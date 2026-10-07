@@ -33,6 +33,11 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Changelog Tooling Self-Test
+        # Guards scripts/changelog.py (used by bump_version.sh and the
+        # release workflow) against regressions in its golden cases.
+        run: python3 scripts/changelog.py self-test
+
   deny:
     name: Security & License Audit
     runs-on: ubuntu-latest
