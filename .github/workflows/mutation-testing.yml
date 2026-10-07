@@ -35,6 +35,9 @@ jobs:
           tool: cargo-mutants,nextest
 
       - name: Run Mutation Testing
+        # Surviving mutants are an expected *report* outcome, not an infra
+        # failure: collect & upload them instead of failing the job.
+        continue-on-error: true
         run: |
           cargo mutants \
             -p taskboard-domain -p taskboard-state \

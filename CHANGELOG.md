@@ -9,6 +9,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ## [Unreleased]
 
+### Fixed
+
+- CI: use the valid `dtolnay/rust-toolchain@stable` ref (the previous `@v1`
+  ref does not exist and would have failed every toolchain job on first run).
+- CI: mutation-testing workflow reports surviving mutants via artifacts
+  instead of failing the scheduled job.
+- `LICENSE-MIT` copyright holder corrected to the project author; repository
+  URL placeholder (`your-username`) replaced with the real remote in
+  `Cargo.toml` and the README badge.
+
+### Added
+
 ### Added
 
 - Cargo workspace with six crates: `taskboard-domain`, `taskboard-state`,
