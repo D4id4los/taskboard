@@ -80,7 +80,10 @@ jobs:
           tool: cargo-llvm-cov,nextest
 
       - name: Generate Coverage Report
-        run: cargo llvm-cov --all-features --workspace --nextest --lcov --output-path lcov.info
+        # llvm-cov 0.9+: nextest is a subcommand (the --nextest flag was
+        # removed); --no-tests=warn keeps the job green while the workspace
+        # has no tests yet.
+        run: cargo llvm-cov nextest --all-features --workspace --no-tests=warn --lcov --output-path lcov.info
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
@@ -102,8 +105,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Run Criterion Benchmarks
-        run: cargo bench --workspace -- --output-format bencher
-        # No criterion benches exist yet; this job goes green (no-op) until
-        # [[bench]] targets land. Wire the bencher action once a BENCHER_API_TOKEN
-        # secret exists:
-        # - uses: bencherdev/bencher-action@v1
+        # Plain `cargo bench`: a no-op while no [[bench]] targets exist.
+        # (--output-format bencher is a nightly-only libtest option and fails
+        # on stable; bencher's rust_criterion adapter parses criterion's own
+        # output, so the flag is not needed for the tracking step either.)
+        run: cargo bench --workspace

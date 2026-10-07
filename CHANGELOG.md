@@ -11,6 +11,9 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- CI: coverage job uses `cargo llvm-cov nextest` (the `--nextest` flag was
+  removed in llvm-cov 0.9) with `--no-tests=warn`; benchmark job runs plain
+  `cargo bench` (`--output-format bencher` is a nightly-only libtest option).
 - CI: use the valid `dtolnay/rust-toolchain@stable` ref (the previous `@v1`
   ref does not exist and would have failed every toolchain job on first run).
 - CI: mutation-testing workflow reports surviving mutants via artifacts
