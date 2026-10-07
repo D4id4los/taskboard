@@ -24,8 +24,8 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
-### Added
-
+- SonarCloud static analysis: `sonar-project.properties` and a
+  `SonarCloud Analysis` CI job (token via the `SONAR_TOKEN` secret).
 - Cargo workspace with six crates: `taskboard-domain`, `taskboard-state`,
   `taskboard-sync-nextcloud`, `taskboard-storage-sqlite`,
   `taskboard-ui-slint`, `taskboard-app` (edition 2024, single global semver).
