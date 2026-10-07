@@ -1,0 +1,24 @@
+[package]
+name = "taskboard-state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Central State Engine actor and ArcSwap-managed application state for taskboard"
+
+[dependencies]
+taskboard-domain.workspace = true
+arc-swap.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

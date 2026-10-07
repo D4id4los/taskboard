@@ -1,0 +1,38 @@
+[package]
+name = "taskboard-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+description = "Executable runner for the taskboard kiosk and desktop application: wires channels, loads config, spawns Tokio actors"
+
+[[bin]]
+name = "taskboard"
+path = "src/main.rs"
+
+[features]
+default = []
+# Compile-time opt-in for tokio-console instrumentation (gRPC on 127.0.0.1:6669).
+tokio-console = ["dep:console-subscriber", "tokio/tracing"]
+
+[dependencies]
+taskboard-domain.workspace = true
+taskboard-state.workspace = true
+taskboard-sync-nextcloud.workspace = true
+taskboard-storage-sqlite.workspace = true
+taskboard-ui-slint.workspace = true
+
+tokio.workspace = true
+arc-swap.workspace = true
+figment.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+color-eyre.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+console-subscriber = { workspace = true, optional = true }
+
+[lints]
+workspace = true

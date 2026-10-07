@@ -1,0 +1,21 @@
+[package]
+name = "taskboard-ui-slint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+description = "Swappable Slint presentation layer for taskboard"
+
+[dependencies]
+taskboard-domain.workspace = true
+arc-swap.workspace = true
+
+# NOTE: the `slint` crate is deliberately not added yet. The UI work has not
+# started; keeping this crate dependency-free avoids pulling the GUI/OpenGL
+# system-library stack into headless builds. Deferred items are tracked in
+# `.artifacts/taskboard-potential-improvements-backlog.md`.
+
+[lints]
+workspace = true

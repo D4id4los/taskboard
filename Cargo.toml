@@ -1,0 +1,70 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/taskboard-domain",
+    "crates/taskboard-state",
+    "crates/taskboard-sync-nextcloud",
+    "crates/taskboard-storage-sqlite",
+    "crates/taskboard-ui-slint",
+    "crates/taskboard-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+authors = ["Viktoria Pogrzebacz <viktoria@agerekg.at>"]
+repository = "https://github.com/your-username/taskboard"
+readme = "README.org"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[workspace.dependencies]
+# Internal crates
+taskboard-domain = { path = "crates/taskboard-domain" }
+taskboard-state = { path = "crates/taskboard-state" }
+taskboard-sync-nextcloud = { path = "crates/taskboard-sync-nextcloud" }
+taskboard-storage-sqlite = { path = "crates/taskboard-storage-sqlite" }
+taskboard-ui-slint = { path = "crates/taskboard-ui-slint" }
+
+# Async runtime & channels
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs"] }
+arc-swap = "1"
+
+# Persistence
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "chrono", "uuid", "migrate"] }
+
+# Networking
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Configuration
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# Time & identifiers
+chrono = { version = "0.4", features = ["serde", "clock"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+# Error handling
+thiserror = "2"
+color-eyre = "0.6"
+
+# Observability
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+console-subscriber = "0.4"
+
+# Testing
+proptest = "1"
+insta = { version = "1", features = ["yaml"] }
+
+[profile.release]
+# The kiosk targets low-power hardware: optimize for size + runtime, not build time.
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

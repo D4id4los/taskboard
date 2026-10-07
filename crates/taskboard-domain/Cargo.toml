@@ -1,0 +1,20 @@
+[package]
+name = "taskboard-domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Pure domain types, entities, and inter-actor protocols for the taskboard system"
+
+[dependencies]
+serde.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

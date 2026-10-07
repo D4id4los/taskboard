@@ -1,0 +1,21 @@
+[package]
+name = "taskboard-storage-sqlite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Local SQLite persistence actor providing offline-first caching for taskboard"
+
+[dependencies]
+taskboard-domain.workspace = true
+sqlx.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
