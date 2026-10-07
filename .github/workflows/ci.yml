@@ -95,6 +95,12 @@ jobs:
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
+    # Dependabot PR runs do not receive repository secrets, so SONAR_TOKEN is
+    # empty there and the scan can only fail with "Not authorized". Main-push
+    # analysis remains the authoritative quality record; deliberately not a
+    # required status check (rulesets cannot express "required except for
+    # Dependabot" — a skipped required check would block Dependabot PRs).
+    if: github.actor != 'dependabot[bot]'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,7 +108,7 @@ jobs:
           fetch-depth: 0
 
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@v5
+        uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         # Organization/project keys are read from sonar-project.properties.
