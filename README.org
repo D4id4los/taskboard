@@ -1,7 +1,7 @@
 #+title: taskboard
 #+options: toc:nil
 
-[[https://github.com/your-username/taskboard/actions/workflows/ci.yml/badge.svg]]
+[[https://github.com/D4id4los/taskboard/actions/workflows/ci.yml/badge.svg]]
 
 =taskboard= is a cross-platform task management and reminder application
 designed for both low-power, ambient display *Kiosks* and interactive
