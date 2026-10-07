@@ -80,25 +80,10 @@ PY
 cargo update --workspace --quiet
 
 DATE="$(date +%Y-%m-%d)"
-if grep -q "## \[Unreleased\]" "$CHANGELOG"; then
-    python3 - "$CHANGELOG" "$NEW" "$DATE" <<'PY'
-import sys
-path, ver, date = sys.argv[1], sys.argv[2], sys.argv[3]
-text = open(path, encoding="utf-8").read()
-release = f"## [{ver}] - {date}"
-head = "## [Unreleased]"
-# Split the Unreleased section at the next '## ' heading.
-start = text.index(head) + len(head)
-nxt = text.index("## ", start)
-body = text[start:nxt]
-text = (
-    text[:start]
-    + f"\n\n{release}\n{body.rstrip()}\n"
-    + "\n"
-    + text[nxt:]
-)
-open(path, "w", encoding="utf-8").write(text)
-PY
+if grep -q "^## \[Unreleased\]" "$CHANGELOG"; then
+    # changelog.py promotes the Unreleased content into a versioned section
+    # (no-op with a warning when Unreleased is empty — the bump still stands).
+    python3 "$ROOT/scripts/changelog.py" promote "$NEW" "$DATE" "$CHANGELOG"
 else
     echo "warning: no '## [Unreleased]' section in $CHANGELOG; skipping changelog edit." >&2
 fi
