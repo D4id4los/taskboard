@@ -41,7 +41,7 @@ jobs:
         run: |
           cargo mutants \
             -p taskboard-domain -p taskboard-state \
-            --in-place --timeout-multi 2.0
+            --in-place --timeout-multiplier 2.0
 
       - name: Collect Surviving Mutants
         if: always()
