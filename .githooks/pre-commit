@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Pre-commit hook: keep formatting drift and clippy warnings out of commits.
+#
+# Enable with:  git config core.hooksPath .githooks
+#
+# Fast feedback first: fmt is instant, clippy reuses cached build artifacts.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-commit] cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "[pre-commit] cargo clippy --workspace --all-targets -- -D warnings"
+cargo clippy --workspace --all-targets --quiet -- -D warnings
+
+echo "[pre-commit] OK"

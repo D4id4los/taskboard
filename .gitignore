@@ -28,6 +28,7 @@ taskboard.toml.local
 # Editors / OS
 .idea/
 .vscode/
+.zcode/
 *.swp
 *~
 \#*\#
