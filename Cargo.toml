@@ -36,7 +36,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 arc-swap = "1"
 
 # Persistence
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "chrono", "uuid", "migrate"] }
+sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "chrono", "uuid", "migrate"] }
 
 # Networking
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
