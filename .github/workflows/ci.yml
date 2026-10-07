@@ -92,6 +92,21 @@ jobs:
           fail_ci_if_error: false
           # CODECOV_TOKEN is optional for public repos, but recommended.
 
+  sonarcloud:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: SonarCloud uses blame/age data for new-code analysis.
+          fetch-depth: 0
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        # Organization/project keys are read from sonar-project.properties.
+
   benchmark:
     name: Performance Benchmarking
     runs-on: ubuntu-latest
