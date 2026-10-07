@@ -1,0 +1,41 @@
+#+title: ADR 0001: Multi-Actor Headless Core Architecture
+#+options: toc:nil
+
+- *Date:* 2026-10-07
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+=taskboard= must run in two modes — a passive Kiosk display on low-power
+hardware and an interactive Desktop manager — with zero frame drops,
+non-blocking rendering, offline resilience, and the freedom to swap GUI
+frameworks (Slint, iced, egui) later.
+
+* Decision
+
+Adopt a *Headless Core with an Event-Driven Multi-Actor Architecture* on
+Tokio:
+
+- Six workspace crates with strict dependency boundaries
+  (=taskboard-domain=, =taskboard-state=, =taskboard-sync-nextcloud=,
+  =taskboard-storage-sqlite=, =taskboard-ui-slint=, =taskboard-app=).
+- Components communicate exclusively via typed async channels
+  (=tokio::sync::mpsc= commands, =tokio::sync::broadcast= system events,
+  embedded =oneshot= queries) — no shared-mutable-state locks across actor
+  boundaries.
+- The State Engine is the single source of truth; it owns the write side of
+  an =arc_swap::ArcSwap<AppState>= that the UI reads lock-free.
+- The UI is a disposable thin client: read snapshot, render, emit commands.
+
+* Consequences
+
+- *Positive:* Rendering can never be blocked by IO; the GUI framework is
+  swappable; every actor is testable as a black box through its channels;
+  offline-first behavior falls out of the storage actor's cache.
+- *Negative:* More moving parts than a monolith; channel topology must be
+  documented and kept consistent (=docs/architecture.org=); some
+  boilerplate per actor.
+- *Enforcement:* Crate boundary rules are checked in code review and by
+  =AGENTS.md= §2; pure-domain purity is checkable from
+  =crates/taskboard-domain/Cargo.toml= dependencies.

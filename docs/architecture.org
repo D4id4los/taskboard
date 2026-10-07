@@ -1,0 +1,193 @@
+#+title: taskboard System Architecture
+#+options: toc:t
+
+*Project:* Multi-Actor, Channel-Driven Kiosk & Desktop Task Management
+Application
+
+*Namespace:* =taskboard-*=
+
+*Target HW Platform:* Low-power ambient display devices (Kiosk Mode) &
+interactive Desktop Workstations
+
+*Target OS Platforms:* Primary Linux & Windows, with second-tier MacOS
+support.
+
+* Executive Summary
+
+The =taskboard= application is a cross-platform task management and
+reminder system designed to operate in two distinct operational modes:
+
+1. *Passive Kiosk Mode:* Running on low-power hardware attached to an
+   office display, providing continuous, resilient visual output with
+   minimal user interaction.
+
+2. *Interactive Desktop Mode:* Running on standard desktop PCs to actively
+   manage tasks, workflows, and visual display preferences.
+
+To guarantee zero frame-drops, non-blocking rendering, high system
+resilience, and maximum flexibility across different GUI frameworks and
+backend services, the application employs a *Headless Core with an
+Event-Driven Multi-Actor Architecture* built on modern async Rust.
+
+* Architecture Overview & Core Patterns
+
+#+begin_example
+                          ┌──────────────────────────┐
+                          │     taskboard-domain     │
+                          │   (Entities & Enums)     │
+                          └─────────────┬────────────┘
+                                        │ (Shared Types)
+     ┌──────────────────────────────────┼──────────────────────────────────┐
+     │                                  │                                  │
+     ▼                                  ▼                                  ▼
+┌──────────────────────────┐  ┌──────────────────────────┐  ┌──────────────────────────┐
+│     taskboard-ui-slint   │  │     taskboard-state      │  │ taskboard-sync-nextcloud │
+│   (Swappable UI Layer)   │  │  (State Engine Actor)    │  │    (Network IO Actor)    │
+└────────────┬─────────────┘  └────────────┬─────────────┘  └────────────┬─────────────┘
+             │                             │                             │
+             │ mpsc (Commands)             │                             │ mpsc (Sync Results)
+             ├────────────────────────────►│◄────────────────────────────┤
+             │                             │                             │
+             │ broadcast (Signals)         │ broadcast (System Events)   │
+             │◄────────────────────────────┼────────────────────────────►│
+             │                             │                             │
+             │ Lock-Free Reads             │ Atomic Pointer Updates      │
+             │  (ArcSwap<AppState>)        │  (ArcSwap<AppState>)        │
+             └────────────────────────────►│                             │
+                                           │                             │
+                                           │ mpsc (Write Commands)       │
+                                           ▼                             │
+                              ┌──────────────────────────┐               │
+                              │ taskboard-storage-sqlite │               │
+                              │   (Local Cache Actor)    │               │
+                              └──────────────────────────┘               │
+                                           ▲                             │
+                                           └─────────────────────────────┘
+                                                Hydrate / Offline Sync
+#+end_example
+
+** Separation of Concerns & Unidirectional Data Flow
+
+The system strictly isolates presentation, state processing, network
+communication, and disk storage.
+
+- User interactions or visual timers never mutate state in-place.
+- Components publish intents over asynchronous channels.
+- State transitions are centrally processed by a State Engine, producing
+  immutable snapshots for consumption.
+
+** Async-by-Default Execution
+
+All network calls (Nextcloud WebDAV/REST APIs) and local disk operations
+(SQLite) run in isolated background tasks on the Tokio async runtime.
+Heavy processing, polling, or network timeouts cannot block the UI
+rendering loop.
+
+** Framework-Agnostic "Thin Client" UI
+
+The GUI layer operates as a disposable presentation client. It relies on
+standard Rust primitives (=tokio::sync= and =arc_swap::ArcSwap=) to
+communicate with the core engine. This enables spiking and swapping
+front-end libraries (Slint, Iced, egui) without altering business logic or
+IO code.
+
+* Inter-Component Communication Protocol
+
+Components communicate through typed channels and shared atomic pointers,
+avoiding central runtime bottlenecks.
+
+| Communication Path | Mechanism / Type | Description & Purpose |
+|---+---+---|
+| *UI → State Engine* | =tokio::sync::mpsc= | Sends user intent commands (=Command::TaskCompleted(id)=) asynchronously. |
+| *State Engine → UI (Read)* | =arc_swap::ArcSwap<AppState>= | Provides lock-free, zero-contention state inspection during UI repaints. |
+| *State Engine → UI (Signal)* | =tokio::sync::broadcast= | Emits lightweight triggers (=EngineSignal::StateUpdated=) to prompt GUI repaints. |
+| *Actors ↔ Actors* | =tokio::sync::mpsc= | Direct point-to-point command delivery between backend actors (e.g., State Engine → Storage). |
+| *System Notifications* | =tokio::sync::broadcast= | Broadcasts global status changes (=SystemEvent::NetworkLost=) to all interested actors. |
+| *Asynchronous Queries* | =tokio::sync::oneshot= | Embedded inside an =mpsc= message payload for direct, async request-response cycles. |
+
+* Cargo Workspace Topology
+
+To enforce strict boundary checks at compile time and accelerate build
+speeds, the project is structured as a Cargo workspace with explicit
+dependency hierarchies.
+
+** Crate Roles & Dependencies
+
+1. *taskboard-domain* — Pure data types (=Task=, =Project=,
+   =UserPreferences=), inter-actor message enums (=StateCommand=,
+   =SystemEvent=), and trait interfaces. Dependencies: minimal (=serde=,
+   =chrono=, =uuid=). Zero UI, network, or database dependencies.
+
+2. *taskboard-state* — Single source of runtime truth. Processes incoming
+   commands, mutates memory state, updates =ArcSwap<AppState>=, and
+   broadcasts state events. Dependencies: =taskboard-domain=, =arc-swap=,
+   =tokio=.
+
+3. *taskboard-sync-nextcloud* — Manages remote sync with Nextcloud API
+   endpoints. Handles network errors and publishes sync status to the State
+   Engine. Dependencies: =taskboard-domain=, =reqwest=, =tokio=,
+   =serde_json=.
+
+4. *taskboard-storage-sqlite* — Manages local SQLite disk persistence.
+   Ensures the app boots immediately with cached data if network
+   connectivity is lost. Dependencies: =taskboard-domain=, =sqlx=, =tokio=.
+
+5. *taskboard-ui-slint* — Handles presentation rendering. Reads state via
+   lock-free =ArcSwap= loads and emits =mpsc= commands on user input.
+   Dependencies: =taskboard-domain=, =slint= (deferred), =arc-swap=.
+
+6. *taskboard-app* — Binary entry point (=main.rs=). Loads configuration,
+   initializes tracing, instantiates channels, spawns background actors on
+   Tokio, mounts the UI, and steps aside. Dependencies: all workspace
+   crates.
+
+* Tech Stack & External Crates Specification
+
+| Category | Selected Tool / Crate | Purpose & Selection Rationale |
+|---+---+---|
+| *Async Runtime* | =tokio= | De-facto standard for async IO, timing tasks, and channel communication primitives. |
+| *Lock-Free State* | =arc-swap= | Atomic pointer updates for =ArcSwap<AppState>=, ensuring non-blocking reads on UI threads. |
+| *Local Persistence* | =sqlx= | Async SQLite database interaction featuring compile-time verified SQL queries. |
+| *Networking* | =reqwest= | Async HTTP client for the Nextcloud WebDAV/REST APIs (rustls TLS). |
+| *Configuration* | =figment= | Hierarchical configuration management merging embedded defaults, TOML files, and environment variables. |
+| *Identifiers* | =uuid= | Generates collision-resistant v4/v7 UUIDs for client-side task creation before remote synchronization. |
+| *Date & Time* | =chrono= | Time, schedule, and timezone handling with support for =sqlx= and API string formatting. |
+| *Domain Errors* | =thiserror= | Derives static, strongly-typed error enums in library crates for programmatic pattern matching. |
+| *App Bin Errors* | =color-eyre= | Top-level panic and error handling in =taskboard-app= with rich visual formatting. |
+| *Observability* | =tracing= + =tracing-subscriber= | Contextual logging across async =.await= boundaries, with standard =log= compatibility enabled. |
+| *Async Debugging* | =tokio-console= | Captures async task/channel state via =console_subscriber::ConsoleLayer= (gRPC on 127.0.0.1:6669); compiled in behind the =tokio-console= feature. |
+| *Snapshot Testing* | =insta= | Comparing large structs, JSON payloads, or state trees over time without manually writing assertions. |
+| *Mutation Testing* | =cargo-mutants= | Finds holes in test coverage for pure & core crates (=taskboard-domain= and =taskboard-state=). |
+
+* Quality Gate & Tooling Strategy
+
+| Objective | Selected Tool | Integration & Execution Rationale |
+|---+---+---|
+| *Linting* | =clippy= | Run with =all = "warn"= and =pedantic = "warn"= (workspace lints); CI escalates to =-D warnings=. |
+| *Test Execution* | =cargo-nextest= | Executes test binaries in isolated OS processes in parallel. Faster runs, better output, automatic flakiness management for async/multi-threaded integration tests. |
+| *Property Testing* | =proptest= | Generates randomized inputs to uncover edge cases and panic bugs in domain logic. |
+| *Snapshot Testing* | =insta= | Snapshot testing of the =StateEngine='s =AppState= trees. |
+| *Benchmarking* | =criterion= | Statistical tracking of execution timing across commits to prevent performance regressions in hot paths (SQLite caching, task sorting). |
+| *Code Coverage* | =cargo-llvm-cov= | Native =rustc= source-based instrumentation; precise line/branch coverage across threads and async tasks. |
+| *Mutation Testing* | =cargo-mutants= | Weekly scheduled CI job plus manual =workflow_dispatch=. |
+| *Dependency Audit* | =cargo-deny= | Unified linter for =Cargo.lock=: RustSec vulnerabilities, license compliance, crate sources, duplicate versions. |
+| *Memory Safety* | =miri= | Weekly scheduled CI job scoped to =taskboard-domain= and =taskboard-state= (see =docs/testing_strategy.org=). |
+
+* Versioning
+
+The project uses a single global semantic version shared by all crates:
+
+#+begin_example
+taskboard v0.2.3
+├── crates/taskboard-domain         @ 0.2.3
+├── crates/taskboard-state          @ 0.2.3
+├── crates/taskboard-sync-nextcloud @ 0.2.3
+├── crates/taskboard-storage-sqlite @ 0.2.3
+├── crates/taskboard-ui-slint       @ 0.2.3
+└── crates/taskboard-app            @ 0.2.3
+#+end_example
+
+The version is defined once in =[workspace.package] version= in the root
+=Cargo.toml=; every member crate inherits it via =version.workspace = true=.
+Releases are cut exclusively with =./scripts/bump_version.sh
+<major|minor|patch>= (see =docs/coding_guidelines.org=).

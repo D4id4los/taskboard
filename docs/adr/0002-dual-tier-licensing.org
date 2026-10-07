@@ -1,0 +1,45 @@
+#+title: ADR 0002: Dual-Tier Workspace Licensing
+#+options: toc:nil
+
+- *Date:* 2026-10-07
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+The workspace contains both reusable library components and end-user
+application binaries. A single license across all crates forces a trade-off:
+
+- =AGPL-3.0-only= everywhere would prevent external Rust developers from
+  importing =taskboard-domain= or the Nextcloud connector into permissive
+  software, creating adoption friction.
+- =MIT OR Apache-2.0= everywhere would allow third parties to take the
+  finished Kiosk/Desktop application, modify it, and host it as a closed
+  proprietary service without contributing back.
+
+* Decision
+
+*Dual-Tier Workspace Licensing Strategy*, defined at the crate level:
+
+- *Permissive tier* — =MIT OR Apache-2.0= (SPDX:
+  =MIT OR Apache-2.0=): =taskboard-domain=, =taskboard-state=,
+  =taskboard-sync-nextcloud=, =taskboard-storage-sqlite=.
+- *Copyleft tier* — =AGPL-3.0-only=: =taskboard-app=,
+  =taskboard-ui-slint=, and any future presentation crates (e.g.,
+  =taskboard-ui-iced=).
+
+Implementation: canonical license texts in the repository root
+(=LICENSE-MIT=, =LICENSE-APACHE=, =LICENSE-AGPL=); per-crate =license=
+fields in each manifest; SPDX headers in every =.rs= file;
+=cargo-deny= enforces dependency license compliance in CI.
+
+* Consequences
+
+- *Positive:* Maximum ecosystem adoption for reusable libraries; the
+  end-user product (including network-hosted kiosk services) is protected
+  by the AGPL's source-publishing requirement.
+- *Negative:* Contributors must pick the right SPDX header per crate; a
+  new UI implementation must remember it lands in the copyleft tier;
+  =cargo-deny= must be kept in sync with the allow-list.
+- *Watch-out:* Code must not flow from the AGPL tier back into the
+  permissive tier without a licensing decision.

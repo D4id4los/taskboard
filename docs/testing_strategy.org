@@ -1,0 +1,147 @@
+#+title: taskboard Testing Strategy
+#+options: toc:t
+
+Achieving high testability in an asynchronous, multi-actor system requires
+strict boundaries between pure logic and side-effect-heavy IO. The design
+decisions below make the test suite fast, deterministic, and free of flaky
+network or UI dependencies. These rules are binding for agents and humans
+alike (see also =AGENTS.md= §5).
+
+* 1. Hexagonal Architecture (Ports and Adapters)
+
+Isolate core logic from Nextcloud and SQLite via Dependency Injection
+through Rust traits.
+
+- *Define IO Traits in the Domain:* =taskboard-domain= defines async traits
+  for all external operations (e.g., =pub trait TaskRepository=).
+- *Inject Dependencies:* The state engine and sync actors receive these
+  dependencies via generics (=T: TaskRepository=) or dynamic dispatch
+  (=Box<dyn TaskRepository>=).
+- *The TDD Benefit:* In production, =taskboard-app= injects the real
+  =SqliteRepository=. In tests, an in-memory fake runs database-dependent
+  logic in microseconds without touching the disk.
+
+* 2. "Black Box" Actor Testing via Channels
+
+Actors are tested through their public channel interface, without mocking
+frameworks.
+
+- *The Pattern:* Treat the actor as a black box. In a =#[tokio::test]=,
+  instantiate the actor and hand it the receiving ends of its channels.
+- *Execution:* Send an explicit command (e.g., =Command::TaskCompleted(id)=)
+  down the =mpsc::Sender=.
+- *Assertion:* Await the actor's response on the outgoing channel and
+  assert the typed result. This proves the actor processes messages
+  correctly without spinning up the Slint UI or a real database.
+
+* 3. Fakes over Mocks for Stateful Components
+
+- *Handwritten Fakes:* Instead of asserting that =save_task()= was called,
+  implement the =TaskRepository= trait on a simple =HashMap= wrapped in
+  =Arc<Mutex<T>>=. This simulates true data persistence across multiple
+  operations — far more robust than pre-programmed mock return values.
+- *Using =mockall=:* For simple behavior verification, =mockall= is the
+  standard choice. When mocking async traits via the =async-trait= crate,
+  place the =#[automock]= macro /before/ =#[async_trait]= so the compiler
+  generates mockable futures.
+
+* 4. The Functional Core & Property Testing
+
+Keep =taskboard-domain= completely pure: zero network, zero UI, zero async
+runtime.
+
+- *Pure Functions:* Domain logic takes inputs and returns outputs, rather
+  than mutating hidden state.
+- *Property-Based Testing:* Because the domain is pure, =proptest= can
+  bombard task sorting rules, recurrence generators, or Kiosk rotation
+  schedules with thousands of randomized inputs to catch edge-case panics.
+
+* 5. Snapshot Testing the App State
+
+The UI layer is a "dumb client" that strictly reads from
+=arc_swap::ArcSwap<AppState>=, so verifying state logic is straightforward:
+
+- *The Practice:* Use =insta=. Push a series of commands through the state
+  engine in a test, extract the final =AppState=, and verify the entire
+  state tree with =insta::assert_yaml_snapshot!=. If a logic change alters
+  the =AppState= structure, =insta= fails with a clean diff.
+- *Do not* test the UI framework's internal state; snapshot the
+  =StateEngine= instead.
+
+* 6. Deterministic "Tokio Time"
+
+Task reminders and Kiosk screen rotations depend on time passing. Standard
+=tokio::time::sleep= in tests makes suites slow and flaky — /never use it/.
+
+- *Time Manipulation:* In =#[tokio::test]= blocks, call
+  =tokio::time::pause()= to freeze the runtime clock, then
+  =tokio::time::advance(Duration::from_secs(3600)).await= to fast-forward
+  instantly. Strict timeouts, delayed API retries, and task deadlines are
+  tested deterministically.
+
+* 7. UI Unit/Component Tests
+
+Use the UI framework's test utilities (e.g., =slint::testing=) to verify
+that local widget state (like active typing in a text field) is preserved
+while waiting for an async round-trip, and that the correct commands are
+sent over =mpsc= upon simulated user input.
+
+* 8. Test Suite Discipline (Hard Rules)
+
+From =AGENTS.md= §5, restated because they matter:
+
+- A new test failing can be a bug in production code — evaluate both sides
+  before changing anything.
+- Never weaken a correct test to make it pass; leave it failing and report
+  the bug if the fix is out-of-scope.
+- No quality ceilings, no text assertions, one behavior per test at the
+  lowest layer, deterministic by construction, no pins of "today's
+  behavior".
+
+* 9. Memory Safety: Miri
+
+Unsafe code lives mostly in the third-party dependencies of the stack, so
+Miri is applied targetedly:
+
+1. *Enforce* =#![forbid(unsafe_code)]= in all workspace crates (the sole
+   exception: =taskboard-ui-slint=).
+2. *Scope* =cargo miri= to pure logic, serialization, and state-transition
+   tests: =cargo miri test -p taskboard-domain -p taskboard-state=.
+3. *Run out-of-band in CI* (weekly scheduled workflow + manual dispatch):
+   Miri is 10–100× slower than native builds, so it never runs in the PR
+   pipeline. Run it locally when introducing complex serialization
+   structures or concurrency primitives.
+
+* 10. Fuzzing: cargo-fuzz
+
+Deferred. With high-level, heavily-fuzzed ecosystem crates (=serde_json=,
+=sqlx=, =tokio=, =chrono=) doing the low-level parsing, =proptest= +
+=insta= provide ~95% of the value at a fraction of the setup cost.
+
+*When to add =cargo-fuzz=:* only when a custom binary format parser,
+string tokenizer, or low-level protocol decoder appears (e.g., hand-written
+WebDAV XML parsing in =taskboard-sync-nextcloud=). Then fuzz out-of-band on
+a dedicated service (OSS-Fuzz) rather than in the PR pipeline.
+
+* 11. Sanitizers (ASan)
+
+Deferred. Rely on =#![forbid(unsafe_code)]=, =clippy=, =cargo-deny=, and
+Miri for now. Once the Slint UI and SQLite integrations are fully wired in
+=taskboard-app=, add a scheduled nightly CI job running ASan against the
+C-FFI boundary:
+
+#+begin_src sh
+RUSTFLAGS="-Zsanitizer=address" cargo +nightly test \
+  -p taskboard-storage-sqlite -p taskboard-ui-slint \
+  --target x86_64-unknown-linux-gnu
+#+end_src
+
+* 12. Coverage & Mutation Testing
+
+- *Coverage:* =cargo-llvm-cov --all-features --workspace --nextest= in CI;
+  review diff coverage before merging.
+- *Mutation Testing:* =cargo-mutants= runs weekly (and on demand) against
+  =taskboard-domain= and =taskboard-state=. Surviving mutants are recorded
+  as =.artifacts/reports/YYYY-MM-DD-mutation-testing-report.md=.
+- *Benchmarks:* =criterion= tracks hot paths (SQLite caching actor, task
+  sorting) across commits to catch performance regressions early.

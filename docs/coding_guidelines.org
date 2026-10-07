@@ -1,0 +1,176 @@
+#+title: taskboard Coding Guidelines
+#+options: toc:t
+
+* 1. Code Formatting and Linting
+
+- *Formatting:* Enforce standard Rust formatting rules using =cargo fmt=.
+  Never hand-format Rust code; always run =cargo fmt= before committing.
+- *Idiomatic Code:* Run =cargo clippy= (workspace lints: =all = "warn"=,
+  =pedantic = "warn"=) to catch common mistakes and enforce idiomatic Rust
+  constructs. Do not offer a PR that contains clippy warnings — CI runs
+  with =-D warnings=, turning them into hard errors.
+- *Dependency Auditing:* =cargo-deny= runs in CI as a unified linter for
+  =Cargo.lock=: duplicate dependency versions, restrictive software
+  licenses, forbidden crate sources, and security vulnerabilities. Run
+  =cargo deny check --workspace= locally before pushing.
+- *Dependency Versions:* Shared external dependencies are versioned once in
+  the root =[workspace.dependencies]=. Member crates must reference them
+  with =.workspace = true=, never with a duplicate version pin.
+
+* 2. Architectural Boundaries and Purity
+
+- *The Functional Core:* The =taskboard-domain= crate must remain
+  completely pure: zero network, zero UI, zero asynchronous runtime
+  dependencies. Design domain logic as pure functions that take inputs and
+  return outputs, rather than methods that mutate hidden state.
+- *Actor Isolation:* Application state, network IO, and local storage run
+  as isolated background tasks on the Tokio runtime. Actors communicate
+  exclusively via typed message passing using asynchronous channels
+  (=tokio::sync::mpsc=, =tokio::sync::broadcast=, embedded =oneshot=).
+- *Dependency Injection:* Rely heavily on DI through Rust traits: define IO
+  interfaces (Ports) in the domain crate, implement them (Adapters) in the
+  outer crates (see =docs/testing_strategy.org=).
+- *unsafe:* Every crate carries =#![forbid(unsafe_code)]= — the sole
+  exception is =taskboard-ui-slint=, where Slint's generated rendering code
+  requires =unsafe=. Do not relax this without an ADR.
+
+* 3. Error Handling
+
+Error handling is structurally split between library crates and the main
+executable:
+
+- *Domain & Libraries:* Use =thiserror= in domain and library crates to
+  derive static, strongly-typed error enums so callers can programmatically
+  match on specific failure modes (e.g., =NetworkTimeout= vs =Unauthorized=).
+- *Application Binary:* Use =color-eyre= in =taskboard-app= to catch errors
+  and panics with rich backtraces and colorized context.
+- *No =unwrap=/=expect= in non-test library code* unless the invariant is
+  proven locally and documented; prefer returning typed errors.
+
+* 4. Logging and Observability
+
+- *Structured Instrumentation:* Use =tracing= for all application logging
+  to handle contextual spans across =.await= points in async workflows.
+- *Dependency Log Capture:* Always include the =log= compatibility feature
+  flag in =tracing= so standard =log= emissions from third-party
+  dependencies route into the structured =tracing-subscriber= output.
+- *Log enough to enable debugging:* All project crates should carry
+  sufficient logging statements (at appropriate levels) that a user's
+  default log output can localise a bug report, and a =debug= or =trace=
+  level log can pinpoint the location of most bugs.
+- *Async Diagnostics:* Build with =--features tokio-console= (in
+  =taskboard-app=) and connect the =tokio-console= CLI to inspect async
+  task state, channel occupancy, and lock acquisitions during development.
+
+* 5. State Sharing and Synchronization
+
+- *Lock-Free UI Reads:* Never force the UI to wait on asynchronous
+  processes. Expose the application state to the UI layer using
+  =arc_swap::ArcSwap<AppState>=: lock-free, zero-contention reads on the UI
+  rendering thread.
+- *Non-Blocking Logic:* The UI crate must act as a "dumb presentation
+  client". It only reads from the =ArcSwap= snapshot, maps fields to
+  widgets, and emits non-blocking =mpsc= commands on user interactions.
+- *No shared-mutable-state locks across actors:* =Mutex=/=RwLock= are
+  reserved for intra-actor internals, never for cross-actor communication.
+
+* 6. Platform Support
+
+- *Multi-platform by default:* Where possible, code is multi-platform
+  compatible. Platform-specific code must be gated by the appropriate
+  annotations (=#[cfg(...)]=).
+- *Target Platforms:* x86_64 Linux is the dev platform; first-class binary
+  releases for x86_64 Linux & Windows; second priority 64-bit MacOS, 64-bit
+  ARM Linux & Windows.
+
+* 7. Source Code Repository
+
+** Commit Message Format
+
+#+begin_example
+<type>(<module/workspace-scope>): <short-desc>
+
+<long-desc>
+#+end_example
+
+Types: =feat=, =fix=, =refactor=, =test=, =docs=, =ci=, =chore=.
+
+Example:
+
+#+begin_example
+feat(decoder): Reject BCD-invalid timecode values in decoded results
+
+New backend-neutral ltc_integrity post-pass over decoded frame
+lists, wired into the builtin build_result and the chunked merge.
+Finds any decoded values outside LTC's BCD ranges.
+#+end_example
+
+** Feature/Issue Branches
+
+Implement new features and bug fixes on dedicated feature branches that get
+merged into =main= once completed.
+
+Branch naming: =<category>/<workspace-scope>-<short-description>= with
+categories:
+
+- =feat/=: New user-facing features, new domain functionality, or new UI views.
+- =fix/=: Bug fixes across state processing, IO connectors, or UI components.
+- =refactor/=: Restructuring or optimization without changing external behavior.
+- =test/=: Adding or updating unit tests, insta snapshots, or proptest suites.
+- =docs/=: Documentation updates.
+- =ci/=: Pipeline tweaks, GitHub Actions updates, cargo-deny configuration.
+- =chore/=: Dependency bumps, toolchain updates, repository maintenance.
+
+Examples: =feat/ui-slint-overdue-banner=, =feat/state-kiosk-rotation-timer=,
+=fix/issue-42-sqlite-cache-deadlock=, =fix/nextcloud-auth-token-refresh=,
+=ci/cargo-deny-license-check=, =docs/update-agents-artifact-spec=.
+
+Naming guidelines:
+- Keep descriptions concise: 2–4 words after the scope tag.
+- Include issue numbers for tracked bugs.
+- Avoid personal prefixes; if two people create separate versions of the
+  same feature/fix, use a personal suffix instead.
+
+** Double-Rebase Merge into main
+
+Completed feature and issue branches are merged into =main= via the
+double-rebase technique:
+
+1. Rebase =feat/foo= onto =main=; fix any merge conflicts.
+2. Rerun automatic tests if the rebase changed the code.
+3. Check out =main= and rebase =main= onto =feat/foo=.
+
+This way no merge commit ever enters =main=. Merging into =main= requires
+explicit user approval (see =AGENTS.md= §8).
+
+** Git Usage Policy (for agents)
+
+- Never push to a remote without explicit direction from the user.
+- Never merge a feature branch into =main= without explicit user approval.
+- Do create feature branches for code changes; do commit freely to them.
+- Do not work on or commit to =main=. (Exception: the initial repository
+  bootstrap commits.)
+- Worktrees for parallel agent work live next to the project root:
+  =<project-root>-WT-<branch-name>=.
+
+** Release Versioning
+
+Single global semver in =[workspace.package] version=, inherited by all
+crates. Cut releases exclusively with:
+
+#+begin_src sh
+./scripts/bump_version.sh <major|minor|patch>
+#+end_src
+
+The script (1) aborts on an unclean git tree, (2) increments the version,
+(3) refreshes =Cargo.lock= and the =CHANGELOG.md= release entry, (4) stages
+& commits all changed files, (5) tags =v<major>.<minor>.<patch>= in a
+GitHub-parseable format.
+
+* 8. Artefact Management
+
+AI-generated plans and reports live under =.artifacts/plans/= and
+=.artifacts/reports/= with strict =YYYY-MM-DD-<kebab-topic>-{plan,report}.md=
+naming; out-of-scope improvement ideas are appended to
+=.artifacts/taskboard-potential-improvements-backlog.md=. Templates and the
+full policy are in =AGENTS.md= §7.

@@ -1,0 +1,163 @@
+#+title: taskboard
+#+options: toc:nil
+
+[[https://github.com/your-username/taskboard/actions/workflows/ci.yml/badge.svg]]
+
+=taskboard= is a cross-platform task management and reminder application
+designed for both low-power, ambient display *Kiosks* and interactive
+*Desktop* workstations. Built in Rust, it features an asynchronous,
+event-driven multi-actor core with an offline-first architecture powered by
+Nextcloud API synchronization and local SQLite caching.
+
+* Key Features
+
+- *Dual-Mode Operation:* Runs seamlessly as a passive, low-power Kiosk
+  display or an interactive Desktop manager.
+- *Headless Core Architecture:* Decoupled presentation layer enabling
+  non-blocking UI rendering and interchangeable front-end drivers (Slint,
+  iced, egui).
+- *Offline-First Synchronization:* Local SQLite caching ensures continuous
+  operation during network drops, background-syncing with Nextcloud when
+  reconnected.
+- *Lock-Free State Reads:* Zero-contention UI frame rendering powered by
+  atomic state pointer swaps (=arc-swap=).
+
+* Download
+
+Pre-built binaries for Linux, Windows, and MacOS will be published on the
+GitHub Releases page once the release pipeline lands (see the
+[[./.artifacts/taskboard-potential-improvements-backlog.md][improvements backlog]]). Until then, build from source:
+
+#+begin_src sh
+cargo build --release -p taskboard-app
+#+end_src
+
+* Architecture Overview
+
+The application employs a /Headless Core with an Event-Driven Multi-Actor
+Architecture/ built on Tokio. User interactions or visual timers never
+mutate state in place: components publish intents over async channels, a
+central State Engine processes them, and immutable snapshots are consumed
+by the UI. Full details, including the channel topology and crate
+dependency rules, live in [[./docs/architecture.org][docs/architecture.org]].
+
+* Repository Structure
+
+This repository is organized as a Cargo workspace with strict crate
+boundaries:
+
+#+begin_example
+taskboard/
+├── .artifacts/                   # AI-agent plans, reports, and the improvement backlog
+├── .github/workflows/            # CI/CD pipelines (nextest, cargo-deny, coverage, miri, mutants)
+├── docs/                         # Architecture document, coding guidelines, ADRs
+├── scripts/                      # Maintenance scripts (version bumping)
+└── crates/
+    ├── taskboard-domain/         # Pure domain entities, message enums, and trait boundaries
+    ├── taskboard-state/          # State Engine actor & ArcSwap state management
+    ├── taskboard-sync-nextcloud/ # Nextcloud WebDAV/REST client actor (IO)
+    ├── taskboard-storage-sqlite/ # Local SQLite disk caching actor (IO)
+    ├── taskboard-ui-slint/       # Slint presentation UI layer
+    └── taskboard-app/            # Application runner & channel wiring binary
+#+end_example
+
+* Dev Quickstart
+
+** Prerequisites
+
+- *Rust Toolchain:* =stable=, managed via [[https://rustup.rs][rustup]] (the pinned
+  =rust-toolchain.toml= is picked up automatically). Edition 2024, MSRV 1.96.
+- *System Dependencies:* =gcc= or =clang= (for SQLite linking). Graphics
+  backend drivers (OpenGL/Vulkan) will be required for the Slint UI once it
+  lands.
+- *Recommended tooling:* =cargo-nextest=, =cargo-deny=, =cargo-llvm-cov=
+  (all used by CI; install with =cargo install cargo-nextest cargo-deny
+  cargo-llvm-cov=).
+
+** 1. Enable the Git Hooks
+
+The repository ships a =pre-commit= hook (fmt + clippy). Point git at it:
+
+#+begin_src sh
+git config core.hooksPath .githooks
+#+end_src
+
+** 2. Build the Workspace
+
+#+begin_src sh
+cargo build --workspace
+#+end_src
+
+** 3. Run the Application
+
+#+begin_src sh
+cargo run -p taskboard-app
+#+end_src
+
+** Configuration
+
+=taskboard= uses hierarchical configuration loading via =figment=. Settings
+merge from embedded defaults, a =taskboard.toml= file in the working
+directory, and =TASKBOARD_= prefixed environment variables (highest
+priority).
+
+Example =taskboard.toml=:
+
+#+begin_src toml
+[nextcloud]
+server_url = "https://cloud.example.com"
+app_password = "your-app-password"
+
+[kiosk]
+rotation_interval_secs = 15
+show_overdue_banner = true
+#+end_src
+
+** Testing & Quality Gates
+
+This project enforces strict quality standards via =cargo-nextest= and
+linter tooling:
+
+#+begin_src sh
+# Run all workspace unit and actor tests
+cargo nextest run --workspace
+
+# Run doc tests (nextest does not execute these)
+cargo test --doc --workspace
+
+# Check formatting and Clippy lints
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+
+# Audit licenses, duplicates, and security vulnerabilities
+cargo deny check --workspace
+#+end_src
+
+* Contributing
+
+Everyone — humans, LLMs, and humans using LLMs — is required to read
+[[./docs/coding_guidelines.org][docs/coding_guidelines.org]] before writing any code or producing pull
+requests. LLM coding agents are allowed to assist in the development of
+this project, but it is expected that their users take responsibility for
+the LLM's output, review it, and be satisfied with its quality before they
+open a pull request.
+
+** LLM Agents
+
+If you are an LLM coding agent working on this repository, *you must read
+[[./AGENTS.md][AGENTS.md]] before writing code or submitting pull requests.*
+
+All non-code implementation plans and diagnostic reports must be stored
+under =.artifacts/plans/= and =.artifacts/reports/= using strict ISO-8601
+date prefixes (=YYYY-MM-DD-<topic>-plan.md= / =-report.md=).
+
+* License
+
+This project utilizes a *Dual-Tier Workspace Licensing Model*:
+
+- *Library Crates* (=taskboard-domain=, =taskboard-state=,
+  =taskboard-sync-nextcloud=, =taskboard-storage-sqlite=) are dual-licensed
+  under [[./LICENSE-MIT][MIT]] OR [[./LICENSE-APACHE][Apache-2.0]].
+
+- *Application & UI Crates* (=taskboard-app=, =taskboard-ui-slint=) are
+  licensed under the [[./LICENSE-AGPL][GNU Affero General Public License v3.0]].

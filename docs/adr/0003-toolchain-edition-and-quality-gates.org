@@ -1,0 +1,49 @@
+#+title: ADR 0003: Toolchain, Edition, and Quality Gates
+#+options: toc:nil
+
+- *Date:* 2026-10-07
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+The project starts from a clean slate and must avoid teething pains when
+adding tooling later. Decisions were needed for: Rust edition, shared
+versioning, lint policy, =unsafe= policy, and when heavy machinery (Miri,
+fuzzing, sanitizers) enters the pipeline.
+
+* Decision
+
+- *Edition 2024*, MSRV =1.96=, pinned via =rust-toolchain.toml=
+  (=stable= + =rustfmt= + =clippy=). Chosen over edition 2021: greenfield
+  project, current stable toolchain supports it fully.
+- *Single global semver* in =[workspace.package] version=, inherited by
+  all crates via =version.workspace = true=; releases cut only by
+  =scripts/bump_version.sh= (clean-tree check → bump → commit → tag
+  =vX.Y.Z=).
+- *Shared dependency versions* centralized in the root
+  =[workspace.dependencies]=; member crates use =.workspace = true=.
+- *Workspace lints:* =clippy::all = "warn"= and =clippy::pedantic = "warn"=
+  declared once in =[workspace.lints]=; CI escalates with
+  =-D warnings=. =rustfmt= default style, enforced in CI.
+- *=#![forbid(unsafe_code)]= in every crate* except =taskboard-ui-slint=
+  (Slint's generated rendering code requires =unsafe=; sole documented
+  exception).
+- *Quality-gate rollout:* clippy/nextest/cargo-deny from day one in the PR
+  pipeline; =cargo-llvm-cov= coverage on every PR; Miri and cargo-mutants
+  as weekly scheduled jobs; fuzzing (cargo-fuzz) and sanitizers (ASan)
+  deferred until custom parsers / FFI complexity appear (see
+  =docs/testing_strategy.org=).
+- *Slint dependency deferred:* =taskboard-ui-slint= ships dependency-free
+  until UI work starts, keeping the GUI/OpenGL system-library stack out of
+  headless builds and CI. Tracked in the improvements backlog.
+
+* Consequences
+
+- *Positive:* One place to bump any shared dependency or lint; no
+  version drift between crates; the Cargo.lock, cargo-deny license
+  allow-list, and CI are exercised against the real dependency tree from
+  the first commit; =unsafe= regressions are compiler errors.
+- *Negative:* Edition 2024 raises the minimum toolchain (acceptable: MSRV
+  1.96 is the current stable); the deferred Slint dependency means the UI
+  crate's manifests will change when UI work begins.
