@@ -1,0 +1,37 @@
+# Rust build artifacts
+/target
+
+# Coverage output
+lcov.info
+*.profraw
+
+# Mutation testing output
+mutants-out*/
+
+# Local environment / secrets (Nextcloud app passwords etc.)
+.env
+.env.*
+
+# Local configuration overrides
+taskboard.toml.local
+
+# SQLite local cache databases (never commit runtime data)
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Insta pending snapshots are reviewed and accepted; reject stray files
+*.snap.new
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*~
+\#*\#
+.\#*
+
+# Org-mode exports
+*.html

@@ -1,0 +1,20 @@
+# Normalize all text files to LF in the repository; working tree keeps LF
+# on Linux and may be converted on Windows by core.autocrlf.
+* text=auto eol=lf
+
+# Shell scripts must always work with LF, including on Windows checkouts.
+*.sh text eol=lf
+.githooks/* text eol=lf
+
+# Rust sources: keep stable diffs
+*.rs text diff
+*.toml text
+*.yml text
+*.yaml text
+*.org text
+*.md text diff
+
+# Binaries / certificates should never be mangled
+*.png binary
+*.ico binary
+*.icns binary
