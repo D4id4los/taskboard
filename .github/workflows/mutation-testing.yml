@@ -1,0 +1,64 @@
+name: Mutation Testing
+
+# Weekly sweep of cargo-mutants over the pure & core crates, plus manual
+# dispatch on feature branches prior to major releases. Mutants are slow:
+# this deliberately runs out-of-band, never in the PR pipeline.
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants:
+    name: cargo-mutants (domain & state)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants,nextest
+
+      - name: Run Mutation Testing
+        run: |
+          cargo mutants \
+            -p taskboard-domain -p taskboard-state \
+            --in-place --timeout-multi 2.0
+
+      - name: Collect Surviving Mutants
+        if: always()
+        run: |
+          if [ -d mutants-out ]; then
+            cat mutants-out/mutants-out.log || true
+            if [ -s mutants-out/survivors.txt ] || compgen -G "mutants-out/survivors*" > /dev/null; then
+              echo "Surviving mutants found — see artifacts."
+            fi
+          fi
+
+      - name: Upload Mutation Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-testing-report-${{ github.run_id }}
+          path: mutants-out/
+          retention-days: 30
+
+      # Record surviving mutants into
+      # .artifacts/reports/YYYY-MM-DD-mutation-testing-report.md
+      # (template in AGENTS.md §7) and triage them into fixes or the
+      # improvements backlog.

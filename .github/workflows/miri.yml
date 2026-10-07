@@ -1,0 +1,37 @@
+name: Miri
+
+# Weekly out-of-band memory-safety sweep over the pure crates. Miri
+# interprets MIR (10-100x slower than native), so it never runs per-PR.
+# Scope rationale: docs/testing_strategy.org §9.
+
+on:
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Miri requires the nightly interpreter; make sure every cargo invocation
+  # in this job uses it regardless of rust-toolchain.toml.
+  RUSTUP_TOOLCHAIN: nightly
+
+jobs:
+  miri:
+    name: cargo miri (domain & state)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Run Miri on Pure Crates
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-domain -p taskboard-state
