@@ -113,9 +113,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
+      - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
@@ -125,3 +123,17 @@ jobs:
         # on stable; bencher's rust_criterion adapter parses criterion's own
         # output, so the flag is not needed for the tracking step either.)
         run: cargo bench --workspace
+
+      - name: Track Benchmarks with Bencher
+        # Only record trend data from main pushes; Bencher needs the API token.
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        continue-on-error: true # TODO: remove once the first criterion benches exist
+        env:
+          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+        run: |
+          bencher run \
+            --project taskboard \
+            --branch main \
+            --testbed ubuntu-latest \
+            --adapter rust_criterion \
+            "cargo bench --workspace"

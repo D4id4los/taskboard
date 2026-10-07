@@ -26,6 +26,9 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 - SonarCloud static analysis: `sonar-project.properties` and a
   `SonarCloud Analysis` CI job (token via the `SONAR_TOKEN` secret).
+- Bencher continuous benchmark tracking: the `benchmark` job records
+  criterion results from `main` pushes via the Bencher CLI
+  (`BENCHER_API_TOKEN` secret); tolerant until first benches exist.
 - Cargo workspace with six crates: `taskboard-domain`, `taskboard-state`,
   `taskboard-sync-nextcloud`, `taskboard-storage-sqlite`,
   `taskboard-ui-slint`, `taskboard-app` (edition 2024, single global semver).
