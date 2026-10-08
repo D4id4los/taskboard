@@ -78,7 +78,7 @@ communication, and disk storage.
 
 ** Async-by-Default Execution
 
-All network calls (Nextcloud WebDAV/REST APIs) and local disk operations
+All network calls (Nextcloud Deck OCS REST API) and local disk operations
 (SQLite) run in isolated background tasks on the Tokio async runtime.
 Heavy processing, polling, or network timeouts cannot block the UI
 rendering loop.
@@ -148,7 +148,7 @@ dependency hierarchies.
 | *Async Runtime* | =tokio= | De-facto standard for async IO, timing tasks, and channel communication primitives. |
 | *Lock-Free State* | =arc-swap= | Atomic pointer updates for =ArcSwap<AppState>=, ensuring non-blocking reads on UI threads. |
 | *Local Persistence* | =sqlx= | Async SQLite database interaction featuring compile-time verified SQL queries. |
-| *Networking* | =reqwest= | Async HTTP client for the Nextcloud WebDAV/REST APIs (rustls TLS). |
+| *Networking* | =reqwest= | Async HTTP client for the Nextcloud Deck OCS REST API (rustls TLS). |
 | *Configuration* | =figment= | Hierarchical configuration management merging embedded defaults, TOML files, and environment variables. |
 | *Identifiers* | =uuid= | Generates collision-resistant v4/v7 UUIDs for client-side task creation before remote synchronization. |
 | *Date & Time* | =chrono= | Time, schedule, and timezone handling with support for =sqlx= and API string formatting. |

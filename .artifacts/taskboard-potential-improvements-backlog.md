@@ -262,6 +262,103 @@ and Deck config endpoints.
 Model and test each group the same tiered way when a consumer appears;
 comments first if task discussions ever matter to the UI.
 
+## [2026-10-08] OAuth2 device/PKCE login flow
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-plan.md` §2/§4
+- **Target Area**: `crates/taskboard-app/`, `crates/taskboard-sync-nextcloud/`
+
+### Context & Description
+The roadmap decision (2026-10-08) is app password + OS keyring: the user
+mints an app password in the Nextcloud web UI and pastes it at first run.
+OAuth2 (device grant or PKCE) would remove that manual step and improve
+revocation UX, but adds redirect handling, refresh-token scheduling, and
+per-server OAuth app registration — significant work on top of an auth
+model that is already decided, implemented, and tier-tested.
+
+### Proposed Approach
+If first-run login friction becomes a real complaint, add an OAuth2 flow
+alongside the app-password path (keep both): browser-based authorization
+with a loopback redirect, tokens in the same keyring entry, and refresh
+scheduling in the sync actor. Registering a default OAuth client per
+Nextcloud instance is an open problem to solve first.
+
+## [2026-10-08] Daemon IPC for remote control (kiosk management)
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-plan.md` §2/§4
+- **Target Area**: `crates/taskboard-app/`
+
+### Context & Description
+The roadmap decision (2026-10-08) is a single `taskboard` binary whose
+subcommands boot the core in-process. A long-running `daemon` owning the
+core plus thin CLI subcommands over local IPC (e.g. unix domain socket)
+would enable remote management of a kiosk box and avoid repeated core
+bootstrapping per command. Deferred because the in-process flavor is the
+simplest correct E2E story and IPC adds a protocol layer before anything
+is usable.
+
+### Proposed Approach
+Design a small typed IPC protocol (versioned, length-framed) once a
+kiosk deployment actually needs remote control; the CLI surface
+(`login`, `tasks ...`, `sync`) stays unchanged, only the transport of
+commands differs.
+
+## [2026-10-08] Reminders/notifications subsystem
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-plan.md` §4
+- **Target Area**: `taskboard-domain/`, `taskboard-state/`, `taskboard-app/`
+
+### Context & Description
+Taskboard's identity is "task management **and reminder** system"
+(AGENTS.md §1), but no reminder design exists yet: no due-date watching,
+notification scheduling, kiosk banner triggering, or desktop-notification
+integration appears in architecture.org or any plan. The roadmap focuses
+on sync + persistence first; reminders need their own planning round and
+should start early after M1/M2 while the state engine contracts are
+still cheap to extend.
+
+### Proposed Approach
+Own plan covering: reminder rules as pure domain functions (proptest
+scheduling), a scheduler actor on the injected clock (no sleeps),
+notification output as a Port, and the kiosk overdue-banner path.
+
+## [2026-10-08] Multi-board support
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-plan.md` §3 (Phase 6)
+- **Target Area**: `crates/taskboard-app/`, `crates/taskboard-state/`
+
+### Context & Description
+The MVP binds exactly one Deck board at first run (`boards select`).
+Multiple boards complicate identity (remote ids are only unique per
+board for stacks/cards), the outbox operation types, and every UI view.
+Deferred until the single-board deployment proves the core.
+
+### Proposed Approach
+Lift to N boards by keying stacks/cards by (board_id, id) in storage and
+adding a board selector to the UI; revisit before designing any feature
+that bakes "one board" into the AppState shape.
+
+## [2026-10-08] Keyring fallback for headless Linux (no Secret Service)
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-plan.md` §5
+- **Target Area**: `crates/taskboard-app/`
+
+### Context & Description
+The `keyring` crate on Linux talks to the Secret Service (gnome-keyring/
+KWallet), which is absent on headless servers, SSH sessions, and minimal
+kiosk images. The roadmap stores the Nextcloud app password in the OS
+keyring; deployments without a secret service need a defined behavior —
+a clear typed error at minimum, likely a 0600 file fallback.
+
+### Proposed Approach
+In the Phase 5 (app bootstrap) plan: wrap keyring access behind a small
+Port with two impls (keyring, encrypted-file), select via config, and
+document the trade-off. Never silently fall back to plaintext.
+
 ## [2026-10-08] Deck client coverage pass: endpoint logging arms
 
 - **Category**: `Testing`
