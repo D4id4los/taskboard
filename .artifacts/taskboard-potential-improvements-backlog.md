@@ -145,3 +145,37 @@ AGENTS.md §1 and need a cross toolchain plus Slint system-lib answers
 Add matrix legs for macOS aarch64 (native runner) and Linux/Windows
 aarch64 (cross toolchain) to `release.yml`; verify the packaging script's
 `--target` path on each before the first tagged release that includes them.
+
+## [2026-10-08] Nextcloud major-version matrix for the docker test tier
+
+- **Category**: `Testing`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-nextcloud-sync-testing-plan.md`
+- **Target Area**: `docker/nextcloud-test/compose.yaml`, `.github/workflows/ci.yml`
+
+### Context & Description
+Tier 2 (dockerized Nextcloud) pins a single stable major, so protocol drift
+between supported Nextcloud/Deck versions goes unnoticed until it hits the
+user's real deployment (Tier 3, manual-only).
+
+### Proposed Approach
+Once the client surface grows beyond the board slice, add a matrix leg for
+the oldest supported Nextcloud major (a separate compose file or an
+overridable image tag) to the `Nextcloud Integration (docker)` CI job.
+
+## [2026-10-08] Scheduled live-tier runs via a self-hosted LAN runner
+
+- **Category**: `Testing`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-nextcloud-sync-testing-plan.md`
+- **Target Area**: `.github/workflows/`, GitHub runner setup
+
+### Context & Description
+Tier 3 (private production server) is deliberately manual/local-only so no
+Nextcloud secret — not even the server address — exists on GitHub, whose CI
+logs are public. The trade-off: nothing verifies the real deployment
+periodically.
+
+### Proposed Approach
+If scheduled live checks become wanted, register a self-hosted GitHub
+runner on the LAN (its logs are not publicly readable), move the Tier 3
+suite + `.env` secrets there, and run it on a schedule like `miri.yml`.
+Keep the zero-secrets-on-GitHub property intact for all hosted jobs.
