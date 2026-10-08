@@ -55,7 +55,8 @@ async fn main() -> Result<(), DeckError> {
     let json = serde_json::to_string_pretty(&harvested).expect("boards serialize");
     let out =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deck/boards_live.json");
-    std::fs::write(&out, json).expect("write fixture");
+    // Async context: use tokio's non-blocking file API (rust:S7493).
+    tokio::fs::write(&out, json).await.expect("write fixture");
     println!("wrote {}", out.display());
 
     let deleted = client.delete_board(board.id).await?;
