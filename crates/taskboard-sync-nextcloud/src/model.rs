@@ -114,10 +114,10 @@ pub struct Card {
     #[serde(default)]
     pub last_modified: i64,
     /// ISO-8601 deadline (`2020-01-20T09:52:43+00:00`) or `null`.
-    #[serde(default, alias = "dueDate")]
+    #[serde(default, alias = "dueDate", serialize_with = "ser_opt_datetime")]
     pub duedate: Option<DateTime<Utc>>,
     /// ISO-8601 completion timestamp or `null`.
-    #[serde(default)]
+    #[serde(default, serialize_with = "ser_opt_datetime")]
     pub done: Option<DateTime<Utc>>,
     #[serde(default)]
     pub archived: bool,
@@ -236,6 +236,21 @@ pub struct ExtendedData {
     pub mimetype: String,
     #[serde(default)]
     pub mtime: i64,
+}
+
+/// Serializes an optional UTC datetime as Deck's ISO-8601 shape
+/// (`2020-01-20T09:52:43+00:00`), not chrono's serde default (`...Z`).
+#[allow(clippy::ref_option)] // serde's serialize_with signature is fixed
+pub(crate) fn ser_opt_datetime<S: serde::Serializer>(
+    value: &Option<DateTime<Utc>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(dt) => {
+            serializer.serialize_str(&dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
+        }
+        None => serializer.serialize_none(),
+    }
 }
 
 #[cfg(test)]
