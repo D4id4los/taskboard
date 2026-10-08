@@ -73,6 +73,8 @@ def archive_path(version, target, fmt):
 
 
 def stage_and_archive(version, target, fmt):
+    build(target)
+
     build_dir = DIST / f"taskboard-{version}-{target}"
     if build_dir.exists():
         shutil.rmtree(build_dir)
@@ -87,11 +89,11 @@ def stage_and_archive(version, target, fmt):
     if archive.exists():
         archive.unlink()
     if fmt == "zip":
-        subprocess.run(
-            ["python3", "-c", _ZIP_ONE_LINER, str(build_dir), str(archive.name)],
-            cwd=DIST,
-            check=True,
-        )
+        # shutil, not a python3 subprocess: Windows runners ship the
+        # Store-stub python3.exe alias (sys.executable would also work,
+        # but this avoids a process entirely).
+        base = str(archive)[:-4]
+        shutil.make_archive(base, "zip", root_dir=build_dir.parent, base_dir=build_dir.name)
     else:
         subprocess.run(
             ["tar", "-czf", archive.name, "-C", str(build_dir.parent), build_dir.name],
@@ -99,11 +101,6 @@ def stage_and_archive(version, target, fmt):
             check=True,
         )
     return archive, build_dir
-
-
-_ZIP_ONE_LINER = (
-    "import shutil, sys; shutil.make_archive(sys.argv[2][:-4], 'zip', sys.argv[1])"
-)
 
 
 def sha256_of(path):
@@ -139,7 +136,9 @@ def check_archive(version, target, fmt):
         import zipfile
 
         with zipfile.ZipFile(archive) as zf:
-            members = sorted(zf.namelist())
+            members = sorted(
+                zi.filename for zi in zf.infolist() if not zi.is_dir()
+            )
     else:
         with tarfile.open(archive) as tf:
             members = sorted(
