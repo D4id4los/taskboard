@@ -102,14 +102,15 @@ invocation.
 
 - *Tier 0 — recorded fixtures (unit).* Parse and build Deck OCS payloads
   against JSON fixture files recorded from a real server (Tier 2 doubles
-  as the fixture-harvesting source). No network; part of the ordinary
-  CI test job.
+  as the fixture-harvesting source; =examples/harvest_deck_fixtures.rs=
+  refreshes =tests/fixtures/deck/= against a live tier when the recorded
+  payload shapes drift). No network; part of the ordinary CI test job.
 - *Tier 1 — contract tests (mock HTTP).* An in-process mock server
   (=wiremock=, dev-dependency) serves canned responses covering the
   error matrix (401/403/404/409/412/5xx). Client behavior is verified
   deterministically here: Basic-auth and =OCS-APIRequest= header
   construction, OCS envelope unwrapping, typed error mapping, and
-  retry/backoff — the last frozen with =tokio::time::pause()/advance()=
+  retry/backoff — the last frozen via the =RetrySleep= clock seam
   (§6), which is impossible against a real server.
 - *Tier 2 — dockerized Nextcloud (CI, secretless).* The official
   =nextcloud:<major>= image (version pinned; a matrix over supported
@@ -145,8 +146,9 @@ Hard rules binding the real-server tiers (2 and 3):
   and are the only non-interactive option on servers enforcing 2FA. They
   cannot be folder-scoped — the dedicated test account /is/ the scope.
 - *Secrets live in one place only.* Tier 3 credentials sit in a
-  git-ignored =.env= at the repo root, loaded by the test harness; the
-  committed =.env.example= documents the names:
+  git-ignored =.env= at the repo root, loaded by the test harness via
+  =dotenvy= (dev-dependency); the committed =.env.example= documents the
+  names:
   =TASKBOARD_IT_NEXTCLOUD_URL=, =TASKBOARD_IT_NEXTCLOUD_USER=,
   =TASKBOARD_IT_NEXTCLOUD_TOKEN=. CI-only tokens (=CODECOV_TOKEN=,
   =SONAR_TOKEN=, =BENCHER_API_TOKEN=) stay in GitHub Actions secrets —

@@ -34,6 +34,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Nextcloud sync testing build-out: `DeckClient` boards slice (list/create/
+  delete over the Deck OCS REST API) with typed errors and bounded retries,
+  plus all four test tiers — Tier 0 fixtures, Tier 1 `wiremock` contract
+  tests (hermetic, default suite), Tier 2 secretless dockerized Nextcloud
+  (`scripts/nextcloud_it_setup.sh`, new `Nextcloud Integration (docker)` CI
+  job), and Tier 3 live-server tests loaded from a git-ignored `.env`
+  (`.env.example` template; `examples/harvest_deck_fixtures.rs` refreshes
+  the recorded fixtures).
 - Testing strategy: tiered integration-test model for the Nextcloud sync
   client (Deck OCS REST API) — recorded fixtures, `wiremock` contract
   tests, a secretless dockerized-Nextcloud tier in CI, and a local-only
