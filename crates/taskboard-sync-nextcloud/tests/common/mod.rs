@@ -4,6 +4,8 @@
 //! Tier 2 (dockerized) and Tier 3 (live server) tests are `#[ignore]`-marked
 //! and skip themselves when their environment is not configured, so the
 //! default suite stays hermetic.
+// Not every tier's test binary uses every helper.
+#![allow(dead_code)]
 
 use std::time::Duration;
 

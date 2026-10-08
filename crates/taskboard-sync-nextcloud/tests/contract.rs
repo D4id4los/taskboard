@@ -150,18 +150,26 @@ async fn create_board_posts_json_and_decodes_board() {
 }
 
 #[tokio::test]
-async fn delete_board_sends_delete_to_resource_path() {
+async fn delete_board_sends_delete_to_resource_path_and_returns_board() {
     let server = MockServer::start().await;
     Mock::given(method("DELETE"))
         .and(path(format!("{BOARDS_PATH}/42")))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "ocs": {"meta": {"statuscode": 200}, "data": []}
+            "ocs": {
+                "meta": {"statuscode": 200},
+                "data": {"id": 42, "title": "b", "color": "00c2e0", "deletedAt": 1700}
+            }
         })))
         .mount(&server)
         .await;
 
-    client_for(&server).delete_board(42).await.unwrap();
+    let board = client_for(&server).delete_board(42).await.unwrap();
     server.verify().await;
+    assert_eq!(board.id, 42);
+    assert!(
+        !board.is_live(),
+        "soft-deleted board must be reported as such"
+    );
 }
 
 #[tokio::test]
