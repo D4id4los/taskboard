@@ -10,3 +10,13 @@
 //! This crate is pure IO: it holds no application state of its own.
 
 #![forbid(unsafe_code)]
+
+pub mod backoff;
+pub mod client;
+pub mod error;
+pub mod ocs;
+
+pub use backoff::BackoffPolicy;
+pub use client::{DeckClient, RetrySleep, TokioSleep};
+pub use error::DeckError;
+pub use ocs::Board;

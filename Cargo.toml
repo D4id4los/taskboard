@@ -61,6 +61,9 @@ console-subscriber = "0.5"
 
 # Testing
 proptest = "1"
+wiremock = "0.6"
+dotenvy = "0.15"
+base64 = "0.22"
 insta = { version = "1", features = ["yaml"] }
 
 [profile.release]

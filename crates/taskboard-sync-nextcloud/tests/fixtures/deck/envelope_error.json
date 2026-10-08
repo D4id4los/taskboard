@@ -1,0 +1,8 @@
+{
+  "ocs": {
+    "meta": {
+      "status": "failure",
+      "statuscode": 404,
+      "message": "Wrong board ID"
+    },
+    "data": []

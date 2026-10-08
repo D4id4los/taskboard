@@ -1,0 +1,20 @@
+{
+  "ocs": {
+    "meta": {
+      "status": "ok",
+      "statuscode": 200,
+      "message": "OK",
+      "totalitems": "",
+      "itemsperpage": ""
+    },
+    "data": {
+      "id": 42,
+      "title": "taskboard-it-ab12cd34",
+      "color": "ff00ff",
+      "owner": { "primaryKey": "taskboard-it", "uid": "taskboard-it" },
+      "archived": false,
+      "shared": 0,
+      "deletedAt": 0
+    }
+  }
+}
