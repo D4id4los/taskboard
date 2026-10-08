@@ -12,6 +12,7 @@ use reqwest::{Client, Method, StatusCode, Url, header::ACCEPT};
 use serde::Serialize;
 
 use crate::backoff::BackoffPolicy;
+use crate::color::DeckColor;
 use crate::error::DeckError;
 use crate::ocs::{Board, OcsEnvelope};
 
@@ -53,7 +54,7 @@ pub struct DeckClient {
 #[derive(Serialize)]
 struct CreateBoardBody<'a> {
     title: &'a str,
-    color: &'a str,
+    color: &'a DeckColor,
 }
 
 impl DeckClient {
@@ -119,13 +120,13 @@ impl DeckClient {
         result
     }
 
-    /// Creates a board; `color` is a six-digit hex string without `#`.
+    /// Creates a board with a six-digit hex [`DeckColor`].
     ///
     /// # Errors
     ///
     /// See [`DeckError`].
-    pub async fn create_board(&self, title: &str, color: &str) -> Result<Board, DeckError> {
-        tracing::debug!(title, color, "creating deck board");
+    pub async fn create_board(&self, title: &str, color: &DeckColor) -> Result<Board, DeckError> {
+        tracing::debug!(title, color = %color, "creating deck board");
         let result: Result<Board, DeckError> = self
             .send_json(
                 Method::POST,

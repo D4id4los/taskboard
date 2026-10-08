@@ -13,10 +13,12 @@
 
 pub mod backoff;
 pub mod client;
+pub mod color;
 pub mod error;
 pub mod ocs;
 
 pub use backoff::BackoffPolicy;
 pub use client::{DeckClient, RetrySleep, TokioSleep};
+pub use color::{DeckColor, ParseColorError};
 pub use error::DeckError;
 pub use ocs::Board;
