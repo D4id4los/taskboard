@@ -142,12 +142,17 @@ impl DeckClient {
 
     /// Deletes a board by id.
     ///
+    /// Returns the deleted board as the server reports it. Deck's DELETE is
+    /// a *soft* delete: the response (authoritative, unlike the listing,
+    /// which can lag behind Deck's board cache) carries a non-zero
+    /// `Board::deleted_at`.
+    ///
     /// # Errors
     ///
-    /// See [`DeckError`]; [`DeckError::NotFound`] when the board is gone.
-    pub async fn delete_board(&self, id: u64) -> Result<(), DeckError> {
+    /// See [`DeckError`].
+    pub async fn delete_board(&self, id: u64) -> Result<Board, DeckError> {
         tracing::debug!(board_id = id, "deleting deck board");
-        let result: Result<Option<serde_json::Value>, DeckError> = self
+        let result: Result<Board, DeckError> = self
             .send_json(
                 Method::DELETE,
                 &format!("boards/{id}"),
@@ -155,10 +160,14 @@ impl DeckClient {
             )
             .await;
         match &result {
-            Ok(_) => tracing::info!(board_id = id, "deck board deleted"),
+            Ok(board) => tracing::info!(
+                board_id = id,
+                deleted_at = board.deleted_at,
+                "deck board deleted"
+            ),
             Err(err) => tracing::warn!(board_id = id, error = %err, "deleting deck board failed"),
         }
-        result.map(|_| ())
+        result
     }
 
     /// Performs the request (with retries) and decodes the OCS envelope.
@@ -239,13 +248,18 @@ impl DeckClient {
     }
 }
 
-/// Wall-clock helper kept separate so tests can exercise envelope decoding
-/// (ok, unknown fields tolerated, malformed) without a server.
+/// Decodes a Deck API response payload.
+///
+/// Tolerates both response shapes in the wild: older servers always wrap in
+/// the OCS envelope; newer Deck releases return the bare payload for
+/// `Accept: application/json` (verified against Nextcloud 35).
 pub(crate) fn decode_envelope<T: serde::de::DeserializeOwned>(
     bytes: &[u8],
 ) -> Result<T, DeckError> {
-    let envelope: OcsEnvelope<T> = serde_json::from_slice(bytes)?;
-    Ok(envelope.ocs.data)
+    if let Ok(envelope) = serde_json::from_slice::<OcsEnvelope<T>>(bytes) {
+        return Ok(envelope.ocs.data);
+    }
+    Ok(serde_json::from_slice(bytes)?)
 }
 
 #[cfg(test)]
@@ -300,5 +314,14 @@ mod tests {
     fn envelope_decode_rejects_malformed() {
         let res: Result<serde_json::Value, _> = decode_envelope(br#"{"ocs": {"meta": {}"#);
         assert!(matches!(res, Err(DeckError::Envelope(_))));
+    }
+
+    #[test]
+    fn bare_payload_without_envelope_decodes() {
+        // Nextcloud 35 returns a bare array for Accept: application/json.
+        let decoded: Vec<Board> =
+            decode_envelope(br#"[{"id": 3, "title": "t", "color": "5c2751"}]"#).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].id, 3);
     }
 }

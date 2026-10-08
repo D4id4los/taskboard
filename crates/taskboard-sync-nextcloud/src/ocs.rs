@@ -29,10 +29,24 @@ pub struct OcsMeta {
 
 /// A Deck board as returned by the boards endpoints.
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Board {
     pub id: u64,
     pub title: String,
     pub color: String,
+    /// Unix timestamp of a soft delete; `0` (or missing on older servers)
+    /// means the board is live. Deck's DELETE does not remove the board
+    /// from listings, it only stamps this field.
+    #[serde(default)]
+    pub deleted_at: i64,
+}
+
+impl Board {
+    /// True when the board has not been soft-deleted.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.deleted_at == 0
+    }
 }
 
 #[cfg(test)]

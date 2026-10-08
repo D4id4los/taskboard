@@ -70,6 +70,33 @@ jobs:
       - name: Run Doc Tests
         run: cargo test --doc --workspace
 
+  nextcloud-it:
+    name: Nextcloud Integration (docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Start dockerized Nextcloud (Deck, test user, app password)
+        run: scripts/nextcloud_it_setup.sh up --ci
+
+      - name: Docker-tier integration tests
+        # --no-tests=fail guards the filter silently matching nothing.
+        run: >
+          cargo nextest run -p taskboard-sync-nextcloud --run-ignored only
+          -E 'test(it_nextcloud_docker)' --no-tests=fail
+
+      - name: Teardown
+        if: always()
+        run: scripts/nextcloud_it_setup.sh down
+
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
