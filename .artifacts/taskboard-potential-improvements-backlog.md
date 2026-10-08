@@ -384,3 +384,54 @@ assertions. Or accept the gap explicitly with a lint/coverage ignore
 annotated at the logging match, if the team decides logs are not worth
 harnessing. Trigger: next time coverage is formally gated, or when the
 client surface next changes anyway.
+
+## [2026-10-09] Field-level merge refinement to avoid granularity clobbering
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-phase1-domain-model-plan.md` (§7.4 example 2, "granularity trap") + user request
+- **Target Area**: `crates/taskboard-domain/src/merge.rs` (policy layer; may need a persisted edit-history structure in Phase 2 storage)
+
+### Context & Description
+Deck's `lastModified` is entity-level, so the Phase 1 policy lets a
+remote entity-touch that is merely *newer* than a local field edit
+overwrite that field with its (unchanged) remote value — even when the
+remote change actually touched a different field. This is the classic
+per-object sync flaw where one field's update silently clobbers
+unrelated fields the remote never modified. The current design accepts
+and documents this loss; the user explicitly wants mitigation explored:
+"always hate it when a per-object sync clobbers individual fields
+because of bad sync implementations". Any decision under incomplete
+information is probabilistic, not provably correct — the goal is to
+make wrong guesses rare and bounded, not to eliminate them.
+
+### Proposed Approach
+Ideas to evaluate (design spike first, then a plan):
+
+1. **Local edit history.** Persist per-field edit records
+   `(field, previous_value, new_value, edited_at)` locally (Phase 2
+   storage, bounded/compacted). On merge, when
+   `ts_r > clocks[field]`, diff the remote snapshot against the
+   previously observed remote state (`remote_seen` baseline) to infer
+   *which fields the remote edit actually touched*, and apply remote
+   values only to those fields — instead of blanket entity-level LWW.
+2. **Field-change inference heuristics.** When the inference is
+   ambiguous (e.g. remote value equals our previous local value, or no
+   prior baseline exists), decide between "remote deliberately
+   reverted/rewrote this field" vs "sync granularity artifact" using
+   signals like value equality with history, whether the remote entity
+   has any *other* changed field, and recency distance. Uncertain cases
+   fall back to today's strict-LWW behavior.
+3. **Conflict surfacing instead of silent choice.** For fields the
+   heuristic scores as genuinely contested, consider surfacing a
+   user-visible conflict (kept copy + current copy) rather than
+   auto-picking — possibly only for high-stakes fields like
+   title/description.
+4. **Upstream check (cheap first step).** Re-verify against current
+   Nextcloud Deck sources whether any write-side version vector,
+   `If-Match`, or per-field `lastModified` exists on newer Deck
+   versions (the client-surface plan found none documented); if one
+   appears, prefer it over all heuristics.
+
+Trigger: revisit after M1 real-server use if field-clobbering is
+observed or complained about; the Phase 1 policy primitives (per-field
+clocks, `remote_seen`) are already the substrate this builds on.
