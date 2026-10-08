@@ -505,6 +505,50 @@ mod tests {
     }
 
     #[test]
+    fn card_label_decodes_bare_id() {
+        let l: CardLabel = serde_json::from_str("7").unwrap();
+        assert_eq!(l, CardLabel::from(7));
+    }
+
+    #[test]
+    fn participant_serializes_as_first_non_empty_id_field() {
+        let full = Participant {
+            primary_key: "pk".into(),
+            uid: "uid".into(),
+            displayname: "dn".into(),
+        };
+        assert_eq!(serde_json::to_string(&full).unwrap(), r#""pk""#);
+        assert_eq!(
+            serde_json::to_string(&Participant {
+                primary_key: String::new(),
+                uid: "uid".into(),
+                displayname: "dn".into(),
+            })
+            .unwrap(),
+            r#""uid""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Participant {
+                primary_key: String::new(),
+                uid: String::new(),
+                displayname: "dn".into(),
+            })
+            .unwrap(),
+            r#""dn""#
+        );
+    }
+
+    #[test]
+    fn participant_rejects_other_json_shapes() {
+        for bad in ["null", "true", "5", r#"["u"]"#] {
+            assert!(
+                serde_json::from_str::<Participant>(bad).is_err(),
+                "{bad} must not decode as a participant"
+            );
+        }
+    }
+
+    #[test]
     fn explicit_null_collections_decode_as_empty() {
         // Seen on the dockerized tier: a stack whose only card was moved
         // away lists with "cards": null, and a fresh board can carry
