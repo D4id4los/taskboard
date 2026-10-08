@@ -11,6 +11,9 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- Deck client: explicitly `null` collections in Deck payloads (e.g. a
+  stack's `cards` once empty, seen on the dockerized tier) decode as empty
+  vectors instead of failing the whole listing.
 - CI: coverage job uses `cargo llvm-cov nextest` (the `--nextest` flag was
   removed in llvm-cov 0.9) with `--no-tests=warn`; benchmark job runs plain
   `cargo bench` (`--output-format bencher` is a nightly-only libtest option).

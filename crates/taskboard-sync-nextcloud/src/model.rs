@@ -35,11 +35,11 @@ pub struct Board {
     pub shared: i64,
     #[serde(default)]
     pub owner: Option<Participant>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub users: Vec<Participant>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub labels: Vec<Label>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub acl: Vec<Acl>,
     #[serde(default)]
     pub permissions: Option<BoardPermissions>,
@@ -86,7 +86,7 @@ pub struct Stack {
     pub deleted_at: i64,
     #[serde(default)]
     pub order: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub cards: Vec<Card>,
 }
 
@@ -125,11 +125,11 @@ pub struct Card {
     pub owner: Option<Participant>,
     #[serde(default)]
     pub last_editor: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub labels: Vec<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub assigned_users: Vec<Participant>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub attachments: Vec<Attachment>,
     #[serde(default)]
     pub attachment_count: i64,
@@ -236,6 +236,17 @@ pub struct ExtendedData {
     pub mimetype: String,
     #[serde(default)]
     pub mtime: i64,
+}
+
+/// Deck serializes some empty collections as `null` (e.g. a stack's
+/// `cards` once its only card is moved away — seen on the dockerized
+/// tier); decode those as empty vectors instead of failing the payload.
+fn null_to_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// Serializes an optional UTC datetime as Deck's ISO-8601 shape
@@ -365,6 +376,29 @@ mod tests {
     fn malformed_fixture_is_rejected() {
         let res: Result<Board, _> = crate::client::decode_envelope(&fixture("envelope_error.json"));
         assert!(res.is_err(), "truncated envelope must not decode");
+    }
+
+    #[test]
+    fn explicit_null_collections_decode_as_empty() {
+        // Seen on the dockerized tier: a stack whose only card was moved
+        // away lists with "cards": null, and a fresh board can carry
+        // "labels": null. One null must not fail the whole payload.
+        let stack: Stack =
+            serde_json::from_str(r#"{"id": 9, "title": "Doing", "boardId": 42, "cards": null}"#)
+                .unwrap();
+        assert!(stack.cards.is_empty());
+        let board: Board = serde_json::from_str(
+            r#"{"id": 3, "title": "t", "color": "5c2751", "labels": null, "users": null, "acl": null}"#,
+        )
+        .unwrap();
+        assert!(board.labels.is_empty() && board.users.is_empty() && board.acl.is_empty());
+        let card: Card = serde_json::from_str(
+            r#"{"id": 5, "title": "c", "labels": null, "assignedUsers": null, "attachments": null}"#,
+        )
+        .unwrap();
+        assert!(
+            card.labels.is_empty() && card.assigned_users.is_empty() && card.attachments.is_empty()
+        );
     }
 
     #[test]
