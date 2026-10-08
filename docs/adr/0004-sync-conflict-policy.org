@@ -1,0 +1,129 @@
+#+title: ADR 0004: Sync Conflict Policy
+#+options: toc:nil
+
+- *Date:* 2026-10-08
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+The offline-first sync model allows local edits while disconnected; a
+later sync must reconcile them against remote Deck changes. Deck
+constrains the design space:
+
+- No write-side preconditions (=If-Match=), so optimistic concurrency on
+  the wire is impossible.
+- =lastModified= / =deletedAt= are entity-level, seconds-resolution epoch
+  integers; cards have *no* =deletedAt= (deletion is observable only as
+  absence from listings or a 404). Boards and stacks are soft-deleted with
+  a real =deletedAt=.
+- Card PUT is a full round-trip; sparse PUTs reset omitted fields, so
+  every write is full-send anyway.
+- Remote ids are only unique per board; local ids are client-side
+  UUIDv7 generated before any remote binding exists.
+
+* Decision
+
+** Per-field last-writer-wins, local clocks vs entity-granular remote
+
+Every editable field of a domain entity carries a =DateTime<Utc>= write
+clock (=TaskClocks= etc.). Local edits stamp only the touched fields;
+adopting a remote version stamps every field with the remote
+=lastModified=. Per field:
+
+#+begin_quote
+the remote value wins ⟺ =remote.last_modified > field_clock= (strictly);
+ties and older remotes keep local.
+#+end_quote
+
+The tie-break is deterministic (local bias): Deck's second-resolution
+timestamps naturally lose to sub-second local edits made in the same
+second. This boundary is pinned by property tests (and kills the
+strict-vs-inclusive comparison mutants in =merge.rs=).
+
+Documented limitation — *granularity data loss*: because the remote side
+is entity-granular, a remote entity-touch newer than a local field edit
+reverts that field even when the remote change touched a different field
+(e.g. a remote description edit at 10:06 overwrites a local title edit
+from 10:05 with the server's unchanged title). This is inherent to Deck's
+timestamps; a Phase 4 docker-tier scenario pins the behavior so it stays
+intentional and observable. Alternatives (single entity-level mtime
+locally; OR-set labels) were rejected as materially worse or premature
+(see backlog).
+
+** Composite and set-valued fields
+
+- *Position* (=stack= + =order=) shares one clock: a move is one user
+  intent, so concurrent move+reorder resolve as a unit — never a
+  stack-from-A-order-from-B chimera. Interleaving of two devices'
+  orderings is a documented limitation.
+- *Labels* merge as one field (whole-set LWW). Add-wins OR-set merging is
+  backlogged.
+
+** Deletion
+
+- Boards/stacks/labels: the remote =deletedAt= is a timestamped fact and
+  LWWs against the local side's latest activity exactly like any field.
+- Cards: no remote delete timestamp exists, so an *observed remote
+  absence always beats concurrent local edits* (delete-wins tombstone,
+  stamped with the observation time). Automatic resurrection would create
+  zombie tasks reappearing after every sync. Resurrect-as-new-card is
+  backlogged.
+- Local card tombstones participate in the normal LWW: a strictly newer
+  remote edit resurrects the task (and drops the pending delete op); an
+  older remote edit leaves the tombstone standing, and the pending delete
+  re-pushes over the remote change. Deck's cache lag cannot resurrect a
+  pushed delete: the tombstone clock is at least as new as any stale
+  listing entry.
+
+** Push echoes are adopted unconditionally
+
+After a create/update push, the server echo is adopted as-is (not LWW)
+with clocks advanced to =max(local, echo.last_modified)=. The server
+normalizes what we just wrote (trims, reformats, truncates timestamps to
+whole seconds); LWW against a seconds-resolution echo would let the local
+sub-second values win forever and the normalization would never land. A
+=reorder= push returns no usable echo — the op completes and the next
+pull reconciles.
+
+** The engine executes the merge
+
+The sync actor only fetches, pushes, maps DTOs into domain-owned remote
+views, and reports raw observations plus push outcomes
+(=SyncReport=). The state engine runs the pure policy
+(=apply_sync_report=) against its authoritative current state, so user
+edits landing during a sync run cannot be lost to a stale-state race —
+and 100% of the policy stays inside =taskboard-domain=. Merge functions
+never read clocks or generate ids: time and ids are injected data.
+
+** Processing order (normative)
+
+Push outcomes first (they establish new baselines), then board → stacks
+→ labels → tasks (remote entity adoption precedes task label-set
+resolution), then presence reconciliation for bound-but-absent entities,
+then the sync-status transition. Re-applying an unchanged snapshot emits
+no persistence actions (idempotence is a property-tested invariant).
+
+** Absence correctness rests on a snapshot-completeness contract
+
+The =RemoteBoardSnapshot= in =SyncReport::Completed= must be the sync
+actor's complete view of the board at sync time — absence from it means
+absence on the server. Enforced in Phase 4 actor tests; a partial
+snapshot would silently tombstone live tasks.
+
+* Consequences
+
+- *Positive:* Deterministic, total, clock-free policy (Miri- and
+  mutants-friendly); disjoint field edits survive; deletion semantics
+  are well-defined in both timestamped and absence-only worlds.
+- *Negative:* Clock skew (all comparisons are cross-machine wall clock;
+  no NTP assumed) can misorder near-simultaneous edits — the
+  strict-comparison with tie-to-local bias is the documented behavior,
+  not a fix.
+  Entity-granular remote timestamps cause the documented field losses
+  above. Both are backlogged for revisit if real-server use shows
+  revert-on-sync symptoms.
+- *Enforcement:* Property tests in =crates/taskboard-domain/src/merge.rs=
+  (idempotence, strict-newness boundary, clock monotonicity, convergence,
+  rule outcomes); mutation testing targets =merge.rs= with zero expected
+  survivors.

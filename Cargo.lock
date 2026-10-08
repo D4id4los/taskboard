@@ -2366,6 +2366,8 @@ dependencies = [
  "chrono",
  "proptest",
  "serde",
+ "serde_json",
+ "thiserror",
  "uuid",
 ]
 

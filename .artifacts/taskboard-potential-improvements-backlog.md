@@ -435,3 +435,79 @@ Ideas to evaluate (design spike first, then a plan):
 Trigger: revisit after M1 real-server use if field-clobbering is
 observed or complained about; the Phase 1 policy primitives (per-field
 clocks, `remote_seen`) are already the substrate this builds on.
+
+## [2026-10-09] Add-wins (OR-set) label merge
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-phase1-domain-model-plan.md` §12
+- **Target Area**: `crates/taskboard-domain/src/merge.rs`
+
+### Context & Description
+Labels currently merge as one field (whole-set LWW, phase-1 decision 4):
+two devices adding different labels concurrently lose one side's addition.
+
+### Proposed Approach
+Per-label timestamps; removes win only when newer than the opposing add.
+Replaces the whole-set comparison in `merge_task`'s label branch and adds
+a `LabelClocks`-like per-membership clock.
+
+## [2026-10-09] Resurrect-as-new-card policy for remote card deletes
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-phase1-domain-model-plan.md` §12
+- **Target Area**: `crates/taskboard-domain/src/merge.rs` (R3)
+
+### Context & Description
+Observed remote absence of a bound card always wins over concurrent local
+edits (delete-wins fallback): the local edit is lost when someone deletes
+the card remotely while it is being edited offline.
+
+### Proposed Approach
+Keep the local content and re-push it as a new card (fresh remote id)
+instead of tombstoning; needs a duplicate-title UX policy and an outbox
+op for "recreate".
+
+## [2026-10-09] Incremental `RemoteIndex` maintenance
+
+- **Category**: `Performance`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-phase1-domain-model-plan.md` §12
+- **Target Area**: `crates/taskboard-domain/src/merge.rs`
+
+### Context & Description
+The remote-ref index is rebuilt O(n) per sync from scratch. Fine at MVP
+scale; irrelevant until boards grow large or syncs become frequent.
+
+### Proposed Approach
+Maintain the index incrementally inside the state engine when entities
+change, or memoize per `AppState` version counter.
+
+## [2026-10-09] Local board-edit commands and `Board` clocks
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-phase1-domain-model-plan.md` §12
+- **Target Area**: `crates/taskboard-domain/src/entities.rs`, `messages.rs`
+
+### Context & Description
+`Board` has no per-field clocks and there are no local board-edit
+commands (MVP binds an existing remote board); board content arrives only
+via remote adoption.
+
+### Proposed Approach
+Add `BoardClocks { title, color, archived, deleted }` plus
+`RenameBoard`/`SetBoardColor` commands when multi-board or local board
+editing lands.
+
+## [2026-10-09] Clock-skew mitigation for sync comparisons
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-phase1-domain-model-plan.md` §12
+- **Target Area**: `crates/taskboard-domain/src/merge.rs`, ADR 0004
+
+### Context & Description
+All LWW comparisons are cross-machine wall clock; within-skew
+misordering can revert a just-made local edit to a slightly "newer"
+remote value (documented in ADR 0004).
+
+### Proposed Approach
+Configurable remote-age bias (subtract N seconds from remote timestamps
+before comparison) if real-server use (M1) shows revert-on-sync symptoms.

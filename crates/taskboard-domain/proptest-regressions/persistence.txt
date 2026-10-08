@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1ef18e12906a0d3b12c68bc51c1a07ffab716d18fd487023ab6adf49707f3101 # shrinks to state = PersistedState { boards: {BoardId(00000000-0000-0000-0000-000000000000): Board { id: BoardId(00000000-0000-0000-0000-000000000000), remote: None, title: "", color: Color(""), archived: false, deleted: false, remote_seen: None }}, stacks: {StackId(00000000-0000-0000-0000-000000000000): Stack { id: StackId(00000000-0000-0000-0000-000000000000), remote: None, board: BoardId(00000000-0000-0000-0000-000000000000), title: "", order: 0, archived: false, deleted: false, clocks: StackClocks { title: 1971-01-01T00:00:00Z, order: 1971-01-01T00:00:00Z, deleted: 1971-01-01T00:00:00Z }, remote_seen: None }}, tasks: {}, labels: {}, outbox: [], validators: {Boards: SyncValidators { etag: None, last_modified: None }, Stacks(RemoteBoardId(1)): SyncValidators { etag: None, last_modified: None }}, sync: SyncStatus { phase: Idle, last_success: None, pending_ops: 0 } }
