@@ -11,6 +11,8 @@ mutants-out*/
 # Local environment / secrets (Nextcloud app passwords etc.)
 .env
 .env.*
+# ...but the checked-in template must stay tracked.
+!.env.example
 
 # Local configuration overrides
 taskboard.toml.local
