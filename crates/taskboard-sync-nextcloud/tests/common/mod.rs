@@ -118,6 +118,132 @@ pub(crate) mod suite {
         );
     }
 
+    /// Full write-surface lifecycle on a run-id board: label, two stacks,
+    /// two cards, duedate + label assignment, archive, cross-stack move,
+    /// card round-trip update, then a read-back of the whole tree. Soft
+    /// delete is asserted only on the authoritative DELETE payload (the
+    /// boards-listing lag precedent); the caller tears the board down.
+    pub(crate) async fn full_tree_lifecycle(client: &DeckClient) {
+        let run = run_id();
+        let color =
+            taskboard_sync_nextcloud::DeckColor::from_hex("00c2e0").expect("valid lifecycle color");
+
+        let board = client
+            .create_board(&run, &color)
+            .await
+            .expect("board creation must succeed");
+
+        let result = tree_body(client, board.id, &run, &color).await;
+
+        // Best-effort teardown regardless of body outcome; a failure here
+        // must not mask the body's error.
+        let deleted = client.delete_board(board.id).await;
+        match (result, deleted) {
+            (Ok(()), Ok(d)) => assert!(!d.is_live(), "DELETE payload must stamp deletedAt"),
+            (Err(body_err), _) => panic!("full-tree lifecycle failed: {body_err:?}"),
+            (Ok(()), Err(teardown_err)) => panic!("board teardown failed: {teardown_err:?}"),
+        }
+    }
+
+    async fn tree_body(
+        client: &DeckClient,
+        board_id: u64,
+        run: &str,
+        color: &taskboard_sync_nextcloud::DeckColor,
+    ) -> Result<(), taskboard_sync_nextcloud::DeckError> {
+        let label = client
+            .create_label(board_id, &format!("{run}-lbl"), color)
+            .await?;
+
+        let stack_a = client
+            .create_stack(board_id, &format!("{run}-a"), 0)
+            .await?;
+        let stack_b = client
+            .create_stack(board_id, &format!("{run}-b"), 1)
+            .await?;
+
+        let duedate = chrono::Utc::now() + chrono::Duration::days(1);
+        let card_a = client
+            .create_card(
+                board_id,
+                stack_a.id,
+                &taskboard_sync_nextcloud::NewCard {
+                    title: format!("{run}-card"),
+                    order: Some(0),
+                    description: None,
+                    duedate: Some(duedate),
+                    kind: None,
+                },
+            )
+            .await?;
+        let card_b = client
+            .create_card(
+                board_id,
+                stack_a.id,
+                &taskboard_sync_nextcloud::NewCard {
+                    title: format!("{run}-archived"),
+                    order: Some(1),
+                    description: None,
+                    duedate: None,
+                    kind: None,
+                },
+            )
+            .await?;
+
+        client
+            .assign_label(board_id, stack_a.id, card_a.id, label.id)
+            .await?;
+        client.archive_card(board_id, stack_a.id, card_b.id).await?;
+
+        // Cross-stack move (the reorder primitive): card_a to stack_b.
+        client
+            .reorder_card(board_id, stack_a.id, card_a.id, 0, stack_b.id)
+            .await?;
+
+        // Full round-trip update on the moved card.
+        let mut fetched = client.card(board_id, stack_b.id, card_a.id).await?;
+        fetched.description = format!("{run}-description");
+        client.update_card(board_id, &fetched).await?;
+
+        // Read the tree back and assert terminal state.
+        let stacks = client
+            .stacks(board_id, taskboard_sync_nextcloud::StackFilter::Active)
+            .await?;
+        let stack_b_after = stacks
+            .iter()
+            .find(|s| s.id == stack_b.id)
+            .expect("stack b listed");
+        let moved = stack_b_after
+            .cards
+            .iter()
+            .find(|c| c.id == card_a.id)
+            .expect("moved card must be listed in the destination stack");
+        assert_eq!(moved.description, format!("{run}-description"));
+        assert!(
+            moved.duedate.is_some(),
+            "duedate must survive the round-trip"
+        );
+        assert!(
+            moved.labels.contains(&label.id),
+            "label must survive the round-trip"
+        );
+        let origin = stacks
+            .iter()
+            .find(|s| s.id == stack_a.id)
+            .expect("stack a listed");
+        assert!(
+            origin.cards.iter().all(|c| c.id != card_a.id),
+            "moved card must no longer be listed in the origin stack"
+        );
+
+        let labels = client.labels(board_id).await?;
+        assert!(
+            labels.iter().any(|l| l.id == label.id),
+            "created label must be listed"
+        );
+        Ok(())
+    }
+
     /// Deleting a missing board yields a typed error. Nextcloud 35 answers
     /// Forbidden (not `NotFound`) for boards that do not exist or are not
     /// ours; a plausible-but-absent id is used because huge ids overflow

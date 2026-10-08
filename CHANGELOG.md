@@ -34,6 +34,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Deck client write surface in `taskboard-sync-nextcloud`: board
+  update/restore/clone (sparse `BoardChanges`, all-false-default
+  `CloneOptions`), stack create/update/delete, card create/update (full
+  round-trip)/delete/archive/reorder-move/label assign-remove, and label
+  create/update/delete — every `PUT`/`POST` body pinned by contract tests.
+  Tier 2/3 gain a `full_tree_lifecycle` live suite behavior and the fixture
+  harvest example now builds the same run-id tree and writes per-resource
+  `*_live.json` fixtures.
 - Deck client read surface in `taskboard-sync-nextcloud`: full wire model
   (`Board`, `Stack`, `Card`, `Label`, `Acl`, `Participant`, `Attachment`,
   `BoardPermissions`, `StackFilter`) with typed read endpoints for boards,

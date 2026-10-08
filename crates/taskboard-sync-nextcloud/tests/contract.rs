@@ -7,7 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
-use taskboard_sync_nextcloud::{DeckClient, DeckColor, DeckError, StackFilter};
+use taskboard_sync_nextcloud::model::Card;
+use taskboard_sync_nextcloud::{
+    BoardChanges, CloneOptions, DeckClient, DeckColor, DeckError, LabelChanges, NewCard,
+    StackChanges, StackFilter,
+};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -509,4 +513,379 @@ async fn precondition_failed_maps_from_412_without_retry() {
     let err = client_for(&server).boards().await.unwrap_err();
     server.verify().await;
     assert!(matches!(err, DeckError::PreconditionFailed));
+}
+
+fn board_json(id: u64, title: &str) -> String {
+    serde_json::json!({
+        "id": id, "title": title, "color": "00c2e0", "deletedAt": 0
+    })
+    .to_string()
+}
+
+fn stack_json(id: u64, title: &str) -> String {
+    serde_json::json!({
+        "id": id, "title": title, "boardId": 42, "order": 0, "deletedAt": 0, "cards": []
+    })
+    .to_string()
+}
+
+fn card_json(id: u64, title: &str) -> String {
+    serde_json::json!({
+        "id": id, "title": title, "stackId": 9, "type": "plain", "order": 0,
+        "labels": [], "assignedUsers": [], "archived": false,
+        "duedate": null, "done": null, "attachments": [],
+        "attachmentCount": 0, "commentsUnread": 0, "overdue": 0
+    })
+    .to_string()
+}
+
+fn label_json(id: u64, title: &str) -> String {
+    serde_json::json!({"id": id, "title": title, "color": "00c2e0", "boardId": 42}).to_string()
+}
+
+async fn last_body(server: &MockServer) -> serde_json::Value {
+    let requests = server.received_requests().await.unwrap();
+    serde_json::from_slice(&requests.last().unwrap().body).unwrap()
+}
+
+#[tokio::test]
+async fn update_board_puts_sparse_changeset_verbatim() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{BOARDS_PATH}/42")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(board_json(42, "renamed")))
+        .mount(&server)
+        .await;
+
+    let board = client_for(&server)
+        .update_board(
+            42,
+            &BoardChanges {
+                title: "renamed".into(),
+                color: DeckColor::from_hex("ff0000").unwrap(),
+                archived: true,
+            },
+        )
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(board.title, "renamed");
+
+    // Exactly the changeset fields: no silent defaults can creep in.
+    assert_eq!(
+        last_body(&server).await,
+        serde_json::json!({"title": "renamed", "color": "ff0000", "archived": true})
+    );
+}
+
+#[tokio::test]
+async fn restore_board_puts_undo_delete_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{BOARDS_PATH}/42/undoDelete")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(board_json(42, "b")))
+        .mount(&server)
+        .await;
+
+    let board = client_for(&server).restore_board(42).await.unwrap();
+    server.verify().await;
+    assert_eq!(board.id, 42);
+}
+
+#[tokio::test]
+async fn clone_board_posts_options_with_default_flags_false() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("{BOARDS_PATH}/42/clone")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(board_json(43, "copy")))
+        .mount(&server)
+        .await;
+
+    let board = client_for(&server)
+        .clone_board(42, &CloneOptions::default())
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(board.id, 43);
+
+    // Default copies nothing; unset title is omitted entirely.
+    assert_eq!(
+        last_body(&server).await,
+        serde_json::json!({
+            "copyDescription": false, "copyLabels": false, "copyAssignedUsers": false
+        })
+    );
+}
+
+#[tokio::test]
+async fn create_stack_posts_title_and_order() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(stack_json(8, "To do")))
+        .mount(&server)
+        .await;
+
+    let stack = client_for(&server)
+        .create_stack(42, "To do", 0)
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(stack.id, 8);
+    assert_eq!(
+        last_body(&server).await,
+        serde_json::json!({"title": "To do", "order": 0})
+    );
+}
+
+#[tokio::test]
+async fn update_stack_puts_sparse_changeset_verbatim() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/8")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(stack_json(8, "Done")))
+        .mount(&server)
+        .await;
+
+    let stack = client_for(&server)
+        .update_stack(
+            42,
+            8,
+            &StackChanges {
+                title: "Done".into(),
+                order: 2,
+            },
+        )
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(stack.title, "Done");
+    assert_eq!(
+        last_body(&server).await,
+        serde_json::json!({"title": "Done", "order": 2})
+    );
+}
+
+#[tokio::test]
+async fn delete_stack_sends_delete_and_returns_stack() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/8")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(stack_json(8, "To do")))
+        .mount(&server)
+        .await;
+
+    let stack = client_for(&server).delete_stack(42, 8).await.unwrap();
+    server.verify().await;
+    assert_eq!(stack.id, 8);
+}
+
+#[tokio::test]
+async fn create_card_posts_exact_payload_including_iso_duedate() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "new card")))
+        .mount(&server)
+        .await;
+
+    let card = client_for(&server)
+        .create_card(
+            42,
+            9,
+            &NewCard {
+                title: "new card".into(),
+                order: Some(3),
+                description: None,
+                duedate: Some("2020-01-20T09:52:43Z".parse().unwrap()),
+                kind: None,
+            },
+        )
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(card.id, 5);
+
+    // Omitted fields are absent (server defaults apply); the duedate uses
+    // Deck's +00:00 ISO shape, not chrono's Z suffix.
+    assert_eq!(
+        last_body(&server).await,
+        serde_json::json!({
+            "title": "new card", "order": 3,
+            "duedate": "2020-01-20T09:52:43+00:00"
+        })
+    );
+}
+
+#[tokio::test]
+async fn update_card_puts_full_round_trip_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/5")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "edited")))
+        .mount(&server)
+        .await;
+
+    // Read-then-mutate: start from a fetched wire card and change fields.
+    let mut card: Card = serde_json::from_str(&card_json(5, "original")).unwrap();
+    card.title = "edited".into();
+    card.duedate = Some("2026-12-31T23:59:59Z".parse().unwrap());
+    let updated = client_for(&server).update_card(42, &card).await.unwrap();
+    server.verify().await;
+    assert_eq!(updated.title, "edited");
+
+    let body = last_body(&server).await;
+    // Full round-trip: structural fields the caller never touched are all
+    // present, so the server cannot reset them.
+    assert_eq!(body["id"], 5);
+    assert_eq!(body["stackId"], 9);
+    assert_eq!(body["type"], "plain");
+    assert_eq!(body["title"], "edited");
+    assert_eq!(body["duedate"], "2026-12-31T23:59:59+00:00");
+}
+
+#[tokio::test]
+async fn delete_card_sends_delete_and_returns_card() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/5")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "gone")))
+        .mount(&server)
+        .await;
+
+    let card = client_for(&server).delete_card(42, 9, 5).await.unwrap();
+    server.verify().await;
+    assert_eq!(card.id, 5);
+}
+
+#[tokio::test]
+async fn archive_and_unarchive_hit_dedicated_routes_with_empty_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/5/archive")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "c")))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/5/unarchive")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "c")))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server);
+    client.archive_card(42, 9, 5).await.unwrap();
+    client.unarchive_card(42, 9, 5).await.unwrap();
+    server.verify().await;
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests.iter().all(|r| r.body.is_empty()));
+}
+
+#[tokio::test]
+async fn reorder_card_puts_order_and_target_stack_in_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/5/reorder")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "c")))
+        .mount(&server)
+        .await;
+
+    let card = client_for(&server)
+        .reorder_card(42, 9, 5, 0, 8)
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(card.id, 5);
+    assert_eq!(
+        last_body(&server).await,
+        serde_json::json!({"order": 0, "stackId": 8})
+    );
+}
+
+#[tokio::test]
+async fn assign_and_remove_label_post_label_id_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!(
+            "{BOARDS_PATH}/42/stacks/9/cards/5/assignLabel"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "c")))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!(
+            "{BOARDS_PATH}/42/stacks/9/cards/5/removeLabel"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "c")))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server);
+    client.assign_label(42, 9, 5, 7).await.unwrap();
+    client.remove_label(42, 9, 5, 7).await.unwrap();
+    server.verify().await;
+    assert_eq!(last_body(&server).await, serde_json::json!({"labelId": 7}));
+}
+
+#[tokio::test]
+async fn create_label_posts_title_and_color() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("{BOARDS_PATH}/42/labels")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(label_json(2, "urgent")))
+        .mount(&server)
+        .await;
+
+    let label = client_for(&server)
+        .create_label(42, "urgent", &DeckColor::from_hex("FF0000").unwrap())
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(label.id, 2);
+    assert_eq!(
+        last_body(&server).await,
+        serde_json::json!({"title": "urgent", "color": "ff0000"})
+    );
+}
+
+#[tokio::test]
+async fn update_label_puts_sparse_changeset_verbatim() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{BOARDS_PATH}/42/labels/2")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(label_json(2, "later")))
+        .mount(&server)
+        .await;
+
+    let label = client_for(&server)
+        .update_label(
+            42,
+            2,
+            &LabelChanges {
+                title: "later".into(),
+                color: DeckColor::from_hex("00ff00").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(label.title, "later");
+    assert_eq!(
+        last_body(&server).await,
+        serde_json::json!({"title": "later", "color": "00ff00"})
+    );
+}
+
+#[tokio::test]
+async fn delete_label_sends_delete_to_label_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{BOARDS_PATH}/42/labels/2")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(label_json(2, "urgent")))
+        .mount(&server)
+        .await;
+
+    let label = client_for(&server).delete_label(42, 2).await.unwrap();
+    server.verify().await;
+    assert_eq!(label.id, 2);
 }

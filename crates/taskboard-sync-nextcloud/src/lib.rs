@@ -19,7 +19,10 @@ pub mod model;
 pub mod ocs;
 
 pub use backoff::BackoffPolicy;
-pub use client::{DeckClient, RetrySleep, TokioSleep};
+pub use client::{
+    BoardChanges, CloneOptions, DeckClient, LabelChanges, NewCard, RetrySleep, StackChanges,
+    TokioSleep,
+};
 pub use color::{DeckColor, ParseColorError};
 pub use error::DeckError;
 pub use model::{

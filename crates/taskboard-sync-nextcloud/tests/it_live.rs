@@ -17,7 +17,7 @@
 
 mod common;
 
-use common::suite::{board_lifecycle, lists_boards};
+use common::suite::{board_lifecycle, full_tree_lifecycle, lists_boards};
 use common::{deck_client, live_config, with_deadline};
 use taskboard_sync_nextcloud::DeckError;
 
@@ -63,4 +63,15 @@ async fn it_nextcloud_live_bad_token_is_unauthorized() {
     })
     .await
     .expect("test must finish within the live deadline");
+}
+
+#[tokio::test]
+#[ignore = "requires live-server credentials in .env (see .env.example)"]
+async fn it_nextcloud_live_full_tree_lifecycle() {
+    let Some(cfg) = live_config() else {
+        return;
+    };
+    with_deadline(full_tree_lifecycle(&deck_client(&cfg)))
+        .await
+        .expect("test must finish within the live deadline");
 }

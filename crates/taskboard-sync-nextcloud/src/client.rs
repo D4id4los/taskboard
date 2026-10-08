@@ -8,6 +8,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use reqwest::{Client, Method, StatusCode, Url, header::ACCEPT};
 use serde::Serialize;
 
@@ -56,6 +57,85 @@ pub struct DeckClient {
 struct CreateBoardBody<'a> {
     title: &'a str,
     color: &'a DeckColor,
+}
+
+/// Sparse changeset for a board PUT.
+///
+/// Every field is required in the changeset (and always sent): Deck fills
+/// server-side defaults for omitted PUT fields, so a "partial" update would
+/// silently reset values. Mutate the struct and send it whole.
+#[derive(Debug, Clone, Serialize)]
+pub struct BoardChanges {
+    pub title: String,
+    pub color: DeckColor,
+    pub archived: bool,
+}
+
+/// Options for a board clone; `Default` copies nothing but the structure.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneOptions {
+    /// Title of the new board; `None` lets Deck derive one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub copy_description: bool,
+    #[serde(default)]
+    pub copy_labels: bool,
+    #[serde(default)]
+    pub copy_assigned_users: bool,
+}
+
+/// Sparse changeset for a stack PUT (same full-send rule as
+/// [`BoardChanges`]).
+#[derive(Debug, Clone, Serialize)]
+pub struct StackChanges {
+    pub title: String,
+    pub order: i64,
+}
+
+/// Payload for creating a card; every field except the title is optional
+/// and omitted from the body when `None`.
+#[derive(Debug, Clone, Serialize)]
+pub struct NewCard {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// ISO-8601 deadline, serialized `+00:00`-style like the Deck API.
+    #[serde(
+        rename = "duedate",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::model::ser_opt_datetime"
+    )]
+    pub duedate: Option<DateTime<Utc>>,
+    /// `plain` or `rich`; omitted lets Deck default to `plain`.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// Sparse changeset for a label PUT (same full-send rule as
+/// [`BoardChanges`]).
+#[derive(Debug, Clone, Serialize)]
+pub struct LabelChanges {
+    pub title: String,
+    pub color: DeckColor,
+}
+
+/// Body of the card reorder/move sub-endpoint.
+#[derive(Serialize)]
+struct ReorderBody {
+    order: i64,
+    #[serde(rename = "stackId")]
+    stack_id: u64,
+}
+
+/// Body of the label assign/remove sub-endpoints.
+#[derive(Serialize)]
+struct LabelIdBody {
+    #[serde(rename = "labelId")]
+    label_id: u64,
 }
 
 impl DeckClient {
@@ -294,6 +374,413 @@ impl DeckClient {
         match &result {
             Ok(attachments) => tracing::info!(count = attachments.len(), "deck attachments listed"),
             Err(err) => tracing::warn!(error = %err, "listing deck attachments failed"),
+        }
+        result
+    }
+
+    /// Applies a full [`BoardChanges`] changeset to a board (PUT).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn update_board(&self, id: u64, changes: &BoardChanges) -> Result<Board, DeckError> {
+        tracing::debug!(board_id = id, "updating deck board");
+        let result: Result<Board, DeckError> = self
+            .send_json(Method::PUT, &format!("boards/{id}"), Some(changes))
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(board_id = id, "deck board updated"),
+            Err(err) => tracing::warn!(board_id = id, error = %err, "updating deck board failed"),
+        }
+        result
+    }
+
+    /// Restores a soft-deleted board (`undoDelete`).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn restore_board(&self, id: u64) -> Result<Board, DeckError> {
+        tracing::debug!(board_id = id, "restoring deck board");
+        let result: Result<Board, DeckError> = self
+            .send_json(
+                Method::PUT,
+                &format!("boards/{id}/undoDelete"),
+                None::<serde_json::Value>,
+            )
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(board_id = id, "deck board restored"),
+            Err(err) => tracing::warn!(board_id = id, error = %err, "restoring deck board failed"),
+        }
+        result
+    }
+
+    /// Clones a board with the given [`CloneOptions`].
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn clone_board(&self, id: u64, options: &CloneOptions) -> Result<Board, DeckError> {
+        tracing::debug!(board_id = id, "cloning deck board");
+        let result: Result<Board, DeckError> = self
+            .send_json(Method::POST, &format!("boards/{id}/clone"), Some(options))
+            .await;
+        match &result {
+            Ok(board) => tracing::info!(board_id = board.id, "deck board cloned"),
+            Err(err) => tracing::warn!(board_id = id, error = %err, "cloning deck board failed"),
+        }
+        result
+    }
+
+    /// Creates a stack on a board at display position `order`.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn create_stack(
+        &self,
+        board_id: u64,
+        title: &str,
+        order: i64,
+    ) -> Result<Stack, DeckError> {
+        tracing::debug!(board_id, title, order, "creating deck stack");
+        let body = serde_json::json!({"title": title, "order": order});
+        let resource = format!("boards/{board_id}/stacks");
+        let result: Result<Stack, DeckError> =
+            self.send_json(Method::POST, &resource, Some(body)).await;
+        match &result {
+            Ok(stack) => tracing::info!(stack_id = stack.id, "deck stack created"),
+            Err(err) => tracing::warn!(error = %err, "creating deck stack failed"),
+        }
+        result
+    }
+
+    /// Applies a full [`StackChanges`] changeset to a stack (PUT).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn update_stack(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        changes: &StackChanges,
+    ) -> Result<Stack, DeckError> {
+        tracing::debug!(board_id, stack_id, "updating deck stack");
+        let resource = format!("boards/{board_id}/stacks/{stack_id}");
+        let result: Result<Stack, DeckError> =
+            self.send_json(Method::PUT, &resource, Some(changes)).await;
+        match &result {
+            Ok(_) => tracing::info!(stack_id, "deck stack updated"),
+            Err(err) => tracing::warn!(stack_id, error = %err, "updating deck stack failed"),
+        }
+        result
+    }
+
+    /// Deletes a stack. Returns the deleted stack as the server reports it.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn delete_stack(&self, board_id: u64, stack_id: u64) -> Result<Stack, DeckError> {
+        tracing::debug!(board_id, stack_id, "deleting deck stack");
+        let resource = format!("boards/{board_id}/stacks/{stack_id}");
+        let result: Result<Stack, DeckError> = self
+            .send_json(Method::DELETE, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(stack_id, "deck stack deleted"),
+            Err(err) => tracing::warn!(stack_id, error = %err, "deleting deck stack failed"),
+        }
+        result
+    }
+
+    /// Creates a card on a stack from a [`NewCard`] payload.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn create_card(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        new_card: &NewCard,
+    ) -> Result<Card, DeckError> {
+        tracing::debug!(board_id, stack_id, title = %new_card.title, "creating deck card");
+        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards");
+        let result: Result<Card, DeckError> = self
+            .send_json(Method::POST, &resource, Some(new_card))
+            .await;
+        match &result {
+            Ok(card) => tracing::info!(card_id = card.id, "deck card created"),
+            Err(err) => tracing::warn!(error = %err, "creating deck card failed"),
+        }
+        result
+    }
+
+    /// Updates a card by `PUT`-ing the *full* card back (round-trip).
+    ///
+    /// Deck fills server-side defaults for missing PUT fields, and the card
+    /// PUT consumes too many fields to safely rebuild a partial body: mutate
+    /// the `Card` returned by a read, then pass it here unchanged otherwise.
+    /// `board_id` is the path prefix (the wire `Card` carries only
+    /// `stackId`).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn update_card(&self, board_id: u64, card: &Card) -> Result<Card, DeckError> {
+        tracing::debug!(board_id, card_id = card.id, "updating deck card");
+        let resource = format!(
+            "boards/{board_id}/stacks/{}/cards/{}",
+            card.stack_id, card.id
+        );
+        let result: Result<Card, DeckError> =
+            self.send_json(Method::PUT, &resource, Some(card)).await;
+        match &result {
+            Ok(_) => tracing::info!(card_id = card.id, "deck card updated"),
+            Err(err) => {
+                tracing::warn!(card_id = card.id, error = %err, "updating deck card failed");
+            }
+        }
+        result
+    }
+
+    /// Deletes a card. Returns the deleted card as the server reports it.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn delete_card(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+    ) -> Result<Card, DeckError> {
+        tracing::debug!(board_id, stack_id, card_id, "deleting deck card");
+        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}");
+        let result: Result<Card, DeckError> = self
+            .send_json(Method::DELETE, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(card_id, "deck card deleted"),
+            Err(err) => tracing::warn!(card_id, error = %err, "deleting deck card failed"),
+        }
+        result
+    }
+
+    /// Archives a card (dedicated sub-endpoint, not a card PUT).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn archive_card(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+    ) -> Result<Card, DeckError> {
+        self.card_flag(board_id, stack_id, card_id, "archive").await
+    }
+
+    /// Unarchives a card (dedicated sub-endpoint, not a card PUT).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn unarchive_card(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+    ) -> Result<Card, DeckError> {
+        self.card_flag(board_id, stack_id, card_id, "unarchive")
+            .await
+    }
+
+    /// Reorders a card within its stack, or moves it when `target_stack`
+    /// differs (also the move primitive). Deck wants the new position and
+    /// the destination stack in the *body*, not the path.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn reorder_card(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        order: i64,
+        target_stack: u64,
+    ) -> Result<Card, DeckError> {
+        tracing::debug!(
+            board_id,
+            stack_id,
+            card_id,
+            order,
+            target_stack,
+            "reordering deck card"
+        );
+        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/reorder");
+        let result: Result<Card, DeckError> = self
+            .send_json(
+                Method::PUT,
+                &resource,
+                Some(ReorderBody {
+                    order,
+                    stack_id: target_stack,
+                }),
+            )
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(card_id, "deck card reordered"),
+            Err(err) => tracing::warn!(card_id, error = %err, "reordering deck card failed"),
+        }
+        result
+    }
+
+    /// Assigns a label to a card.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn assign_label(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        label_id: u64,
+    ) -> Result<Card, DeckError> {
+        self.card_label(board_id, stack_id, card_id, label_id, "assignLabel")
+            .await
+    }
+
+    /// Removes a label from a card.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn remove_label(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        label_id: u64,
+    ) -> Result<Card, DeckError> {
+        self.card_label(board_id, stack_id, card_id, label_id, "removeLabel")
+            .await
+    }
+
+    /// Creates a label on a board.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn create_label(
+        &self,
+        board_id: u64,
+        title: &str,
+        color: &DeckColor,
+    ) -> Result<Label, DeckError> {
+        tracing::debug!(board_id, title, color = %color, "creating deck label");
+        let resource = format!("boards/{board_id}/labels");
+        let body = serde_json::json!({"title": title, "color": color.as_str()});
+        let result: Result<Label, DeckError> =
+            self.send_json(Method::POST, &resource, Some(body)).await;
+        match &result {
+            Ok(label) => tracing::info!(label_id = label.id, "deck label created"),
+            Err(err) => tracing::warn!(error = %err, "creating deck label failed"),
+        }
+        result
+    }
+
+    /// Applies a full [`LabelChanges`] changeset to a label (PUT).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn update_label(
+        &self,
+        board_id: u64,
+        label_id: u64,
+        changes: &LabelChanges,
+    ) -> Result<Label, DeckError> {
+        tracing::debug!(board_id, label_id, "updating deck label");
+        let resource = format!("boards/{board_id}/labels/{label_id}");
+        let result: Result<Label, DeckError> =
+            self.send_json(Method::PUT, &resource, Some(changes)).await;
+        match &result {
+            Ok(_) => tracing::info!(label_id, "deck label updated"),
+            Err(err) => tracing::warn!(label_id, error = %err, "updating deck label failed"),
+        }
+        result
+    }
+
+    /// Deletes a label.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn delete_label(&self, board_id: u64, label_id: u64) -> Result<Label, DeckError> {
+        tracing::debug!(board_id, label_id, "deleting deck label");
+        let resource = format!("boards/{board_id}/labels/{label_id}");
+        let result: Result<Label, DeckError> = self
+            .send_json(Method::DELETE, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(label_id, "deck label deleted"),
+            Err(err) => tracing::warn!(label_id, error = %err, "deleting deck label failed"),
+        }
+        result
+    }
+
+    /// Shared body of the archive/unarchive sub-endpoints (no request body).
+    async fn card_flag(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        flag: &str,
+    ) -> Result<Card, DeckError> {
+        tracing::debug!(board_id, stack_id, card_id, flag, "flagging deck card");
+        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/{flag}");
+        let result: Result<Card, DeckError> = self
+            .send_json(Method::PUT, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(card_id, flag, "deck card flagged"),
+            Err(err) => tracing::warn!(card_id, flag, error = %err, "flagging deck card failed"),
+        }
+        result
+    }
+
+    /// Shared body of the assignLabel/removeLabel sub-endpoints.
+    async fn card_label(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        label_id: u64,
+        action: &str,
+    ) -> Result<Card, DeckError> {
+        tracing::debug!(
+            board_id,
+            stack_id,
+            card_id,
+            label_id,
+            action,
+            "card label change"
+        );
+        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/{action}");
+        let result: Result<Card, DeckError> = self
+            .send_json(Method::PUT, &resource, Some(LabelIdBody { label_id }))
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(card_id, label_id, action, "deck card label changed"),
+            Err(err) => {
+                tracing::warn!(card_id, label_id, action, error = %err, "card label change failed");
+            }
         }
         result
     }
