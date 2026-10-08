@@ -9,7 +9,10 @@ use std::future::Future;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use reqwest::{Client, Method, StatusCode, Url, header::ACCEPT};
+use reqwest::{
+    Client, Method, StatusCode, Url,
+    header::{self, ACCEPT},
+};
 use serde::Serialize;
 
 use crate::backoff::BackoffPolicy;
@@ -138,6 +141,64 @@ struct LabelIdBody {
     label_id: u64,
 }
 
+/// One outgoing request as [`DeckClient::attempt`] consumes it.
+struct Call {
+    method: Method,
+    resource: String,
+    body: Option<serde_json::Value>,
+    validators: Option<Validators>,
+}
+
+/// One raw successful response: status, validators from the headers, and
+/// the (still encoded) body.
+struct Raw {
+    status: StatusCode,
+    validators: Validators,
+    body: Vec<u8>,
+}
+
+/// Opaque conditional-read validators carried between polls.
+///
+/// Both fields are header strings and are treated as opaque: the `ETag` must
+/// not be interpreted (RFC 9110), and the `Last-Modified` HTTP-date is only
+/// ever re-emitted, never parsed. `Default` means "first poll, no
+/// validators".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Validators {
+    /// `ETag` response header (`If-None-Match` on the next poll).
+    pub etag: Option<String>,
+    /// `Last-Modified` response header (`If-Modified-Since` on the next
+    /// poll).
+    pub last_modified: Option<String>,
+}
+
+/// Result of a conditional read. `data: None` means the server answered
+/// `304 Not Modified` — the caller keeps its cached copy. `validators` are
+/// the ones to present on the *next* poll.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetch<T> {
+    /// `None` on `304 Not Modified`.
+    pub data: Option<T>,
+    pub validators: Validators,
+}
+
+/// Maps an HTTP status to a typed [`DeckError`]; `Ok(())` means "not an
+/// error case here" (including `304`, which conditional callers interpret).
+fn map_status(status: StatusCode) -> Result<(), DeckError> {
+    match status {
+        StatusCode::UNAUTHORIZED => Err(DeckError::Unauthorized),
+        StatusCode::FORBIDDEN => Err(DeckError::Forbidden),
+        StatusCode::NOT_FOUND => Err(DeckError::NotFound),
+        StatusCode::BAD_REQUEST => Err(DeckError::BadRequest),
+        StatusCode::CONFLICT => Err(DeckError::Conflict),
+        StatusCode::PRECONDITION_FAILED => Err(DeckError::PreconditionFailed),
+        StatusCode::TOO_MANY_REQUESTS => Err(DeckError::RateLimited),
+        StatusCode::SERVICE_UNAVAILABLE => Err(DeckError::Unavailable),
+        s if s.is_server_error() => Err(DeckError::Server(s.as_u16())),
+        _ => Ok(()),
+    }
+}
+
 impl DeckClient {
     /// Builds a client for `{base_url}/index.php/apps/deck/api/v1.0`.
     ///
@@ -199,6 +260,61 @@ impl DeckClient {
             Err(err) => tracing::warn!(error = %err, "listing deck boards failed"),
         }
         result
+    }
+
+    /// Conditional variant of [`DeckClient::boards`].
+    ///
+    /// `If-None-Match`/`If-Modified-Since` are sent from the given
+    /// [`Validators`] (pass [`Validators::default()`] for the first poll);
+    /// a `304` surfaces as `data: None`, never as an error.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn fetch_boards(
+        &self,
+        validators: &Validators,
+    ) -> Result<Fetch<Vec<Board>>, DeckError> {
+        tracing::debug!("conditionally listing deck boards");
+        self.fetch_conditional("boards", validators).await
+    }
+
+    /// Conditional variant of [`DeckClient::stacks`].
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn fetch_stacks(
+        &self,
+        board_id: u64,
+        filter: StackFilter,
+        validators: &Validators,
+    ) -> Result<Fetch<Vec<Stack>>, DeckError> {
+        tracing::debug!(board_id, ?filter, "conditionally listing deck stacks");
+        let resource = format!("boards/{board_id}/{}", filter.path_segment());
+        self.fetch_conditional(&resource, validators).await
+    }
+
+    /// Conditional variant of [`DeckClient::card`].
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn fetch_card(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        validators: &Validators,
+    ) -> Result<Fetch<Card>, DeckError> {
+        tracing::debug!(
+            board_id,
+            stack_id,
+            card_id,
+            "conditionally fetching deck card"
+        );
+        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}");
+        self.fetch_conditional(&resource, validators).await
     }
 
     /// Fetches a single board by id.
@@ -806,11 +922,70 @@ impl DeckClient {
         resource: &str,
         body: Option<impl Serialize>,
     ) -> Result<T, DeckError> {
+        let call = Call {
+            method,
+            resource: resource.to_owned(),
+            body: body
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(DeckError::from)?,
+            validators: None,
+        };
+        self.send_with_retries(call, |raw| {
+            map_status(raw.status)?;
+            decode_envelope(&raw.body)
+        })
+        .await
+    }
+
+    /// Performs a conditional GET: the opaque [`Validators`] are re-emitted
+    /// verbatim (`If-None-Match`/`If-Modified-Since`), a `304` is returned
+    /// as [`Fetch`] with `data: None` (never decoded, never an error), and
+    /// a `200` comes back with the validators from the response headers for
+    /// the next poll.
+    async fn fetch_conditional<T: serde::de::DeserializeOwned>(
+        &self,
+        resource: &str,
+        validators: &Validators,
+    ) -> Result<Fetch<T>, DeckError> {
+        let call = Call {
+            method: Method::GET,
+            resource: resource.to_owned(),
+            body: None,
+            validators: Some(validators.clone()),
+        };
+        self.send_with_retries(call, |raw| {
+            if raw.status == StatusCode::NOT_MODIFIED {
+                // The response body is empty and must not be decoded.
+                return Ok(Fetch {
+                    data: None,
+                    validators: raw.validators,
+                });
+            }
+            map_status(raw.status)?;
+            Ok(Fetch {
+                data: Some(decode_envelope(&raw.body)?),
+                validators: raw.validators,
+            })
+        })
+        .await
+    }
+
+    /// Drives `attempt` with the [`BackoffPolicy`] until `handle` reports a
+    /// final outcome or the retry budget is exhausted.
+    async fn send_with_retries<T>(
+        &self,
+        call: Call,
+        handle: impl Fn(Raw) -> Result<T, DeckError>,
+    ) -> Result<T, DeckError> {
         let mut retry_index = 0u32;
         loop {
-            let outcome = self.attempt(&method, resource, body.as_ref()).await;
+            let outcome = match self.attempt(&call).await {
+                Ok(raw) => handle(raw),
+                Err(err) => Err(err),
+            };
             match outcome {
-                Ok(bytes) => return decode_envelope(&bytes),
+                Ok(value) => return Ok(value),
                 Err(
                     retryable @ (DeckError::RateLimited
                     | DeckError::Unavailable
@@ -819,7 +994,12 @@ impl DeckClient {
                     let Some(delay) = self.backoff.delay(retry_index) else {
                         return Err(retryable);
                     };
-                    tracing::warn!(retry_index, ?delay, resource, "retryable failure");
+                    tracing::warn!(
+                        retry_index,
+                        ?delay,
+                        resource = call.resource,
+                        "retryable failure"
+                    );
                     self.sleeper.sleep(delay).await;
                     retry_index += 1;
                 }
@@ -828,42 +1008,51 @@ impl DeckClient {
         }
     }
 
-    /// One request/response round trip; maps statuses to typed outcomes.
-    async fn attempt(
-        &self,
-        method: &Method,
-        resource: &str,
-        body: Option<&impl Serialize>,
-    ) -> Result<Vec<u8>, DeckError> {
+    /// One request/response round trip. Error statuses are mapped to typed
+    /// outcomes; everything else (including `304` for conditional calls)
+    /// comes back raw for the caller to interpret.
+    async fn attempt(&self, call: &Call) -> Result<Raw, DeckError> {
         let url = self
             .base_url
-            .join(&format!("{DECK_API_PATH}/{resource}"))
+            .join(&format!("{DECK_API_PATH}/{}", call.resource))
             .map_err(|_| DeckError::InvalidBaseUrl)?;
 
         let mut request = self
             .http
-            .request(method.clone(), url)
+            .request(call.method.clone(), url)
             .header("OCS-APIRequest", "true")
             .header(ACCEPT, "application/json")
             .basic_auth(self.credentials_user(), Some(self.credentials_token()));
-        if let Some(body) = body {
+        if let Some(body) = &call.body {
             request = request.json(body);
+        }
+        if let Some(validators) = &call.validators {
+            if let Some(etag) = &validators.etag {
+                request = request.header(header::IF_NONE_MATCH, etag);
+            }
+            if let Some(last_modified) = &validators.last_modified {
+                request = request.header(header::IF_MODIFIED_SINCE, last_modified);
+            }
         }
 
         let response = request.send().await?;
-        match response.status() {
-            StatusCode::UNAUTHORIZED => return Err(DeckError::Unauthorized),
-            StatusCode::FORBIDDEN => return Err(DeckError::Forbidden),
-            StatusCode::NOT_FOUND => return Err(DeckError::NotFound),
-            StatusCode::BAD_REQUEST => return Err(DeckError::BadRequest),
-            StatusCode::CONFLICT => return Err(DeckError::Conflict),
-            StatusCode::PRECONDITION_FAILED => return Err(DeckError::PreconditionFailed),
-            StatusCode::TOO_MANY_REQUESTS => return Err(DeckError::RateLimited),
-            StatusCode::SERVICE_UNAVAILABLE => return Err(DeckError::Unavailable),
-            status if status.is_server_error() => return Err(DeckError::Server(status.as_u16())),
-            _ => {}
-        }
-        Ok(response.bytes().await?.to_vec())
+        let status = response.status();
+        let headers = response.headers();
+        let validators = Validators {
+            etag: headers
+                .get(header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned),
+            last_modified: headers
+                .get(header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned),
+        };
+        Ok(Raw {
+            status,
+            validators,
+            body: response.bytes().await?.to_vec(),
+        })
     }
 
     /// Splits the stored `user:token` back apart for `basic_auth`.

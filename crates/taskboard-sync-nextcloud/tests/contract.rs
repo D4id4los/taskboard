@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
+use taskboard_sync_nextcloud::Validators;
 use taskboard_sync_nextcloud::model::Card;
 use taskboard_sync_nextcloud::{
     BoardChanges, CloneOptions, DeckClient, DeckColor, DeckError, LabelChanges, NewCard,
@@ -895,4 +896,118 @@ async fn delete_label_sends_delete_to_label_path() {
     let label = client_for(&server).delete_label(42, 2).await.unwrap();
     server.verify().await;
     assert_eq!(label.id, 2);
+}
+
+#[tokio::test]
+async fn conditional_fetch_sends_validators_and_returns_fresh_data() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(BOARDS_PATH))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("ETag", "\"etag-2\"")
+                .insert_header("Last-Modified", "Thu, 08 Oct 2026 12:00:00 GMT")
+                .set_body_string(fixture("boards_list.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let fetched = client_for(&server)
+        .fetch_boards(&Validators {
+            etag: Some("\"etag-1\"".into()),
+            last_modified: Some("Wed, 08 Oct 2026 00:00:00 GMT".into()),
+        })
+        .await
+        .unwrap();
+
+    // Validators are re-emitted verbatim as condition headers.
+    let req = &server.received_requests().await.unwrap()[0];
+    let hdr = |name: &str| {
+        req.headers
+            .get(name)
+            .expect("conditional header must be present")
+            .to_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(hdr("If-None-Match"), "\"etag-1\"");
+    assert_eq!(hdr("If-Modified-Since"), "Wed, 08 Oct 2026 00:00:00 GMT");
+
+    let boards = fetched.data.expect("fresh data on 200");
+    assert_eq!(boards.len(), 2);
+    // The next poll's validators come from the response headers, verbatim.
+    assert_eq!(
+        fetched.validators,
+        Validators {
+            etag: Some("\"etag-2\"".into()),
+            last_modified: Some("Thu, 08 Oct 2026 12:00:00 GMT".into()),
+        }
+    );
+}
+
+#[tokio::test]
+async fn not_modified_304_with_empty_body_is_data_not_error() {
+    // Guards the fallthrough bug class: 304 carries no body and must be
+    // mapped before any envelope decoding.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(BOARDS_PATH))
+        .and(header("If-None-Match", "\"etag-1\""))
+        .respond_with(ResponseTemplate::new(304).insert_header("ETag", "\"etag-1\""))
+        .mount(&server)
+        .await;
+
+    let fetched = client_for(&server)
+        .fetch_boards(&Validators {
+            etag: Some("\"etag-1\"".into()),
+            last_modified: None,
+        })
+        .await
+        .unwrap();
+    server.verify().await;
+
+    assert!(fetched.data.is_none(), "304 must surface as cached data");
+    assert_eq!(fetched.validators.etag.as_deref(), Some("\"etag-1\""));
+}
+
+#[tokio::test]
+async fn conditional_cycle_fetch_not_modified_mutate_refetch() {
+    // First poll: 200 with validators; second: 304; after a mutation: 200
+    // again with *new* validators and fresh data.
+    let server = MockServer::start().await;
+    let etag = std::sync::Arc::new(AtomicUsize::new(0));
+    let etag_for_responder = etag.clone();
+    Mock::given(method("GET"))
+        .and(path(BOARDS_PATH))
+        .respond_with(move |_req: &wiremock::Request| {
+            let generation = etag_for_responder.load(Ordering::SeqCst);
+            ResponseTemplate::new(if generation == 1 { 304 } else { 200 })
+                .insert_header("ETag", format!("\"gen-{generation}\""))
+                .set_body_string(fixture("boards_list.json"))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(BOARDS_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_string(board_json(99, "mutated")))
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server);
+    let first = client.fetch_boards(&Validators::default()).await.unwrap();
+    assert_eq!(first.validators.etag.as_deref(), Some("\"gen-0\""));
+
+    etag.store(1, Ordering::SeqCst);
+    let cached = client.fetch_boards(&first.validators).await.unwrap();
+    assert!(cached.data.is_none(), "unchanged generation must yield 304");
+
+    etag.store(2, Ordering::SeqCst);
+    client
+        .create_board("mutated", &DeckColor::from_hex("ff0000").unwrap())
+        .await
+        .unwrap();
+    let fresh = client.fetch_boards(&cached.validators).await.unwrap();
+    let boards = fresh.data.expect("mutation must produce fresh data");
+    assert_eq!(boards.len(), 2);
+    assert_eq!(fresh.validators.etag.as_deref(), Some("\"gen-2\""));
 }
