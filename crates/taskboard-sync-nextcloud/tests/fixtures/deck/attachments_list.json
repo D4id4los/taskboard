@@ -1,0 +1,12 @@
+[
+  {
+    "id": 11,
+    "cardId": 5,
+    "type": "deck_file",
+    "createdAt": 1759900500,
+    "createdBy": "taskboard-it",
+    "deletedAt": 0,
+    "data": { "fileName": "spec.org", "size": 1234, "mtime": 1759900499 },
+    "extendedData": { "fileName": "spec.org", "size": 1234, "mimetype": "text/x-org", "mtime": 1759900499 }
+  }
+]

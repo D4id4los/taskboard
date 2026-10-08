@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "title": "urgent",
+    "color": "ff0000",
+    "boardId": 42
+  },
+  {
+    "id": 2,
+    "title": "someday",
+    "color": "00C2E0",
+    "boardId": 42
+  }
+]

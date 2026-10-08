@@ -1,0 +1,43 @@
+{
+  "id": 9,
+  "title": "Doing",
+  "boardId": 42,
+  "order": 1,
+  "deletedAt": 0,
+  "cards": [
+    {
+      "id": 5,
+      "title": "harvest fixtures",
+      "stackId": 9,
+      "type": "plain",
+      "order": 0,
+      "createdAt": 1759900000,
+      "lastModified": 1759910000,
+      "archived": false,
+      "duedate": "2026-10-20T09:52:43+00:00",
+      "done": null,
+      "labels": [1],
+      "assignedUsers": [{ "primaryKey": "taskboard-it", "uid": "taskboard-it", "displayname": "Taskboard IT" }],
+      "attachmentCount": 0,
+      "commentsUnread": 0,
+      "overdue": 0
+    },
+    {
+      "id": 6,
+      "title": "kiosk layout",
+      "stackId": 9,
+      "type": "plain",
+      "order": 1,
+      "createdAt": 1759900100,
+      "lastModified": 1759910100,
+      "archived": true,
+      "duedate": null,
+      "done": null,
+      "labels": [],
+      "assignedUsers": [],
+      "attachmentCount": 0,
+      "commentsUnread": 0,
+      "overdue": 0
+    }
+  ]
+}

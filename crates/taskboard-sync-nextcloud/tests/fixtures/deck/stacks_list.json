@@ -1,0 +1,36 @@
+[
+  {
+    "id": 8,
+    "title": "To do",
+    "boardId": 42,
+    "order": 0,
+    "deletedAt": 0,
+    "cards": []
+  },
+  {
+    "id": 9,
+    "title": "Doing",
+    "boardId": 42,
+    "order": 1,
+    "deletedAt": 0,
+    "cards": [
+      {
+        "id": 5,
+        "title": "harvest fixtures",
+        "stackId": 9,
+        "type": "plain",
+        "order": 0,
+        "createdAt": 1759900000,
+        "lastModified": 1759910000,
+        "archived": false,
+        "duedate": null,
+        "done": null,
+        "labels": [],
+        "assignedUsers": [],
+        "attachmentCount": 0,
+        "commentsUnread": 0,
+        "overdue": 0
+      }
+    ]
+  }
+]
