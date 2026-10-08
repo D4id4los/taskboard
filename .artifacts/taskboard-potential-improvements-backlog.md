@@ -261,3 +261,29 @@ and Deck config endpoints.
 ### Proposed Approach
 Model and test each group the same tiered way when a consumer appears;
 comments first if task discussions ever matter to the UI.
+
+## [2026-10-08] Deck client coverage pass: endpoint logging arms
+
+- **Category**: `Testing`
+- **Originating Plan/Report**: Codecov patch-coverage flag on the
+  deck-client-surface PRs (`.artifacts/plans/2026-10-08-sync-nextcloud-deck-client-surface-plan.md`)
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/client.rs`
+
+### Context & Description
+Every `DeckClient` endpoint method ends in a
+`match &result { Ok => tracing::info!, Err => tracing::warn! }` pair;
+these arms (roughly 30 lines) are the bulk of the crate's remaining
+uncovered code. Deliberately not covered in the surface PRs: asserting
+them would require asserting log text, which the testing rules forbid,
+and per-arm copy-paste tests would be metric-chasing, not behavior
+testing. The model-layer wire-drift behavior (CardLabel, Participant)
+was covered in the surface PR itself.
+
+### Proposed Approach
+One parameterized test that iterates the endpoint methods (success and
+error case each) and asserts only structural facts — no panic, call
+observed on the mock — driving every logging arm without text
+assertions. Or accept the gap explicitly with a lint/coverage ignore
+annotated at the logging match, if the team decides logs are not worth
+harnessing. Trigger: next time coverage is formally gated, or when the
+client surface next changes anyway.
