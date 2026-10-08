@@ -42,6 +42,10 @@ package requirements on ubuntu-latest.
 - **Category**: `DX`
 - **Originating Plan/Report**: Repository bootstrap
 - **Target Area**: `.github/workflows/`
+- **Status**: ✅ DONE (implemented 2026-10-08 as a hand-rolled matrix
+  workflow — decision: cargo-dist deferred to ≥ 1.0.0, see the
+  [2026-10-08] entry below — via `.artifacts/plans/2026-10-08-release-pipeline-and-ci-followups-plan.md`,
+  PRs #10–#12; dry-run + first release validation pending post-merge)
 
 ### Context & Description
 The README promises GitHub Releases binaries (Linux & Windows first-class;
@@ -73,6 +77,10 @@ float (e.g., track stable minus N).
 - **Category**: `Performance`
 - **Originating Plan/Report**: Repository bootstrap
 - **Target Area**: `.github/workflows/ci.yml`
+- **Status**: ✅ DONE (implemented 2026-10-07/08: `benchmark` job tracks
+  criterion results from `main` pushes via the Bencher CLI with the
+  `BENCHER_API_TOKEN` secret; tolerant until first `[[bench]]` targets
+  exist — PR #7)
 
 ### Context & Description
 The `benchmark` job runs criterion and discards output; historical trend
@@ -89,6 +97,10 @@ sorting), add the `bencherdev/bencher-action` step and a
 - **Category**: `Testing`
 - **Originating Plan/Report**: Repository bootstrap
 - **Target Area**: `.github/workflows/`
+- **Status**: ✅ PARTIALLY DONE — SonarCloud implemented 2026-10-07/08
+  (`sonar-project.properties` + CI job, `SONAR_TOKEN` secret; PRs #6/#9;
+  skipped for Dependabot actors, non-gating by design). Snyk stays
+  skipped/backlog.
 
 ### Context & Description
 Optional third-party quality/security services (free for public repos) that
@@ -99,3 +111,37 @@ dependency PRs (Snyk) on top of clippy + cargo-deny.
 Defer until the repository is public and the team decides the added PR
 noise is worth it; then add `SonarSource/sonarcloud-github-action` and/or
 connect Snyk via the GitHub app.
+
+## [2026-10-08] cargo-dist & installers (≥ 1.0.0)
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-release-pipeline-and-ci-followups-plan.md`
+- **Target Area**: `.github/workflows/`
+
+### Context & Description
+The hand-rolled matrix release workflow (2026-10-08) covers plain archives
+for the first-class targets. Installer UX (shell/PowerShell installers),
+artifact attestations, and auto-update channels are a ≥ 1.0.0 topic, when
+end-user distribution actually matters.
+
+### Proposed Approach
+Adopt cargo-dist (v0.33+, actively maintained) when approaching 1.0.0. It
+consumes the existing `v*` tags, so adoption stays cheap: the hand-rolled
+workflow can be retired or kept as a fallback.
+
+## [2026-10-08] Second-priority release targets: macOS aarch64 + Linux/Windows aarch64
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-release-pipeline-and-ci-followups-plan.md`
+- **Target Area**: `.github/workflows/release.yml`
+
+### Context & Description
+The release matrix currently covers only the two first-class targets
+(x86_64 Linux & Windows). macOS and aarch64 are second priority per
+AGENTS.md §1 and need a cross toolchain plus Slint system-lib answers
+(revisit when the Slint UI lands).
+
+### Proposed Approach
+Add matrix legs for macOS aarch64 (native runner) and Linux/Windows
+aarch64 (cross toolchain) to `release.yml`; verify the packaging script's
+`--target` path on each before the first tagged release that includes them.

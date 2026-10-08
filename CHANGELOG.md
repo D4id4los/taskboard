@@ -21,11 +21,32 @@ The workspace carries a single global version (see `docs/architecture.org`);
 - `LICENSE-MIT` copyright holder corrected to the project author; repository
   URL placeholder (`your-username`) replaced with the real remote in
   `Cargo.toml` and the README badge.
+- CI: SonarCloud job is skipped for Dependabot PR runs (they receive no
+  repository secrets, so the scan could only fail with "Not authorized");
+  main-push analysis remains the authoritative record.
+- CI: replaced the deprecated `SonarSource/sonarcloud-github-action@v5`
+  with its successor `SonarSource/sonarqube-scan-action@v8`.
+- `scripts/bump_version.sh`: the changelog promotion no longer corrupts
+  `### ` subsections (stray `#` lines, H2-ified `### Fixed`), nests the
+  promoted section under Unreleased, or crashes on an empty Unreleased
+  section — reimplemented on `scripts/changelog.py` with golden self-tests
+  wired into the CI `check` job.
 
 ### Added
 
 - SonarCloud static analysis: `sonar-project.properties` and a
   `SonarCloud Analysis` CI job (token via the `SONAR_TOKEN` secret).
+- Binary release pipeline: tag-triggered (`v*`) matrix workflow building
+  `x86_64-unknown-linux-gnu` (tar.gz) and `x86_64-pc-windows-msvc` (zip)
+  archives plus SHA256 checksums, publishing a GitHub Release whose body
+  is the version's CHANGELOG section; `workflow_dispatch` dry-run mode
+  for pipeline validation without a Release.
+- `scripts/package_release.py`: shared packaging script used identically
+  by CI and locally (byte-identical artifacts) — builds `taskboard-app`,
+  stages binary + licenses + README + changelog into `target/dist/`,
+  archives, and writes checksums; `--check` verifies existing archives.
+- `scripts/changelog.py`: Keep-a-Changelog tooling (`promote`, `extract`,
+  `self-test`) used by `bump_version.sh` and the release workflow.
 - Bencher continuous benchmark tracking: the `benchmark` job records
   criterion results from `main` pushes via the Bencher CLI
   (`BENCHER_API_TOKEN` secret); tolerant until first benches exist.

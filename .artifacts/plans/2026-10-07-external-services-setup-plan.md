@@ -7,8 +7,10 @@
 - **Goal**: Get the bootstrapped repository onto GitHub with CI, protection, and the
   free-tier integration services configured; clearly split manual (human) steps from
   agent-executable steps, and define the exact handback format.
-- **Status**: AWAITING USER TASKS. This plan file is currently uncommitted; it should
-  be committed together with the agent's first handback commit (see §5.0).
+- **Status**: ✅ COMPLETE (updated 2026-10-08). All tasks implemented and
+  merged: remote pushed, CI green, ruleset + secrets + hooks done, Bencher
+  (PR #7) and SonarCloud (PRs #6/#9) integrated. Exception: optional §3.7
+  Snyk stays deliberately skipped (backlog entry).
 
 ---
 
