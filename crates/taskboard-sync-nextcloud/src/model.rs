@@ -126,7 +126,7 @@ pub struct Card {
     #[serde(default)]
     pub last_editor: Option<String>,
     #[serde(default, deserialize_with = "null_to_empty_vec")]
-    pub labels: Vec<u64>,
+    pub labels: Vec<CardLabel>,
     #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub assigned_users: Vec<Participant>,
     #[serde(default, deserialize_with = "null_to_empty_vec")]
@@ -138,6 +138,61 @@ pub struct Card {
     /// Server-managed overdue flag (`0` = not overdue).
     #[serde(default)]
     pub overdue: i64,
+}
+
+/// A label reference on a card. Deck versions disagree on the wire shape:
+/// card responses inline the full label object, others carry bare ids (and
+/// writes take ids) — only the id is consumed and re-emitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardLabel {
+    pub id: u64,
+}
+
+impl From<u64> for CardLabel {
+    fn from(id: u64) -> Self {
+        Self { id }
+    }
+}
+
+impl serde::Serialize for CardLabel {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(self.id)
+    }
+}
+
+impl<'de> Deserialize<'de> for CardLabel {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct LabelRefVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for LabelRefVisitor {
+            type Value = CardLabel;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a label id or label object")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, id: u64) -> Result<CardLabel, E> {
+                Ok(CardLabel { id })
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<CardLabel, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut id = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "id" {
+                        id = Some(map.next_value::<u64>()?);
+                    } else {
+                        let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                id.map(|id| CardLabel { id })
+                    .ok_or_else(|| serde::de::Error::missing_field("id"))
+            }
+        }
+        deserializer.deserialize_any(LabelRefVisitor)
+    }
 }
 
 /// A colored tag attachable to cards.
@@ -178,16 +233,62 @@ pub struct Acl {
 }
 
 /// A Nextcloud user (or group/circle) reference; fields may be absent
-/// depending on the endpoint that embedded it.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// depending on the endpoint that embedded it. Some responses carry a bare
+/// user id string instead of an object — that decodes as the id in all
+/// three fields.
+#[derive(Debug, Clone)]
 pub struct Participant {
-    #[serde(default)]
     pub primary_key: String,
-    #[serde(default)]
     pub uid: String,
-    #[serde(default)]
     pub displayname: String,
+}
+
+// Deck's card PUT takes the owner/participant as the bare user id string
+// (`update(string $title, $type, string $owner, ...)`, Deck 1.17.5), while
+// reads return either a string or a full object — so writes re-emit the id.
+impl serde::Serialize for Participant {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if !self.primary_key.is_empty() {
+            serializer.serialize_str(&self.primary_key)
+        } else if !self.uid.is_empty() {
+            serializer.serialize_str(&self.uid)
+        } else {
+            serializer.serialize_str(&self.displayname)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Participant {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw: serde_json::Value = serde_json::Value::deserialize(deserializer)?;
+        match raw {
+            serde_json::Value::String(id) => Ok(Self {
+                primary_key: id.clone(),
+                uid: id.clone(),
+                displayname: id,
+            }),
+            serde_json::Value::Object(_) => Ok(Self {
+                primary_key: raw["primaryKey"].as_str().unwrap_or_default().to_owned(),
+                uid: raw["uid"].as_str().unwrap_or_default().to_owned(),
+                displayname: raw["displayname"].as_str().unwrap_or_default().to_owned(),
+            }),
+            other => {
+                let unexpected = match other {
+                    serde_json::Value::Null => serde::de::Unexpected::Unit,
+                    serde_json::Value::Bool(b) => serde::de::Unexpected::Bool(b),
+                    serde_json::Value::Number(n) => {
+                        serde::de::Unexpected::Unsigned(n.as_u64().unwrap_or_default())
+                    }
+                    serde_json::Value::Array(_) => serde::de::Unexpected::Seq,
+                    _ => serde::de::Unexpected::Map,
+                };
+                Err(serde::de::Error::invalid_type(
+                    unexpected,
+                    &"a participant id string or object",
+                ))
+            }
+        }
+    }
 }
 
 /// The permission set the requesting account holds on a board.
@@ -331,7 +432,7 @@ mod tests {
             "2020-01-20T09:52:43+00:00"
         );
         assert_eq!(card.done.unwrap().year(), 2026);
-        assert_eq!(card.labels, vec![1, 2]);
+        assert_eq!(card.labels, vec![CardLabel::from(1), CardLabel::from(2)]);
         assert_eq!(card.attachment_count, 1);
         assert_eq!(card.comments_unread, 3);
         assert!(card.overdue != 0);
@@ -376,6 +477,31 @@ mod tests {
     fn malformed_fixture_is_rejected() {
         let res: Result<Board, _> = crate::client::decode_envelope(&fixture("envelope_error.json"));
         assert!(res.is_err(), "truncated envelope must not decode");
+    }
+
+    #[test]
+    fn card_labels_decode_from_ids_and_objects() {
+        // Some Deck versions inline full label objects on cards, others
+        // carry bare ids; both must decode to the label id.
+        let card: Card = serde_json::from_str(
+            r#"{"id": 5, "title": "c", "labels": [7, {"id": 9, "title": "x", "color": "ff0000"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(card.labels, vec![CardLabel::from(7), CardLabel::from(9)]);
+        // Writes re-emit the ids only.
+        let json = serde_json::to_string(&card.labels).unwrap();
+        assert_eq!(json, "[7,9]");
+    }
+
+    #[test]
+    fn participant_decodes_from_id_string_or_object() {
+        let p: Participant = serde_json::from_str(r#""taskboard-it""#).unwrap();
+        assert_eq!(p.primary_key, "taskboard-it");
+        let p: Participant =
+            serde_json::from_str(r#"{"primaryKey": "u", "uid": "u", "displayname": "U"}"#).unwrap();
+        assert_eq!(p.displayname, "U");
+        // Writes re-emit the user id string (Deck's card PUT signature).
+        assert_eq!(serde_json::to_string(&p).unwrap(), r#""u""#);
     }
 
     #[test]
