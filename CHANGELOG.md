@@ -9,6 +9,31 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ## [Unreleased]
 
+### Added
+
+- Growth roadmap Phase 1 (ADR 0004): the canonical domain model in
+  `taskboard-domain` — `Board`/`Stack`/`Task`/`Label` entities with
+  per-field write clocks, typed local (UUIDv7) and remote (Deck) ids with
+  board-scoped composite refs, the real `AppState` with sync status, the
+  inter-actor message payloads (`StateCommand`, `SystemEvent`,
+  `EngineSignal`, `SyncCommand`, `SyncReport` + changesets), the outbox
+  operation types (`OpId`, `LocalOp`, `PendingOp`), the async-shaped
+  `TaskRepository` port (`BoxFuture`, no runtime dependency) with
+  `RepositoryError`, `PersistedState`, and batched `PersistenceAction`s,
+  the `Clock`/`IdGenerator` seams, and the pure sync conflict policy
+  (`apply_sync_report` + R1–R9 per-entity merge primitives) with a
+  property-test suite (idempotence, strict-newness tie-break, clock
+  monotonicity, convergence, no-panic bombardment).
+- Non-default `test-support` cargo feature on `taskboard-domain`:
+  property strategies for all entities and remote views, an
+  `InMemoryRepository` fake, and the repository contract harness
+  (`assert_task_repository_contract`) that Phase 2's sqlite adapter will
+  re-run verbatim.
+- ADR 0004 "Sync conflict policy" documenting the per-field LWW model,
+  tie-to-local bias, deletion rules (timestamped soft deletes for
+  boards/stacks/labels, delete-wins fallback for cards), unconditional
+  echo adoption, and the engine-executes-merge split.
+
 ### Fixed
 
 - Deck client wire-model fixes found by the live tiers: explicitly `null`

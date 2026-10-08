@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 28fd68a6cb2b50fb1d600688a46d174fb707fd84e7a493b8e68fc3d60fdf1841 # shrinks to changes = TaskChanges { title: None, description: None, duedate: Some(None), archived: None }
