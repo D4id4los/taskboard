@@ -40,7 +40,11 @@ struct SequenceResponder {
 
 impl SequenceResponder {
     fn new(statuses: Vec<u16>) -> Self {
-        assert!(!statuses.is_empty());
+        // Deliberately not `assert!(!statuses.is_empty())` / a
+        // `first().is_some()` check: the pinned dev toolchain and CI's
+        // newer stable deny those shapes in opposite directions
+        // (clippy::assert_is_empty vs clippy::unnecessary_first_then_check).
+        assert_ne!(statuses.len(), 0, "status sequence must not be empty");
         Self {
             statuses,
             index: AtomicUsize::new(0),
