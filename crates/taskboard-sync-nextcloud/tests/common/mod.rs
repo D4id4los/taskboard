@@ -4,6 +4,12 @@
 //! Tier 2 (dockerized) and Tier 3 (live server) tests are `#[ignore]`-marked
 //! and skip themselves when their environment is not configured, so the
 //! default suite stays hermetic.
+//!
+//! When a live tier fails on wire-format drift, consult the known-server
+//! matrix in `docs/testing_strategy.org` §8 first (Tier 3 live as of
+//! 2026-10-08: Nextcloud 33.0.9 / Deck 1.17.5; Tier 2 docker: Nextcloud
+//! 35.0.1 / Deck 1.19.0) — it lists each observed deviation from the Deck
+//! API reference.
 // Not every tier's test binary uses every helper.
 #![allow(dead_code)]
 
