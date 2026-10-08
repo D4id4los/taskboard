@@ -67,7 +67,7 @@ taskboard/
 └── crates/
     ├── taskboard-domain/         # Pure domain entities, message enums, and trait boundaries
     ├── taskboard-state/          # State Engine actor & ArcSwap state management
-    ├── taskboard-sync-nextcloud/ # Nextcloud WebDAV/REST client actor (IO)
+    ├── taskboard-sync-nextcloud/ # Nextcloud Deck OCS REST client actor (IO)
     ├── taskboard-storage-sqlite/ # Local SQLite disk caching actor (IO)
     ├── taskboard-ui-slint/       # Slint presentation UI layer
     └── taskboard-app/            # Application runner & channel wiring binary

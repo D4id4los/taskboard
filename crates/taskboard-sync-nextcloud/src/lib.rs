@@ -2,7 +2,7 @@
 //! Nextcloud synchronization actor for `taskboard`.
 //!
 //! Implements the remote side of the offline-first sync strategy: pulls and
-//! pushes tasks via the Nextcloud WebDAV/REST APIs without ever blocking the
+//! pushes tasks via the Nextcloud Deck OCS REST API without ever blocking the
 //! state engine or the UI. Network failures are typed (via `thiserror`) and
 //! reported to the state engine over channels so the UI can surface sync
 //! status instead of failing.
