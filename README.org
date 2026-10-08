@@ -24,9 +24,21 @@ Nextcloud API synchronization and local SQLite caching.
 
 * Download
 
-Pre-built binaries for Linux, Windows, and MacOS will be published on the
-GitHub Releases page once the release pipeline lands (see the
-[[./.artifacts/taskboard-potential-improvements-backlog.md][improvements backlog]]). Until then, build from source:
+Pre-built binaries for the first-class platforms (x86_64 Linux & Windows)
+are attached to every [[https://github.com/D4id4los/taskboard/releases][GitHub Release]]. Each release ships a
+=taskboard-<version>-<target-triple>.tar.gz= (Linux) or =.zip= (Windows)
+containing the =taskboard= binary, both licenses, the README, and the
+changelog, plus a matching =.sha256= checksum file and a combined
+=SHA256SUMS=.
+
+To test release packaging locally (byte-identical to a CI leg):
+
+#+begin_src sh
+python3 scripts/package_release.py          # build + archive into target/dist/
+python3 scripts/package_release.py --check  # verify an existing archive
+#+end_src
+
+Until the first release is cut, build from source:
 
 #+begin_src sh
 cargo build --release -p taskboard-app
@@ -93,6 +105,9 @@ cargo build --workspace
 #+begin_src sh
 cargo run -p taskboard-app
 #+end_src
+
+Release artifacts can be built and verified locally with
+=python3 scripts/package_release.py= (see [[Download][Download]]).
 
 ** Configuration
 

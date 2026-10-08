@@ -1,0 +1,147 @@
+name: Release
+
+# Tag-triggered binary releases. The workflow executes in the tagged
+# commit, so it must be merged to main before the first release tag.
+#
+# dry-run: trigger workflow_dispatch manually — builds and packages both
+# targets and uploads artifacts, but never creates a Release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + package + upload artifacts only (no Release)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate Release Metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Tag Format
+        if: github.event_name == 'push'
+        run: '[[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: tag $GITHUB_REF_NAME does not match vMAJOR.MINOR.PATCH" >&2; exit 1; }'
+
+      - name: Tag Version Matches Workspace Version
+        if: github.event_name == 'push'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          WORKSPACE_VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          if [ "$TAG_VERSION" != "$WORKSPACE_VERSION" ]; then
+            echo "error: tag version $TAG_VERSION != workspace version $WORKSPACE_VERSION" >&2
+            exit 1
+          fi
+          echo "tag version matches workspace version $WORKSPACE_VERSION"
+
+      - name: Release Notes Exist
+        # Release body must come from the version's CHANGELOG section. On
+        # dry-runs (workflow_dispatch, no tag) the current Unreleased section
+        # may not be promoted yet — packaging, not notes, is under test.
+        run: |
+          VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          if python scripts/changelog.py extract "$VERSION" CHANGELOG.md > release_notes.md; then
+            echo "notes for $VERSION found"
+          elif [ "${{ inputs.dry_run || 'false' }}" = "true" ]; then
+            echo "warning: no CHANGELOG section for $VERSION (dry run); continuing" >&2
+            echo "(dry run — release notes pending promotion)" > release_notes.md
+          else
+            echo "error: no CHANGELOG.md section for version $VERSION; promote [Unreleased] first" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release_notes.md
+          retention-days: 7
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            format: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            format: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Package Release
+        # `python` (not python3): Windows runners ship the Store-stub
+        # python3.exe alias, while `python` is real Python 3 on all runners.
+        run: python scripts/package_release.py --target ${{ matrix.target }} --format ${{ matrix.format }}
+
+      - name: Verify Package
+        run: python scripts/package_release.py --check --target ${{ matrix.target }} --format ${{ matrix.format }}
+
+      - name: Compute Archive Name
+        id: archive-name
+        shell: bash
+        run: |
+          VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          echo "archive=taskboard-${VERSION}-${{ matrix.target }}.${{ matrix.format }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            target/dist/${{ steps.archive-name.outputs.archive }}
+            target/dist/${{ steps.archive-name.outputs.archive }}.sha256
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Assemble SHA256SUMS
+        run: |
+          cd dist
+          cat -- *.sha256 > SHA256SUMS
+          rm -- *.sha256
+          sha256sum -c SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          gh release create "$TAG" \
+            --title "taskboard $VERSION" \
+            --notes-file <(python scripts/changelog.py extract "$VERSION" CHANGELOG.md) \
+            dist/*
