@@ -108,8 +108,15 @@ impl DeckClient {
     /// See [`DeckError`]: typed outcomes for auth, HTTP, envelope, and
     /// (after retries) transport/rate-limit failures.
     pub async fn boards(&self) -> Result<Vec<Board>, DeckError> {
-        self.send_json(Method::GET, "boards", None::<serde_json::Value>)
-            .await
+        tracing::debug!("listing deck boards");
+        let result: Result<Vec<Board>, DeckError> = self
+            .send_json(Method::GET, "boards", None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(boards) => tracing::info!(count = boards.len(), "deck boards listed"),
+            Err(err) => tracing::warn!(error = %err, "listing deck boards failed"),
+        }
+        result
     }
 
     /// Creates a board; `color` is a six-digit hex string without `#`.
@@ -118,12 +125,19 @@ impl DeckClient {
     ///
     /// See [`DeckError`].
     pub async fn create_board(&self, title: &str, color: &str) -> Result<Board, DeckError> {
-        self.send_json(
-            Method::POST,
-            "boards",
-            Some(CreateBoardBody { title, color }),
-        )
-        .await
+        tracing::debug!(title, color, "creating deck board");
+        let result: Result<Board, DeckError> = self
+            .send_json(
+                Method::POST,
+                "boards",
+                Some(CreateBoardBody { title, color }),
+            )
+            .await;
+        match &result {
+            Ok(board) => tracing::info!(board_id = board.id, "deck board created"),
+            Err(err) => tracing::warn!(error = %err, "creating deck board failed"),
+        }
+        result
     }
 
     /// Deletes a board by id.
@@ -132,14 +146,19 @@ impl DeckClient {
     ///
     /// See [`DeckError`]; [`DeckError::NotFound`] when the board is gone.
     pub async fn delete_board(&self, id: u64) -> Result<(), DeckError> {
-        let _: Option<serde_json::Value> = self
+        tracing::debug!(board_id = id, "deleting deck board");
+        let result: Result<Option<serde_json::Value>, DeckError> = self
             .send_json(
                 Method::DELETE,
                 &format!("boards/{id}"),
                 None::<serde_json::Value>,
             )
-            .await?;
-        Ok(())
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(board_id = id, "deck board deleted"),
+            Err(err) => tracing::warn!(board_id = id, error = %err, "deleting deck board failed"),
+        }
+        result.map(|_| ())
     }
 
     /// Performs the request (with retries) and decodes the OCS envelope.
