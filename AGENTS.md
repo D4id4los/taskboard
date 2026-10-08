@@ -166,6 +166,28 @@ implementation specs into the root directory or source folders.
   `<project-root>-WT-<branch-name>`.
 - `gh` is available for CI triage (`gh run list/watch/view --log-failed`,
   `gh pr checks`).
+- **PR granularity**: default to **one branch/PR per plan** when the plan is
+  one coherent deliverable. Use **stacked PRs** (each branch based on the
+  previous one, all PRs targeted at `main`) only when a single PR does not
+  make sense — e.g. independently reviewable slices of a large effort, or
+  parallelizable work that must land in order.
+- **Stacked PRs + squash merges require the rebase dance.** `main` is
+  squash-merged, so when an upstream PR in a stack lands, every descendant
+  branch still contains the original (now duplicate) commits and GitHub
+  reports phantom conflicts. The agent doing stacked-PR work should *expect*
+  this after each merge and fix it proactively — rebasing the branch onto
+  `origin/main` while dropping the already-merged commits:
+
+  ```sh
+  git fetch origin --prune
+  git rebase --onto origin/main <tip-of-the-branch-that-just-landed> <my-branch>
+  # resolve nothing unless real conflicts appear; then:
+  git push --force-with-lease origin <my-branch>
+  ```
+
+  When handing the merge to the user, print the exact commands so they can
+  be copy-pasted. `--force-with-lease` is mandatory; never plain `--force`.
+  PRs are not affected by any of this if nothing is stacked behind them.
 
 ## 9. Versioning
 
