@@ -185,6 +185,10 @@ Keep the zero-secrets-on-GitHub property intact for all hosted jobs.
 - **Category**: `Refactoring`
 - **Originating Plan/Report**: Chat review of `.artifacts/plans/2026-10-08-nextcloud-sync-testing-plan.md` outcomes
 - **Target Area**: `crates/taskboard-sync-nextcloud/`
+- **Status**: ✅ DONE — generalized to `DeckColor` (covers labels too) in
+  `crates/taskboard-sync-nextcloud/src/color.rs`
+  (`.artifacts/plans/2026-10-08-sync-nextcloud-deck-client-surface-plan.md` §5,
+  PR A)
 
 ### Context & Description
 Deck API colors (boards now; labels, cards, and stacks later) are passed
@@ -201,3 +205,59 @@ client-surface plan: hex-string newtype (`#[serde(rename_all =
 proptest for the validation, and decide whether it belongs
 crate-internal or in `taskboard-domain` alongside the other Deck
 payload types.
+
+## [2026-10-08] Deck sync actor, conflict resolution, and DTO→domain mapping
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-sync-nextcloud-deck-client-surface-plan.md` §9
+- **Target Area**: `crates/taskboard-sync-nextcloud/`, `crates/taskboard-domain/`, `crates/taskboard-app/`
+
+### Context & Description
+The client-surface plan deliberately delivers only the Deck API access
+point. The actor that drives it — poll scheduling on top of the
+conditional reads, offline write queue for kiosk mode, conflict
+resolution, channel wiring to the state engine, and the canonical
+domain entities (`Task`, board ports) plus the pure DTO→domain mapping
+functions — remains unbuilt.
+
+### Proposed Approach
+Its own plan once the client surface has landed: define domain entities
+and a Deck backend port in `taskboard-domain`, implement pure mapping
+functions in the sync crate (proptest-able), then build the actor over
+`mpsc`/`broadcast`/`oneshot` per `docs/architecture.org`.
+
+## [2026-10-08] Deck attachment writes and content download
+
+- **Category**: `Refactoring`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-sync-nextcloud-deck-client-surface-plan.md` §9
+- **Target Area**: `crates/taskboard-sync-nextcloud/`
+
+### Context & Description
+The client surface covers attachment *metadata* only (list + embedded
+`extendedData`). Uploading (`multipart/form-data`), updating, restoring,
+deleting, and downloading file content would require the `multipart`
+reqwest feature and a non-JSON response path, none of which a taskboard
+kiosk needs today.
+
+### Proposed Approach
+Add the `multipart` feature to the workspace `reqwest` pin, model the
+upload body, and route content download as raw bytes rather than
+`send_json`. Trigger: an actual product feature that consumes
+attachments.
+
+## [2026-10-08] Deck comments and administrative endpoints
+
+- **Category**: `Refactoring`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-08-sync-nextcloud-deck-client-surface-plan.md` §9
+- **Target Area**: `crates/taskboard-sync-nextcloud/`
+
+### Context & Description
+Deck API groups intentionally left unbuilt because a single-account
+taskboard client has no use for them: card comments (OCS endpoints, the
+API's only pagination), ACL/participant management, card user
+assignment/unassignment, board import/export, collaborative sessions,
+and Deck config endpoints.
+
+### Proposed Approach
+Model and test each group the same tiered way when a consumer appears;
+comments first if task discussions ever matter to the UI.
