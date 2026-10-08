@@ -4,8 +4,11 @@
 Achieving high testability in an asynchronous, multi-actor system requires
 strict boundaries between pure logic and side-effect-heavy IO. The design
 decisions below make the test suite fast, deterministic, and free of flaky
-network or UI dependencies. These rules are binding for agents and humans
-alike (see also =AGENTS.md= §5).
+network or UI dependencies. The single sanctioned exception is the
+Nextcloud sync client, whose real-server testing is strictly tiered (§8):
+only the hermetic, secretless docker tier may run in CI — anything
+touching a live deployment is a local, opt-in invocation. These rules
+are binding for agents and humans alike (see also =AGENTS.md= §5).
 
 * 1. Hexagonal Architecture (Ports and Adapters)
 
@@ -86,7 +89,82 @@ that local widget state (like active typing in a text field) is preserved
 while waiting for an async round-trip, and that the correct commands are
 sent over =mpsc= upon simulated user input.
 
-* 8. Test Suite Discipline (Hard Rules)
+* 8. Integration Testing: Nextcloud Sync (Deck OCS REST API)
+
+=taskboard-sync-nextcloud= speaks to the Deck app through its OCS REST
+API (paths under =/index.php/apps/deck/api/v1.0=, JSON inside the OCS
+envelope), authenticating with an /application password/ over HTTP Basic
+auth; every request carries the =OCS-APIRequest: true= header. Testing a
+real HTTP client is split into four tiers, each answering a different
+question. Only the hermetic tiers run by default; CI never sees a
+secret, and nothing touches a live deployment except an explicit local
+invocation.
+
+- *Tier 0 — recorded fixtures (unit).* Parse and build Deck OCS payloads
+  against JSON fixture files recorded from a real server (Tier 2 doubles
+  as the fixture-harvesting source). No network; part of the ordinary
+  CI test job.
+- *Tier 1 — contract tests (mock HTTP).* An in-process mock server
+  (=wiremock=, dev-dependency) serves canned responses covering the
+  error matrix (401/403/404/409/412/5xx). Client behavior is verified
+  deterministically here: Basic-auth and =OCS-APIRequest= header
+  construction, OCS envelope unwrapping, typed error mapping, and
+  retry/backoff — the last frozen with =tokio::time::pause()/advance()=
+  (§6), which is impossible against a real server.
+- *Tier 2 — dockerized Nextcloud (CI, secretless).* The official
+  =nextcloud:<major>= image (version pinned; a matrix over supported
+  majors is a future option) on SQLite, started via
+  =docker/nextcloud-test/compose.yaml= both locally and as a CI job step
+  (compose rather than a =services:= block, because the Deck app must be
+  installed after boot via =occ app:install deck=). Auto-install runs
+  from the container env (=NEXTCLOUD_ADMIN_USER=,
+  =NEXTCLOUD_ADMIN_PASSWORD=, =SQLITE_DATABASE=,
+  =NEXTCLOUD_TRUSTED_DOMAINS=); readiness is polled on =status.php=
+  until =installed:true= /with a deadline/ (§9: poll a predicate, never
+  sleep). Credentials are throwaway values hardcoded in the
+  compose/workflow environment — the instance is localhost-only and
+  ephemeral, so there is deliberately /no/ secret management here. A
+  test user and its app password are minted after boot (=occ user:add=,
+  =occ user:add-app-password= — =app-password:assign= on newer releases)
+  so this tier exercises the production auth path. CI runs the tier
+  under the =it_nextcloud_docker= test-name filter.
+- *Tier 3 — private production server (local, manual only).* Proves the
+  full story against the real deployment: its Nextcloud version, reverse
+  proxy, and TLS chain. It /never/ runs in CI — no Nextcloud secret of
+  any kind exists on GitHub, so the server address cannot leak into the
+  repository's public CI logs. Run it locally on demand:
+
+#+begin_src sh
+cargo nextest run --run-ignored only -E 'test(it_nextcloud_live)'
+#+end_src
+
+Hard rules binding the real-server tiers (2 and 3):
+
+- *App password, never the account password.* App passwords are
+  individually revocable and auditable in Nextcloud's Security panel,
+  and are the only non-interactive option on servers enforcing 2FA. They
+  cannot be folder-scoped — the dedicated test account /is/ the scope.
+- *Secrets live in one place only.* Tier 3 credentials sit in a
+  git-ignored =.env= at the repo root, loaded by the test harness; the
+  committed =.env.example= documents the names:
+  =TASKBOARD_IT_NEXTCLOUD_URL=, =TASKBOARD_IT_NEXTCLOUD_USER=,
+  =TASKBOARD_IT_NEXTCLOUD_TOKEN=. CI-only tokens (=CODECOV_TOKEN=,
+  =SONAR_TOKEN=, =BENCHER_API_TOKEN=) stay in GitHub Actions secrets —
+  a secret never migrates to a place that does not use it.
+- *Skip, never fail.* Live tests are =#[ignore]=-marked with an internal
+  environment guard; when the variables are unset they skip. The default
+  =cargo nextest run --workspace= therefore cannot touch the network,
+  and the coverage job stays hermetic by construction.
+- *Isolation.* Every run reads and writes only under a unique
+  =taskboard-it-<run-id>= prefix, with best-effort teardown.
+- *Wall-clock timeouts.* Every live test is wrapped in
+  =tokio::time::timeout= so a hung connection fails the test in seconds
+  instead of stalling the job.
+- *Auth-failure coverage stays in Tiers 1–2* (401 mapping, expired
+  tokens): repeated failures against a real server trip its brute-force
+  protection and can lock the test account out.
+
+* 9. Test Suite Discipline (Hard Rules)
 
 From =AGENTS.md= §5, restated because they matter:
 
@@ -98,7 +176,7 @@ From =AGENTS.md= §5, restated because they matter:
   lowest layer, deterministic by construction, no pins of "today's
   behavior".
 
-* 9. Memory Safety: Miri
+* 10. Memory Safety: Miri
 
 Unsafe code lives mostly in the third-party dependencies of the stack, so
 Miri is applied targetedly:
@@ -112,18 +190,19 @@ Miri is applied targetedly:
    pipeline. Run it locally when introducing complex serialization
    structures or concurrency primitives.
 
-* 10. Fuzzing: cargo-fuzz
+* 11. Fuzzing: cargo-fuzz
 
 Deferred. With high-level, heavily-fuzzed ecosystem crates (=serde_json=,
 =sqlx=, =tokio=, =chrono=) doing the low-level parsing, =proptest= +
 =insta= provide ~95% of the value at a fraction of the setup cost.
 
 *When to add =cargo-fuzz=:* only when a custom binary format parser,
-string tokenizer, or low-level protocol decoder appears (e.g., hand-written
-WebDAV XML parsing in =taskboard-sync-nextcloud=). Then fuzz out-of-band on
-a dedicated service (OSS-Fuzz) rather than in the PR pipeline.
+string tokenizer, or low-level protocol decoder appears. (The Deck OCS
+API is JSON handled by =serde_json=, so =taskboard-sync-nextcloud= is
+not expected to grow such a parser.) Then fuzz out-of-band on a
+dedicated service (OSS-Fuzz) rather than in the PR pipeline.
 
-* 11. Sanitizers (ASan)
+* 12. Sanitizers (ASan)
 
 Deferred. Rely on =#![forbid(unsafe_code)]=, =clippy=, =cargo-deny=, and
 Miri for now. Once the Slint UI and SQLite integrations are fully wired in
@@ -136,7 +215,7 @@ RUSTFLAGS="-Zsanitizer=address" cargo +nightly test \
   --target x86_64-unknown-linux-gnu
 #+end_src
 
-* 12. Coverage & Mutation Testing
+* 13. Coverage & Mutation Testing
 
 - *Coverage:* =cargo-llvm-cov --all-features --workspace --nextest= in CI;
   review diff coverage before merging.

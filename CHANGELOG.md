@@ -34,6 +34,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Testing strategy: tiered integration-test model for the Nextcloud sync
+  client (Deck OCS REST API) — recorded fixtures, `wiremock` contract
+  tests, a secretless dockerized-Nextcloud tier in CI, and a local-only
+  live tier against a private server; no Nextcloud secrets exist in CI by
+  design, so the server address cannot leak into public CI logs.
 - SonarCloud static analysis: `sonar-project.properties` and a
   `SonarCloud Analysis` CI job (token via the `SONAR_TOKEN` secret).
 - Binary release pipeline: tag-triggered (`v*`) matrix workflow building
