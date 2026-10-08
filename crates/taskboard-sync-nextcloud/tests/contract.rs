@@ -1011,3 +1011,64 @@ async fn conditional_cycle_fetch_not_modified_mutate_refetch() {
     assert_eq!(boards.len(), 2);
     assert_eq!(fresh.validators.etag.as_deref(), Some("\"gen-2\""));
 }
+
+#[tokio::test]
+async fn conditional_stack_fetch_hits_archived_route_with_validators() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/archived")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("ETag", "\"stacks-2\"")
+                .set_body_string(fixture("stacks_list.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let fetched = client_for(&server)
+        .fetch_stacks(
+            42,
+            StackFilter::Archived,
+            &Validators {
+                etag: Some("\"stacks-1\"".into()),
+                last_modified: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // Path carries the filter's route; the stale validator was re-emitted;
+    // the fresh one comes back for the next poll.
+    let req = &server.received_requests().await.unwrap()[0];
+    let if_none_match = req.headers.get("If-None-Match").unwrap().to_str().unwrap();
+    assert_eq!(if_none_match, "\"stacks-1\"");
+    assert_eq!(fetched.data.expect("fresh data on 200").len(), 2);
+    assert_eq!(fetched.validators.etag.as_deref(), Some("\"stacks-2\""));
+}
+
+#[tokio::test]
+async fn conditional_card_fetch_returns_304_as_data() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/5")))
+        .respond_with(ResponseTemplate::new(304).insert_header("ETag", "\"card-1\""))
+        .mount(&server)
+        .await;
+
+    let fetched = client_for(&server)
+        .fetch_card(
+            42,
+            9,
+            5,
+            &Validators {
+                etag: Some("\"card-1\"".into()),
+                last_modified: None,
+            },
+        )
+        .await
+        .unwrap();
+    server.verify().await;
+
+    assert!(fetched.data.is_none(), "304 must surface as cached data");
+    assert_eq!(fetched.validators.etag.as_deref(), Some("\"card-1\""));
+}
