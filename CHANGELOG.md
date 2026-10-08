@@ -42,6 +42,13 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Conditional reads in the Deck client (`taskboard-sync-nextcloud`):
+  `fetch_boards`/`fetch_stacks`/`fetch_card` take opaque `Validators`
+  (ETag / `Last-Modified`, re-emitted verbatim) and return `Fetch<T>`;
+  `304 Not Modified` surfaces as `data: None` — mapped before any body
+  decoding, never an error. Tier 1 pins the 304-with-empty-body contract
+  and a mocked fetch→304→mutate→refetch cycle; Tier 2/3 gain a real
+  `conditional_read_cycle`.
 - Deck client write surface in `taskboard-sync-nextcloud`: board
   update/restore/clone (sparse `BoardChanges`, all-false-default
   `CloneOptions`), stack create/update/delete, card create/update (full

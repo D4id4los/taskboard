@@ -20,8 +20,8 @@ pub mod ocs;
 
 pub use backoff::BackoffPolicy;
 pub use client::{
-    BoardChanges, CloneOptions, DeckClient, LabelChanges, NewCard, RetrySleep, StackChanges,
-    TokioSleep,
+    BoardChanges, CloneOptions, DeckClient, Fetch, LabelChanges, NewCard, RetrySleep, StackChanges,
+    TokioSleep, Validators,
 };
 pub use color::{DeckColor, ParseColorError};
 pub use error::DeckError;

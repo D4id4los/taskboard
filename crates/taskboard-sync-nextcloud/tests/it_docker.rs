@@ -18,7 +18,8 @@
 mod common;
 
 use common::suite::{
-    board_lifecycle, delete_missing_board_is_typed_error, full_tree_lifecycle, lists_boards,
+    board_lifecycle, conditional_read_cycle, delete_missing_board_is_typed_error,
+    full_tree_lifecycle, lists_boards,
 };
 use common::{deck_client, live_docker_config, with_deadline};
 
@@ -62,6 +63,17 @@ async fn it_nextcloud_docker_full_tree_lifecycle() {
         return;
     };
     with_deadline(full_tree_lifecycle(&deck_client(&cfg)))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_conditional_read_cycle() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(conditional_read_cycle(&deck_client(&cfg)))
         .await
         .expect("test must finish within the live deadline");
 }

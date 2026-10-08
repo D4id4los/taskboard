@@ -242,6 +242,60 @@ pub(crate) mod suite {
         Ok(())
     }
 
+    /// Real conditional-read cycle: first poll (validators), conditional
+    /// poll (either `304` or fresh data — servers that do not emit
+    /// validators on these routes must not fail the test), then a mutation,
+    /// then a conditional poll with the *stale* validators which must
+    /// return fresh data containing the mutation.
+    pub(crate) async fn conditional_read_cycle(client: &DeckClient) {
+        let first = client
+            .fetch_boards(&taskboard_sync_nextcloud::Validators::default())
+            .await
+            .expect("first conditional fetch must succeed");
+        assert!(first.data.is_some(), "first poll must return data");
+        assert!(
+            first.validators.etag.is_some() || first.validators.last_modified.is_some(),
+            "data-bearing responses should carry validators (server-dependent)"
+        );
+
+        // Server-dependent: a validator-aware server answers 304 here.
+        if let Ok(cached) = client.fetch_boards(&first.validators).await
+            && cached.data.is_none()
+        {
+            assert_eq!(
+                cached.validators, first.validators,
+                "304 must keep the validators usable for the next poll"
+            );
+        }
+
+        // Mutate, then poll conditionally with the stale validators.
+        let run = run_id();
+        let color =
+            taskboard_sync_nextcloud::DeckColor::from_hex("00c2e0").expect("valid cycle color");
+        let created = client
+            .create_board(&run, &color)
+            .await
+            .expect("mutation board creation must succeed");
+
+        let after = client
+            .fetch_boards(&first.validators)
+            .await
+            .expect("post-mutation conditional fetch must succeed");
+        let boards = after
+            .data
+            .unwrap_or_else(|| panic!("stale validators must not yield 304 after a mutation"));
+        assert!(
+            boards.iter().any(|b| b.id == created.id),
+            "post-mutation listing must contain the new board"
+        );
+
+        let deleted = client
+            .delete_board(created.id)
+            .await
+            .expect("teardown delete");
+        assert!(!deleted.is_live());
+    }
+
     /// Deleting a missing board yields a typed error. Nextcloud 35 answers
     /// Forbidden (not `NotFound`) for boards that do not exist or are not
     /// ours; a plausible-but-absent id is used because huge ids overflow
