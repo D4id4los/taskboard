@@ -27,6 +27,16 @@ pub enum DeckError {
     /// The requested resource does not exist (HTTP 404).
     #[error("resource not found")]
     NotFound,
+    /// The request was rejected as invalid (HTTP 400), e.g. a title longer
+    /// than the server's limit.
+    #[error("invalid request")]
+    BadRequest,
+    /// The request conflicts with server state (HTTP 409).
+    #[error("conflict with server state")]
+    Conflict,
+    /// A precondition on the request failed (HTTP 412).
+    #[error("precondition failed")]
+    PreconditionFailed,
     /// Rate limited (HTTP 429); retries exhausted.
     #[error("rate limited")]
     RateLimited,

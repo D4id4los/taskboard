@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Minimal Deck OCS REST client (boards slice).
+//! Typed Deck OCS REST client.
 //!
-//! Vertical slice proving the Tier 0–2 test infrastructure
-//! (`docs/testing_strategy.org` §8): list, create, and delete boards with
-//! typed errors and bounded retries. The full sync surface grows here later.
+//! Read surface for every Deck resource (`docs/testing_strategy.org` §8),
+//! plus the boards write slice: envelope decoding, typed errors, and bounded
+//! retries. The write surface for stacks/cards/labels grows here next.
 
 use std::future::Future;
 use std::time::Duration;
@@ -14,7 +14,8 @@ use serde::Serialize;
 use crate::backoff::BackoffPolicy;
 use crate::color::DeckColor;
 use crate::error::DeckError;
-use crate::ocs::{Board, OcsEnvelope};
+use crate::model::{Attachment, Board, Card, Label, Stack, StackFilter};
+use crate::ocs::OcsEnvelope;
 
 const DECK_API_PATH: &str = "index.php/apps/deck/api/v1.0";
 
@@ -120,6 +121,27 @@ impl DeckClient {
         result
     }
 
+    /// Fetches a single board by id.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn board(&self, id: u64) -> Result<Board, DeckError> {
+        tracing::debug!(board_id = id, "fetching deck board");
+        let result: Result<Board, DeckError> = self
+            .send_json(
+                Method::GET,
+                &format!("boards/{id}"),
+                None::<serde_json::Value>,
+            )
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(board_id = id, "deck board fetched"),
+            Err(err) => tracing::warn!(board_id = id, error = %err, "fetching deck board failed"),
+        }
+        result
+    }
+
     /// Creates a board with a six-digit hex [`DeckColor`].
     ///
     /// # Errors
@@ -167,6 +189,111 @@ impl DeckClient {
                 "deck board deleted"
             ),
             Err(err) => tracing::warn!(board_id = id, error = %err, "deleting deck board failed"),
+        }
+        result
+    }
+
+    /// Lists a board's stacks with their nested cards.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn stacks(
+        &self,
+        board_id: u64,
+        filter: StackFilter,
+    ) -> Result<Vec<Stack>, DeckError> {
+        tracing::debug!(board_id, ?filter, "listing deck stacks");
+        let resource = format!("boards/{board_id}/{}", filter.path_segment());
+        let result: Result<Vec<Stack>, DeckError> = self
+            .send_json(Method::GET, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(stacks) => tracing::info!(count = stacks.len(), "deck stacks listed"),
+            Err(err) => tracing::warn!(error = %err, "listing deck stacks failed"),
+        }
+        result
+    }
+
+    /// Fetches a single stack (with its cards).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn stack(&self, board_id: u64, stack_id: u64) -> Result<Stack, DeckError> {
+        tracing::debug!(board_id, stack_id, "fetching deck stack");
+        let resource = format!("boards/{board_id}/stacks/{stack_id}");
+        let result: Result<Stack, DeckError> = self
+            .send_json(Method::GET, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(stack_id, "deck stack fetched"),
+            Err(err) => tracing::warn!(error = %err, "fetching deck stack failed"),
+        }
+        result
+    }
+
+    /// Fetches a single card.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn card(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+    ) -> Result<Card, DeckError> {
+        tracing::debug!(board_id, stack_id, card_id, "fetching deck card");
+        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}");
+        let result: Result<Card, DeckError> = self
+            .send_json(Method::GET, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(_) => tracing::info!(card_id, "deck card fetched"),
+            Err(err) => tracing::warn!(error = %err, "fetching deck card failed"),
+        }
+        result
+    }
+
+    /// Lists a board's labels.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn labels(&self, board_id: u64) -> Result<Vec<Label>, DeckError> {
+        tracing::debug!(board_id, "listing deck labels");
+        let resource = format!("boards/{board_id}/labels");
+        let result: Result<Vec<Label>, DeckError> = self
+            .send_json(Method::GET, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(labels) => tracing::info!(count = labels.len(), "deck labels listed"),
+            Err(err) => tracing::warn!(error = %err, "listing deck labels failed"),
+        }
+        result
+    }
+
+    /// Lists a card's attachment metadata (content download is out of
+    /// scope).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn attachments(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+    ) -> Result<Vec<Attachment>, DeckError> {
+        tracing::debug!(board_id, stack_id, card_id, "listing deck attachments");
+        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments");
+        let result: Result<Vec<Attachment>, DeckError> = self
+            .send_json(Method::GET, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(attachments) => tracing::info!(count = attachments.len(), "deck attachments listed"),
+            Err(err) => tracing::warn!(error = %err, "listing deck attachments failed"),
         }
         result
     }
@@ -227,6 +354,9 @@ impl DeckClient {
             StatusCode::UNAUTHORIZED => return Err(DeckError::Unauthorized),
             StatusCode::FORBIDDEN => return Err(DeckError::Forbidden),
             StatusCode::NOT_FOUND => return Err(DeckError::NotFound),
+            StatusCode::BAD_REQUEST => return Err(DeckError::BadRequest),
+            StatusCode::CONFLICT => return Err(DeckError::Conflict),
+            StatusCode::PRECONDITION_FAILED => return Err(DeckError::PreconditionFailed),
             StatusCode::TOO_MANY_REQUESTS => return Err(DeckError::RateLimited),
             StatusCode::SERVICE_UNAVAILABLE => return Err(DeckError::Unavailable),
             status if status.is_server_error() => return Err(DeckError::Server(status.as_u16())),

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
-use taskboard_sync_nextcloud::{DeckClient, DeckColor, DeckError};
+use taskboard_sync_nextcloud::{DeckClient, DeckColor, DeckError, StackFilter};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -352,4 +352,161 @@ async fn authorization_header_is_per_instance_not_global() {
 
     let boards = client_for(&server).boards().await;
     assert!(boards.is_ok(), "exact Basic-auth header must be accepted");
+}
+
+#[tokio::test]
+async fn get_board_hits_resource_path_and_decodes_board() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{BOARDS_PATH}/42")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(fixture("board_create_response.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let board = client_for(&server).board(42).await.unwrap();
+    server.verify().await;
+    assert_eq!(board.id, 42);
+    assert_eq!(board.title, "taskboard-it-ab12cd34");
+}
+
+#[tokio::test]
+async fn stacks_listing_decodes_nested_collection() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("stacks_list.json")))
+        .mount(&server)
+        .await;
+
+    let stacks = client_for(&server)
+        .stacks(42, StackFilter::Active)
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(stacks.len(), 2);
+    assert_eq!(stacks[1].cards[0].title, "harvest fixtures");
+}
+
+#[tokio::test]
+async fn archived_stacks_use_the_dedicated_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/archived")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("stacks_list.json")))
+        .mount(&server)
+        .await;
+
+    let stacks = client_for(&server)
+        .stacks(42, StackFilter::Archived)
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(stacks.len(), 2);
+}
+
+#[tokio::test]
+async fn stack_detail_decodes_nested_cards() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("stack_detail.json")))
+        .mount(&server)
+        .await;
+
+    let stack = client_for(&server).stack(42, 9).await.unwrap();
+    server.verify().await;
+    assert_eq!(stack.cards.len(), 2);
+    assert!(stack.cards.iter().any(|c| c.archived));
+}
+
+#[tokio::test]
+async fn card_detail_decodes_iso8601_timestamps() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/5")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("card_detail.json")))
+        .mount(&server)
+        .await;
+
+    let card = client_for(&server).card(42, 9, 5).await.unwrap();
+    server.verify().await;
+    assert_eq!(card.id, 5);
+    assert!(card.duedate.is_some());
+}
+
+#[tokio::test]
+async fn labels_listing_decodes_collection() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{BOARDS_PATH}/42/labels")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("labels_list.json")))
+        .mount(&server)
+        .await;
+
+    let labels = client_for(&server).labels(42).await.unwrap();
+    server.verify().await;
+    assert_eq!(labels.len(), 2);
+    // Lenient read path: server strings pass through verbatim.
+    assert_eq!(labels[1].color.as_str(), "00C2E0");
+}
+
+#[tokio::test]
+async fn attachments_listing_hits_nested_resource_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{BOARDS_PATH}/42/stacks/9/cards/5/attachments"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("attachments_list.json")))
+        .mount(&server)
+        .await;
+
+    let attachments = client_for(&server).attachments(42, 9, 5).await.unwrap();
+    server.verify().await;
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].kind, "deck_file");
+}
+
+#[tokio::test]
+async fn bad_request_maps_from_400_without_retry() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(BOARDS_PATH))
+        .respond_with(ResponseTemplate::new(400))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server).boards().await.unwrap_err();
+    server.verify().await;
+    assert!(matches!(err, DeckError::BadRequest));
+}
+
+#[tokio::test]
+async fn conflict_maps_from_409_without_retry() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(BOARDS_PATH))
+        .respond_with(ResponseTemplate::new(409))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server).boards().await.unwrap_err();
+    server.verify().await;
+    assert!(matches!(err, DeckError::Conflict));
+}
+
+#[tokio::test]
+async fn precondition_failed_maps_from_412_without_retry() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(BOARDS_PATH))
+        .respond_with(ResponseTemplate::new(412))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server).boards().await.unwrap_err();
+    server.verify().await;
+    assert!(matches!(err, DeckError::PreconditionFailed));
 }

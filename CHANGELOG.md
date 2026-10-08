@@ -34,6 +34,13 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Deck client read surface in `taskboard-sync-nextcloud`: full wire model
+  (`Board`, `Stack`, `Card`, `Label`, `Acl`, `Participant`, `Attachment`,
+  `BoardPermissions`, `StackFilter`) with typed read endpoints for boards,
+  stacks (active/archived), cards, labels, and attachment metadata; ISO-8601
+  `duedate`/`done` decode via chrono. `DeckError` gains `BadRequest`,
+  `Conflict`, and `PreconditionFailed` for a complete typed status matrix;
+  Tier 0 fixtures and Tier 1 contract tests cover every endpoint.
 - `DeckColor` validated type in `taskboard-sync-nextcloud`: six hex digits
   (no `#`), case-normalized on construction, proptest-validated; reads stay
   lenient so a malformed server color cannot fail a whole listing. The

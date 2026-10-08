@@ -1,0 +1,19 @@
+{
+  "id": 6,
+  "title": "kiosk layout",
+  "description": "",
+  "stackId": 9,
+  "type": "plain",
+  "order": 1,
+  "createdAt": 1759900100,
+  "lastModified": 1759910100,
+  "labels": [],
+  "assignedUsers": [],
+  "duedate": null,
+  "done": null,
+  "archived": false,
+  "attachments": [],
+  "attachmentCount": 0,
+  "commentsUnread": 0,
+  "overdue": 0
+}
