@@ -139,6 +139,26 @@ invocation.
 cargo nextest run --run-ignored only -E 'test(it_nextcloud_live)'
 #+end_src
 
+*Known-server matrix (check here first when a live tier fails).* When a
+tier surfaces a failure, record the server versions and the observed
+wire behavior next to them — the Deck API reference (=deck/api/v1.0
+docs/API.md=) describes intent, not every deployed reality, and wire
+drift is version-specific:
+
+- *Tier 3 live (as of 2026-10-08):* Nextcloud 33.0.9, Deck app 1.17.5
+  (=status.php= / =capabilities= =deck.version=). Observed deviations
+  from the API reference, all pinned by fixtures/contract tests: card
+  PUT requires =owner= as the /bare user id string/ (an object fails
+  framework param binding with a bare 400); card reads return =labels=
+  as inlined label objects (writes take ids); =reorder= answers with a
+  card object, an array of cards, or nothing depending on version, and
+  a cross-stack move can lag Deck's cache; =GET /boards/{id}/labels=
+  answers 405 (use the board read's =labels=); stack listings omit
+  =cards= entirely for empty stacks (other builds send =null=).
+- *Tier 2 docker (as of 2026-10-08):* =nextcloud:35= (35.0.1), Deck app
+  1.19.0 (=occ app:install deck=). Same wire shapes as Tier 3 except
+  where noted above; empty stacks send =cards: null= here.
+
 Hard rules binding the real-server tiers (2 and 3):
 
 - *App password, never the account password.* App passwords are
