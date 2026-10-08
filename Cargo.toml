@@ -57,7 +57,7 @@ color-eyre = "0.6"
 # Observability
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-console-subscriber = "0.4"
+console-subscriber = "0.5"
 
 # Testing
 proptest = "1"
