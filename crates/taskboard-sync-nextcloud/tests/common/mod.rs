@@ -73,7 +73,7 @@ pub(crate) fn deck_client(cfg: &LiveCfg) -> DeckClient {
 /// at Tiers 0/1 and deliberately not duplicated here.
 pub(crate) mod suite {
     use super::run_id;
-    use taskboard_sync_nextcloud::{DeckClient, DeckError};
+    use taskboard_sync_nextcloud::{DeckClient, DeckColor, DeckError};
 
     /// Listing succeeds and decodes well-formed boards.
     pub(crate) async fn lists_boards(client: &DeckClient) {
@@ -90,7 +90,10 @@ pub(crate) mod suite {
         let title = run_id();
 
         let created = client
-            .create_board(&title, "00c2e0")
+            .create_board(
+                &title,
+                &DeckColor::from_hex("00c2e0").expect("valid fixture color"),
+            )
             .await
             .expect("board creation must succeed");
 

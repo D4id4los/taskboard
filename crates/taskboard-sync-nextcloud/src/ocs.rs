@@ -7,6 +7,8 @@
 
 use serde::Deserialize;
 
+use crate::color::DeckColor;
+
 /// Top-level OCS envelope around every Deck API payload.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OcsEnvelope<T> {
@@ -33,7 +35,9 @@ pub struct OcsMeta {
 pub struct Board {
     pub id: u64,
     pub title: String,
-    pub color: String,
+    /// Lenient on reads (any server string passes through); strict
+    /// six-hex-digit construction via [`DeckColor::from_hex`] for writes.
+    pub color: DeckColor,
     /// Unix timestamp of a soft delete; `0` (or missing on older servers)
     /// means the board is live. Deck's DELETE does not remove the board
     /// from listings, it only stamps this field.
@@ -76,7 +80,7 @@ mod tests {
         let env: OcsEnvelope<Board> =
             serde_json::from_slice(&fixture("board_create_response.json")).unwrap();
         assert_eq!(env.ocs.data.id, 42);
-        assert_eq!(env.ocs.data.color, "ff00ff");
+        assert_eq!(env.ocs.data.color.as_str(), "ff00ff");
     }
 
     #[test]

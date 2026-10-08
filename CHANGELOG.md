@@ -34,6 +34,10 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- `DeckColor` validated type in `taskboard-sync-nextcloud`: six hex digits
+  (no `#`), case-normalized on construction, proptest-validated; reads stay
+  lenient so a malformed server color cannot fail a whole listing. The
+  `create_board` color parameter and `Board.color` now carry the type.
 - Nextcloud sync testing build-out: `DeckClient` boards slice (list/create/
   delete over the Deck OCS REST API) with typed errors and bounded retries,
   plus all four test tiers — Tier 0 fixtures, Tier 1 `wiremock` contract

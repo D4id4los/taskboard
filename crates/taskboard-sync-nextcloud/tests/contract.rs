@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
-use taskboard_sync_nextcloud::{DeckClient, DeckError};
+use taskboard_sync_nextcloud::{DeckClient, DeckColor, DeckError};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -101,7 +101,7 @@ async fn boards_request_carries_auth_and_ocs_headers_and_unwraps_envelope() {
     assert_eq!(boards.len(), 2);
     assert_eq!(boards[0].id, 3);
     assert_eq!(boards[0].title, "taskboard-sync");
-    assert_eq!(boards[1].color, "00c2e0");
+    assert_eq!(boards[1].color.as_str(), "00c2e0");
 
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
@@ -135,7 +135,7 @@ async fn create_board_posts_json_and_decodes_board() {
         .await;
 
     let board = client_for(&server)
-        .create_board("new board", "ff0000")
+        .create_board("new board", &DeckColor::from_hex("ff0000").unwrap())
         .await
         .unwrap();
     assert_eq!(board.id, 42);

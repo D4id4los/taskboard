@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use taskboard_sync_nextcloud::{DeckClient, DeckError};
+use taskboard_sync_nextcloud::{DeckClient, DeckColor, DeckError};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), DeckError> {
@@ -32,7 +32,12 @@ async fn main() -> Result<(), DeckError> {
         let id = uuid::Uuid::new_v4().simple().to_string();
         format!("taskboard-it-{}", &id[..8])
     };
-    let board = client.create_board(&run_id, "00c2e0").await?;
+    let board = client
+        .create_board(
+            &run_id,
+            &DeckColor::from_hex("00c2e0").expect("valid harvest color"),
+        )
+        .await?;
     println!(
         "created harvest board {id} ({title})",
         id = board.id,
