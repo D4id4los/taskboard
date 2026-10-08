@@ -40,7 +40,19 @@ async fn main() -> Result<(), DeckError> {
     );
 
     let boards = client.boards().await?;
-    let json = serde_json::to_string_pretty(&boards).expect("boards serialize");
+    // The account may hold unrelated boards; harvested fixtures must
+    // contain only run-id data (reviewed before committing).
+    let harvested: Vec<_> = boards
+        .iter()
+        .filter(|b| b.title == run_id)
+        .cloned()
+        .collect();
+    assert_eq!(
+        harvested.len(),
+        1,
+        "exactly one run-id board must exist for the harvest"
+    );
+    let json = serde_json::to_string_pretty(&harvested).expect("boards serialize");
     let out =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deck/boards_live.json");
     std::fs::write(&out, json).expect("write fixture");
