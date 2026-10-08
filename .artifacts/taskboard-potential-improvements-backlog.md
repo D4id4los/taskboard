@@ -179,3 +179,25 @@ If scheduled live checks become wanted, register a self-hosted GitHub
 runner on the LAN (its logs are not publicly readable), move the Tier 3
 suite + `.env` secrets there, and run it on a schedule like `miri.yml`.
 Keep the zero-secrets-on-GitHub property intact for all hosted jobs.
+
+## [2026-10-08] Dedicated `BoardColor` type in the Deck client
+
+- **Category**: `Refactoring`
+- **Originating Plan/Report**: Chat review of `.artifacts/plans/2026-10-08-nextcloud-sync-testing-plan.md` outcomes
+- **Target Area**: `crates/taskboard-sync-nextcloud/`
+
+### Context & Description
+Deck API colors (boards now; labels, cards, and stacks later) are passed
+through as bare strings everywhere in the crate. Modelling them as a
+dedicated validated type, converted to string only at the request
+boundary, was deferred because the current plan scopes the full Deck
+surface out (§1) and the change would reopen the public
+`create_board` signature across three reviewed branches.
+
+### Proposed Approach
+Design the type once for the whole Deck surface in the upcoming
+client-surface plan: hex-string newtype (`#[serde(rename_all =
+"camelCase")]` wire format), validation rules (six hex digits, no `#`),
+proptest for the validation, and decide whether it belongs
+crate-internal or in `taskboard-domain` alongside the other Deck
+payload types.
