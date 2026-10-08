@@ -782,24 +782,31 @@ async fn archive_and_unarchive_hit_dedicated_routes_with_empty_body() {
 }
 
 #[tokio::test]
-async fn reorder_card_puts_order_and_target_stack_in_body() {
-    let server = MockServer::start().await;
-    Mock::given(method("PUT"))
-        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/5/reorder")))
-        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "c")))
-        .mount(&server)
-        .await;
+async fn reorder_card_puts_order_and_target_stack_in_body_and_ignores_reply() {
+    // Observed Deck versions answer with a card object, an array of cards,
+    // or an empty body; none of that may fail the call.
+    for reply in [
+        card_json(5, "c"),
+        format!("[{}]", card_json(5, "c")),
+        String::new(),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/5/reorder")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(reply.clone()))
+            .mount(&server)
+            .await;
 
-    let card = client_for(&server)
-        .reorder_card(42, 9, 5, 0, 8)
-        .await
-        .unwrap();
-    server.verify().await;
-    assert_eq!(card.id, 5);
-    assert_eq!(
-        last_body(&server).await,
-        serde_json::json!({"order": 0, "stackId": 8})
-    );
+        client_for(&server)
+            .reorder_card(42, 9, 5, 0, 8)
+            .await
+            .unwrap_or_else(|e| panic!("reorder must tolerate reply {reply:?}: {e}"));
+        server.verify().await;
+        assert_eq!(
+            last_body(&server).await,
+            serde_json::json!({"order": 0, "stackId": 8})
+        );
+    }
 }
 
 #[tokio::test]

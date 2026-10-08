@@ -603,6 +603,11 @@ impl DeckClient {
     /// differs (also the move primitive). Deck wants the new position and
     /// the destination stack in the *body*, not the path.
     ///
+    /// The response body is deliberately not decoded: observed Deck
+    /// versions return either a card object, an array of cards, or nothing,
+    /// and the moved card's own listing can lag Deck's cache. Read the card
+    /// back via [`DeckClient::card`] when the new state is needed.
+    ///
     /// # Errors
     ///
     /// See [`DeckError`].
@@ -613,7 +618,7 @@ impl DeckClient {
         card_id: u64,
         order: i64,
         target_stack: u64,
-    ) -> Result<Card, DeckError> {
+    ) -> Result<(), DeckError> {
         tracing::debug!(
             board_id,
             stack_id,
@@ -623,7 +628,12 @@ impl DeckClient {
             "reordering deck card"
         );
         let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/reorder");
-        let result: Result<Card, DeckError> = self
+        // The body is ignored: observed Deck versions return a card object,
+        // an array of cards, or nothing at all, and the moved card's own
+        // listing can lag Deck's cache. Read back via `card()` if needed.
+        // A body that does not decode as JSON is indistinguishable from an
+        // empty one and is not an error; status errors were already mapped.
+        let outcome: Result<serde_json::Value, DeckError> = self
             .send_json(
                 Method::PUT,
                 &resource,
@@ -633,8 +643,12 @@ impl DeckClient {
                 }),
             )
             .await;
+        let result = outcome.map(|_| ()).or_else(|err| match err {
+            DeckError::Envelope(_) => Ok(()),
+            other => Err(other),
+        });
         match &result {
-            Ok(_) => tracing::info!(card_id, "deck card reordered"),
+            Ok(()) => tracing::info!(card_id, "deck card reordered"),
             Err(err) => tracing::warn!(card_id, error = %err, "reordering deck card failed"),
         }
         result

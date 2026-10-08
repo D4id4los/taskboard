@@ -26,5 +26,6 @@ pub use client::{
 pub use color::{DeckColor, ParseColorError};
 pub use error::DeckError;
 pub use model::{
-    Attachment, Board, BoardPermissions, Card, ExtendedData, Label, Participant, Stack, StackFilter,
+    Attachment, Board, BoardPermissions, Card, CardLabel, ExtendedData, Label, Participant, Stack,
+    StackFilter,
 };

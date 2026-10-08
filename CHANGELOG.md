@@ -11,9 +11,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
-- Deck client: explicitly `null` collections in Deck payloads (e.g. a
-  stack's `cards` once empty, seen on the dockerized tier) decode as empty
-  vectors instead of failing the whole listing.
+- Deck client wire-model fixes found by the live tiers: explicitly `null`
+  collections (e.g. a stack's `cards` once empty) decode as empty vectors;
+  card `labels` accept both bare ids and inlined label objects (writes
+  re-emit ids); `Participant` reads accept an id string or a full object,
+  and writes re-emit the id string (Deck's card PUT requires the owner as
+  the bare user id); `reorder_card` no longer decodes the response body
+  (Deck versions return a card object, an array, or nothing) and returns
+  `()`, reading back via `card()` when needed.
 - CI: coverage job uses `cargo llvm-cov nextest` (the `--nextest` flag was
   removed in llvm-cov 0.9) with `--no-tests=warn`; benchmark job runs plain
   `cargo bench` (`--output-format bencher` is a nightly-only libtest option).
