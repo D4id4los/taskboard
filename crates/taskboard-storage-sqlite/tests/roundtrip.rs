@@ -386,6 +386,19 @@ async fn corrupt_rows_decode_to_corrupted() {
     )
     .await;
     assert!(matches!(result, Err(RepositoryError::Corrupted)));
+
+    // Unparseable clock text in a task's ck_ column.
+    let result = corrupt_and_load(
+        "INSERT INTO boards (id, title, color, archived, deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000005', 'x', 'x', 0, 0);
+         INSERT INTO stacks (id, board, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000006', '0197c0ff-eeee-7ccc-8ddd-000000000005', 's', 0, 0, 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00');
+         INSERT INTO tasks (id, stack, title, description, sort_order, archived, deleted, ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, ck_archived, ck_deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000007', '0197c0ff-eeee-7ccc-8ddd-000000000006', 't', '', 0, 0, 0, 'junk', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+    )
+    .await;
+    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+
+    // The sync_status singleton row is gone.
+    let result = corrupt_and_load("DELETE FROM sync_status WHERE id = 1").await;
+    assert!(matches!(result, Err(RepositoryError::Corrupted)));
 }
 
 /// T8 — state survives a close/reopen cycle on a file database (and the

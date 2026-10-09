@@ -33,17 +33,24 @@ async fn apply_routes_to_repo_and_load_observes() {
     assert_eq!(loaded.boards.len(), 1);
 }
 
-/// A2 — FIFO + reply-after-commit: when the first apply's reply resolved,
-/// its effects are already observable (the flush barrier Phase 5 uses).
+/// A2 — FIFO + reply-after-commit: two applies fired concurrently both
+/// land, and once their replies resolved their effects are observable
+/// without extra waiting (the flush semantics Phase 5 relies on).
 #[tokio::test]
 async fn apply_reply_is_a_flush_barrier() {
     let repo = Arc::new(open_memory().await.expect("open"));
-    let (handle, _join) = spawn_storage_actor(repo.clone());
+    let (handle, _join) = spawn_storage_actor(repo);
 
-    handle.apply(vec![board_action(1)]).await.expect("apply 1");
-    // The first reply already resolved — the second command's view must
-    // include the first batch without any extra waiting.
-    handle.apply(vec![board_action(2)]).await.expect("apply 2");
+    // Both commands are in flight at once; the mpsc inbox serializes them.
+    let (first, second) = tokio::join!(
+        handle.apply(vec![board_action(1)]),
+        handle.apply(vec![board_action(2)]),
+    );
+    first.expect("apply 1");
+    second.expect("apply 2");
+
+    // Both replies resolved after their commits — the load must already
+    // see both batches.
     let loaded = handle.load().await.expect("load");
     assert_eq!(loaded.boards.len(), 2);
 }

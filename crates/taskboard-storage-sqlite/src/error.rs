@@ -18,11 +18,11 @@ pub enum OpenError {
 /// 12): decoding/integrity failures are `Corrupted`, everything else (io,
 /// busy, locked) is transient `Unavailable`. The match is on error shape,
 /// never on message text. A crate-local function rather than a
-/// `From` impl — both sides are foreign types (orphan rule).
-/// The `must_use` is implied by the pure mapping (clippy suggestion suppressed:
-/// the function is always used inside `map_err` closures).
+/// `From` impl — both sides are foreign types (orphan rule). Non-exhaustive
+/// upstream enums: everything else (syntax, RAISE-triggered aborts, …) is
+/// not an integrity verdict.
 #[allow(clippy::must_use_candidate)]
-pub fn repo_error(err: &sqlx::Error) -> RepositoryError {
+pub(crate) fn repo_error(err: &sqlx::Error) -> RepositoryError {
     match &err {
         sqlx::Error::ColumnDecode { .. } | sqlx::Error::ColumnNotFound(_) => {
             RepositoryError::Corrupted

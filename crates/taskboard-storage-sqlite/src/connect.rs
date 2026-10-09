@@ -2,7 +2,6 @@
 //! Connection setup: pragmas, pool shape, and boot-time migrations.
 
 use std::path::Path;
-use std::str::FromStr;
 use std::time::Duration;
 
 use sqlx::SqlitePool;
@@ -20,14 +19,13 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 /// `synchronous=NORMAL`, FK enforcement, a busy timeout. sqlx logs every
 /// statement at debug level by default, which makes a bug-report log
 /// localize the failing SQL.
-fn connect_options(url: &str) -> Result<SqliteConnectOptions, OpenError> {
-    Ok(SqliteConnectOptions::from_str(url)
-        .map_err(OpenError::Connect)?
+fn apply_pragmas(options: SqliteConnectOptions) -> SqliteConnectOptions {
+    options
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .synchronous(SqliteSynchronous::Normal)
         .foreign_keys(true)
-        .busy_timeout(Duration::from_secs(5)))
+        .busy_timeout(Duration::from_secs(5))
 }
 
 /// The single-connection pool shape (plan decision 4): the storage actor is
@@ -46,14 +44,17 @@ fn pool_options(memory: bool) -> SqlitePoolOptions {
     }
 }
 
-async fn open_with(url: &str, memory: bool) -> Result<SqliteTaskRepository, OpenError> {
+async fn open_with(
+    options: SqliteConnectOptions,
+    memory: bool,
+) -> Result<SqliteTaskRepository, OpenError> {
     let pool: SqlitePool = pool_options(memory)
-        .connect_with(connect_options(url)?)
+        .connect_with(options)
         .await
         .map_err(OpenError::Connect)?;
     MIGRATOR.run(&pool).await.map_err(OpenError::Migrate)?;
     tracing::info!(
-        migrations = MIGRATOR.iter().count(),
+        migrations_embedded = MIGRATOR.iter().count(),
         "sqlite database opened; schema ensured"
     );
     Ok(SqliteTaskRepository { pool })
@@ -62,6 +63,9 @@ async fn open_with(url: &str, memory: bool) -> Result<SqliteTaskRepository, Open
 /// Opens (creating if absent) the database at `path`, applies pending
 /// migrations, and returns the repository.
 ///
+/// The path is handed to sqlite as a filename (never interpolated into a
+/// connection URL), so `%`, `?`, and non-UTF-8 path components survive.
+///
 /// # Errors
 ///
 /// [`OpenError::Connect`] when the file cannot be opened;
@@ -69,7 +73,11 @@ async fn open_with(url: &str, memory: bool) -> Result<SqliteTaskRepository, Open
 pub async fn open(path: impl AsRef<Path>) -> Result<SqliteTaskRepository, OpenError> {
     let path = path.as_ref();
     tracing::debug!(path = %path.display(), "opening sqlite database");
-    open_with(&format!("sqlite://{}", path.display()), false).await
+    open_with(
+        apply_pragmas(SqliteConnectOptions::new()).filename(path),
+        false,
+    )
+    .await
 }
 
 /// In-memory variant for tests. The database is per-connection, so the pool
@@ -80,5 +88,59 @@ pub async fn open(path: impl AsRef<Path>) -> Result<SqliteTaskRepository, OpenEr
 /// [`OpenError::Connect`] if the pool cannot be created;
 /// [`OpenError::Migrate`] if the embedded migrations fail.
 pub async fn open_memory() -> Result<SqliteTaskRepository, OpenError> {
-    open_with("sqlite::memory:", true).await
+    let parsed: SqliteConnectOptions = "sqlite::memory:".parse().map_err(OpenError::Connect)?;
+    open_with(apply_pragmas(parsed), true).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use taskboard_domain::persistence::{PersistedState, TaskRepository};
+
+    /// A fresh database loads a default-shaped state (derived
+    /// `pending_ops` = 0).
+    #[tokio::test]
+    async fn fresh_database_loads_default_state() {
+        let repo = open_memory().await.expect("open");
+        let loaded = repo.load().await.expect("load");
+        assert_eq!(loaded, PersistedState::default());
+    }
+
+    /// Opening the same file twice applies zero new migrations (idempotence).
+    #[tokio::test]
+    async fn reopening_applies_no_new_migrations() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let first = open(file.path()).await.expect("first open");
+        drop(first);
+
+        let second = open(file.path()).await.expect("second open");
+        second.load().await.expect("load");
+        let raw = SqlitePool::connect(&format!("sqlite://{}", file.path().display()))
+            .await
+            .expect("raw connect");
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&raw)
+            .await
+            .expect("migration bookkeeping");
+        assert_eq!(applied, 1, "exactly one migration must be recorded");
+    }
+
+    /// The durability pragmas are actually in force: `journal_mode` is WAL.
+    #[tokio::test]
+    async fn journal_mode_is_wal() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let repo = open(file.path()).await.expect("open");
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&repo.pool)
+            .await
+            .expect("pragma");
+        assert_eq!(mode, "wal");
+    }
+
+    /// The pool holds exactly one connection (kiosk single-writer stance).
+    #[tokio::test]
+    async fn pool_is_single_connection() {
+        let repo = open_memory().await.expect("open");
+        assert_eq!(repo.pool.size(), 1);
+    }
 }

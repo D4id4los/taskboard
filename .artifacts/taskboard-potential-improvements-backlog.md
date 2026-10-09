@@ -618,3 +618,24 @@ FK" from "stored data is damaged".
 ### Proposed Approach
 If coarseness bites in practice, propose a port variant (`Rejected`?) with
 an ADR rather than overloading `Corrupted` silently.
+
+## [2026-10-09] Reconcile storage naming: `sync_metadata` table vs validator types; `TaskRepository` scope
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: review of `feat/storage-sqlite-repository`
+- **Target Area**: `taskboard-storage-sqlite` (schema), `taskboard-domain` (`persistence.rs`)
+
+### Context & Description
+The table storing validator bundles is named `sync_metadata`, while every
+type around it says "validator" (`ValidatorKey`, `SyncValidators`,
+`PersistenceAction::UpsertValidators`). The mismatch is documented in the
+code but persists in the schema. Separately, `TaskRepository` is named for
+tasks while its surface persists whole `PersistedState` (boards, outbox,
+sync status) — a name inherited from Phase 1 that this crate's first real
+implementation makes visible.
+
+### Proposed Approach
+Both renames require an additive migration (`ALTER TABLE … RENAME` /
+copy-table-and-rename per ADR 0005) plus a port rename rippling through
+the domain, fake, and storage crates — bundle them with the first
+migration that ships after Phase 2 to amortize the churn.

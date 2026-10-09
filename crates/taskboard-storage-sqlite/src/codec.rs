@@ -8,9 +8,7 @@
 //! columns decode to [`Corrupted`](taskboard_domain::persistence::RepositoryError)
 //! via [`CodecError`].
 
-use taskboard_domain::ids::{
-    LabelId, RemoteBoardId, RemoteCardId, RemoteLabelId, RemoteStackId, StackId, TaskId,
-};
+use taskboard_domain::ids::{LabelId, RemoteBoardId, StackId, TaskId};
 use taskboard_domain::outbox::LocalOp;
 use taskboard_domain::persistence::ValidatorKey;
 use taskboard_domain::state::{SyncErrorKind, SyncPhase};
@@ -35,21 +33,6 @@ pub fn uuid_to_text(id: Uuid) -> String {
 /// [`CodecError`] when the text is not a valid UUID.
 pub fn uuid_from_text(raw: &str) -> Result<Uuid, CodecError> {
     Uuid::parse_str(raw).map_err(|_| CodecError)
-}
-
-/// `u64` text form of a remote id.
-#[must_use]
-pub fn remote_id_to_text(id: u64) -> String {
-    id.to_string()
-}
-
-/// Parses a remote id.
-///
-/// # Errors
-///
-/// [`CodecError`] when the text is not a valid `u64`.
-pub fn remote_id_from_text(raw: &str) -> Result<u64, CodecError> {
-    raw.parse().map_err(|_| CodecError)
 }
 
 /// The snake-case tag stored in `outbox.op_kind`.
@@ -159,7 +142,7 @@ pub fn op_from_columns(
 
 /// The lowercase tag stored in `sync_status.phase`.
 #[must_use]
-pub fn sync_phase_to_text(phase: &SyncPhase) -> &'static str {
+pub fn sync_phase_to_text(phase: SyncPhase) -> &'static str {
     match phase {
         SyncPhase::Idle => "idle",
         SyncPhase::Syncing => "syncing",
@@ -239,73 +222,66 @@ pub fn validator_key_from_text(raw: &str) -> Result<ValidatorKey, CodecError> {
 /// `remote_stack_id`) columns.
 #[must_use]
 pub fn remote_stack_to_columns(r: taskboard_domain::ids::RemoteStackRef) -> (i64, i64) {
-    (board_col(r.board), stack_col(r.stack))
+    (remote_col(r.board.get()), remote_col(r.stack.get()))
 }
 
 /// Encodes a remote card binding into its (`remote_board_id`,
 /// `remote_stack_id`, `remote_card_id`) columns.
 #[must_use]
 pub fn remote_card_to_columns(r: taskboard_domain::ids::RemoteCardRef) -> (i64, i64, i64) {
-    (board_col(r.board), stack_col(r.stack), card_col(r.card))
+    (
+        remote_col(r.board.get()),
+        remote_col(r.stack.get()),
+        remote_col(r.card.get()),
+    )
 }
 
 /// Encodes a remote label binding into its (`remote_board_id`,
 /// `remote_label_id`) columns.
 #[must_use]
 pub fn remote_label_to_columns(r: taskboard_domain::ids::RemoteLabelRef) -> (i64, i64) {
-    (board_col(r.board), label_col(r.label))
+    (remote_col(r.board.get()), remote_col(r.label.get()))
 }
 
 /// The all-or-none NULL invariant of remote ref columns, checked at decode
-/// time: `Some` columns present ⇔ `Some` ref (plan decision 11). Stored
-/// values are non-negative `u64`s; a negative column is corruption.
+/// time: `Some` columns present ⇔ `Some` ref (plan decision 11).
 ///
 /// # Errors
 ///
-/// [`CodecError`] on a partial column set or a negative stored id.
+/// [`CodecError`] on a partial column set (some set, some NULL) or a
+/// negative stored id.
 pub(crate) fn remote_columns_present_or_none(
     ids: &[Option<i64>],
 ) -> Result<Option<Vec<u64>>, CodecError> {
-    let all: Option<Vec<Option<u64>>> = ids
-        .iter()
-        .copied()
-        .map(|col| match col {
+    let mut out = Vec::with_capacity(ids.len());
+    for col in ids {
+        match col {
             // Negative ids cannot come from a u64 remote id — corruption.
-            Some(num) => u64::try_from(num).ok().map(Some),
-            None => Some(None),
-        })
-        .collect();
-    let all = all.ok_or(CodecError)?;
-    if all.iter().all(Option::is_none) {
-        return Ok(None);
+            Some(num) => out.push(u64::try_from(*num).map_err(|_| CodecError)?),
+            None => {
+                // A NULL is legal only if every column is NULL.
+                return if ids.iter().all(Option::is_none) {
+                    Ok(None)
+                } else {
+                    Err(CodecError)
+                };
+            }
+        }
     }
-    // A partial set (some columns set, others NULL) is corruption.
-    all.into_iter()
-        .collect::<Option<Vec<_>>>()
-        .map(Some)
-        .ok_or(CodecError)
+    Ok(Some(out))
 }
 
-fn board_col(id: RemoteBoardId) -> i64 {
-    i64::try_from(id.get()).unwrap_or(i64::MAX)
-}
-
-fn stack_col(id: RemoteStackId) -> i64 {
-    i64::try_from(id.get()).unwrap_or(i64::MAX)
-}
-
-fn card_col(id: RemoteCardId) -> i64 {
-    i64::try_from(id.get()).unwrap_or(i64::MAX)
-}
-
-fn label_col(id: RemoteLabelId) -> i64 {
-    i64::try_from(id.get()).unwrap_or(i64::MAX)
+/// A remote id as an INTEGER column. Deck ids are sequential `u64`s, far
+/// below `i64::MAX`; a value above that would silently saturate (the
+/// decode-side mirror treats negatives as corruption).
+pub(crate) fn remote_col(raw: u64) -> i64 {
+    i64::try_from(raw).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use taskboard_domain::ids::RemoteLabelId;
+    use taskboard_domain::ids::{RemoteBoardId, RemoteCardId, RemoteLabelId, RemoteStackId};
 
     fn id(raw: u128) -> Uuid {
         Uuid::from_u128(raw)
@@ -316,12 +292,6 @@ mod tests {
         let raw = id(42);
         assert_eq!(uuid_from_text(&uuid_to_text(raw)), Ok(raw));
         assert_eq!(uuid_from_text("not-a-uuid"), Err(CodecError));
-    }
-
-    #[test]
-    fn remote_id_text_roundtrips_and_rejects_garbage() {
-        assert_eq!(remote_id_from_text(&remote_id_to_text(7)), Ok(7));
-        assert_eq!(remote_id_from_text("x"), Err(CodecError));
     }
 
     #[test]
@@ -401,7 +371,7 @@ mod tests {
                 _ => None,
             };
             assert_eq!(
-                sync_phase_from_columns(sync_phase_to_text(&phase), last_error),
+                sync_phase_from_columns(sync_phase_to_text(phase), last_error),
                 Ok(phase)
             );
         }

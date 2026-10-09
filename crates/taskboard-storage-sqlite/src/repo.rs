@@ -108,7 +108,10 @@ struct OutboxRow {
     queued_at: DateTime<Utc>,
 }
 
-/// Raw `sync_metadata` row.
+/// Raw `sync_metadata` row. The table stores the validator bundles; the
+/// `sync_metadata` name predates the domain's `ValidatorKey` naming and
+/// stays for migration immutability (ADR 0005: shipped migrations are
+/// immutable).
 struct ValidatorRow {
     key: String,
     etag: Option<String>,
@@ -136,24 +139,29 @@ mod decode {
     }
 }
 
-fn decode_board(row: BoardRow) -> Result<(Uuid, Board), RepositoryError> {
-    let id = decode::uuid(&row.id)?;
-    let remote = decode::remote_opt(&[row.remote_board_id])?.map(|nums| RemoteBoardId(nums[0]));
-    Ok((
-        id,
-        Board {
-            id: BoardId::from(id),
-            remote,
-            title: row.title,
-            color: Color::new(row.color),
-            archived: row.archived,
-            deleted: row.deleted,
-            remote_seen: row.remote_seen,
-        },
-    ))
+/// Maps a failed statement onto the port's failure classes, logging the
+/// source error first so a bug report localizes the failing SQL (plan
+/// §3.15) instead of seeing only the coarse port variant.
+fn stmt_error(err: &sqlx::Error) -> RepositoryError {
+    tracing::debug!(error = %err, "sqlite statement failed");
+    crate::error::repo_error(err)
 }
 
-fn decode_stack(row: StackRow) -> Result<(Uuid, Stack), RepositoryError> {
+fn decode_board(row: BoardRow) -> Result<Board, RepositoryError> {
+    let id = decode::uuid(&row.id)?;
+    let remote = decode::remote_opt(&[row.remote_board_id])?.map(|nums| RemoteBoardId(nums[0]));
+    Ok(Board {
+        id: BoardId::from(id),
+        remote,
+        title: row.title,
+        color: Color::new(row.color),
+        archived: row.archived,
+        deleted: row.deleted,
+        remote_seen: row.remote_seen,
+    })
+}
+
+fn decode_stack(row: StackRow) -> Result<Stack, RepositoryError> {
     let id = decode::uuid(&row.id)?;
     let board = decode::uuid(&row.board)?;
     let remote = decode::remote_opt(&[row.remote_board_id, row.remote_stack_id])?.map(|nums| {
@@ -162,41 +170,37 @@ fn decode_stack(row: StackRow) -> Result<(Uuid, Stack), RepositoryError> {
             stack: RemoteStackId(nums[1]),
         }
     });
-    let _ = board; // FK integrity is the database's job; only the id is needed
-    Ok((
-        id,
-        Stack {
-            id: StackId::from(id),
-            remote,
-            board: BoardId::from(board),
-            title: row.title,
-            order: row.sort_order,
-            archived: row.archived,
-            deleted: row.deleted,
-            clocks: StackClocks {
-                title: row
-                    .ck_title
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                order: row
-                    .ck_sort_order
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                deleted: row
-                    .ck_deleted
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-            },
-            remote_seen: row.remote_seen,
+    Ok(Stack {
+        id: StackId::from(id),
+        remote,
+        board: BoardId::from(board),
+        title: row.title,
+        order: row.sort_order,
+        archived: row.archived,
+        deleted: row.deleted,
+        clocks: StackClocks {
+            title: row
+                .ck_title
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            order: row
+                .ck_sort_order
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            deleted: row
+                .ck_deleted
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
         },
-    ))
+        remote_seen: row.remote_seen,
+    })
 }
 
 #[allow(clippy::too_many_lines)] // 21 columns; the mapping is linear
 fn decode_task(
     row: TaskRow,
     label_sets: &BTreeMap<Uuid, BTreeSet<Uuid>>,
-) -> Result<(Uuid, Task), RepositoryError> {
+) -> Result<Task, RepositoryError> {
     let id = decode::uuid(&row.id)?;
     let stack = decode::uuid(&row.stack)?;
     let remote =
@@ -211,60 +215,57 @@ fn decode_task(
         .get(&id)
         .map(|set| set.iter().copied().map(LabelId::from).collect())
         .unwrap_or_default();
-    Ok((
-        id,
-        Task {
-            id: TaskId::from(id),
-            remote,
-            title: row.title,
-            description: row.description,
-            duedate: row.duedate,
-            done: row.done,
-            stack: StackId::from(stack),
-            order: row.sort_order,
-            labels,
-            archived: row.archived,
-            deleted: row.deleted,
-            clocks: TaskClocks {
-                title: row
-                    .ck_title
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                description: row
-                    .ck_description
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                duedate: row
-                    .ck_duedate
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                done: row
-                    .ck_done
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                position: row
-                    .ck_position
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                labels: row
-                    .ck_labels
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                archived: row
-                    .ck_archived
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                deleted: row
-                    .ck_deleted
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-            },
-            remote_seen: row.remote_seen,
+    Ok(Task {
+        id: TaskId::from(id),
+        remote,
+        title: row.title,
+        description: row.description,
+        duedate: row.duedate,
+        done: row.done,
+        stack: StackId::from(stack),
+        order: row.sort_order,
+        labels,
+        archived: row.archived,
+        deleted: row.deleted,
+        clocks: TaskClocks {
+            title: row
+                .ck_title
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            description: row
+                .ck_description
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            duedate: row
+                .ck_duedate
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            done: row
+                .ck_done
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            position: row
+                .ck_position
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            labels: row
+                .ck_labels
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            archived: row
+                .ck_archived
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            deleted: row
+                .ck_deleted
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
         },
-    ))
+        remote_seen: row.remote_seen,
+    })
 }
 
-fn decode_label(row: LabelRow) -> Result<(Uuid, Label), RepositoryError> {
+fn decode_label(row: LabelRow) -> Result<Label, RepositoryError> {
     let id = decode::uuid(&row.id)?;
     let board = decode::uuid(&row.board)?;
     let remote = decode::remote_opt(&[row.remote_board_id, row.remote_label_id])?.map(|nums| {
@@ -273,32 +274,29 @@ fn decode_label(row: LabelRow) -> Result<(Uuid, Label), RepositoryError> {
             label: RemoteLabelId(nums[1]),
         }
     });
-    Ok((
-        id,
-        Label {
-            id: LabelId::from(id),
-            remote,
-            board: BoardId::from(board),
-            title: row.title,
-            color: Color::new(row.color),
-            deleted: row.deleted,
-            clocks: LabelClocks {
-                title: row
-                    .ck_title
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                color: row
-                    .ck_color
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-                deleted: row
-                    .ck_deleted
-                    .parse()
-                    .map_err(|_| RepositoryError::Corrupted)?,
-            },
-            remote_seen: row.remote_seen,
+    Ok(Label {
+        id: LabelId::from(id),
+        remote,
+        board: BoardId::from(board),
+        title: row.title,
+        color: Color::new(row.color),
+        deleted: row.deleted,
+        clocks: LabelClocks {
+            title: row
+                .ck_title
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            color: row
+                .ck_color
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            deleted: row
+                .ck_deleted
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
         },
-    ))
+        remote_seen: row.remote_seen,
+    })
 }
 
 fn decode_outbox_row(row: &OutboxRow) -> Result<PendingOp, RepositoryError> {
@@ -328,17 +326,16 @@ impl TaskRepository for SqliteTaskRepository {
 }
 
 impl SqliteTaskRepository {
-    /// The underlying pool (single connection). Exposed for diagnostics
-    /// and tests; production code goes through the port methods or the
-    /// actor.
-    #[must_use]
-    pub fn pool(&self) -> &sqlx::SqlitePool {
-        &self.pool
-    }
-
     #[tracing::instrument(skip(self), err)]
     #[allow(clippy::too_many_lines)] // eight SELECTs; the length is the schema's
     async fn load_inner(&self) -> Result<PersistedState, RepositoryError> {
+        // One read transaction around all SELECTs: the single pooled
+        // connection would otherwise be released between queries, and a
+        // concurrent `apply` could interleave — yielding a state mixing
+        // pre- and post-batch rows, with `pending_ops` disagreeing with
+        // the hydrated outbox.
+        let mut tx = self.pool.begin().await.map_err(|e| stmt_error(&e))?;
+
         let board_rows = sqlx::query_as!(
             BoardRow,
             r#"SELECT id, remote_board_id, title, color,
@@ -346,9 +343,9 @@ impl SqliteTaskRepository {
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM boards ORDER BY id"#
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|e| crate::error::repo_error(&e))?;
+        .map_err(|e| stmt_error(&e))?;
 
         let stack_rows = sqlx::query_as!(
             StackRow,
@@ -358,9 +355,9 @@ impl SqliteTaskRepository {
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM stacks ORDER BY id"#
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|e| crate::error::repo_error(&e))?;
+        .map_err(|e| stmt_error(&e))?;
 
         let label_rows = sqlx::query_as!(
             LabelRow,
@@ -370,9 +367,9 @@ impl SqliteTaskRepository {
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM labels ORDER BY id"#
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|e| crate::error::repo_error(&e))?;
+        .map_err(|e| stmt_error(&e))?;
 
         let task_rows = sqlx::query_as!(
             TaskRow,
@@ -387,15 +384,15 @@ impl SqliteTaskRepository {
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM tasks ORDER BY id"#
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|e| crate::error::repo_error(&e))?;
+        .map_err(|e| stmt_error(&e))?;
 
         let task_label_rows =
             sqlx::query!(r#"SELECT task, label FROM task_labels ORDER BY task, label"#)
-                .fetch_all(&self.pool)
+                .fetch_all(&mut *tx)
                 .await
-                .map_err(|e| crate::error::repo_error(&e))?;
+                .map_err(|e| stmt_error(&e))?;
 
         let outbox_rows = sqlx::query_as!(
             OutboxRow,
@@ -403,17 +400,17 @@ impl SqliteTaskRepository {
                       queued_at as "queued_at: DateTime<Utc>"
                FROM outbox ORDER BY op_seq"#
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|e| crate::error::repo_error(&e))?;
+        .map_err(|e| stmt_error(&e))?;
 
         let validator_rows = sqlx::query_as!(
             ValidatorRow,
             r#"SELECT key, etag, last_modified FROM sync_metadata ORDER BY key"#
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|e| crate::error::repo_error(&e))?;
+        .map_err(|e| stmt_error(&e))?;
 
         let status_row = sqlx::query_as!(
             SyncStatusRow,
@@ -421,27 +418,27 @@ impl SqliteTaskRepository {
                       last_success as "last_success: DateTime<Utc>"
                FROM sync_status WHERE id = 1"#
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(|e| crate::error::repo_error(&e))?
+        .map_err(|e| stmt_error(&e))?
         .ok_or(RepositoryError::Corrupted)?;
 
         let mut boards = BTreeMap::new();
         for row in board_rows {
-            let (id, board) = decode_board(row)?;
-            boards.insert(BoardId::from(id), board);
+            let board = decode_board(row)?;
+            boards.insert(board.id, board);
         }
 
         let mut stacks = BTreeMap::new();
         for row in stack_rows {
-            let (id, stack) = decode_stack(row)?;
-            stacks.insert(StackId::from(id), stack);
+            let stack = decode_stack(row)?;
+            stacks.insert(stack.id, stack);
         }
 
         let mut labels = BTreeMap::new();
         for row in label_rows {
-            let (id, label) = decode_label(row)?;
-            labels.insert(LabelId::from(id), label);
+            let label = decode_label(row)?;
+            labels.insert(label.id, label);
         }
 
         // Group the join table once; tasks look up their whole label set.
@@ -454,8 +451,8 @@ impl SqliteTaskRepository {
 
         let mut tasks = BTreeMap::new();
         for row in task_rows {
-            let (id, task) = decode_task(row, &label_sets)?;
-            tasks.insert(TaskId::from(id), task);
+            let task = decode_task(row, &label_sets)?;
+            tasks.insert(task.id, task);
         }
 
         let mut outbox = Vec::with_capacity(outbox_rows.len());
@@ -481,13 +478,9 @@ impl SqliteTaskRepository {
                 .map_err(|_| RepositoryError::Corrupted)?;
 
         // `pending_ops` is derived, never stored (plan decision 9): the
-        // outbox is the single source of truth for queue depth.
-        let pending_ops = sqlx::query!(r#"SELECT COUNT(*) AS depth FROM outbox"#)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| crate::error::repo_error(&e))?
-            .depth;
-        let pending_ops = u32::try_from(pending_ops).unwrap_or(u32::MAX);
+        // outbox rows just hydrated are the single source of truth for
+        // queue depth — no second query that could drift from them.
+        let pending_ops = u32::try_from(outbox.len()).unwrap_or(u32::MAX);
 
         let state = PersistedState {
             boards,
@@ -502,6 +495,9 @@ impl SqliteTaskRepository {
                 pending_ops,
             },
         };
+        // Read-only transaction: dropping without commit releases the
+        // snapshot.
+        drop(tx);
         tracing::trace!(
             boards = state.boards.len(),
             stacks = state.stacks.len(),
@@ -515,11 +511,7 @@ impl SqliteTaskRepository {
 
     #[tracing::instrument(skip(self, actions), err, fields(actions = actions.len()))]
     async fn apply_inner(&self, actions: Vec<PersistenceAction>) -> Result<(), RepositoryError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| crate::error::repo_error(&e))?;
+        let mut tx = self.pool.begin().await.map_err(|e| stmt_error(&e))?;
         tracing::trace!("transaction begun");
 
         // Fixed execution order satisfying the FK graph (plan decision 6):
@@ -531,9 +523,7 @@ impl SqliteTaskRepository {
 
         match result {
             Ok(()) => {
-                tx.commit()
-                    .await
-                    .map_err(|e| crate::error::repo_error(&e))?;
+                tx.commit().await.map_err(|e| stmt_error(&e))?;
                 tracing::trace!("transaction committed");
                 tracing::info!(actions = actions.len(), "batch applied");
                 Ok(())
@@ -555,9 +545,7 @@ async fn execute_batch(
 ) -> Result<(), RepositoryError> {
     for action in actions {
         if let PersistenceAction::UpsertBoard(board) = action {
-            let remote = board
-                .remote
-                .map(|b| i64::try_from(b.get()).unwrap_or(i64::MAX));
+            let remote = board.remote.map(|b| codec::remote_col(b.get()));
             sqlx::query!(
                 r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, remote_seen)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -577,7 +565,7 @@ async fn execute_batch(
                 board.remote_seen,
             )
             .execute(&mut *tx)
-            .await.map_err(|e| crate::error::repo_error(&e))?;
+            .await.map_err(|e| stmt_error(&e))?;
             tracing::trace!(board = ?board.id, "board upserted");
         }
     }
@@ -617,7 +605,7 @@ async fn execute_batch(
                 stack.remote_seen,
             )
             .execute(&mut *tx)
-            .await.map_err(|e| crate::error::repo_error(&e))?;
+            .await.map_err(|e| stmt_error(&e))?;
             tracing::trace!(stack = ?stack.id, board = ?stack.board, "stack upserted");
         }
     }
@@ -655,7 +643,7 @@ async fn execute_batch(
                 label.remote_seen,
             )
             .execute(&mut *tx)
-            .await.map_err(|e| crate::error::repo_error(&e))?;
+            .await.map_err(|e| stmt_error(&e))?;
             tracing::trace!(label = ?label.id, board = ?label.board, "label upserted");
         }
     }
@@ -713,7 +701,7 @@ async fn execute_batch(
                 task.remote_seen,
             )
             .execute(&mut *tx)
-            .await.map_err(|e| crate::error::repo_error(&e))?;
+            .await.map_err(|e| stmt_error(&e))?;
 
             // The label set is one whole-set field: replace its join rows
             // wholesale. Plain upserts only — `INSERT OR REPLACE` would
@@ -724,7 +712,7 @@ async fn execute_batch(
             )
             .execute(&mut *tx)
             .await
-            .map_err(|e| crate::error::repo_error(&e))?;
+            .map_err(|e| stmt_error(&e))?;
             for label in &task.labels {
                 sqlx::query!(
                     r#"INSERT INTO task_labels (task, label) VALUES (?, ?)"#,
@@ -733,7 +721,7 @@ async fn execute_batch(
                 )
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| crate::error::repo_error(&e))?;
+                .map_err(|e| stmt_error(&e))?;
             }
             tracing::trace!(task = ?task.id, stack = ?task.stack, labels = task.labels.len(), "task upserted");
         }
@@ -749,7 +737,7 @@ async fn execute_batch(
             )
             .execute(&mut *tx)
             .await
-            .map_err(|e| crate::error::repo_error(&e))?;
+            .map_err(|e| stmt_error(&e))?;
             tracing::trace!(op = ?op_id.0, "op removed from outbox");
         }
     }
@@ -781,7 +769,7 @@ async fn execute_batch(
             )
             .execute(&mut *tx)
             .await
-            .map_err(|e| crate::error::repo_error(&e))?;
+            .map_err(|e| stmt_error(&e))?;
             tracing::trace!(op = ?op.op_id.0, kind = codec::op_kind_to_text(&op.op), "op enqueued");
         }
     }
@@ -799,7 +787,7 @@ async fn execute_batch(
             )
             .execute(&mut *tx)
             .await
-            .map_err(|e| crate::error::repo_error(&e))?;
+            .map_err(|e| stmt_error(&e))?;
             tracing::trace!(
                 key = codec::validator_key_to_text(key),
                 "validators upserted"
@@ -821,15 +809,15 @@ async fn execute_batch(
                        phase = excluded.phase,
                        last_error = excluded.last_error,
                        last_success = excluded.last_success"#,
-                codec::sync_phase_to_text(&status.phase),
+                codec::sync_phase_to_text(status.phase),
                 last_error,
                 status.last_success,
             )
             .execute(&mut *tx)
             .await
-            .map_err(|e| crate::error::repo_error(&e))?;
+            .map_err(|e| stmt_error(&e))?;
             tracing::trace!(
-                phase = codec::sync_phase_to_text(&status.phase),
+                phase = codec::sync_phase_to_text(status.phase),
                 "sync status upserted"
             );
         }

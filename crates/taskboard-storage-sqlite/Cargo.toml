@@ -23,4 +23,4 @@ workspace = true
 [dev-dependencies]
 taskboard-domain = { workspace = true, features = ["test-support"] }
 proptest.workspace = true
-tempfile = "3"
+tempfile.workspace = true
