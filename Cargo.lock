@@ -2377,12 +2377,16 @@ name = "taskboard-state"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "chrono",
  "insta",
  "proptest",
  "taskboard-domain",
+ "taskboard-storage-sqlite",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -15,6 +15,7 @@
 //! `taskboard_domain::test_support::<name>` regardless of file.
 
 pub mod contract;
+pub use memory::InMemoryRepository;
 pub mod entities;
 pub mod memory;
 pub mod messages;
