@@ -59,6 +59,15 @@
    subcommands; every non-daemon command boots the full core in its own
    process, does the job, flushes, exits. A lockfile prevents concurrent
    instances. Daemon IPC is a recorded future improvement.
+5. **Agile cross-crate evolution (user, 2026-10-09).** No crate or
+   module is frozen after its phase: when a later phase finds that
+   changing an earlier phase's output yields a better architecture,
+   cleaner responsibilities, or better testability, that change is made
+   in the later phase's PR without ceremony. The full test suite
+   (contract harness, proptests, snapshots, quality gates) is the
+   safety net that keeps such refactors confident. Phase-plan "out of
+   scope" sections state what a phase *delivers*, never which crates it
+   may touch.
 
 ## 3. Development Order & Rationale
 
