@@ -124,6 +124,7 @@ snapshot would silently tombstone live tasks.
   above. Both are backlogged for revisit if real-server use shows
   revert-on-sync symptoms.
 - *Enforcement:* Property tests in =crates/taskboard-domain/src/merge.rs=
-  (idempotence, strict-newness boundary, clock monotonicity, convergence,
-  rule outcomes); mutation testing targets =merge.rs= with zero expected
-  survivors.
+  (the per-entity algebra) and
+  =crates/taskboard-domain/src/pipeline.rs= (the fixed-order composition:
+  idempotence, processing order, convergence, rule outcomes); mutation
+  testing targets both with zero expected survivors.
