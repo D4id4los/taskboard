@@ -13,7 +13,7 @@ use chrono::{TimeZone, Utc};
 use crate::clock::{Clock, SystemClock};
 use crate::entities::{Task, TaskClocks};
 use crate::ids::{StackId, TaskId};
-use crate::ops::{LocalOp, OpId, PendingOp};
+use crate::outbox::{LocalOp, OpId, PendingOp};
 use crate::persistence::{
     PersistedState, PersistenceAction, SyncValidators, TaskRepository, ValidatorKey,
 };

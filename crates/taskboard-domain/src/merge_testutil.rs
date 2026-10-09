@@ -8,13 +8,13 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, TimeZone, Utc};
 
-use crate::clock::IdGenerator;
 use crate::entities::{Board, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks};
+use crate::idgen::IdGenerator;
 use crate::ids::{
     BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
     RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
-use crate::ops::{OpId, PendingOp};
+use crate::outbox::{OpId, PendingOp};
 use crate::remote::{RemoteBoard, RemoteBoardSnapshot, RemoteLabel, RemoteStack, RemoteTask};
 use crate::state::AppState;
 
@@ -201,16 +201,11 @@ pub(crate) fn task_by_card(state: &AppState, card: u64) -> &Task {
         .unwrap()
 }
 
-/// Rebuilds an `AppState` from a pipeline result (assertion helper).
-pub(crate) fn app_into_state(app: &crate::pipeline::SyncApplication) -> AppState {
-    AppState {
-        boards: app.boards.clone(),
-        stacks: app.stacks.clone(),
-        tasks: app.tasks.clone(),
-        labels: app.labels.clone(),
-        sync: app.sync.clone(),
-        last_updated: None,
-    }
+/// Clones the merged state out of a pipeline result (assertion helper).
+pub(crate) fn app_into_state(
+    app: &(AppState, Vec<crate::persistence::PersistenceAction>),
+) -> AppState {
+    app.0.clone()
 }
 
 pub(crate) fn bound_label(num: u64) -> Label {

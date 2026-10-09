@@ -22,6 +22,17 @@
 //! `SyncReport::Completed`. All comparisons are cross-machine wall clock;
 //! see ADR 0004's skew disclaimer. Tests use logical times and are
 //! skew-free by construction.
+//!
+//! Unmapped-remote-stack strategy (the single rule every path follows):
+//! no code path ever fabricates a stack binding. A remote card whose
+//! stack has no local binding keeps its whole local position as a unit
+//! ([`merge_task`], [`adopt_task_after_push`]) or is not adopted at all
+//! ([`adopt_remote_task`] returns `None` — the pipeline defers it to the
+//! next cycle, when its stack exists).
+//!
+//! These primitives are the public API of the sync conflict policy: the
+//! state engine may call them directly (e.g. when executing single
+//! commands); only `utc_min` and `remote_wins` stay internal.
 
 use std::collections::BTreeSet;
 
@@ -30,13 +41,8 @@ use chrono::{DateTime, Utc};
 use crate::entities::{Board, Label, Stack, Task};
 use crate::ids::{LabelId, RemoteBoardId, RemoteLabelId, RemoteStackId, StackId, TaskId};
 use crate::remote::{
-    RemoteBoard, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, remote_index, resolve_label,
+    RemoteBoard, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
-use crate::state::AppState;
-
-fn nil_stack_id() -> StackId {
-    StackId::from(uuid::Uuid::nil())
-}
 
 /// Smallest representable `DateTime<Utc>`: never-newer than anything.
 pub(crate) fn utc_min() -> DateTime<Utc> {
@@ -52,47 +58,34 @@ fn max_ts(a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
     if a > b { a } else { b }
 }
 
-/// Builds the lookup index for the current bound entities.
-#[must_use]
-pub fn state_remote_index(state: &AppState) -> RemoteIndex {
-    remote_index(
-        state
-            .tasks
-            .iter()
-            .filter_map(|(id, t)| Some((t.remote?, *id))),
-        state
-            .stacks
-            .iter()
-            .filter_map(|(id, s)| Some((s.remote?, *id))),
-        state
-            .labels
-            .iter()
-            .filter_map(|(id, l)| Some((l.remote?, *id))),
-    )
-}
-
 /// R1 — adopt a remotely-created task under a fresh local id. All clocks
 /// are stamped with the remote `last_modified`; remote label ids are
 /// resolved through `ctx` (unmapped labels are dropped here; the pipeline
 /// adopts the label entities before the tasks, so unmapped means the
 /// label was already absent remotely).
+///
+/// Returns `None` when the card's remote stack has no local binding: the
+/// pipeline adopts stacks before tasks, so an unresolved stack is absent
+/// remotely too, and adopting would fabricate a dangling position. The
+/// caller defers the card to the next sync cycle (see the module docs'
+/// unmapped-stack strategy).
 #[must_use]
-pub fn adopt_remote_task(remote: &RemoteTask, id: TaskId, ctx: &RemoteIndex) -> Task {
-    Task {
+pub fn adopt_remote_task(remote: &RemoteTask, id: TaskId, ctx: &RemoteIndex) -> Option<Task> {
+    Some(Task {
         id,
         remote: Some(remote.id),
         title: remote.title.clone(),
         description: remote.description.clone(),
         duedate: remote.duedate,
         done: remote.done,
-        stack: resolve_local_stack(ctx, remote.id.board, remote.stack).unwrap_or_else(nil_stack_id),
+        stack: resolve_local_stack(ctx, remote.id.board, remote.stack)?,
         order: remote.order,
         labels: map_remote_labels(ctx, remote.id.board, &remote.labels),
         archived: remote.archived,
         deleted: false,
         clocks: clocks_from(remote.last_modified),
         remote_seen: Some(remote.last_modified),
-    }
+    })
 }
 
 fn clocks_from(ts: DateTime<Utc>) -> crate::entities::TaskClocks {
@@ -207,7 +200,7 @@ pub fn tombstone_task(local: &Task, observed_at: DateTime<Utc>) -> Task {
 /// be "newer" than the just-made local edit, yet its normalization must
 /// land.
 #[must_use]
-pub fn adopt_after_push(local: &Task, echo: &RemoteTask, ctx: &RemoteIndex) -> Task {
+pub fn adopt_task_after_push(local: &Task, echo: &RemoteTask, ctx: &RemoteIndex) -> Task {
     let lm = echo.last_modified;
     Task {
         id: local.id,
@@ -239,7 +232,7 @@ pub fn adopt_after_push(local: &Task, echo: &RemoteTask, ctx: &RemoteIndex) -> T
 /// remote binding. The next pull cannot resurrect: the tombstone clock is
 /// `>=` any stale listing entry (cache-lag safe by construction).
 #[must_use]
-pub fn finalize_pushed_delete(local: &Task) -> Task {
+pub fn finalize_pushed_task_delete(local: &Task) -> Task {
     let mut finalized = local.clone();
     finalized.deleted = true;
     finalized.remote = None;
@@ -273,22 +266,39 @@ pub fn merge_stack(local: &Stack, remote: &RemoteStack) -> Stack {
         max_ts(local.clocks.title, local.clocks.order),
         local.clocks.deleted,
     );
-    match remote.deleted_at {
-        Some(deleted_at) if remote_wins(deleted_at, local_latest) => {
-            merged.deleted = true;
-            merged.clocks.deleted = deleted_at;
-        }
-        _ if local.deleted && remote_wins(ts_r, local.clocks.deleted) => {
-            // Remote is live again (or live and newer than our tombstone).
-            merged.deleted = false;
-            merged.clocks.deleted = ts_r;
-        }
-        _ => {}
+    if let Some((deleted, clock)) = soft_delete_verdict(
+        local_latest,
+        local.deleted,
+        local.clocks.deleted,
+        remote.deleted_at,
+        ts_r,
+    ) {
+        merged.deleted = deleted;
+        merged.clocks.deleted = clock;
     }
 
     merged.remote = Some(remote.id);
     merged.remote_seen = Some(ts_r);
     merged
+}
+
+/// R5/R6 soft-delete defense shared by stacks and labels: decide the
+/// tombstone outcome from the local side's latest activity, the remote
+/// soft-delete stamp, and the remote entity stamp. Returns `None` when
+/// the local `deleted` flag and clock must stay untouched; otherwise the
+/// new `(deleted, deleted-clock)` pair.
+fn soft_delete_verdict(
+    local_latest: DateTime<Utc>,
+    local_deleted: bool,
+    local_deleted_clock: DateTime<Utc>,
+    remote_deleted_at: Option<DateTime<Utc>>,
+    ts_r: DateTime<Utc>,
+) -> Option<(bool, DateTime<Utc>)> {
+    match remote_deleted_at {
+        Some(deleted_at) if remote_wins(deleted_at, local_latest) => Some((true, deleted_at)),
+        _ if local_deleted && remote_wins(ts_r, local_deleted_clock) => Some((false, ts_r)),
+        _ => None,
+    }
 }
 
 /// R1 for stacks: adopt a remotely-created stack under a fresh local id.
@@ -353,16 +363,15 @@ pub fn merge_label(local: &Label, remote: &RemoteLabel) -> Label {
         max_ts(local.clocks.title, local.clocks.color),
         local.clocks.deleted,
     );
-    match remote.deleted_at {
-        Some(deleted_at) if remote_wins(deleted_at, local_latest) => {
-            merged.deleted = true;
-            merged.clocks.deleted = deleted_at;
-        }
-        _ if local.deleted && remote_wins(ts_r, local.clocks.deleted) => {
-            merged.deleted = false;
-            merged.clocks.deleted = ts_r;
-        }
-        _ => {}
+    if let Some((deleted, clock)) = soft_delete_verdict(
+        local_latest,
+        local.deleted,
+        local.clocks.deleted,
+        remote.deleted_at,
+        ts_r,
+    ) {
+        merged.deleted = deleted;
+        merged.clocks.deleted = clock;
     }
 
     merged.remote = Some(remote.id);
@@ -412,8 +421,15 @@ pub fn adopt_label_after_push(local: &Label, echo: &RemoteLabel) -> Label {
 /// R6 for boards: adopt changed remote board content. Boards have no
 /// local-edit commands in the MVP, so the remote content is authoritative
 /// whenever it is strictly newer than `remote_seen`.
+///
+/// This is deliberately *not* a per-field merge: a true field-level board
+/// merge needs `BoardClocks` plus local board-edit commands to stamp them
+/// (see `entities.rs`). Until those exist there is nothing local to
+/// defend, so every difference would resolve to remote anyway and
+/// all-or-nothing adoption is exactly equivalent. Introduce the per-field
+/// variant together with board-edit commands, not before.
 #[must_use]
-pub fn merge_board(local: &Board, remote: &RemoteBoard) -> Board {
+pub fn adopt_board_if_newer(local: &Board, remote: &RemoteBoard) -> Board {
     if !remote_wins(
         remote.last_modified,
         local.remote_seen.unwrap_or_else(utc_min),
@@ -445,7 +461,12 @@ pub fn adopt_remote_board(remote: &RemoteBoard, id: crate::ids::BoardId) -> Boar
     }
 }
 
-pub(crate) fn finalize_stack_tombstone(local: &Stack, observed_at: DateTime<Utc>) -> Stack {
+/// R3/R6 for stacks — observed remote absence of a bound stack (or a
+/// local delete push that must be finalized): tombstone it. The
+/// tombstone's write time never moves backwards; the remote binding is
+/// cleared.
+#[must_use]
+pub fn tombstone_stack(local: &Stack, observed_at: DateTime<Utc>) -> Stack {
     let mut s = local.clone();
     s.deleted = true;
     s.clocks.deleted = max_ts(local.clocks.deleted, observed_at);
@@ -454,7 +475,12 @@ pub(crate) fn finalize_stack_tombstone(local: &Stack, observed_at: DateTime<Utc>
     s
 }
 
-pub(crate) fn finalize_label_tombstone(local: &Label, observed_at: DateTime<Utc>) -> Label {
+/// R3/R6 for labels — observed remote absence of a bound label (or a
+/// local delete push that must be finalized): tombstone it. The
+/// tombstone's write time never moves backwards; the remote binding is
+/// cleared.
+#[must_use]
+pub fn tombstone_label(local: &Label, observed_at: DateTime<Utc>) -> Label {
     let mut l = local.clone();
     l.deleted = true;
     l.clocks.deleted = max_ts(local.clocks.deleted, observed_at);
@@ -613,9 +639,25 @@ mod tests {
     }
 
     #[test]
+    fn remote_task_with_unmapped_stack_is_not_adopted() {
+        // The single unmapped-stack strategy: adoption is deferred (None)
+        // instead of fabricating a dangling stack binding.
+        let remote = remote_task(1, 9, BASE + 60);
+        let adopted = adopt_remote_task(
+            &remote,
+            TaskId::from(uuid::Uuid::from_u128(778)),
+            &RemoteIndex::default(),
+        );
+        assert!(adopted.is_none());
+    }
+
+    #[test]
     fn new_remote_task_adopts_with_resolved_labels() {
         let label_id = LabelId::from(uuid::Uuid::from_u128(700));
         let mut label_map = RemoteIndex::default();
+        label_map
+            .stack_by_ref
+            .insert(stack_ref(1), StackId::from(uuid::Uuid::from_u128(701)));
         label_map.label_by_ref.insert(
             crate::ids::RemoteLabelRef {
                 board: board(REMOTE_BOARD_NUM),
@@ -635,7 +677,8 @@ mod tests {
             &remote,
             TaskId::from(uuid::Uuid::from_u128(777)),
             &label_map,
-        );
+        )
+        .expect("mapped stack adopts");
         assert_eq!(adopted.labels, BTreeSet::from([label_id]));
         assert_eq!(adopted.clocks.title, remote.last_modified);
         assert_eq!(adopted.remote_seen, Some(remote.last_modified));
@@ -686,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_board_adopts_when_newer_and_keeps_local_on_tie() {
+    fn adopt_board_if_newer_adopts_when_newer_and_keeps_local_on_tie() {
         let local = base_state(bound_task(1))
             .boards
             .values()
@@ -694,15 +737,15 @@ mod tests {
             .unwrap()
             .clone();
 
-        let merged = merge_board(&local, &remote_board(REMOTE_BOARD_NUM, BASE + 60));
+        let merged = adopt_board_if_newer(&local, &remote_board(REMOTE_BOARD_NUM, BASE + 60));
         assert_eq!(merged.title, "board 77");
 
-        let tie = merge_board(&local, &remote_board(REMOTE_BOARD_NUM, BASE));
+        let tie = adopt_board_if_newer(&local, &remote_board(REMOTE_BOARD_NUM, BASE));
         assert_eq!(tie, local, "tie keeps local");
     }
 
     #[test]
-    fn merge_board_treats_missing_remote_seen_as_oldest() {
+    fn adopt_board_if_newer_treats_missing_remote_seen_as_oldest() {
         let mut local = base_state(bound_task(1))
             .boards
             .values()
@@ -711,7 +754,7 @@ mod tests {
             .clone();
         local.remote_seen = None;
 
-        let merged = merge_board(&local, &remote_board(REMOTE_BOARD_NUM, 0));
+        let merged = adopt_board_if_newer(&local, &remote_board(REMOTE_BOARD_NUM, 0));
         assert_eq!(merged.title, "board 77");
         assert_eq!(merged.remote_seen, Some(ts(0)));
     }
@@ -771,10 +814,10 @@ mod tests {
     }
 
     #[test]
-    fn finalize_pushed_delete_clears_binding() {
+    fn finalize_pushed_task_delete_clears_binding() {
         let mut local = bound_task(1);
         local.deleted = true;
-        let finalized = finalize_pushed_delete(&local);
+        let finalized = finalize_pushed_task_delete(&local);
         assert!(finalized.deleted);
         assert!(finalized.remote.is_none());
         assert!(finalized.remote_seen.is_none());
