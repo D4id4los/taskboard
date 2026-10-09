@@ -2179,6 +2179,7 @@ dependencies = [
  "sqlx-postgres",
  "sqlx-sqlite",
  "syn 2.0.119",
+ "thiserror",
  "tokio",
  "url",
 ]
@@ -2389,8 +2390,10 @@ name = "taskboard-storage-sqlite"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "proptest",
  "sqlx",
  "taskboard-domain",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

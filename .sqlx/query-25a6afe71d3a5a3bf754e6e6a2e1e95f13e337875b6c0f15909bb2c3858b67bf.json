@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO stacks (id, board, remote_board_id, remote_stack_id, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted, remote_seen)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(id) DO UPDATE SET\n                       board = excluded.board,\n                       remote_board_id = excluded.remote_board_id,\n                       remote_stack_id = excluded.remote_stack_id,\n                       title = excluded.title,\n                       sort_order = excluded.sort_order,\n                       archived = excluded.archived,\n                       deleted = excluded.deleted,\n                       ck_title = excluded.ck_title,\n                       ck_sort_order = excluded.ck_sort_order,\n                       ck_deleted = excluded.ck_deleted,\n                       remote_seen = excluded.remote_seen",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "25a6afe71d3a5a3bf754e6e6a2e1e95f13e337875b6c0f15909bb2c3858b67bf"
+}

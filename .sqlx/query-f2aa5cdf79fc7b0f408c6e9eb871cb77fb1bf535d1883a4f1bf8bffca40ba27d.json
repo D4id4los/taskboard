@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, done, sort_order, archived, deleted, ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, ck_archived, ck_deleted, remote_seen)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(id) DO UPDATE SET\n                       stack = excluded.stack,\n                       remote_board_id = excluded.remote_board_id,\n                       remote_stack_id = excluded.remote_stack_id,\n                       remote_card_id = excluded.remote_card_id,\n                       title = excluded.title,\n                       description = excluded.description,\n                       duedate = excluded.duedate,\n                       done = excluded.done,\n                       sort_order = excluded.sort_order,\n                       archived = excluded.archived,\n                       deleted = excluded.deleted,\n                       ck_title = excluded.ck_title,\n                       ck_description = excluded.ck_description,\n                       ck_duedate = excluded.ck_duedate,\n                       ck_done = excluded.ck_done,\n                       ck_position = excluded.ck_position,\n                       ck_labels = excluded.ck_labels,\n                       ck_archived = excluded.ck_archived,\n                       ck_deleted = excluded.ck_deleted,\n                       remote_seen = excluded.remote_seen",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 21
+    },
+    "nullable": []
+  },
+  "hash": "f2aa5cdf79fc7b0f408c6e9eb871cb77fb1bf535d1883a4f1bf8bffca40ba27d"
+}

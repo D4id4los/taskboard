@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT phase, last_error,\n                      last_success as \"last_success: DateTime<Utc>\"\n               FROM sync_status WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "phase",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sync_status",
+            "name": "phase"
+          }
+        }
+      },
+      {
+        "name": "last_error",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sync_status",
+            "name": "last_error"
+          }
+        }
+      },
+      {
+        "name": "last_success: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sync_status",
+            "name": "last_success"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "f50a0b90fe19dc485c8eb25edb042187fcb6de321e87910df3880f1ff80629fe"
+}

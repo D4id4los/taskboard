@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO sync_metadata (key, etag, last_modified) VALUES (?, ?, ?)\n                   ON CONFLICT(key) DO UPDATE SET\n                       etag = excluded.etag,\n                       last_modified = excluded.last_modified",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "3da110ca50da4a25f5ceaf03b51670bbbb83deb1ba7cc88b3f50b225ec99fee2"
+}

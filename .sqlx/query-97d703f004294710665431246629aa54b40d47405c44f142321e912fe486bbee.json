@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT op_id, op_kind, task_id, stack_id, label_id,\n                      queued_at as \"queued_at: DateTime<Utc>\"\n               FROM outbox ORDER BY op_seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "op_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "op_id"
+          }
+        }
+      },
+      {
+        "name": "op_kind",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "op_kind"
+          }
+        }
+      },
+      {
+        "name": "task_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "name": "stack_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "stack_id"
+          }
+        }
+      },
+      {
+        "name": "label_id",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "label_id"
+          }
+        }
+      },
+      {
+        "name": "queued_at: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "queued_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "97d703f004294710665431246629aa54b40d47405c44f142321e912fe486bbee"
+}

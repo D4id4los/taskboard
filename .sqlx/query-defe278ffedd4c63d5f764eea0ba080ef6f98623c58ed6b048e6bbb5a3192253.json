@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO sync_status (id, phase, last_error, last_success) VALUES (1, ?, ?, ?)\n                   ON CONFLICT(id) DO UPDATE SET\n                       phase = excluded.phase,\n                       last_error = excluded.last_error,\n                       last_success = excluded.last_success",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "defe278ffedd4c63d5f764eea0ba080ef6f98623c58ed6b048e6bbb5a3192253"
+}

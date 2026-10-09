@@ -1,0 +1,158 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, board, remote_board_id, remote_stack_id, title, sort_order,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_sort_order, ck_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM stacks ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "board",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "board"
+          }
+        }
+      },
+      {
+        "name": "remote_board_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "remote_board_id"
+          }
+        }
+      },
+      {
+        "name": "remote_stack_id",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "remote_stack_id"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "sort_order",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "name": "archived: bool",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "archived"
+          }
+        }
+      },
+      {
+        "name": "deleted: bool",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "deleted"
+          }
+        }
+      },
+      {
+        "name": "ck_title",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "ck_title"
+          }
+        }
+      },
+      {
+        "name": "ck_sort_order",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "ck_sort_order"
+          }
+        }
+      },
+      {
+        "name": "ck_deleted",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "ck_deleted"
+          }
+        }
+      },
+      {
+        "name": "remote_seen: DateTime<Utc>",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stacks",
+            "name": "remote_seen"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "60589fc0c12cb0adc0d271a147cc0d8062011390042d9a68dedf902b5881d948"
+}

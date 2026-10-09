@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT task, label FROM task_labels ORDER BY task, label",
+  "describe": {
+    "columns": [
+      {
+        "name": "task",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_labels",
+            "name": "task"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "task_labels",
+            "name": "label"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "32d465ddf0a6581a4157a036d63d038b5f46df3c4f6db7ad164371e66ca8e28f"
+}
