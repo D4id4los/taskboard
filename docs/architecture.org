@@ -138,7 +138,16 @@ dependency hierarchies.
 
 4. *taskboard-storage-sqlite* — Manages local SQLite disk persistence.
    Ensures the app boots immediately with cached data if network
-   connectivity is lost. Dependencies: =taskboard-domain=, =sqlx=, =tokio=.
+   connectivity is lost. Normalized schema (boards/stacks/tasks/labels,
+   =task_labels= join, =outbox=, =sync_metadata=, =sync_status= singleton)
+   applied at boot from embedded migrations; WAL + =synchronous=NORMAL= on
+   a single connection; =SqliteTaskRepository= implements the domain's
+   =TaskRepository= port (one transaction per batch) behind the
+   =StorageCommand= actor inbox (=StorageHandle=, oneshot replies —
+   ADR 0005). Compile-time checked =query!= SQL against the committed
+   =.sqlx/= offline cache; refresh it with =scripts/sqlx-prepare.sh= after
+   touching a query or migration. Dependencies: =taskboard-domain=,
+   =sqlx=, =tokio=.
 
 5. *taskboard-ui-slint* — Handles presentation rendering. Reads state via
    lock-free =ArcSwap= loads and emits =mpsc= commands on user input.
