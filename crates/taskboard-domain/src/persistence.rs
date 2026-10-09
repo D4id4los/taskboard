@@ -159,6 +159,11 @@ mod tests {
     use crate::test_support;
     use proptest::prelude::*;
 
+    #[test]
+    fn invalid_validator_key_string_is_rejected() {
+        assert!(serde_json::from_str::<ValidatorKey>("\"not-a-key\"").is_err());
+    }
+
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(256))]
 
