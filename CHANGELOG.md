@@ -11,6 +11,28 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Growth roadmap Phase 3 (ADR 0006): the State Engine in
+  `taskboard-state` — `EngineCore` (working state advancing only by
+  interpreting persisted batches through the shared `apply_actions`),
+  the `spawn_state_engine` actor loop (biased `select!` over
+  `EngineCommand::{Execute, Flush}`, `SyncReport`s, and `SystemEvent`s),
+  `EngineHandle` (`execute` receipts, fire-and-forget `dispatch`, the
+  `flush` durability barrier, `subscribe`, `shared_state`),
+  apply-before-interpret failure semantics (no rollback: memory never
+  advances on storage failure), the never-persisted `Syncing` transient,
+  and the `SyncNow` nudge contract — plus the S-series insta snapshot
+  suite defining the engine's behavioral contract, the A-series routing
+  tests, and the P-series architectural proptests.
+- Domain additions feeding the above: `command::plan_command` (the full
+  local-command semantics catalogue with typed `CommandError`
+  rejections, idempotent no-ops, bound/unbound delete split, and the
+  `DeleteStack` cascade), `persistence::apply_actions` (the port
+  contract's batch semantics as one production function, now also
+  delegated to by the `InMemoryRepository` fake), and the promoted
+  `test_support::CountingIds` + `state_command_strategy`.
+- `taskboard-storage-sqlite`: `impl TaskRepository for StorageHandle`
+  (the port adapter letting the state engine drive the storage actor
+  without a crate dependency).
 - Growth roadmap Phase 2 (ADR 0005): the SQLite local persistence crate
   `taskboard-storage-sqlite` — normalized schema (`boards`/`stacks`/
   `tasks`/`labels`, `task_labels`, `outbox`, `sync_metadata`,

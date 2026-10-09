@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Environment gate, not a weakened assertion: this suite drives the live
+// tokio engine (timers, channel scheduling), which testing_strategy §10
+// scopes out of Miri ("pure logic, serialization, and state-transition
+// tests"). The transition logic it routes to is Miri-covered in the
+// domain and in `core.rs`.
+#![cfg_attr(miri, allow(dead_code))]
 //! Async black-box routing suite (A-series): one behavior per test, at
 //! the engine-thread layer only — command *semantics* are pinned in the
 //! domain's pure suite and are not re-asserted here.

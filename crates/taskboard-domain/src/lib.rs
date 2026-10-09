@@ -20,8 +20,10 @@
 //! Module map: identifiers ([`ids`]), time seam ([`clock`]), identity
 //! seam ([`idgen`]), entities ([`entities`]), state ([`state`]), remote
 //! views ([`remote`]), outbox ([`outbox`]), persistence port
-//! ([`persistence`]), messages ([`messages`]), conflict-policy algebra
-//! ([`merge`]) and its fixed-order composition ([`pipeline`]).
+//! ([`persistence`]) with the shared batch semantics ([`apply_actions`]),
+//! messages ([`messages`]), local command semantics ([`command`]),
+//! conflict-policy algebra ([`merge`]) and its fixed-order composition
+//! ([`pipeline`]).
 
 #![forbid(unsafe_code)]
 

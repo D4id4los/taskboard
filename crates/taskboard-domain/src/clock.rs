@@ -33,6 +33,11 @@ impl Clock for SystemClock {
 mod tests {
     use super::*;
 
+    // Environment gate, not a weakened assertion: Miri's isolation has no
+    // REALTIME clock, and this test's whole subject is the wall clock
+    // (testing_strategy §10 scopes Miri to pure logic, serialization, and
+    // state-transition tests).
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn system_clock_returns_utc_instant() {
         let before = Utc::now();

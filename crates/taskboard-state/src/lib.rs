@@ -48,13 +48,13 @@
 //!
 //! // Lock-free UI reads; typed command receipts for the CLI.
 //! let _state: Arc<arc_swap::ArcSwap<AppState>> = engine.shared_state();
-//! let outcome = engine.execute(StateCommand::CreateStack {
-//!     title: "todo".into(),
-//!     order: 1,
-//! }).await?;
+//! // RequestSync needs no bound board; creates would (the domain's
+//! // catalogue rejects board-scoped commands without a live board).
+//! let outcome = engine.execute(StateCommand::RequestSync).await?;
 //! assert!(matches!(
 //!     outcome,
-//!     taskboard_domain::CommandOutcome::CreatedStack(_)
+//!     taskboard_domain::CommandOutcome::NoOp // no sync actor wired here
+//!         | taskboard_domain::CommandOutcome::SyncRequested
 //! ));
 //!
 //! system_tx.send(SystemEvent::Shutdown)?;

@@ -1,0 +1,122 @@
+#+title: ADR 0006: The State Engine — Single-Advance Interpret Loop
+#+options: toc:nil
+
+- *Date:* 2026-10-09
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+Phase 3 of the growth roadmap builds the State Engine
+(=taskboard-state=): the actor that owns runtime truth. It must consume
+UI/CLI commands, ingest =SyncReport=s produced by the Phase 1 conflict
+pipeline, persist every mutation through the Phase 2 =TaskRepository=
+port, and publish immutable =AppState= snapshots lock-free to the UI.
+
+Three forces shape the design. First, the state crate must *not* depend
+on =taskboard-storage-sqlite= (architecture.org's dependency list) —
+but it must still drive the sqlite actor in production. Second, storage
+can fail (=RepositoryError=) at any batch, and the kiosk reboots at any
+moment; the in-memory view must never diverge from what survived on
+disk. Third, the command semantics and the sync conflict policy are two
+halves of one transition function — the engine should orchestrate, not
+legislate.
+
+* Decision
+
+** Memory advances only by interpreting the persisted batch
+
+The engine's working state (=EngineCore=, a =PersistedState= plus the
+engine-only =last_updated= stamp) is mutated by exactly one method:
+=interpret(&actions, now)=, which runs the domain's shared
+=persistence::apply_actions= — the *same* function the repository
+implementations run in =apply()=. The loop is strictly
+apply → interpret → publish; =interpret= runs only after =repo.apply=
+returned =Ok=. Consequences:
+
+- memory ≡ disk by construction: one =Vec<PersistenceAction>= lands in
+  both through literally the same code (pinned by proptests P2/P3/P4);
+- a failed =apply= needs no rollback: memory never advanced, the
+  command is reported as =ExecuteError::Storage=, and the next attempt
+  re-plans against the unchanged state;
+- a crash between =apply= and =interpret= loses only process memory,
+  which the next boot re-hydrates from the authoritative disk state.
+
+The same decision refactored the =InMemoryRepository= fake to delegate
+to =apply_actions= instead of re-implementing the batch semantics: one
+executable definition of the port contract, not two copies that can
+drift (the Phase 2 contract harness keeps pinning sqlite against it).
+
+** Command semantics live in the domain; the engine is a thin
+   orchestrator
+
+=plan_command= (a pure, clock/id-injected module next to
+=apply_sync_report=) owns what a =StateCommand= *means*: typed
+=CommandError= rejections, idempotent =NoOp= receipts for repeated
+terminal intents, the bound/unbound delete split, the =DeleteStack=
+cascade. The engine crate owns what *running* means: channels,
+ArcSwap publishing, sequencing, and the lifecycle error classes
+(=ExecuteError::{Rejected, Storage, EngineGone}=). The crate boundary
+follows the working agreement that no crate is frozen after its phase.
+
+** The port adapter bridges to the storage actor
+
+The engine consumes =Arc<dyn TaskRepository>=. Production wiring wraps
+the sqlite actor's =StorageHandle= in a ~30-line =impl TaskRepository=
+(taskboard-storage-sqlite =port.rs=); the actor's oneshot round-trips
+become the port's =BoxFuture=s. Tests inject =InMemoryRepository= (and
+a failing wrapper). No engine crate ever sees a storage
+implementation.
+
+** Sequential processing; the Flush barrier
+
+One message is planned, applied, interpreted, published, and replied
+before the next is polled (biased =select!=: commands, then sync
+reports, then system events). mpsc FIFO makes "reply received ⇒ batch
+durable" hold per command, and =EngineHandle::flush()= extends the
+same guarantee to reply-less =dispatch=es — the CLI exit barrier.
+Write pipelining is deliberately deferred (backlog).
+
+** The sync-status machine
+
+- =Syncing= is published but *never persisted*: the engine sets it only
+  when forwarding =SyncNow= succeeded (so a missing sync actor cannot
+  strand the badge); a reboot never advertises a phantom in-flight
+  cycle.
+- All other phase transitions (=Offline= from =NetworkLost=, =Failed=
+  from =SyncReport::Failed=, the post-=Completed= stable phase) are
+  persisted via an engine-appended =UpsertSyncStatus= — appended only
+  when phase or =last_success= actually changed.
+- =NetworkRestored= only forwards a nudge: the next report is the
+  evidence; a self-declared "idle" would be a guess.
+- =pending_ops= is always derived from the outbox depth (never
+  tracked): at =load()=, and after every batch inside =apply_actions=.
+
+** Nudge contract with the sync actor
+
+The engine forwards =SyncCommand::SyncNow= (fire-and-forget, =try_send=)
+iff an accepted batch enqueued ≥ 1 op, or on =RequestSync= /
+=NetworkRestored=. No debouncing or dedupe engine-side — the Phase 4
+actor owns cycle coalescing.
+
+* Consequences
+
+- The engine has no undo path: correctness rests on ordering, not
+  rollback. Reordering apply/interpret is the one forbidden refactor.
+- =plan_command= and =apply_sync_report= together form the complete
+  transition surface; both are pure, Miri- and mutation-tested in the
+  domain crate.
+- The =insta= S-series snapshots of published =AppState= and persisted
+  =PersistedState= are the engine's behavioral contract; insta diffs
+  read as contract changes.
+- UI and CLI never depend on =taskboard-state=: they consume
+  =Arc<ArcSwap<AppState>>=, broadcast signals, and domain-typed
+  channels (the Phase 5 bootstrap wires the graph).
+
+* Related
+
+- ADR 0001 (multi-actor core, payload/envelope split)
+- ADR 0004 (sync conflict policy — the pipeline half)
+- ADR 0005 (sqlite persistence — the port implementation)
+- Growth roadmap Phase 3 plan
+  (=.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md=)

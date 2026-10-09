@@ -639,3 +639,133 @@ Both renames require an additive migration (`ALTER TABLE … RENAME` /
 copy-table-and-rename per ADR 0005) plus a port rename rippling through
 the domain, fake, and storage crates — bundle them with the first
 migration that ships after Phase 2 to amortize the churn.
+
+## [2026-10-09] Write batching / pipelining in the State Engine
+
+- **Category**: `Performance`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md` (§9, decision 5)
+- **Target Area**: `crates/taskboard-state/` (actor loop)
+
+### Context & Description
+Phase 3 processes one message fully (plan → apply → interpret → publish)
+before polling the next. CLI script throughput (many commands at once)
+and kiosk disk wear would benefit from batching several commands into one
+transaction, or overlapping applies with command processing. Local
+sqlite applies are sub-millisecond, so this is a measured-need item, not
+an MVP gap.
+
+### Proposed Approach
+Batch drain: after the loop wakes, drain the command channel into one
+`Vec<CommandPlan>` (bounded), apply once, interpret once, publish once —
+preserving FIFO and per-command receipts. Never reorder across sync
+reports.
+
+## [2026-10-09] Query-envelope variants on `EngineCommand`
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md` (§9, decision 17)
+- **Target Area**: `crates/taskboard-state/` (`actor.rs`)
+
+### Context & Description
+Roadmap Phase 3's "oneshot queries" is realized as the Execute receipt
+plus the Flush barrier; ArcSwap reads are the query surface. Typed
+read-style variants (wait-for-idle, outbox dump, validators read for the
+Phase 4 sync actor) have no consumer yet and were not built speculatively.
+
+### Proposed Approach
+Additive `EngineCommand` variants with oneshot replies when Phase 4's
+(outbox dump / validators read) and Phase 5's (wait-for-idle) plans name
+their consumers.
+
+## [2026-10-09] Storage-failure `SystemEvent`
+
+- **Category**: `Architecture` / `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md` (§9)
+- **Target Area**: `crates/taskboard-state/`, `crates/taskboard-domain/` (`SystemEvent`)
+
+### Context & Description
+`ExecuteError::Storage` currently surfaces only as a command reply plus
+an `error!` log. A kiosk running fire-and-forget UI dispatches never
+sees persistence failures. A broadcast `SystemEvent` variant would let
+the UI raise a persistent error banner.
+
+### Proposed Approach
+Bundle with Phase 5's error-UX plan; consider debouncing (a failing disk
+fires per command otherwise).
+
+## [2026-10-09] UI command forwarder bootstrap task
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md` (§9, §12)
+- **Target Area**: `crates/taskboard-app/` (Phase 5 bootstrap)
+
+### Context & Description
+The UI dispatches domain-typed `StateCommand`s on a plain `mpsc` (no
+`taskboard-state` dependency). Someone must adapt that channel onto
+`EngineHandle::dispatch` — a tiny bootstrap task owned by Phase 5.
+
+### Proposed Approach
+A `tokio::spawn`ed forwarder in the Phase 5 bootstrap: `recv()` →
+`dispatch()`, logging dropped commands.
+
+## [2026-10-09] Engine metrics counters
+
+- **Category**: `DX` / `Performance`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md` (§9)
+- **Target Area**: `crates/taskboard-state/`
+
+### Context & Description
+Command/rejection/signal counters would feed the kiosk dashboard; the
+logging arms are deliberately not asserted in tests (AGENTS §5), so
+metrics are the durable observability path.
+
+### Proposed Approach
+Atomic counters behind a small `EngineMetrics` struct exposed via the
+handle (or a query-envelope variant once those exist); bundle with the
+existing observability backlog entry.
+
+## [2026-10-09] Debounced nudging (engine-side sync coalescing)
+
+- **Category**: `Performance`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md` (§9, decision 8)
+- **Target Area**: `crates/taskboard-state/` (actor loop)
+
+### Context & Description
+Every mutating command forwards a `SyncNow` nudge pre-coalescing; the
+Phase 4 sync actor's cycle-in-flight dedupe is the designed absorber.
+If measurements show the nudge traffic itself matters (channel churn on
+burst edits), the engine could debounce.
+
+### Proposed Approach
+Only after Phase 4 lands and a benchmark shows need: collapse consecutive
+nudges while one is already queued (an `AtomicBool` or a queued-marker in
+the loop).
+
+## [2026-10-09] Miri + proptest isolation friction
+
+- **Category**: `Testing` / `DX`
+- **Originating Plan/Report**: Phase 3 local verification (plan decision 16)
+- **Target Area**: `.github/workflows/miri.yml`, domain/state test suites
+
+### Context & Description
+Under Miri's default isolation, `Utc::now()` (domain `SystemClock` test)
+and proptest's `FileFailurePersistence` (`getcwd`) are unavailable — the
+weekly CI job will need either `MIRIFLAGS=-Zmiri-disable-isolation` or
+scoped `#[cfg_attr(miri, ignore)]` gates (the clock test carries one
+already, with the testing-strategy scope quoted).
+
+### Proposed Approach
+Decide a repo-wide policy before the next weekly job: prefer
+`-Zmiri-disable-isolation` for the whole job (simplest; the crates are
+pure logic and isolation's guarantees matter less than coverage), or
+audit every proptest/wall-clock test for gates.
+
+**Update (Phase 3 local verification):** three environment limits found
+and handled — (1) `Utc::now()` in the `SystemClock` test: scoped
+`#[cfg_attr(miri, ignore)]`; (2) proptest's `getcwd`: run Miri with
+`-Zmiri-disable-isolation`; (3) insta's socketpair: the S-series
+snapshot tests are miri-gated (engine logic beneath them is Miri-covered
+by the A-series). Also note: even at 16 proptest cases the domain suite
+takes ~45 min under Miri — the weekly CI job (120 min budget) may need
+`PROPTEST_CASES` capping for the miri job, or it will already be near
+the limit.
