@@ -33,21 +33,44 @@
 //! --features sqlite`. CI compiles with `SQLX_OFFLINE=true` and fails any
 //! PR that forgot to refresh `.sqlx/`.
 //!
+//! # Usage
+//!
+//! Open a database (migrations run at boot), wrap it in the storage actor,
+//! and command it through the handle:
+//!
+//! ```
+//! use std::sync::Arc;
+//! use taskboard_domain::persistence::TaskRepository;
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let repo = Arc::new(taskboard_storage_sqlite::open_memory().await?);
+//! let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
+//!
+//! handle.apply(vec![]).await?; // one batch, one transaction
+//! let state = handle.load().await?; // full hydration for boot
+//!
+//! drop(handle); // closing the inbox stops the actor…
+//! join.await?; // …which the bootstrap awaits for a clean shutdown
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Layout
 //!
-//! - [`connect`]: `open`/`open_memory` with pragmas and boot migrations
-//! - [`repo`]: the [`SqliteTaskRepository`] port adapter
-//! - [`codec`]: pure TEXT codecs for ids, op tags, phases, validator keys
-//! - [`error`]: [`OpenError`] and the `sqlx::Error` → `RepositoryError` map
-//! - [`actor`]: the storage actor and its handle
+//! - `connect`: `open`/`open_memory` with pragmas and boot migrations
+//! - `repo`: the [`SqliteTaskRepository`] port adapter
+//! - `codec`: pure TEXT codecs for ids, op tags, phases, validator keys
+//! - `error`: [`OpenError`] and the `sqlx::Error` → `RepositoryError` map
+//! - `actor`: the storage actor and its handle
 
 #![forbid(unsafe_code)]
 
-pub mod actor;
-pub mod codec;
-pub mod connect;
-pub mod error;
-pub mod repo;
+pub(crate) mod actor;
+pub(crate) mod codec;
+pub(crate) mod connect;
+pub(crate) mod error;
+pub(crate) mod repo;
 
 pub use actor::{StorageCommand, StorageHandle, spawn_storage_actor};
 pub use connect::{open, open_memory};

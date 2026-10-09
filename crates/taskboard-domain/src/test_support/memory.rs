@@ -73,7 +73,13 @@ impl TaskRepository for InMemoryRepository {
                         state.labels.insert(label.id, label);
                     }
                     PersistenceAction::EnqueueOp(op) => {
-                        state.outbox.push(op);
+                        // Re-enqueueing an existing id replaces the entry in
+                        // place and keeps its queue position (parity with the
+                        // sqlite upsert on `op_id`, contract-pinned).
+                        match state.outbox.iter_mut().find(|e| e.op_id == op.op_id) {
+                            Some(slot) => *slot = op,
+                            None => state.outbox.push(op),
+                        }
                     }
                     PersistenceAction::CompleteOp(op_id) | PersistenceAction::FailOp(op_id) => {
                         state

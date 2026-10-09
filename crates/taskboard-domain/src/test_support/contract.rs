@@ -205,6 +205,45 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         after.outbox.len(),
         "outbox depth remains the single source of truth"
     );
+
+    // Re-enqueueing an existing op id replaces the entry in place and keeps
+    // its original queue position (the sqlite upsert-on-op_id semantics the
+    // storage adapter implements; both implementations are pinned here).
+    let first = PendingOp {
+        op_id: OpId(uuid::Uuid::from_u128(5)),
+        op: LocalOp::CreateStack(stack.id),
+        queued_at: SystemClock.now(),
+    };
+    let second = PendingOp {
+        op_id: OpId(uuid::Uuid::from_u128(6)),
+        op: LocalOp::CreateLabel(label.id),
+        queued_at: SystemClock.now(),
+    };
+    repo.apply(vec![
+        PersistenceAction::EnqueueOp(first.clone()),
+        PersistenceAction::EnqueueOp(second.clone()),
+    ])
+    .await
+    .expect("enqueue pair");
+    let replacement = PendingOp {
+        op_id: first.op_id,
+        op: LocalOp::RenameStack(stack.id),
+        queued_at: SystemClock.now(),
+    };
+    repo.apply(vec![PersistenceAction::EnqueueOp(replacement.clone())])
+        .await
+        .expect("re-enqueue existing id");
+    let after = repo.load().await.expect("reload");
+    assert_eq!(
+        after.outbox,
+        vec![replacement, second],
+        "re-enqueue must replace in place, keeping the queue position"
+    );
+    assert_eq!(
+        after.sync.pending_ops as usize,
+        after.outbox.len(),
+        "re-enqueue must not duplicate queue depth"
+    );
 }
 
 /// Runs the full contract against `repo`, awaiting futures synchronously.
