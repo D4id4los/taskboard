@@ -6,13 +6,15 @@
 
 use std::sync::Mutex;
 
-use crate::outbox::PendingOp;
 use crate::persistence::{
-    BoxFuture, PersistedState, PersistenceAction, RepositoryError, TaskRepository,
+    BoxFuture, PersistedState, PersistenceAction, RepositoryError, TaskRepository, apply_actions,
 };
 
 /// Shared in-memory fake. Apply is "atomic" trivially: the whole batch is
-/// processed under one lock.
+/// processed under one lock. The action semantics are *not* re-implemented
+/// here: the fake delegates to [`apply_actions`], the same function the
+/// state engine uses to advance memory — one executable definition of the
+/// port contract, which is exactly the point.
 #[derive(Debug, Default)]
 pub struct InMemoryRepository {
     state: Mutex<PersistedState>,
@@ -58,43 +60,7 @@ impl TaskRepository for InMemoryRepository {
     fn apply(&self, actions: Vec<PersistenceAction>) -> BoxFuture<'_, Result<(), RepositoryError>> {
         Box::pin(async move {
             let mut state = self.state.lock().expect("poisoned");
-            for action in actions {
-                match action {
-                    PersistenceAction::UpsertBoard(board) => {
-                        state.boards.insert(board.id, board);
-                    }
-                    PersistenceAction::UpsertStack(stack) => {
-                        state.stacks.insert(stack.id, stack);
-                    }
-                    PersistenceAction::UpsertTask(task) => {
-                        state.tasks.insert(task.id, task);
-                    }
-                    PersistenceAction::UpsertLabel(label) => {
-                        state.labels.insert(label.id, label);
-                    }
-                    PersistenceAction::EnqueueOp(op) => {
-                        // Re-enqueueing an existing id replaces the entry in
-                        // place and keeps its queue position (parity with the
-                        // sqlite upsert on `op_id`, contract-pinned).
-                        match state.outbox.iter_mut().find(|e| e.op_id == op.op_id) {
-                            Some(slot) => *slot = op,
-                            None => state.outbox.push(op),
-                        }
-                    }
-                    PersistenceAction::CompleteOp(op_id) | PersistenceAction::FailOp(op_id) => {
-                        state
-                            .outbox
-                            .retain(|PendingOp { op_id: id, .. }| *id != op_id);
-                    }
-                    PersistenceAction::UpsertValidators(key, validators) => {
-                        state.validators.insert(key, validators);
-                    }
-                    PersistenceAction::UpsertSyncStatus(status) => {
-                        state.sync.phase = status.phase;
-                        state.sync.last_success = status.last_success;
-                    }
-                }
-            }
+            apply_actions(&mut state, &actions);
             Ok(())
         })
     }

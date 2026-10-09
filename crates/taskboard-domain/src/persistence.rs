@@ -157,11 +157,252 @@ pub enum PersistenceAction {
     UpsertSyncStatus(SyncStatus),
 }
 
+/// Applies a batch of [`PersistenceAction`]s to a [`PersistedState`] —
+/// the executable definition of the port's batch contract, shared by the
+/// state engine's memory advance and the repository implementations
+/// (fakes and sqlite alike). One semantics, enforced once.
+///
+/// Per-action semantics: entity upserts replace by id; [`PersistenceAction::
+/// EnqueueOp`] appends (an in-place replace on id collision mirrors the
+/// sqlite upsert on `op_id` — contract-pinned); `CompleteOp`/`FailOp`
+/// remove by op id; `UpsertValidators` replaces the key;
+/// `UpsertSyncStatus` sets phase + last success only (`pending_ops` is
+/// never stored). A final derivation re-computes `sync.pending_ops` from
+/// the outbox depth, so the counter can never drift from the queue it
+/// summarizes (both this function and `load()` derive it).
+pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) {
+    for action in actions {
+        match action {
+            PersistenceAction::UpsertBoard(board) => {
+                state.boards.insert(board.id, board.clone());
+            }
+            PersistenceAction::UpsertStack(stack) => {
+                state.stacks.insert(stack.id, stack.clone());
+            }
+            PersistenceAction::UpsertTask(task) => {
+                state.tasks.insert(task.id, task.clone());
+            }
+            PersistenceAction::UpsertLabel(label) => {
+                state.labels.insert(label.id, label.clone());
+            }
+            PersistenceAction::EnqueueOp(op) => {
+                // Re-enqueueing an existing id replaces the entry in place
+                // and keeps its queue position (parity with the sqlite
+                // upsert on `op_id`, contract-pinned).
+                match state.outbox.iter_mut().find(|e| e.op_id == op.op_id) {
+                    Some(slot) => *slot = op.clone(),
+                    None => state.outbox.push(op.clone()),
+                }
+            }
+            PersistenceAction::CompleteOp(op_id) | PersistenceAction::FailOp(op_id) => {
+                state.outbox.retain(|entry| entry.op_id != *op_id);
+            }
+            PersistenceAction::UpsertValidators(key, validators) => {
+                state.validators.insert(*key, validators.clone());
+            }
+            PersistenceAction::UpsertSyncStatus(status) => {
+                state.sync.phase = status.phase;
+                state.sync.last_success = status.last_success;
+            }
+        }
+    }
+    // Derived, never tracked: after every batch the pending count is
+    // re-derived from the outbox it summarizes.
+    state.sync.pending_ops = u32::try_from(state.outbox.len()).unwrap_or(u32::MAX);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support;
     use proptest::prelude::*;
+    use std::collections::BTreeSet;
+
+    use chrono::{DateTime, TimeZone, Utc};
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn task_with_id(raw: u128) -> crate::entities::Task {
+        let id = crate::ids::TaskId::from(uuid::Uuid::from_u128(raw));
+        crate::entities::Task {
+            id,
+            remote: None,
+            title: format!("task {raw}"),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            stack: crate::ids::StackId::from(uuid::Uuid::from_u128(1)),
+            order: 0,
+            labels: BTreeSet::default(),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::TaskClocks {
+                title: ts(100),
+                description: ts(100),
+                duedate: ts(100),
+                done: ts(100),
+                position: ts(100),
+                labels: ts(100),
+                archived: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn op(raw: u128, target: crate::ids::TaskId) -> PendingOp {
+        PendingOp {
+            op_id: OpId(uuid::Uuid::from_u128(raw)),
+            op: crate::outbox::LocalOp::UpdateTask(target),
+            queued_at: ts(200),
+        }
+    }
+
+    #[test]
+    fn entity_upserts_replace_by_id() {
+        let mut state = PersistedState::default();
+        let task = task_with_id(1);
+        apply_actions(&mut state, &[PersistenceAction::UpsertTask(task.clone())]);
+        let mut renamed = task.clone();
+        renamed.title = "renamed".into();
+        apply_actions(&mut state, &[PersistenceAction::UpsertTask(renamed)]);
+        assert_eq!(state.tasks.len(), 1, "replace, not append");
+        assert_eq!(state.tasks[&task.id].title, "renamed");
+    }
+
+    #[test]
+    fn enqueue_appends_and_reenqueue_keeps_queue_position() {
+        let mut state = PersistedState::default();
+        let task = task_with_id(1);
+        let first = op(10, task.id);
+        let second = op(11, task.id);
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::EnqueueOp(first.clone()),
+                PersistenceAction::EnqueueOp(second.clone()),
+            ],
+        );
+        assert_eq!(state.outbox, vec![first.clone(), second.clone()]);
+
+        // Same id, new payload: replaces in place, keeps its position.
+        let mut replaced = first.clone();
+        replaced.queued_at = ts(300);
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::EnqueueOp(replaced.clone())],
+        );
+        assert_eq!(state.outbox, vec![replaced, second]);
+    }
+
+    #[test]
+    fn complete_and_fail_remove_by_op_id() {
+        let mut state = PersistedState::default();
+        let task = task_with_id(1);
+        let a = op(10, task.id);
+        let b = op(11, task.id);
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::EnqueueOp(a.clone()),
+                PersistenceAction::EnqueueOp(b.clone()),
+                PersistenceAction::CompleteOp(a.op_id),
+                PersistenceAction::FailOp(b.op_id),
+            ],
+        );
+        assert!(state.outbox.is_empty(), "both removals land");
+    }
+
+    #[test]
+    fn validators_upsert_and_status_write_partial_fields() {
+        let mut state = PersistedState::default();
+        let key = ValidatorKey::Boards;
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::UpsertValidators(
+                key,
+                SyncValidators {
+                    etag: Some("v1".into()),
+                    last_modified: None,
+                },
+            )],
+        );
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::UpsertValidators(
+                key,
+                SyncValidators {
+                    etag: None,
+                    last_modified: Some("lm".into()),
+                },
+            )],
+        );
+        assert_eq!(
+            state.validators[&key],
+            SyncValidators {
+                etag: None,
+                last_modified: Some("lm".into())
+            },
+            "upsert replaces the whole bundle"
+        );
+
+        state.sync.pending_ops = 7;
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::UpsertSyncStatus(SyncStatus {
+                phase: crate::state::SyncPhase::Offline,
+                last_success: Some(ts(400)),
+                pending_ops: 9999, // ignored: derived, never stored
+            })],
+        );
+        assert_eq!(state.sync.phase, crate::state::SyncPhase::Offline);
+        assert_eq!(state.sync.last_success, Some(ts(400)));
+        assert_eq!(
+            state.sync.pending_ops, 0,
+            "the counter is re-derived from the (empty) outbox after the batch"
+        );
+    }
+
+    #[test]
+    fn pending_ops_are_rederived_from_the_outbox_after_every_batch() {
+        let mut state = PersistedState::default();
+        let task = task_with_id(1);
+        state.sync.pending_ops = 42;
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::EnqueueOp(op(10, task.id)),
+                PersistenceAction::EnqueueOp(op(11, task.id)),
+            ],
+        );
+        assert_eq!(state.sync.pending_ops, 2);
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::CompleteOp(OpId(uuid::Uuid::from_u128(
+                10,
+            )))],
+        );
+        assert_eq!(state.sync.pending_ops, 1);
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        #[test]
+        fn empty_batch_is_identity(state in test_support::persisted_state_strategy()) {
+            // The strategy may generate a raw `pending_ops` that contradicts
+            // its own outbox; identity is claimed on invariant-satisfying
+            // states, so normalize the counter before comparing.
+            let mut expected = state.clone();
+            expected.sync.pending_ops =
+                u32::try_from(expected.outbox.len()).unwrap_or(u32::MAX);
+            let mut got = state;
+            apply_actions(&mut got, &[]);
+            prop_assert_eq!(got, expected);
+        }
+    }
 
     #[test]
     fn invalid_validator_key_string_is_rejected() {

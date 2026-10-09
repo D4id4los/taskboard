@@ -24,16 +24,60 @@ pub mod state;
 pub use entities::{
     label_clocks_strategy, stack_clocks_strategy, task_clocks_strategy, task_strategy,
 };
-pub use messages::{label_changes_strategy, task_changes_strategy};
+pub use messages::{label_changes_strategy, state_command_strategy, task_changes_strategy};
 pub use remote::{push_outcome_strategy, remote_task_strategy, snapshot_strategy};
 pub use state::{app_state_strategy, persisted_state_strategy};
 
 use chrono::{DateTime, TimeZone, Utc};
 use proptest::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
+use crate::idgen::IdGenerator;
 use crate::ids::{BoardId, LabelId, StackId, TaskId};
 use crate::outbox::OpId;
+
+/// Deterministic id source: UUIDs from a monotonically increasing
+/// counter. Promoted from the domain's `cfg(test)` fixtures so downstream
+/// crates (state engine tests and later) reuse one fake instead of
+/// re-declaring it. Ids are stable across a scenario: the n-th id request
+/// always yields the same UUID.
+#[derive(Debug, Default)]
+pub struct CountingIds(AtomicU64);
+
+impl CountingIds {
+    /// A fresh counter starting at the first UUID.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn next(&self) -> u128 {
+        u128::from(self.0.fetch_add(1, Ordering::SeqCst) + 1)
+    }
+}
+
+impl IdGenerator for CountingIds {
+    fn new_board_id(&self) -> BoardId {
+        BoardId::from(Uuid::from_u128(self.next()))
+    }
+
+    fn new_stack_id(&self) -> StackId {
+        StackId::from(Uuid::from_u128(self.next()))
+    }
+
+    fn new_task_id(&self) -> TaskId {
+        TaskId::from(Uuid::from_u128(self.next()))
+    }
+
+    fn new_label_id(&self) -> LabelId {
+        LabelId::from(Uuid::from_u128(self.next()))
+    }
+
+    fn new_op_id(&self) -> OpId {
+        OpId(Uuid::from_u128(self.next()))
+    }
+}
 
 /// Bounded, serde-stable strings (no control characters).
 pub fn string_strategy() -> impl Strategy<Value = String> {
