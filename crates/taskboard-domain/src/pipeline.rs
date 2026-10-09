@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
 
-use crate::entities::{Label, Stack, Task};
+use crate::entities::{Board, Label, Stack, Task};
 use crate::idgen::IdGenerator;
 use crate::ids::{
     LabelId, RemoteBoardId, RemoteCardRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
@@ -274,27 +274,7 @@ pub fn apply_sync_report(
     }
 
     // ---- 7. Sync-status transition + persistence batch ---------------
-    let mut actions = Vec::new();
-    for (id, board) in &boards {
-        if current.boards.get(id) != Some(board) {
-            actions.push(PersistenceAction::UpsertBoard(board.clone()));
-        }
-    }
-    for (id, stack) in &stacks {
-        if current.stacks.get(id) != Some(stack) {
-            actions.push(PersistenceAction::UpsertStack(stack.clone()));
-        }
-    }
-    for (id, label) in &labels {
-        if current.labels.get(id) != Some(label) {
-            actions.push(PersistenceAction::UpsertLabel(label.clone()));
-        }
-    }
-    for (id, task) in &tasks {
-        if current.tasks.get(id) != Some(task) {
-            actions.push(PersistenceAction::UpsertTask(task.clone()));
-        }
-    }
+    let mut actions = actions_for_changed_entities(current, &boards, &stacks, &labels, &tasks);
     for (op_id, completed) in &op_results {
         actions.push(if *completed {
             PersistenceAction::CompleteOp(*op_id)
@@ -329,6 +309,119 @@ pub fn apply_sync_report(
         sync,
         // Sync ingestion is an engine mutation from a foreign source:
         // stamp it like a local command would be.
+        last_updated: Some(now),
+    };
+    (state, actions)
+}
+
+/// The entity-diff half of the persistence batch: one upsert per entity
+/// whose merged value differs from `current`.
+fn actions_for_changed_entities(
+    current: &AppState,
+    boards: &BTreeMap<crate::ids::BoardId, Board>,
+    stacks: &BTreeMap<StackId, Stack>,
+    labels: &BTreeMap<LabelId, Label>,
+    tasks: &BTreeMap<TaskId, Task>,
+) -> Vec<PersistenceAction> {
+    let mut actions = Vec::new();
+    for (id, board) in boards {
+        if current.boards.get(id) != Some(board) {
+            actions.push(PersistenceAction::UpsertBoard(board.clone()));
+        }
+    }
+    for (id, stack) in stacks {
+        if current.stacks.get(id) != Some(stack) {
+            actions.push(PersistenceAction::UpsertStack(stack.clone()));
+        }
+    }
+    for (id, label) in labels {
+        if current.labels.get(id) != Some(label) {
+            actions.push(PersistenceAction::UpsertLabel(label.clone()));
+        }
+    }
+    for (id, task) in tasks {
+        if current.tasks.get(id) != Some(task) {
+            actions.push(PersistenceAction::UpsertTask(task.clone()));
+        }
+    }
+    actions
+}
+
+/// The pipeline's push-only composition (steps 1 + 7): consumed by the
+/// engine for `SyncReport::Failed` reports that carry successful push
+/// outcomes (phase 4 decision 3 — evidence-then-verdict). The completed
+/// pushes land (ops complete, create echoes bind) and the status
+/// transitions, but **no** board/stack/label/task merge, presence
+/// reconciliation, or cascade runs — an empty snapshot would tombstone
+/// everything, and this function exists precisely to avoid that.
+///
+/// `last_success` advances to `now` only when no outcome was rejected;
+/// rejections keep the previous last success (a rejected write is not a
+/// successful sync). `ids` is currently unused and reserved so the
+/// signature matches [`apply_sync_report`]'s (a future push path that
+/// adopts remotely-created entities would need it).
+pub fn apply_push_report(
+    current: &AppState,
+    outbox: &[PendingOp],
+    pushes: &[PushOutcome],
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> (AppState, Vec<PersistenceAction>) {
+    let _ = ids;
+    let boards = current.boards.clone();
+    let mut stacks = current.stacks.clone();
+    let mut tasks = current.tasks.clone();
+    let mut labels = current.labels.clone();
+
+    let mut ctx = RemoteIndex::from_state(current);
+    let op_results = apply_push_outcomes(
+        pushes,
+        outbox,
+        &mut tasks,
+        &mut stacks,
+        &mut labels,
+        &mut ctx,
+        now,
+    );
+
+    let mut actions = actions_for_changed_entities(current, &boards, &stacks, &labels, &tasks);
+    for (op_id, completed) in &op_results {
+        actions.push(if *completed {
+            PersistenceAction::CompleteOp(*op_id)
+        } else {
+            PersistenceAction::FailOp(*op_id)
+        });
+    }
+
+    let remaining_ops = outbox.len().saturating_sub(op_results.len());
+    let any_rejected = pushes
+        .iter()
+        .any(|outcome| matches!(outcome.result, PushResult::Rejected { .. }));
+    let dead_lettered = op_results.values().any(|completed| !completed);
+    let phase = if dead_lettered {
+        SyncPhase::Failed {
+            last_error: SyncErrorKind::BadRequest,
+        }
+    } else {
+        SyncPhase::Idle
+    };
+    let sync = SyncStatus {
+        phase,
+        last_success: if any_rejected {
+            current.sync.last_success
+        } else {
+            Some(now)
+        },
+        #[allow(clippy::cast_possible_truncation)] // outbox depth is display-scale, not data
+        pending_ops: remaining_ops as u32,
+    };
+
+    let state = AppState {
+        boards,
+        stacks,
+        tasks,
+        labels,
+        sync,
         last_updated: Some(now),
     };
     (state, actions)
@@ -529,6 +622,8 @@ fn cascade_board(
 mod tests {
     use super::*;
     use crate::merge_testutil::*;
+    use crate::test_support;
+
     use crate::remote::{RemoteIndex, RemoteLabel};
     use proptest::prelude::*;
     use std::collections::BTreeSet;
@@ -1231,6 +1326,251 @@ mod tests {
             ts(BASE + 30),
             "already-dead task is not re-tombstoned",
         );
+    }
+
+    #[test]
+    fn apply_push_report_applies_completed_pushes_without_a_snapshot() {
+        // A cycle that pushed an update and then lost the network reports
+        // Failed { pushes }: the completed push lands (op completes, echo
+        // binds) and nothing is tombstoned for lack of a snapshot.
+        let mut local = bound_task(1);
+        local.title = "local edit".into();
+        local.clocks.title = ts(BASE + 300);
+        let state = base_state(local);
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(60));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE),
+        };
+        let mut echo = remote_task(1, 1, BASE + 3_600);
+        echo.title = "normalized".into();
+
+        let app = apply_push_report(
+            &state,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: crate::remote::PushResult::Applied {
+                    echo: Some(crate::remote::RemoteEcho::Task(echo)),
+                },
+            }],
+            &CountingIds::default(),
+            ts(BASE + 3_660),
+        );
+
+        let state_after = app_into_state(&app);
+        let merged = task_by_card(&state_after, 1);
+        assert_eq!(merged.title, "normalized", "echo adopted");
+        assert!(!merged.deleted, "no snapshot means no tombstones");
+        assert_eq!(app.0.sync.pending_ops, 0, "the push completed");
+        assert_eq!(app.0.sync.phase, SyncPhase::Idle);
+        assert_eq!(app.0.sync.last_success, Some(ts(BASE + 3_660)));
+    }
+
+    #[test]
+    fn apply_push_report_keeps_last_success_when_an_outcome_was_rejected() {
+        let task = bound_task(1);
+        let mut base = base_state(task);
+        base.sync.last_success = Some(ts(BASE));
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(61));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateTask(task_by_card(&base, 1).id),
+            queued_at: ts(BASE),
+        };
+
+        let app = apply_push_report(
+            &base,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: crate::remote::PushResult::Rejected {
+                    kind: SyncErrorKind::Forbidden,
+                },
+            }],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        assert_eq!(app.0.sync.pending_ops, 1, "rejected op stays queued");
+        assert_eq!(app.0.sync.phase, SyncPhase::Idle);
+        assert_eq!(
+            app.0.sync.last_success,
+            Some(ts(BASE)),
+            "a rejected write is not a successful sync"
+        );
+    }
+
+    #[test]
+    fn apply_push_report_dead_letters_bad_request_like_the_pipeline() {
+        let task = bound_task(1);
+        let base = base_state(task);
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(62));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateTask(task_by_card(&base, 1).id),
+            queued_at: ts(BASE),
+        };
+
+        let app = apply_push_report(
+            &base,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: crate::remote::PushResult::Rejected {
+                    kind: SyncErrorKind::BadRequest,
+                },
+            }],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        assert_eq!(
+            app.0.sync.phase,
+            SyncPhase::Failed {
+                last_error: SyncErrorKind::BadRequest
+            }
+        );
+    }
+
+    proptest! {
+        #![proptest_config(test_support::proptest_config(256))]
+
+        #[test]
+        fn apply_push_report_equals_the_pipeline_push_phase(
+            state in test_support::persisted_state_strategy().prop_filter(
+                "bound board and seen baselines",
+                |state| {
+                    // Equivalence holds when the snapshot mirrors the bound
+                    // state exactly (so the merge/reconciliation phases are
+                    // no-ops) and no board cascade can fire.
+                    let bound_board = state
+                        .boards
+                        .values()
+                        .find(|b| b.remote.is_some());
+                    let Some(board) = bound_board else { return false };
+                    board.remote_seen.is_some()
+                        && !board.deleted
+                        && state.stacks.values().filter(|s| s.remote.is_some())
+                            .all(|s| s.remote_seen.is_some())
+                        && state.labels.values().filter(|l| l.remote.is_some())
+                            .all(|l| l.remote_seen.is_some())
+                        && state.tasks.values().filter(|t| t.remote.is_some())
+                            .all(|t| t.remote_seen.is_some())
+                },
+            ),
+            pushes in proptest::collection::vec(
+                (
+                    test_support::op_id_strategy(),
+                    proptest::option::of(
+                        test_support::remote_task_strategy().prop_map(crate::remote::RemoteEcho::Task),
+                    ),
+                )
+                    .prop_map(|(op, echo)| crate::remote::PushOutcome {
+                        op,
+                        result: crate::remote::PushResult::Applied { echo },
+                    }),
+                0..6,
+            ),
+        ) {
+            let Some(snapshot) = mirror_snapshot(&state) else {
+                prop_assume!(false, "bound board available");
+                return Ok(());
+            };
+
+            let app: AppState = state.clone().into();
+            let now = ts(2_000_000_000);
+            let (pushed_state, pushed_actions) = apply_push_report(
+                &app, &state.outbox, &pushes, &CountingIds::default(), now);
+            let (full_state, full_actions) = apply_sync_report(
+                &app, &state.outbox, &snapshot, &pushes, &CountingIds::default(), now);
+            prop_assert_eq!(pushed_state, full_state);
+            prop_assert_eq!(pushed_actions, full_actions);
+        }
+    }
+
+    /// Builds a snapshot that mirrors every bound entity of `state`
+    /// (P2 helper): same fields, `last_modified` equal to each entity's
+    /// `remote_seen`, so the pipeline's merge and reconciliation phases
+    /// reduce to no-ops and only the push phase can act.
+    fn mirror_snapshot(state: &crate::persistence::PersistedState) -> Option<RemoteBoardSnapshot> {
+        use crate::remote::{RemoteBoard, RemoteLabel as RL, RemoteStack as RS, RemoteTask as RT};
+        let board = state.boards.values().find(|b| b.remote.is_some())?;
+        let board_id = board.remote?;
+        let remote_board = RemoteBoard {
+            id: board_id,
+            title: board.title.clone(),
+            color: board.color.as_str().to_owned(),
+            archived: board.archived,
+            deleted_at: board
+                .deleted
+                .then_some(board.remote_seen.unwrap_or_else(utc_min)),
+            last_modified: board.remote_seen?,
+        };
+        let stacks: Vec<RS> = state
+            .stacks
+            .values()
+            .filter_map(|s| {
+                let r = s.remote?;
+                Some(RS {
+                    id: r,
+                    title: s.title.clone(),
+                    order: s.order,
+                    archived: s.archived,
+                    deleted_at: s.deleted.then_some(s.remote_seen.unwrap_or_else(utc_min)),
+                    last_modified: s.remote_seen?,
+                })
+            })
+            .collect();
+        let labels: Vec<RL> = state
+            .labels
+            .values()
+            .filter_map(|l| {
+                let r = l.remote?;
+                Some(RL {
+                    id: r,
+                    title: l.title.clone(),
+                    color: l.color.as_str().to_owned(),
+                    deleted_at: l.deleted.then_some(l.remote_seen.unwrap_or_else(utc_min)),
+                    last_modified: l.remote_seen?,
+                })
+            })
+            .collect();
+        let label_refs: std::collections::BTreeMap<LabelId, crate::ids::RemoteLabelRef> = state
+            .labels
+            .values()
+            .filter_map(|l| Some((l.id, l.remote?)))
+            .collect();
+        let tasks: Vec<RT> = state
+            .tasks
+            .values()
+            .filter_map(|t| {
+                let r = t.remote?;
+                Some(RT {
+                    id: r,
+                    title: t.title.clone(),
+                    description: t.description.clone(),
+                    duedate: t.duedate,
+                    done: t.done,
+                    stack: r.stack,
+                    order: t.order,
+                    labels: t
+                        .labels
+                        .iter()
+                        .filter_map(|id| label_refs.get(id).map(|ref_| ref_.label))
+                        .collect(),
+                    archived: t.archived,
+                    last_modified: t.remote_seen?,
+                })
+            })
+            .collect();
+        Some(RemoteBoardSnapshot {
+            board: remote_board,
+            stacks,
+            tasks,
+            labels,
+        })
     }
 
     #[test]

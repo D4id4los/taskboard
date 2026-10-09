@@ -225,11 +225,39 @@ pub enum RemoteEcho {
     Label(RemoteLabel),
 }
 
+/// Conditional-read validators for one board pull (phase 4 decision 4).
+///
+/// Exactly the three conditional endpoints one sync cycle touches. The
+/// engine maps these onto `ValidatorKey::{Boards, Stacks(board),
+/// ArchivedStacks(board)}` against its own board binding when appending the
+/// persistence batch — the sync actor never reasons about storage keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoardPullValidators {
+    /// Validators of the boards listing.
+    pub boards: crate::persistence::SyncValidators,
+    /// Validators of the board's active-stacks listing.
+    pub stacks: crate::persistence::SyncValidators,
+    /// Validators of the board's archived-stacks listing.
+    pub archived_stacks: crate::persistence::SyncValidators,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support;
     use proptest::prelude::*;
+
+    /// Random validators for one endpoint (P4 helper).
+    fn sync_validators_strategy() -> impl Strategy<Value = crate::persistence::SyncValidators> {
+        (
+            proptest::option::of("[a-zA-Z0-9\"-]{1,24}"),
+            proptest::option::of("[a-zA-Z0-9 :,;-]{5,40}"),
+        )
+            .prop_map(|(etag, last_modified)| crate::persistence::SyncValidators {
+                etag,
+                last_modified,
+            })
+    }
 
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(256))]
@@ -253,6 +281,18 @@ mod tests {
             let json = serde_json::to_string(&outcome).unwrap();
             let back: PushOutcome = serde_json::from_str(&json).unwrap();
             prop_assert_eq!(back, outcome);
+        }
+
+        #[test]
+        fn board_pull_validators_roundtrip_through_serde(
+            validators in (sync_validators_strategy(), sync_validators_strategy(), sync_validators_strategy())
+                .prop_map(|(boards, stacks, archived_stacks)| BoardPullValidators {
+                    boards, stacks, archived_stacks,
+                }),
+        ) {
+            let json = serde_json::to_string(&validators).unwrap();
+            let back: BoardPullValidators = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(back, validators);
         }
     }
 }

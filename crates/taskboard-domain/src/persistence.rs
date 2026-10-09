@@ -54,6 +54,27 @@ pub enum RepositoryError {
     Corrupted,
 }
 
+/// The sync actor's read-only view of the engine's persisted state —
+/// outbox, bindings, and validators included (ADR 0005: sync reads via the
+/// engine, never direct SQL). Implemented by the state crate's engine
+/// handle; faked by [`crate::test_support::InMemoryRepository`].
+///
+/// The replied [`PersistedState`] may carry the memory-only `Syncing`
+/// phase transient that no repository `load()` can ever return; consumers
+/// must therefore never branch on `sync.phase` — read the outbox,
+/// bindings, and validators only.
+pub trait SyncStateReader: Send + Sync + std::fmt::Debug {
+    /// The full persisted shape at the time the (sequential) engine
+    /// processes the read — same durability story as a flush barrier.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] while the engine is unreachable
+    /// (stopped or restarting); [`RepositoryError::Corrupted`] is produced
+    /// by implementations whose storage backend can fail to decode.
+    fn read_state(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>>;
+}
+
 /// The full persisted dataset, hydrated at boot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PersistedState {
@@ -95,8 +116,11 @@ impl From<PersistedState> for AppState {
 pub enum ValidatorKey {
     /// The boards listing endpoint.
     Boards,
-    /// The stacks listing endpoint of one board.
+    /// The active-stacks listing endpoint of one board.
     Stacks(crate::ids::RemoteBoardId),
+    /// The archived-stacks listing endpoint of one board (archived cards
+    /// sync too — otherwise the completeness contract would tombstone them).
+    ArchivedStacks(crate::ids::RemoteBoardId),
 }
 
 impl Serialize for ValidatorKey {
@@ -104,6 +128,9 @@ impl Serialize for ValidatorKey {
         match self {
             Self::Boards => serializer.serialize_str("boards"),
             Self::Stacks(board) => serializer.serialize_str(&format!("stacks:{}", board.get())),
+            Self::ArchivedStacks(board) => {
+                serializer.serialize_str(&format!("archived_stacks:{}", board.get()))
+            }
         }
     }
 }
@@ -113,6 +140,12 @@ impl<'de> Deserialize<'de> for ValidatorKey {
         let raw = String::deserialize(deserializer)?;
         if raw == "boards" {
             return Ok(Self::Boards);
+        }
+        if let Some(num) = raw
+            .strip_prefix("archived_stacks:")
+            .and_then(|n| n.parse().ok())
+        {
+            return Ok(Self::ArchivedStacks(crate::ids::RemoteBoardId(num)));
         }
         raw.strip_prefix("stacks:")
             .and_then(|num| num.parse::<u64>().ok())
@@ -407,6 +440,20 @@ mod tests {
     #[test]
     fn invalid_validator_key_string_is_rejected() {
         assert!(serde_json::from_str::<ValidatorKey>("\"not-a-key\"").is_err());
+        assert!(serde_json::from_str::<ValidatorKey>("\"stacks:\"").is_err());
+    }
+
+    #[test]
+    fn archived_stacks_validator_key_roundtrips_through_serde() {
+        let key = ValidatorKey::ArchivedStacks(crate::ids::RemoteBoardId(9));
+        let back: ValidatorKey =
+            serde_json::from_str(&serde_json::to_string(&key).unwrap()).unwrap();
+        assert_eq!(back, key);
+        assert_eq!(
+            serde_json::to_string(&key).unwrap(),
+            serde_json::to_string("archived_stacks:9").unwrap(),
+            "the wire tag is the storage codec's text form"
+        );
     }
 
     proptest! {

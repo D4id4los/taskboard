@@ -27,7 +27,7 @@ use taskboard_state::{EngineStartupError, ExecuteError, spawn_state_engine};
 
 mod common;
 
-use common::{FixedClock, T0, seed_board_state, ts};
+use common::{FixedClock, T0, seed_board_state, test_validators, ts};
 
 /// Fails the first `failures` applies with `Unavailable`, then delegates —
 /// non-mutating on failure, matching transactional reality.
@@ -334,7 +334,7 @@ async fn a5_completed_report_ingestion_publishes() {
     let h = harness().await;
     h.report_tx
         .send(SyncReport::Completed {
-            snapshot: RemoteBoardSnapshot {
+            snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
                     id: RemoteBoardId(77),
                     title: "remote board".into(),
@@ -346,7 +346,8 @@ async fn a5_completed_report_ingestion_publishes() {
                 stacks: vec![],
                 tasks: vec![],
                 labels: vec![],
-            },
+            }),
+            validators: test_validators(),
             pushes: vec![],
         })
         .await
@@ -371,6 +372,7 @@ async fn a6_failed_report_sets_typed_phase() {
     h.report_tx
         .send(SyncReport::Failed {
             kind: SyncErrorKind::Auth,
+            pushes: vec![],
         })
         .await
         .expect("report channel open");
@@ -557,4 +559,249 @@ fn seeded_stack_state() -> (PersistedState, StackId) {
     let mut state = PersistedState::default();
     state.stacks.insert(stack.id, stack);
     (state, stack_id)
+}
+
+// ---------------------------------------------------------------------
+// SyncStateReader routing (phase 4 §4.1)
+// ---------------------------------------------------------------------
+
+/// The `SyncStateReader` impl replies with the engine's full persisted
+/// shape — outbox and validators included, which the published `AppState`
+/// deliberately omits — reflecting every previously accepted message (FIFO,
+/// same durability story as the `Flush` barrier).
+#[tokio::test]
+async fn read_state_returns_the_post_apply_persisted_shape() {
+    use taskboard_domain::SyncStateReader as _;
+
+    let h = spawn(Spawner::default()).await;
+    h.handle
+        .execute(StateCommand::CreateStack {
+            title: "backlog".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted");
+
+    let read = h.handle.read_state().await.expect("engine reachable");
+    assert_eq!(read.outbox.len(), 1, "the outbox travels in the reply");
+    assert_eq!(read.stacks.len(), 1, "the accepted stack is in the reply");
+    let app = h.handle.shared_state().load_full();
+    assert_eq!(read.stacks, app.stacks, "memory ≡ the replied shape");
+}
+
+/// A stopped engine surfaces as the port's transient `Unavailable`, not a
+/// panic and not a hang.
+#[tokio::test]
+async fn read_state_on_a_stopped_engine_maps_to_unavailable() {
+    use taskboard_domain::SyncStateReader as _;
+
+    let h = spawn(Spawner::default()).await;
+    h.join.abort();
+    // Give the loop a chance to observe the abort; either way the handle's
+    // send eventually fails once the task is gone.
+    let outcome = h.handle.read_state().await;
+    assert!(
+        matches!(outcome, Err(RepositoryError::Unavailable)),
+        "a stopped engine must map to Unavailable, got {outcome:?}"
+    );
+}
+
+/// A `Completed` report's validators are persisted under the engine's own
+/// board binding (phase 4 decision 4) — and identical validators on the
+/// next report append nothing (iff-different rule).
+#[tokio::test]
+async fn completed_report_persists_validators_under_the_board_binding() {
+    let h = spawn(Spawner::default()).await;
+    let validators = taskboard_domain::BoardPullValidators {
+        boards: taskboard_domain::SyncValidators {
+            etag: Some("\"b1\"".into()),
+            last_modified: None,
+        },
+        stacks: taskboard_domain::SyncValidators {
+            etag: Some("\"s1\"".into()),
+            last_modified: None,
+        },
+        archived_stacks: taskboard_domain::SyncValidators {
+            etag: Some("\"a1\"".into()),
+            last_modified: None,
+        },
+    };
+    h.report_tx
+        .send(SyncReport::Completed {
+            snapshot: Box::new(RemoteBoardSnapshot {
+                board: RemoteBoard {
+                    id: RemoteBoardId(77),
+                    title: "remote board".into(),
+                    color: "00ff00".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0),
+                },
+                stacks: vec![],
+                tasks: vec![],
+                labels: vec![],
+            }),
+            validators: validators.clone(),
+            pushes: vec![],
+        })
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.boards
+            .values()
+            .any(|b| b.remote == Some(RemoteBoardId(77)))
+    })
+    .await;
+
+    // Deterministic settle via a Flush: the batch is durable.
+    h.handle.flush().await;
+    let read = taskboard_domain::SyncStateReader::read_state(&h.handle)
+        .await
+        .expect("reachable");
+    assert_eq!(
+        read.validators.get(&taskboard_domain::ValidatorKey::Boards),
+        Some(&validators.boards),
+    );
+    assert_eq!(
+        read.validators
+            .get(&taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(77))),
+        Some(&validators.stacks),
+    );
+    assert_eq!(
+        read.validators
+            .get(&taskboard_domain::ValidatorKey::ArchivedStacks(
+                RemoteBoardId(77)
+            )),
+        Some(&validators.archived_stacks),
+    );
+}
+
+/// A `Failed` report carrying completed pushes lands them (decision 3):
+/// the op completes, the echo binds, the phase returns to `Idle` — and no
+/// tombstoning happens for the missing snapshot.
+#[allow(clippy::too_many_lines)] // the binding setup is the scenario
+#[tokio::test]
+async fn failed_report_with_pushes_applies_the_evidence() {
+    use taskboard_domain::SyncStateReader as _;
+
+    let h = spawn(Spawner::default()).await;
+    // Bind board 77 and its stack 9 first, so the create's echo can bind.
+    h.report_tx
+        .send(SyncReport::Completed {
+            snapshot: Box::new(RemoteBoardSnapshot {
+                board: RemoteBoard {
+                    id: RemoteBoardId(77),
+                    title: "remote board".into(),
+                    color: "00ff00".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0),
+                },
+                stacks: vec![taskboard_domain::RemoteStack {
+                    id: taskboard_domain::RemoteStackRef {
+                        board: RemoteBoardId(77),
+                        stack: taskboard_domain::RemoteStackId(9),
+                    },
+                    title: "backlog".into(),
+                    order: 0,
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0),
+                }],
+                tasks: vec![],
+                labels: vec![],
+            }),
+            validators: test_validators(),
+            pushes: vec![],
+        })
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| !app.stacks.is_empty()).await;
+    h.handle.flush().await;
+    let stack_id = *taskboard_domain::SyncStateReader::read_state(&h.handle)
+        .await
+        .expect("read")
+        .stacks
+        .keys()
+        .next()
+        .expect("adopted stack");
+    let CommandOutcome::CreatedTask(task_id) = h
+        .handle
+        .execute(StateCommand::CreateTask {
+            title: "offline draft".into(),
+            stack: stack_id,
+            order: 0,
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("wrong receipt");
+    };
+    let op_id = h
+        .handle
+        .read_state()
+        .await
+        .expect("read")
+        .outbox
+        .iter()
+        .find(|op| matches!(op.op, taskboard_domain::LocalOp::CreateTask(id) if id == task_id))
+        .map(|op| op.op_id)
+        .expect("the create op is queued");
+
+    let mut echo_card: RemoteBoardSnapshot = RemoteBoardSnapshot {
+        board: RemoteBoard {
+            id: RemoteBoardId(77),
+            title: "b".into(),
+            color: "00ff00".into(),
+            archived: false,
+            deleted_at: None,
+            last_modified: ts(T0),
+        },
+        stacks: vec![],
+        tasks: vec![],
+        labels: vec![],
+    };
+    echo_card.tasks.push(taskboard_domain::RemoteTask {
+        id: taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(77),
+            stack: taskboard_domain::RemoteStackId(9),
+            card: taskboard_domain::RemoteCardId(42),
+        },
+        title: "offline draft".into(),
+        description: String::new(),
+        duedate: None,
+        done: None,
+        stack: taskboard_domain::RemoteStackId(9),
+        order: 0,
+        labels: std::collections::BTreeSet::new(),
+        archived: false,
+        last_modified: ts(T0 + 60),
+    });
+    let echo = echo_card.tasks.pop().expect("echo task");
+    h.report_tx
+        .send(SyncReport::Failed {
+            kind: SyncErrorKind::Network,
+            pushes: vec![taskboard_domain::PushOutcome {
+                op: op_id,
+                result: taskboard_domain::PushResult::Applied {
+                    echo: Some(taskboard_domain::RemoteEcho::Task(echo)),
+                },
+            }],
+        })
+        .await
+        .expect("report channel open");
+
+    eventually(&h.handle, |app| {
+        app.sync.pending_ops == 0
+            && app.tasks.get(&task_id).is_some_and(|t| {
+                t.remote
+                    == Some(taskboard_domain::RemoteCardRef {
+                        board: RemoteBoardId(77),
+                        stack: taskboard_domain::RemoteStackId(9),
+                        card: taskboard_domain::RemoteCardId(42),
+                    })
+            })
+            && app.sync.phase == SyncPhase::Idle
+    })
+    .await;
 }

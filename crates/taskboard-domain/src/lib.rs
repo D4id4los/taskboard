@@ -37,6 +37,7 @@ pub mod messages;
 pub mod outbox;
 pub mod persistence;
 pub mod pipeline;
+pub mod push;
 pub mod remote;
 pub mod state;
 
@@ -67,12 +68,15 @@ pub use messages::{
 };
 pub use outbox::{LocalOp, OpId, PendingOp};
 pub use persistence::{
-    BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
-    ValidatorKey, apply_actions,
+    BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncStateReader, SyncValidators,
+    TaskRepository, ValidatorKey, apply_actions,
 };
-pub use pipeline::apply_sync_report;
+pub use pipeline::{apply_push_report, apply_sync_report};
+pub use push::{
+    CardShape, EntityTables, MaterializedOp, NewCardShape, PushGroup, PushTarget, plan_pushes,
+};
 pub use remote::{
-    PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho, RemoteIndex,
-    RemoteLabel, RemoteStack, RemoteTask, resolve_label,
+    BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
+    RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
 pub use state::{AppState, SyncErrorKind, SyncPhase, SyncStatus};

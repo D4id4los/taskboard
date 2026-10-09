@@ -180,14 +180,24 @@ pub enum SyncCommand {
 }
 
 /// Sync actor → engine report (mpsc payload).
+///
+/// Evidence-then-verdict (phase 4 decision 3): a `Failed` cycle still
+/// carries the push outcomes that *completed* before the abort, so the
+/// engine lands them (ops complete, create echoes bind) instead of
+/// re-POSTing completed creates next cycle — Deck has no idempotency keys.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncReport {
-    /// A cycle finished pulling (and pushing); the engine executes the
-    /// merge policy against this data.
+    /// A cycle finished pushing and pulling; the engine executes the merge
+    /// policy against this data.
     Completed {
         /// Complete remote view of the board at sync time (completeness
         /// contract: absence means the resource is gone server-side).
-        snapshot: RemoteBoardSnapshot,
+        /// Boxed: a snapshot dwarfs the other variants and reports travel
+        /// by value over mpsc.
+        snapshot: Box<RemoteBoardSnapshot>,
+        /// Conditional-read validators of the three pulled endpoints; the
+        /// engine keys them against its own board binding.
+        validators: crate::remote::BoardPullValidators,
         /// Outcomes of the ops pushed during this cycle.
         pushes: Vec<PushOutcome>,
     },
@@ -195,6 +205,9 @@ pub enum SyncReport {
     Failed {
         /// Deck-agnostic failure class.
         kind: SyncErrorKind,
+        /// Successful push outcomes from the aborted cycle; empty when the
+        /// cycle failed before (or during) its first push.
+        pushes: Vec<PushOutcome>,
     },
 }
 
