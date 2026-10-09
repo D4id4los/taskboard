@@ -25,13 +25,44 @@ use crate::persistence::{
 /// Panics on the first violated contract clause (with the clause name), or
 /// if an implementation's future stays `Pending` under the harness' no-op
 /// waker (contract implementations must make progress without a reactor).
+#[allow(clippy::too_many_lines)] // one sequential contract; splitting hides the flow
 pub fn assert_task_repository_contract<R: TaskRepository>(repo: &R) {
     // A repo starts loadable, even if empty.
     let initial: PersistedState = block_on(repo.load()).expect("load");
 
-    // Entities inserted by a batch are returned by the next load, and
-    // CompleteOp removes the enqueued op from the outbox without touching
-    // entities.
+    // Entities of every kind inserted by a batch are returned by the next
+    // load, and CompleteOp removes the enqueued op from the outbox without
+    // touching entities.
+    let board = crate::entities::Board {
+        id: crate::ids::BoardId::from(uuid::Uuid::from_u128(11)),
+        remote: None,
+        title: "board".into(),
+        color: crate::entities::Color::new("ff0000"),
+        archived: false,
+        deleted: false,
+        remote_seen: None,
+    };
+    let stack = crate::entities::Stack {
+        id: StackId::from(uuid::Uuid::from_u128(2)),
+        remote: None,
+        board: board.id,
+        title: "stack".into(),
+        order: 0,
+        archived: false,
+        deleted: false,
+        clocks: stack_clocks_at(0),
+        remote_seen: None,
+    };
+    let label = crate::entities::Label {
+        id: crate::ids::LabelId::from(uuid::Uuid::from_u128(12)),
+        remote: None,
+        board: board.id,
+        title: "label".into(),
+        color: crate::entities::Color::new("00ff00"),
+        deleted: false,
+        clocks: label_clocks_at(0),
+        remote_seen: None,
+    };
     let task = Task {
         id: TaskId::from(uuid::Uuid::from_u128(1)),
         remote: None,
@@ -53,12 +84,30 @@ pub fn assert_task_repository_contract<R: TaskRepository>(repo: &R) {
         queued_at: SystemClock.now(),
     };
     let batch = vec![
+        PersistenceAction::UpsertBoard(board.clone()),
+        PersistenceAction::UpsertStack(stack.clone()),
+        PersistenceAction::UpsertLabel(label.clone()),
         PersistenceAction::UpsertTask(task.clone()),
         PersistenceAction::EnqueueOp(op.clone()),
     ];
     block_on(repo.apply(batch)).expect("apply batch");
 
     let after: PersistedState = block_on(repo.load()).expect("reload");
+    assert_eq!(
+        after.boards.get(&board.id),
+        Some(&board),
+        "upserted board must round-trip"
+    );
+    assert_eq!(
+        after.stacks.get(&stack.id),
+        Some(&stack),
+        "upserted stack must round-trip"
+    );
+    assert_eq!(
+        after.labels.get(&label.id),
+        Some(&label),
+        "upserted label must round-trip"
+    );
     assert_eq!(
         after.tasks.get(&task.id),
         Some(&task),
@@ -99,6 +148,24 @@ pub fn assert_task_repository_contract<R: TaskRepository>(repo: &R) {
         Some(&v),
         "validators must round-trip"
     );
+}
+
+fn stack_clocks_at(secs: i64) -> crate::entities::StackClocks {
+    let t = Utc.timestamp_opt(secs, 0).unwrap();
+    crate::entities::StackClocks {
+        title: t,
+        order: t,
+        deleted: t,
+    }
+}
+
+fn label_clocks_at(secs: i64) -> crate::entities::LabelClocks {
+    let t = Utc.timestamp_opt(secs, 0).unwrap();
+    crate::entities::LabelClocks {
+        title: t,
+        color: t,
+        deleted: t,
+    }
 }
 
 fn clock_at(secs: i64) -> TaskClocks {

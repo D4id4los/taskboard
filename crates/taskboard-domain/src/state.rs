@@ -116,6 +116,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
+    use crate::ids::TaskId;
     use crate::test_support;
     use proptest::prelude::*;
 
@@ -126,8 +127,20 @@ mod tests {
         fn live_tasks_exclude_tombstones_and_sort_canonically(
             state in test_support::app_state_strategy(),
         ) {
+            // Exact-set equality, not a filter: an empty result must be
+            // distinguishable from the real answer.
+            let mut expected: Vec<TaskId> = state
+                .tasks
+                .values()
+                .filter(|t| t.is_live())
+                .map(|t| t.id)
+                .collect();
+            expected.sort_by_key(|id| {
+                let t = &state.tasks[id];
+                (t.order, *id)
+            });
             let live = state.live_tasks();
-            prop_assert!(live.iter().all(|t| t.is_live()));
+            prop_assert_eq!(live.iter().map(|t| t.id).collect::<Vec<_>>(), expected);
             for pair in live.windows(2) {
                 prop_assert!(pair[0].order < pair[1].order
                     || (pair[0].order == pair[1].order && pair[0].id < pair[1].id));
@@ -139,7 +152,20 @@ mod tests {
             state in test_support::app_state_strategy(),
         ) {
             for stack_id in state.stacks.keys() {
-                for task in state.tasks_in_stack(*stack_id) {
+                // Exact membership, in canonical order.
+                let mut expected: Vec<TaskId> = state
+                    .tasks
+                    .values()
+                    .filter(|t| t.is_live() && t.stack == *stack_id)
+                    .map(|t| t.id)
+                    .collect();
+                expected.sort_by_key(|id| {
+                    let t = &state.tasks[id];
+                    (t.order, *id)
+                });
+                let got = state.tasks_in_stack(*stack_id);
+                prop_assert_eq!(got.iter().map(|t| t.id).collect::<Vec<_>>(), expected);
+                for task in &got {
                     prop_assert_eq!(task.stack, *stack_id);
                 }
             }

@@ -1,0 +1,15 @@
+# cargo-mutants workspace configuration.
+#
+# The mutation-killing surface is the *policy* code: merge.rs's per-entity
+# primitives and the apply_sync_report pipeline, plus the view helpers in
+# state.rs (plan: 2026-10-08-growth-roadmap-phase1-domain-model-plan.md §11,
+# "any survivor in merge.rs is a bug in the tests").
+#
+# test_support/ is deliberately excluded: its strategies and the repository
+# contract harness are test *infrastructure* — mutating them tests the
+# testers, which AGENTS.md §5 forbids ("Don't test test-helpers"). The
+# harness gets its real validation the day the Phase 2 sqlite adapter
+# satisfies it with a second implementation.
+exclude_globs = [
+    "**/test_support/**",
+]

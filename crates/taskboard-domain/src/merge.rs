@@ -525,42 +525,82 @@ pub fn apply_sync_report(
             continue;
         };
         match &outcome.result {
-            PushResult::Applied { echo } => match echo {
-                Some(RemoteEcho::Task(echo)) => {
-                    if let LocalOp::CreateTask(id) | LocalOp::UpdateTask(id) = op.op
-                        && let Some(local) = tasks.get(&id)
-                    {
-                        let merged = adopt_after_push(local, echo, &ctx);
-                        tasks.insert(id, merged);
+            PushResult::Applied { echo } => {
+                // R9c: delete pushes finalize immediately — Deck's DELETE
+                // response is authoritative, so the tombstone clears its
+                // binding now instead of waiting for the next pull.
+                match op.op {
+                    LocalOp::DeleteTask(id) => {
+                        if let Some(local) = tasks.get(&id) {
+                            let finalized = finalize_pushed_delete(local);
+                            tasks.insert(id, finalized);
+                        }
+                        op_results.insert(outcome.op, true);
+                        continue;
                     }
-                    op_results.insert(outcome.op, true);
-                }
-                Some(RemoteEcho::Stack(echo)) => {
-                    if let LocalOp::CreateStack(id) | LocalOp::RenameStack(id) = op.op
-                        && let Some(local) = stacks.get(&id)
-                    {
-                        let merged = adopt_stack_after_push(local, echo);
-                        stacks.insert(id, merged);
-                        ctx.stack_by_ref.insert(echo.id, id);
+                    LocalOp::DeleteStack(id) => {
+                        if let Some(local) = stacks.get(&id) {
+                            let finalized = finalize_stack_tombstone(local, now);
+                            stacks.insert(id, finalized);
+                        }
+                        op_results.insert(outcome.op, true);
+                        continue;
                     }
-                    op_results.insert(outcome.op, true);
-                }
-                Some(RemoteEcho::Label(echo)) => {
-                    if let LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) = op.op
-                        && let Some(local) = labels.get(&id)
-                    {
-                        let merged = adopt_label_after_push(local, echo);
-                        labels.insert(id, merged);
-                        ctx.label_by_ref.insert(echo.id, id);
+                    LocalOp::DeleteLabel(id) => {
+                        if let Some(local) = labels.get(&id) {
+                            let finalized = finalize_label_tombstone(local, now);
+                            labels.insert(id, finalized);
+                        }
+                        op_results.insert(outcome.op, true);
+                        continue;
                     }
-                    op_results.insert(outcome.op, true);
+                    LocalOp::CreateTask(_)
+                    | LocalOp::UpdateTask(_)
+                    | LocalOp::MoveTask(_)
+                    | LocalOp::CreateStack(_)
+                    | LocalOp::RenameStack(_)
+                    | LocalOp::CreateLabel(_)
+                    | LocalOp::UpdateLabel(_)
+                    | LocalOp::AssignLabel(..)
+                    | LocalOp::UnassignLabel(..) => {}
                 }
-                // R9d: reorder returns no echo — complete and reconcile
-                // via the next pull.
-                None => {
-                    op_results.insert(outcome.op, true);
+                match echo {
+                    Some(RemoteEcho::Task(echo)) => {
+                        if let LocalOp::CreateTask(id) | LocalOp::UpdateTask(id) = op.op
+                            && let Some(local) = tasks.get(&id)
+                        {
+                            let merged = adopt_after_push(local, echo, &ctx);
+                            tasks.insert(id, merged);
+                        }
+                        op_results.insert(outcome.op, true);
+                    }
+                    Some(RemoteEcho::Stack(echo)) => {
+                        if let LocalOp::CreateStack(id) | LocalOp::RenameStack(id) = op.op
+                            && let Some(local) = stacks.get(&id)
+                        {
+                            let merged = adopt_stack_after_push(local, echo);
+                            stacks.insert(id, merged);
+                            ctx.stack_by_ref.insert(echo.id, id);
+                        }
+                        op_results.insert(outcome.op, true);
+                    }
+                    Some(RemoteEcho::Label(echo)) => {
+                        if let LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) = op.op
+                            && let Some(local) = labels.get(&id)
+                        {
+                            let merged = adopt_label_after_push(local, echo);
+                            labels.insert(id, merged);
+                            ctx.label_by_ref.insert(echo.id, id);
+                        }
+                        op_results.insert(outcome.op, true);
+                    }
+                    // R9d: reorder returns no echo — complete and reconcile
+                    // via the next pull.
+                    None => {
+                        op_results.insert(outcome.op, true);
+                    }
                 }
-            },
+            }
             // R9e: the resource is gone server-side; fall through to the
             // delete rules.
             PushResult::RemoteMissing => match op.op {
@@ -640,7 +680,6 @@ pub fn apply_sync_report(
     }
 
     // ---- 3. Stacks (R1/R4/R5/R6) ------------------------------------
-    let mut live_stack_refs = BTreeSet::new();
     let mut newly_tombstoned_stack_refs: Vec<RemoteStackId> = Vec::new();
     for remote in &snapshot.stacks {
         if let Some(id) = ctx.stack_by_ref.get(&remote.id).copied() {
@@ -656,16 +695,10 @@ pub fn apply_sync_report(
                 }
                 stacks.insert(id, merged);
             }
-            if !merged_is_deleted(&stacks[&id]) {
-                live_stack_refs.insert(remote.id.stack);
-            }
         } else {
             let id = ids.new_stack_id();
             stacks.insert(id, adopt_remote_stack(remote, id, board_id));
             ctx.stack_by_ref.insert(remote.id, id);
-            if !stacks[&id].deleted {
-                live_stack_refs.insert(remote.id.stack);
-            }
         }
     }
 
@@ -840,10 +873,6 @@ pub fn apply_sync_report(
     }
 }
 
-fn merged_is_deleted(stack: &Stack) -> bool {
-    stack.deleted
-}
-
 fn finalize_stack_tombstone(local: &Stack, observed_at: DateTime<Utc>) -> Stack {
     let mut s = local.clone();
     s.deleted = true;
@@ -871,9 +900,11 @@ fn cascade_board(
     outbox: &[PendingOp],
     op_results: &mut HashMap<crate::ops::OpId, bool>,
 ) {
+    // A deleted board takes its stacks with it: finalize every stack of
+    // the board (live ones become tombstones too).
     let stack_ids: Vec<StackId> = stacks
         .iter()
-        .filter(|(_, s)| s.board == *board_id && s.deleted)
+        .filter(|(_, s)| s.board == *board_id)
         .map(|(id, _)| *id)
         .collect();
     for id in stack_ids {
@@ -929,7 +960,7 @@ mod tests {
     }
     impl IdGenerator for CountingIds {
         fn new_board_id(&self) -> crate::ids::BoardId {
-            unreachable!("MVP binds an existing board; no board adoption ids")
+            crate::ids::BoardId::from(uuid::Uuid::from_u128(self.next()))
         }
         fn new_stack_id(&self) -> StackId {
             StackId::from(uuid::Uuid::from_u128(self.next()))
@@ -1153,6 +1184,20 @@ mod tests {
         assert!(merged.archived);
     }
 
+    #[test]
+    fn tombstone_never_moves_an_existing_tombstone_clock_backwards() {
+        let mut local = bound_task(1);
+        local.deleted = true;
+        local.clocks.deleted = ts(BASE + 7_200); // tombstoned earlier offline
+
+        let reobserved = tombstone_task(&local, ts(BASE));
+        assert_eq!(
+            reobserved.clocks.deleted,
+            ts(BASE + 7_200),
+            "re-observation must not decrease the tombstone clock"
+        );
+    }
+
     // ---- §7.4 example 3: remote absence → delete-wins (R3) -------------
     #[test]
     fn remote_absence_tombstones_and_cancels_pending_ops() {
@@ -1226,6 +1271,37 @@ mod tests {
         let merged = merge_stack(&local, &remote);
         assert!(!merged.deleted, "rename is newer than the soft delete");
         assert_eq!(merged.title, "renamed");
+    }
+
+    #[test]
+    fn newer_remote_edit_resurrects_locally_tombstoned_stack_and_label() {
+        let mut stack = local_stack();
+        stack.deleted = true;
+        stack.clocks.deleted = ts(BASE + 300);
+        let resurrected = merge_stack(&stack, &remote_stack(1, BASE + 360));
+        assert!(!resurrected.deleted, "stack: newer remote edit resurrects");
+
+        let mut label = bound_label(1);
+        label.deleted = true;
+        label.clocks.deleted = ts(BASE + 300);
+        let label_revived = merge_label(&label, &remote_label(1, BASE + 360));
+        assert!(
+            !label_revived.deleted,
+            "label: newer remote edit resurrects"
+        );
+    }
+
+    #[test]
+    fn older_remote_edit_keeps_local_stack_and_label_tombstones() {
+        let mut stack = local_stack();
+        stack.deleted = true;
+        stack.clocks.deleted = ts(BASE + 300);
+        assert!(merge_stack(&stack, &remote_stack(1, BASE + 60)).deleted);
+
+        let mut label = bound_label(1);
+        label.deleted = true;
+        label.clocks.deleted = ts(BASE + 300);
+        assert!(merge_label(&label, &remote_label(1, BASE + 60)).deleted);
     }
 
     #[test]
@@ -1504,6 +1580,12 @@ mod tests {
             BTreeSet::from([adopted_label.id]),
             "R7 resolution uses the post-adoption mapping"
         );
+        assert_eq!(
+            adopted_task.stack,
+            state.stacks.values().next().unwrap().id,
+            "remote stack resolves through the index",
+        );
+        assert_eq!(adopted_task.order, remote.order);
     }
 
     // ---- Idempotence: re-applying the same snapshot is a no-op ----------
@@ -1658,5 +1740,1256 @@ mod tests {
         let merged = task_by_card(&state_after, 1);
         assert_eq!(merged.title, "normalized");
         assert_eq!(app.sync.pending_ops, 0);
+    }
+
+    // ==== Coverage-gap tests (see .artifacts/reports/2026-10-09-...md) ====
+
+    // ---- Algebra: labels (R6) -------------------------------------------
+    fn bound_label(num: u64) -> Label {
+        Label {
+            id: LabelId::from(uuid::Uuid::from_u128(600 + u128::from(num))),
+            remote: Some(crate::ids::RemoteLabelRef {
+                board: board(REMOTE_BOARD),
+                label: crate::ids::RemoteLabelId(num),
+            }),
+            board: crate::ids::BoardId::from(uuid::Uuid::from_u128(800)),
+            title: format!("label {num}"),
+            color: Color::new("00ff00"),
+            deleted: false,
+            clocks: crate::entities::LabelClocks {
+                title: ts(BASE),
+                color: ts(BASE),
+                deleted: ts(BASE),
+            },
+            remote_seen: Some(ts(BASE)),
+        }
+    }
+
+    fn remote_label(num: u64, last_modified: i64) -> RemoteLabel {
+        RemoteLabel {
+            id: crate::ids::RemoteLabelRef {
+                board: board(REMOTE_BOARD),
+                label: crate::ids::RemoteLabelId(num),
+            },
+            title: format!("label {num} renamed"),
+            color: "0000ff".into(),
+            deleted_at: None,
+            last_modified: ts(last_modified),
+        }
+    }
+
+    #[test]
+    fn merge_label_adopts_newer_title_and_color() {
+        let merged = merge_label(&bound_label(1), &remote_label(1, BASE + 60));
+        assert_eq!(merged.title, "label 1 renamed");
+        assert_eq!(merged.color.as_str(), "0000ff");
+        assert_eq!(merged.clocks.title, ts(BASE + 60));
+        assert!(!merged.deleted);
+    }
+
+    #[test]
+    fn merge_label_tie_keeps_local() {
+        let merged = merge_label(&bound_label(1), &remote_label(1, BASE));
+        assert_eq!(merged.title, "label 1");
+        assert_eq!(merged.color.as_str(), "00ff00");
+    }
+
+    #[test]
+    fn newer_local_label_edit_beats_older_remote_delete() {
+        let mut local = bound_label(1);
+        local.title = "renamed locally".into();
+        local.clocks.title = ts(BASE + 480);
+        let mut remote = remote_label(1, BASE + 420);
+        remote.deleted_at = Some(ts(BASE + 420));
+
+        let merged = merge_label(&local, &remote);
+        assert!(!merged.deleted);
+        assert_eq!(merged.title, "renamed locally");
+    }
+
+    #[test]
+    fn newer_remote_label_delete_beats_older_local_edit() {
+        let mut local = bound_label(1);
+        local.title = "renamed locally".into();
+        local.clocks.title = ts(BASE + 300);
+        let mut remote = remote_label(1, BASE + 420);
+        remote.deleted_at = Some(ts(BASE + 420));
+
+        let merged = merge_label(&local, &remote);
+        assert!(merged.deleted);
+        assert_eq!(merged.clocks.deleted, ts(BASE + 420));
+    }
+
+    // ---- Algebra: boards (R1/R6, MVP-unreachable but total) --------------
+    fn remote_board(num: u64, last_modified: i64) -> RemoteBoard {
+        RemoteBoard {
+            id: board(num),
+            title: format!("board {num}"),
+            color: "ff0000".into(),
+            archived: false,
+            deleted_at: None,
+            last_modified: ts(last_modified),
+        }
+    }
+
+    #[test]
+    fn merge_board_adopts_when_newer_and_keeps_local_on_tie() {
+        let local = base_state(bound_task(1))
+            .boards
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+
+        let merged = merge_board(&local, &remote_board(REMOTE_BOARD, BASE + 60));
+        assert_eq!(merged.title, "board 77");
+
+        let tie = merge_board(&local, &remote_board(REMOTE_BOARD, BASE));
+        assert_eq!(tie, local, "tie keeps local");
+    }
+
+    #[test]
+    fn merge_board_treats_missing_remote_seen_as_oldest() {
+        let mut local = base_state(bound_task(1))
+            .boards
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        local.remote_seen = None;
+
+        let merged = merge_board(&local, &remote_board(REMOTE_BOARD, 0));
+        assert_eq!(merged.title, "board 77");
+        assert_eq!(merged.remote_seen, Some(ts(0)));
+    }
+
+    #[test]
+    fn adopt_remote_board_stamps_remote_content() {
+        let id = crate::ids::BoardId::from(uuid::Uuid::from_u128(1234));
+        let adopted = adopt_remote_board(&remote_board(99, BASE + 5), id);
+        assert_eq!(adopted.id, id);
+        assert_eq!(adopted.remote, Some(board(99)));
+        assert_eq!(adopted.remote_seen, Some(ts(BASE + 5)));
+        assert!(!adopted.deleted);
+    }
+
+    // ---- Algebra: stacks/labels adoption + push echoes -------------------
+    #[test]
+    fn adopt_remote_stack_binds_board_and_stamps_clocks() {
+        let id = StackId::from(uuid::Uuid::from_u128(4321));
+        let board_id = crate::ids::BoardId::from(uuid::Uuid::from_u128(800));
+        let adopted = adopt_remote_stack(&remote_stack(3, BASE + 5), id, board_id);
+        assert_eq!(adopted.remote, Some(stack_ref(3)));
+        assert_eq!(adopted.board, board_id);
+        assert_eq!(adopted.clocks.title, ts(BASE + 5));
+        assert!(!adopted.deleted);
+
+        let mut deleted = remote_stack(3, BASE + 5);
+        deleted.deleted_at = Some(ts(BASE + 5));
+        let tombstone = adopt_remote_stack(&deleted, id, board_id);
+        assert!(tombstone.deleted);
+    }
+
+    #[test]
+    fn adopt_stack_after_push_is_unconditional() {
+        let mut local = local_stack();
+        local.remote = None;
+        local.title = "  padded  ".into();
+        let mut echo = remote_stack(1, BASE + 60);
+        echo.title = "padded".into();
+
+        let merged = adopt_stack_after_push(&local, &echo);
+        assert_eq!(merged.title, "padded");
+        assert_eq!(merged.remote, Some(stack_ref(1)));
+        assert_eq!(merged.clocks.title, echo.last_modified);
+    }
+
+    #[test]
+    fn adopt_label_after_push_is_unconditional() {
+        let mut local = bound_label(1);
+        local.remote = None;
+        let mut echo = remote_label(1, BASE + 60);
+        echo.title = "normalized".into();
+
+        let merged = adopt_label_after_push(&local, &echo);
+        assert_eq!(merged.title, "normalized");
+        assert_eq!(merged.remote, Some(echo.id));
+        assert_eq!(merged.clocks.title, echo.last_modified);
+        assert!(!merged.deleted);
+    }
+
+    #[test]
+    fn finalize_pushed_delete_clears_binding() {
+        let mut local = bound_task(1);
+        local.deleted = true;
+        let finalized = finalize_pushed_delete(&local);
+        assert!(finalized.deleted);
+        assert!(finalized.remote.is_none());
+        assert!(finalized.remote_seen.is_none());
+        assert_eq!(finalized.title, local.title, "content is kept");
+    }
+
+    #[test]
+    fn merge_task_adopts_position_through_the_stack_index() {
+        let mut local = bound_task(1);
+        local.order = 42;
+        let mut ctx = RemoteIndex::default();
+        ctx.stack_by_ref.insert(stack_ref(1), local.stack);
+
+        let mut remote = remote_task(1, 1, BASE + 60);
+        remote.order = 77;
+
+        let merged = merge_task(&local, &remote, &ctx);
+        assert_eq!(
+            merged.stack, local.stack,
+            "remote stack maps to the local one"
+        );
+        assert_eq!(merged.order, 77, "position adopted as one unit");
+        assert_eq!(merged.clocks.position, ts(BASE + 60));
+
+        // Unmapped remote stack: the composite position is kept as a unit.
+        let mut unmapped = RemoteIndex::default();
+        unmapped
+            .stack_by_ref
+            .insert(stack_ref(9), StackId::from(uuid::Uuid::from_u128(5)));
+        let kept = merge_task(&local, &remote, &unmapped);
+        assert_eq!(kept.stack, local.stack);
+        assert_eq!(kept.order, 42, "unmapped stack keeps the whole position");
+    }
+
+    #[test]
+    fn task_echo_for_a_move_op_is_not_adopted() {
+        let task = bound_task(1);
+        let state = base_state(task);
+        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(45));
+        let op = crate::ops::PendingOp {
+            op_id,
+            op: LocalOp::MoveTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE),
+        };
+        let mut echo = remote_task(1, 1, BASE + 60);
+        echo.title = "echoed title".into();
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Task(echo)),
+                },
+            }],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        // R9a echo adoption applies to create/update pushes only; a move
+        // has no echo (R9d) and must not consume one addressed to it.
+        let state_after = app_into_state(&app);
+        assert_eq!(task_by_card(&state_after, 1).title, "local 1");
+    }
+
+    #[test]
+    fn resurrect_and_remote_missing_leave_unrelated_ops_queued() {
+        // Resurrect path (R5): only the task's DeleteTask op is dropped;
+        // an unrelated pending op stays queued.
+        let mut task = bound_task(1);
+        task.deleted = true;
+        task.clocks.deleted = ts(BASE + 300);
+        let state = base_state(task);
+        let stack = local_stack();
+        let mut stack = stack;
+        stack.remote = None;
+        let stack_id = stack.id;
+        let mut state = state;
+        state.stacks.insert(stack_id, stack);
+        let delete_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(46)),
+            op: LocalOp::DeleteTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE),
+        };
+        let stack_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(47)),
+            op: LocalOp::CreateStack(stack_id),
+            queued_at: ts(BASE),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 360)], BASE + 360);
+
+        let app = apply_sync_report(
+            &state,
+            &[delete_op, stack_op],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 420),
+        );
+
+        assert!(
+            app.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(46)))),
+            "the resurrected task's delete op is dropped",
+        );
+        assert!(
+            !app.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(47)))),
+            "the unrelated stack op must stay queued",
+        );
+        assert_eq!(app.sync.pending_ops, 1);
+
+        // R3 path: same expectation — cancellation is op-targeted.
+        let task2 = bound_task(2);
+        let state2 = base_state(task2);
+        let update_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(48)),
+            op: LocalOp::UpdateTask(task_by_card(&state2, 2).id),
+            queued_at: ts(BASE),
+        };
+        let stack_op2 = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(49)),
+            op: LocalOp::CreateStack(*state2.stacks.keys().next().unwrap()),
+            queued_at: ts(BASE),
+        };
+        // Pure pull (no push outcomes): the presence reconciliation itself
+        // cancels the task's ops.
+        let snap2 = single_stack_snapshot(vec![], BASE);
+
+        let app2 = apply_sync_report(
+            &state2,
+            &[update_op, stack_op2],
+            &snap2,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        assert!(
+            app2
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(48)))),
+            "R3 cancels the absent task's own op",
+        );
+        assert!(
+            !app2
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(49)))),
+            "R3 cancellation must not touch unrelated ops",
+        );
+        assert_eq!(app2.sync.pending_ops, 1);
+    }
+
+    #[test]
+    fn stack_cascade_spares_moved_out_and_offline_tasks() {
+        let task_a = bound_task(1); // lives in stack 1, gets cascaded
+        let mut task_b = bound_task(2); // moved out to stack 2 before the delete
+        let stack2 = Stack {
+            id: StackId::from(uuid::Uuid::from_u128(901)),
+            remote: Some(stack_ref(2)),
+            board: crate::ids::BoardId::from(uuid::Uuid::from_u128(800)),
+            title: "stack 2".into(),
+            order: 2,
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::StackClocks {
+                title: ts(BASE),
+                order: ts(BASE),
+                deleted: ts(BASE),
+            },
+            remote_seen: Some(ts(BASE)),
+        };
+        task_b.stack = stack2.id;
+        task_b.remote = Some(card_ref(2, 5));
+        let mut offline = bound_task(4); // local-only draft (R2)
+        offline.remote = None;
+        offline.remote_seen = None;
+        offline.title = "offline draft".into();
+
+        let task_a_id = task_a.id;
+        let moved_id = task_b.id;
+        let offline_id = offline.id;
+        let mut state = base_state(task_a);
+        let stack1_id = *state.stacks.keys().next().unwrap();
+        state.stacks.insert(stack2.id, stack2);
+        state.tasks.insert(task_b.id, task_b);
+        state.tasks.insert(offline.id, offline);
+
+        let move_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(52)),
+            op: LocalOp::MoveTask(task_a_id),
+            queued_at: ts(BASE),
+        };
+        let stack_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(53)),
+            op: LocalOp::CreateStack(stack1_id),
+            queued_at: ts(BASE),
+        };
+
+        let mut deleted_stack = remote_stack(1, BASE + 60);
+        deleted_stack.deleted_at = Some(ts(BASE + 60));
+        let snap = snapshot(
+            vec![deleted_stack, remote_stack(2, BASE)],
+            vec![remote_task(1, 1, BASE), remote_task(2, 5, BASE)],
+        );
+
+        let app = apply_sync_report(
+            &state,
+            &[move_op, stack_op],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        assert!(
+            app.tasks[&task_a_id].deleted,
+            "task in the deleted stack cascades"
+        );
+        assert!(
+            !app.tasks[&offline_id].deleted,
+            "offline local-only task is outside every cascade filter",
+        );
+        assert!(
+            !app.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::UpsertTask(t) if t.id == offline_id)),
+        );
+        assert!(
+            !app.tasks[&moved_id].deleted,
+            "moved-out card survives via its target-stack listing",
+        );
+        assert_eq!(
+            app.sync.pending_ops, 1,
+            "only the cascaded task's op is cancelled; the stack op stays queued",
+        );
+    }
+
+    #[test]
+    fn older_remote_than_remote_seen_keeps_local_entity() {
+        // A remote entity OLDER than our baseline must not merge, even with
+        // different content (R4 guards stacks, labels, and tasks alike).
+        let mut stack = local_stack();
+        stack.remote_seen = Some(ts(BASE + 120));
+        stack.title = "locally newer".into();
+        let older = remote_stack(1, BASE + 60); // older than remote_seen
+
+        let mut state = base_state(bound_task(1));
+        let stack_id = stack.id;
+        state.stacks.insert(stack_id, stack);
+        let snap = snapshot(vec![older], vec![remote_task(1, 1, BASE)]);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 180),
+        );
+        assert_eq!(
+            app.stacks[&stack_id].title, "locally newer",
+            "older remote must not overwrite the baseline",
+        );
+    }
+
+    #[test]
+    fn already_finalized_entities_are_not_refinalized_on_absence() {
+        // A tombstoned stack/label that kept its binding (cache-lag re-bind)
+        // must not be re-finalized when absent: no clock bump, no action.
+        let mut state = base_state(bound_task(1));
+        let stack_id = *state.stacks.keys().next().unwrap();
+        let mut stack = local_stack();
+        stack.deleted = true;
+        stack.clocks.deleted = ts(BASE + 30);
+        state.stacks.insert(stack_id, stack);
+        let mut label = bound_label(9);
+        label.deleted = true;
+        label.clocks.deleted = ts(BASE + 30);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        let snap = single_stack_snapshot(vec![], BASE);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 90),
+        );
+
+        assert_eq!(
+            app.stacks[&stack_id].clocks.deleted,
+            ts(BASE + 30),
+            "absence must not bump an existing tombstone clock",
+        );
+        assert_eq!(app.labels[&label_id].clocks.deleted, ts(BASE + 30));
+        assert!(
+            !app.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::UpsertStack(s) if s.id == stack_id)),
+        );
+    }
+
+    #[test]
+    fn board_cascade_finalizes_present_entities_and_spares_the_dead() {
+        // Cache-lag snapshot: the board is gone but its stacks/tasks/labels
+        // are still listed — only the cascade can finalize them here (the
+        // presence reconciliation never fires for present resources).
+        let mut state = base_state(bound_task(1));
+        let live_label = bound_label(6);
+        let live_label_id = live_label.id;
+        state.labels.insert(live_label_id, live_label);
+        let mut dead_label = bound_label(10);
+        dead_label.deleted = true;
+        dead_label.clocks.deleted = ts(BASE + 30);
+        let dead_label_id = dead_label.id;
+        state.labels.insert(dead_label_id, dead_label);
+        let stack_id = *state.stacks.keys().next().unwrap();
+        let task_id = task_by_card(&state, 1).id;
+        let mut dead_task = bound_task(3);
+        dead_task.deleted = true;
+        dead_task.clocks.deleted = ts(BASE + 30);
+        dead_task.remote = None; // already finalized; outside every filter here
+        dead_task.remote_seen = None;
+        let dead_task_id = dead_task.id;
+        state.tasks.insert(dead_task_id, dead_task);
+        let op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(50)),
+            op: LocalOp::UpdateTask(task_id),
+            queued_at: ts(BASE),
+        };
+        let stack_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(51)),
+            op: LocalOp::CreateStack(stack_id),
+            queued_at: ts(BASE),
+        };
+
+        let mut board = remote_board(REMOTE_BOARD, BASE + 60);
+        board.deleted_at = Some(ts(BASE + 60));
+        let snap = RemoteBoardSnapshot {
+            board,
+            stacks: vec![remote_stack(1, BASE)],
+            tasks: vec![remote_task(1, 1, BASE)],
+            labels: vec![remote_label(6, BASE)],
+        };
+
+        let app = apply_sync_report(
+            &state,
+            &[op, stack_op],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        assert!(
+            app.stacks[&stack_id].deleted,
+            "cascade finalizes the listed stack"
+        );
+        assert!(
+            app.tasks[&task_id].deleted,
+            "cascade tombstones the listed task"
+        );
+        assert_eq!(
+            app.sync.pending_ops, 1,
+            "stack op survives; task op cancelled"
+        );
+        assert!(app.labels[&live_label_id].deleted);
+        assert_eq!(
+            app.labels[&dead_label_id].clocks.deleted,
+            ts(BASE + 30),
+            "already-dead label is not re-finalized",
+        );
+        assert_eq!(
+            app.tasks[&dead_task_id].clocks.deleted,
+            ts(BASE + 30),
+            "already-dead task is not re-tombstoned",
+        );
+    }
+
+    // ---- Algebra: op targeting helper ------------------------------------
+    #[test]
+    fn op_targets_task_matches_only_that_tasks_ops() {
+        let t = TaskId::from(uuid::Uuid::from_u128(1));
+        let other = TaskId::from(uuid::Uuid::from_u128(2));
+        let s = StackId::from(uuid::Uuid::from_u128(3));
+        let l = LabelId::from(uuid::Uuid::from_u128(4));
+
+        for op in [
+            LocalOp::CreateTask(t),
+            LocalOp::UpdateTask(t),
+            LocalOp::MoveTask(t),
+            LocalOp::DeleteTask(t),
+            LocalOp::AssignLabel(t, l),
+            LocalOp::UnassignLabel(t, l),
+        ] {
+            assert!(op_targets_task(&op, t));
+            assert!(!op_targets_task(&op, other));
+        }
+        for op in [
+            LocalOp::CreateStack(s),
+            LocalOp::RenameStack(s),
+            LocalOp::DeleteStack(s),
+            LocalOp::CreateLabel(l),
+            LocalOp::UpdateLabel(l),
+            LocalOp::DeleteLabel(l),
+        ] {
+            assert!(!op_targets_task(&op, t));
+        }
+    }
+
+    // ---- Pipeline: R9c delete pushes finalize immediately -----------------
+    #[test]
+    fn pushed_delete_finalizes_tombstone_immediately() {
+        let mut task = bound_task(1);
+        task.deleted = true;
+        let state = base_state(task);
+        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(21));
+        let op = crate::ops::PendingOp {
+            op_id,
+            op: LocalOp::DeleteTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE),
+        };
+        // The delete has fully propagated: the card is absent remotely.
+        let snap = single_stack_snapshot(vec![], BASE);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::Applied { echo: None },
+            }],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        let task_id = task_by_card(&state, 1).id;
+        let merged = &app.tasks[&task_id];
+        assert!(merged.deleted);
+        assert!(
+            merged.remote.is_none(),
+            "R9c clears the binding immediately"
+        );
+        assert!(merged.remote_seen.is_none());
+        assert_eq!(app.sync.pending_ops, 0);
+        assert!(
+            !app.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(_))),
+            "the delete op completes, not fails"
+        );
+    }
+
+    // ---- Pipeline: stack/label push echoes (R9a) --------------------------
+    #[test]
+    fn create_stack_push_echo_binds_remote() {
+        let mut stack = local_stack();
+        stack.remote = None;
+        let state = base_state(bound_task(1));
+        let stack_id = state.stacks.keys().next().unwrap();
+        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(22));
+        let op = crate::ops::PendingOp {
+            op_id,
+            op: LocalOp::CreateStack(*stack_id),
+            queued_at: ts(BASE),
+        };
+        let mut echo = remote_stack(1, BASE + 60);
+        echo.title = "normalized".into();
+        let snap = snapshot(vec![remote_stack(1, BASE)], vec![]);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Stack(echo)),
+                },
+            }],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        let merged = &app.stacks[stack_id];
+        assert_eq!(merged.remote, Some(stack_ref(1)));
+        assert_eq!(merged.title, "normalized");
+        assert_eq!(app.sync.pending_ops, 0);
+    }
+
+    #[test]
+    fn create_label_push_echo_binds_remote() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(1);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(23));
+        let op = crate::ops::PendingOp {
+            op_id,
+            op: LocalOp::CreateLabel(label_id),
+            queued_at: ts(BASE),
+        };
+        let mut echo = remote_label(1, BASE + 60);
+        echo.title = "normalized".into();
+        let mut snap = single_stack_snapshot(vec![], BASE);
+        snap.labels.push(remote_label(1, BASE));
+        let expected_ref = echo.id;
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Label(echo)),
+                },
+            }],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        let merged = &app.labels[&label_id];
+        assert_eq!(merged.remote, Some(expected_ref));
+        assert_eq!(merged.title, "normalized");
+        assert_eq!(app.sync.pending_ops, 0);
+    }
+
+    #[test]
+    fn pushed_stack_and_label_deletes_finalize_immediately() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(8);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        let stack_id = *state.stacks.keys().next().unwrap();
+        let mut stack = local_stack();
+        stack.deleted = true;
+        state.stacks.insert(stack_id, stack);
+        let mut label = bound_label(8);
+        label.deleted = true;
+        state.labels.insert(label_id, label);
+        let stack_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(41)),
+            op: LocalOp::DeleteStack(stack_id),
+            queued_at: ts(BASE),
+        };
+        let label_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(42)),
+            op: LocalOp::DeleteLabel(label_id),
+            queued_at: ts(BASE),
+        };
+        // Fully propagated deletes: nothing listed anymore.
+        let snap = snapshot(vec![], vec![]);
+
+        let app = apply_sync_report(
+            &state,
+            &[stack_op, label_op],
+            &snap,
+            &[
+                PushOutcome {
+                    op: crate::ops::OpId(uuid::Uuid::from_u128(41)),
+                    result: PushResult::Applied { echo: None },
+                },
+                PushOutcome {
+                    op: crate::ops::OpId(uuid::Uuid::from_u128(42)),
+                    result: PushResult::Applied { echo: None },
+                },
+            ],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        assert!(app.stacks[&stack_id].deleted);
+        assert!(app.stacks[&stack_id].remote.is_none());
+        assert!(app.labels[&label_id].deleted);
+        assert!(app.labels[&label_id].remote.is_none());
+        assert_eq!(app.sync.pending_ops, 0);
+    }
+
+    // ---- Pipeline: R9e RemoteMissing variants ------------------------------
+    #[test]
+    fn remote_missing_stack_and_label_ops_finalize_tombstones() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(2);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        let stack_id = *state.stacks.keys().next().unwrap();
+
+        let stack_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(24)),
+            op: LocalOp::DeleteStack(stack_id),
+            queued_at: ts(BASE),
+        };
+        let label_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(25)),
+            op: LocalOp::DeleteLabel(label_id),
+            queued_at: ts(BASE),
+        };
+        let snap = snapshot(vec![], vec![]);
+
+        let app = apply_sync_report(
+            &state,
+            &[stack_op, label_op],
+            &snap,
+            &[
+                PushOutcome {
+                    op: crate::ops::OpId(uuid::Uuid::from_u128(24)),
+                    result: PushResult::RemoteMissing,
+                },
+                PushOutcome {
+                    op: crate::ops::OpId(uuid::Uuid::from_u128(25)),
+                    result: PushResult::RemoteMissing,
+                },
+            ],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        assert!(app.stacks[&stack_id].deleted);
+        assert!(app.stacks[&stack_id].remote.is_none());
+        assert!(app.labels[&label_id].deleted);
+        assert!(app.labels[&label_id].remote.is_none());
+        assert_eq!(app.sync.pending_ops, 0);
+    }
+
+    #[test]
+    fn remote_missing_move_op_tombstones_and_assign_op_completes() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(3);
+        let label_id = label.id;
+        let task_id = task_by_card(&state, 1).id;
+        state.labels.insert(label_id, label);
+        let move_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(26)),
+            op: LocalOp::MoveTask(task_id),
+            queued_at: ts(BASE),
+        };
+        let assign_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(27)),
+            op: LocalOp::AssignLabel(task_id, label_id),
+            queued_at: ts(BASE),
+        };
+        let delete_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(43)),
+            op: LocalOp::DeleteTask(task_id),
+            queued_at: ts(BASE),
+        };
+        let snap = single_stack_snapshot(vec![], BASE);
+
+        let app = apply_sync_report(
+            &state,
+            &[move_op, assign_op, delete_op],
+            &snap,
+            &[
+                PushOutcome {
+                    op: crate::ops::OpId(uuid::Uuid::from_u128(26)),
+                    result: PushResult::RemoteMissing,
+                },
+                PushOutcome {
+                    op: crate::ops::OpId(uuid::Uuid::from_u128(27)),
+                    result: PushResult::RemoteMissing,
+                },
+                PushOutcome {
+                    op: crate::ops::OpId(uuid::Uuid::from_u128(43)),
+                    result: PushResult::RemoteMissing,
+                },
+            ],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        assert!(app.tasks[&task_id].deleted);
+        assert_eq!(app.sync.pending_ops, 0, "all three ops resolved");
+    }
+
+    #[test]
+    fn remote_missing_cancels_sibling_ops_of_the_task() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(4);
+        let label_id = label.id;
+        let task_id = task_by_card(&state, 1).id;
+        state.labels.insert(label_id, label);
+        let update_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(28)),
+            op: LocalOp::UpdateTask(task_id),
+            queued_at: ts(BASE),
+        };
+        let assign_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(29)),
+            op: LocalOp::AssignLabel(task_id, label_id),
+            queued_at: ts(BASE),
+        };
+        let stack_op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(54)),
+            op: LocalOp::CreateStack(*state.stacks.keys().next().unwrap()),
+            queued_at: ts(BASE),
+        };
+        let snap = single_stack_snapshot(vec![], BASE);
+
+        let app = apply_sync_report(
+            &state,
+            &[update_op, assign_op, stack_op],
+            &snap,
+            // Only the update reports gone; the assign must be cancelled
+            // with it (the task no longer exists).
+            &[PushOutcome {
+                op: crate::ops::OpId(uuid::Uuid::from_u128(28)),
+                result: PushResult::RemoteMissing,
+            }],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        assert!(app.tasks[&task_id].deleted);
+        assert_eq!(
+            app.sync.pending_ops, 1,
+            "sibling assign cancelled, stack op queued"
+        );
+        assert!(
+            app.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(29)))),
+        );
+        assert_eq!(
+            app.sync.pending_ops, 1,
+            "the unrelated stack op stays queued"
+        );
+        assert!(
+            !app
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(54)))),
+        );
+    }
+
+    // ---- Pipeline: absence reconciliation for stacks and labels (R6) ------
+    #[test]
+    fn stack_absent_from_snapshot_is_finalized() {
+        let task = bound_task(1);
+        let state = base_state(task);
+        let stack_id = *state.stacks.keys().next().unwrap();
+        // The card is still listed (Deck's cascade lag), but its stack is
+        // gone from the stacks listing.
+        let snap = RemoteBoardSnapshot {
+            board: remote_board(REMOTE_BOARD, BASE),
+            stacks: vec![],
+            tasks: vec![remote_task(1, 1, BASE)],
+            labels: vec![],
+        };
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        let merged = &app.stacks[&stack_id];
+        assert!(merged.deleted);
+        assert!(merged.remote.is_none());
+    }
+
+    #[test]
+    fn label_absent_from_snapshot_is_finalized() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(5);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        let merged = &app.labels[&label_id];
+        assert!(merged.deleted);
+        assert!(merged.remote.is_none());
+    }
+
+    // ---- Pipeline: board tombstone cascade (R6) ----------------------------
+    #[test]
+    fn board_tombstone_cascades_stacks_tasks_and_labels() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(6);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        let stack_id = *state.stacks.keys().next().unwrap();
+        let task_id = task_by_card(&state, 1).id;
+        let op = crate::ops::PendingOp {
+            op_id: crate::ops::OpId(uuid::Uuid::from_u128(44)),
+            op: LocalOp::UpdateTask(task_id),
+            queued_at: ts(BASE),
+        };
+
+        let mut board = remote_board(REMOTE_BOARD, BASE + 60);
+        board.deleted_at = Some(ts(BASE + 60));
+        // Completeness contract: a gone board lists nothing.
+        let snap = RemoteBoardSnapshot {
+            board,
+            stacks: vec![],
+            tasks: vec![],
+            labels: vec![],
+        };
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        assert!(app.boards.values().all(|b| b.deleted));
+        assert!(app.stacks[&stack_id].deleted, "stacks finalized");
+        assert!(app.stacks[&stack_id].remote.is_none());
+        assert!(
+            app.tasks.values().all(|t| t.deleted),
+            "all the board's tasks tombstoned"
+        );
+        assert!(app.labels[&label_id].deleted, "labels finalized");
+        assert_eq!(
+            app.sync.pending_ops, 0,
+            "the board's tasks' ops are cancelled by the cascade"
+        );
+    }
+
+    // ---- Pipeline: stack cascade cancels ops (R6 -> R3) --------------------
+    #[test]
+    fn stack_delete_cascade_cancels_cascaded_tasks_ops() {
+        let task = bound_task(1);
+        let state = base_state(task);
+        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(30));
+        let op = crate::ops::PendingOp {
+            op_id,
+            op: LocalOp::MoveTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE),
+        };
+        // Cache lag: the card is still listed under the now-deleted stack.
+        let mut stack = remote_stack(1, BASE + 60);
+        stack.deleted_at = Some(ts(BASE + 60));
+        let snap = snapshot(vec![stack], vec![remote_task(1, 1, BASE)]);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        let task_id = task_by_card(&state, 1).id;
+        assert!(app.tasks[&task_id].deleted);
+        assert_eq!(app.sync.pending_ops, 0, "cascade cancels the moved op");
+    }
+
+    // ---- Pipeline: R5 resurrect drops the pending delete -------------------
+    #[test]
+    fn resurrect_via_pipeline_drops_pending_delete_op() {
+        let mut task = bound_task(1);
+        task.deleted = true;
+        task.clocks.deleted = ts(BASE + 300);
+        let state = base_state(task);
+        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(31));
+        let op = crate::ops::PendingOp {
+            op_id,
+            op: LocalOp::DeleteTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 360)], BASE + 360);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 420),
+        );
+
+        let state_after = app_into_state(&app);
+        let merged = task_by_card(&state_after, 1);
+        assert!(!merged.deleted, "newer remote edit resurrects");
+        assert!(
+            app.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == op_id)),
+            "the pending DeleteTask op is dropped"
+        );
+    }
+
+    // ---- Pipeline: R2 local-only task untouched ----------------------------
+    #[test]
+    fn local_only_task_survives_sync_untouched() {
+        let mut state = base_state(bound_task(1));
+        let mut offline = bound_task(2);
+        offline.remote = None;
+        offline.remote_seen = None;
+        offline.title = "offline draft".into();
+        state.tasks.insert(offline.id, offline);
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 60)], BASE + 60);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        let draft = app
+            .tasks
+            .values()
+            .find(|t| t.remote.is_none())
+            .expect("offline task still present");
+        assert_eq!(draft.title, "offline draft");
+        assert!(
+            !app.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::UpsertTask(t) if t.remote.is_none())),
+            "R2: the never-pushed task is untouched"
+        );
+    }
+
+    // ---- Pipeline: R1 adoption of stacks and boards ------------------------
+    #[test]
+    fn new_remote_stack_adopts_in_pipeline() {
+        let state = base_state(bound_task(1));
+        let snap = snapshot(
+            vec![remote_stack(1, BASE), remote_stack(3, BASE + 60)],
+            vec![remote_task(1, 1, BASE)],
+        );
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        let adopted = app
+            .stacks
+            .values()
+            .find(|s| s.remote == Some(stack_ref(3)))
+            .expect("remote stack adopted");
+        assert_eq!(adopted.title, "stack 3");
+        assert_eq!(adopted.remote_seen, Some(ts(BASE + 60)));
+    }
+
+    #[test]
+    fn unknown_remote_board_is_adopted() {
+        let state = base_state(bound_task(1));
+        let snap = RemoteBoardSnapshot {
+            board: remote_board(88, BASE + 60),
+            stacks: vec![remote_stack(1, BASE)],
+            tasks: vec![],
+            labels: vec![],
+        };
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        let adopted = app
+            .boards
+            .values()
+            .find(|b| b.remote == Some(board(88)))
+            .expect("second board adopted (multi-board-ready shape)");
+        assert_eq!(adopted.title, "board 88");
+    }
+
+    #[test]
+    fn changed_remote_board_content_emits_board_upsert() {
+        let state = base_state(bound_task(1));
+        let snap = RemoteBoardSnapshot {
+            board: remote_board(REMOTE_BOARD, BASE + 60),
+            stacks: vec![remote_stack(1, BASE)],
+            tasks: vec![],
+            labels: vec![],
+        };
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        assert!(
+            app.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::UpsertBoard(b) if b.title == "board 77")),
+        );
+    }
+
+    // ---- Pipeline: label merge (R6 via pipeline) ----------------------------
+    #[test]
+    fn changed_remote_label_merges_in_pipeline() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(7);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        let mut snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        snap.labels.push(remote_label(7, BASE + 60));
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        assert_eq!(app.labels[&label_id].title, "label 7 renamed");
+        assert!(app.actions.iter().any(
+            |a| matches!(a, PersistenceAction::UpsertLabel(l) if l.title == "label 7 renamed")
+        ),);
+    }
+
+    // ---- Pipeline: outcomes for unknown ops are ignored ---------------------
+    #[test]
+    fn push_outcome_for_unknown_op_is_ignored() {
+        let state = base_state(bound_task(1));
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[PushOutcome {
+                op: crate::ops::OpId(uuid::Uuid::from_u128(99)),
+                result: PushResult::Applied { echo: None },
+            }],
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        assert!(app.actions.is_empty());
     }
 }

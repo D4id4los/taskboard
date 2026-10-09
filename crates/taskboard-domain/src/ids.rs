@@ -129,14 +129,27 @@ mod tests {
         #[test]
         fn local_ids_roundtrip_through_uuid(raw in any::<u128>()) {
             let raw = uuid::Uuid::from_u128(raw);
-            let id = TaskId::from(raw);
-            prop_assert_eq!(id.as_uuid(), raw);
-            prop_assert_eq!(id, TaskId::from_uuid(raw));
+            let task = TaskId::from(raw);
+            prop_assert_eq!(task.as_uuid(), raw);
+            prop_assert_eq!(task, TaskId::from_uuid(raw));
+            // Every id kind shares the macro-generated accessors.
+            let board = BoardId::from_uuid(raw);
+            prop_assert_eq!(board.as_uuid(), raw);
+            prop_assert_eq!(board, BoardId::from(raw));
+            let stack = StackId::from_uuid(raw);
+            prop_assert_eq!(stack.as_uuid(), raw);
+            prop_assert_eq!(stack, StackId::from(raw));
+            let label = LabelId::from_uuid(raw);
+            prop_assert_eq!(label.as_uuid(), raw);
+            prop_assert_eq!(label, LabelId::from(raw));
         }
 
         #[test]
         fn remote_ids_roundtrip_through_u64(raw in any::<u64>()) {
             prop_assert_eq!(RemoteCardId(raw).get(), raw);
+            prop_assert_eq!(RemoteStackId(raw).get(), raw);
+            prop_assert_eq!(RemoteLabelId(raw).get(), raw);
+            prop_assert_eq!(RemoteBoardId(raw).get(), raw);
         }
 
         #[test]
