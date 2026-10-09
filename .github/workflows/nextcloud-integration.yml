@@ -1,0 +1,53 @@
+name: Nextcloud Integration
+
+# The Docker-tier sync tests (real Nextcloud + Deck in docker) run out of
+# the per-PR CI path: the `nextcloud` image is pulled from Docker Hub,
+# whose anonymous pull-rate limit (shared across all GitHub-hosted
+# runners) intermittently 429s the job — an always-flaky required check
+# is noise, not signal. The sync *contract* suite (request shapes, DTO
+# mapping, golden responses) still runs on every PR inside "Test
+# Execution"; this workflow adds live-server verification on demand
+# (dispatch during sync-actor development) and weekly (upstream drift).
+# If per-PR coverage ever becomes worth it again, mirror the pinned
+# image into GHCR instead of re-adding the Hub pull.
+
+on:
+  schedule:
+    - cron: "0 4 * * 3" # Wednesdays 04:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nextcloud-it:
+    name: Nextcloud Integration (docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Start dockerized Nextcloud (Deck, test user, app password)
+        run: scripts/nextcloud_it_setup.sh up --ci
+
+      - name: Docker-tier integration tests
+        # --no-tests=fail guards the filter silently matching nothing.
+        run: >
+          cargo nextest run -p taskboard-sync-nextcloud --run-ignored only
+          -E 'test(it_nextcloud_docker)' --no-tests=fail
+
+      - name: Teardown
+        if: always()
+        run: scripts/nextcloud_it_setup.sh down
