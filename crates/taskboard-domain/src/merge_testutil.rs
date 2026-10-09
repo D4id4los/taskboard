@@ -9,12 +9,11 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, TimeZone, Utc};
 
 use crate::entities::{Board, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks};
-use crate::idgen::IdGenerator;
 use crate::ids::{
     BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
     RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
-use crate::outbox::{OpId, PendingOp};
+use crate::outbox::PendingOp;
 use crate::remote::{RemoteBoard, RemoteBoardSnapshot, RemoteLabel, RemoteStack, RemoteTask};
 use crate::state::AppState;
 
@@ -22,33 +21,9 @@ pub(crate) fn ts(secs: i64) -> DateTime<Utc> {
     Utc.timestamp_opt(secs, 0).unwrap()
 }
 
-/// Deterministic id source: uuids from a counter.
-#[derive(Debug, Default)]
-pub(crate) struct CountingIds(std::sync::atomic::AtomicU64);
-
-impl CountingIds {
-    fn next(&self) -> u128 {
-        u128::from(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1)
-    }
-}
-
-impl IdGenerator for CountingIds {
-    fn new_board_id(&self) -> BoardId {
-        BoardId::from(uuid::Uuid::from_u128(self.next()))
-    }
-    fn new_stack_id(&self) -> StackId {
-        StackId::from(uuid::Uuid::from_u128(self.next()))
-    }
-    fn new_task_id(&self) -> TaskId {
-        TaskId::from(uuid::Uuid::from_u128(self.next()))
-    }
-    fn new_label_id(&self) -> LabelId {
-        LabelId::from(uuid::Uuid::from_u128(self.next()))
-    }
-    fn new_op_id(&self) -> OpId {
-        OpId(uuid::Uuid::from_u128(self.next()))
-    }
-}
+// The deterministic id generator is the promoted, feature-gated
+// `test_support::CountingIds` (public so downstream crates reuse it).
+pub(crate) use crate::test_support::CountingIds;
 
 pub(crate) const BASE: i64 = 36_000; // 10:00:00Z
 pub(crate) const REMOTE_BOARD_NUM: u64 = 77;

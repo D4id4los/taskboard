@@ -26,6 +26,7 @@
 #![forbid(unsafe_code)]
 
 pub mod clock;
+pub mod command;
 pub mod entities;
 pub mod idgen;
 pub mod ids;
@@ -46,6 +47,7 @@ pub mod test_support;
 pub(crate) mod merge_testutil;
 
 pub use clock::{Clock, SystemClock};
+pub use command::{CommandError, CommandOutcome, CommandPlan, plan_command};
 pub use entities::{Board, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks};
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
@@ -64,7 +66,7 @@ pub use messages::{
 pub use outbox::{LocalOp, OpId, PendingOp};
 pub use persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
-    ValidatorKey,
+    ValidatorKey, apply_actions,
 };
 pub use pipeline::apply_sync_report;
 pub use remote::{
