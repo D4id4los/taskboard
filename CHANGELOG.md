@@ -11,6 +11,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Growth roadmap Phase 2 (ADR 0005): the SQLite local persistence crate
+  `taskboard-storage-sqlite` — normalized schema (`boards`/`stacks`/
+  `tasks`/`labels`, `task_labels`, `outbox`, `sync_metadata`,
+  `sync_status`) with embedded boot-time migrations, WAL +
+  `synchronous=NORMAL` on a single connection, `SqliteTaskRepository`
+  implementing the `TaskRepository` port with compile-time checked
+  `query!` SQL (one transaction per batch, FK-safe fixed order, derived
+  `pending_ops`, retained tombstones), the `StorageCommand` actor with
+  reply-carrying `StorageHandle`, and the offline sqlx workflow
+  (`scripts/sqlx-prepare.sh`, committed `.sqlx/`, `SQLX_OFFLINE` +
+  freshness check in CI).
+- Domain additions feeding the above: async contract harness
+  (`assert_task_repository_contract_async`), `PersistenceAction::
+  UpsertSyncStatus` (with derived-`pending_ops` parity in the
+  `InMemoryRepository` fake).
 - Growth roadmap Phase 1 (ADR 0004): the canonical domain model in
   `taskboard-domain` — `Board`/`Stack`/`Task`/`Label` entities with
   per-field write clocks, typed local (UUIDv7) and remote (Deck) ids with

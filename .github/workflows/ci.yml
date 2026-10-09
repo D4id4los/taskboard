@@ -18,6 +18,11 @@ jobs:
   check:
     name: Code Quality & Linting
     runs-on: ubuntu-latest
+    env:
+      # query!/query_as! resolve against the committed .sqlx/ cache; a PR
+      # that touched a query or migration without running
+      # scripts/sqlx-prepare.sh fails the freshness step below.
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v7
 
@@ -32,6 +37,16 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: sqlx-cli 0.9 (sqlite)
+        # The CLI major/minor must match the sqlx crate (0.9) — the offline
+        # data format changed across versions (ADR 0005).
+        uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli@0.9
+
+      - name: sqlx Offline Cache Freshness
+        run: scripts/sqlx-prepare.sh --check
 
       - name: Changelog Tooling Self-Test
         # Guards scripts/changelog.py (used by bump_version.sh and the
@@ -52,6 +67,10 @@ jobs:
   test:
     name: Test Execution
     runs-on: ubuntu-latest
+    env:
+      # Same offline-cache guarantee as the check job: builds must never
+      # need a live DATABASE_URL.
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v7
 
@@ -100,6 +119,9 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    env:
+      # Same offline-cache guarantee as the check job.
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v7
 

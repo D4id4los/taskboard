@@ -542,3 +542,79 @@ questions to settle first:
    boundary where the policy is invoked, accepting coarser attribution.
 Trigger: before or during Phase 3 work, so engine-level debugging benefits
 from the start.
+
+## [2026-10-09] Tombstone purge mechanism
+
+- **Category**: `FEATURE`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase2-storage-sqlite-plan.md` §4.3/§11
+- **Target Area**: `taskboard-domain` (new `PersistenceAction::PruneTombstones { older_than }`), `taskboard-storage-sqlite` (execution), actor/CLI surface
+
+### Context & Description
+MVP retains tombstones forever (correct for clock comparison across
+boots, ADR 0004 R3/R5/R6). Local db growth is bounded by real single-board
+usage, but long-lived kiosks eventually need pruning.
+
+### Proposed Approach
+`DELETE FROM tasks WHERE deleted = 1 AND ck_deleted < ?` (stacks/labels/
+boards likewise; `task_labels` follows via `ON DELETE CASCADE`). The
+schema already supports this as pure SQL — no migration needed. Trigger:
+local db growth observed in real use (M1).
+
+## [2026-10-09] Criterion bench for the persistence hot path
+
+- **Category**: `PERF`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase2-storage-sqlite-plan.md` §11
+- **Target Area**: `taskboard-storage-sqlite` (`[[bench]]` target)
+
+### Context & Description
+`load()` hydration and one `apply` batch are the storage hot path; the
+benchmark CI job exists and currently no-ops. The kiosk perf goal
+(AGENTS §1) makes regressions here worth tracking.
+
+### Proposed Approach
+Criterion benches at N ∈ {100, 1 000, 10 000} tasks. Kept out of Phase 2
+only to hold PR size.
+
+## [2026-10-09] Read pool / concurrent loads
+
+- **Category**: `PERF`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase2-storage-sqlite-plan.md` §11
+- **Target Area**: `taskboard-storage-sqlite` (`connect.rs` pool shape)
+
+### Context & Description
+Phase 2 uses `max_connections(1)` (single-writer MVP, ADR 0005); reads go
+through the actor. If Phase 3 ever wants parallel reads while the actor
+writes, WAL readers can run on separate connections.
+
+### Proposed Approach
+Revisit `max_connections` + WAL reader semantics when a concrete
+concurrent-read need exists; not before.
+
+## [2026-10-09] Outbox compaction/coalescing at rest
+
+- **Category**: `FEATURE`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase2-storage-sqlite-plan.md` §11
+- **Target Area**: Phase 4 push side (storage exposes append/remove only)
+
+### Context & Description
+Storage deliberately stores and orders ops (plan decision 8); coalescing
+update+delete → delete etc. is actor logic built on these types.
+
+### Proposed Approach
+Implement coalescing as a Phase 4 push-side policy over the outbox port
+surface; no storage change required.
+
+## [2026-10-09] sqlx error-class mapping refinement
+
+- **Category**: `DESIGN`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase2-storage-sqlite-plan.md` §11
+- **Target Area**: `taskboard-domain` port, `taskboard-storage-sqlite` (`error.rs`)
+
+### Context & Description
+Constraint violations map to `RepositoryError::Corrupted` (plan decision
+12) — honest but coarse; a caller cannot distinguish "batch violated an
+FK" from "stored data is damaged".
+
+### Proposed Approach
+If coarseness bites in practice, propose a port variant (`Rejected`?) with
+an ADR rather than overloading `Corrupted` silently.

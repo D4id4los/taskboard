@@ -1,0 +1,112 @@
+#+title: ADR 0005: SQLite Local Persistence
+#+options: toc:nil
+
+- *Date:* 2026-10-09
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+Phase 2 of the growth roadmap adds the local disk cache
+(=taskboard-storage-sqlite=): the kiosk must boot instantly from cached
+data and keep operating offline, with local edits queued durably in the
+outbox until the next successful sync. The persistence port (ADR 0004
+ecosystem, Phase 1) is exactly =load() -> PersistedState= and
+=apply(Vec<PersistenceAction>)=; tombstones must survive restarts because
+R3/R5/R6 compare tombstone clocks across boots.
+
+* Decision
+
+** Fully normalized relational schema; no JSON columns
+
+One column per domain field ([[./../../crates/taskboard-storage-sqlite/migrations/0001_init.sql][=0001_init.sql=]]); =LocalOp= decomposes into an
+=op_kind= tag column plus the id columns it addresses. Every column is
+compile-time checked by =query!=; decode failures map onto
+=RepositoryError::Corrupted=; tombstone retention is plain SQL. Rejected:
+JSON payload columns (bypasses =query!= checking, invites serde drift) and
+a document-store layout (same objections, squanders sqlite).
+
+** TEXT ids and timestamps, never in ORDER BY
+
+Local ids are hyphenated-UUID =TEXT= primary keys, remote ids nullable
+=INTEGER= columns (all-or-none NULL, enforced at the codec layer) —
+debuggable in the =sqlite3= CLI. Timestamps are chrono-encoded =TEXT=
+(sqlite's =TEXT= affinity infers strings in the macros, so chrono columns
+use the =as "col: DateTime<Utc>"= override). *Caveat:* TEXT timestamps
+must never appear in =ORDER BY= (fractional-digit lengths vary); ordering
+is always by =sort_order=, =op_seq=, or id, and any "sort by time" is
+derived-view logic that belongs in Rust. Note also that SQLite =TEXT
+PRIMARY KEY= columns are nullable unless declared =NOT NULL= — the schema
+declares them explicitly.
+
+** Durability stance: WAL + synchronous=NORMAL, one connection
+
+=journal_mode=WAL=, =synchronous=NORMAL=, =foreign_keys=ON=,
+=busy_timeout=, =max_connections(1)=. WAL+NORMAL survives *app* crashes
+without loss — the outbox's crash-safe promise; an OS crash / power loss
+may drop the newest commits, an accepted kiosk trade-off. Revisit only if
+power-loss field reports show lost edits. The single connection eliminates
+the =SQLITE_BUSY= class (the storage actor is the only writer) and is
+*required* for =:memory:= databases, which live per connection.
+
+** Boot-time embedded migrations; immutable once shipped
+
+=sqlx::migrate!()= embeds the SQL and =open()= applies pending migrations
+before returning — production boots need no =sqlx-cli= and releases carry
+their schema. Applied migrations are checksummed by sqlx and must never be
+edited after a release; schema changes are always new numbered files
+(copy-table-and-rename for sqlite's limited =ALTER TABLE=).
+
+** One transaction per apply batch, fixed FK-safe order
+
+The batch executes boards → stacks → labels → tasks (+ =task_labels=) →
+outbox removals → outbox appends → validators → sync status; any failure
+rolls back the whole batch. Entity writes are =INSERT … ON CONFLICT DO
+UPDATE= upserts — *never* =INSERT OR REPLACE=, which deletes-then-inserts
+and would fire =ON DELETE CASCADE= on =task_labels=. Task label sets are
+replaced wholesale inside the transaction (the domain models them as one
+whole-set field). Outbox rows upsert on =op_id= so re-applying a batch is
+idempotent; queue order is the =op_seq= =AUTOINCREMENT=.
+
+** pending_ops is derived, never stored
+
+=sync.pending_ops= is =COUNT(*)= on the outbox at load time; a stored
+counter can drift from the queue it summarizes. =UpsertSyncStatus=
+persists phase and last success only.
+
+** Tombstones are retained forever (MVP)
+
+Tombstones are ordinary rows with =deleted = 1=; purging early would
+resurrect remotely-deleted entities on the next pull. When local db growth
+becomes real, a =PruneTombstones= action executing =DELETE FROM tasks
+WHERE deleted = 1 AND ck_deleted < ?= (etc.) needs no migration — the
+mechanism is backlogged, not improvised.
+
+** Constraint violations map to Corrupted
+
+The port has exactly two failure classes. FK/CHECK/UNIQUE violations are
+integrity failures of the batch or dataset → =Corrupted= (not retryable);
+io/busy/locked → =Unavailable=. If finer classes are ever needed, extend
+the port deliberately with an ADR.
+
+** Compile-time checked SQL and the offline workflow
+
+=query!=/=query_as!= everywhere SQL appears. The macros resolve offline
+against the committed =.sqlx/= cache at the workspace root. After touching
+a query or migration, run =scripts/sqlx-prepare.sh= and commit =.sqlx/= *with*
+the change; CI runs =cargo sqlx prepare --check= and compiles with
+=SQLX_OFFLINE=true=. The sqlx-cli major/minor must match the sqlx crate —
+the offline data format changed across versions:
+
+: cargo install sqlx-cli --version 0.9 --no-default-features --features sqlite
+
+* Consequences
+
+- Phase 3 (state engine) gets =StorageHandle::apply/load= with a
+  reply-based flush barrier (await the last apply's oneshot reply).
+- Phase 4 (sync) reads outbox order via the engine; validators survive
+  restarts in =sync_metadata=.
+- Phase 5 (app) wires =open(path)= to the figment-configured db path; the
+  boot is migrations-free; shutdown drops all handles and awaits the actor.
+- Constraint violations land in =Corrupted= until the port grows a finer
+  variant (backlogged, ADR-gated).
