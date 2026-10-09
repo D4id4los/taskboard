@@ -328,6 +328,14 @@ impl TaskRepository for SqliteTaskRepository {
 }
 
 impl SqliteTaskRepository {
+    /// The underlying pool (single connection). Exposed for diagnostics
+    /// and tests; production code goes through the port methods or the
+    /// actor.
+    #[must_use]
+    pub fn pool(&self) -> &sqlx::SqlitePool {
+        &self.pool
+    }
+
     #[tracing::instrument(skip(self), err)]
     #[allow(clippy::too_many_lines)] // eight SELECTs; the length is the schema's
     async fn load_inner(&self) -> Result<PersistedState, RepositoryError> {
