@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod actor;
 pub mod backoff;
 pub mod client;
 pub mod color;
@@ -18,8 +19,10 @@ pub mod error;
 pub mod mapping;
 pub mod model;
 pub mod ocs;
+pub mod poll;
 pub mod push_exec;
 
+pub use actor::{SyncActorConfig, spawn_sync_actor};
 pub use backoff::BackoffPolicy;
 pub use client::{
     BoardChanges, CloneOptions, DeckClient, Fetch, LabelChanges, NewCard, RetrySleep, StackChanges,
@@ -31,4 +34,5 @@ pub use model::{
     Attachment, Board, BoardPermissions, Card, CardLabel, ExtendedData, Label, Participant, Stack,
     StackFilter,
 };
+pub use poll::poll_backoff;
 pub use push_exec::{BindingOverlay, GroupOutcome, PushExecutor};
