@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM outbox WHERE op_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "73c5c2fafb71fcba2e17b02817fc37616fc4e1e677dc3c0ddbe74adec4ab13b2"
+}

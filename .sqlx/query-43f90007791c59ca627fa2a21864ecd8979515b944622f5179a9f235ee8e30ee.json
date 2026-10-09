@@ -1,0 +1,266 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, stack, remote_board_id, remote_stack_id, remote_card_id,\n                      title, description,\n                      duedate as \"duedate: DateTime<Utc>\",\n                      done as \"done: DateTime<Utc>\",\n                      sort_order,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_description, ck_duedate, ck_done, ck_position,\n                      ck_labels, ck_archived, ck_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM tasks ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "stack",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "stack"
+          }
+        }
+      },
+      {
+        "name": "remote_board_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "remote_board_id"
+          }
+        }
+      },
+      {
+        "name": "remote_stack_id",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "remote_stack_id"
+          }
+        }
+      },
+      {
+        "name": "remote_card_id",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "remote_card_id"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "duedate: DateTime<Utc>",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "duedate"
+          }
+        }
+      },
+      {
+        "name": "done: DateTime<Utc>",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "done"
+          }
+        }
+      },
+      {
+        "name": "sort_order",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "name": "archived: bool",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "archived"
+          }
+        }
+      },
+      {
+        "name": "deleted: bool",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "deleted"
+          }
+        }
+      },
+      {
+        "name": "ck_title",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "ck_title"
+          }
+        }
+      },
+      {
+        "name": "ck_description",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "ck_description"
+          }
+        }
+      },
+      {
+        "name": "ck_duedate",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "ck_duedate"
+          }
+        }
+      },
+      {
+        "name": "ck_done",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "ck_done"
+          }
+        }
+      },
+      {
+        "name": "ck_position",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "ck_position"
+          }
+        }
+      },
+      {
+        "name": "ck_labels",
+        "ordinal": 17,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "ck_labels"
+          }
+        }
+      },
+      {
+        "name": "ck_archived",
+        "ordinal": 18,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "ck_archived"
+          }
+        }
+      },
+      {
+        "name": "ck_deleted",
+        "ordinal": 19,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "ck_deleted"
+          }
+        }
+      },
+      {
+        "name": "remote_seen: DateTime<Utc>",
+        "ordinal": 20,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "remote_seen"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "43f90007791c59ca627fa2a21864ecd8979515b944622f5179a9f235ee8e30ee"
+}

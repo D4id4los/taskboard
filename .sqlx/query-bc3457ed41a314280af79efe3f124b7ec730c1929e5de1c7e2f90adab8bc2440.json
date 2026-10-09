@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO outbox (op_id, op_kind, task_id, stack_id, label_id, queued_at)\n                   VALUES (?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(op_id) DO UPDATE SET\n                       op_kind = excluded.op_kind,\n                       task_id = excluded.task_id,\n                       stack_id = excluded.stack_id,\n                       label_id = excluded.label_id,\n                       queued_at = excluded.queued_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "bc3457ed41a314280af79efe3f124b7ec730c1929e5de1c7e2f90adab8bc2440"
+}
