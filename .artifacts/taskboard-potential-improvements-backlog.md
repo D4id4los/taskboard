@@ -511,3 +511,34 @@ remote value (documented in ADR 0004).
 ### Proposed Approach
 Configurable remote-age bias (subtract N seconds from remote timestamps
 before comparison) if real-server use (M1) shows revert-on-sync symptoms.
+
+## [2026-10-09] Logging statements for taskboard-domain
+
+- **Category**: `DX`
+- **Originating Plan/Report**: Chat/Context 2026-10-09 (user request during
+  the Phase 2 plan review; forgotten in the initial Phase 1 commits)
+- **Target Area**: `crates/taskboard-domain/`
+
+### Context & Description
+The domain crate shipped without `tracing` statements, so a debug log
+attached to a bug report cannot show which merge primitive or pipeline step
+produced a surprising state. Coding guidelines §4 expects "sufficient
+logging statements ... that a user's default log output can localise a bug
+report, and a `debug` or `trace` level log can pinpoint the location of most
+bugs" — the pure core is currently the biggest hole in that story.
+
+### Proposed Approach
+Add a pass instrumenting the domain's public entry points: `trace!` at the
+top of each merge primitive and `apply_sync_report` (inputs' identities and
+chosen outcome per rule R1–R9 — typed values only, no text assertions in
+tests, user content only at `trace`), `debug!` for rule decisions (e.g.
+"R5 resurrect" as the enum/variant facts, not prose). Two open design
+questions to settle first:
+1. Domain purity: the crate's dependency cap is `serde`/`chrono`/`uuid`/
+   `thiserror` with zero incidental deps; adding `tracing` (workspace-pinned,
+   no features) relaxes the documented cap and deserves a one-line ADR 0004/
+   architecture.org amendment rather than a silent addition.
+2. Alternatively (if the cap stays), instrument at the Phase 3 engine
+   boundary where the policy is invoked, accepting coarser attribution.
+Trigger: before or during Phase 3 work, so engine-level debugging benefits
+from the start.
