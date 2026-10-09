@@ -207,6 +207,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 cargo test --doc --workspace
 cargo deny check --workspace
+cargo llvm-cov --workspace
 ```
 
 Do not offer a result containing `clippy` warnings or formatting drift.
