@@ -388,7 +388,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+        #![proptest_config(test_support::proptest_config(256))]
 
         #[test]
         fn empty_batch_is_identity(state in test_support::persisted_state_strategy()) {
@@ -410,7 +410,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+        #![proptest_config(test_support::proptest_config(256))]
 
         #[test]
         fn persisted_state_roundtrips_through_serde(state in test_support::persisted_state_strategy()) {

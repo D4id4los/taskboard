@@ -16,13 +16,12 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use chrono::TimeZone;
 use proptest::prelude::*;
 use taskboard_domain::StateCommand;
 use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::persistence::TaskRepository;
 use taskboard_domain::test_support::{
-    CountingIds, InMemoryRepository, persisted_state_strategy, snapshot_strategy,
+    CountingIds, InMemoryRepository, persisted_state_strategy, proptest_config, snapshot_strategy,
 };
 use taskboard_domain::{
     AppState, Board, BoardId, Clock, Color, CommandOutcome, Label, LabelClocks, LocalOp, OpId,
@@ -32,14 +31,12 @@ use taskboard_domain::{
 use taskboard_state::EngineCore;
 use taskboard_state::spawn_state_engine;
 
-const NOW_SECS: i64 = 36_000;
+mod common;
+
+use common::{T0, stranger_task_id, ts};
 
 fn now() -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc.timestamp_opt(NOW_SECS, 0).unwrap()
-}
-
-fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    ts(T0)
 }
 
 fn uuid(raw: u128) -> uuid::Uuid {
@@ -153,7 +150,10 @@ fn arbitrary_batch() -> impl Strategy<Value = Vec<PersistenceAction>> {
 }
 
 proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+    // The shared config (not the default): proptest's failure persistence
+    // aborts under Miri isolation (`getcwd`) — disabling it there is an
+    // environment gate, not a weakened assertion.
+    #![proptest_config(proptest_config(256))]
 
     #[test]
     fn p2_interpret_matches_repository_load(
@@ -411,14 +411,6 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
     (state, stack_id, task_id, label_id)
 }
 
-fn stale_task_id() -> TaskId {
-    let ids = CountingIds::new();
-    for _ in 0..1_000 {
-        ids.new_op_id();
-    }
-    ids.new_task_id()
-}
-
 /// Drives one generated sequence through a live engine and checks the
 /// coherence properties after every command (P4), then op freshness (P5).
 ///
@@ -520,7 +512,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                     label: labels[label_idx % labels.len()],
                 },
                 Step::Stale { done } => StateCommand::SetTaskDone {
-                    id: stale_task_id(),
+                    id: stranger_task_id(),
                     done: *done,
                 },
             };
@@ -640,7 +632,7 @@ impl Clock for FixedTestClock {
 }
 
 proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    #![proptest_config(proptest_config(64))]
 
     // Environment gate (testing_strategy §10): runs the live tokio
     // engine — out of Miri's scope; native runs cover it fully.

@@ -769,3 +769,63 @@ by the A-series). Also note: even at 16 proptest cases the domain suite
 takes ~45 min under Miri — the weekly CI job (120 min budget) may need
 `PROPTEST_CASES` capping for the miri job, or it will already be near
 the limit.
+
+## [2026-10-09] Reduce per-message state cloning in the State Engine
+
+- **Category**: `Performance`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md` (decision 15, accepted trade-off) / Phase 3 review
+- **Target Area**: `crates/taskboard-state/` (`core.rs`, `actor.rs`)
+
+### Context & Description
+Every accepted message currently deep-clones the entity maps several
+times: `EngineCore::app()` clones four `BTreeMap`s per call, `interpret`
+calls it twice (before/after comparison for publish-iff-changed) plus
+once more inside `publish`, and the actor clones the action batch once
+more to hand the repository its own copy. Irrelevant at personal
+taskboard scale, but the project targets low-power kiosk hardware and
+this is the per-interaction hot path.
+
+### Proposed Approach
+Analyse only if profiling shows a problem. The `AppState` projection is
+already shared with the UI as an `Arc` inside the `ArcSwap`; the same
+shape could apply to the internal message path — e.g. keep the working
+state behind a cheaply cloneable handle (or share the maps as
+`Arc<BTreeMap>` with copy-on-write semantics) so `interpret`'s
+changed-detection compares cheap handles and `publish` swaps the very
+`Arc` it built, instead of cloning out of the core again. The action
+batch given to the repository could likewise be `Arc<[PersistenceAction]>`
+or drained from the plan rather than cloned. Requires care to keep ADR
+0006's single-advance rule (memory advances only by interpreting the
+persisted batch) and the P2/P3/P4 equivalence pins intact.
+
+## [2026-10-09] Miri CI tuning: verify and time-cap the weekly job
+
+- **Category**: `Testing` / `DX`
+- **Originating Plan/Report**: Phase 3 review fix-up (this branch) / prior entry "Miri environment limits"
+- **Target Area**: `.github/workflows/miri.yml`, proptest configs
+
+### Context & Description
+The Phase 3 review fixed the *aborts* the weekly Miri job would hit:
+proptest failure-persistence is now disabled under `cfg!(miri)` via
+`test_support::proptest_config` (the `getcwd` isolation abort at runner
+startup), and `sqlite_smoke` (tempdir `mkdir` + sqlite FFI) is
+`#[cfg_attr(miri, ignore)]`-gated like the insta S-series. Locally
+verified: the A-series runs 12/12 under Miri (~9 s interpreted, plus
+several minutes of compile), the smoke test is skipped, and the exact
+aborting scenarios are gone. What is NOT verified is the full CI
+invocation end-to-end: proptest properties are extremely slow under the
+interpreter (one P-equivalence property at a *single* case exceeded a
+9-minute local budget), so at 256 cases the job almost certainly blows
+its 120-minute timeout — the job has never actually run green on this
+suite.
+
+### Proposed Approach
+A dedicated agent (own branch, e.g. `ci/miri-tuning`, own checkout so
+other work continues) drives `workflow_dispatch` on the weekly job and
+iterates on config until green within budget: cap cases for the Miri job
+via `PROPTEST_CASES` env in `miri.yml` (proptest reads it natively),
+consider splitting domain/state into parallel jobs, and if interpreter
+throughput still cannot fit, scope the job's test filter (unit + A-series
++ P2/P3 at reduced cases) with the scope documented in
+testing_strategy §10. Landing state must keep the property: every
+reduction is an environment/speed gate, never a weakened assertion.

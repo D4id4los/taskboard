@@ -17,43 +17,18 @@
 
 use std::sync::Arc;
 
-use chrono::TimeZone;
-use taskboard_domain::idgen::IdGenerator as _;
-
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    Clock, Color, CommandOutcome, Label, LabelClocks, LocalOp, PushOutcome, PushResult,
-    RemoteBoard, RemoteBoardSnapshot, Stack, StackClocks, StateCommand, SyncCommand, SyncErrorKind,
-    SyncPhase, SyncReport, SystemEvent,
+    Color, CommandOutcome, LocalOp, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot,
+    StateCommand, SyncCommand, SyncErrorKind, SyncPhase, SyncReport, SystemEvent,
 };
 use taskboard_state::spawn_state_engine;
 
 use insta::assert_yaml_snapshot;
 
-const T0: i64 = 36_000; // 10:00:00Z
+mod common;
 
-fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc.timestamp_opt(secs, 0).unwrap()
-}
-
-#[derive(Debug)]
-struct FixedClock(std::sync::Mutex<i64>);
-
-impl FixedClock {
-    fn new(secs: i64) -> Self {
-        Self(std::sync::Mutex::new(secs))
-    }
-
-    fn advance(&self, secs: i64) {
-        *self.0.lock().expect("poisoned") += secs;
-    }
-}
-
-impl Clock for FixedClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        ts(*self.0.lock().expect("poisoned"))
-    }
-}
+use common::{FixedClock, T0, seed_board_state, stranger_task_id, ts};
 
 /// A board-bearing fake repo (no command creates boards) plus the
 /// running engine over it. The clock advances one minute per message.
@@ -67,8 +42,8 @@ struct Scenario {
 
 impl Scenario {
     async fn start() -> Self {
-        let repo = Arc::new(InMemoryRepository::with_state(seed_board_state()));
-        let clock = Arc::new(FixedClock::new(T0));
+        let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
+        let clock = FixedClock::new(T0);
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
         let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
@@ -113,22 +88,6 @@ impl Scenario {
         let persisted = self.repo.snapshot();
         assert_yaml_snapshot!(format!("{scenario}_persisted_state"), &persisted);
     }
-}
-
-fn seed_board_state() -> taskboard_domain::PersistedState {
-    let ids = CountingIds::new();
-    let board = taskboard_domain::Board {
-        id: ids.new_board_id(),
-        remote: None,
-        title: "kiosk".into(),
-        color: Color::new("0000ff"),
-        archived: false,
-        deleted: false,
-        remote_seen: None,
-    };
-    let mut state = taskboard_domain::PersistedState::default();
-    state.boards.insert(board.id, board);
-    state
 }
 
 /// S1 — fresh-boot authoring: stack → task → edit → done → label →
@@ -198,8 +157,6 @@ async fn s1_fresh_boot_authoring() {
     .await;
     s.run(StateCommand::DeleteTask { id: task }).await;
     s.snap("s1");
-    // Silence unused warnings for the seeded-label fixture type imports.
-    let _ = (stack, label);
     drop(s);
 }
 
@@ -431,13 +388,7 @@ async fn s5_rejections_leave_state_untouched() {
     let before = s.repo.snapshot();
 
     // Stale id: unknown task.
-    let stranger = {
-        let ids = CountingIds::new();
-        for _ in 0..1_000 {
-            ids.new_op_id();
-        }
-        ids.new_task_id()
-    };
+    let stranger = stranger_task_id();
     assert!(matches!(
         s.run_raw(StateCommand::SetTaskDone {
             id: stranger,
@@ -469,14 +420,6 @@ async fn s5_rejections_leave_state_untouched() {
         before,
         "rejections and no-ops must not touch the persisted state"
     );
-    // Unused fixture type keep-alive (label/stack fixtures unused here).
-    let _ = (std::mem::size_of::<(
-        Label,
-        LabelClocks,
-        Stack,
-        StackClocks,
-        SyncPhase,
-    )>(),);
 }
 
 /// S6 — network-lost/restored cycle: the phase machine's transitions.

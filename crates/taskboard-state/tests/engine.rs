@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Environment gate, not a weakened assertion: this suite drives the live
-// tokio engine (timers, channel scheduling), which testing_strategy §10
-// scopes out of Miri ("pure logic, serialization, and state-transition
-// tests"). The transition logic it routes to is Miri-covered in the
-// domain and in `core.rs`.
-#![cfg_attr(miri, allow(dead_code))]
 //! Async black-box routing suite (A-series): one behavior per test, at
 //! the engine-thread layer only — command *semantics* are pinned in the
 //! domain's pure suite and are not re-asserted here.
@@ -12,50 +6,28 @@
 //! Determinism: fixed/advancing logical clock, counting ids, oneshot
 //! replies and the Flush barrier as completion signals, paused-time
 //! polling with timeout guards (no wall-clock sleeps).
+//!
+//! The suite is Miri-clean and runs under Miri too (it only exercises
+//! basic tokio scheduling, no timers); the transition logic it routes to
+//! is Miri-covered in the domain and in `core.rs`.
 
 use std::sync::Arc;
 use std::time::Duration;
-
-use chrono::TimeZone;
 
 use taskboard_domain::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, TaskRepository,
 };
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    AppState, Clock, Color, CommandOutcome, EngineSignal, IdGenerator, RemoteBoard, RemoteBoardId,
+    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, RemoteBoard, RemoteBoardId,
     RemoteBoardSnapshot, Stack, StackClocks, StackId, StateCommand, SyncCommand, SyncErrorKind,
     SyncPhase, SyncReport, SystemEvent,
 };
 use taskboard_state::{EngineStartupError, ExecuteError, spawn_state_engine};
 
-const T0: i64 = 36_000; // 10:00:00Z
+mod common;
 
-fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc.timestamp_opt(secs, 0).unwrap()
-}
-
-/// Fixed logical clock: every message in a scenario observes the same
-/// instant unless advanced explicitly.
-#[derive(Debug)]
-struct FixedClock(std::sync::Mutex<i64>);
-
-impl FixedClock {
-    fn new(secs: i64) -> Self {
-        Self(std::sync::Mutex::new(secs))
-    }
-
-    #[allow(dead_code)]
-    fn advance(&self, secs: i64) {
-        *self.0.lock().expect("poisoned") += secs;
-    }
-}
-
-impl Clock for FixedClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        ts(*self.0.lock().expect("poisoned"))
-    }
-}
+use common::{FixedClock, T0, seed_board_state, ts};
 
 /// Fails the first `failures` applies with `Unavailable`, then delegates —
 /// non-mutating on failure, matching transactional reality.
@@ -68,7 +40,7 @@ struct FlakyRepository {
 impl FlakyRepository {
     fn new(failures: u32) -> Self {
         Self {
-            inner: InMemoryRepository::with_state(seeded_board_state()),
+            inner: InMemoryRepository::with_state(seed_board_state("board")),
             remaining_failures: std::sync::atomic::AtomicU32::new(failures),
         }
     }
@@ -126,9 +98,9 @@ impl Default for Spawner {
         // Every scenario is seeded with one live board: the domain
         // catalogue rejects board-scoped creates (`NoBoard`) otherwise.
         Self {
-            repo: Arc::new(InMemoryRepository::with_state(seeded_board_state())),
+            repo: Arc::new(InMemoryRepository::with_state(seed_board_state("board"))),
             ids: Arc::new(CountingIds::new()),
-            clock: Arc::new(FixedClock::new(T0)),
+            clock: FixedClock::new(T0),
         }
     }
 }
@@ -547,7 +519,7 @@ async fn a12_boot_failure_surfaces_load_error() {
     let result = spawn_state_engine(
         Arc::new(DeadRepository),
         Arc::new(CountingIds::new()),
-        Arc::new(FixedClock::new(T0)),
+        FixedClock::new(T0),
         sync_out,
         report_rx,
         system_rx,
@@ -562,23 +534,6 @@ async fn a12_boot_failure_surfaces_load_error() {
 // ---------------------------------------------------------------------
 // shared fixtures
 // ---------------------------------------------------------------------
-
-/// A persisted state holding exactly one live (unbound) board.
-fn seeded_board_state() -> PersistedState {
-    let ids = CountingIds::new();
-    let board = taskboard_domain::Board {
-        id: ids.new_board_id(),
-        remote: None,
-        title: "board".into(),
-        color: Color::new("0000ff"),
-        archived: false,
-        deleted: false,
-        remote_seen: None,
-    };
-    let mut state = PersistedState::default();
-    state.boards.insert(board.id, board);
-    state
-}
 
 fn seeded_stack_state() -> (PersistedState, StackId) {
     let ids = CountingIds::new();
