@@ -46,7 +46,13 @@ impl InMemoryRepository {
 
 impl TaskRepository for InMemoryRepository {
     fn load(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>> {
-        Box::pin(async { Ok(self.snapshot()) })
+        Box::pin(async {
+            let mut state = self.snapshot();
+            // `pending_ops` is derived, never stored (parity with the sqlite
+            // implementation): the outbox is the single source of truth.
+            state.sync.pending_ops = u32::try_from(state.outbox.len()).unwrap_or(u32::MAX);
+            Ok(state)
+        })
     }
 
     fn apply(&self, actions: Vec<PersistenceAction>) -> BoxFuture<'_, Result<(), RepositoryError>> {
@@ -76,6 +82,10 @@ impl TaskRepository for InMemoryRepository {
                     }
                     PersistenceAction::UpsertValidators(key, validators) => {
                         state.validators.insert(key, validators);
+                    }
+                    PersistenceAction::UpsertSyncStatus(status) => {
+                        state.sync.phase = status.phase;
+                        state.sync.last_success = status.last_success;
                     }
                 }
             }

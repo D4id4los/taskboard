@@ -151,6 +151,10 @@ pub enum PersistenceAction {
     FailOp(OpId),
     /// Store validators for one endpoint.
     UpsertValidators(ValidatorKey, SyncValidators),
+    /// Persist the sync status (phase + last success). `pending_ops` is NOT
+    /// stored: implementations derive it at load time from the outbox depth,
+    /// so a stored counter can never drift from the queue it summarizes.
+    UpsertSyncStatus(SyncStatus),
 }
 
 #[cfg(test)]

@@ -4,7 +4,8 @@
 //! Any [`TaskRepository`] implementation must satisfy these behavioral
 //! facts. `InMemoryRepository` runs them in-repo (proven at build time);
 //! Phase 2 re-runs the identical harness against the sqlite adapter by
-//! calling [`assert_task_repository_contract`] from its own tests.
+//! calling [`assert_task_repository_contract_async`] from its own async
+//! tests.
 
 use std::task::{Context, Poll, Waker};
 
@@ -17,18 +18,19 @@ use crate::outbox::{LocalOp, OpId, PendingOp};
 use crate::persistence::{
     PersistedState, PersistenceAction, SyncValidators, TaskRepository, ValidatorKey,
 };
+use crate::state::SyncStatus;
 
-/// Runs the full contract against `repo`, awaiting futures synchronously.
+/// Runs the full contract against `repo`, awaiting futures with the caller's
+/// runtime (real IO implementations need a reactor; the in-memory fake is
+/// ready under any executor).
 ///
 /// # Panics
 ///
-/// Panics on the first violated contract clause (with the clause name), or
-/// if an implementation's future stays `Pending` under the harness' no-op
-/// waker (contract implementations must make progress without a reactor).
+/// Panics on the first violated contract clause (with the clause name).
 #[allow(clippy::too_many_lines)] // one sequential contract; splitting hides the flow
-pub fn assert_task_repository_contract<R: TaskRepository>(repo: &R) {
+pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) {
     // A repo starts loadable, even if empty.
-    let initial: PersistedState = block_on(repo.load()).expect("load");
+    let initial: PersistedState = repo.load().await.expect("load");
 
     // Entities of every kind inserted by a batch are returned by the next
     // load, and CompleteOp removes the enqueued op from the outbox without
@@ -90,9 +92,9 @@ pub fn assert_task_repository_contract<R: TaskRepository>(repo: &R) {
         PersistenceAction::UpsertTask(task.clone()),
         PersistenceAction::EnqueueOp(op.clone()),
     ];
-    block_on(repo.apply(batch)).expect("apply batch");
+    repo.apply(batch).await.expect("apply batch");
 
-    let after: PersistedState = block_on(repo.load()).expect("reload");
+    let after: PersistedState = repo.load().await.expect("reload");
     assert_eq!(
         after.boards.get(&board.id),
         Some(&board),
@@ -118,9 +120,16 @@ pub fn assert_task_repository_contract<R: TaskRepository>(repo: &R) {
         after.outbox.iter().any(|o| o.op_id == op.op_id),
         "enqueued op must be present"
     );
+    assert_eq!(
+        after.sync.pending_ops as usize,
+        after.outbox.len(),
+        "pending_ops must be derived from the outbox depth"
+    );
 
-    block_on(repo.apply(vec![PersistenceAction::CompleteOp(op.op_id)])).expect("complete op");
-    let after = block_on(repo.load()).expect("reload");
+    repo.apply(vec![PersistenceAction::CompleteOp(op.op_id)])
+        .await
+        .expect("complete op");
+    let after = repo.load().await.expect("reload");
     assert!(
         !after.outbox.iter().any(|o| o.op_id == op.op_id),
         "CompleteOp must remove the op"
@@ -130,9 +139,16 @@ pub fn assert_task_repository_contract<R: TaskRepository>(repo: &R) {
         Some(&task),
         "CompleteOp must not touch entities"
     );
+    assert_eq!(
+        after.sync.pending_ops as usize,
+        after.outbox.len(),
+        "completing an op must move the derived pending_ops"
+    );
 
     // FailOp on an already-absent id is a no-op, not an error.
-    block_on(repo.apply(vec![PersistenceAction::FailOp(op.op_id)])).expect("fail absent op");
+    repo.apply(vec![PersistenceAction::FailOp(op.op_id)])
+        .await
+        .expect("fail absent op");
 
     // Validators upsert and overwrite.
     let key = ValidatorKey::Boards;
@@ -140,14 +156,70 @@ pub fn assert_task_repository_contract<R: TaskRepository>(repo: &R) {
         etag: Some("\"v1\"".into()),
         last_modified: None,
     };
-    block_on(repo.apply(vec![PersistenceAction::UpsertValidators(key, v.clone())]))
+    repo.apply(vec![PersistenceAction::UpsertValidators(key, v.clone())])
+        .await
         .expect("validators");
-    let after = block_on(repo.load()).expect("reload");
+    let after = repo.load().await.expect("reload");
     assert_eq!(
         after.validators.get(&key),
         Some(&v),
         "validators must round-trip"
     );
+
+    // Sync status persists phase + last success; pending_ops stays derived
+    // from the (non-empty) outbox, not from the status payload.
+    let op2 = PendingOp {
+        op_id: OpId(uuid::Uuid::from_u128(4)),
+        op: LocalOp::UpdateTask(task.id),
+        queued_at: SystemClock.now(),
+    };
+    repo.apply(vec![PersistenceAction::EnqueueOp(op2.clone())])
+        .await
+        .expect("enqueue for sync status");
+    let status = SyncStatus {
+        phase: crate::state::SyncPhase::Offline,
+        last_success: Some(Utc.timestamp_opt(1_700_000_000, 0).unwrap()),
+        pending_ops: 999, // stored payload drift; must be ignored on load
+    };
+    repo.apply(vec![PersistenceAction::UpsertSyncStatus(status.clone())])
+        .await
+        .expect("sync status");
+    let after = repo.load().await.expect("reload");
+    assert_eq!(after.sync.phase, status.phase, "sync phase must round-trip");
+    assert_eq!(
+        after.sync.last_success, status.last_success,
+        "last_success must round-trip"
+    );
+    assert_eq!(
+        after.sync.pending_ops as usize,
+        after.outbox.len(),
+        "pending_ops must be re-derived, not taken from the status payload"
+    );
+
+    repo.apply(vec![PersistenceAction::CompleteOp(op2.op_id)])
+        .await
+        .expect("complete second op");
+    let after = repo.load().await.expect("reload");
+    assert_eq!(
+        after.sync.pending_ops as usize,
+        after.outbox.len(),
+        "outbox depth remains the single source of truth"
+    );
+}
+
+/// Runs the full contract against `repo`, awaiting futures synchronously.
+///
+/// Only for implementations whose futures are immediately ready (the
+/// in-memory fake); real IO backends need
+/// [`assert_task_repository_contract_async`] under an async runtime.
+///
+/// # Panics
+///
+/// Panics on the first violated contract clause (with the clause name), or
+/// if an implementation's future stays `Pending` under the harness' no-op
+/// waker (contract implementations must make progress without a reactor).
+pub fn assert_task_repository_contract<R: TaskRepository>(repo: &R) {
+    block_on(assert_task_repository_contract_async(repo));
 }
 
 fn stack_clocks_at(secs: i64) -> crate::entities::StackClocks {
@@ -184,7 +256,7 @@ fn clock_at(secs: i64) -> TaskClocks {
 
 /// Executor-free await via the built-in no-op waker: polls once and panics
 /// if the future reports `Pending` (the fakes must be ready).
-fn block_on<T>(fut: impl std::future::Future<Output = T>) -> T {
+pub(crate) fn block_on<T>(fut: impl std::future::Future<Output = T>) -> T {
     let mut fut = Box::pin(fut);
     match fut.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(value) => value,
@@ -195,6 +267,9 @@ fn block_on<T>(fut: impl std::future::Future<Output = T>) -> T {
 #[cfg(test)]
 mod tests {
     use super::assert_task_repository_contract;
+    use crate::persistence::PersistedState;
+    use crate::persistence::TaskRepository;
+    use crate::state::{SyncPhase, SyncStatus};
     use crate::test_support::memory::InMemoryRepository;
 
     #[test]
@@ -203,10 +278,22 @@ mod tests {
     }
 
     #[test]
-    fn in_memory_repository_preserves_preloaded_state() {
-        let mut state = crate::persistence::PersistedState::default();
-        state.sync.pending_ops = 7;
-        let repo = crate::test_support::memory::InMemoryRepository::with_state(state);
-        assert_eq!(repo.snapshot().sync.pending_ops, 7);
+    fn in_memory_repository_preserves_preloaded_state_currently_pins_derivation() {
+        // Deliberate contract change (phase 2 decision 9): `pending_ops` is
+        // never stored; it is re-derived from the outbox depth at load. A
+        // preloaded status keeps its phase and last_success; a hand-set
+        // pending_ops counter does not survive the load boundary.
+        let state = PersistedState {
+            sync: SyncStatus {
+                phase: SyncPhase::Offline,
+                last_success: None,
+                pending_ops: 7,
+            },
+            ..PersistedState::default()
+        };
+        let repo = InMemoryRepository::with_state(state);
+        let loaded = crate::test_support::contract::block_on(repo.load()).expect("load");
+        assert_eq!(loaded.sync.phase, SyncPhase::Offline);
+        assert_eq!(loaded.sync.pending_ops, 0);
     }
 }
