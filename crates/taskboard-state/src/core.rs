@@ -69,7 +69,10 @@ impl EngineCore {
         &self.state.sync
     }
 
-    /// Test/assertion view mirroring the persisted shape.
+    /// Test/assertion view mirroring the persisted shape. One divergence
+    /// from what a repository could return: the memory-only `Syncing`
+    /// transient set by [`Self::mark_syncing`] appears here even though
+    /// persistence never stores it (a repository `load()` never sees it).
     #[must_use]
     pub fn persisted_view(&self) -> PersistedState {
         self.state.clone()

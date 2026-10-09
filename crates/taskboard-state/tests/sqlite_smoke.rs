@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Environment gate, not a weakened assertion: this suite drives the live
-// tokio engine (timers, channel scheduling), which testing_strategy §10
-// scopes out of Miri ("pure logic, serialization, and state-transition
-// tests"). The transition logic it routes to is Miri-covered in the
-// domain and in `core.rs`.
-#![cfg_attr(miri, allow(dead_code))]
 //! I1: engine ↔ port adapter ↔ storage actor ↔ sqlite in one routing
 //! smoke. One command round-trips durably; a second engine boot on the
 //! same file-backed database hydrates the task.
+//!
+//! Environment gate, not a weakened assertion: the smoke creates a real
+//! temp directory (`mkdir` is unavailable under Miri isolation) and
+//! drives sqlite FFI, both outside testing-strategy §10's Miri scope —
+//! the routing logic it exercises is Miri-covered by the A-series.
 
 use std::sync::Arc;
 
-use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::persistence::TaskRepository;
 use taskboard_domain::test_support::CountingIds;
-use taskboard_domain::{Clock, CommandOutcome, StateCommand, SyncCommand, SyncReport, SystemEvent};
+use taskboard_domain::{CommandOutcome, StateCommand, SyncCommand, SyncReport, SystemEvent};
 use taskboard_state::spawn_state_engine;
 
+mod common;
+
+use common::{FixedClock, T0};
+
+#[cfg_attr(miri, ignore)] // tempdir mkdir + sqlite FFI (environment gate)
 #[tokio::test]
 async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -44,7 +47,7 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
         let (engine, engine_join) = spawn_state_engine(
             repo_port,
             Arc::new(CountingIds::new()),
-            Arc::new(FixedClock),
+            FixedClock::new(T0),
             sync_out,
             report_rx,
             system_rx,
@@ -103,26 +106,5 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
 
 /// A live board entity with a deterministic id.
 fn seeded_board() -> taskboard_domain::Board {
-    let ids = CountingIds::new();
-    taskboard_domain::Board {
-        id: ids.new_board_id(),
-        remote: None,
-        title: "board".into(),
-        color: taskboard_domain::Color::new("0000ff"),
-        archived: false,
-        deleted: false,
-        remote_seen: None,
-    }
-}
-
-/// Fixed logical clock for the smoke (UTC 10:00:00Z, all messages).
-use chrono::TimeZone;
-
-#[derive(Debug)]
-struct FixedClock;
-
-impl Clock for FixedClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc.timestamp_opt(36_000, 0).unwrap()
-    }
+    common::board("board")
 }

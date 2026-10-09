@@ -80,6 +80,21 @@ impl IdGenerator for CountingIds {
     }
 }
 
+/// The standard proptest config, Miri-safe: failure persistence
+/// canonicalizes the source path at runner startup, which aborts under
+/// Miri isolation (`getcwd`). Persistence only remembers shrinking seeds
+/// between runs — disabling it under Miri is an environment gate, not a
+/// weakened assertion. `PROPTEST_CASES` still overrides `cases` from the
+/// environment (slow-interpreter CI capping).
+#[must_use]
+pub fn proptest_config(cases: u32) -> proptest::test_runner::Config {
+    let mut config = proptest::test_runner::Config::with_cases(cases);
+    if cfg!(miri) {
+        config.failure_persistence = None;
+    }
+    config
+}
+
 /// Bounded, serde-stable strings (no control characters).
 pub fn string_strategy() -> impl Strategy<Value = String> {
     "[a-zA-Z0-9 ._/-]{0,32}"

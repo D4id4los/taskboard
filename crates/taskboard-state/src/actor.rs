@@ -157,15 +157,17 @@ pub async fn spawn_state_engine(
     system: broadcast::Receiver<SystemEvent>,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
-    let core = EngineCore::from_persisted(persisted);
+    // Log the counts straight off the hydrated data — never clone the
+    // whole state just to print its sizes.
     tracing::info!(
-        boards = core.persisted_view().boards.len(),
-        stacks = core.persisted_view().stacks.len(),
-        tasks = core.persisted_view().tasks.len(),
-        labels = core.persisted_view().labels.len(),
-        outbox = core.persisted_view().outbox.len(),
+        boards = persisted.boards.len(),
+        stacks = persisted.stacks.len(),
+        tasks = persisted.tasks.len(),
+        labels = persisted.labels.len(),
+        outbox = persisted.outbox.len(),
         "state engine hydrated"
     );
+    let core = EngineCore::from_persisted(persisted);
 
     let shared = Arc::new(ArcSwap::from_pointee(core.app()));
     let (commands, command_rx) = mpsc::channel(COMMAND_BUFFER);
@@ -365,15 +367,18 @@ async fn execute_command(
         return;
     }
     let changed = core.interpret(&plan.actions, now);
-    if changed {
-        publish(core, shared, signals);
-    }
-    let enqueued = plan
+    // Nudge iff the batch enqueued >= 1 op; a successful forward marks
+    // the memory-only `Syncing` transient. One mutating message publishes
+    // at most once: the entity change and the transient land in a single
+    // swap + signal (the nudge is a channel send, safe before publish —
+    // the report it triggers cannot be ingested until this message
+    // finishes).
+    let enqueued_ops = plan
         .actions
         .iter()
-        .filter(|action| matches!(action, PersistenceAction::EnqueueOp(_)))
-        .count();
-    if enqueued > 0 && forward_sync_now(sync_out) && core.mark_syncing() {
+        .any(|action| matches!(action, PersistenceAction::EnqueueOp(_)));
+    let marked_syncing = enqueued_ops && forward_sync_now(sync_out) && core.mark_syncing();
+    if changed || marked_syncing {
         publish(core, shared, signals);
     }
     if let Some(reply) = reply {

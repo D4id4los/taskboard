@@ -194,7 +194,10 @@ fn label_ops(outbox: &[PendingOp], label: LabelId) -> Vec<OpId> {
 ///
 /// Returns the persistence batch and the receipt. The function is total:
 /// any (state, command) combination yields a plan or a typed
-/// [`CommandError`], never a panic.
+/// [`CommandError`], never a panic. The outbox never influences the
+/// outcome: rejections and no-ops are identical for any queue contents,
+/// and accepted plans differ only in the `FailOp`s the delete paths
+/// derive from it.
 ///
 /// # Errors
 ///
@@ -205,20 +208,8 @@ fn label_ops(outbox: &[PendingOp], label: LabelId) -> Vec<OpId> {
 /// `outbox` is the engine's current queue slice: the delete paths cancel
 /// a target's pending ops by id, exactly like
 /// [`crate::pipeline::apply_sync_report`] takes it.
-pub fn plan_command(
-    app: &AppState,
-    outbox: &[PendingOp],
-    command: &StateCommand,
-    ids: &dyn IdGenerator,
-    now: DateTime<Utc>,
-) -> Result<CommandPlan, CommandError> {
-    plan_inner(app, outbox, command, ids, now)
-}
-
-/// The catalogue: one arm per §4 table row. Kept as one `match` so the
-/// per-command rules stay adjacent and diffable against the table.
 #[allow(clippy::too_many_lines)] // one catalogue; splitting hides the table
-fn plan_inner(
+pub fn plan_command(
     app: &AppState,
     outbox: &[PendingOp],
     command: &StateCommand,
@@ -257,10 +248,14 @@ fn plan_inner(
             })
         }
         StateCommand::UpdateTask { id, changes } => {
+            // Existence before the changeset guard, like every other
+            // command: an empty edit against an unknown/deleted task is a
+            // rejection, not a silent no-op.
+            let task = live_task(app, *id)?;
             if changes == &TaskChanges::default() {
                 return Ok(no_op());
             }
-            let mut updated = live_task(app, *id)?.clone();
+            let mut updated = task.clone();
             if let Some(title) = &changes.title {
                 updated.title.clone_from(title);
                 updated.clocks.title = now;
@@ -391,25 +386,22 @@ fn plan_inner(
             // Cascade: every live task of the stack follows the DeleteTask
             // bound/unbound split (mirroring the remote R6 cascade so the
             // local view matches what the server will do).
-            let cascade_ids: Vec<TaskId> = app
+            let live_tasks: Vec<Task> = app
                 .tasks
                 .values()
                 .filter(|task| task.is_live() && task.stack == *id)
-                .map(|task| task.id)
+                .cloned()
                 .collect();
-            for task_id in cascade_ids {
-                let Ok(task) = existing_task(app, task_id) else {
-                    continue;
-                };
+            for task in live_tasks {
                 let mut tombstoned = task.clone();
                 tombstoned.deleted = true;
                 tombstoned.clocks.deleted = now;
                 actions.push(PersistenceAction::UpsertTask(tombstoned));
                 if task.remote.is_some() {
-                    actions.push(enqueue(LocalOp::DeleteTask(task_id), ids, now));
+                    actions.push(enqueue(LocalOp::DeleteTask(task.id), ids, now));
                 } else {
                     actions.extend(
-                        task_ops(outbox, task_id)
+                        task_ops(outbox, task.id)
                             .into_iter()
                             .map(PersistenceAction::FailOp),
                     );
@@ -447,10 +439,12 @@ fn plan_inner(
             })
         }
         StateCommand::UpdateLabel { id, changes } => {
+            // Existence before the changeset guard, like `UpdateTask`.
+            let label = live_label(app, *id)?;
             if changes == &LabelChanges::default() {
                 return Ok(no_op());
             }
-            let mut updated = live_label(app, *id)?.clone();
+            let mut updated = label.clone();
             if let Some(title) = &changes.title {
                 updated.title.clone_from(title);
                 updated.clocks.title = now;
@@ -858,6 +852,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan, no_op());
+    }
+
+    #[test]
+    fn empty_changeset_against_unknown_target_is_still_rejected() {
+        // Coherence with every other command: the existence guard fires
+        // before the changeset guard.
+        let (app, outbox) = base();
+        let missing = TaskId::from(uuid::Uuid::from_u128(4242));
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::UpdateTask {
+                    id: missing,
+                    changes: TaskChanges::default(),
+                }
+            ),
+            Err(CommandError::UnknownTask(missing))
+        );
+        let missing_label = LabelId::from(uuid::Uuid::from_u128(4243));
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::UpdateLabel {
+                    id: missing_label,
+                    changes: LabelChanges::default(),
+                }
+            ),
+            Err(CommandError::UnknownLabel(missing_label))
+        );
     }
 
     #[test]
@@ -1527,7 +1552,8 @@ mod tests {
 mod proptests {
     use super::*;
     use crate::test_support::{
-        CountingIds, app_state_strategy, persisted_state_strategy, state_command_strategy,
+        CountingIds, app_state_strategy, persisted_state_strategy, proptest_config,
+        state_command_strategy,
     };
     use chrono::TimeZone;
     use proptest::prelude::*;
@@ -1557,7 +1583,7 @@ mod proptests {
     }
 
     proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+        #![proptest_config(proptest_config(256))]
 
         #[test]
         fn plan_command_is_total_and_ok_plans_are_self_consistent(
@@ -1610,17 +1636,48 @@ mod proptests {
         }
 
         #[test]
-        fn plan_command_never_depends_on_outbox_ordering_for_validity(
+        fn plan_command_outcome_is_independent_of_the_outbox(
             state in app_state_strategy(),
+            outbox_state in persisted_state_strategy(),
             command in state_command_strategy(),
         ) {
-            // A rejected/no-op result must be identical regardless of the
-            // outbox contents; accepted plans are allowed to differ only in
-            // FailOp actions, which the catalogue derives from the outbox.
+            // The outbox never influences the outcome: identical
+            // rejections and identical no-ops for any queue contents; an
+            // accepted plan differs only in the FailOps the delete paths
+            // derive from the outbox. Fresh `CountingIds` on both sides
+            // keep the fresh ids (entity and op) comparable.
             let empty: Vec<PendingOp> = Vec::new();
             let now = chrono::Utc.timestamp_opt(36_000, 0).unwrap();
             let baseline = plan_command(&state, &empty, &command, &CountingIds::default(), now);
-            let _ = baseline; // totality under both outbox shapes
+            let variant = plan_command(
+                &state,
+                &outbox_state.outbox,
+                &command,
+                &CountingIds::default(),
+                now,
+            );
+
+            match (&baseline, &variant) {
+                (Err(a), Err(b)) => prop_assert_eq!(a, b),
+                (Ok(p), Ok(q)) if p.outcome == CommandOutcome::NoOp => prop_assert_eq!(p, q),
+                (Ok(p), Ok(q)) => {
+                    let without_fails = |plan: &CommandPlan| {
+                        plan.actions
+                            .iter()
+                            .filter(|action| !matches!(action, PersistenceAction::FailOp(_)))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+                    prop_assert_eq!(&p.outcome, &q.outcome);
+                    prop_assert_eq!(without_fails(p), without_fails(q));
+                }
+                (Err(_), Ok(_)) | (Ok(_), Err(_)) => {
+                    prop_assert!(
+                        false,
+                        "acceptance must not depend on the outbox: {baseline:?} vs {variant:?}"
+                    );
+                }
+            }
         }
     }
 }
