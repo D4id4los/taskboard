@@ -59,10 +59,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # Prebuilt cargo-deny binary from GitHub releases instead of
+      # EmbarkStudios/cargo-deny-action: the action builds its Docker
+      # image on the runner and pulls the rust base from Docker Hub,
+      # whose anonymous pull-rate limit (shared across all GitHub-hosted
+      # runners) intermittently 429s the whole job.
+      - uses: taiki-e/install-action@v2
         with:
-          command: check
-          arguments: --workspace
+          tool: cargo-deny
+
+      - run: cargo deny check --workspace
 
   test:
     name: Test Execution
