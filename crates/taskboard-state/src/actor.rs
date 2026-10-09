@@ -20,9 +20,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use taskboard_domain::{
-    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, PersistenceAction, StateCommand,
-    SyncCommand, SyncPhase, SyncStatus, SystemEvent, TaskRepository, apply_sync_report,
-    plan_command,
+    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, PersistedState, PersistenceAction,
+    RepositoryError, StateCommand, SyncCommand, SyncPhase, SyncStateReader, SyncStatus,
+    SystemEvent, TaskRepository, ValidatorKey, apply_push_report, apply_sync_report, plan_command,
 };
 
 use crate::core::EngineCore;
@@ -54,6 +54,15 @@ pub enum EngineCommand {
     Flush {
         /// Reply when the command queue is settled.
         reply: oneshot::Sender<()>,
+    },
+    /// The sync actor's read envelope (the domain's `SyncStateReader`
+    /// port). Processed in the sequential loop, so a reply reflects the
+    /// settled post-interpret state — same durability story as `Flush`.
+    /// May carry the memory-only `Syncing` transient; consumers must not
+    /// branch on `sync.phase`.
+    ReadState {
+        /// The full persisted shape (outbox, bindings, validators).
+        reply: oneshot::Sender<Result<PersistedState, RepositoryError>>,
     },
 }
 
@@ -134,6 +143,26 @@ impl EngineHandle {
     #[must_use]
     pub fn shared_state(&self) -> Arc<ArcSwap<AppState>> {
         Arc::clone(&self.state)
+    }
+}
+
+/// The sync actor's read port over the engine envelope (ADR 0005: sync
+/// reads the outbox/bindings/validators *via* the engine, never direct
+/// SQL). A stopped engine surfaces as
+/// [`RepositoryError::Unavailable`] — the port's transient error class,
+/// mirroring `execute`'s `EngineGone` semantics.
+impl SyncStateReader for EngineHandle {
+    fn read_state(
+        &self,
+    ) -> taskboard_domain::BoxFuture<'_, Result<PersistedState, RepositoryError>> {
+        Box::pin(async {
+            let (reply, rx) = oneshot::channel();
+            self.commands
+                .send(EngineCommand::ReadState { reply })
+                .await
+                .map_err(|_| RepositoryError::Unavailable)?;
+            rx.await.map_err(|_| RepositoryError::Unavailable)?
+        })
     }
 }
 
@@ -246,6 +275,9 @@ async fn run_loop(
                     // FIFO: everything before this was applied, interpreted,
                     // and published.
                     let _ = reply.send(());
+                }
+                Some(EngineCommand::ReadState { reply }) => {
+                    let _ = reply.send(Ok(core.persisted_view()));
                 }
                 None => commands_open = false,
             },
@@ -417,25 +449,35 @@ async fn ingest_sync_report(
     tracing::debug!("sync report ingested");
     let now = clock.now();
     let actions = match report {
-        taskboard_domain::SyncReport::Completed { snapshot, pushes } => {
+        taskboard_domain::SyncReport::Completed {
+            snapshot,
+            validators,
+            pushes,
+        } => {
             let (merged, mut batch) =
                 apply_sync_report(&core.app(), core.outbox(), &snapshot, &pushes, ids, now);
-            // Persist the stable phase only when it (or last_success)
-            // actually changed; `pending_ops` is derived, never stored.
-            let current = core.sync_status();
-            if merged.sync.phase != current.phase
-                || merged.sync.last_success != current.last_success
-            {
-                batch.push(PersistenceAction::UpsertSyncStatus(merged.sync));
-            }
+            append_status_if_changed(core, &mut batch, &merged.sync);
+            // The binding may have been adopted by this very batch, so the
+            // keys derive from the post-merge board — "its own binding" is
+            // the engine's after it ingests the report.
+            append_validators_if_changed(core, &mut batch, &validators, &merged);
             batch
         }
-        taskboard_domain::SyncReport::Failed { kind } => {
+        taskboard_domain::SyncReport::Failed { kind, pushes } if pushes.is_empty() => {
             vec![PersistenceAction::UpsertSyncStatus(SyncStatus {
                 phase: SyncPhase::Failed { last_error: kind },
                 last_success: core.sync_status().last_success,
                 pending_ops: 0, // ignored: derived at apply time
             })]
+        }
+        // Evidence-then-verdict (phase 4 decision 3): the cycle's completed
+        // pushes land even though the pull aborted — no snapshot merge, no
+        // reconciliation, no cascade (that is `apply_push_report`'s job).
+        taskboard_domain::SyncReport::Failed { pushes, .. } => {
+            let (merged, mut batch) =
+                apply_push_report(&core.app(), core.outbox(), &pushes, ids, now);
+            append_status_if_changed(core, &mut batch, &merged.sync);
+            batch
         }
     };
 
@@ -454,6 +496,57 @@ async fn ingest_sync_report(
             if core.interpret(&actions, now) {
                 publish(core, shared, signals);
             }
+        }
+    }
+}
+
+/// Appends the status write only when the stable part (phase or
+/// `last_success`) actually changed; `pending_ops` is derived, never stored.
+fn append_status_if_changed(
+    core: &EngineCore,
+    batch: &mut Vec<PersistenceAction>,
+    merged: &SyncStatus,
+) {
+    let current = core.sync_status();
+    if merged.phase != current.phase || merged.last_success != current.last_success {
+        batch.push(PersistenceAction::UpsertSyncStatus(merged.clone()));
+    }
+}
+
+/// Appends one `UpsertValidators` per key derived from the report's
+/// `BoardPullValidators`, keyed against the engine's own board binding
+/// (phase 4 decision 4 — the actor never reasons about storage keys).
+/// No-op when no board is bound or nothing differs from the stored values.
+fn append_validators_if_changed(
+    core: &EngineCore,
+    batch: &mut Vec<PersistenceAction>,
+    validators: &taskboard_domain::BoardPullValidators,
+    merged: &AppState,
+) {
+    let Some(board) = merged
+        .boards
+        .values()
+        .find(|b| b.remote.is_some())
+        .and_then(|b| b.remote)
+    else {
+        return;
+    };
+    let incoming = [
+        (ValidatorKey::Boards, &validators.boards),
+        (ValidatorKey::Stacks(board), &validators.stacks),
+        (
+            ValidatorKey::ArchivedStacks(board),
+            &validators.archived_stacks,
+        ),
+    ];
+    for (key, value) in incoming {
+        // An empty bundle carries nothing reusable and would wrongly clear
+        // a warm key after a header-less 200; keep the stored one instead.
+        if *value == taskboard_domain::SyncValidators::default() {
+            continue;
+        }
+        if core.validators().get(&key) != Some(value) {
+            batch.push(PersistenceAction::UpsertValidators(key, value.clone()));
         }
     }
 }

@@ -496,6 +496,13 @@ fn build_validators(
         validators.insert(
             ValidatorKey::Stacks(board),
             SyncValidators {
+                etag: etag.clone(),
+                last_modified: last_modified.clone(),
+            },
+        );
+        validators.insert(
+            ValidatorKey::ArchivedStacks(board),
+            SyncValidators {
                 etag,
                 last_modified,
             },
@@ -509,14 +516,15 @@ fn sync_phase_strategy() -> impl Strategy<Value = SyncPhase> {
         Just(SyncPhase::Idle),
         Just(SyncPhase::Syncing),
         Just(SyncPhase::Offline),
-        (0_usize..6).prop_map(|kind| SyncPhase::Failed {
+        (0_usize..7).prop_map(|kind| SyncPhase::Failed {
             last_error: match kind {
                 0 => SyncErrorKind::Network,
                 1 => SyncErrorKind::Auth,
                 2 => SyncErrorKind::Forbidden,
                 3 => SyncErrorKind::Server,
                 4 => SyncErrorKind::BadRequest,
-                _ => SyncErrorKind::LocalData,
+                5 => SyncErrorKind::LocalData,
+                _ => SyncErrorKind::NoBoard,
             },
         }),
     ]

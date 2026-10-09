@@ -161,6 +161,7 @@ pub fn sync_error_kind_to_text(kind: SyncErrorKind) -> &'static str {
         SyncErrorKind::Server => "server",
         SyncErrorKind::BadRequest => "bad_request",
         SyncErrorKind::LocalData => "local_data",
+        SyncErrorKind::NoBoard => "no_board",
     }
 }
 
@@ -187,6 +188,7 @@ pub fn sync_phase_from_columns(
                 Some("server") => SyncErrorKind::Server,
                 Some("bad_request") => SyncErrorKind::BadRequest,
                 Some("local_data") => SyncErrorKind::LocalData,
+                Some("no_board") => SyncErrorKind::NoBoard,
                 _ => return Err(CodecError),
             },
         }),
@@ -200,6 +202,7 @@ pub fn validator_key_to_text(key: &ValidatorKey) -> String {
     match *key {
         ValidatorKey::Boards => "boards".to_string(),
         ValidatorKey::Stacks(board) => format!("stacks:{}", board.get()),
+        ValidatorKey::ArchivedStacks(board) => format!("archived_stacks:{}", board.get()),
     }
 }
 
@@ -211,6 +214,12 @@ pub fn validator_key_to_text(key: &ValidatorKey) -> String {
 pub fn validator_key_from_text(raw: &str) -> Result<ValidatorKey, CodecError> {
     if raw == "boards" {
         return Ok(ValidatorKey::Boards);
+    }
+    if let Some(num) = raw
+        .strip_prefix("archived_stacks:")
+        .and_then(|num| num.parse::<u64>().ok())
+    {
+        return Ok(ValidatorKey::ArchivedStacks(RemoteBoardId(num)));
     }
     raw.strip_prefix("stacks:")
         .and_then(|num| num.parse::<u64>().ok())
@@ -406,8 +415,36 @@ mod tests {
             validator_key_from_text(&validator_key_to_text(&stacks)),
             Ok(stacks)
         );
+        let archived = ValidatorKey::ArchivedStacks(RemoteBoardId(9));
+        assert_eq!(
+            validator_key_from_text(&validator_key_to_text(&archived)),
+            Ok(archived)
+        );
+        assert_eq!(
+            validator_key_to_text(&archived),
+            "archived_stacks:9",
+            "the text form is free-form TEXT: no migration needed"
+        );
         assert_eq!(validator_key_from_text("labels"), Err(CodecError));
         assert_eq!(validator_key_from_text("stacks:x"), Err(CodecError));
+        assert_eq!(
+            validator_key_from_text("archived_stacks:x"),
+            Err(CodecError)
+        );
+    }
+
+    #[test]
+    fn no_board_error_kind_roundtrips_through_the_codec() {
+        let phase = SyncPhase::Failed {
+            last_error: SyncErrorKind::NoBoard,
+        };
+        assert_eq!(
+            sync_phase_from_columns(
+                sync_phase_to_text(phase),
+                Some(sync_error_kind_to_text(SyncErrorKind::NoBoard))
+            ),
+            Ok(phase)
+        );
     }
 
     #[test]

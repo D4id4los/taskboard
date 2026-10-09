@@ -28,7 +28,7 @@ use insta::assert_yaml_snapshot;
 
 mod common;
 
-use common::{FixedClock, T0, seed_board_state, stranger_task_id, ts};
+use common::{FixedClock, T0, seed_board_state, stranger_task_id, test_validators, ts};
 
 /// A board-bearing fake repo (no command creates boards) plus the
 /// running engine over it. The clock advances one minute per message.
@@ -214,7 +214,7 @@ async fn s3_sync_ingestion_binds_and_pulls() {
     s.clock.advance(60);
     s.report_tx
         .send(SyncReport::Completed {
-            snapshot: RemoteBoardSnapshot {
+            snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
                     id: taskboard_domain::RemoteBoardId(77),
                     title: "kiosk".into(),
@@ -251,7 +251,8 @@ async fn s3_sync_ingestion_binds_and_pulls() {
                     last_modified: ts(T0),
                 }],
                 labels: vec![],
-            },
+            }),
+            validators: test_validators(),
             pushes: vec![],
         })
         .await
@@ -324,7 +325,7 @@ async fn s4_sync_resolution_drains_outbox() {
     s.clock.advance(60);
     s.report_tx
         .send(SyncReport::Completed {
-            snapshot: RemoteBoardSnapshot {
+            snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
                     id: taskboard_domain::RemoteBoardId(77),
                     title: "kiosk".into(),
@@ -336,8 +337,9 @@ async fn s4_sync_resolution_drains_outbox() {
                 stacks: vec![],
                 tasks: vec![],
                 labels: vec![],
-            },
+            }),
             pushes,
+            validators: test_validators(),
         })
         .await
         .expect("report channel open");
@@ -462,6 +464,7 @@ async fn s6_network_lost_restored_cycle() {
     s.report_tx
         .send(SyncReport::Failed {
             kind: SyncErrorKind::Network,
+            pushes: vec![],
         })
         .await
         .expect("report channel open");

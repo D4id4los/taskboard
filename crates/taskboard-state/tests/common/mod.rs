@@ -64,6 +64,17 @@ pub fn seed_board_state(title: &str) -> PersistedState {
     state
 }
 
+/// A `Completed` report's validator triple with empty header sets: no
+/// `UpsertValidators` action can follow (nothing stored to differ from).
+pub fn test_validators() -> taskboard_domain::BoardPullValidators {
+    let empty = taskboard_domain::SyncValidators::default();
+    taskboard_domain::BoardPullValidators {
+        boards: empty.clone(),
+        stacks: empty.clone(),
+        archived_stacks: empty,
+    }
+}
+
 /// An id guaranteed absent from the current scenario: burned from a fresh
 /// counter far past any id count a scenario can reach.
 pub fn stranger_task_id() -> TaskId {

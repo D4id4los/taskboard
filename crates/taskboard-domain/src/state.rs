@@ -82,6 +82,8 @@ pub enum SyncErrorKind {
     BadRequest,
     /// Local data problem (e.g. repository unavailable during sync).
     LocalData,
+    /// No sync target is bound yet — a cycle fired before `SetBoard`.
+    NoBoard,
 }
 
 impl AppState {

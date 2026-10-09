@@ -7,10 +7,13 @@
 //! any other way — memory ≡ disk by construction, and a failed `apply`
 //! needs no rollback because `interpret` never runs (ADR 0006).
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 
 use taskboard_domain::{
-    AppState, PendingOp, PersistedState, PersistenceAction, SyncPhase, SyncStatus, apply_actions,
+    AppState, PendingOp, PersistedState, PersistenceAction, SyncPhase, SyncStatus, SyncValidators,
+    ValidatorKey, apply_actions,
 };
 
 /// The engine's private working state: the persisted shape plus the one
@@ -67,6 +70,13 @@ impl EngineCore {
     #[must_use]
     pub fn sync_status(&self) -> &SyncStatus {
         &self.state.sync
+    }
+
+    /// The stored conditional-read validators (the ingestion compares
+    /// incoming report validators against these before persisting).
+    #[must_use]
+    pub fn validators(&self) -> &BTreeMap<ValidatorKey, SyncValidators> {
+        &self.state.validators
     }
 
     /// Test/assertion view mirroring the persisted shape. One divergence
