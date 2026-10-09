@@ -1,9 +1,10 @@
 # cargo-mutants workspace configuration.
 #
 # The mutation-killing surface is the *policy* code: merge.rs's per-entity
-# primitives and the apply_sync_report pipeline, plus the view helpers in
-# state.rs (plan: 2026-10-08-growth-roadmap-phase1-domain-model-plan.md §11,
-# "any survivor in merge.rs is a bug in the tests").
+# primitives, pipeline.rs's apply_sync_report composition, and the view
+# helpers in state.rs (plan:
+# 2026-10-08-growth-roadmap-phase1-domain-model-plan.md §11, "any survivor
+# in merge.rs is a bug in the tests" — read as "in the policy modules").
 #
 # test_support/ is deliberately excluded: its strategies and the repository
 # contract harness are test *infrastructure* — mutating them tests the
