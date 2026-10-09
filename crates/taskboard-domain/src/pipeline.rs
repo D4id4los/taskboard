@@ -1962,6 +1962,145 @@ mod tests {
         assert!(app.1.is_empty());
     }
 
+    #[test]
+    // One test per R9-arm × ghost-entity combination; splitting would
+    // scatter the decision table it enumerates.
+    #[allow(clippy::too_many_lines)]
+    fn push_outcomes_for_entities_absent_from_state_are_no_ops() {
+        // Engine/repo desync defense: an outbox op may reference an entity
+        // that vanished from state. Every R9 arm must no-op on the missing
+        // entity (no panic, no fabricated entry) while still resolving the
+        // op. An unbound board/label in state is likewise skipped by the
+        // remote index.
+        let mut state = base_state(bound_task(1));
+        let unbound_board = crate::entities::Board {
+            id: crate::ids::BoardId::from(uuid::Uuid::from_u128(810)),
+            remote: None,
+            title: "unbound".into(),
+            color: crate::entities::Color::new("0000ff"),
+            archived: false,
+            deleted: false,
+            remote_seen: None,
+        };
+        state.boards.insert(unbound_board.id, unbound_board);
+        let unbound_label = bound_label(20);
+        let unbound_label_id = unbound_label.id;
+        let mut unbound_label = unbound_label;
+        unbound_label.remote = None;
+        state.labels.insert(unbound_label_id, unbound_label);
+
+        let ghost_task = TaskId::from(uuid::Uuid::from_u128(811));
+        let ghost_stack = StackId::from(uuid::Uuid::from_u128(812));
+        let ghost_label = LabelId::from(uuid::Uuid::from_u128(813));
+        let ops: Vec<PendingOp> = [
+            LocalOp::DeleteTask(ghost_task),
+            LocalOp::UpdateTask(ghost_task),
+            LocalOp::DeleteStack(ghost_stack),
+            LocalOp::DeleteLabel(ghost_label),
+            LocalOp::RenameStack(ghost_stack),
+            LocalOp::UpdateLabel(ghost_label),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, op)| PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(600 + i as u128)),
+            op,
+            queued_at: ts(BASE),
+        })
+        .collect();
+        let pushes = vec![
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(600)),
+                result: PushResult::Applied { echo: None },
+            },
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(601)),
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Task(remote_task(1, 9, BASE + 60))),
+                },
+            },
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(602)),
+                result: PushResult::Applied { echo: None },
+            },
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(603)),
+                result: PushResult::RemoteMissing,
+            },
+            // A stack/label RemoteMissing against the ghost entities.
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(602)),
+                result: PushResult::RemoteMissing,
+            },
+            // DeleteLabel ghost accepted (Applied arm on a missing entity).
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(603)),
+                result: PushResult::Applied { echo: None },
+            },
+            // RemoteMissing for the non-delete ghost ops: update-task,
+            // rename-stack, update-label arms on missing entities.
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(601)),
+                result: PushResult::RemoteMissing,
+            },
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(604)),
+                result: PushResult::RemoteMissing,
+            },
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(605)),
+                result: PushResult::RemoteMissing,
+            },
+            // Malformed outcomes: an echo kind addressed to an op kind it
+            // can never belong to must be ignored, not adopted. Addressed
+            // to non-delete ops — a delete op short-circuits before the
+            // echo match.
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(601)),
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Stack(remote_stack(1, BASE + 60))),
+                },
+            },
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(601)),
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Label(remote_label(1, BASE + 60))),
+                },
+            },
+            PushOutcome {
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(604)),
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Task(remote_task(1, 9, BASE + 60))),
+                },
+            },
+        ];
+
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let (merged, actions) = apply_sync_report(
+            &state,
+            &ops,
+            &snap,
+            &pushes,
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        // No ghost entity was fabricated into state; every ghost op is
+        // resolved (completed), so only the outbox is empty afterwards.
+        assert!(!merged.tasks.contains_key(&ghost_task));
+        assert!(!merged.stacks.contains_key(&ghost_stack));
+        assert!(!merged.labels.contains_key(&ghost_label));
+        assert_eq!(merged.sync.pending_ops, 0);
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, PersistenceAction::CompleteOp(_)))
+                .count(),
+            6,
+            "all six ghost ops completed",
+        );
+    }
+
     proptest! {
     #[test]
     fn equal_replicas_converge(
