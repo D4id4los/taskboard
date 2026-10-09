@@ -15,6 +15,7 @@ pub mod backoff;
 pub mod client;
 pub mod color;
 pub mod error;
+pub mod mapping;
 pub mod model;
 pub mod ocs;
 
