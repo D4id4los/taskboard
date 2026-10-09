@@ -86,6 +86,11 @@ pub struct Stack {
     pub deleted_at: i64,
     #[serde(default)]
     pub order: i64,
+    /// Unix timestamp of the last modification.
+    #[serde(default)]
+    pub last_modified: i64,
+    #[serde(default)]
+    pub archived: bool,
     #[serde(default, deserialize_with = "null_to_empty_vec")]
     pub cards: Vec<Card>,
 }
@@ -206,6 +211,9 @@ pub struct Label {
     pub color: DeckColor,
     #[serde(default)]
     pub board_id: u64,
+    /// Unix timestamp of the last modification.
+    #[serde(default)]
+    pub last_modified: i64,
 }
 
 /// An access-control entry on a board (wire field `type` is the participant
