@@ -206,7 +206,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 cargo test --doc --workspace
-cargo deny check --workspace
+cargo deny check
 cargo llvm-cov --workspace
 ```
 
