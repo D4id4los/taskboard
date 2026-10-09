@@ -261,6 +261,7 @@ impl ReadyExt for InMemoryRepository {
 
 /// One generated engine step over index-based pools (task/stack/label);
 /// indices wrap modulo the pool length at execution time.
+#[cfg_attr(miri, allow(dead_code))]
 #[derive(Debug, Clone)]
 enum Step {
     CreateTask(i64),
@@ -420,6 +421,11 @@ fn stale_task_id() -> TaskId {
 
 /// Drives one generated sequence through a live engine and checks the
 /// coherence properties after every command (P4), then op freshness (P5).
+///
+/// Environment gate, not a weakened assertion: the sequence property runs
+/// the live tokio engine, which `testing_strategy` §10 scopes out of Miri;
+/// the semantic equivalences (P2/P3) stay Miri-covered below.
+#[cfg_attr(miri, allow(dead_code))]
 #[allow(clippy::too_many_lines)] // the step mapping IS the catalogue transcription
 fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -636,6 +642,9 @@ impl Clock for FixedTestClock {
 proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(64))]
 
+    // Environment gate (testing_strategy §10): runs the live tokio
+    // engine — out of Miri's scope; native runs cover it fully.
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn p4_p5_sequences_are_coherent_and_fresh(steps in proptest::collection::vec(step_strategy(), 0..10)) {
         drive_sequence(&steps)?;

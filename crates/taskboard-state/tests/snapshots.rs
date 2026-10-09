@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Environment gate, not a weakened assertion: this suite drives the live
+// tokio engine (timers, channel scheduling), which testing_strategy §10
+// scopes out of Miri ("pure logic, serialization, and state-transition
+// tests"). The transition logic it routes to is Miri-covered in the
+// domain and in `core.rs`.
+#![cfg_attr(miri, allow(dead_code))]
+// insta itself is not Miri-clean (it opens a socketpair for its UI
+// plumbing) — the S-series is environment-gated here and fully exercised
+// in every native/CI gate. The engine logic beneath it IS Miri-covered
+// (A-series + the domain pure suites).
 //! Insta snapshot suite (S-series): the scenarios that define the
 //! engine's behavioral contract. Each snapshot captures BOTH the
 //! published `AppState` and the fake repository's `PersistedState` —
@@ -123,6 +133,7 @@ fn seed_board_state() -> taskboard_domain::PersistedState {
 
 /// S1 — fresh-boot authoring: stack → task → edit → done → label →
 /// assign → move → delete.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
 #[tokio::test]
 async fn s1_fresh_boot_authoring() {
     let mut s = Scenario::start().await;
@@ -194,6 +205,7 @@ async fn s1_fresh_boot_authoring() {
 
 /// S2 — offline queue accumulation: many edits, no sync; the outbox
 /// (and its derived `pending_ops`) grows with every accepted intent.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
 #[tokio::test]
 async fn s2_offline_queue_accumulation() {
     let mut s = Scenario::start().await;
@@ -238,6 +250,7 @@ async fn s2_offline_queue_accumulation() {
 
 /// S3 — sync ingestion: a `Completed` report binds the board and pulls
 /// remote entities in.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
 #[tokio::test]
 async fn s3_sync_ingestion_binds_and_pulls() {
     let s = Scenario::start().await;
@@ -310,6 +323,7 @@ async fn s3_sync_ingestion_binds_and_pulls() {
 
 /// S4 — sync resolution: push outcomes complete ops (and dead-letter the
 /// rejected one), draining `pending_ops`.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
 #[tokio::test]
 async fn s4_sync_resolution_drains_outbox() {
     let mut s = Scenario::start().await;
@@ -391,6 +405,7 @@ async fn s4_sync_resolution_drains_outbox() {
 
 /// S5 — rejection sequence: stale-id and no-op commands leave state and
 /// outbox untouched.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
 #[tokio::test]
 async fn s5_rejections_leave_state_untouched() {
     let mut s = Scenario::start().await;
@@ -465,6 +480,7 @@ async fn s5_rejections_leave_state_untouched() {
 }
 
 /// S6 — network-lost/restored cycle: the phase machine's transitions.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
 #[tokio::test]
 async fn s6_network_lost_restored_cycle() {
     let mut s = Scenario::start().await;

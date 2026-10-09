@@ -101,7 +101,10 @@ avoiding central runtime bottlenecks.
 | *UI → State Engine* | =tokio::sync::mpsc= | Sends user intent commands (=Command::TaskCompleted(id)=) asynchronously. |
 | *State Engine → UI (Read)* | =arc_swap::ArcSwap<AppState>= | Provides lock-free, zero-contention state inspection during UI repaints. |
 | *State Engine → UI (Signal)* | =tokio::sync::broadcast= | Emits lightweight triggers (=EngineSignal::StateUpdated=) to prompt GUI repaints. |
-| *Actors ↔ Actors* | =tokio::sync::mpsc= | Direct point-to-point command delivery between backend actors (e.g., State Engine → Storage). |
+| *UI/CLI → State Engine* | =tokio::sync::mpsc= + =oneshot= | =EngineCommand::Execute= carries a =StateCommand= payload with an optional oneshot receipt (typed =Result<CommandOutcome, ExecuteError>=; a received reply implies durability). =EngineCommand::Flush= is the reply-less dispatch durability barrier (CLI exit). |
+| *State Engine → Sync Actor* | =tokio::sync::mpsc= | Fire-and-forget =SyncCommand::SyncNow= nudges, forwarded iff an accepted batch enqueued an op (or on =RequestSync= / =NetworkRestored=). |
+| *Sync Actor → State Engine* | =tokio::sync::mpsc= | =SyncReport::{Completed, Failed}= ingestion through the Phase 1 conflict pipeline. |
+| *Actors ↔ Actors* | =tokio::sync::mpsc= | Direct point-to-point command delivery between backend actors (e.g., State Engine → Storage via the =TaskRepository= port adapter). |
 | *System Notifications* | =tokio::sync::broadcast= | Broadcasts global status changes (=SystemEvent::NetworkLost=) to all interested actors. |
 | *Asynchronous Queries* | =tokio::sync::oneshot= | Embedded inside an =mpsc= message payload for direct, async request-response cycles. Payloads are pure domain types; the channel-bearing envelope is declared by the actor crate (payload/envelope split, ADR 0004). |
 
@@ -126,10 +129,21 @@ dependency hierarchies.
    barrier wrapping =oneshot::Sender=) live in the actor crates that own
    the channels — domain owns only the pure payloads.
 
-2. *taskboard-state* — Single source of runtime truth. Processes incoming
-   commands, mutates memory state, updates =ArcSwap<AppState>=, and
-   broadcasts state events. Dependencies: =taskboard-domain=, =arc-swap=,
-   =tokio=.
+2. *taskboard-state* — Single source of runtime truth (ADR 0006). Runs
+   the State Engine actor: a sequential command loop over the domain's
+   pure transition functions (=plan_command= for local commands,
+   =apply_sync_report= for sync ingestion). Memory advances only by
+   interpreting the action batches that were durably applied through the
+   =TaskRepository= port (consumed as =Arc<dyn TaskRepository>—
+   production wires the sqlite actor via a port adapter); after each
+   interpreted batch it publishes the =AppState= projection through
+   =ArcSwap<AppState>= and broadcasts =EngineSignal::StateUpdated=.
+   Inbox: =EngineCommand::{Execute (oneshot receipt), Flush (durability
+   barrier)}=; it also ingests =SyncReport=s and =SystemEvent=s, and
+   forwards =SyncNow= nudges to the sync actor. Command *semantics*
+   (rejections, no-ops, cascades) live in the domain; this crate owns
+   channels, publishing, and sequencing only. Dependencies:
+   =taskboard-domain=, =arc-swap=, =chrono=, =tokio=.
 
 3. *taskboard-sync-nextcloud* — Manages remote sync with Nextcloud API
    endpoints. Handles network errors and publishes sync status to the State

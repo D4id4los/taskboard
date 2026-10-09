@@ -1,4 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+// Environment gate, not a weakened assertion: this suite drives the live
+// tokio engine (timers, channel scheduling), which testing_strategy §10
+// scopes out of Miri ("pure logic, serialization, and state-transition
+// tests"). The transition logic it routes to is Miri-covered in the
+// domain and in `core.rs`.
+#![cfg_attr(miri, allow(dead_code))]
 //! I1: engine ↔ port adapter ↔ storage actor ↔ sqlite in one routing
 //! smoke. One command round-trips durably; a second engine boot on the
 //! same file-backed database hydrates the task.
