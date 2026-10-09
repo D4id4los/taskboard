@@ -1,0 +1,56 @@
+---
+source: crates/taskboard-state/tests/snapshots.rs
+expression: "&*app"
+---
+boards:
+  00000000-0000-0000-0000-000000000001:
+    id: 00000000-0000-0000-0000-000000000001
+    remote: ~
+    title: kiosk
+    color: 0000ff
+    archived: false
+    deleted: false
+    remote_seen: ~
+stacks:
+  00000000-0000-0000-0000-000000000001:
+    id: 00000000-0000-0000-0000-000000000001
+    remote: ~
+    board: 00000000-0000-0000-0000-000000000001
+    title: todo
+    order: 1
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:01:00Z"
+      order: "1970-01-01T10:01:00Z"
+      deleted: "1970-01-01T10:01:00Z"
+    remote_seen: ~
+tasks:
+  00000000-0000-0000-0000-000000000003:
+    id: 00000000-0000-0000-0000-000000000003
+    remote: ~
+    title: real
+    description: ""
+    duedate: ~
+    done: ~
+    stack: 00000000-0000-0000-0000-000000000001
+    order: 1
+    labels: []
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:02:00Z"
+      description: "1970-01-01T10:02:00Z"
+      duedate: "1970-01-01T10:02:00Z"
+      done: "1970-01-01T10:02:00Z"
+      position: "1970-01-01T10:02:00Z"
+      labels: "1970-01-01T10:02:00Z"
+      archived: "1970-01-01T10:02:00Z"
+      deleted: "1970-01-01T10:02:00Z"
+    remote_seen: ~
+labels: {}
+sync:
+  phase: Idle
+  last_success: ~
+  pending_ops: 2
+last_updated: "1970-01-01T10:02:00Z"

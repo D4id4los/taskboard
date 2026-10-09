@@ -11,13 +11,18 @@ description = "Central State Engine actor and ArcSwap-managed application state 
 [dependencies]
 taskboard-domain.workspace = true
 arc-swap.workspace = true
+chrono.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+taskboard-domain = { workspace = true, features = ["test-support"] }
+taskboard-storage-sqlite.workspace = true
 insta.workspace = true
 proptest.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

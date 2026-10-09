@@ -70,6 +70,7 @@ pub(crate) mod actor;
 pub(crate) mod codec;
 pub(crate) mod connect;
 pub(crate) mod error;
+pub(crate) mod port;
 pub(crate) mod repo;
 
 pub use actor::{StorageCommand, StorageHandle, spawn_storage_actor};
