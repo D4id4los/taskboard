@@ -556,7 +556,10 @@ mod tests {
         let stack: Stack =
             serde_json::from_str(r#"{"id": 9, "title": "Doing", "boardId": 42, "cards": null}"#)
                 .unwrap();
-        assert!(stack.cards.is_empty());
+        // Not `assert!(stack.cards.is_empty())`: CI's newer stable clippy
+        // denies that shape (clippy::assert_is_empty); the length check is
+        // accepted by both toolchains.
+        assert_eq!(stack.cards.len(), 0, "null cards decode as empty");
         let board: Board = serde_json::from_str(
             r#"{"id": 3, "title": "t", "color": "5c2751", "labels": null, "users": null, "acl": null}"#,
         )

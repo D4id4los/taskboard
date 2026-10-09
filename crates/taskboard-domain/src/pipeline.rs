@@ -1959,7 +1959,11 @@ mod tests {
             ts(BASE + 60),
         );
 
-        assert!(app.1.is_empty());
+        // Deliberately not `assert!(app.1.is_empty())`: CI's newer stable
+        // clippy denies that shape (clippy::assert_is_empty) while the
+        // lint is unknown to the pinned dev toolchain; the length check
+        // is accepted by both.
+        assert_eq!(app.1.len(), 0, "unknown op outcome must be a no-op");
     }
 
     #[test]
