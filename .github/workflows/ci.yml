@@ -68,7 +68,7 @@ jobs:
         with:
           tool: cargo-deny
 
-      - run: cargo deny check --workspace
+      - run: cargo deny check
 
   test:
     name: Test Execution
