@@ -16,31 +16,55 @@
   outbox retained), DTO↔domain mapping (proptest-able), the wiremock
   actor suite (`tokio::time` paused scheduling), and dockerized two-way
   sync scenarios as the exit demonstration.
-- **Status**: PROPOSED (draft v1 for user review)
+- **Status**: ACCEPTED (user review 2026-10-09; rev 2 rebases onto the
+  merged phase 3 and records the §0 reconciliation outcome)
 - **Parent roadmap**: `.artifacts/plans/2026-10-08-growth-roadmap-plan.md`
   §3 Phase 4. Exit criterion: "two-way sync demonstrated against
   dockerized Nextcloud."
 - **Predecessors**: Phase 1 (merge policy R1–R9 + remote views, merged),
   Phase 2 (outbox + validators persistence, merged), Phase 3 (engine +
-  nudge contract — **in review on `feat/state-engine-actor`; this plan is
-  written against that branch's surface, see §0**).
+  nudge contract, **merged to `main` as `93ab5fb`; §0 records the
+  reconciliation against it**).
 
 ---
 
-## 0. Phase 3 Reconciliation Gate (do first at implementation time)
+## 0. Phase 3 Reconciliation Gate — executed (2026-10-09, against `main` @ `93ab5fb`)
 
-This plan is authored while Phase 3's Miri run is still in flight; its
-surface facts come from the `feat/state-engine-actor` branch at `726a765`
-plus the phase 3 plan §12 handoff row. Before implementing, re-verify
-against the merged state and re-baseline any drift (working agreement —
-no crate is frozen; §1):
+Authored against `feat/state-engine-actor` @ `726a765`; Phase 3 merged to
+`main` as one squash (`93ab5fb` "Phase 3 review fixes — Miri gates,
+single publish, coherence"). Gate findings, each re-verified in the
+merged tree:
 
-- `spawn_state_engine`'s parameter list (the injected channel halves this
-  actor consumes/produces: `sync_out`, `sync_reports`, `system`).
-- `EngineCommand` variants (this plan adds `ReadState`, §4.1).
-- `SyncReport`'s shape (this plan changes it, §4.2) and the engine's
-  `ingest_sync_report` (§5.5).
-- The storage codec's validator-key tags (§4.4 adds one).
+- **`spawn_state_engine` — unchanged** (same six injected parameters);
+  §5.1's wiring assumptions hold verbatim.
+- **`EngineCommand` — unchanged** (`Execute`/`Flush` only); the §4.1
+  `ReadState` addition lands exactly as planned.
+- **`SyncReport` — untouched** (`messages.rs` is not in the merge
+  diff); the §4.2 reshape applies as written. The storage crate is
+  likewise untouched — the §4.4 `ArchivedStacks` codec tag lands on the
+  same code.
+- **Adopted change — `persisted_view()` divergence**: the review fixes
+  documented that the memory-only `Syncing` transient appears in
+  `EngineCore::persisted_view()` even though no repository `load()`
+  could ever return it. The §4.1 `ReadState` reply inherits that
+  divergence; §4.1 now pins how a `SyncStateReader` consumer must treat
+  it.
+- **Adopted change — single publish per message**: the engine now emits
+  at most one swap + signal per mutating message (entity change and the
+  `Syncing` transient in one publish, with the nudge sent before the
+  publish). Engine-internal; A2/I-series expectations are unaffected,
+  and the in-code guarantee the change documents — "the report it
+  triggers cannot be ingested until this message finishes" — is exactly
+  the ordering the I-series E2E tests ride on.
+- **Noted, irrelevant here**: `plan_command` hardening (existence
+  guards before changeset guards; an outbox-independence proptest) and
+  the new Miri `cfg_attr` environment gates touch no phase 4 contract.
+- **architecture.org**: phase 3 refreshed the state-crate bullet and
+  the channel table, but the `taskboard-sync-nextcloud` dependency list
+  is **still stale** relative to its manifest — §9's refresh duty
+  stands.
+- Residual duty at implementation time: re-run this checklist once more
+  if anything else lands on `main` before the branch starts.
 
 ## 1. Context & Known Facts (do not re-derive)
 
@@ -144,8 +168,11 @@ no crate is frozen; §1):
   (`scripts/nextcloud_it_setup.sh up [--ci]`, env
   `TASKBOARD_IT_DOCKER_{URL,USER,TOKEN}`, run via
   `cargo nextest run -p taskboard-sync-nextcloud --run-ignored only -E
-  'test(it_nextcloud_docker)'`, CI job `nextcloud-it` with
-  `--no-tests=fail`), Tier 3 live (`.env`:
+  'test(it_nextcloud_docker)'`; **CI runs the tier in
+  `.github/workflows/nextcloud-integration.yml` — `workflow_dispatch` +
+  weekly (Wednesdays 04:00 UTC), deliberately out of the per-PR path
+  (Docker Hub pull-rate 429s made a required check flaky; per-PR CI
+  keeps the wiremock contract suite only)**), Tier 3 live (`.env`:
   `TASKBOARD_IT_NEXTCLOUD_{URL,USER,TOKEN}`). The sync crate's dev-deps
   already include `tokio/test-util` (pause/advance), `wiremock`,
   `proptest`, `dotenvy`. Domain `test-support` provides
@@ -423,8 +450,16 @@ Sender<Result<PersistedState, RepositoryError>> }`; the loop arm replies
 `Ok(core.persisted_view())`; a closed inbox maps to
 `RepositoryError::Unavailable` in the `impl SyncStateReader for
 EngineHandle` (mirroring `execute`'s `EngineGone` semantics, expressed in
-the port's error type). `impl SyncStateReader for InMemoryRepository`
-returns `Ok(self.snapshot())` — with the contract harness extended to
+the port's error type). **Divergence note (merged phase 3, §0)**:
+`persisted_view()` carries the memory-only `Syncing` transient that no
+repository `load()` can ever return, so a `ReadState` reply may advertise
+`phase: Syncing` that was never persisted. Accepted deliberately, under
+one pin: **`SyncStateReader` consumers must never branch on
+`sync.phase`** — the phase is engine/UI territory, and the actor's cycle
+(§5.2) reads only the outbox, bindings, and validators (an A-series test
+asserts identical actor behavior for both phase spellings of an equal
+state). `impl SyncStateReader for InMemoryRepository` returns
+`Ok(self.snapshot())` — with the contract harness extended to
 assert both impls return the post-apply persisted shape (cheap, one
 routing test per impl; semantics live in `apply_actions`, already
 tested).
@@ -881,8 +916,10 @@ free (decision 16). Surviving mutants → `.artifacts/reports/`.
   taskboard-storage-sqlite`: codec addition + contract harness re-run.
 - Tier 2: `eval "$(scripts/nextcloud_it_setup.sh up)" && cargo nextest
   run -p taskboard-sync-nextcloud --run-ignored only -E 'test(
-  it_nextcloud_docker)'` green including D1–D6 (CI job `nextcloud-it`
-  exercises the same).
+  it_nextcloud_docker)'` green including D1–D6 locally; in CI, trigger
+  `nextcloud-integration.yml` via `workflow_dispatch` on the PR branch
+  (it also runs weekly thereafter) — per-PR CI covers the contract
+  suite only, by design (§1).
 - **Phase 4 exit (roadmap)**: two-way sync demonstrated against
   dockerized Nextcloud — D1 is the demo; D2–D6 retire the flagged
   tier-2 verifications (reorder semantics, archived listing, deleted
