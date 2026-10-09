@@ -16,18 +16,20 @@ use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
 
-use crate::clock::IdGenerator;
-use crate::entities::{Board, Label, Stack, Task};
-use crate::ids::{LabelId, RemoteBoardId, RemoteCardRef, RemoteStackId, StackId, TaskId};
-use crate::merge::{
-    adopt_after_push, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
-    adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, finalize_label_tombstone,
-    finalize_pushed_delete, finalize_stack_tombstone, merge_board, merge_label, merge_stack,
-    merge_task, remote_wins, state_remote_index, tombstone_task, utc_min,
+use crate::entities::{Label, Stack, Task};
+use crate::idgen::IdGenerator;
+use crate::ids::{
+    LabelId, RemoteBoardId, RemoteCardRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
-use crate::ops::{LocalOp, PendingOp};
+use crate::merge::{
+    adopt_board_if_newer, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
+    adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, adopt_task_after_push,
+    finalize_pushed_task_delete, merge_label, merge_stack, merge_task, remote_wins,
+    tombstone_label, tombstone_stack, tombstone_task, utc_min,
+};
+use crate::outbox::{LocalOp, OpId, PendingOp};
 use crate::persistence::PersistenceAction;
-use crate::remote::{PushOutcome, PushResult, RemoteBoardSnapshot, RemoteEcho};
+use crate::remote::{PushOutcome, PushResult, RemoteBoardSnapshot, RemoteEcho, RemoteIndex};
 use crate::state::{AppState, SyncErrorKind, SyncPhase, SyncStatus};
 
 fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
@@ -47,24 +49,6 @@ fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
     }
 }
 
-/// The pipeline result the engine applies: new entity maps, the new sync
-/// status, and the persistence batch (upserts + op transitions).
-#[derive(Debug, Clone, PartialEq)]
-pub struct SyncApplication {
-    /// Merged boards.
-    pub boards: BTreeMap<crate::ids::BoardId, Board>,
-    /// Merged stacks.
-    pub stacks: BTreeMap<StackId, Stack>,
-    /// Merged tasks.
-    pub tasks: BTreeMap<TaskId, Task>,
-    /// Merged labels.
-    pub labels: BTreeMap<LabelId, Label>,
-    /// Resulting sync status (phase transition + outbox depth).
-    pub sync: SyncStatus,
-    /// Persistence batch for the storage actor.
-    pub actions: Vec<PersistenceAction>,
-}
-
 /// The pipeline the engine calls once per `SyncReport::Completed`.
 ///
 /// Processing order is fixed (and tested): **push outcomes first** (they
@@ -72,10 +56,15 @@ pub struct SyncApplication {
 /// before R7 resolution), then presence reconciliation (R3/R6) for
 /// bound-but-absent entities, then the sync-status transition.
 ///
+/// Returns the merged [`AppState`] (with `last_updated` stamped to `now`)
+/// and the persistence batch for the storage actor.
+///
 /// `ids` provides fresh local ids for remotely-created entities (R1);
 /// `now` is the observation time for absence tombstones. Neither is ever
 /// read by the per-entity merge primitives.
-#[allow(clippy::too_many_lines)] // one fixed-order pipeline; splitting would obscure it
+// Still one fixed-order sequence after the R9 decision table was extracted
+// into `apply_push_outcomes`; the numbered sections ARE the design.
+#[allow(clippy::too_many_lines)]
 pub fn apply_sync_report(
     current: &AppState,
     outbox: &[PendingOp],
@@ -83,148 +72,23 @@ pub fn apply_sync_report(
     pushes: &[PushOutcome],
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
-) -> SyncApplication {
+) -> (AppState, Vec<PersistenceAction>) {
     let mut boards = current.boards.clone();
     let mut stacks = current.stacks.clone();
     let mut tasks = current.tasks.clone();
     let mut labels = current.labels.clone();
 
-    // Op bookkeeping: op_id -> (index into outbox, op). Values: true =
-    // completed, false = failed/cancelled; None = untouched.
-    let mut op_results: HashMap<crate::ops::OpId, bool> = HashMap::new();
-
     // ---- 1. Push outcomes (R9*) ------------------------------------
-    let mut ctx = state_remote_index(current);
-    let op_by_id: HashMap<crate::ops::OpId, &PendingOp> =
-        outbox.iter().map(|op| (op.op_id, op)).collect();
-
-    for outcome in pushes {
-        let Some(op) = op_by_id.get(&outcome.op) else {
-            continue;
-        };
-        match &outcome.result {
-            PushResult::Applied { echo } => {
-                // R9c: delete pushes finalize immediately — Deck's DELETE
-                // response is authoritative, so the tombstone clears its
-                // binding now instead of waiting for the next pull.
-                match op.op {
-                    LocalOp::DeleteTask(id) => {
-                        if let Some(local) = tasks.get(&id) {
-                            let finalized = finalize_pushed_delete(local);
-                            tasks.insert(id, finalized);
-                        }
-                        op_results.insert(outcome.op, true);
-                        continue;
-                    }
-                    LocalOp::DeleteStack(id) => {
-                        if let Some(local) = stacks.get(&id) {
-                            let finalized = finalize_stack_tombstone(local, now);
-                            stacks.insert(id, finalized);
-                        }
-                        op_results.insert(outcome.op, true);
-                        continue;
-                    }
-                    LocalOp::DeleteLabel(id) => {
-                        if let Some(local) = labels.get(&id) {
-                            let finalized = finalize_label_tombstone(local, now);
-                            labels.insert(id, finalized);
-                        }
-                        op_results.insert(outcome.op, true);
-                        continue;
-                    }
-                    LocalOp::CreateTask(_)
-                    | LocalOp::UpdateTask(_)
-                    | LocalOp::MoveTask(_)
-                    | LocalOp::CreateStack(_)
-                    | LocalOp::RenameStack(_)
-                    | LocalOp::CreateLabel(_)
-                    | LocalOp::UpdateLabel(_)
-                    | LocalOp::AssignLabel(..)
-                    | LocalOp::UnassignLabel(..) => {}
-                }
-                match echo {
-                    Some(RemoteEcho::Task(echo)) => {
-                        if let LocalOp::CreateTask(id) | LocalOp::UpdateTask(id) = op.op
-                            && let Some(local) = tasks.get(&id)
-                        {
-                            let merged = adopt_after_push(local, echo, &ctx);
-                            tasks.insert(id, merged);
-                        }
-                        op_results.insert(outcome.op, true);
-                    }
-                    Some(RemoteEcho::Stack(echo)) => {
-                        if let LocalOp::CreateStack(id) | LocalOp::RenameStack(id) = op.op
-                            && let Some(local) = stacks.get(&id)
-                        {
-                            let merged = adopt_stack_after_push(local, echo);
-                            stacks.insert(id, merged);
-                            ctx.stack_by_ref.insert(echo.id, id);
-                        }
-                        op_results.insert(outcome.op, true);
-                    }
-                    Some(RemoteEcho::Label(echo)) => {
-                        if let LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) = op.op
-                            && let Some(local) = labels.get(&id)
-                        {
-                            let merged = adopt_label_after_push(local, echo);
-                            labels.insert(id, merged);
-                            ctx.label_by_ref.insert(echo.id, id);
-                        }
-                        op_results.insert(outcome.op, true);
-                    }
-                    // R9d: reorder returns no echo — complete and reconcile
-                    // via the next pull.
-                    None => {
-                        op_results.insert(outcome.op, true);
-                    }
-                }
-            }
-            // R9e: the resource is gone server-side; fall through to the
-            // delete rules.
-            PushResult::RemoteMissing => match op.op {
-                LocalOp::CreateTask(id)
-                | LocalOp::UpdateTask(id)
-                | LocalOp::MoveTask(id)
-                | LocalOp::DeleteTask(id) => {
-                    if let Some(local) = tasks.get(&id) {
-                        let tombstoned = tombstone_task(local, now);
-                        tasks.insert(id, tombstoned);
-                        for other in outbox {
-                            if other.op_id != outcome.op
-                                && op_targets_task(&other.op, id)
-                                && !op_results.contains_key(&other.op_id)
-                            {
-                                op_results.insert(other.op_id, false);
-                            }
-                        }
-                    }
-                    op_results.insert(outcome.op, true);
-                }
-                LocalOp::CreateStack(id) | LocalOp::RenameStack(id) | LocalOp::DeleteStack(id) => {
-                    if let Some(local) = stacks.get(&id) {
-                        stacks.insert(id, finalize_stack_tombstone(local, now));
-                    }
-                    op_results.insert(outcome.op, true);
-                }
-                LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
-                    if let Some(local) = labels.get(&id) {
-                        labels.insert(id, finalize_label_tombstone(local, now));
-                    }
-                    op_results.insert(outcome.op, true);
-                }
-                LocalOp::AssignLabel(..) | LocalOp::UnassignLabel(..) => {
-                    op_results.insert(outcome.op, true);
-                }
-            },
-            PushResult::Rejected { kind } => {
-                // BadRequest dead-letters; everything else stays queued
-                // untouched for retry.
-                if *kind == SyncErrorKind::BadRequest {
-                    op_results.insert(outcome.op, false);
-                }
-            }
-        }
-    }
+    let mut ctx = RemoteIndex::from_state(current);
+    let mut op_results = apply_push_outcomes(
+        pushes,
+        outbox,
+        &mut tasks,
+        &mut stacks,
+        &mut labels,
+        &mut ctx,
+        now,
+    );
 
     // ---- 2. Board ---------------------------------------------------
     let mut board_ids_by_remote: HashMap<RemoteBoardId, crate::ids::BoardId> = current
@@ -235,7 +99,7 @@ pub fn apply_sync_report(
     let remote_board = &snapshot.board;
     let board_id = if let Some(id) = board_ids_by_remote.get(&remote_board.id).copied() {
         let local = &boards[&id];
-        let merged = merge_board(local, remote_board);
+        let merged = adopt_board_if_newer(local, remote_board);
         boards.insert(id, merged);
         id
     } else {
@@ -323,9 +187,14 @@ pub fn apply_sync_report(
                 }
             }
         } else {
+            // Deferred adoption (None) when the remote stack has no local
+            // binding: the card joins a later cycle, once its stack exists
+            // (merge.rs unmapped-stack strategy).
             let id = ids.new_task_id();
-            tasks.insert(id, adopt_remote_task(remote, id, &ctx));
-            ctx.task_by_ref.insert(remote.id, id);
+            if let Some(adopted) = adopt_remote_task(remote, id, &ctx) {
+                tasks.insert(id, adopted);
+                ctx.task_by_ref.insert(remote.id, id);
+            }
         }
     }
 
@@ -334,12 +203,17 @@ pub fn apply_sync_report(
     // completeness contract). Cards: delete-wins fallback.
     let present_refs: std::collections::BTreeSet<RemoteCardRef> =
         snapshot.tasks.iter().map(|t| t.id).collect();
-    for (id, local) in tasks.clone() {
-        let Some(remote_ref) = local.remote else {
-            continue;
-        };
+    let bound_task_refs: Vec<(TaskId, RemoteCardRef)> = tasks
+        .iter()
+        .filter_map(|(id, t)| Some((*id, t.remote?)))
+        .collect();
+    for (id, remote_ref) in bound_task_refs {
+        // No `!local.deleted` guard here, unlike stacks/labels below: a
+        // tombstoned task that kept its binding must still have it cleared
+        // (R9c cache-lag safety).
         if !present_refs.contains(&remote_ref) {
-            tasks.insert(id, tombstone_task(&local, now));
+            let local = &tasks[&id];
+            tasks.insert(id, tombstone_task(local, now));
             for other in outbox {
                 if !op_results.contains_key(&other.op_id) && op_targets_task(&other.op, id) {
                     op_results.insert(other.op_id, false);
@@ -347,25 +221,29 @@ pub fn apply_sync_report(
             }
         }
     }
-    let present_stack_refs: std::collections::BTreeSet<crate::ids::RemoteStackRef> =
+    let present_stack_refs: std::collections::BTreeSet<RemoteStackRef> =
         snapshot.stacks.iter().map(|s| s.id).collect();
-    for (id, local) in stacks.clone() {
-        let Some(remote_ref) = local.remote else {
-            continue;
-        };
+    let bound_stack_refs: Vec<(StackId, RemoteStackRef)> = stacks
+        .iter()
+        .filter_map(|(id, s)| Some((*id, s.remote?)))
+        .collect();
+    for (id, remote_ref) in bound_stack_refs {
+        let local = &stacks[&id];
         if !present_stack_refs.contains(&remote_ref) && !local.deleted {
-            stacks.insert(id, finalize_stack_tombstone(&local, now));
+            stacks.insert(id, tombstone_stack(local, now));
             newly_tombstoned_stack_refs.push(remote_ref.stack);
         }
     }
     let present_label_refs: std::collections::BTreeSet<crate::ids::RemoteLabelRef> =
         snapshot.labels.iter().map(|l| l.id).collect();
-    for (id, local) in labels.clone() {
-        let Some(remote_ref) = local.remote else {
-            continue;
-        };
+    let bound_label_refs: Vec<(LabelId, crate::ids::RemoteLabelRef)> = labels
+        .iter()
+        .filter_map(|(id, l)| Some((*id, l.remote?)))
+        .collect();
+    for (id, remote_ref) in bound_label_refs {
+        let local = &labels[&id];
         if !present_label_refs.contains(&remote_ref) && !local.deleted {
-            labels.insert(id, finalize_label_tombstone(&local, now));
+            labels.insert(id, tombstone_label(local, now));
         }
     }
 
@@ -425,7 +303,9 @@ pub fn apply_sync_report(
         });
     }
 
-    let remaining_ops = outbox.len() - op_results.len();
+    // saturating_sub defensively: a corrupted persisted outbox with
+    // duplicate op ids must not underflow the pending count.
+    let remaining_ops = outbox.len().saturating_sub(op_results.len());
     let dead_lettered = op_results.values().any(|completed| !completed);
     let phase = if dead_lettered {
         SyncPhase::Failed {
@@ -441,14 +321,163 @@ pub fn apply_sync_report(
         pending_ops: remaining_ops as u32,
     };
 
-    SyncApplication {
+    let state = AppState {
         boards,
         stacks,
         tasks,
         labels,
         sync,
-        actions,
+        // Sync ingestion is an engine mutation from a foreign source:
+        // stamp it like a local command would be.
+        last_updated: Some(now),
+    };
+    (state, actions)
+}
+
+/// Executes the push outcomes (R9) against the current entity maps and
+/// returns the op bookkeeping: `op_id -> true` (completed) / `false`
+/// (failed/cancelled); ops absent from the map stay queued untouched.
+#[allow(clippy::too_many_lines)] // one R9 decision table; splitting hides the cases
+fn apply_push_outcomes(
+    pushes: &[PushOutcome],
+    outbox: &[PendingOp],
+    tasks: &mut BTreeMap<TaskId, Task>,
+    stacks: &mut BTreeMap<StackId, Stack>,
+    labels: &mut BTreeMap<LabelId, Label>,
+    ctx: &mut RemoteIndex,
+    now: DateTime<Utc>,
+) -> HashMap<OpId, bool> {
+    let mut op_results: HashMap<OpId, bool> = HashMap::new();
+    let op_by_id: HashMap<OpId, &PendingOp> = outbox.iter().map(|op| (op.op_id, op)).collect();
+
+    for outcome in pushes {
+        let Some(op) = op_by_id.get(&outcome.op) else {
+            continue;
+        };
+        match &outcome.result {
+            PushResult::Applied { echo } => {
+                // R9c: delete pushes finalize immediately — Deck's DELETE
+                // response is authoritative, so the tombstone clears its
+                // binding now instead of waiting for the next pull.
+                match op.op {
+                    LocalOp::DeleteTask(id) => {
+                        if let Some(local) = tasks.get(&id) {
+                            let finalized = finalize_pushed_task_delete(local);
+                            tasks.insert(id, finalized);
+                        }
+                        op_results.insert(outcome.op, true);
+                        continue;
+                    }
+                    LocalOp::DeleteStack(id) => {
+                        if let Some(local) = stacks.get(&id) {
+                            let finalized = tombstone_stack(local, now);
+                            stacks.insert(id, finalized);
+                        }
+                        op_results.insert(outcome.op, true);
+                        continue;
+                    }
+                    LocalOp::DeleteLabel(id) => {
+                        if let Some(local) = labels.get(&id) {
+                            let finalized = tombstone_label(local, now);
+                            labels.insert(id, finalized);
+                        }
+                        op_results.insert(outcome.op, true);
+                        continue;
+                    }
+                    LocalOp::CreateTask(_)
+                    | LocalOp::UpdateTask(_)
+                    | LocalOp::MoveTask(_)
+                    | LocalOp::CreateStack(_)
+                    | LocalOp::RenameStack(_)
+                    | LocalOp::CreateLabel(_)
+                    | LocalOp::UpdateLabel(_)
+                    | LocalOp::AssignLabel(..)
+                    | LocalOp::UnassignLabel(..) => {}
+                }
+                match echo {
+                    Some(RemoteEcho::Task(echo)) => {
+                        if let LocalOp::CreateTask(id) | LocalOp::UpdateTask(id) = op.op
+                            && let Some(local) = tasks.get(&id)
+                        {
+                            let merged = adopt_task_after_push(local, echo, ctx);
+                            tasks.insert(id, merged);
+                        }
+                        op_results.insert(outcome.op, true);
+                    }
+                    Some(RemoteEcho::Stack(echo)) => {
+                        if let LocalOp::CreateStack(id) | LocalOp::RenameStack(id) = op.op
+                            && let Some(local) = stacks.get(&id)
+                        {
+                            let merged = adopt_stack_after_push(local, echo);
+                            stacks.insert(id, merged);
+                            ctx.stack_by_ref.insert(echo.id, id);
+                        }
+                        op_results.insert(outcome.op, true);
+                    }
+                    Some(RemoteEcho::Label(echo)) => {
+                        if let LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) = op.op
+                            && let Some(local) = labels.get(&id)
+                        {
+                            let merged = adopt_label_after_push(local, echo);
+                            labels.insert(id, merged);
+                            ctx.label_by_ref.insert(echo.id, id);
+                        }
+                        op_results.insert(outcome.op, true);
+                    }
+                    // R9d: reorder returns no echo — complete and reconcile
+                    // via the next pull.
+                    None => {
+                        op_results.insert(outcome.op, true);
+                    }
+                }
+            }
+            // R9e: the resource is gone server-side; fall through to the
+            // delete rules.
+            PushResult::RemoteMissing => match op.op {
+                LocalOp::CreateTask(id)
+                | LocalOp::UpdateTask(id)
+                | LocalOp::MoveTask(id)
+                | LocalOp::DeleteTask(id) => {
+                    if let Some(local) = tasks.get(&id) {
+                        let tombstoned = tombstone_task(local, now);
+                        tasks.insert(id, tombstoned);
+                        for other in outbox {
+                            if other.op_id != outcome.op
+                                && op_targets_task(&other.op, id)
+                                && !op_results.contains_key(&other.op_id)
+                            {
+                                op_results.insert(other.op_id, false);
+                            }
+                        }
+                    }
+                    op_results.insert(outcome.op, true);
+                }
+                LocalOp::CreateStack(id) | LocalOp::RenameStack(id) | LocalOp::DeleteStack(id) => {
+                    if let Some(local) = stacks.get(&id) {
+                        stacks.insert(id, tombstone_stack(local, now));
+                    }
+                    op_results.insert(outcome.op, true);
+                }
+                LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
+                    if let Some(local) = labels.get(&id) {
+                        labels.insert(id, tombstone_label(local, now));
+                    }
+                    op_results.insert(outcome.op, true);
+                }
+                LocalOp::AssignLabel(..) | LocalOp::UnassignLabel(..) => {
+                    op_results.insert(outcome.op, true);
+                }
+            },
+            PushResult::Rejected { kind } => {
+                // BadRequest dead-letters; everything else stays queued
+                // untouched for retry.
+                if *kind == SyncErrorKind::BadRequest {
+                    op_results.insert(outcome.op, false);
+                }
+            }
+        }
     }
+    op_results
 }
 
 fn cascade_board(
@@ -458,7 +487,7 @@ fn cascade_board(
     labels: &mut BTreeMap<LabelId, Label>,
     now: DateTime<Utc>,
     outbox: &[PendingOp],
-    op_results: &mut HashMap<crate::ops::OpId, bool>,
+    op_results: &mut HashMap<crate::outbox::OpId, bool>,
 ) {
     // A deleted board takes its stacks with it: finalize every stack of
     // the board (live ones become tombstones too).
@@ -469,7 +498,7 @@ fn cascade_board(
         .collect();
     for id in stack_ids {
         let stack = &stacks[&id];
-        stacks.insert(id, finalize_stack_tombstone(stack, now));
+        stacks.insert(id, tombstone_stack(stack, now));
     }
     let task_ids: Vec<TaskId> = tasks
         .iter()
@@ -492,7 +521,7 @@ fn cascade_board(
         .collect();
     for id in label_ids {
         let label = &labels[&id];
-        labels.insert(id, finalize_label_tombstone(label, now));
+        labels.insert(id, tombstone_label(label, now));
     }
 }
 
@@ -509,8 +538,8 @@ mod tests {
     fn remote_absence_tombstones_and_cancels_pending_ops() {
         let task = bound_task(1);
         let state = base_state(task);
-        let op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(555)),
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(555)),
             op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
         };
@@ -525,14 +554,14 @@ mod tests {
             ts(BASE + 3_600),
         );
 
-        let merged = app.tasks.values().next().unwrap();
+        let merged = app.0.tasks.values().next().unwrap();
         assert!(merged.deleted, "R3: delete-wins on observed absence");
         assert!(merged.remote.is_none());
         assert!(merged.remote_seen.is_none());
         assert!(
-            app.actions
+            app.1
                 .iter()
-                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(555)))),
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(555)))),
             "the task's pending ops must be cancelled"
         );
     }
@@ -565,7 +594,7 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 600),
         );
-        let merged_task = app.tasks.values().next().unwrap();
+        let merged_task = app.0.tasks.values().next().unwrap();
         assert!(merged_task.deleted, "stack tombstone cascades to its tasks");
     }
 
@@ -579,7 +608,7 @@ mod tests {
         echo.title = "untidied".into(); // server-trimmed
 
         let ctx = RemoteIndex::default();
-        let merged = adopt_after_push(&local, &echo, &ctx);
+        let merged = adopt_task_after_push(&local, &echo, &ctx);
 
         // Unconditional adoption, not LWW: the normalization lands even
         // though the echo timestamp is not "newer" than the local edit.
@@ -600,7 +629,7 @@ mod tests {
             ts(BASE + 3_660),
         );
         assert!(
-            app.actions
+            app.1
                 .iter()
                 .all(|a| !matches!(a, PersistenceAction::UpsertTask(_))),
             "pull must not undo the echo adoption"
@@ -611,8 +640,8 @@ mod tests {
     fn reorder_push_completes_without_touching_state() {
         let task = bound_task(1);
         let state = base_state(task);
-        let op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(1)),
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(1)),
             op: LocalOp::MoveTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
         };
@@ -623,14 +652,14 @@ mod tests {
             &[op],
             &snap,
             &[PushOutcome {
-                op: crate::ops::OpId(uuid::Uuid::from_u128(1)),
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(1)),
                 result: PushResult::Applied { echo: None },
             }],
             &CountingIds::default(),
             ts(BASE + 60),
         );
 
-        assert_eq!(app.sync.pending_ops, 0, "reorder op completes");
+        assert_eq!(app.0.sync.pending_ops, 0, "reorder op completes");
         let state_after = app_into_state(&app);
         let merged = task_by_card(&state_after, 1);
         assert_eq!(merged.order, 1, "baseline untouched until the next pull");
@@ -640,8 +669,8 @@ mod tests {
     fn remote_missing_on_update_push_tombstones() {
         let task = bound_task(1);
         let state = base_state(task);
-        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(2));
-        let op = crate::ops::PendingOp {
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(2));
+        let op = crate::outbox::PendingOp {
             op_id,
             op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
@@ -661,7 +690,7 @@ mod tests {
             ts(BASE + 60),
         );
 
-        let merged = app.tasks.values().next().unwrap();
+        let merged = app.0.tasks.values().next().unwrap();
         assert!(merged.deleted);
     }
 
@@ -669,8 +698,8 @@ mod tests {
     fn rejected_op_stays_queued_but_bad_request_dead_letters() {
         let task = bound_task(1);
         let state = base_state(task);
-        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(3));
-        let op = crate::ops::PendingOp {
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(3));
+        let op = crate::outbox::PendingOp {
             op_id,
             op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
@@ -690,8 +719,11 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
         );
-        assert_eq!(app.sync.pending_ops, 1, "retryable rejection stays queued");
-        assert_eq!(app.sync.phase, SyncPhase::Idle);
+        assert_eq!(
+            app.0.sync.pending_ops, 1,
+            "retryable rejection stays queued"
+        );
+        assert_eq!(app.0.sync.phase, SyncPhase::Idle);
 
         let app = apply_sync_report(
             &state,
@@ -706,9 +738,9 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
         );
-        assert_eq!(app.sync.pending_ops, 0, "BadRequest dead-letters");
+        assert_eq!(app.0.sync.pending_ops, 0, "BadRequest dead-letters");
         assert_eq!(
-            app.sync.phase,
+            app.0.sync.phase,
             SyncPhase::Failed {
                 last_error: SyncErrorKind::BadRequest
             }
@@ -752,11 +784,13 @@ mod tests {
         );
 
         let adopted_label = app
+            .0
             .labels
             .values()
             .find(|l| l.remote == Some(label.id))
             .expect("remote label adopted");
         let adopted_task = app
+            .0
             .tasks
             .values()
             .find(|t| t.remote == Some(remote.id))
@@ -798,9 +832,9 @@ mod tests {
         );
 
         assert!(
-            second.actions.is_empty(),
+            second.1.is_empty(),
             "second application must be a no-op, got {:?}",
-            second.actions
+            second.1
         );
     }
 
@@ -818,8 +852,8 @@ mod tests {
 
         let mut echo = remote_task(1, 1, BASE + 3_600);
         echo.title = "normalized".into();
-        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(9));
-        let op = crate::ops::PendingOp {
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(9));
+        let op = crate::outbox::PendingOp {
             op_id,
             op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
@@ -843,15 +877,15 @@ mod tests {
         let state_after = app_into_state(&app);
         let merged = task_by_card(&state_after, 1);
         assert_eq!(merged.title, "normalized");
-        assert_eq!(app.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.pending_ops, 0);
     }
 
     #[test]
     fn task_echo_for_a_move_op_is_not_adopted() {
         let task = bound_task(1);
         let state = base_state(task);
-        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(45));
-        let op = crate::ops::PendingOp {
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(45));
+        let op = crate::outbox::PendingOp {
             op_id,
             op: LocalOp::MoveTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
@@ -894,13 +928,13 @@ mod tests {
         let stack_id = stack.id;
         let mut state = state;
         state.stacks.insert(stack_id, stack);
-        let delete_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(46)),
+        let delete_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(46)),
             op: LocalOp::DeleteTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
         };
-        let stack_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(47)),
+        let stack_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(47)),
             op: LocalOp::CreateStack(stack_id),
             queued_at: ts(BASE),
         };
@@ -916,29 +950,29 @@ mod tests {
         );
 
         assert!(
-            app.actions
+            app.1
                 .iter()
-                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(46)))),
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(46)))),
             "the resurrected task's delete op is dropped",
         );
         assert!(
-            !app.actions
+            !app.1
                 .iter()
-                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(47)))),
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(47)))),
             "the unrelated stack op must stay queued",
         );
-        assert_eq!(app.sync.pending_ops, 1);
+        assert_eq!(app.0.sync.pending_ops, 1);
 
         // R3 path: same expectation — cancellation is op-targeted.
         let task2 = bound_task(2);
         let state2 = base_state(task2);
-        let update_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(48)),
+        let update_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(48)),
             op: LocalOp::UpdateTask(task_by_card(&state2, 2).id),
             queued_at: ts(BASE),
         };
-        let stack_op2 = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(49)),
+        let stack_op2 = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(49)),
             op: LocalOp::CreateStack(*state2.stacks.keys().next().unwrap()),
             queued_at: ts(BASE),
         };
@@ -956,20 +990,18 @@ mod tests {
         );
 
         assert!(
-            app2
-                .actions
+            app2.1
                 .iter()
-                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(48)))),
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(48)))),
             "R3 cancels the absent task's own op",
         );
         assert!(
-            !app2
-                .actions
+            !app2.1
                 .iter()
-                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(49)))),
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(49)))),
             "R3 cancellation must not touch unrelated ops",
         );
-        assert_eq!(app2.sync.pending_ops, 1);
+        assert_eq!(app2.0.sync.pending_ops, 1);
     }
 
     #[test]
@@ -1007,13 +1039,13 @@ mod tests {
         state.tasks.insert(task_b.id, task_b);
         state.tasks.insert(offline.id, offline);
 
-        let move_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(52)),
+        let move_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(52)),
             op: LocalOp::MoveTask(task_a_id),
             queued_at: ts(BASE),
         };
-        let stack_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(53)),
+        let stack_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(53)),
             op: LocalOp::CreateStack(stack1_id),
             queued_at: ts(BASE),
         };
@@ -1035,24 +1067,24 @@ mod tests {
         );
 
         assert!(
-            app.tasks[&task_a_id].deleted,
+            app.0.tasks[&task_a_id].deleted,
             "task in the deleted stack cascades"
         );
         assert!(
-            !app.tasks[&offline_id].deleted,
+            !app.0.tasks[&offline_id].deleted,
             "offline local-only task is outside every cascade filter",
         );
         assert!(
-            !app.actions
+            !app.1
                 .iter()
                 .any(|a| matches!(a, PersistenceAction::UpsertTask(t) if t.id == offline_id)),
         );
         assert!(
-            !app.tasks[&moved_id].deleted,
+            !app.0.tasks[&moved_id].deleted,
             "moved-out card survives via its target-stack listing",
         );
         assert_eq!(
-            app.sync.pending_ops, 1,
+            app.0.sync.pending_ops, 1,
             "only the cascaded task's op is cancelled; the stack op stays queued",
         );
     }
@@ -1080,7 +1112,7 @@ mod tests {
             ts(BASE + 180),
         );
         assert_eq!(
-            app.stacks[&stack_id].title, "locally newer",
+            app.0.stacks[&stack_id].title, "locally newer",
             "older remote must not overwrite the baseline",
         );
     }
@@ -1112,13 +1144,13 @@ mod tests {
         );
 
         assert_eq!(
-            app.stacks[&stack_id].clocks.deleted,
+            app.0.stacks[&stack_id].clocks.deleted,
             ts(BASE + 30),
             "absence must not bump an existing tombstone clock",
         );
-        assert_eq!(app.labels[&label_id].clocks.deleted, ts(BASE + 30));
+        assert_eq!(app.0.labels[&label_id].clocks.deleted, ts(BASE + 30));
         assert!(
-            !app.actions
+            !app.1
                 .iter()
                 .any(|a| matches!(a, PersistenceAction::UpsertStack(s) if s.id == stack_id)),
         );
@@ -1147,13 +1179,13 @@ mod tests {
         dead_task.remote_seen = None;
         let dead_task_id = dead_task.id;
         state.tasks.insert(dead_task_id, dead_task);
-        let op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(50)),
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(50)),
             op: LocalOp::UpdateTask(task_id),
             queued_at: ts(BASE),
         };
-        let stack_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(51)),
+        let stack_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(51)),
             op: LocalOp::CreateStack(stack_id),
             queued_at: ts(BASE),
         };
@@ -1177,25 +1209,25 @@ mod tests {
         );
 
         assert!(
-            app.stacks[&stack_id].deleted,
+            app.0.stacks[&stack_id].deleted,
             "cascade finalizes the listed stack"
         );
         assert!(
-            app.tasks[&task_id].deleted,
+            app.0.tasks[&task_id].deleted,
             "cascade tombstones the listed task"
         );
         assert_eq!(
-            app.sync.pending_ops, 1,
+            app.0.sync.pending_ops, 1,
             "stack op survives; task op cancelled"
         );
-        assert!(app.labels[&live_label_id].deleted);
+        assert!(app.0.labels[&live_label_id].deleted);
         assert_eq!(
-            app.labels[&dead_label_id].clocks.deleted,
+            app.0.labels[&dead_label_id].clocks.deleted,
             ts(BASE + 30),
             "already-dead label is not re-finalized",
         );
         assert_eq!(
-            app.tasks[&dead_task_id].clocks.deleted,
+            app.0.tasks[&dead_task_id].clocks.deleted,
             ts(BASE + 30),
             "already-dead task is not re-tombstoned",
         );
@@ -1236,8 +1268,8 @@ mod tests {
         let mut task = bound_task(1);
         task.deleted = true;
         let state = base_state(task);
-        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(21));
-        let op = crate::ops::PendingOp {
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(21));
+        let op = crate::outbox::PendingOp {
             op_id,
             op: LocalOp::DeleteTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
@@ -1258,16 +1290,16 @@ mod tests {
         );
 
         let task_id = task_by_card(&state, 1).id;
-        let merged = &app.tasks[&task_id];
+        let merged = &app.0.tasks[&task_id];
         assert!(merged.deleted);
         assert!(
             merged.remote.is_none(),
             "R9c clears the binding immediately"
         );
         assert!(merged.remote_seen.is_none());
-        assert_eq!(app.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.pending_ops, 0);
         assert!(
-            !app.actions
+            !app.1
                 .iter()
                 .any(|a| matches!(a, PersistenceAction::FailOp(_))),
             "the delete op completes, not fails"
@@ -1280,8 +1312,8 @@ mod tests {
         stack.remote = None;
         let state = base_state(bound_task(1));
         let stack_id = state.stacks.keys().next().unwrap();
-        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(22));
-        let op = crate::ops::PendingOp {
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(22));
+        let op = crate::outbox::PendingOp {
             op_id,
             op: LocalOp::CreateStack(*stack_id),
             queued_at: ts(BASE),
@@ -1304,10 +1336,10 @@ mod tests {
             ts(BASE + 60),
         );
 
-        let merged = &app.stacks[stack_id];
+        let merged = &app.0.stacks[stack_id];
         assert_eq!(merged.remote, Some(stack_ref(1)));
         assert_eq!(merged.title, "normalized");
-        assert_eq!(app.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.pending_ops, 0);
     }
 
     #[test]
@@ -1316,8 +1348,8 @@ mod tests {
         let label = bound_label(1);
         let label_id = label.id;
         state.labels.insert(label_id, label);
-        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(23));
-        let op = crate::ops::PendingOp {
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(23));
+        let op = crate::outbox::PendingOp {
             op_id,
             op: LocalOp::CreateLabel(label_id),
             queued_at: ts(BASE),
@@ -1342,10 +1374,10 @@ mod tests {
             ts(BASE + 60),
         );
 
-        let merged = &app.labels[&label_id];
+        let merged = &app.0.labels[&label_id];
         assert_eq!(merged.remote, Some(expected_ref));
         assert_eq!(merged.title, "normalized");
-        assert_eq!(app.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.pending_ops, 0);
     }
 
     #[test]
@@ -1361,13 +1393,13 @@ mod tests {
         let mut label = bound_label(8);
         label.deleted = true;
         state.labels.insert(label_id, label);
-        let stack_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(41)),
+        let stack_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(41)),
             op: LocalOp::DeleteStack(stack_id),
             queued_at: ts(BASE),
         };
-        let label_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(42)),
+        let label_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(42)),
             op: LocalOp::DeleteLabel(label_id),
             queued_at: ts(BASE),
         };
@@ -1380,11 +1412,11 @@ mod tests {
             &snap,
             &[
                 PushOutcome {
-                    op: crate::ops::OpId(uuid::Uuid::from_u128(41)),
+                    op: crate::outbox::OpId(uuid::Uuid::from_u128(41)),
                     result: PushResult::Applied { echo: None },
                 },
                 PushOutcome {
-                    op: crate::ops::OpId(uuid::Uuid::from_u128(42)),
+                    op: crate::outbox::OpId(uuid::Uuid::from_u128(42)),
                     result: PushResult::Applied { echo: None },
                 },
             ],
@@ -1392,11 +1424,11 @@ mod tests {
             ts(BASE + 60),
         );
 
-        assert!(app.stacks[&stack_id].deleted);
-        assert!(app.stacks[&stack_id].remote.is_none());
-        assert!(app.labels[&label_id].deleted);
-        assert!(app.labels[&label_id].remote.is_none());
-        assert_eq!(app.sync.pending_ops, 0);
+        assert!(app.0.stacks[&stack_id].deleted);
+        assert!(app.0.stacks[&stack_id].remote.is_none());
+        assert!(app.0.labels[&label_id].deleted);
+        assert!(app.0.labels[&label_id].remote.is_none());
+        assert_eq!(app.0.sync.pending_ops, 0);
     }
 
     #[test]
@@ -1407,13 +1439,13 @@ mod tests {
         state.labels.insert(label_id, label);
         let stack_id = *state.stacks.keys().next().unwrap();
 
-        let stack_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(24)),
+        let stack_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(24)),
             op: LocalOp::DeleteStack(stack_id),
             queued_at: ts(BASE),
         };
-        let label_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(25)),
+        let label_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(25)),
             op: LocalOp::DeleteLabel(label_id),
             queued_at: ts(BASE),
         };
@@ -1425,11 +1457,11 @@ mod tests {
             &snap,
             &[
                 PushOutcome {
-                    op: crate::ops::OpId(uuid::Uuid::from_u128(24)),
+                    op: crate::outbox::OpId(uuid::Uuid::from_u128(24)),
                     result: PushResult::RemoteMissing,
                 },
                 PushOutcome {
-                    op: crate::ops::OpId(uuid::Uuid::from_u128(25)),
+                    op: crate::outbox::OpId(uuid::Uuid::from_u128(25)),
                     result: PushResult::RemoteMissing,
                 },
             ],
@@ -1437,11 +1469,11 @@ mod tests {
             ts(BASE + 60),
         );
 
-        assert!(app.stacks[&stack_id].deleted);
-        assert!(app.stacks[&stack_id].remote.is_none());
-        assert!(app.labels[&label_id].deleted);
-        assert!(app.labels[&label_id].remote.is_none());
-        assert_eq!(app.sync.pending_ops, 0);
+        assert!(app.0.stacks[&stack_id].deleted);
+        assert!(app.0.stacks[&stack_id].remote.is_none());
+        assert!(app.0.labels[&label_id].deleted);
+        assert!(app.0.labels[&label_id].remote.is_none());
+        assert_eq!(app.0.sync.pending_ops, 0);
     }
 
     #[test]
@@ -1451,18 +1483,18 @@ mod tests {
         let label_id = label.id;
         let task_id = task_by_card(&state, 1).id;
         state.labels.insert(label_id, label);
-        let move_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(26)),
+        let move_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(26)),
             op: LocalOp::MoveTask(task_id),
             queued_at: ts(BASE),
         };
-        let assign_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(27)),
+        let assign_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(27)),
             op: LocalOp::AssignLabel(task_id, label_id),
             queued_at: ts(BASE),
         };
-        let delete_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(43)),
+        let delete_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(43)),
             op: LocalOp::DeleteTask(task_id),
             queued_at: ts(BASE),
         };
@@ -1474,15 +1506,15 @@ mod tests {
             &snap,
             &[
                 PushOutcome {
-                    op: crate::ops::OpId(uuid::Uuid::from_u128(26)),
+                    op: crate::outbox::OpId(uuid::Uuid::from_u128(26)),
                     result: PushResult::RemoteMissing,
                 },
                 PushOutcome {
-                    op: crate::ops::OpId(uuid::Uuid::from_u128(27)),
+                    op: crate::outbox::OpId(uuid::Uuid::from_u128(27)),
                     result: PushResult::RemoteMissing,
                 },
                 PushOutcome {
-                    op: crate::ops::OpId(uuid::Uuid::from_u128(43)),
+                    op: crate::outbox::OpId(uuid::Uuid::from_u128(43)),
                     result: PushResult::RemoteMissing,
                 },
             ],
@@ -1490,8 +1522,8 @@ mod tests {
             ts(BASE + 60),
         );
 
-        assert!(app.tasks[&task_id].deleted);
-        assert_eq!(app.sync.pending_ops, 0, "all three ops resolved");
+        assert!(app.0.tasks[&task_id].deleted);
+        assert_eq!(app.0.sync.pending_ops, 0, "all three ops resolved");
     }
 
     #[test]
@@ -1501,18 +1533,18 @@ mod tests {
         let label_id = label.id;
         let task_id = task_by_card(&state, 1).id;
         state.labels.insert(label_id, label);
-        let update_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(28)),
+        let update_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(28)),
             op: LocalOp::UpdateTask(task_id),
             queued_at: ts(BASE),
         };
-        let assign_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(29)),
+        let assign_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(29)),
             op: LocalOp::AssignLabel(task_id, label_id),
             queued_at: ts(BASE),
         };
-        let stack_op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(54)),
+        let stack_op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(54)),
             op: LocalOp::CreateStack(*state.stacks.keys().next().unwrap()),
             queued_at: ts(BASE),
         };
@@ -1525,32 +1557,31 @@ mod tests {
             // Only the update reports gone; the assign must be cancelled
             // with it (the task no longer exists).
             &[PushOutcome {
-                op: crate::ops::OpId(uuid::Uuid::from_u128(28)),
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(28)),
                 result: PushResult::RemoteMissing,
             }],
             &CountingIds::default(),
             ts(BASE + 60),
         );
 
-        assert!(app.tasks[&task_id].deleted);
+        assert!(app.0.tasks[&task_id].deleted);
         assert_eq!(
-            app.sync.pending_ops, 1,
+            app.0.sync.pending_ops, 1,
             "sibling assign cancelled, stack op queued"
         );
         assert!(
-            app.actions
+            app.1
                 .iter()
-                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(29)))),
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(29)))),
         );
         assert_eq!(
-            app.sync.pending_ops, 1,
+            app.0.sync.pending_ops, 1,
             "the unrelated stack op stays queued"
         );
         assert!(
-            !app
-                .actions
+            !app.1
                 .iter()
-                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::ops::OpId(uuid::Uuid::from_u128(54)))),
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(54)))),
         );
     }
 
@@ -1577,7 +1608,7 @@ mod tests {
             ts(BASE + 60),
         );
 
-        let merged = &app.stacks[&stack_id];
+        let merged = &app.0.stacks[&stack_id];
         assert!(merged.deleted);
         assert!(merged.remote.is_none());
     }
@@ -1599,7 +1630,7 @@ mod tests {
             ts(BASE + 60),
         );
 
-        let merged = &app.labels[&label_id];
+        let merged = &app.0.labels[&label_id];
         assert!(merged.deleted);
         assert!(merged.remote.is_none());
     }
@@ -1612,8 +1643,8 @@ mod tests {
         state.labels.insert(label_id, label);
         let stack_id = *state.stacks.keys().next().unwrap();
         let task_id = task_by_card(&state, 1).id;
-        let op = crate::ops::PendingOp {
-            op_id: crate::ops::OpId(uuid::Uuid::from_u128(44)),
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(44)),
             op: LocalOp::UpdateTask(task_id),
             queued_at: ts(BASE),
         };
@@ -1637,16 +1668,16 @@ mod tests {
             ts(BASE + 120),
         );
 
-        assert!(app.boards.values().all(|b| b.deleted));
-        assert!(app.stacks[&stack_id].deleted, "stacks finalized");
-        assert!(app.stacks[&stack_id].remote.is_none());
+        assert!(app.0.boards.values().all(|b| b.deleted));
+        assert!(app.0.stacks[&stack_id].deleted, "stacks finalized");
+        assert!(app.0.stacks[&stack_id].remote.is_none());
         assert!(
-            app.tasks.values().all(|t| t.deleted),
+            app.0.tasks.values().all(|t| t.deleted),
             "all the board's tasks tombstoned"
         );
-        assert!(app.labels[&label_id].deleted, "labels finalized");
+        assert!(app.0.labels[&label_id].deleted, "labels finalized");
         assert_eq!(
-            app.sync.pending_ops, 0,
+            app.0.sync.pending_ops, 0,
             "the board's tasks' ops are cancelled by the cascade"
         );
     }
@@ -1655,8 +1686,8 @@ mod tests {
     fn stack_delete_cascade_cancels_cascaded_tasks_ops() {
         let task = bound_task(1);
         let state = base_state(task);
-        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(30));
-        let op = crate::ops::PendingOp {
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(30));
+        let op = crate::outbox::PendingOp {
             op_id,
             op: LocalOp::MoveTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
@@ -1676,8 +1707,8 @@ mod tests {
         );
 
         let task_id = task_by_card(&state, 1).id;
-        assert!(app.tasks[&task_id].deleted);
-        assert_eq!(app.sync.pending_ops, 0, "cascade cancels the moved op");
+        assert!(app.0.tasks[&task_id].deleted);
+        assert_eq!(app.0.sync.pending_ops, 0, "cascade cancels the moved op");
     }
 
     #[test]
@@ -1686,8 +1717,8 @@ mod tests {
         task.deleted = true;
         task.clocks.deleted = ts(BASE + 300);
         let state = base_state(task);
-        let op_id = crate::ops::OpId(uuid::Uuid::from_u128(31));
-        let op = crate::ops::PendingOp {
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(31));
+        let op = crate::outbox::PendingOp {
             op_id,
             op: LocalOp::DeleteTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
@@ -1707,10 +1738,68 @@ mod tests {
         let merged = task_by_card(&state_after, 1);
         assert!(!merged.deleted, "newer remote edit resurrects");
         assert!(
-            app.actions
+            app.1
                 .iter()
                 .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == op_id)),
             "the pending DeleteTask op is dropped"
+        );
+    }
+
+    #[test]
+    fn card_with_unresolvable_stack_is_deferred_then_adopted() {
+        // Referentially inconsistent snapshot (Deck cache lag): a card is
+        // listed but its stack is not. The card is NOT adopted this cycle
+        // (no fabricated stack binding); it joins as soon as its stack is
+        // listed in a later snapshot.
+        let state = base_state(bound_task(1));
+        let orphan_snap = single_stack_snapshot(vec![remote_task(3, 9, BASE + 60)], BASE + 60);
+
+        let first = apply_sync_report(
+            &state,
+            &[],
+            &orphan_snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+        assert!(
+            first
+                .0
+                .tasks
+                .values()
+                .all(|t| t.remote != Some(card_ref(3, 9))),
+            "orphan-stack card is not adopted",
+        );
+        assert!(
+            !first.1.iter().any(|a| matches!(a, PersistenceAction::UpsertTask(t) if t.remote == Some(card_ref(3, 9)))),
+            "the deferred card emits no persistence action",
+        );
+
+        let next_snap = snapshot(
+            vec![remote_stack(1, BASE + 60), remote_stack(3, BASE + 60)],
+            vec![remote_task(1, 1, BASE), remote_task(3, 9, BASE + 60)],
+        );
+        let (second, _) = apply_sync_report(
+            &app_into_state(&first),
+            &[],
+            &next_snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 180),
+        );
+        let adopted = second
+            .tasks
+            .values()
+            .find(|t| t.remote == Some(card_ref(3, 9)))
+            .expect("card adopted once its stack is listed");
+        assert_eq!(
+            adopted.stack,
+            second
+                .stacks
+                .values()
+                .find(|s| s.remote == Some(stack_ref(3)))
+                .unwrap()
+                .id,
         );
     }
 
@@ -1734,13 +1823,14 @@ mod tests {
         );
 
         let draft = app
+            .0
             .tasks
             .values()
             .find(|t| t.remote.is_none())
             .expect("offline task still present");
         assert_eq!(draft.title, "offline draft");
         assert!(
-            !app.actions
+            !app.1
                 .iter()
                 .any(|a| matches!(a, PersistenceAction::UpsertTask(t) if t.remote.is_none())),
             "R2: the never-pushed task is untouched"
@@ -1765,6 +1855,7 @@ mod tests {
         );
 
         let adopted = app
+            .0
             .stacks
             .values()
             .find(|s| s.remote == Some(stack_ref(3)))
@@ -1793,6 +1884,7 @@ mod tests {
         );
 
         let adopted = app
+            .0
             .boards
             .values()
             .find(|b| b.remote == Some(board(88)))
@@ -1820,7 +1912,7 @@ mod tests {
         );
 
         assert!(
-            app.actions
+            app.1
                 .iter()
                 .any(|a| matches!(a, PersistenceAction::UpsertBoard(b) if b.title == "board 77")),
         );
@@ -1844,8 +1936,8 @@ mod tests {
             ts(BASE + 120),
         );
 
-        assert_eq!(app.labels[&label_id].title, "label 7 renamed");
-        assert!(app.actions.iter().any(
+        assert_eq!(app.0.labels[&label_id].title, "label 7 renamed");
+        assert!(app.1.iter().any(
             |a| matches!(a, PersistenceAction::UpsertLabel(l) if l.title == "label 7 renamed")
         ),);
     }
@@ -1860,14 +1952,14 @@ mod tests {
             &[],
             &snap,
             &[PushOutcome {
-                op: crate::ops::OpId(uuid::Uuid::from_u128(99)),
+                op: crate::outbox::OpId(uuid::Uuid::from_u128(99)),
                 result: PushResult::Applied { echo: None },
             }],
             &CountingIds::default(),
             ts(BASE + 60),
         );
 
-        assert!(app.actions.is_empty());
+        assert!(app.1.is_empty());
     }
 
     proptest! {
@@ -1886,7 +1978,7 @@ mod tests {
 
         let a = apply_sync_report(&state, &[], &snap, &[], &CountingIds::default(), ts(20_000));
         let b = apply_sync_report(&state, &[], &snap, &[], &CountingIds::default(), ts(20_000));
-        prop_assert_eq!(a.tasks, b.tasks);
+        prop_assert_eq!(a.0.tasks, b.0.tasks);
     }
     }
 }

@@ -6,7 +6,7 @@
 
 use std::sync::Mutex;
 
-use crate::ops::PendingOp;
+use crate::outbox::PendingOp;
 use crate::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, TaskRepository,
 };

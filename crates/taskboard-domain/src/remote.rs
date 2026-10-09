@@ -17,7 +17,7 @@ use crate::ids::{
     LabelId, RemoteBoardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId,
     RemoteStackRef, StackId, TaskId,
 };
-use crate::ops::OpId;
+use crate::outbox::OpId;
 use crate::state::SyncErrorKind;
 
 /// A board as observed on the remote.
@@ -120,8 +120,10 @@ pub struct RemoteBoardSnapshot {
 }
 
 /// Lookup-only index from remote refs to local ids, derived from the
-/// current state (rebuilt O(n) per sync; incremental maintenance is
-/// backlogged). Pure data — merge functions receive it, never rebuild it.
+/// current bound entities (rebuilt O(n) per sync; incremental maintenance
+/// is backlogged). Pure data — merge functions receive it, never rebuild
+/// it. Build it with [`RemoteIndex::from_state`] (whole [`AppState`]) or
+/// [`RemoteIndex::from_bindings`] (explicit pairs).
 #[derive(Debug, Default)]
 pub struct RemoteIndex {
     /// Task id by full remote card ref.
@@ -132,17 +134,39 @@ pub struct RemoteIndex {
     pub label_by_ref: HashMap<RemoteLabelRef, LabelId>,
 }
 
-/// Builds the index from the current bound entities.
-#[must_use]
-pub fn remote_index(
-    tasks: impl Iterator<Item = (RemoteCardRef, TaskId)>,
-    stacks: impl Iterator<Item = (RemoteStackRef, StackId)>,
-    labels: impl Iterator<Item = (RemoteLabelRef, LabelId)>,
-) -> RemoteIndex {
-    RemoteIndex {
-        task_by_ref: tasks.collect(),
-        stack_by_ref: stacks.collect(),
-        label_by_ref: labels.collect(),
+impl RemoteIndex {
+    /// Builds the index from explicit `(remote ref, local id)` binding
+    /// pairs of already-bound entities.
+    #[must_use]
+    pub fn from_bindings(
+        tasks: impl Iterator<Item = (RemoteCardRef, TaskId)>,
+        stacks: impl Iterator<Item = (RemoteStackRef, StackId)>,
+        labels: impl Iterator<Item = (RemoteLabelRef, LabelId)>,
+    ) -> Self {
+        Self {
+            task_by_ref: tasks.collect(),
+            stack_by_ref: stacks.collect(),
+            label_by_ref: labels.collect(),
+        }
+    }
+
+    /// Builds the index for the bound entities of an [`AppState`].
+    #[must_use]
+    pub fn from_state(state: &crate::state::AppState) -> Self {
+        Self::from_bindings(
+            state
+                .tasks
+                .iter()
+                .filter_map(|(id, t)| Some((t.remote?, *id))),
+            state
+                .stacks
+                .iter()
+                .filter_map(|(id, s)| Some((s.remote?, *id))),
+            state
+                .labels
+                .iter()
+                .filter_map(|(id, l)| Some((l.remote?, *id))),
+        )
     }
 }
 

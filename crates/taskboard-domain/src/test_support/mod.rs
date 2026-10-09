@@ -33,7 +33,7 @@ use proptest::prelude::*;
 use uuid::Uuid;
 
 use crate::ids::{BoardId, LabelId, StackId, TaskId};
-use crate::ops::OpId;
+use crate::outbox::OpId;
 
 /// Bounded, serde-stable strings (no control characters).
 pub fn string_strategy() -> impl Strategy<Value = String> {

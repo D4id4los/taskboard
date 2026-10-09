@@ -17,7 +17,7 @@ use crate::ids::{
     LabelId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
     RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
-use crate::ops::{LocalOp, PendingOp};
+use crate::outbox::{LocalOp, PendingOp};
 use crate::persistence::{PersistedState, SyncValidators, ValidatorKey};
 use crate::state::{AppState, SyncErrorKind, SyncPhase, SyncStatus};
 
@@ -376,7 +376,7 @@ pub fn app_state_strategy() -> impl Strategy<Value = AppState> {
 #[derive(Debug, Clone)]
 pub struct OutboxRow {
     /// Operation id.
-    pub op_id: crate::ops::OpId,
+    pub op_id: crate::outbox::OpId,
     /// Operation kind (index into `LocalOp` variants; resolved against the
     /// generated entity lists, rows without a matching entity are dropped).
     pub kind: usize,

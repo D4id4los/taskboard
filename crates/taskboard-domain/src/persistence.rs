@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::entities::{Board, Label, Stack};
-use crate::ops::{OpId, PendingOp};
+use crate::outbox::{OpId, PendingOp};
 use crate::state::{AppState, SyncStatus};
 
 /// Hand-rolled boxed future alias: the domain may not depend on

@@ -17,20 +17,21 @@
 //! - The sync conflict policy ([`apply_sync_report`] and the per-entity
 //!   primitives) is executed by the state engine, never by the sync actor.
 //!
-//! Module map: identifiers ([`ids`]), seams ([`clock`]), entities
-//! ([`entities`]), state ([`state`]), remote views ([`remote`]), outbox
-//! ops ([`ops`]), persistence port ([`persistence`]), messages
-//! ([`messages`]), conflict-policy algebra ([`merge`]) and its
-//! fixed-order composition ([`pipeline`]).
+//! Module map: identifiers ([`ids`]), time seam ([`clock`]), identity
+//! seam ([`idgen`]), entities ([`entities`]), state ([`state`]), remote
+//! views ([`remote`]), outbox ([`outbox`]), persistence port
+//! ([`persistence`]), messages ([`messages`]), conflict-policy algebra
+//! ([`merge`]) and its fixed-order composition ([`pipeline`]).
 
 #![forbid(unsafe_code)]
 
 pub mod clock;
 pub mod entities;
+pub mod idgen;
 pub mod ids;
 pub mod merge;
 pub mod messages;
-pub mod ops;
+pub mod outbox;
 pub mod persistence;
 pub mod pipeline;
 pub mod remote;
@@ -44,28 +45,30 @@ pub mod test_support;
 #[cfg(test)]
 pub(crate) mod merge_testutil;
 
-pub use clock::{Clock, IdGenerator, SystemClock, UuidV7Generator};
+pub use clock::{Clock, SystemClock};
 pub use entities::{Board, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks};
+pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
     BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
     RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 pub use merge::{
-    adopt_after_push, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
-    adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, finalize_pushed_delete,
-    merge_board, merge_label, merge_stack, merge_task, state_remote_index, tombstone_task,
+    adopt_board_if_newer, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
+    adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, adopt_task_after_push,
+    finalize_pushed_task_delete, merge_label, merge_stack, merge_task, tombstone_label,
+    tombstone_stack, tombstone_task,
 };
 pub use messages::{
     EngineSignal, LabelChanges, StateCommand, SyncCommand, SyncReport, SystemEvent, TaskChanges,
 };
-pub use ops::{LocalOp, OpId, PendingOp};
+pub use outbox::{LocalOp, OpId, PendingOp};
 pub use persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
     ValidatorKey,
 };
-pub use pipeline::{SyncApplication, apply_sync_report};
+pub use pipeline::apply_sync_report;
 pub use remote::{
     PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho, RemoteIndex,
-    RemoteLabel, RemoteStack, RemoteTask, remote_index, resolve_label,
+    RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
 pub use state::{AppState, SyncErrorKind, SyncPhase, SyncStatus};
