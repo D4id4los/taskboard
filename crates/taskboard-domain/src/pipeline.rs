@@ -1269,6 +1269,61 @@ mod tests {
     }
 
     #[test]
+    fn a_create_pushed_and_pulled_in_the_same_cycle_is_not_re_adopted() {
+        // The J1 finding: the create's echo binds the local task to card
+        // 9 during the push phase; the same cycle's pull then reports
+        // card 9. The card→local matching map must be built from the
+        // *post-echo* task map, or the pull re-adopts the card as a
+        // duplicate local task (which then wedges the update binding).
+        let mut created = bound_task(9);
+        created.remote = None;
+        created.remote_seen = None;
+        created.title = "created".into();
+        let created_id = created.id;
+        let state = base_state(created);
+
+        let echo = remote_task(1, 9, BASE + 60);
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(9));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::CreateTask(created_id),
+            queued_at: ts(BASE),
+        };
+        let snap = single_stack_snapshot(vec![echo.clone()], BASE + 60);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Task(echo)),
+                },
+            }],
+            ts(BASE + 30), // the cycle read after the create was queued
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        let state_after = app_into_state(&app);
+        let live_count = state_after.tasks.values().filter(|t| !t.deleted).count();
+        assert_eq!(
+            live_count, 1,
+            "the echoed create must match the pulled card, not re-adopt it as a duplicate"
+        );
+        let merged = task_by_card(&state_after, 9);
+        assert_eq!(merged.id, created_id, "the pull matched the pushed task");
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::CompleteOp(id) if *id == op_id)),
+            "the create op completed"
+        );
+        assert_eq!(app.0.sync.pending_ops, 0);
+    }
+
+    #[test]
     fn resurrect_and_remote_missing_leave_unrelated_ops_queued() {
         // Resurrect path (R5): only the task's DeleteTask op is dropped;
         // an unrelated pending op stays queued.
