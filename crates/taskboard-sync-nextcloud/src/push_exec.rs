@@ -84,8 +84,12 @@ pub enum GroupOutcome {
     Outcomes(Vec<PushOutcome>),
     /// A transport-class failure: stop pushing; nothing is reported for
     /// this group or anything after it (decision 8). The typed error is
-    /// logged at the abort site (`DeckError` is not `Clone`).
-    Aborted,
+    /// logged at the abort site (`DeckError` is not `Clone`). `landed`
+    /// carries the outcomes for writes that *did* complete before the
+    /// transport failure — most importantly a create whose post-create
+    /// sub-call failed: without the evidence the engine would re-POST the
+    /// create next cycle, and Deck has no idempotency keys.
+    Aborted { landed: Vec<PushOutcome> },
 }
 
 /// One push cycle's executor over the injected client.
@@ -413,7 +417,11 @@ impl<'a> PushExecutor<'a> {
                                         outcomes.push(PushOutcome { op: *op_id, result });
                                     } else {
                                         tracing::warn!(error = %err, "push aborted: transport failure");
-                                        return GroupOutcome::Aborted;
+                                        // The create DID land: its evidence must
+                                        // travel in the Failed report or the next
+                                        // cycle re-POSTs the card (no idempotency
+                                        // keys — decision 3's whole point).
+                                        return GroupOutcome::Aborted { landed: outcomes };
                                     }
                                 }
                             }
@@ -446,10 +454,10 @@ impl<'a> PushExecutor<'a> {
         {
             tracing::warn!(error = %err, "post-create archive failed; the flag repairs on a later cycle");
             if is_transport(&err) {
-                {
-                    tracing::warn!(error = %err, "push aborted: transport failure");
-                    return GroupOutcome::Aborted;
-                }
+                tracing::warn!(error = %err, "push aborted: transport failure");
+                // The create landed; report its evidence (see the
+                // assignLabel abort above).
+                return GroupOutcome::Aborted { landed: outcomes };
             }
         }
         if let Some(done) = new_card.done {
@@ -462,10 +470,8 @@ impl<'a> PushExecutor<'a> {
             {
                 tracing::warn!(error = %err, "post-create done stamp failed; it repairs on a later cycle");
                 if is_transport(&err) {
-                    {
-                        tracing::warn!(error = %err, "push aborted: transport failure");
-                        return GroupOutcome::Aborted;
-                    }
+                    tracing::warn!(error = %err, "push aborted: transport failure");
+                    return GroupOutcome::Aborted { landed: outcomes };
                 }
             }
         }
@@ -716,12 +722,24 @@ impl<'a> PushExecutor<'a> {
         }])
     }
 
-    /// Applies the classification table; `None` (transport class) aborts.
+    /// Applies the classification table. A *successful* classification
+    /// (`Applied`, e.g. the 2xx-but-undecodable-echo case) completes the
+    /// subsumed ops with the primary; a failure result (`Rejected` /
+    /// `RemoteMissing`) completes the primary only — the subsumed ops stay
+    /// queued with their sibling for the next cycle (decision 6). `None`
+    /// (transport class) aborts the cycle with the landed evidence.
     fn classify(group: &PushGroup, err: &DeckError, ctx: PushCtx) -> GroupOutcome {
         match mapping::classify_push(err, ctx) {
-            Some(result) => GroupOutcome::Outcomes(Self::primary_outcome(group, result)),
-            // Transport class: the cycle aborts (decision 8) — no outcome.
-            None => GroupOutcome::Aborted,
+            Some(result @ PushResult::Applied { .. }) => {
+                GroupOutcome::Outcomes(Self::primary_outcome(group, result))
+            }
+            Some(result) => GroupOutcome::Outcomes(vec![PushOutcome {
+                op: group.primary,
+                result,
+            }]),
+            // Transport class: the cycle aborts (decision 8) — no outcome
+            // for this group's writes (they did not land) or anything after.
+            None => GroupOutcome::Aborted { landed: Vec::new() },
         }
     }
 }
@@ -1226,6 +1244,178 @@ mod tests {
                 empty_tables(),
             )
             .await;
-        assert!(matches!(outcome, GroupOutcome::Aborted));
+        assert!(
+            matches!(outcome, GroupOutcome::Aborted { landed } if landed.is_empty()),
+            "a transport failure on the group's own write lands nothing"
+        );
+    }
+
+    /// F1 regression: a create that landed but whose post-create label ride
+    /// then hit a transport failure must carry the create's outcome in the
+    /// abort — otherwise the engine re-POSTs the card next cycle (no
+    /// idempotency keys).
+    #[tokio::test]
+    async fn transport_failure_after_a_landed_create_keeps_its_evidence() {
+        // A raw TCP server: the first request (the create POST) gets a real
+        // HTTP 200 response; every later connection is accepted and dropped,
+        // which reqwest reports as a transport error (the client exhausts
+        // its three attempts against it).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                serve_one_create(stream);
+            }
+            // Subsequent connections: accept and immediately drop.
+            for _ in 0..8 {
+                if listener.accept().is_err() {
+                    break;
+                }
+            }
+        });
+
+        let client = DeckClient::new(&format!("http://{addr}"), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[(6, 3)]));
+        let outbox = vec![
+            op(100, LocalOp::CreateTask(task_id(10))),
+            op(101, LocalOp::AssignLabel(task_id(10), label_id(6))),
+        ];
+        let shape = taskboard_domain::NewCardShape {
+            title: "created".into(),
+            order: 0,
+            description: String::new(),
+            duedate: None,
+            done: None,
+            archived: false,
+            labels: std::collections::BTreeSet::new(),
+        };
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::CreateTask {
+                        task: task_id(10),
+                        stack: stack_id(5),
+                        new_card: shape,
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[101],
+                ),
+                &outbox,
+                empty_tables(),
+            )
+            .await;
+
+        let GroupOutcome::Aborted { landed } = outcome else {
+            panic!("expected a transport abort");
+        };
+        assert_eq!(landed.len(), 1, "the create's evidence survives the abort");
+        assert!(matches!(
+            &landed[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
+                if view.id.card == taskboard_domain::RemoteCardId(55)
+        ));
+    }
+
+    /// F2 regression: a failed materialized write completes only the
+    /// primary — the subsumed ops stay queued with their sibling.
+    #[tokio::test]
+    async fn a_rejected_write_leaves_the_subsumed_ops_queued() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 0)))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+        let shape = CardShape {
+            title: "edited".into(),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            order: 0,
+            archived: false,
+            labels: std::collections::BTreeSet::new(),
+        };
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: shape,
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[101, 102],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert_eq!(
+            outcomes.len(),
+            1,
+            "only the primary gets an outcome; the subsumed ops stay queued"
+        );
+        assert_eq!(outcomes[0].op, taskboard_domain::OpId(uid(100)));
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::BadRequest
+            }
+        ));
+    }
+
+    /// Writes one minimal HTTP/1.1 response carrying the card JSON, then
+    /// closes the connection (`Connection: close` forces the next request
+    /// onto a fresh connection, which the test server then drops).
+    fn serve_one_create(mut stream: std::net::TcpStream) {
+        use std::io::{Read, Write};
+        let mut buf = [0_u8; 4096];
+        let mut request = Vec::new();
+        // Read until the end of the headers, then the content-length body.
+        loop {
+            let Ok(n) = stream.read(&mut buf) else { return };
+            if n == 0 {
+                return;
+            }
+            request.extend_from_slice(&buf[..n]);
+            let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]).to_lowercase();
+            let length: usize = headers
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            if request.len() >= header_end + 4 + length {
+                break;
+            }
+        }
+        let body = card_json(55, 7, 0);
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.flush();
     }
 }

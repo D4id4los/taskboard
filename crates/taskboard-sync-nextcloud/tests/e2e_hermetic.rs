@@ -8,6 +8,11 @@
 //! repository is the *same* object for both sides, so memory ≡ disk holds
 //! across the pair and every assertion reads the engine's published
 //! `AppState` — the surface a real UI would see.
+//!
+//! Determinism: `#[tokio::test(start_paused)]` freezes the tokio clock; the
+//! `start_server` boot helper and the `eventually` pollers are the only
+//! places time advances, so the actor's poll ticks fire exactly while a
+//! test waits on a predicate — never between assertions.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -119,19 +124,49 @@ async fn bind_board(commands: &mpsc::Sender<SyncCommand>) {
 // `RemoteBoardId` alias to keep the helper signatures short.
 use taskboard_domain::RemoteBoardId as RemoteBoardId0;
 
-async fn eventually(engine: &taskboard_state::EngineHandle, pred: impl Fn(&AppState) -> bool) {
-    // tracing_subscriber not available; dump state on timeout instead.
-
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if pred(&engine.shared_state().load_full()) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+/// Starts a wiremock server under paused time: the server's startup polls
+/// readiness with a 25 ms sleep, so time must advance while it boots.
+async fn start_server() -> MockServer {
+    let started = tokio::spawn(MockServer::start());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if started.is_finished() {
+            return started.await.expect("wiremock server starts");
         }
-    })
-    .await
-    .expect("predicate satisfied within the deadline");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "wiremock never became ready"
+        );
+        tokio::time::advance(Duration::from_millis(10)).await;
+    }
+}
+
+/// Waits until both subscribers (engine and actor) are on the system
+/// broadcast — a structural fact, not a timed one; no sleeps.
+async fn wait_subscribed(system_tx: &broadcast::Sender<SystemEvent>) {
+    for _ in 0..10_000 {
+        if system_tx.receiver_count() >= 2 {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("engine and actor never both subscribed to the system broadcast");
+}
+
+async fn eventually(engine: &taskboard_state::EngineHandle, pred: impl Fn(&AppState) -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if pred(&engine.shared_state().load_full()) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "predicate satisfied within the deadline"
+        );
+        // Time advances only here: the actor's poll ticks fire while the
+        // test waits, never between assertions.
+        tokio::time::advance(Duration::from_millis(5)).await;
+    }
 }
 
 fn boards_json() -> String {
@@ -519,9 +554,9 @@ impl DeckSim {
 /// the engine, then the bound sync target produces a cycle that pushes the
 /// drafts and pulls the board; the remote binding becomes visible in the
 /// published `AppState`.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn i1_offline_creates_round_trip_to_the_server() {
-    let server = MockServer::start().await;
+    let server = start_server().await;
     let sim = DeckSim::new();
     sim.mount(&server).await;
     // The board's live column exists server-side from the start.
@@ -532,9 +567,9 @@ async fn i1_offline_creates_round_trip_to_the_server() {
 
     let stack = boot(server, seeded_state()).await;
     let (commands, _actor) = spawn_actor(&stack);
-    // Wait for the actor's first silent tick (broadcast-subscription race:
-    // nudges before it are harmless anyway).
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Deterministic: wait for the broadcast subscription (a structural
+    // fact) instead of sleeping through the actor's first tick.
+    wait_subscribed(&stack.system_tx).await;
     bind_board(&commands).await;
 
     let CommandOutcome::CreatedStack(stack_id) = stack
@@ -581,9 +616,9 @@ async fn i1_offline_creates_round_trip_to_the_server() {
 
 /// I2 — remote edit wins per LWW: a server-side newer edit overwrites the
 /// locally stale one on the next pull.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn i2_remote_newer_edit_adopts() {
-    let server = MockServer::start().await;
+    let server = start_server().await;
     // The card exists remotely with a NEWER lastModified than the local
     // stale edit (local clocks ~T; remote edit T + 600).
     let mut card = card_json(55, "server wins");
@@ -623,7 +658,7 @@ async fn i2_remote_newer_edit_adopts() {
     state.tasks.insert(task.id, task);
     let stack = boot(server, state).await;
     let (commands, _actor) = spawn_actor(&stack);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_subscribed(&stack.system_tx).await;
     bind_board(&commands).await;
 
     eventually(&stack.engine, |app| {
@@ -636,9 +671,9 @@ async fn i2_remote_newer_edit_adopts() {
 
 /// I3 — concurrent edits resolve per-field: the locally newer title
 /// survives while the remotely newer description adopts.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn i3_concurrent_edits_resolve_per_field() {
-    let server = MockServer::start().await;
+    let server = start_server().await;
     let mut card = card_json(55, "older remote title");
     card["description"] = serde_json::json!("newer remote description");
     card["lastModified"] = serde_json::json!(T + 100); // newer than remote_seen
@@ -678,7 +713,7 @@ async fn i3_concurrent_edits_resolve_per_field() {
     state.tasks.insert(task.id, task);
     let stack = boot(server, state).await;
     let (commands, _actor) = spawn_actor(&stack);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_subscribed(&stack.system_tx).await;
     bind_board(&commands).await;
 
     eventually(&stack.engine, |app| {
@@ -693,10 +728,10 @@ async fn i3_concurrent_edits_resolve_per_field() {
 
 /// I4 — full two-way: move + label assign push to the server (reorder and
 /// assignLabel requests observed), then a local delete deletes remotely.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 #[allow(clippy::too_many_lines)] // fixture seeding is the scenario
 async fn i4_move_label_and_delete_push_to_the_server() {
-    let server = MockServer::start().await;
+    let server = start_server().await;
     let sim = DeckSim::new();
     sim.mount(&server).await;
     // The two server-side columns and the card, matching the seeded state.
@@ -804,14 +839,13 @@ async fn i4_move_label_and_delete_push_to_the_server() {
     }
     let stack = boot(server, state).await;
     let (commands, _actor) = spawn_actor(&stack);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_subscribed(&stack.system_tx).await;
     bind_board(&commands).await;
 
     eventually(&stack.engine, |app| app.sync.pending_ops == 0).await;
     // The move and the label assignment both reached the server.
     eventually_no_state(|| {
         let ops = sim.ops.lock().unwrap();
-        eprintln!("I4 sim ops: {ops:?}");
         ops.contains(&"reorder".to_string()) && ops.contains(&"put".to_string())
     })
     .await;
@@ -849,16 +883,19 @@ async fn i4_move_label_and_delete_push_to_the_server() {
 }
 
 async fn eventually_no_state(pred: impl Fn() -> bool) {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if pred() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if pred() {
+            return;
         }
-    })
-    .await
-    .expect("predicate satisfied within the deadline");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "predicate satisfied within the deadline"
+        );
+        // Time advances only here: the actor's poll ticks fire while the
+        // test waits, never between assertions.
+        tokio::time::advance(Duration::from_millis(5)).await;
+    }
 }
 
 /// I5 — restart continuity: after dropping the actor and respawning with a
@@ -866,16 +903,16 @@ async fn eventually_no_state(pred: impl Fn() -> bool) {
 /// validators resume conditional polling: the unchanged server answers
 /// 304s, the rebuilt cache fills, and cycles keep succeeding. (With the
 /// old actor gone, the engine's dead nudge channel costs nothing.)
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn i5_restart_resumes_conditional_polling() {
-    let server = MockServer::start().await;
+    let server = start_server().await;
     mount_conditional_pull(&server).await;
 
     // First lifetime: one full cycle (cold cache → fresh data + validators
     // persisted by the engine).
     let stack = boot(server, seeded_state()).await;
     let (commands, first_actor) = spawn_actor(&stack);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_subscribed(&stack.system_tx).await;
     bind_board(&commands).await;
     eventually(&stack.engine, |app| {
         app.sync.phase == SyncPhase::Idle && app.sync.last_success.is_some()
@@ -889,9 +926,16 @@ async fn i5_restart_resumes_conditional_polling() {
     );
 
     // Restart: drop the first actor, respawn with a fresh client over the
-    // same engine and repository.
+    // same engine and repository. Await (not sleep for) the abort: the
+    // handle reaching `finished` is a structural fact.
     first_actor.abort();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    for _ in 0..10_000 {
+        if first_actor.is_finished() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(first_actor.is_finished(), "the aborted actor stops");
     let before = stack.server.received_requests().await.unwrap().len();
     let (_commands2, _second_actor) = spawn_actor(&stack);
     let first_success = stack.engine.shared_state().load_full().sync.last_success;
