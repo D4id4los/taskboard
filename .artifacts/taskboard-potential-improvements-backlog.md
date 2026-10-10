@@ -1055,3 +1055,83 @@ response.
 If kiosk supervision ever needs it: a signal ladder (second signal =
 abort actors immediately, third = `_exit`) with distinct exit codes,
 documented in the runbook.
+
+## [2026-10-10] Task selectors beyond exact uuid
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
+- **Target Area**: `crates/taskboard-app/src/commands/`
+
+### Context & Description
+M1 `tasks done/move` take the exact local `TaskId` uuid (scripting-first).
+Humans must copy it from `tasks list --json` first; prefix matching,
+`--title`, or ordinal selectors would round out the UX.
+
+### Proposed Approach
+A shared `resolve_task(&AppState, &str)` that tries exact id, then a
+unique id prefix (≥8 chars), then an exact-title match — mirroring
+`resolve_stack`, returning the same `UnknownTask`/ambiguity errors.
+
+## [2026-10-10] `tasks edit/delete`, `stacks`/`labels` subcommands
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
+- **Target Area**: `crates/taskboard-app/src/commands/`
+
+### Context & Description
+The domain commands exist (`UpdateTask`, `DeleteTask`, the full
+stacks/labels verb set) but the M1 CLI deliberately ships only
+`tasks list/add/done/move`. The outbox/push machinery needs no changes
+for the missing verbs.
+
+### Proposed Approach
+Grow the `Tasks`/new `Stacks`/`Labels` clap groups one verb at a time;
+each is a selector resolution + one `StateCommand` + a receipt,
+reusing the Phase 6 handler pattern.
+
+## [2026-10-10] `logout` subcommand
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
+- **Target Area**: `crates/taskboard-app/src/commands/`
+
+### Context & Description
+`CredentialStore::delete` shipped in Phase 5 unused; rotating away a
+stale keyring entry currently means `secret-tool` by hand.
+
+### Proposed Approach
+`taskboard logout`: load config (typed errors if unconfigured), delete
+the `user@host` entry, confirm; a `--purge` variant for the local db is
+a separate, destructive design question.
+
+## [2026-10-10] `taskboard status` without triggering a cycle
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
+- **Target Area**: `crates/taskboard-app/`
+
+### Context & Description
+Under the uniform-core doctrine every core boot fires an immediate sync
+cycle, so a "just show me SyncStatus" read cannot exist as a plain
+subcommand — it would silently do network I/O.
+
+### Proposed Approach
+Either a no-sync bootstrap mode (spawn engine+storage only) or the
+daemon-IPC entry (query the running daemon); decide when a consumer
+actually needs it.
+
+## [2026-10-10] Versioned `--json` schema
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
+- **Target Area**: `crates/taskboard-app/src/commands/output.rs`
+
+### Context & Description
+The Phase 6 JSON payloads and error kinds are stable within M1 but
+carry no compatibility guarantee; external scripts will accrete around
+them anyway.
+
+### Proposed Approach
+When real consumers appear: a schema version field (or `--json=v2`
+gate), serde renames frozen, and payload diffs covered by snapshot
+tests in the app crate.
