@@ -44,10 +44,22 @@ fn config_for(server_url: &str, dir: &tempfile::TempDir) -> AppConfig {
     config
 }
 
-/// The env credential store preloaded with [`PASSWORD`] (restored on
-/// drop).
-fn env_password() -> EnvOverride {
-    EnvOverride::set("TASKBOARD_APP_PASSWORD", PASSWORD)
+/// The env credential store preloaded with [`PASSWORD`]: the process
+/// env lock plus the override itself, alive until the end of the test
+/// (the override's SAFETY contract requires the lock to be held).
+struct PasswordEnv {
+    /// Held for the override's lifetime (SAFETY contract of `set_env`).
+    _lock: common::EnvGuard,
+    /// Restores the prior env state on drop.
+    _override: EnvOverride,
+}
+
+fn env_password() -> PasswordEnv {
+    let lock = common::env_lock();
+    PasswordEnv {
+        _lock: lock,
+        _override: EnvOverride::set("TASKBOARD_APP_PASSWORD", PASSWORD),
+    }
 }
 
 /// The Basic-auth header the client must send for the B-series creds.
@@ -142,9 +154,9 @@ async fn eventually(app: &App, pred: impl Fn(&taskboard_domain::AppState) -> boo
     .expect("predicate satisfied within the deadline");
 }
 
-/// Bootstraps with the env store (the password override lives as long
-/// as the guard).
-async fn boot(config: AppConfig) -> (App, EnvOverride) {
+/// Bootstraps with the env store (the password override and its env
+/// lock live as long as the returned guard).
+async fn boot(config: AppConfig) -> (App, PasswordEnv) {
     let guard = env_password();
     let app = bootstrap(config, Arc::new(taskboard_app::secrets::EnvCredentialStore))
         .await
@@ -164,7 +176,7 @@ async fn boot(config: AppConfig) -> (App, EnvOverride) {
 async fn b1_boot_and_no_board_cycle_through_the_graph() {
     let dir = tempdir();
     let server = MockServer::start().await;
-    let (app, _pw) = boot(config_for(&server.uri(), &dir)).await;
+    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
 
     let outcome = app
         .engine
@@ -220,7 +232,7 @@ async fn b2_seeded_cycle_pulls_and_authenticates() {
         seed_join.await.expect("seed actor exits");
     }
 
-    let (app, _pw) = boot(config_for(&server.uri(), &dir)).await;
+    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
     app.engine
         .execute(StateCommand::RequestSync)
         .await
@@ -254,7 +266,7 @@ async fn b3_graceful_shutdown_reopens_the_database() {
         drop(repo);
         join.await.expect("seed actor exits");
 
-        let (app, _pw) = boot(config_for(&server.uri(), &dir)).await;
+        let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
         let outcome = app.shutdown().await;
         assert!(!outcome.actor_aborted);
 
@@ -289,7 +301,7 @@ async fn b4_shutdown_mid_cycle_is_bounded_and_keeps_the_outbox() {
 
     let mut config = config_for(&server.uri(), &dir);
     config.app.shutdown_timeout_secs = 1; // tight budget: the test's bound
-    let (app, _pw) = boot(config).await;
+    let (app, _env) = boot(config).await;
 
     app.engine
         .execute(StateCommand::RequestSync)
@@ -414,7 +426,7 @@ async fn b7_restart_continuity_with_validators() {
 
     // First boot: a full pull stores the validators (ETag "gen-1").
     {
-        let (app, _pw) = boot(config.clone()).await;
+        let (app, _env) = boot(config.clone()).await;
         app.engine
             .execute(StateCommand::RequestSync)
             .await
@@ -459,7 +471,7 @@ async fn b7_restart_continuity_with_validators() {
 
     config.nextcloud.server_url = Some(second.uri());
     config.storage.db_path = Some(db_path);
-    let (app, _pw) = boot(config).await;
+    let (app, _env) = boot(config).await;
 
     // Cycle 1 (post-restart): the forced unconditional refetch.
     app.engine
