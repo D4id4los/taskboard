@@ -124,12 +124,14 @@ headless machines, the =TASKBOARD_APP_PASSWORD= environment variable
 (set =[nextcloud] credential_store = "env"= explicitly; there is no
 silent fallback).
 
+Replace every =<placeholder>= below with your own values.
+
 Example =taskboard.toml=:
 
 #+begin_src toml
 [nextcloud]
-server_url = "https://cloud.example.com"
-username = "your-login"
+server_url = "https://<your-nextcloud-host>"   # e.g. https://cloud.example.com
+username = "<your-nextcloud-username>"
 
 [sync]
 poll_interval_secs = 30
@@ -138,20 +140,25 @@ poll_interval_secs = 30
 ** Running the Daemon (M1 quickstart)
 
 1. Configure =taskboard.toml= as above.
-2. Provide the app password, either in your desktop keyring
+2. Provide the app password, either in your desktop keyring (the
+   default store):
 
    #+begin_src sh
-   # paste the app password when prompted; the entry name is
-   # username@host-of-server (what KeyringStore looks up)
-   printf 'your-app-password' | secret-tool store --label=taskboard \
-     service taskboard username your-login@cloud.example.com
+   # <your-keyring-account> must be <your-nextcloud-username>@<host>,
+   # where <host> is the host of server_url (no port, no path) —
+   # this exact pair is what the daemon looks up.
+   printf '%s' '<your-app-password>' | secret-tool store --label=taskboard \
+     service taskboard username <your-nextcloud-username>@<host>
 
-   # verify / clean up later:
-   secret-tool lookup service taskboard username your-login@cloud.example.com
+   # verify it is retrievable (prints the secret):
+   secret-tool lookup service taskboard \
+     username <your-nextcloud-username>@<host>
    #+end_src
 
-   or via the environment escape hatch:
-   =TASKBOARD_APP_PASSWORD=...= plus =credential_store = "env"=.
+   ...or via the environment escape hatch: add
+   =credential_store = "env"= to the =[nextcloud]= table and export
+   =TASKBOARD_APP_PASSWORD=<your-app-password>= before starting the
+   daemon.
 3. Run the headless sync daemon:
 
    #+begin_src sh
