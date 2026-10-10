@@ -1139,7 +1139,8 @@ stale keyring entry currently means `secret-tool` by hand.
 
 ### Proposed Approach
 `taskboard logout`: load config (typed errors if unconfigured), delete
-the `user@host` entry, confirm; a `--purge` variant for the local db is
+the `user@host` entry, print a receipt; a `--forget-board` variant can
+additionally drop the binding. A `--purge` variant for the local db is
 a separate, destructive design question.
 
 ## [2026-10-10] `taskboard status` without triggering a cycle
@@ -1154,9 +1155,11 @@ cycle, so a "just show me SyncStatus" read cannot exist as a plain
 subcommand — it would silently do network I/O.
 
 ### Proposed Approach
-Either a no-sync bootstrap mode (spawn engine+storage only) or the
-daemon-IPC entry (query the running daemon); decide when a consumer
-actually needs it.
+Prefer daemon IPC: a `status` query over the IPC surface, drafting
+from the `--json` payload contract (see the Phase 6 plan's consumer
+handoff map). Note: once the stand-alone-first work lands,
+`backend = "none"` boots already cycle-free, so the remaining hard
+case is a configured connector — exactly what daemon IPC answers.
 
 ## [2026-10-10] Versioned `--json` schema
 
@@ -1219,81 +1222,29 @@ This effectively re-frames the roadmap's "offline-first" from
 configured", and should be reflected in `docs/architecture.org` and a
 roadmap amendment when picked up.
 
-## [2026-10-10] Task selectors beyond exact uuid
+## [2026-10-11] `parted`-style interactive REPL mode
 
 - **Category**: `DX`
-- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
-- **Target Area**: `crates/taskboard-app/src/commands/tasks.rs`
+- **Originating Plan/Report**: `.artifacts/reports/2026-10-11-m1-exit-pre-gui-analysis-report.md` (user idea, 2026-10-11)
+- **Target Area**: `crates/taskboard-app/` (`commands/`, `cli.rs`, `main.rs`)
 
 ### Context & Description
-The M1 CLI selects tasks by exact local uuid only (`tasks list --json`
-is the scripting id source). Prefix match, `--title` selectors, and
-ordinals are a human-ergonomics gap deliberately deferred — the domain
-commands already accept ids.
+Bare `taskboard` currently resolves `[app] mode` (the daemon until
+Phase 7). A `parted`-style REPL — no arguments drops the user into a
+shell where each line is parsed and dispatched against one booted
+core, `exit`/Ctrl-D leaves — would make daily driving and SSH/kiosk
+administration far cheaper than one-process-per-command. The seam
+already exists: every verb wraps an `AsyncFnOnce(&App)` body in
+`with_core`; extracting those bodies is most of the work and is
+shared with the daemon-IPC entry below.
 
 ### Proposed Approach
-Add a selector resolution layer in `commands/tasks.rs` only (domain
-untouched): prefix match with a uniqueness requirement, exact-title
-with the same ambiguity rule stacks use.
-
-## [2026-10-10] `tasks edit/delete`, `stacks`/`labels` subcommands
-
-- **Category**: `DX`
-- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
-- **Target Area**: `crates/taskboard-app/src/commands/`
-
-### Context & Description
-The domain commands exist (`UpdateTask`, `DeleteTask`, stack/label
-verbs); the M1 CLI surface is deliberately minimal. Every CLI verb is
-additive over the existing engine catalogue.
-
-### Proposed Approach
-Follow the established verb pattern: typed handler + projection in
-`commands/`, selector helpers shared with `tasks`.
-
-## [2026-10-10] `taskboard logout`
-
-- **Category**: `DX`
-- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
-- **Target Area**: `crates/taskboard-app/src/commands/`
-
-### Context & Description
-`CredentialStore::delete` ships (used by nobody yet); the subcommand is
-a one-liner once anyone needs it.
-
-### Proposed Approach
-`logout`: resolve config, call `store.delete(server, user)`, print a
-receipt. Optionally `--forget-board` to drop the binding.
-
-## [2026-10-10] `taskboard status` without triggering a sync cycle
-
-- **Category**: `Architecture`
-- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
-- **Target Area**: `crates/taskboard-app/src/bootstrap.rs` + `commands/`
-
-### Context & Description
-Under the uniform-core doctrine (boot = immediate first cycle), a
-no-sync status read is a fiction: every core command pays a cycle.
-`sync --no-wait` reports the status but nudges the actor. A true
-status-only read needs either a no-sync boot mode or daemon IPC
-(existing entry) — both doctrine decisions, not CLI sugar.
-
-### Proposed Approach
-Prefer daemon IPC: a `status` query over the IPC surface drafts from
-the `--json` payload contract (see the consumer handoff map in the
-phase 6 plan).
-
-## [2026-10-10] JSON schema stability/versioning for `--json`
-
-- **Category**: `DX`
-- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
-- **Target Area**: `crates/taskboard-app/src/commands/output.rs`
-
-### Context & Description
-The `--json` payloads are internal-but-scriptable; kinds and shapes are
-stable within M1 but explicitly not versioned-guaranteed. A versioned
-contract is premature until external consumers exist.
-
-### Proposed Approach
-A `--json=versioned` mode or a documented `schema_version` field once
-kiosk tooling/daemon IPC depend on the shapes.
+Extract the `&App`-taking handler bodies; loop `rustyline` (new MIT
+workspace dep) lines → `Cli::try_parse_from(shell-split(line))` →
+dispatch, printing clap usage errors in-loop instead of exiting.
+Decide the no-argument default (TTY-sniff → REPL vs explicit
+subcommand vs parted-style always-REPL) — nothing ships pre-v0.1.0,
+so changing the default is cheapest now. A REPL session holds the
+instance lock for its lifetime (stop the daemon first). Sequence
+after the CLI-completeness work so the verb surface justifies
+entering the shell.
