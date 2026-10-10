@@ -464,3 +464,84 @@ async fn v10_ambiguous_and_missing_stacks_are_typed() {
         .expect_err("no stacks");
     assert_eq!(err.error_kind(), "no-stacks");
 }
+
+/// Seeds a persisted sync status into a db through the storage actor
+/// (what earlier invocations leave behind — the sync status is
+/// durable, unlike the binding).
+async fn seed_sync_status(db: &std::path::Path, status: taskboard_domain::SyncStatus) {
+    let repo = Arc::new(taskboard_storage_sqlite::open(db).await.expect("seed db"));
+    let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
+    handle
+        .apply(vec![taskboard_domain::PersistenceAction::UpsertSyncStatus(
+            status,
+        )])
+        .await
+        .expect("seed applies");
+    drop(handle);
+    join.await.expect("seed actor exits");
+}
+
+/// V11: a db carrying a *stale* persisted `Failed` status (e.g. from a
+/// `sync` run before any binding — a board-less db never clears it)
+/// must still adopt: the wait decides on fresh evidence, not the
+/// hydrated snapshot.
+#[tokio::test]
+async fn v11_select_ignores_a_stale_persisted_failure() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    mount_pull(&server, common::stacks_json(&json!([]))).await;
+    let db = dir.path().join("v11.db");
+    seed_sync_status(
+        &db,
+        taskboard_domain::SyncStatus {
+            phase: taskboard_domain::SyncPhase::Failed {
+                last_error: taskboard_domain::SyncErrorKind::NoBoard,
+            },
+            last_success: None,
+            pending_ops: 0,
+        },
+    )
+    .await;
+    let config = config_for(&server.uri(), dir.path(), "v11.db");
+    let store = store_for(&server.uri());
+
+    let receipt = boards::select(config, store, common::BOARD, Duration::from_secs(30))
+        .await
+        .expect("stale failure must not block the adoption");
+    assert_eq!(receipt.board.id, common::BOARD);
+}
+
+/// V12: a `Failed` phase that *is* fresh evidence (the adoption cycle
+/// itself failed — the server 500s) is still a typed failure.
+#[tokio::test]
+async fn v12_select_reports_a_fresh_failure() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    // Only the pre-validation listing succeeds; the binding cycle's
+    // reads all fail.
+    mount_get(&server, BOARDS_PATH, common::boards_json()).await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(wiremock::ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let db = dir.path().join("v12.db");
+    seed_sync_status(
+        &db,
+        taskboard_domain::SyncStatus {
+            phase: taskboard_domain::SyncPhase::Failed {
+                last_error: taskboard_domain::SyncErrorKind::NoBoard,
+            },
+            last_success: None,
+            pending_ops: 0,
+        },
+    )
+    .await;
+    let config = config_for(&server.uri(), dir.path(), "v12.db");
+    let store = store_for(&server.uri());
+
+    let err = boards::select(config, store, common::BOARD, Duration::from_secs(30))
+        .await
+        .expect_err("the fresh cycle failure must surface");
+    assert_eq!(err.error_kind(), "sync-failed");
+    assert_eq!(err.error_detail().as_deref(), Some("server"));
+}
