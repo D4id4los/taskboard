@@ -42,10 +42,17 @@ jobs:
       - name: Start dockerized Nextcloud (Deck, test user, app password)
         run: scripts/nextcloud_it_setup.sh up --ci
 
-      - name: Docker-tier integration tests
+      - name: Docker-tier integration tests (sync actor)
         # --no-tests=fail guards the filter silently matching nothing.
         run: >
           cargo nextest run -p taskboard-sync-nextcloud --run-ignored only
+          -E 'test(it_nextcloud_docker)' --no-tests=fail
+
+      - name: Docker-tier integration tests (app daemon journey)
+        # The Phase 5 exit demo: the in-process daemon pulls, pushes,
+        # and shuts down gracefully against the same dockerized server.
+        run: >
+          cargo nextest run -p taskboard-app --run-ignored only
           -E 'test(it_nextcloud_docker)' --no-tests=fail
 
       - name: Teardown

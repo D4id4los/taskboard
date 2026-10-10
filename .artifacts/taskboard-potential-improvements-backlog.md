@@ -359,6 +359,13 @@ In the Phase 5 (app bootstrap) plan: wrap keyring access behind a small
 Port with two impls (keyring, encrypted-file), select via config, and
 document the trade-off. Never silently fall back to plaintext.
 
+> **Status note (2026-10-10, Phase 5)**: decided in ADR 0008. The
+> `CredentialStore` port shipped with the keyring store (default) and
+> the *env-var* store as the sanctioned headless escape hatch
+> (`credential_store = "env"` + `TASKBOARD_APP_PASSWORD` — explicit
+> opt-in, never a silent fallback). Remaining future work for this
+> entry: the encrypted-file store below.
+
 ## [2026-10-08] Deck client coverage pass: endpoint logging arms
 
 - **Category**: `Testing`
@@ -961,3 +968,90 @@ Trigger: a board with hundreds of bound cards or measured cycle cost.
 Mitigation: conditional (`If-None-Match`) per-card detail fetches for
 changed cards only, or refresh details only when the listing's
 `lastModified` batch actually moved.
+
+## [2026-10-10] XDG config discovery
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase5-app-bootstrap-plan.md` §8
+- **Target Area**: `crates/taskboard-app/src/config.rs`
+
+### Context & Description
+Phase 5's config path resolution is `--config` > `TASKBOARD_CONFIG` >
+`./taskboard.toml` — a CWD-relative default only. Desktop deployments
+expect `$XDG_CONFIG_HOME/taskboard/taskboard.toml` to be consulted
+before falling back to the CWD file.
+
+### Proposed Approach
+Insert an XDG step between the env var and the CWD default in
+`AppConfig::load`; document the final order. Cheap, self-contained.
+
+## [2026-10-10] Encrypted-file credential store
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase5-app-bootstrap-plan.md` §3.3 (resolves the design half of the "[2026-10-08] Keyring fallback" entry)
+- **Target Area**: `crates/taskboard-app/src/secrets.rs`
+
+### Context & Description
+The env store is fine for CI/SSH but wrong for long-lived desktop use:
+env vars are process-scoped and visible to same-user tooling (`ps -E` on
+some platforms). Deployments that refuse env vars *and* lack a Secret
+Service (minimal kiosk images) currently have no sanctioned store.
+
+### Proposed Approach
+A third `CredentialStore` impl selected by `[nextcloud] credential_store
+= "file"`: encrypted at rest, key management is the open design
+question (passphrase-derived via argon2 with an interactive unlock, or
+a generated 0600 key file for unattended kiosks). The port makes this a
+drop-in addition.
+
+## [2026-10-10] Systemd/journald packaging
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase5-app-bootstrap-plan.md` §8
+- **Target Area**: packaging / `taskboard-app`
+
+### Context & Description
+Kiosk deployments supervise the daemon with systemd; the SIGTERM-graceful
+shutdown (ADR 0008) is the hard part and is done, but a unit-file
+template, `Type=notify` readiness, and a journald log destination are
+still manual.
+
+### Proposed Approach
+Ship a `contrib/taskboard.service` template (user service, `Restart=
+on-failure`, `SIGTERM` default) and note that the fmt subscriber's
+stderr is journald-visible as-is for M1; sd_notify integration only if
+start-up ordering actually needs it.
+
+## [2026-10-10] Config doctoring / `taskboard config print`
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase5-app-bootstrap-plan.md` §8
+- **Target Area**: `crates/taskboard-app`
+
+### Context & Description
+Support conversations need the *effective* config (post-defaults, post-
+env) without secrets. Phase 5 keeps `AppConfig` secret-free by
+construction, so a redacted dump is nearly free — but there is no CLI
+surface for it until Phase 6's subcommands.
+
+### Proposed Approach
+Phase 6: a `config print` subcommand serializing the loaded `AppConfig`
+(it is `Serialize` and secret-free); a `--json` flag matches the
+planned output convention.
+
+## [2026-10-10] Signal-escalation policy
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase5-app-bootstrap-plan.md` §8
+- **Target Area**: `crates/taskboard-app/src/main.rs`
+
+### Context & Description
+The second Ctrl-C force-exits (`exit(130)`), which is standard daemon
+UX but flat: no distinct exit codes for "aborted actor" vs "clean",
+no flush-then-force ladder for kiosk supervision that wants a graded
+response.
+
+### Proposed Approach
+If kiosk supervision ever needs it: a signal ladder (second signal =
+abort actors immediately, third = `_exit`) with distinct exit codes,
+documented in the runbook.

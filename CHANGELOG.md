@@ -11,6 +11,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Growth roadmap Phase 5 (ADR 0008): the `taskboard-app` bootstrap
+  library — `AppConfig` (figment: defaults → `taskboard.toml` →
+  `TASKBOARD_*` env, strict tables enforcing no-secrets-in-TOML), the
+  `CredentialStore` port with `KeyringStore` (OS keyring, default) and
+  `EnvCredentialStore` (`TASKBOARD_APP_PASSWORD` escape hatch,
+  config-selected, never a silent fallback), the redacting
+  `AppPassword` newtype, and `bootstrap()` wiring the full actor graph
+  into an `App` handle with a graceful bounded shutdown sequence
+  (`App::shutdown()`, `run_until_signal` with ctrl_c/SIGTERM). The
+  `taskboard` binary is now lib+bin: `main.rs` is thin glue, the
+  library is importable by tests and every later frontend.
+- Docker-tier app tests (`it_nextcloud_docker_*` in `taskboard-app`):
+  the daemon pull/push/shutdown journey against the dockerized
+  Nextcloud — the automated Phase 5 exit demo; wired into
+  `nextcloud-integration.yml` alongside the sync crate's tier.
 - Growth roadmap Phase 4 (ADR 0007): the sync actor in
   `taskboard-sync-nextcloud` — `spawn_sync_actor` (scheduled push-first
   cycle: read via the `SyncStateReader` port → push → pull → report),
@@ -96,6 +111,20 @@ The workspace carries a single global version (see `docs/architecture.org`);
   tie-to-local bias, deletion rules (timestamped soft deletes for
   boards/stacks/labels, delete-wins fallback for cards), unconditional
   echo adoption, and the engine-executes-merge split.
+
+### Changed
+
+- The `taskboard` binary now accepts `daemon` (subcommand), a global
+  `--config <path>`, and `--version`; no arguments still runs the
+  daemon, per `[app] mode` (ADR 0008).
+- The State Engine's `Shutdown` semantics: the engine no longer exits
+  immediately — it enters a shutdown drain (new work declined with
+  `EngineGone`, flush still answers) and keeps ingesting sync reports
+  until the reports channel closes, so the sync actor's final cycle
+  evidence lands before the process exits (the graceful-shutdown half
+  of the duplicate-create window, ADR 0007/0008).
+- `DeckClient`'s `Debug` impl redacts the credentials field (a
+  `?client` log line used to print the app password).
 
 ### Fixed
 
