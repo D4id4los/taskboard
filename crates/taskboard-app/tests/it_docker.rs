@@ -24,13 +24,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use taskboard_app::bootstrap::bootstrap;
-use taskboard_app::config::{AppConfig, CredentialStoreKind};
 use taskboard_domain::persistence::TaskRepository as _;
-use taskboard_sync_nextcloud::{DeckClient, DeckColor, NewCard, StackFilter};
+use taskboard_sync_nextcloud::{DeckClient, NewCard, StackFilter};
 
 mod common;
 
-use common::{EnvOverride, env_lock};
+use common::{EnvOverride, create_board_and_stack, env_lock, live_config, seed_board_binding};
 
 /// The outer wall-clock deadline for one tier test.
 const LIVE_DEADLINE: Duration = Duration::from_secs(300);
@@ -250,68 +249,6 @@ async fn shutdown_mid_cycle(cfg: &common::LiveCfg) {
 
     let deleted = common::retry(|| async { client.delete_board(board.id).await }).await;
     assert!(deleted.is_ok(), "board teardown must succeed");
-}
-
-/// Create a fresh run-scoped board with one stack on the live server.
-async fn create_board_and_stack(
-    client: &DeckClient,
-    run: &str,
-) -> (
-    taskboard_sync_nextcloud::Board,
-    taskboard_sync_nextcloud::Stack,
-) {
-    let board = common::retry(|| async {
-        client
-            .create_board(run, &DeckColor::from_hex("00c2e0").expect("hex"))
-            .await
-    })
-    .await
-    .expect("board creation must succeed");
-    let stack = common::retry(|| async {
-        client
-            .create_stack(board.id, &format!("{run}-col"), 0)
-            .await
-    })
-    .await
-    .expect("stack creation must succeed");
-    (board, stack)
-}
-
-/// Seed the local database with a board binding for the remote board
-/// through the storage crate's public API (the daemon adopts it on boot).
-async fn seed_board_binding(db_path: &std::path::Path, local_id: u128, remote_id: u64, run: &str) {
-    let repo = Arc::new(
-        taskboard_storage_sqlite::open(db_path)
-            .await
-            .expect("seed db"),
-    );
-    let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
-    handle
-        .apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
-            taskboard_domain::Board {
-                id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(local_id)),
-                remote: Some(taskboard_domain::RemoteBoardId(remote_id)),
-                title: run.to_owned(),
-                color: taskboard_domain::Color::new("00c2e0"),
-                archived: false,
-                deleted: false,
-                remote_seen: None,
-            },
-        )])
-        .await
-        .expect("seed applies");
-    drop(handle);
-    join.await.expect("seed actor exits");
-}
-
-/// Env-store daemon config pointed at the live server and the test db.
-fn live_config(cfg: &common::LiveCfg, db_path: &std::path::Path) -> AppConfig {
-    let mut config = AppConfig::default();
-    config.nextcloud.server_url = Some(cfg.url.clone());
-    config.nextcloud.username = Some(cfg.user.clone());
-    config.nextcloud.credential_store = CredentialStoreKind::Env;
-    config.storage.db_path = Some(db_path.to_owned());
-    config
 }
 
 async fn eventually(app: &taskboard_app::App, pred: impl Fn(&taskboard_domain::AppState) -> bool) {
