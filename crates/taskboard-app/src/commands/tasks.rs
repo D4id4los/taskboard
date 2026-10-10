@@ -8,8 +8,9 @@
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::time::Duration;
 
-use taskboard_domain::{AppState, Stack, StackId, StateCommand, TaskId};
+use taskboard_domain::{AppState, Stack, StackId, StateCommand, SyncPhase, TaskId};
 
 use crate::commands::CommandError;
 use crate::commands::output::{
@@ -18,16 +19,55 @@ use crate::commands::output::{
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
 
-/// Boots the core, runs `body`, and always shuts the core down.
+/// Boots the core, waits for the boot cycle's first pull to land (so
+/// selectors resolve against adopted remote data, not the hydration
+/// snapshot), runs `body`, and always shuts the core down.
 async fn with_core<T>(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
     body: impl AsyncFnOnce(&crate::App) -> Result<T, CommandError>,
 ) -> Result<T, CommandError> {
+    let timeout = Duration::from_secs(config.app.shutdown_timeout_secs.max(1));
     let app = crate::bootstrap::bootstrap(config, store).await?;
+    wait_for_boot_pull(&app, timeout).await;
     let result = body(&app).await;
     let _ = app.shutdown().await;
     result
+}
+
+/// Waits for the boot cycle's first pull (a `Syncing` → settled
+/// transition) so the published state includes adopted remote data.
+/// A board-less db can only ever skip silently (`NoBoard`), so it
+/// returns immediately; a deadline expiry degrades gracefully —
+/// offline-first: local data serves the command.
+async fn wait_for_boot_pull(app: &crate::App, timeout: Duration) {
+    let mut signals = app.engine.subscribe();
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut seen_syncing = false;
+    loop {
+        let state = app.engine.shared_state().load_full();
+        match state.sync.phase {
+            SyncPhase::Syncing => seen_syncing = true,
+            _ if seen_syncing => return,
+            // The cycle already settled before we started watching.
+            _ if state.sync.last_success.is_some()
+                || matches!(
+                    state.sync.phase,
+                    SyncPhase::Offline | SyncPhase::Failed { .. }
+                ) =>
+            {
+                return;
+            }
+            // No live board: the cycle can only skip silently.
+            _ if !state.boards.values().any(|b| !b.deleted) => return,
+            _ => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!("boot pull did not settle in time; serving local data");
+            return;
+        }
+        let _ = tokio::time::timeout(Duration::from_millis(200), signals.recv()).await;
+    }
 }
 
 /// Resolves a stack selector: exact uuid wins, then exact live title;
@@ -57,6 +97,19 @@ fn resolve_stack(state: &AppState, selector: Option<&str>) -> Result<StackId, Co
         1 => Ok(matches[0]),
         _ => Err(CommandError::AmbiguousStack),
     }
+}
+
+/// Resolves the *target* stack of a mutation: a board-less db has no
+/// stacks by construction, and the honest typed answer there is the
+/// engine's own `NoBoard` rejection, not `NoStacks`.
+fn resolve_target(state: &AppState, selector: Option<&str>) -> Result<StackId, CommandError> {
+    let no_board = !state.boards.values().any(|b| !b.deleted);
+    resolve_stack(state, selector).map_err(|err| match (err, no_board) {
+        (CommandError::NoStacks, true) => CommandError::Engine(Box::new(
+            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard),
+        )),
+        (err, _) => err,
+    })
 }
 
 /// The append order for a stack: `max(order) + 1` over the canonical
@@ -130,7 +183,7 @@ pub async fn add(
     let title = title.to_owned();
     with_core(config, store, async |app| {
         let state = app.engine.shared_state().load_full();
-        let stack = resolve_stack(&state, stack)?;
+        let stack = resolve_target(&state, stack)?;
         let order = append_order(&state, stack);
         app.engine
             .execute(StateCommand::CreateTask {
@@ -193,7 +246,7 @@ pub async fn move_(
     let task_id = parse_task_id(task)?;
     with_core(config, store, async |app| {
         let state = app.engine.shared_state().load_full();
-        let stack = resolve_stack(&state, stack)?;
+        let stack = resolve_target(&state, stack)?;
         let order = order.unwrap_or_else(|| append_order(&state, stack));
         app.engine
             .execute(StateCommand::MoveTask {
