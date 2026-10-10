@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use taskboard_domain::{RemoteBoardId, SyncCommand, SyncPhase};
+use taskboard_domain::{RemoteBoardId, SyncCommand, SyncPhase, SyncStatus};
 
 use crate::commands::output::{BoardsListEntry, SelectReceipt, SyncStatusView};
 use crate::commands::{CommandError, map_deck_error};
@@ -118,23 +118,33 @@ async fn select_locked(
     }
     drop(state);
 
+    // Snapshot the hydrated status before the send: a *stale* persisted
+    // `Failed` (e.g. from a `sync` run before any binding) must not mask
+    // the fresh adoption cycle — the same S0 guard `wait_for_sync_result`
+    // applies.
+    let startup = app.engine.shared_state().load_full().sync.clone();
     app.sync_commands()
         .send(SyncCommand::SetBoard(RemoteBoardId(board)))
         .await
         .map_err(|_| CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone)))?;
 
-    wait_for_adoption(app, board, timeout).await
+    wait_for_adoption(app, board, &startup, timeout).await
 }
 
 /// Predicate-polls (event-driven with a polling fallback) until the
-/// remote board is adopted locally, a fresh sync failure lands, or the
-/// deadline expires.
+/// remote board is adopted locally, a *fresh* sync failure lands, or the
+/// deadline expires. Freshness is decided against the pre-`SetBoard`
+/// snapshot `startup` (the sync status is persisted and hydrated at
+/// boot, so a board-less db can boot carrying an old `Failed` phase that
+/// nothing clears until a cycle settles).
 async fn wait_for_adoption(
     app: &crate::App,
     board: u64,
+    startup: &SyncStatus,
     timeout: Duration,
 ) -> Result<SelectReceipt, CommandError> {
     let mut signals = app.engine.subscribe();
+    let mut seen_change = false;
     let deadline = Instant::now() + timeout;
     loop {
         let state = app.engine.shared_state().load_full();
@@ -153,7 +163,12 @@ async fn wait_for_adoption(
                 sync: SyncStatusView::new(&state.sync),
             });
         }
-        if let SyncPhase::Failed { last_error } = state.sync.phase {
+        let fresh_failure = matches!(state.sync.phase, SyncPhase::Failed { .. })
+            && (seen_change || state.sync != *startup);
+        if fresh_failure {
+            let SyncPhase::Failed { last_error } = state.sync.phase else {
+                unreachable!("checked by fresh_failure");
+            };
             return Err(CommandError::SyncFailed(last_error));
         }
         if Instant::now() >= deadline {
@@ -162,7 +177,12 @@ async fn wait_for_adoption(
         }
         // Signals prompt an early re-check; the 200 ms poll is the
         // fallback if events lag.
-        let _ = tokio::time::timeout(Duration::from_millis(200), signals.recv()).await;
+        if tokio::time::timeout(Duration::from_millis(200), signals.recv())
+            .await
+            .is_ok()
+        {
+            seen_change = true;
+        }
     }
 }
 
