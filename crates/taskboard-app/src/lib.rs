@@ -13,7 +13,12 @@
 //!   [`AppPassword`](secrets::AppPassword).
 //! - [`bootstrap`]: the actor-graph wiring and the [`App`] handle with
 //!   its graceful [`shutdown`](bootstrap::App::shutdown) sequence.
-//! - [`cli`]: the clap surface (dispatch lives in the binary).
+//! - [`lockfile`]: the per-database instance lock (one core per
+//!   database; OS-released on process death).
+//! - [`commands`]: the operator-facing command handlers (ADR 0009) —
+//!   `login`, `boards`, `tasks`, `sync` — with the `--json` output
+//!   contract; the binary is dispatch + exit codes.
+//! - [`cli`]: the clap surface.
 //!
 //! This is internal API (the workspace is `publish = false`): no
 //! stability promises across crates. Tracing is initialized by the
@@ -24,7 +29,9 @@
 
 pub mod bootstrap;
 pub mod cli;
+pub mod commands;
 pub mod config;
+pub mod lockfile;
 pub mod secrets;
 
 /// Application version, taken from the shared workspace version.

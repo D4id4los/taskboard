@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `taskboard` application runner.
 //!
-//! Thin process glue (ADR 0008): parse the CLI, initialize `tracing`,
-//! load the config, pick the credential store, boot the in-process core
-//! through the library's `bootstrap`, and run the daemon lifecycle with
-//! a second-signal force exit. All wiring lives in the `taskboard_app`
-//! library so tests and future frontends reuse it.
+//! Thin process glue (ADRs 0008/0009): parse the CLI, initialize
+//! `tracing`, then either hand the subcommand to the library's
+//! `commands::dispatch` (typed handlers, exit codes) or run the daemon
+//! lifecycle — boot the in-process core through `bootstrap`, wait for
+//! the signal, graceful drain with a second-signal force exit. All
+//! wiring lives in the `taskboard_app` library so tests and future
+//! frontends reuse it.
 
 #![forbid(unsafe_code)]
 
@@ -15,6 +17,7 @@ use clap::Parser as _;
 
 use taskboard_app::bootstrap::{bootstrap, wait_for_signal};
 use taskboard_app::cli::{Cli, Command};
+use taskboard_app::commands::{CommandCtx, dispatch};
 use taskboard_app::config::{AppConfig, CredentialStoreKind};
 use taskboard_app::secrets::{CredentialStore, EnvCredentialStore, KeyringStore};
 
@@ -52,6 +55,22 @@ fn main() -> color_eyre::Result<()> {
 }
 
 async fn run(cli: Cli) -> color_eyre::Result<()> {
+    // Subcommand arms are lib code (`commands::dispatch`); the process
+    // exits with the returned code (0 success / 1 runtime failure).
+    // Exit 2 is clap's usage error, 130 the second-signal force exit.
+    if let Some(command) = cli.command
+        && !matches!(command, Command::Daemon)
+    {
+        let ctx = CommandCtx {
+            json: cli.json,
+            config_path: AppConfig::config_path(cli.config),
+        };
+        let code = dispatch(command, ctx).await;
+        std::process::exit(i32::from(code));
+    }
+
+    // Daemon lifecycle (explicit `daemon`, or no subcommand: `[app]
+    // mode` resolution — the daemon until the UI phases land).
     let config = AppConfig::load(cli.config)?;
     let store: Arc<dyn CredentialStore> = match config.nextcloud.credential_store {
         CredentialStoreKind::Keyring => Arc::new(KeyringStore),
@@ -69,19 +88,10 @@ async fn run(cli: Cli) -> color_eyre::Result<()> {
         Err(err) => return Err(err.into()),
     };
 
-    // Dispatch shape: `None` resolves `[app] mode` (already enforced by
-    // the bootstrap mode check); `daemon` is explicit. Phase 6 grows
-    // this match with `login`/`boards`/`tasks`/`sync`.
-    match cli.command {
-        Some(Command::Daemon) | None => {}
-    }
-
-    // Daemon lifecycle: the first signal starts the graceful drain; a
-    // second signal during the drain force-exits (standard daemon UX;
-    // deliberately untested glue). The first-signal wait happens here —
-    // *before* arming the force-exit watcher — because `ctrl_c` and
-    // SIGTERM notify every listener: an early watcher would catch the
-    // first signal instead of the second.
+    // The first-signal wait happens here — *before* arming the
+    // force-exit watcher — because `ctrl_c` and SIGTERM notify every
+    // listener: an early watcher would catch the first signal instead
+    // of the second.
     wait_for_signal().await;
     tracing::info!("shutdown signal received");
     let outcome = tokio::select! {

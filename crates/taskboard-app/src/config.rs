@@ -216,21 +216,44 @@ impl AppConfig {
     /// [`ConfigError`] — typed, see the variant docs.
     #[allow(clippy::result_large_err)] // the figment source, once at boot
     pub fn load(explicit_path: Option<PathBuf>) -> Result<Self, ConfigError> {
-        let path = match explicit_path {
-            Some(p) => Some(p),
-            None => std::env::var_os("TASKBOARD_CONFIG").map(PathBuf::from),
-        };
+        let path = Self::config_path(explicit_path);
         if let Some(p) = &path
             && !p.is_file()
         {
             return Err(ConfigError::FileNotFound(p.clone()));
         }
+        let config = Self::extract_raw(path.as_deref())?;
+        config.validate()?;
+        Ok(config)
+    }
 
-        let mut config: Self = figment(path).extract().map_err(ConfigError::Decode)?;
+    /// Resolves the config path: the explicit `--config` value, else
+    /// `TASKBOARD_CONFIG`, else `None` (→ [`DEFAULT_CONFIG_PATH`] in
+    /// the provider chain). [`AppConfig::load`] and the Phase 6
+    /// commands share this single rule.
+    #[must_use]
+    pub fn config_path(explicit_path: Option<PathBuf>) -> Option<PathBuf> {
+        explicit_path.or_else(|| std::env::var_os("TASKBOARD_CONFIG").map(PathBuf::from))
+    }
+
+    /// Decodes the config *without validation* and fills the default db
+    /// path: defaults → toml file at `path` (an absent file contributes
+    /// nothing) → `TASKBOARD_*` env. A not-yet-valid config must not
+    /// block `login` (the first-run command reads, overlays, then
+    /// validates); every other command validates via [`AppConfig::load`].
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Decode`] when the providers produce an
+    /// undecodable tree.
+    #[allow(clippy::result_large_err)] // the figment source, once at boot
+    pub fn extract_raw(path: Option<&Path>) -> Result<Self, ConfigError> {
+        let mut config: Self = figment(path.map(PathBuf::from))
+            .extract()
+            .map_err(ConfigError::Decode)?;
         if config.storage.db_path.is_none() {
             config.storage.db_path = default_db_path();
         }
-        config.validate()?;
         Ok(config)
     }
 
