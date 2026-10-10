@@ -24,10 +24,10 @@ pub struct Board {
     /// Unix timestamp of a soft delete; `0` (or missing on older servers)
     /// means the board is live. Deck's DELETE does not remove the board
     /// from listings, it only stamps this field.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_zero")]
     pub deleted_at: i64,
     /// Unix timestamp of the last modification.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_zero")]
     pub last_modified: i64,
     #[serde(default)]
     pub archived: bool,
@@ -82,12 +82,12 @@ pub struct Stack {
     pub title: String,
     #[serde(default)]
     pub board_id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_zero")]
     pub deleted_at: i64,
     #[serde(default)]
     pub order: i64,
     /// Unix timestamp of the last modification.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_zero")]
     pub last_modified: i64,
     #[serde(default)]
     pub archived: bool,
@@ -211,8 +211,9 @@ pub struct Label {
     pub color: DeckColor,
     #[serde(default)]
     pub board_id: u64,
-    /// Unix timestamp of the last modification.
-    #[serde(default)]
+    /// Unix timestamp of the last modification; the live tier's default
+    /// board labels carry an explicit `null` (no stamp).
+    #[serde(default, deserialize_with = "null_to_zero")]
     pub last_modified: i64,
 }
 
@@ -358,6 +359,18 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Some servers send timestamp fields as an explicit `null` where the
+/// dockerized tier sends `0` or omits them (the live tier's default board
+/// labels carry `"lastModified": null`); decode those as `0` — the
+/// documented no-stamp sentinel the read mapping treats as "loses every
+/// LWW comparison".
+fn null_to_zero<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<i64>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Serializes an optional UTC datetime as Deck's ISO-8601 shape
 /// (`2020-01-20T09:52:43+00:00`), not chrono's serde default (`...Z`).
 #[allow(clippy::ref_option)] // serde's serialize_with signature is fixed
@@ -399,6 +412,33 @@ mod tests {
         assert_eq!(boards[1].labels[0].title, "someday");
         assert_eq!(boards[1].labels[0].color.as_str(), "00c2e0");
         assert!(boards.iter().all(Board::is_live));
+    }
+
+    #[test]
+    fn explicit_null_timestamps_decode_as_the_zero_sentinel() {
+        // The live tier's freshly created boards carry default labels with
+        // `"lastModified": null` (tier-3 observed 2026-10-10); `#[serde(
+        // default)]` alone rejects an explicit null, which failed every
+        // board create decode there.
+        let board: Board = serde_json::from_str(
+            r#"{"id": 1, "title": "b", "color": "00c2e0",
+                "lastModified": null, "deletedAt": null,
+                "labels": [{"id": 2, "title": "Finished", "color": "31CC7C",
+                            "boardId": 1, "cardId": null, "lastModified": null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(board.last_modified, 0);
+        assert_eq!(board.deleted_at, 0);
+        assert!(board.is_live());
+        assert_eq!(board.labels[0].last_modified, 0);
+
+        let stack: Stack = serde_json::from_str(
+            r#"{"id": 3, "title": "s", "boardId": 1, "lastModified": null,
+                "deletedAt": null}"#,
+        )
+        .unwrap();
+        assert_eq!(stack.last_modified, 0);
+        assert_eq!(stack.deleted_at, 0);
     }
 
     #[test]
