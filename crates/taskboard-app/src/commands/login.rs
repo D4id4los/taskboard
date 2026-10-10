@@ -17,47 +17,62 @@ use crate::config::{AppConfig, DEFAULT_CONFIG_PATH};
 use crate::secrets::{AppPassword, CredentialError, CredentialStore};
 
 /// Input seam for interactive values (fakes over mocks; the E2E pipes
-/// stdin through the production impl).
+/// stdin through the production impl). `prompt` is the label the
+/// production impl displays; the flag-supplied values skip prompting
+/// entirely.
 pub trait PromptReader: Send + Sync {
     /// One trimmed line (server URL / username).
     ///
     /// # Errors
     ///
     /// [`std::io::Error`] when stdin cannot be read.
-    fn read_line(&mut self) -> Result<String, std::io::Error>;
+    fn read_line(&mut self, prompt: &str) -> Result<String, std::io::Error>;
 
-    /// A secret ([`rpassword::read_password`] in production — stdin
-    /// based, so piped input works).
+    /// A secret: on a terminal via `rpassword` with `*` feedback per
+    /// keystroke (common CLI practice); on piped stdin a plain line
+    /// (scripts and the E2E pipe the password).
     ///
     /// # Errors
     ///
     /// [`std::io::Error`] when the secret cannot be read.
-    fn read_secret(&mut self) -> Result<String, std::io::Error>;
+    fn read_secret(&mut self, prompt: &str) -> Result<String, std::io::Error>;
 }
 
-/// The production prompt reader: plain stdin lines for values; the
-/// secret via `rpassword` (no echo) on a terminal, or a plain stdin
-/// line when stdin is piped (scripts and the E2E pipe the password).
+/// The production prompt reader. Prompts go to stderr, keeping stdout
+/// a clean output channel for payloads.
 #[derive(Debug, Default)]
 pub struct StdinPrompts;
 
+/// The masked-feedback config: one `*` per typed character.
+fn masked_password_config() -> rpassword::Config {
+    rpassword::ConfigBuilder::new()
+        .password_feedback_mask('*')
+        .build()
+}
+
 impl PromptReader for StdinPrompts {
-    fn read_line(&mut self) -> Result<String, std::io::Error> {
-        print!("> ");
-        let _ = std::io::stdout().flush();
+    fn read_line(&mut self, prompt: &str) -> Result<String, std::io::Error> {
+        let mut stderr = std::io::stderr();
+        write!(stderr, "{prompt}")?;
+        stderr.flush()?;
         let mut line = String::new();
         std::io::stdin().read_line(&mut line)?;
         Ok(line.trim().to_owned())
     }
 
-    fn read_secret(&mut self) -> Result<String, std::io::Error> {
-        let stdin = std::io::stdin();
-        if stdin.is_terminal() {
-            rpassword::read_password().map(|s| s.trim().to_owned())
+    fn read_secret(&mut self, prompt: &str) -> Result<String, std::io::Error> {
+        if std::io::stdin().is_terminal() {
+            // `prompt_password_with_config` prompts and reads on the
+            // TTY with echo off and `*` per keystroke.
+            rpassword::prompt_password_with_config(prompt, masked_password_config())
+                .map(|s| s.trim().to_owned())
         } else {
             // Piped stdin: no terminal to hide the echo on.
+            let mut stderr = std::io::stderr();
+            write!(stderr, "{prompt}")?;
+            stderr.flush()?;
             let mut line = String::new();
-            stdin.read_line(&mut line)?;
+            std::io::stdin().read_line(&mut line)?;
             Ok(line.trim().to_owned())
         }
     }
@@ -85,13 +100,19 @@ pub async fn run(
 
     let server = match server {
         Some(s) => s,
-        None => prompts.read_line().map_err(CommandError::Prompt)?,
+        None => prompts
+            .read_line("Server URL (https://cloud.example.com): ")
+            .map_err(CommandError::Prompt)?,
     };
     let user = match user {
         Some(u) => u,
-        None => prompts.read_line().map_err(CommandError::Prompt)?,
+        None => prompts
+            .read_line("Server URL (https://cloud.example.com): ")
+            .map_err(CommandError::Prompt)?,
     };
-    let password = prompts.read_secret().map_err(CommandError::Prompt)?;
+    let password = prompts
+        .read_secret("App password: ")
+        .map_err(CommandError::Prompt)?;
 
     // Verify before anything is persisted.
     let client = DeckClient::new(&server, &user, &password).map_err(map_deck_error)?;
@@ -207,10 +228,10 @@ fn deck_variant(err: &DeckError) -> &'static str {
 /// fn scripted(answers: Vec<String>) -> impl PromptReader {
 ///     struct S(std::sync::Mutex<std::vec::IntoIter<String>>);
 ///     impl PromptReader for S {
-///         fn read_line(&mut self) -> Result<String, std::io::Error> {
+///         fn read_line(&mut self, _: &str) -> Result<String, std::io::Error> {
 ///             Ok(self.0.lock().unwrap().next().unwrap_or_default())
 ///         }
-///         fn read_secret(&mut self) -> Result<String, std::io::Error> {
+///         fn read_secret(&mut self, _: &str) -> Result<String, std::io::Error> {
 ///             Ok(self.0.lock().unwrap().next().unwrap_or_default())
 ///         }
 ///     }

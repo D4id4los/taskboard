@@ -250,7 +250,7 @@ async fn l6_login_prompts_in_order() {
     assert_eq!(receipt.username, "alice");
     // Exactly the three scripted answers were consumed.
     assert!(
-        prompts.read_line().is_err(),
+        prompts.read_line("probe: ").is_err(),
         "no further prompts after url/user/secret"
     );
 }
