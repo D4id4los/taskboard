@@ -52,9 +52,11 @@ jobs:
           cargo nextest run -p taskboard-sync-nextcloud --run-ignored only
           -E 'test(it_nextcloud_docker)' --no-tests=fail
 
-      - name: Docker-tier integration tests (app daemon journey)
-        # The Phase 5 exit demo: the in-process daemon pulls, pushes,
-        # and shuts down gracefully against the same dockerized server.
+      - name: Docker-tier integration tests (app daemon + CLI journeys)
+        # Phase 5 daemon journey + Phase 6 J-series (the real binary:
+        # login/select/add/sync against the same dockerized server); the
+        # filter matches both, and nextest builds the bin for
+        # CARGO_BIN_EXE_taskboard.
         run: >
           cargo nextest run -p taskboard-app --run-ignored only
           -E 'test(it_nextcloud_docker)' --no-tests=fail
