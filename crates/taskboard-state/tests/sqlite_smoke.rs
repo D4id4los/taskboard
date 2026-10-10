@@ -41,7 +41,7 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
             .await
             .expect("board seeded");
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
-        let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+        let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
         let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
 
         let (engine, engine_join) = spawn_state_engine(
@@ -76,7 +76,12 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
         engine.flush().await; // durability barrier before shutdown
 
         system_tx.send(SystemEvent::Shutdown).expect("broadcast");
-        let _ = engine_join.await;
+        // The drain ends when the reports channel closes — drop the
+        // sender (the sync actor's stand-in) before awaiting the engine.
+        drop(report_tx);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(60), engine_join)
+            .await
+            .expect("engine drain completes");
         drop(storage_join); // storage actor keeps its own lifecycle
     }
 

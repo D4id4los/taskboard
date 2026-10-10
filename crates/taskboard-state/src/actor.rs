@@ -254,13 +254,34 @@ async fn run_loop(
     let mut commands_open = true;
     let mut reports_open = true;
     let mut system_open = true;
+    // Drain mode (ADR 0008): after `SystemEvent::Shutdown` the engine
+    // declines new work but keeps ingesting sync reports until the
+    // reports channel closes — the sync actor owns the sender, so its
+    // exit is exactly when the last cycle's evidence has landed.
+    let mut draining = false;
 
-    while commands_open || reports_open || system_open {
+    loop {
+        if draining && !reports_open {
+            tracing::info!("state engine stopped: drain complete");
+            return;
+        }
+        if !draining && !commands_open && !reports_open && !system_open {
+            break;
+        }
         tokio::select! {
             biased; // deterministic drain order: commands, reports, system
 
             maybe_command = commands.recv(), if commands_open => match maybe_command {
                 Some(EngineCommand::Execute { command, reply }) => {
+                    if draining {
+                        // Declined, not executed: shutdown stopped new
+                        // work. The reply mirrors a stopped engine.
+                        tracing::debug!("command declined: engine draining");
+                        if let Some(reply) = reply {
+                            let _ = reply.send(Err(ExecuteError::EngineGone));
+                        }
+                        continue;
+                    }
                     execute_command(
                         &mut core,
                         &shared,
@@ -273,7 +294,9 @@ async fn run_loop(
                 }
                 Some(EngineCommand::Flush { reply }) => {
                     // FIFO: everything before this was applied, interpreted,
-                    // and published.
+                    // and published. In drain mode the pre-drain prefix is
+                    // already settled, so the immediate reply preserves the
+                    // barrier semantics.
                     let _ = reply.send(());
                 }
                 Some(EngineCommand::ReadState { reply }) => {
@@ -294,25 +317,39 @@ async fn run_loop(
                     .await;
                 }
                 None => {
-                    // The sync actor died; the engine is a daemon and must
-                    // not follow it.
-                    tracing::warn!("sync report channel closed; continuing without sync");
+                    if draining {
+                        // The sync actor exited after Shutdown: the drain
+                        // is complete, checked at the top of the loop.
+                        tracing::info!("sync report channel closed; drain complete");
+                    } else {
+                        // The sync actor died; the engine is a daemon and must
+                        // not follow it.
+                        tracing::warn!("sync report channel closed; continuing without sync");
+                    }
                     reports_open = false;
                 }
             },
 
             maybe_event = system.recv(), if system_open => match maybe_event {
                 Ok(SystemEvent::Shutdown) => {
-                    tracing::info!("state engine stopping: shutdown event");
-                    return;
+                    if draining {
+                        // Already draining: idempotent (G6).
+                        tracing::debug!("shutdown event ignored: engine already draining");
+                    } else {
+                        tracing::info!("state engine entering shutdown drain");
+                        draining = true;
+                    }
                 }
-                Ok(SystemEvent::NetworkLost) => {
+                Ok(SystemEvent::NetworkLost) if !draining => {
                     go_offline(&mut core, &shared, &signals, &repo, clock.as_ref()).await;
                 }
-                Ok(SystemEvent::NetworkRestored) => {
+                Ok(SystemEvent::NetworkRestored) if !draining => {
                     // No phase change: the next report is the evidence; a
                     // self-declared "idle" would be a guess.
                     forward_sync_now(&sync_out);
+                }
+                Ok(SystemEvent::NetworkLost | SystemEvent::NetworkRestored) => {
+                    tracing::debug!("network event ignored: engine draining");
                 }
                 Err(broadcast::error::RecvError::Closed) => system_open = false,
                 Err(broadcast::error::RecvError::Lagged(missed)) => {

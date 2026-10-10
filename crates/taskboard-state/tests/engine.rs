@@ -166,6 +166,27 @@ fn drain_signals(rx: &mut tokio::sync::broadcast::Receiver<EngineSignal>) -> usi
     count
 }
 
+/// Waits until the engine has entered drain mode. There is no state-level
+/// observation of the transition, so this polls with a harmless command
+/// (`RequestSync` has no `Err` outcome other than `EngineGone`) under a
+/// deadline — the reply *is* the drain-mode signal.
+async fn wait_draining(handle: &taskboard_state::EngineHandle) {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if handle
+                .execute(StateCommand::RequestSync)
+                .await
+                .is_err_and(|err| matches!(err, ExecuteError::EngineGone))
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("engine entered drain mode within the deadline");
+}
+
 // ---------------------------------------------------------------------
 // A-series
 // ---------------------------------------------------------------------
@@ -416,15 +437,16 @@ async fn a7_network_lost_persists_offline_and_restored_only_nudges() {
     );
 }
 
-/// A8: `Shutdown` stops the loop; the `JoinHandle` resolves (timeout
-/// guard, not a sleep).
+/// A8: `Shutdown` starts the shutdown drain; the loop exits once the
+/// reports channel closes (timeout guard, not a sleep).
 #[tokio::test]
-async fn a8_shutdown_stops_the_loop() {
+async fn a8_shutdown_drains_then_exits_when_reports_close() {
     let h = harness().await;
     h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+    drop(h.report_tx); // the sync actor exiting is what ends the drain
     tokio::time::timeout(Duration::from_secs(60), h.join)
         .await
-        .expect("engine exits on shutdown")
+        .expect("engine exits after drain")
         .expect("clean exit");
 }
 
@@ -481,11 +503,10 @@ async fn a9_storage_failure_reverts_nothing_and_recovers() {
 async fn a10_execute_after_shutdown_is_engine_gone() {
     let h = harness().await;
     h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
-    tokio::time::timeout(Duration::from_secs(60), h.join)
-        .await
-        .expect("engine exits")
-        .expect("clean");
+    wait_draining(&h.handle).await;
 
+    // The engine is draining, not gone: it still services its inbox to
+    // decline the command with a reply (never a hang).
     let result = h
         .handle
         .execute(StateCommand::CreateStack {
@@ -494,6 +515,12 @@ async fn a10_execute_after_shutdown_is_engine_gone() {
         })
         .await;
     assert!(matches!(result, Err(ExecuteError::EngineGone)));
+
+    drop(h.report_tx);
+    tokio::time::timeout(Duration::from_secs(60), h.join)
+        .await
+        .expect("engine exits after drain")
+        .expect("clean");
 }
 
 /// A11: boot hydration publishes the persisted state before any command.
@@ -811,4 +838,155 @@ async fn failed_report_with_pushes_applies_the_evidence() {
             && app.sync.phase == SyncPhase::Idle
     })
     .await;
+}
+
+// ---------------------------------------------------------------------
+// G-series: shutdown linger-drain semantics (ADR 0008)
+// ---------------------------------------------------------------------
+
+/// A failed cycle report whose ingestion flips the published phase — the
+/// observable evidence that a report *landed*.
+fn failed_report() -> SyncReport {
+    SyncReport::Failed {
+        kind: SyncErrorKind::Network,
+        pushes: vec![],
+        read_at: ts(T0),
+    }
+}
+
+/// G1: a report sent *after* `Shutdown` is still ingested — the drain
+/// keeps landing cycle evidence instead of dropping it (the
+/// duplicate-create window).
+#[tokio::test]
+async fn g1_shutdown_keeps_ingesting_reports() {
+    let h = harness().await;
+    h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+    h.report_tx
+        .send(failed_report())
+        .await
+        .expect("channel open");
+
+    eventually(&h.handle, |app| {
+        app.sync.phase
+            == SyncPhase::Failed {
+                last_error: SyncErrorKind::Network,
+            }
+    })
+    .await;
+
+    drop(h.report_tx);
+    tokio::time::timeout(Duration::from_secs(60), h.join)
+        .await
+        .expect("engine exits after drain")
+        .expect("clean");
+}
+
+/// G2: in drain mode `Execute` is declined with `EngineGone` and `Flush`
+/// still answers promptly (the barrier never hangs).
+#[tokio::test]
+async fn g2_drain_declines_execute_and_answers_flush() {
+    let h = harness().await;
+    h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+    wait_draining(&h.handle).await;
+
+    let declined = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            title: "late".into(),
+            order: 1,
+        })
+        .await;
+    assert!(matches!(declined, Err(ExecuteError::EngineGone)));
+
+    tokio::time::timeout(Duration::from_secs(60), h.handle.flush())
+        .await
+        .expect("drain-mode flush answers promptly");
+
+    drop(h.report_tx);
+    tokio::time::timeout(Duration::from_secs(60), h.join)
+        .await
+        .expect("engine exits after drain")
+        .expect("clean");
+}
+
+/// G3: closing the reports channel after `Shutdown` ends the drain — the
+/// engine task exits (the sync actor owns the sender, so its exit is the
+/// drain's end signal).
+#[tokio::test]
+async fn g3_reports_close_ends_the_drain() {
+    let h = harness().await;
+    h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+    drop(h.report_tx);
+    tokio::time::timeout(Duration::from_secs(60), h.join)
+        .await
+        .expect("drain ends when reports close")
+        .expect("clean");
+}
+
+/// G4: `Shutdown` with the reports channel *already* closed exits
+/// immediately — no drain that can never end.
+#[tokio::test]
+async fn g4_shutdown_with_reports_already_closed_exits_immediately() {
+    let h = harness().await;
+    drop(h.report_tx);
+    // Let the engine observe the closure first (it logs and keeps
+    // running as a daemon); the shutdown then drains an empty channel.
+    eventually_idle(&h.handle).await;
+    h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+    tokio::time::timeout(Duration::from_secs(60), h.join)
+        .await
+        .expect("immediate exit")
+        .expect("clean");
+}
+
+/// G5: a report sent *before* `Shutdown` is ingested before the drain
+/// begins (biased order: reports are drained ahead of system events).
+#[tokio::test]
+async fn g5_pre_shutdown_reports_ingest_before_drain() {
+    let h = harness().await;
+    h.report_tx
+        .send(failed_report())
+        .await
+        .expect("channel open");
+    h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+
+    eventually(&h.handle, |app| {
+        app.sync.phase
+            == SyncPhase::Failed {
+                last_error: SyncErrorKind::Network,
+            }
+    })
+    .await;
+
+    drop(h.report_tx);
+    tokio::time::timeout(Duration::from_secs(60), h.join)
+        .await
+        .expect("engine exits after drain")
+        .expect("clean");
+}
+
+/// G6: a second `Shutdown` during the drain is ignored — idempotent, no
+/// state corruption, no premature exit.
+#[tokio::test]
+async fn g6_second_shutdown_during_drain_is_ignored() {
+    let h = harness().await;
+    h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+    h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+    drop(h.report_tx);
+    tokio::time::timeout(Duration::from_secs(60), h.join)
+        .await
+        .expect("engine exits after drain")
+        .expect("clean");
+}
+
+/// Polls until the engine has observed the reports-channel closure
+/// (observable as... nothing in state — so this waits for the *absence*
+/// of an exit across a bounded window instead: the daemon contract).
+async fn eventually_idle(handle: &taskboard_state::EngineHandle) {
+    // The engine must still be running: a command is accepted (a no-op
+    // create against an unbound board would be rejected — use flush as a
+    // liveness probe instead).
+    tokio::time::timeout(Duration::from_secs(60), handle.flush())
+        .await
+        .expect("engine still services commands after reports closed");
 }

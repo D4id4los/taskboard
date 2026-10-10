@@ -33,7 +33,7 @@
 //! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
 //! // The bootstrap owns the channel graph and keeps the matching halves.
 //! let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
-//! let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+//! let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
 //! let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
 //!
 //! let (engine, join) = spawn_state_engine(
@@ -57,6 +57,7 @@
 //!         | taskboard_domain::CommandOutcome::SyncRequested
 //! ));
 //!
+//! drop(_report_tx); // the drain ends when the reports channel closes
 //! system_tx.send(SystemEvent::Shutdown)?;
 //! join.await?;
 //! # Ok(())
