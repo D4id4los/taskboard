@@ -104,7 +104,9 @@ internal-but-scriptable and explicitly *not* versioned-guaranteed
 ** Instance lock: OS advisory lock on a db sidecar, held by the core
 
 =lockfile.rs::InstanceLock::acquire(db_path)= opens/creates
-=<db>.lock= and takes an exclusive =fd-lock= write lock (=try_lock=
+=<db-stem>.lock= next to the database (=taskboard.db= →
+=taskboard.lock=) and takes an exclusive =fd-lock= write lock
+(=try_lock=
 semantics: fail fast, never block), writing the holder PID into the
 file body (diagnostic only — the OS lock is authoritative and is
 released automatically on process death; no staleness heuristics exist
