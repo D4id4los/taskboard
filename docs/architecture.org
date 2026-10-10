@@ -110,6 +110,12 @@ avoiding central runtime bottlenecks.
 | *System Notifications* | =tokio::sync::broadcast= | Broadcasts global status changes (=SystemEvent::NetworkLost=) to all interested actors. |
 | *Asynchronous Queries* | =tokio::sync::oneshot= | Embedded inside an =mpsc= message payload for direct, async request-response cycles. Payloads are pure domain types; the channel-bearing envelope is declared by the actor crate (payload/envelope split, ADR 0004). |
 
+All inter-actor channels — the system broadcast, both sync =mpsc=
+pipes, and the storage/engine command inboxes — are *bootstrap-created*
+and owned by =taskboard_app::bootstrap= (ADR 0008); actors receive
+their halves as injected constructor arguments and never construct
+channels between themselves.
+
 * Cargo Workspace Topology
 
 To enforce strict boundary checks at compile time and accelerate build
@@ -179,10 +185,21 @@ dependency hierarchies.
    lock-free =ArcSwap= loads and emits =mpsc= commands on user input.
    Dependencies: =taskboard-domain=, =slint= (deferred), =arc-swap=.
 
-6. *taskboard-app* — Binary entry point (=main.rs=). Loads configuration,
-   initializes tracing, instantiates channels, spawns background actors on
-   Tokio, mounts the UI, and steps aside. Dependencies: all workspace
-   crates.
+6. *taskboard-app* — The bootstrap library (ADR 0008) plus the thin
+   =taskboard= binary. The library owns =config= (figment hierarchy
+   defaults → =taskboard.toml= → =TASKBOARD_*= env, strict tables —
+   secrets in TOML cannot decode), =secrets= (the =CredentialStore=
+   port with the keyring and env stores, config-selected, no silent
+   fallback; redacting =AppPassword=), and =bootstrap=: one async fn
+   that wires the whole channel graph (all channel halves created here,
+   ADR 0007's handoff note) and returns the =App= handle shared by the
+   daemon now and every Phase 6 subcommand / Phase 7 UI later. =App::
+   shutdown()= is the graceful sequence (flush → =Shutdown= broadcast →
+   bounded actor joins with the engine's linger-drain → storage join);
+   =main.rs= is process glue only (clap, tracing init, signal force
+   exit). Dependencies: all workspace crates, =figment=, =clap=,
+   =keyring= (platform features via target-specific deps), =dirs=,
+   =color-eyre=, =tracing=, =tokio=.
 
 * Tech Stack & External Crates Specification
 

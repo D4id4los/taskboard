@@ -113,20 +113,48 @@ Release artifacts can be built and verified locally with
 
 =taskboard= uses hierarchical configuration loading via =figment=. Settings
 merge from embedded defaults, a =taskboard.toml= file in the working
-directory, and =TASKBOARD_= prefixed environment variables (highest
-priority).
+directory (or =--config <path>= / =TASKBOARD_CONFIG=), and =TASKBOARD_=
+prefixed environment variables (highest priority; =__= nests, e.g.
+=TASKBOARD_SYNC__POLL_INTERVAL_SECS=).
+
+Config files carry *no secrets* — unknown keys inside a table are a
+hard error, so an =app_password= line cannot even decode. The Nextcloud
+app password is resolved through the OS keyring (default) or, on
+headless machines, the =TASKBOARD_APP_PASSWORD= environment variable
+(set =[nextcloud] credential_store = "env"= explicitly; there is no
+silent fallback).
 
 Example =taskboard.toml=:
 
 #+begin_src toml
 [nextcloud]
 server_url = "https://cloud.example.com"
-app_password = "your-app-password"
+username = "your-login"
 
-[kiosk]
-rotation_interval_secs = 15
-show_overdue_banner = true
+[sync]
+poll_interval_secs = 30
 #+end_src
+
+** Running the Daemon (M1 quickstart)
+
+1. Configure =taskboard.toml= as above.
+2. Provide the app password, either in your desktop keyring
+
+   #+begin_src sh
+   secret-tool set --service taskboard --account your-login@cloud.example.com
+   #+end_src
+
+   or via the environment escape hatch:
+   =TASKBOARD_APP_PASSWORD=...= plus =credential_store = "env"=.
+3. Run the headless sync daemon:
+
+   #+begin_src sh
+   cargo run -p taskboard-app -- daemon
+   #+end_src
+
+It pulls the bound board, pushes local edits, retries offline, and
+shuts down gracefully on Ctrl-C/SIGTERM (flushing every accepted
+command and the sync actor's final report first).
 
 ** Testing & Quality Gates
 
