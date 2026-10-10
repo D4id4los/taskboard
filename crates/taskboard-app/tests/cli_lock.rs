@@ -13,11 +13,13 @@ use common::{binary_command, tempdir, write_test_config};
 
 /// Polls `pred` with a real-time deadline (process synchronization —
 /// the hermetic suites' tokio-clock rules do not reach subprocesses).
-fn wait_until(pred: impl Fn() -> bool, what: &str) {
+/// The wait yields to the runtime (`tokio::time::sleep`), keeping the
+/// async test body free of blocking calls.
+async fn wait_until(pred: impl Fn() -> bool, what: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !pred() {
         assert!(Instant::now() < deadline, "{what} did not happen in time");
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -53,7 +55,7 @@ async fn k3_daemon_holds_the_lock_across_processes() {
         .spawn()
         .expect("spawn daemon");
     let mut daemon = Child(daemon);
-    wait_until(|| lock_sidecar.is_file(), "daemon acquired the lock");
+    wait_until(|| lock_sidecar.is_file(), "daemon acquired the lock").await;
 
     // Second process on the same database: exit 1, typed stderr JSON.
     let locked = binary_command()
@@ -82,12 +84,17 @@ async fn k3_daemon_holds_the_lock_across_processes() {
     assert_eq!(err["error"]["kind"], "instance-locked");
 
     // The holder dies (SIGTERM → graceful drain → OS releases the
-    // lock), and the next invocation succeeds.
+    // lock), and the next invocation succeeds. The one-shot `kill` is
+    // a blocking process call: park it on the blocking pool.
     let pid = daemon.0.id();
-    let _ = std::process::Command::new("kill")
-        .arg(pid.to_string())
-        .status()
-        .expect("send SIGTERM");
+    tokio::task::spawn_blocking(move || {
+        std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status()
+            .expect("send SIGTERM")
+    })
+    .await
+    .expect("kill task joins");
     let exit_deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if daemon.0.try_wait().expect("poll daemon").is_some() {
@@ -97,7 +104,7 @@ async fn k3_daemon_holds_the_lock_across_processes() {
             Instant::now() < exit_deadline,
             "daemon did not exit after SIGTERM"
         );
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     drop(daemon);
 
