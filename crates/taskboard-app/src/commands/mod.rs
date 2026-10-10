@@ -225,12 +225,13 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
     tracing::info!(?command, config = ?ctx.config_path, json, "running command");
     match command {
         Command::Login { server, user } => {
-            let path = AppConfig::config_path(ctx.config_path);
-            match AppConfig::extract_raw(path.as_deref()) {
+            let path = AppConfig::config_path(ctx.config_path)
+                .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
+            match AppConfig::extract_raw(Some(&path)) {
                 Ok(raw) => {
                     let store = production_store(raw.nextcloud.credential_store);
                     let mut prompts = login::StdinPrompts;
-                    match login::run(path.as_deref(), server, user, &mut prompts, &store).await {
+                    match login::run(&path, raw, server, user, &mut prompts, &store).await {
                         Ok(receipt) => {
                             emit(json, &receipt, &login::render_text(&receipt));
                             0

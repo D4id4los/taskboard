@@ -6,14 +6,14 @@
 //! credential store. Nothing is persisted unless verification passed.
 
 use std::io::{ErrorKind as IoErrorKind, IsTerminal as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use taskboard_sync_nextcloud::{DeckClient, DeckError};
 
 use crate::commands::output::LoginReceipt;
 use crate::commands::{CommandError, map_deck_error};
-use crate::config::{AppConfig, DEFAULT_CONFIG_PATH};
+use crate::config::AppConfig;
 use crate::secrets::{AppPassword, CredentialError, CredentialStore};
 
 /// Input seam for interactive values (fakes over mocks; the E2E pipes
@@ -67,18 +67,22 @@ impl PromptReader for StdinPrompts {
             rpassword::prompt_password_with_config(prompt, masked_password_config())
                 .map(|s| s.trim().to_owned())
         } else {
-            // Piped stdin: no terminal to hide the echo on.
+            // Piped stdin: no terminal to hide the echo on. Strip only
+            // the line terminator — a secret may contain any other
+            // character.
             let mut stderr = std::io::stderr();
             write!(stderr, "{prompt}")?;
             stderr.flush()?;
             let mut line = String::new();
             std::io::stdin().read_line(&mut line)?;
-            Ok(line.trim().to_owned())
+            Ok(line.trim_end_matches(['\r', '\n']).to_owned())
         }
     }
 }
 
-/// Runs the login ceremony.
+/// Runs the login ceremony. `raw` is the pre-read, unvalidated config at
+/// `config_path` (the dispatcher reads it once; `extract_raw` tolerates
+/// a not-yet-valid config — a missing file feeds the empty default).
 ///
 /// # Errors
 ///
@@ -86,18 +90,13 @@ impl PromptReader for StdinPrompts {
 /// persisted (no config write, no store call) unless the server
 /// verified the credentials.
 pub async fn run(
-    config_path: Option<&Path>,
+    config_path: &Path,
+    raw: AppConfig,
     server: Option<String>,
     user: Option<String>,
     prompts: &mut dyn PromptReader,
     store: &Arc<dyn CredentialStore>,
 ) -> Result<LoginReceipt, CommandError> {
-    let path = config_path.map_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH), Path::to_path_buf);
-    // A missing file at the resolved path is *not* an error here (the
-    // other commands keep `FileNotFound`); the raw read feeds only the
-    // re-validation and the credential-store selection.
-    let raw = AppConfig::extract_raw(Some(&path))?;
-
     let server = match server {
         Some(s) => s,
         None => prompts
@@ -130,7 +129,7 @@ pub async fn run(
     merged.nextcloud.server_url = Some(server.clone());
     merged.nextcloud.username = Some(user.clone());
     merged.validate().map_err(CommandError::from)?;
-    write_config_overlay(&path, &server, &user).map_err(CommandError::ConfigWrite)?;
+    write_config_overlay(config_path, &server, &user).map_err(CommandError::ConfigWrite)?;
 
     // Then the secret. A read-only store (env) is a *successful* login
     // with `stored: "env"`; no secret is ever written to any file.
@@ -240,7 +239,7 @@ fn deck_variant(err: &DeckError) -> &'static str {
 ///
 /// // `store: Arc<dyn CredentialStore>` would be a fake in tests; the
 /// // binary picks the keyring or env store from the config:
-/// // let receipt = run(Some(&config_path), None, None,
+/// // let receipt = run(&config_path, raw_config, None, None,
 /// //                   &mut scripted(vec![…]), &store).await?;
 /// fn main() {
 ///     let _ = StdinPrompts;
