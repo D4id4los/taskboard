@@ -195,6 +195,40 @@ Hard rules binding the real-server tiers (2 and 3):
   tokens): repeated failures against a real server trip its brute-force
   protection and can lock the test account out.
 
+** App-level E2E (binary-driving, tier-2 reuse)
+
+Phase 6 adds a fourth live surface to Tier 2: the =it_nextcloud_docker_cli_*=
+journeys (=crates/taskboard-app/tests/it_cli.rs=) drive the *real
+binary* — =Command::new(env!("CARGO_BIN_EXE_taskboard"))= — through the
+multi-process login → boards select → tasks add → sync choreography
+against the dockerized Deck server. They exist to prove only what only
+the binary can prove: arg parsing, stdin prompting (the password is
+piped into =login=, which is itself the regression proof for the
+piped-stdin =rpassword= path), config-file discovery, per-process env
+resolution, exit codes, and the durable-then-pushed sequencing across
+separate invocations. Everything below that surface is tested
+hermetically (O/L/V/K-series via =taskboard_app::commands::= handlers
+with wiremock + real sqlite tempdirs + fake stores/prompts) — one
+behavior, one test, at the lowest layer that can own it.
+
+Mechanics that make the binary tests safe to run in a shared suite:
+
+- *Config by file, never by env.* Every child gets its config via
+  explicit =--config <tempdir>/taskboard.toml=; the =TASKBOARD_CONFIG=
+  escape hatch would couple children to the parent test process.
+- *Per-child env hygiene.* =tests/common::binary_command()= strips
+  every parent =TASKBOARD_*= variable before spawning and re-sets
+  exactly what the child needs (=TASKBOARD_APP_PASSWORD= = the tier
+  token) — a sibling test's override cannot leak into a journey.
+- *The docker-tier serialization covers them.* The =it_nextcloud_docker=
+  filter and the =docker-tier= nextest group (=max-threads = 1=)
+  include the CLI journeys automatically; the existing
+  =nextcloud-integration.yml= invocation needs no workflow change.
+- *Coverage note (documented, not solved):* subprocess work is not
+  instrumented by =cargo llvm-cov=; the hermetic handler suites carry
+  the coverage duty for the command logic, and the journeys prove
+  wiring.
+
 * 9. Test Suite Discipline (Hard Rules)
 
 From =AGENTS.md= §5, restated because they matter:

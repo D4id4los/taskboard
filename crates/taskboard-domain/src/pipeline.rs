@@ -273,6 +273,18 @@ pub fn apply_sync_report(
         read_at,
     );
 
+    // The card→local matching map, built from the *post-echo* task map:
+    // a create pushed in this very cycle already carries its echo binding
+    // here, so the pull in the same cycle must match it instead of
+    // re-adopting the card as a duplicate local task (observed by the
+    // phase-6 J1 journey against a real server). Built before the board
+    // cascade runs — a cascade-finalized binding must not re-match.
+    let task_by_board_card: HashMap<(RemoteBoardId, RemoteCardId), TaskId> = tasks
+        .iter()
+        .filter_map(|(id, t)| Some((t.remote?, *id)))
+        .map(|(r, id)| ((r.board, r.card), id))
+        .collect();
+
     // ---- 2. Board ---------------------------------------------------
     let mut board_ids_by_remote: HashMap<RemoteBoardId, crate::ids::BoardId> = current
         .boards
@@ -358,12 +370,6 @@ pub fn apply_sync_report(
     // whose binding update rides the next pull) changes the ref's stack
     // component only. Matching by the full ref would read every move as
     // delete+create and tombstone the moved task.
-    let task_by_board_card: HashMap<(RemoteBoardId, RemoteCardId), TaskId> = current
-        .tasks
-        .iter()
-        .filter_map(|(id, t)| Some((t.remote?, *id)))
-        .map(|(r, id)| ((r.board, r.card), id))
-        .collect();
     let mut newly_adopted: HashMap<(RemoteBoardId, RemoteCardId), TaskId> = HashMap::new();
     let task_intents = pending_task_intents(outbox, read_at);
     for remote in &snapshot.tasks {
