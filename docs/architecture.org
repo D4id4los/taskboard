@@ -190,15 +190,20 @@ dependency hierarchies.
    defaults → =taskboard.toml= → =TASKBOARD_*= env, strict tables —
    secrets in TOML cannot decode), =secrets= (the =CredentialStore=
    port with the keyring and env stores, config-selected, no silent
-   fallback; redacting =AppPassword=), and =bootstrap=: one async fn
+   fallback; redacting =AppPassword=), =bootstrap=: one async fn
    that wires the whole channel graph (all channel halves created here,
-   ADR 0007's handoff note) and returns the =App= handle shared by the
-   daemon now and every Phase 6 subcommand / Phase 7 UI later. =App::
-   shutdown()= is the graceful sequence (flush → =Shutdown= broadcast →
-   bounded actor joins with the engine's linger-drain → storage join);
-   =main.rs= is process glue only (clap, tracing init, signal force
-   exit). Dependencies: all workspace crates, =figment=, =clap=,
-   =keyring= (platform features via target-specific deps), =dirs=,
+   ADR 0007's handoff note) and returns the =App= handle shared by
+   every frontend, =lockfile= (the per-database instance lock — an
+   OS-released advisory lock on a =<db>.lock= sidecar acquired before
+   the db open, ADR 0009), and =commands= (ADR 0009): the operator
+   CLI's typed handlers — =login=, =boards=, =tasks=, =sync= — with
+   the =--json= output contract (typed projections on stdout, kebab-case
+   error envelopes on stderr); =main.rs= is dispatch + exit codes only.
+   =App::shutdown()= is the graceful sequence (flush → =Shutdown=
+   broadcast → bounded actor joins with the engine's linger-drain →
+   storage join). Dependencies: all workspace crates, =figment=,
+   =clap=, =keyring= (platform features via target-specific deps),
+   =rpassword=, =fd-lock=, =toml_edit=, =serde_json=, =dirs=,
    =color-eyre=, =tracing=, =tokio=.
 
 * Tech Stack & External Crates Specification
@@ -210,6 +215,9 @@ dependency hierarchies.
 | *Local Persistence* | =sqlx= | Async SQLite database interaction featuring compile-time verified SQL queries. |
 | *Networking* | =reqwest= | Async HTTP client for the Nextcloud Deck OCS REST API (rustls TLS). |
 | *Configuration* | =figment= | Hierarchical configuration management merging embedded defaults, TOML files, and environment variables. |
+| *Config Editing* | =toml_edit= | Comment/formatting-preserving read-modify-write of the config TOML (=taskboard login=). |
+| *CLI Prompts* | =rpassword= | Interactive password prompt (=taskboard login=); stdin-based, tty echo suppression. |
+| *Instance Lock* | =fd-lock= | Cross-platform advisory file lock; the per-database instance lock sidecar. |
 | *Identifiers* | =uuid= | Generates collision-resistant v4/v7 UUIDs for client-side task creation before remote synchronization. |
 | *Date & Time* | =chrono= | Time, schedule, and timezone handling with support for =sqlx= and API string formatting. |
 | *Domain Errors* | =thiserror= | Derives static, strongly-typed error enums in library crates for programmatic pattern matching. |
