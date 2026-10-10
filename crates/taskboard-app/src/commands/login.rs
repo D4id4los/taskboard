@@ -107,7 +107,7 @@ pub async fn run(
     let user = match user {
         Some(u) => u,
         None => prompts
-            .read_line("Server URL (https://cloud.example.com): ")
+            .read_line("Username: ")
             .map_err(CommandError::Prompt)?,
     };
     let password = prompts
