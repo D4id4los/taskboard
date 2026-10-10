@@ -106,6 +106,22 @@ pub enum StateCommand {
         /// Label.
         label: LabelId,
     },
+    /// Create the single local board (refuses when a live board exists).
+    /// The stand-alone first-run command; carries no outbox op — server-side
+    /// creation is the `publish` ceremony's job.
+    CreateBoard {
+        /// Board title.
+        title: String,
+        /// Board color (lenient; validated at the CLI boundary).
+        color: Color,
+    },
+    /// Attach the local board to an existing remote board. The next pull
+    /// matches by this binding and merges instead of adopting a duplicate;
+    /// the outbox then drains onto the remote board.
+    BindBoard {
+        /// The remote board to bind to.
+        remote: RemoteBoardId,
+    },
     /// User-visible refresh request; the engine forwards it to the sync
     /// actor.
     RequestSync,
