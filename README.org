@@ -141,7 +141,13 @@ poll_interval_secs = 30
 2. Provide the app password, either in your desktop keyring
 
    #+begin_src sh
-   secret-tool set --service taskboard --account your-login@cloud.example.com
+   # paste the app password when prompted; the entry name is
+   # username@host-of-server (what KeyringStore looks up)
+   printf 'your-app-password' | secret-tool store --label=taskboard \
+     service taskboard username your-login@cloud.example.com
+
+   # verify / clean up later:
+   secret-tool lookup service taskboard username your-login@cloud.example.com
    #+end_src
 
    or via the environment escape hatch:
