@@ -64,25 +64,14 @@ async fn it_nextcloud_docker_shutdown_mid_cycle_is_bounded() {
 /// outbox.
 async fn daemon_journey(cfg: &common::LiveCfg) {
     let _env = env_lock();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db_path = dir.path().join("taskboard.db");
-
+    let _password = EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
     let client = DeckClient::new(&cfg.url, &cfg.user, &cfg.token).expect("base URL");
     let run = common::run_id();
-    let board = common::retry(|| async {
-        client
-            .create_board(&run, &DeckColor::from_hex("00c2e0").expect("hex"))
-            .await
-    })
-    .await
-    .expect("board creation must succeed");
-    let stack = common::retry(|| async {
-        client
-            .create_stack(board.id, &format!("{run}-col"), 0)
-            .await
-    })
-    .await
-    .expect("stack creation must succeed");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("taskboard.db");
+    let (board, stack) = create_board_and_stack(&client, &run).await;
+    seed_board_binding(&db_path, 0x00DA_000E, board.id, &run).await;
+
     let server_card = common::retry(|| async {
         client
             .create_card(
@@ -101,39 +90,8 @@ async fn daemon_journey(cfg: &common::LiveCfg) {
     .await
     .expect("server-side card creation must succeed");
 
-    // Seed the board binding through the storage crate's public API.
-    {
-        let repo = Arc::new(
-            taskboard_storage_sqlite::open(&db_path)
-                .await
-                .expect("seed db"),
-        );
-        let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
-        handle
-            .apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
-                taskboard_domain::Board {
-                    id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x00DA_000E)),
-                    remote: Some(taskboard_domain::RemoteBoardId(board.id)),
-                    title: run.clone(),
-                    color: taskboard_domain::Color::new("00c2e0"),
-                    archived: false,
-                    deleted: false,
-                    remote_seen: None,
-                },
-            )])
-            .await
-            .expect("seed applies");
-        drop(handle);
-        join.await.expect("seed actor exits");
-    }
-
     // Bootstrap the daemon with the env credential store.
-    let _password = EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
-    let mut config = AppConfig::default();
-    config.nextcloud.server_url = Some(cfg.url.clone());
-    config.nextcloud.username = Some(cfg.user.clone());
-    config.nextcloud.credential_store = CredentialStoreKind::Env;
-    config.storage.db_path = Some(db_path.clone());
+    let config = live_config(cfg, &db_path);
     let app = bootstrap(config, Arc::new(taskboard_app::secrets::EnvCredentialStore))
         .await
         .expect("bootstrap");
@@ -218,58 +176,18 @@ async fn daemon_journey(cfg: &common::LiveCfg) {
 /// half-applied).
 async fn shutdown_mid_cycle(cfg: &common::LiveCfg) {
     let _env = env_lock();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db_path = dir.path().join("taskboard.db");
-
+    let _password = EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
     let client = DeckClient::new(&cfg.url, &cfg.user, &cfg.token).expect("base URL");
     let run = common::run_id();
-    let board = common::retry(|| async {
-        client
-            .create_board(&run, &DeckColor::from_hex("00c2e0").expect("hex"))
-            .await
-    })
-    .await
-    .expect("board creation must succeed");
-    let stack = common::retry(|| async {
-        client
-            .create_stack(board.id, &format!("{run}-col"), 0)
-            .await
-    })
-    .await
-    .expect("stack creation must succeed");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("taskboard.db");
+    let (board, stack) = create_board_and_stack(&client, &run).await;
+    seed_board_binding(&db_path, 0x00DB_000E, board.id, &run).await;
 
-    {
-        let repo = Arc::new(
-            taskboard_storage_sqlite::open(&db_path)
-                .await
-                .expect("seed db"),
-        );
-        let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
-        handle
-            .apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
-                taskboard_domain::Board {
-                    id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x00DB_000E)),
-                    remote: Some(taskboard_domain::RemoteBoardId(board.id)),
-                    title: run.clone(),
-                    color: taskboard_domain::Color::new("00c2e0"),
-                    archived: false,
-                    deleted: false,
-                    remote_seen: None,
-                },
-            )])
-            .await
-            .expect("seed applies");
-        drop(handle);
-        join.await.expect("seed actor exits");
-    }
-
-    let _password = EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
-    let mut config = AppConfig::default();
-    config.nextcloud.server_url = Some(cfg.url.clone());
-    config.nextcloud.username = Some(cfg.user.clone());
-    config.nextcloud.credential_store = CredentialStoreKind::Env;
-    config.storage.db_path = Some(db_path.clone());
-    config.app.shutdown_timeout_secs = 0; // force the bounded-abort path
+    // Bootstrap the daemon with the env credential store, forcing the
+    // bounded-abort path.
+    let mut config = live_config(cfg, &db_path);
+    config.app.shutdown_timeout_secs = 0;
     let app = bootstrap(config, Arc::new(taskboard_app::secrets::EnvCredentialStore))
         .await
         .expect("bootstrap");
@@ -332,6 +250,68 @@ async fn shutdown_mid_cycle(cfg: &common::LiveCfg) {
 
     let deleted = common::retry(|| async { client.delete_board(board.id).await }).await;
     assert!(deleted.is_ok(), "board teardown must succeed");
+}
+
+/// Create a fresh run-scoped board with one stack on the live server.
+async fn create_board_and_stack(
+    client: &DeckClient,
+    run: &str,
+) -> (
+    taskboard_sync_nextcloud::Board,
+    taskboard_sync_nextcloud::Stack,
+) {
+    let board = common::retry(|| async {
+        client
+            .create_board(run, &DeckColor::from_hex("00c2e0").expect("hex"))
+            .await
+    })
+    .await
+    .expect("board creation must succeed");
+    let stack = common::retry(|| async {
+        client
+            .create_stack(board.id, &format!("{run}-col"), 0)
+            .await
+    })
+    .await
+    .expect("stack creation must succeed");
+    (board, stack)
+}
+
+/// Seed the local database with a board binding for the remote board
+/// through the storage crate's public API (the daemon adopts it on boot).
+async fn seed_board_binding(db_path: &std::path::Path, local_id: u128, remote_id: u64, run: &str) {
+    let repo = Arc::new(
+        taskboard_storage_sqlite::open(db_path)
+            .await
+            .expect("seed db"),
+    );
+    let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
+    handle
+        .apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
+            taskboard_domain::Board {
+                id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(local_id)),
+                remote: Some(taskboard_domain::RemoteBoardId(remote_id)),
+                title: run.to_owned(),
+                color: taskboard_domain::Color::new("00c2e0"),
+                archived: false,
+                deleted: false,
+                remote_seen: None,
+            },
+        )])
+        .await
+        .expect("seed applies");
+    drop(handle);
+    join.await.expect("seed actor exits");
+}
+
+/// Env-store daemon config pointed at the live server and the test db.
+fn live_config(cfg: &common::LiveCfg, db_path: &std::path::Path) -> AppConfig {
+    let mut config = AppConfig::default();
+    config.nextcloud.server_url = Some(cfg.url.clone());
+    config.nextcloud.username = Some(cfg.user.clone());
+    config.nextcloud.credential_store = CredentialStoreKind::Env;
+    config.storage.db_path = Some(db_path.to_owned());
+    config
 }
 
 async fn eventually(app: &taskboard_app::App, pred: impl Fn(&taskboard_domain::AppState) -> bool) {
