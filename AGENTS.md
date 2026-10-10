@@ -171,12 +171,13 @@ implementation specs into the root directory or source folders.
   previous one, all PRs targeted at `main`) only when a single PR does not
   make sense — e.g. independently reviewable slices of a large effort, or
   parallelizable work that must land in order.
-- **Stacked PRs + squash merges require the rebase dance.** `main` is
-  squash-merged, so when an upstream PR in a stack lands, every descendant
-  branch still contains the original (now duplicate) commits and GitHub
-  reports phantom conflicts. The agent doing stacked-PR work should *expect*
-  this after each merge and fix it proactively — rebasing the branch onto
-  `origin/main` while dropping the already-merged commits:
+- **Stacked PRs + rebase merges require the rebase dance.** `main` is
+  rebase-merged, so when an upstream PR in a stack lands, its commits
+  are rewritten onto `main` with new SHAs — every descendant branch
+  still contains the original (now duplicate) commits and GitHub
+  reports phantom conflicts. The agent doing stacked-PR work should
+  *expect* this after each merge and fix it proactively — rebasing the
+  branch onto `origin/main` while dropping the already-merged commits:
 
   ```sh
   git fetch origin --prune
@@ -188,6 +189,11 @@ implementation specs into the root directory or source folders.
   When handing the merge to the user, print the exact commands so they can
   be copy-pasted. `--force-with-lease` is mandatory; never plain `--force`.
   PRs are not affected by any of this if nothing is stacked behind them.
+- **Commit hygiene for rebase merges**: every commit lands on `main`
+  verbatim, so each one must stand alone — a correct build, a
+  meaningful `<type>(<module>)` subject, and no "WIP"/leftover noise.
+  Never put fixes in follow-up commits with duplicate subjects; amend
+  or reword before the PR opens.
 
 ## 9. Versioning
 
