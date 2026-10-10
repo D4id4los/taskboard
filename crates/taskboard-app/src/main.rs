@@ -22,10 +22,18 @@ use taskboard_app::config::{AppConfig, CredentialStoreKind};
 use taskboard_app::secrets::{CredentialStore, EnvCredentialStore, KeyringStore};
 
 fn init_tracing() {
+    // The console subscriber is compile-time optional but runtime
+    // opt-in: `console_subscriber::init` unconditionally binds gRPC
+    // 127.0.0.1:6669 and panics when the port is taken. An
+    // `--all-features` build (coverage CI, release checks) would
+    // otherwise kill every spawned `taskboard` process that loses that
+    // bind — parallel test runs and multi-process tooling included.
     #[cfg(feature = "tokio-console")]
-    console_subscriber::init();
+    if std::env::var_os("TASKBOARD_CONSOLE").is_some() {
+        console_subscriber::init();
+        return;
+    }
 
-    #[cfg(not(feature = "tokio-console"))]
     {
         use tracing_subscriber::EnvFilter;
         tracing_subscriber::fmt()
