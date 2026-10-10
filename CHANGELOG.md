@@ -11,6 +11,33 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Growth roadmap Phase 6 (ADR 0009): the operator CLI over the
+  in-process core — `login` (verify-then-persist: flags/prompted
+  server+user, app password via `rpassword` on a terminal or piped
+  stdin, non-secrets overlaid into `taskboard.toml` comment-preserving
+  via `toml_edit`, the secret into the credential store; the env store
+  reports `stored: "env"` with nothing written to any file), `boards
+  list/select` (discovery plus the one-time single-board binding with
+  pre-validation, rebind refusal, and an adoption wait), `tasks
+  list/add/done/move` (exact selectors, append-by-default orders,
+  `NoOp` idempotency), and `sync` (bounded wait, honest
+  Succeeded/Failed/TimedOut outcome, `--no-wait`). A global `--json`
+  flag switches every command to typed JSON payloads on stdout with
+  kebab-case error envelopes on stderr; exit codes are 0 success /
+  1 runtime failure / 2 clap usage / 130 second-signal force exit.
+- The per-database instance lock: an OS advisory exclusive lock on a
+  `<db>.lock` sidecar (fd-lock), acquired in `bootstrap()` before the
+  database opens and held for the process lifetime — a second core on
+  the same database fails with the typed `InstanceLocked` (db path +
+  holder pid), machine-distinguishable as `instance-locked`; released
+  automatically on process death.
+- The J-series binary-driving E2E tier (`it_nextcloud_docker_cli_*`):
+  the real `taskboard` binary against the dockerized Nextcloud —
+  login (stdin-piped password) → boards select → tasks add → sync
+  with server-side push/pull verification, and the bad-token rejection
+  journey; picked up by the existing `nextcloud-integration.yml`
+  filter with no workflow change.
+
 - Growth roadmap Phase 5 (ADR 0008): the `taskboard-app` bootstrap
   library — `AppConfig` (figment: defaults → `taskboard.toml` →
   `TASKBOARD_*` env, strict tables enforcing no-secrets-in-TOML), the
@@ -114,6 +141,13 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Changed
 
+- `login` replaces the manual `secret-tool` dance of the Phase 5 M1
+  quickstart: the ceremony verifies against the server before anything
+  is persisted and stores the app password itself.
+- The sync merge fixes a duplicate-adoption bug: a card created and
+  pulled within one sync cycle was adopted twice (the create's echo
+  binding was invisible to the pull's card-to-local matching map,
+  which read pre-echo state), wedging subsequent update pushes.
 - The `taskboard` binary now accepts `daemon` (subcommand), a global
   `--config <path>`, and `--version`; no arguments still runs the
   daemon, per `[app] mode` (ADR 0008).

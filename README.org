@@ -137,37 +137,49 @@ username = "<your-nextcloud-username>"
 poll_interval_secs = 30
 #+end_src
 
-** Running the Daemon (M1 quickstart)
+** M1 Quickstart: the =taskboard= CLI
 
-1. Configure =taskboard.toml= as above.
-2. Provide the app password, either in your desktop keyring (the
-   default store):
+First-run ceremony — =login= creates or updates =taskboard.toml= (the
+example config above is optional; =login= writes =server_url= and
+=username= itself) and stores the app password in the OS keyring:
 
-   #+begin_src sh
-   # <your-keyring-account> must be <your-nextcloud-username>@<host>,
-   # where <host> is the host of server_url (no port, no path) —
-   # this exact pair is what the daemon looks up.
-   printf '%s' '<your-app-password>' | secret-tool store --label=taskboard \
-     service taskboard username <your-nextcloud-username>@<host>
+#+begin_src sh
+# Interactive: prompts for server, username, and the app password
+# (echo-suppressed on a terminal; piped stdin works for scripts).
+cargo run -p taskboard-app -- login
+#+end_src
 
-   # verify it is retrievable (prints the secret):
-   secret-tool lookup service taskboard \
-     username <your-nextcloud-username>@<host>
-   #+end_src
+Headless variant: set =[nextcloud] credential_store = "env"= in the
+config and export =TASKBOARD_APP_PASSWORD=<your-app-password>= —
+=login= then succeeds with =stored: "env"= and no secret ever touches
+a file.
 
-   ...or via the environment escape hatch: add
-   =credential_store = "env"= to the =[nextcloud]= table and export
-   =TASKBOARD_APP_PASSWORD=<your-app-password>= before starting the
-   daemon.
-3. Run the headless sync daemon:
+Then bind the installation to one Deck board and go:
 
-   #+begin_src sh
-   cargo run -p taskboard-app -- daemon
-   #+end_src
+#+begin_src sh
+taskboard boards list          # remote ids feed select
+taskboard boards select <id>
+taskboard tasks add "first task"
+taskboard sync                 # push now; durability is local immediately
+taskboard tasks list
+taskboard daemon               # headless sync loop until Ctrl-C/SIGTERM
+#+end_src
 
-It pulls the bound board, pushes local edits, retries offline, and
-shuts down gracefully on Ctrl-C/SIGTERM (flushing every accepted
-command and the sync actor's final report first).
+Notes:
+
+- *One core per database:* a second core-booting invocation on the same
+  database fails with the typed =instance-locked= error while a daemon
+  or another command runs — stop the daemon first. The lock is
+  OS-released on process death; there is no stale-lock cleanup.
+- *Offline-first:* =tasks add= (and every verb) is durable locally when
+  the reply arrives; the push rides the next =sync= or the daemon. The
+  boot cycle's pull is waited for, so =tasks list= shows remote data.
+- *Scripting:* =--json= (global) prints typed JSON payloads on stdout;
+  failures print ={"error":{"kind":"<kebab-case>"}}= on stderr and exit
+  =1=. Idempotent repeats (=tasks done= twice) are successes. Exit code
+  =130= is the daemon's second-signal force exit.
+- *Single board:* the MVP binds exactly one board; =boards select=
+  refuses a rebind to a different board (typed =board-already-bound=).
 
 ** Testing & Quality Gates
 
