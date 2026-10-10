@@ -33,6 +33,9 @@ fn init_tracing() {
                 // Sensible default: info from our crates, warnings from deps.
                 "info,tower=warn,hyper=warn,reqwest=warn".to_owned().into()
             }))
+            // Logs go to stderr: stdout carries the `--json` payloads
+            // (and human output) — a scripting surface, not a log sink.
+            .with_writer(std::io::stderr)
             .init();
     }
 }
