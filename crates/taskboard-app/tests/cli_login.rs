@@ -23,8 +23,10 @@ async fn run_login(
     prompts: &mut dyn taskboard_app::commands::login::PromptReader,
     store: &Arc<dyn CredentialStore>,
 ) -> Result<LoginReceipt, CommandError> {
+    let raw = AppConfig::extract_raw(Some(config_path)).expect("raw config decodes");
     login::run(
-        Some(config_path),
+        config_path,
+        raw,
         server,
         Some("alice".to_owned()),
         prompts,
@@ -244,9 +246,12 @@ async fn l6_login_prompts_in_order() {
     let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
     let mut prompts = FakePrompts::new(&[server.uri().as_str(), "alice", "pw"]);
 
-    let receipt = login::run(Some(&config_path), None, None, &mut prompts, &store)
-        .await
-        .expect("prompted login succeeds");
+    let receipt = {
+        let raw = AppConfig::extract_raw(Some(&config_path)).expect("raw config decodes");
+        login::run(&config_path, raw, None, None, &mut prompts, &store)
+            .await
+            .expect("prompted login succeeds")
+    };
     assert_eq!(receipt.username, "alice");
     // Exactly the three scripted answers were consumed.
     assert!(
