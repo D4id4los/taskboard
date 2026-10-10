@@ -545,3 +545,71 @@ async fn v12_select_reports_a_fresh_failure() {
     assert_eq!(err.error_kind(), "sync-failed");
     assert_eq!(err.error_detail().as_deref(), Some("server"));
 }
+
+/// V13: `sync --no-wait` nudges and reports the current status without
+/// awaiting the cycle (`NoWait` outcome, current phase/pending visible).
+#[tokio::test]
+async fn v13_sync_no_wait_reports_without_awaiting() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    mount_pull(&server, common::stacks_json(&json!([]))).await;
+    let db = dir.path().join("v13.db");
+    common::seed_board_binding(&db, 0x00DA_000E, common::BOARD, "v13").await;
+    let config = config_for(&server.uri(), dir.path(), "v13.db");
+    let store = store_for(&server.uri());
+
+    tasks::add(config.clone(), Arc::clone(&store), "v13-task", Some("col"))
+        .await
+        .expect("add");
+
+    let started = std::time::Instant::now();
+    let outcome = sync::run(config, store, true, Duration::from_secs(30))
+        .await
+        .expect("sync runs");
+    let SyncOutcome::NoWait(view) = outcome else {
+        panic!("expected NoWait, got {outcome:?}");
+    };
+    assert_eq!(view.pending_ops, 1, "the create is still queued");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "no-wait must not await the cycle"
+    );
+}
+
+/// V14: task selectors are exact uuids — a non-uuid string is a typed
+/// `unknown-task` before any core boots; a well-formed but unknown uuid
+/// is the engine's typed rejection.
+#[tokio::test]
+async fn v14_done_and_move_reject_unknown_task_selectors() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    mount_pull(&server, common::stacks_json(&json!([]))).await;
+    let db = dir.path().join("v14.db");
+    common::seed_board_binding(&db, 0x00DA_000E, common::BOARD, "v14").await;
+    let config = config_for(&server.uri(), dir.path(), "v14.db");
+    let store = store_for(&server.uri());
+
+    // Non-uuid: rejected at parse time, before any boot (no requests).
+    let err = tasks::done(config.clone(), Arc::clone(&store), "not-a-uuid", false)
+        .await
+        .expect_err("non-uuid selector");
+    assert_eq!(err.error_kind(), "unknown-task");
+    assert_eq!(err.error_detail().as_deref(), Some("not-a-uuid"));
+    let requests = server.received_requests().await.expect("requests recorded");
+    assert!(
+        requests.is_empty(),
+        "a non-uuid selector must not boot the core"
+    );
+
+    // Well-formed but unknown uuid: the engine's typed rejection.
+    let missing = uuid::Uuid::new_v4().to_string();
+    let err = tasks::done(config.clone(), Arc::clone(&store), &missing, false)
+        .await
+        .expect_err("unknown uuid");
+    assert_eq!(err.error_kind(), "unknown-task");
+
+    let err = tasks::move_(config, Arc::clone(&store), &missing, Some("col"), None)
+        .await
+        .expect_err("unknown uuid move");
+    assert_eq!(err.error_kind(), "unknown-task");
+}
