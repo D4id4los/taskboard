@@ -38,7 +38,7 @@ impl FakePrompts {
 }
 
 impl taskboard_app::commands::login::PromptReader for FakePrompts {
-    fn read_line(&mut self) -> Result<String, std::io::Error> {
+    fn read_line(&mut self, _prompt: &str) -> Result<String, std::io::Error> {
         self.answers
             .lock()
             .expect("fake prompts lock")
@@ -46,8 +46,8 @@ impl taskboard_app::commands::login::PromptReader for FakePrompts {
             .ok_or_else(|| std::io::Error::other("no scripted answer"))
     }
 
-    fn read_secret(&mut self) -> Result<String, std::io::Error> {
-        self.read_line()
+    fn read_secret(&mut self, prompt: &str) -> Result<String, std::io::Error> {
+        self.read_line(prompt)
     }
 }
 
