@@ -143,6 +143,15 @@ fn boards_json() -> String {
     .to_string()
 }
 
+fn board_json() -> String {
+    serde_json::json!({
+        "id": BOARD, "title": "board", "color": "00ff00",
+        "lastModified": T, "deletedAt": 0, "archived": false,
+        "labels": [{"id": 3, "title": "urgent", "color": "ff0000", "boardId": BOARD}]
+    })
+    .to_string()
+}
+
 fn stacks_json(cards: &serde_json::Value) -> String {
     serde_json::json!([{
         "id": STACK, "title": "col", "boardId": BOARD, "order": 0,
@@ -202,6 +211,10 @@ async fn mount_pull(server: &MockServer, cards: serde_json::Value) {
         (
             "/index.php/apps/deck/api/v1.0/boards".to_string(),
             boards_json(),
+        ),
+        (
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}"),
+            board_json(),
         ),
         (
             format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
@@ -290,6 +303,13 @@ impl DeckSim {
                 ResponseTemplate::new(200)
                     .insert_header("ETag", "\"gen-1\"")
                     .set_body_string(boards_json())
+            })
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(base.clone()))
+            .respond_with(move |_req: &wiremock::Request| {
+                ResponseTemplate::new(200).set_body_string(board_json())
             })
             .mount(server)
             .await;
@@ -910,6 +930,8 @@ async fn mount_conditional_pull(server: &MockServer) {
             stacks_json(&serde_json::json!([]))
         } else if p.ends_with("/stacks/archived") {
             "[]".to_string()
+        } else if p.ends_with(&format!("/boards/{BOARD}")) {
+            board_json()
         } else {
             boards_json()
         };
@@ -919,6 +941,7 @@ async fn mount_conditional_pull(server: &MockServer) {
     };
     for p in [
         "/index.php/apps/deck/api/v1.0/boards".to_string(),
+        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}"),
         format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
         format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"),
     ] {

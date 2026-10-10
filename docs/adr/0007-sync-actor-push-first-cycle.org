@@ -1,0 +1,157 @@
+#+title: ADR 0007: The Sync Actor — Push-First Cycle, Evidence-Then-Verdict Reporting
+#+options: toc:nil
+
+- *Date:* 2026-10-10
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+Phase 4 of the growth roadmap completes =taskboard-sync-nextcloud= as
+an actor: a scheduled cycle that pushes the storage outbox to Deck
+(coalesced, dependency-ordered, fetch-before-write), pulls the bound
+board into a complete =RemoteBoardSnapshot=, and reports
+=SyncReport=s to the State Engine — with an offline finite state
+machine around it. The Phase 1 conflict pipeline
+(=apply_sync_report=, ADR 0004) already owns the merge policy; the
+client surface and its typed error matrix are complete (tier 1).
+
+Four forces shape the design. First, the R3 hazard: presence
+reconciliation tombstones every bound entity absent from a snapshot, so
+a snapshot fetched *before* this cycle's pushes would report freshly
+created cards as absent and destroy them. Second, Deck has no write
+idempotency keys: a retried or duplicated create POST re-applies, so
+completed work must never be re-attempted after a mid-cycle failure.
+Third, ADR 0005 forbids the sync crate from reading sqlite directly,
+and architecture.org forbids it from depending on
+=taskboard-state= — yet the cycle needs the outbox, bindings, and
+validators, which the published =AppState= deliberately omits. Fourth,
+Deck's wire reality (whole-entity =lastModified= stamps, no per-card
+delete timestamps, listings that lag the server's own cache) keeps
+breaking naive assumptions, as the tier-2 D-series demonstrated.
+
+* Decision
+
+** Push before pull — the normative cycle order
+
+One cycle is: *read* (the engine's persisted state through the
+=SyncStateReader= port) → *push* (the coalesced outbox) → *pull*
+(three conditional reads into a complete snapshot) → *report*. Push
+outcomes are reported together with the snapshot of the *post-push*
+server state: R9 echo adoption establishes baselines before the
+snapshot merge, and a card created and pushed in the same cycle is
+present in its snapshot — the R3 tombstone hazard is structurally
+excluded, not guarded against. A pull read that fails after retries
+fails the whole cycle: no snapshot is ever reported from a partial
+pull, and the cycle's completed pushes travel in the =Failed= report.
+
+** Evidence-then-verdict reporting
+
+=SyncReport::Completed { snapshot, validators, pushes, read_at }=
+carries the merge inputs and the cycle's push outcomes together.
+=SyncReport::Failed { kind, pushes, read_at }= carries the pushes that
+*completed* before an abort: the engine lands them through
+=apply_push_report= (the pipeline's push-only composition), so
+completed creates bind instead of being re-POSTed next cycle — the
+only available defense against Deck's missing idempotency keys.
+=Completed= carries the three endpoints' conditional-read validators
+(=BoardPullValidators=); the engine persists them keyed by its own
+board binding, making actor restarts resume conditional polling.
+
+** The read side is a domain port
+
+=SyncStateReader= (a second domain port beside =TaskRepository=)
+returns the full =PersistedState= — outbox, bindings, validators
+included — and is implemented by the engine handle over an
+=EngineCommand::ReadState= envelope (the sequential loop replies, so a
+reply reflects the settled post-interpret state) and by the shared
+=InMemoryRepository= fake. The sync crate stays
+=taskboard-state=-free and SQL-free. Consumers must never branch on
+=sync.phase=: the reply may carry the memory-only =Syncing= transient
+that no repository =load()= can return (ADR 0006's documented
+divergence).
+
+** Coalescing is a pure domain planner
+
+=domain::push::plan_pushes= groups the outbox per entity (stacks →
+labels → tasks, the dependency direction) and materializes at most one
+client call per group: deletes subsume everything, creates carry
+current state, edits collapse into one full-send PUT plus at most one
+reorder. The planner is pure over the outbox and current tables — it
+never sees remote bindings; the actor's push executor resolves
+dependencies through a binding overlay seeded from the read state and
+extended by create echoes (binding by overlay, never by search). The
+executor fetches a card's authoritative detail immediately before
+every write to it: the full-round-trip PUT is built from the fetched
+card, and stale-binding 404s are never misread as =RemoteMissing=.
+
+** The self-clobber guard: protecting post-read intent
+
+Deck stamps its whole-card =lastModified= on any write, and its
+listings lag its cache. A cycle that planned *before* a user command
+executed reports snapshots and echoes stamped newer than that
+command's field clocks; naive per-field LWW would adopt the plan-time
+value over the newer local edit — silently losing intent (observed
+end-to-end in the D6 docker scenario: a =SetTaskDone= between plan and
+push was wiped by the same cycle's pull). Every report therefore
+carries =read_at=, the instant the cycle read the engine state, and
+the merge protects fields covered by outbox ops queued *after* it:
+those ops were never seen by the cycle's push, so the snapshot's and
+the echo's values for their fields are not evidence against the local
+intent. Ops queued no later than =read_at= are unprotected — their
+fields' post-push truth is exactly what the snapshot reports. The
+guard restores field values *and* write clocks from the local state;
+observation stamps (=remote_seen=) still advance.
+
+** Offline handling and scheduling
+
+The actor is the network authority: transport-classified cycle
+failures broadcast =SystemEvent::NetworkLost= once per episode (then
+back off, doubling from an injected initial value to a cap); the first
+success reports =Completed= first and *then* broadcasts
+=NetworkRestored=, so the engine's re-nudge lands on the cycle-in-flight
+dedupe flag (one benign coalesced rerun). =SyncNow= while a cycle
+runs sets the dedupe flag — nudge storms collapse into one rerun.
+Non-transport failures (auth, server, local-data, no-board) back off
+but never broadcast network events. =SyncNow= consumption and
+=SystemEvent::Shutdown= exit the loop; the actor holds no durable
+state beyond the injected client (stateless across restarts except
+the rebuildable pull cache). =SetBoard= sets the pull target and
+triggers an immediate cycle; the *local* board binding is written by
+adoption (R1) on the next successful pull, never by the actor.
+
+** Board-absence is a tombstone, verified twice
+
+The bound board's absence from the =fetch_boards= listing is confirmed
+by one unconditional detail read before anything is synthesized — a
+filtered listing must never cascade-destruct. Tier-2 verification
+drove the concrete rules: a soft-deleted board's detail answers *403*
+(not 404) while the lagging listing may still list it; Deck does not
+advance =lastModified= on a soft delete; and every read of a dead
+board (stacks, cards) answers 404/403. Consequently a confirmed-dead
+board is stamped with the *observation time* (the deletion is the
+freshest fact we hold — its listed stamps would lose every LWW
+comparison against the local =remote_seen= and the tombstone could
+never be adopted), the dead board's listings are answered from empty
+arrays, and the per-card detail refresh is skipped entirely (its 403s
+would fail the cycle forever and the cascade could never land).
+
+* Consequences
+
+- Two-way sync is demonstrated against dockerized Nextcloud (the
+  roadmap's phase exit): the D-series drives the full engine + actor
+  pair through push, pull, move, archive, label, dead-board cascade,
+  and field-write round trips on Nextcloud 35 / Deck 1.19.
+- The =SyncReport= reshape is a workspace-internal breaking change
+  absorbed in the same phase as its ingestion semantics; the phase 3
+  suite is the regression net.
+- =ReadState= clones the full persisted state per cycle — O(entities)
+  at kiosk scale, microseconds to milliseconds; narrower read envelopes
+  are backlogged if measurements disagree.
+- The single remaining snapshot-integrity gap is a server that *lies*
+  by omitting live resources from a 200 listing; outside the
+  completeness contract's reach, noted here as accepted.
+- Residual duplicate-create window: a crash between a create POST and
+  its outcome reaching the engine re-POSTs next cycle (no idempotency
+  keys exist to prevent it); the window is one oneshot hop wide and
+  the reconciliation idea is backlogged.

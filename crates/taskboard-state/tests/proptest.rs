@@ -206,10 +206,9 @@ proptest! {
             &app,
             &persisted.outbox,
             &snapshot,
-            &pushes,
+            &pushes, chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &ids,
-            now(),
-        );
+            now());
         // The engine appends the status action iff phase or last_success
         // changed — the same rule the actor applies.
         if merged.sync.phase != persisted.sync.phase

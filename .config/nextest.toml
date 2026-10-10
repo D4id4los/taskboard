@@ -1,0 +1,10 @@
+# The dockerized Nextcloud tier (it_nextcloud_docker_*) shares one server
+# instance; parallel tests contend for its single-threaded PHP/Deck cache
+# and trip the read-after-write lag into multi-second territory. Serialize
+# the tier; everything else keeps the default parallelism.
+[test-groups]
+docker-tier = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(it_nextcloud_docker)'
+test-group = 'docker-tier'

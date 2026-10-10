@@ -11,6 +11,32 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Growth roadmap Phase 4 (ADR 0007): the sync actor in
+  `taskboard-sync-nextcloud` — `spawn_sync_actor` (scheduled push-first
+  cycle: read via the `SyncStateReader` port → push → pull → report),
+  the push executor (binding overlay, fetch-before-write, typed
+  `DeckError` → `PushResult` classification), the pull assembler
+  (three conditional reads, both stack listings, per-card detail
+  refresh), the offline FSM (`NetworkLost`/`NetworkRestored`
+  ownership, failure backoff, cycle-in-flight `SyncNow` dedupe,
+  `SetBoard` consumption with binding-by-adoption), and the D-series
+  two-way sync demonstration against dockerized Nextcloud (the phase
+  exit).
+- Domain additions feeding the above: `push::plan_pushes` (the pure
+  push-coalescing planner with proptest partition/order laws), the
+  `SyncStateReader` port (+ `EngineCommand::ReadState`, engine and
+  fake implementations), `apply_push_report` (the pipeline's push-only
+  composition for evidence-then-verdict `Failed` reports), the
+  `SyncReport` reshape (`Completed { validators, read_at }`, `Failed {
+  pushes, read_at }`), `SyncErrorKind::NoBoard`, and the storage
+  codec's `ValidatorKey::ArchivedStacks` tag.
+- The self-clobber guard (ADR 0007): sync reports carry `read_at`, and
+  the merge/echo adoption protects fields covered by outbox ops queued
+  after the cycle's read — a local edit landing between the cycle's
+  state read and its push can no longer be silently wiped by the
+  pull's whole-card stamps (observed end-to-end in the D6 docker
+  scenario).
+- Doc-test usage examples on `spawn_sync_actor` and `plan_pushes`.
 - Growth roadmap Phase 3 (ADR 0006): the State Engine in
   `taskboard-state` — `EngineCore` (working state advancing only by
   interpreting persisted batches through the shared `apply_actions`),

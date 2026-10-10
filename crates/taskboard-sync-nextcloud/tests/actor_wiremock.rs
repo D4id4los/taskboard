@@ -357,8 +357,8 @@ async fn a2_unchanged_poll_ticks_on_304s_from_the_cache() {
     );
     assert_eq!(
         server.received_requests().await.unwrap().len(),
-        6,
-        "3 reads per cycle; the 304s filled from the cache"
+        8,
+        "4 reads per cycle (3 conditional + the board-detail labels read); the 304s filled from the cache"
     );
 }
 
@@ -384,8 +384,8 @@ async fn a3_nudge_storm_collapse_into_one_rerun() {
     let _ = next_report(&mut actor).await; // cycle 3: the storm coalesces into one rerun
     assert_eq!(
         server.received_requests().await.unwrap().len(),
-        9,
-        "exactly three cycles: initial + first nudge + one coalesced rerun"
+        12,
+        "exactly three cycles (4 reads each): initial + first nudge + one coalesced rerun"
     );
     // And then silence: five nudges never mean five cycles.
     assert!(
@@ -432,7 +432,7 @@ async fn a4_transport_failure_mid_push_keeps_evidence_and_queue() {
         ),
     );
     let report = set_board_and_report(&mut actor).await;
-    let SyncReport::Failed { kind, pushes } = report else {
+    let SyncReport::Failed { kind, pushes, .. } = report else {
         panic!("expected a Failed report");
     };
     assert_eq!(kind, SyncErrorKind::Network);
@@ -470,6 +470,13 @@ async fn a7_offline_episode_broadcasts_lost_once_then_restored() {
             stacks_json(&serde_json::json!([]))
         } else if p.ends_with("/stacks/archived") {
             "[]".to_string()
+        } else if p.ends_with(&format!("/boards/{BOARD}")) {
+            // The board-detail (labels) read: a single board object.
+            serde_json::json!({
+                "id": BOARD, "title": "board", "color": "00ff00",
+                "lastModified": T, "deletedAt": 0, "archived": false, "labels": []
+            })
+            .to_string()
         } else {
             boards_json(false)
         };
@@ -657,7 +664,7 @@ async fn a10_304_with_a_cold_cache_refetches_unconditionally() {
     };
     assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
     // 3 conditional 304s + 3 unconditional refetches.
-    assert_eq!(server.received_requests().await.unwrap().len(), 6);
+    assert_eq!(server.received_requests().await.unwrap().len(), 7);
     assert_eq!(
         validators.boards.etag.as_deref(),
         Some("\"gen-1\""),

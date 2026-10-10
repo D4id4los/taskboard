@@ -66,6 +66,27 @@ pub(crate) async fn with_deadline<T>(
     tokio::time::timeout(LIVE_DEADLINE, body).await
 }
 
+/// Retries `op` while Deck answers one of its sporadic write-path
+/// `Server(500)`s (known upstream flakiness, observed across create/reorder/
+/// archive/delete; see the known-server matrix in `docs/testing_strategy.org`).
+/// The production client deliberately does *not* retry `Server` — a retried
+/// create can double-apply — but tier scaffolding operates on per-run
+/// resources where a retry is safe, and reads are always safe to retry.
+pub(crate) async fn retrying_server_errors<T>(
+    mut op: impl AsyncFnMut() -> Result<T, taskboard_sync_nextcloud::DeckError>,
+) -> Result<T, taskboard_sync_nextcloud::DeckError> {
+    let mut attempts = 0u32;
+    loop {
+        match op().await {
+            Err(taskboard_sync_nextcloud::DeckError::Server(_)) if attempts < 4 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(200 * u64::from(attempts))).await;
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Builds the client for a resolved tier configuration.
 pub(crate) fn deck_client(cfg: &LiveCfg) -> DeckClient {
     DeckClient::new(&cfg.url, &cfg.user, &cfg.token).expect("tier URL must be valid")
@@ -77,6 +98,8 @@ pub(crate) fn deck_client(cfg: &LiveCfg) -> DeckClient {
 /// keeps only config resolution, skip logic, and its `it_nextcloud_*` test
 /// names. Client *behavior* (envelope, headers, errors, retries) is asserted
 /// at Tiers 0/1 and deliberately not duplicated here.
+pub(crate) mod sync_pair;
+
 pub(crate) mod suite {
     use super::run_id;
     use taskboard_sync_nextcloud::{DeckClient, DeckColor, DeckError};

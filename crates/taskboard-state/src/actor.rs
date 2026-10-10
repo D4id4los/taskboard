@@ -453,9 +453,17 @@ async fn ingest_sync_report(
             snapshot,
             validators,
             pushes,
+            read_at,
         } => {
-            let (merged, mut batch) =
-                apply_sync_report(&core.app(), core.outbox(), &snapshot, &pushes, ids, now);
+            let (merged, mut batch) = apply_sync_report(
+                &core.app(),
+                core.outbox(),
+                &snapshot,
+                &pushes,
+                read_at,
+                ids,
+                now,
+            );
             append_status_if_changed(core, &mut batch, &merged.sync);
             // The binding may have been adopted by this very batch, so the
             // keys derive from the post-merge board — "its own binding" is
@@ -463,7 +471,7 @@ async fn ingest_sync_report(
             append_validators_if_changed(core, &mut batch, &validators, &merged);
             batch
         }
-        taskboard_domain::SyncReport::Failed { kind, pushes } if pushes.is_empty() => {
+        taskboard_domain::SyncReport::Failed { kind, pushes, .. } if pushes.is_empty() => {
             vec![PersistenceAction::UpsertSyncStatus(SyncStatus {
                 phase: SyncPhase::Failed { last_error: kind },
                 last_success: core.sync_status().last_success,
@@ -473,9 +481,11 @@ async fn ingest_sync_report(
         // Evidence-then-verdict (phase 4 decision 3): the cycle's completed
         // pushes land even though the pull aborted — no snapshot merge, no
         // reconciliation, no cascade (that is `apply_push_report`'s job).
-        taskboard_domain::SyncReport::Failed { pushes, .. } => {
+        taskboard_domain::SyncReport::Failed {
+            pushes, read_at, ..
+        } => {
             let (merged, mut batch) =
-                apply_push_report(&core.app(), core.outbox(), &pushes, ids, now);
+                apply_push_report(&core.app(), core.outbox(), &pushes, read_at, ids, now);
             append_status_if_changed(core, &mut batch, &merged.sync);
             batch
         }
