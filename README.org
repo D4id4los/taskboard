@@ -174,8 +174,10 @@ Notes:
   or another command runs — stop the daemon first. The lock is
   OS-released on process death; there is no stale-lock cleanup.
 - *Offline-first:* =tasks add= (and every verb) is durable locally when
-  the reply arrives; the push rides the next =sync= or the daemon. The
-  boot cycle's pull is waited for, so =tasks list= shows remote data.
+  the reply arrives; the push rides the next =sync= or the daemon. A
+  verb serves the last synced state (the boot cycle's pull is given a
+  bounded chance when it is still in flight) — run =taskboard sync= to
+  see remote changes made elsewhere.
 - *Scripting:* =--json= (global) prints typed JSON payloads on stdout;
   failures print ={"error":{"kind":"<kebab-case>"}}= on stderr and exit
   =1=. Idempotent repeats (=tasks done= twice) are successes. Exit code

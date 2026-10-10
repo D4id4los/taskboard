@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-use taskboard_domain::{AppState, Stack, StackId, StateCommand, SyncPhase, TaskId};
+use taskboard_domain::{AppState, CommandOutcome, Stack, StackId, StateCommand, SyncPhase, TaskId};
 
 use crate::commands::CommandError;
 use crate::commands::output::{
@@ -19,9 +19,16 @@ use crate::commands::output::{
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
 
-/// Boots the core, waits for the boot cycle's first pull to land (so
-/// selectors resolve against adopted remote data, not the hydration
-/// snapshot), runs `body`, and always shuts the core down.
+/// Boots the core, gives the boot cycle's first pull a bounded chance to
+/// land, runs `body`, and always shuts the core down.
+///
+/// Honesty note: the wait only helps when the cycle is *in flight at
+/// command time* (a `Syncing` phase). A bound db that has ever synced
+/// hydrates a settled status, so the wait returns immediately and the
+/// verb serves the hydration snapshot — remote data newer than the last
+/// sync shows up only after `taskboard sync` or the daemon. The boot
+/// cycle's push still drains the outbox during the patient shutdown
+/// join; durability is local the moment `execute` replies.
 async fn with_core<T>(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
@@ -35,11 +42,14 @@ async fn with_core<T>(
     result
 }
 
-/// Waits for the boot cycle's first pull (a `Syncing` → settled
-/// transition) so the published state includes adopted remote data.
-/// A board-less db can only ever skip silently (`NoBoard`), so it
-/// returns immediately; a deadline expiry degrades gracefully —
-/// offline-first: local data serves the command.
+/// Gives the boot cycle's first pull (a `Syncing` → settled
+/// transition) a bounded chance to land before the verb reads the
+/// state. Only a cycle *in flight right now* is awaited; a settled
+/// hydrated status (the common case) returns immediately — freshness
+/// beyond the last sync is `taskboard sync`'s job. A board-less db can
+/// only ever skip silently (`NoBoard`), so it returns immediately; a
+/// deadline expiry degrades gracefully — offline-first: local data
+/// serves the command.
 async fn wait_for_boot_pull(app: &crate::App, timeout: Duration) {
     let mut signals = app.engine.subscribe();
     let deadline = tokio::time::Instant::now() + timeout;
@@ -191,15 +201,26 @@ pub async fn add(
         let state = app.engine.shared_state().load_full();
         let stack = resolve_target(&state, stack)?;
         let order = append_order(&state, stack);
-        app.engine
+        let outcome = app
+            .engine
             .execute(StateCommand::CreateTask {
                 title: title.clone(),
                 stack,
                 order,
             })
             .await?;
+        // The engine's create reply carries the exact id — never
+        // re-derive it by scanning titles (duplicate titles would
+        // mis-attribute the receipt).
+        let CommandOutcome::CreatedTask(task_id) = outcome else {
+            return Err(CommandError::UnknownTask(title));
+        };
         let state = app.engine.shared_state().load_full();
-        let task = live_task(&state, &title)?;
+        let task = state
+            .tasks
+            .get(&task_id)
+            .filter(|t| t.is_live())
+            .ok_or_else(|| CommandError::UnknownTask(title))?;
         Ok(mutation_receipt(&state, task))
     })
     .await
@@ -278,20 +299,6 @@ fn parse_task_id(raw: &str) -> Result<TaskId, CommandError> {
     uuid::Uuid::parse_str(raw)
         .map(TaskId::from_uuid)
         .map_err(|_| CommandError::UnknownTask(raw.to_owned()))
-}
-
-/// After a successful create, the task must be present and live in the
-/// published state (the reply implies durability).
-fn live_task<'a>(
-    state: &'a AppState,
-    title: &str,
-) -> Result<&'a taskboard_domain::Task, CommandError> {
-    state
-        .tasks
-        .values()
-        .rev()
-        .find(|t| t.is_live() && t.title == title)
-        .map_or_else(|| Err(CommandError::UnknownTask(title.to_owned())), Ok)
 }
 
 /// The human-readable task list.
