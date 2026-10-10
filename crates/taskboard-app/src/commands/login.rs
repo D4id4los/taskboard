@@ -5,7 +5,7 @@
 //! TOML (comment-preserving via `toml_edit`), the secret to the
 //! credential store. Nothing is persisted unless verification passed.
 
-use std::io::{ErrorKind as IoErrorKind, Write as _};
+use std::io::{ErrorKind as IoErrorKind, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -35,8 +35,9 @@ pub trait PromptReader: Send + Sync {
     fn read_secret(&mut self) -> Result<String, std::io::Error>;
 }
 
-/// The production prompt reader: plain stdin lines for values,
-/// `rpassword` (no echo where the tty allows) for secrets.
+/// The production prompt reader: plain stdin lines for values; the
+/// secret via `rpassword` (no echo) on a terminal, or a plain stdin
+/// line when stdin is piped (scripts and the E2E pipe the password).
 #[derive(Debug, Default)]
 pub struct StdinPrompts;
 
@@ -50,7 +51,15 @@ impl PromptReader for StdinPrompts {
     }
 
     fn read_secret(&mut self) -> Result<String, std::io::Error> {
-        rpassword::read_password().map(|s| s.trim().to_owned())
+        let stdin = std::io::stdin();
+        if stdin.is_terminal() {
+            rpassword::read_password().map(|s| s.trim().to_owned())
+        } else {
+            // Piped stdin: no terminal to hide the echo on.
+            let mut line = String::new();
+            stdin.read_line(&mut line)?;
+            Ok(line.trim().to_owned())
+        }
     }
 }
 

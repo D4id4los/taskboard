@@ -1,0 +1,163 @@
+#+title: ADR 0009: CLI Surface, Instance Lock, and the Binary-Driving E2E Tier
+#+options: toc:nil
+
+- *Date:* 2026-10-10
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+Phase 6 of the growth roadmap is the M1 exit: a deployable, real-server-
+validated headless taskboard. What is missing is the operator surface —
+a CLI over the Phase 5 in-process core (=taskboard-app=, ADR 0008) —
+plus the guarantees an operator-facing process implies (one core per
+database) and the test tier that proves the /binary/, not just the
+handlers.
+
+Forces: =login= must work on a machine with no valid config yet (the
+config hierarchy of ADR 0008 requires =server_url=/=username=, so
+=AppConfig::load= + validate cannot precede it); the MVP is
+single-board (domain =live_board()= picks =min(BoardId)=, so two
+bindings would silently target the wrong one); every core command pays
+one bootstrap whose sync actor fires a first cycle immediately; Deck's
+error surface for a bogus board id inside a cycle is a generic
+=Failed { Server }=; and scripted/test consumers need machine-readable
+output that never carries secrets.
+
+* Decision
+
+** Two command classes: pre-core and core-booting
+
+=taskboard= grows =login=, =boards {list,select}=, =tasks
+{list,add,done,move}=, =sync=, =daemon=, with a global =--json= flag.
+Handlers live in the library (=commands/=, one module per group plus
+=output.rs=); =main.rs= is dispatch + exit codes only — the Phase 5
+"dispatch lives in the binary" shape survives as the one-arm match, the
+*bodies* became testable lib code.
+
+- *Pre-core* (=login=, =boards list=): config + a =DeckClient= only.
+  No actor graph, no database, no instance lock. =login= is the
+  first-run bootstrap command; =boards list= is the stateless remote
+  listing the first-run selection UX consumes.
+- *Core-booting* (=boards select=, =tasks *=, =sync=): one full
+  =bootstrap= per invocation — boot, work, =shutdown()=, exit (roadmap
+  §2.4: one bootstrap, N frontends). Consequence, accepted: every core
+  command pays one pull+push round-trip and a bounded shutdown join;
+  offline the cycle fails, =Offline= is published, local data still
+  serves the command. Verbs additionally wait for the boot cycle's
+  first pull to settle so selectors resolve against adopted remote
+  data, not the hydration snapshot.
+
+Exit codes: =0= success (idempotent =NoOp= repeats are successes), =1=
+runtime failure, =2= clap usage, =130= second-signal force exit.
+
+** The login ceremony: verify-then-persist
+
+Flow: resolve the config path (=--config= > =TASKBOARD_CONFIG= >
+=./taskboard.toml= — extracted as =AppConfig::config_path=; a missing
+file at that path is *not* an error for =login=, it is the command
+that creates it); read the existing file *without validation*
+(=AppConfig::extract_raw=); prompt only what the flags omit (plain
+stdin lines; the password via a =PromptReader= seam whose production
+impl is =rpassword::read_password= — stdin-based, so piped E2E works);
+verify with =DeckClient::boards()= (the credential-verification call —
+401 /and/ 403 are bad credentials, some servers answer 403 for bad
+tokens); and only then persist:
+
+- non-secrets overlaid into the TOML via =toml_edit= read-modify-write
+  (comments, formatting, and unknown tables survive — the file is
+  operator territory), re-validated, written atomically (temp file +
+  rename);
+- the secret to the =CredentialStore=. With =credential_store = "env"=
+  the store answers =Unsupported=: login still succeeds and reports
+  =stored: "env"= (export =TASKBOARD_APP_PASSWORD=). *No secret is
+  ever written to any file.*
+
+** The single-board binding ceremony (=boards select=)
+
+Pre-validate the requested id against a fresh =boards()= listing
+(unknown/archived/deleted → typed =UnknownBoard=) *before* any core
+boot — a bogus id inside a cycle would only surface as the generic
+=Failed { Server}=. Then boot; a live local board bound to a
+*different* remote id is a typed =BoardAlreadyBound { current }=
+refusal (the single-board invariant above); re-selecting the bound id
+is a =NoOp= success. Otherwise =SyncCommand::SetBoard= goes out and the
+handler waits — event-driven with a polling fallback, deadline-bounded
+(=--timeout-secs=, default 60) — until the board is adopted (the
+adopted board row *is* the durable binding a later daemon resumes) or
+a sync failure lands.
+
+** Output contract: typed projections, never domain serde
+
+=commands/output.rs= defines serde projection structs
+(=TaskRow=, =TaskList=, =SyncStatusView=, =LoginReceipt=,
+=SelectReceipt=, …). Under =--json=, payloads go to stdout; runtime
+failures print ={"error":{"kind":"<kebab-case>"}}= to *stderr* (the
+tracing subscriber is configured to stderr so logs never corrupt the
+payload stream). The kinds come from an exhaustive
+=CommandError::error_kind()= match — the compiler forces new variants
+into the table — plus an optional structural =detail= (ids, nested
+sync kind). No projection type carries a secret field. The shapes are
+internal-but-scriptable and explicitly *not* versioned-guaranteed
+(backlog: JSON schema versioning). =daemon= ignores =--json=.
+
+** Instance lock: OS advisory lock on a db sidecar, held by the core
+
+=lockfile.rs::InstanceLock::acquire(db_path)= opens/creates
+=<db>.lock= and takes an exclusive =fd-lock= write lock (=try_lock=
+semantics: fail fast, never block), writing the holder PID into the
+file body (diagnostic only — the OS lock is authoritative and is
+released automatically on process death; no staleness heuristics exist
+to get wrong, the classic =O_EXCL= pitfall). =bootstrap()= creates the
+db's parent directory, then acquires the lock *before* the db open;
+the guard lives in =App=. Failure is
+=BootstrapError::InstanceLocked { db, holder_pid }=. Scope: any core
+boot locks; pre-core commands do not. The lock is *scoped to the
+database file*, so worktrees/CI processes with distinct db paths never
+contend. Caveat (documented): advisory locks on NFS/network filesystems
+are unreliable — sqlite on NFS is already unsupported territory.
+
+** The binary-driving E2E tier (J-series)
+
+Handler logic is proven hermetically (L/V/K/O-series: wiremock, real
+sqlite tempdirs, =FakeCredentialStore= / =FakePrompts=); the J-series
+(=tests/it_cli.rs=, =it_nextcloud_docker_cli_*=, =#[ignore]=, tier-2
+reuse) proves only what only the real binary can prove — arg parsing,
+stdin prompting, config-file discovery, env resolution, process exit
+codes, and the multi-process login → select → add → sync choreography
+against a real Deck server. Mechanics: =Command::new(env!(
+"CARGO_BIN_EXE_taskboard"))=; config via explicit =--config= (never
+=TASKBOARD_CONFIG=); per-child env hygiene (=binary_command()=
+strips every parent =TASKBOARD_*= and re-sets exactly what the child
+needs); assertions on exit codes, parsed =--json= structure, and
+server-side truth via a raw =DeckClient=. The existing
+=nextcloud-integration.yml= filter (=test(it_nextcloud_docker)=)
+picks the J-series up with no workflow change. K3 (the cross-process
+instance-lock test) is hermetic and rides the same =CARGO_BIN_EXE=
+mechanism; note binary-driving tests run work in subprocesses llvm-cov
+does not instrument — the hermetic suites carry the coverage duty.
+
+* Consequences
+
+- =login= replaces the manual =secret-tool= dance of the Phase 5
+  quickstart; =rpassword=, =fd-lock=, and =toml_edit= join the
+  workspace dependency list (all MIT OR Apache-2.0; =serde_json=
+  promoted to a real dependency of the app crate).
+- Every core command boots the full graph; a "local-only boot mode"
+  was deliberately rejected (second bootstrap shape, stale reads,
+  doctrine divergence — backlog).
+- Stopping the daemon is a precondition for any other core command on
+  the same database (=instance-locked= is machine-distinguishable for
+  supervisors); queued commands would be daemon IPC (existing backlog
+  entry).
+- Known tolerance: =sync='s stale-identical-failure ambiguity — a
+  fresh failure identical to a persisted =S0= publishes no state
+  change and resolves as =TimedOut= (or =Failed= at the deadline if
+  the phase is =Failed=); the payload always shows the final status.
+  Pinned by tests, not papered over with an engine change.
+- Deliberate deviations from the plan's §4 sketches, adopted during
+  implementation: =CommandError= boxes its error-crate payloads (the
+  figment/sqlx/reqwest sources would dominate every =Result= layout),
+  carries =UnknownStack= and =Deck= variants (typed zero-match and
+  pass-through cases), and =SyncOutcome= carries the failure kind in
+  =Failed= plus a =NoWait= arm for =--no-wait=.
