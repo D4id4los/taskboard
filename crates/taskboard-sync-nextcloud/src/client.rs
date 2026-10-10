@@ -47,13 +47,27 @@ impl RetrySleep for TokioSleep {
 /// Requests carry Basic auth (`user:app_password`), the `OCS-APIRequest`
 /// header Nextcloud requires, and `Accept: application/json`. Retries on
 /// `429`, `503`, and transport errors using [`BackoffPolicy`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DeckClient {
     http: Client,
     base_url: Url,
     credentials: String,
     backoff: BackoffPolicy,
     sleeper: std::sync::Arc<dyn RetrySleep>,
+}
+
+impl std::fmt::Debug for DeckClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The credentials field *is* the secret (`user:app-password`);
+        // a `tracing::debug!(?client)` must never leak it (ADR 0008).
+        f.debug_struct("DeckClient")
+            .field("http", &self.http)
+            .field("base_url", &self.base_url)
+            .field("credentials", &"[redacted]")
+            .field("backoff", &self.backoff)
+            .field("sleeper", &self.sleeper)
+            .finish()
+    }
 }
 
 #[derive(Serialize)]
@@ -1094,6 +1108,18 @@ mod tests {
     #[test]
     fn accepts_clean_base_url() {
         assert!(err_of("https://cloud.example.com").is_ok());
+    }
+
+    /// Leak floor: the `Debug` output of a client built with a known
+    /// password must not contain it (ADR 0008 — `?client` in a log line
+    /// used to print the app password).
+    #[test]
+    fn debug_output_never_contains_the_credentials() {
+        let client = DeckClient::new("https://cloud.example.com", "alice", "s3cret-app-pw")
+            .expect("base URL must be valid");
+        let formatted = format!("{client:?}");
+        assert!(!formatted.contains("s3cret-app-pw"));
+        assert!(!formatted.contains("alice:s3cret-app-pw"));
     }
 
     #[test]
