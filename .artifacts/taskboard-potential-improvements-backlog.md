@@ -20,6 +20,44 @@ Why this matters and why it was out-of-scope at the time of discovery.
 Optional high-level notes for a future iteration.
 -->
 
+## Flaky Test Watchlist
+
+A standing collection of tests observed failing (or hanging) without a
+code cause — timing races, environment sensitivity, instrumentation
+artifacts, real-server jitter. Append an entry each time a flake is
+observed; **do not fix opportunistically inside unrelated work**.
+Periodically (e.g. when the list grows to ~5 entries or before a
+release), review the list in one dedicated pass: reproduce, diagnose,
+and either fix the root cause or document the tolerated flakiness and
+its mitigation.
+
+Entry format per observation: date, test, where it failed (gate /
+runner / invocation), symptom, evidence for the flake verdict
+(re-runs, isolation), current suspicion, and any mitigation applied.
+
+---
+
+### [2026-10-11] `actor_wiremock` fails under the instrumented llvm-cov run
+
+- **Test**: `taskboard-sync-nextcloud --test actor_wiremock` (all 12
+  tests in the binary, exact case not captured from the aggregate
+  output)
+- **Where**: local full-gate run `cargo llvm-cov --workspace`
+  (instrumented target dir `target/llvm-cov-target`), on branch
+  `feat/app-cli-e2e` @ `b22721f`
+- **Symptom**: the workspace llvm-cov run exited 101 with
+  `error: test failed ... --test actor_wiremock`; the crate was not
+  touched by the branch's changes.
+- **Flake evidence**: the same test binary passes under llvm-cov in
+  isolation (12/12), and the immediate full-workspace llvm-cov re-run
+  is green. Not reproduced since.
+- **Suspicion**: timing under instrumentation (wiremock request/response
+  handling with coverage probes and the instrumented target dir) or
+  parallel-test resource contention specific to the coverage build;
+  no diagnosis attempted — the gate was re-run instead.
+- **Mitigation applied**: none (re-run). If it recurs, capture the
+  failing test name and the `--nocapture` output before re-running.
+
 ## [2026-10-07] Add the `slint` dependency to taskboard-ui-slint
 
 - **Category**: `UI` / `DX`
