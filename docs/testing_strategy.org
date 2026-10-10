@@ -157,7 +157,16 @@ drift is version-specific:
   =cards= entirely for empty stacks (other builds send =null=).
 - *Tier 2 docker (as of 2026-10-08):* =nextcloud:35= (35.0.1), Deck app
   1.19.0 (=occ app:install deck=). Same wire shapes as Tier 3 except
-  where noted above; empty stacks send =cards: null= here.
+  where noted above; empty stacks send =cards: null= here. Phase 4
+  additions (verified 2026-10-10 by the D-series): the boards
+  *listing* carries =labels: []= even for labelled boards (the board
+  *detail* payload is authoritative); a soft-deleted board's detail
+  read answers *403* while the listing may still list it (=deletedAt=
+  stamped, =lastModified= *not* advanced — deletion stamps must come
+  from the observation); every read of a dead board (stacks, card
+  details) answers 404/403; write endpoints answer sporadic =500=s
+  under load (the production client must not retry those — a retried
+  create can double-apply — but tier scaffolding retries them).
 
 Hard rules binding the real-server tiers (2 and 3):
 

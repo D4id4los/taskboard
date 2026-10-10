@@ -49,6 +49,187 @@ fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
     }
 }
 
+/// Task fields protected from a pull's LWW adoption because a pending op
+/// covering them was queued *after* the cycle read the state (`read_at`).
+/// Deck stamps its whole-card `last_modified` on any write, so the pull
+/// following our own push carries stamps newer than every local clock —
+/// for a field the push never carried, adopting its snapshot value would
+/// silently clobber a newer local edit (the "self-clobber" race). Ops the
+/// cycle *did* see (queued no later than `read_at`) are not protected:
+/// their fields' post-push truth is exactly what the snapshot reports.
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)] // one flag per protected task field
+struct PendingTaskIntent {
+    title: bool,
+    description: bool,
+    duedate: bool,
+    done: bool,
+    archived: bool,
+    position: bool,
+    labels: bool,
+    deleted: bool,
+}
+
+/// Collects per-task pending intents from one pass over the outbox.
+fn pending_task_intents(
+    outbox: &[PendingOp],
+    read_at: DateTime<Utc>,
+) -> HashMap<TaskId, PendingTaskIntent> {
+    let mut map: HashMap<TaskId, PendingTaskIntent> = HashMap::new();
+    for op in outbox {
+        if op.queued_at <= read_at {
+            continue;
+        }
+        let entry = map.entry(match op.op {
+            LocalOp::UpdateTask(t)
+            | LocalOp::MoveTask(t)
+            | LocalOp::DeleteTask(t)
+            | LocalOp::AssignLabel(t, _)
+            | LocalOp::UnassignLabel(t, _) => t,
+            LocalOp::CreateTask(_)
+            | LocalOp::CreateStack(_)
+            | LocalOp::RenameStack(_)
+            | LocalOp::DeleteStack(_)
+            | LocalOp::CreateLabel(_)
+            | LocalOp::UpdateLabel(_)
+            | LocalOp::DeleteLabel(_) => continue,
+        });
+        match op.op {
+            LocalOp::UpdateTask(_) => {
+                let p = entry.or_default();
+                p.title = true;
+                p.description = true;
+                p.duedate = true;
+                p.done = true;
+                p.archived = true;
+            }
+            LocalOp::MoveTask(_) => {
+                entry.or_default().position = true;
+            }
+            LocalOp::DeleteTask(_) => {
+                entry.or_default().deleted = true;
+            }
+            LocalOp::AssignLabel(_, _) | LocalOp::UnassignLabel(_, _) => {
+                entry.or_default().labels = true;
+            }
+            _ => unreachable!("filtered above"),
+        }
+    }
+    map
+}
+
+/// Copies protected field values *and* their write clocks back from the
+/// local state over the merge result. Binding fields (`remote`,
+/// `remote_seen`) keep the merged values: the observation happened either
+/// way.
+fn keep_task_intent(merged: &mut Task, local: &Task, p: PendingTaskIntent) {
+    if p.title {
+        merged.title.clone_from(&local.title);
+        merged.clocks.title = local.clocks.title;
+    }
+    if p.description {
+        merged.description.clone_from(&local.description);
+        merged.clocks.description = local.clocks.description;
+    }
+    if p.duedate {
+        merged.duedate = local.duedate;
+        merged.clocks.duedate = local.clocks.duedate;
+    }
+    if p.done {
+        merged.done = local.done;
+        merged.clocks.done = local.clocks.done;
+    }
+    if p.archived {
+        merged.archived = local.archived;
+        merged.clocks.archived = local.clocks.archived;
+    }
+    if p.position {
+        merged.stack = local.stack;
+        merged.order = local.order;
+        merged.clocks.position = local.clocks.position;
+    }
+    if p.labels {
+        merged.labels.clone_from(&local.labels);
+        merged.clocks.labels = local.clocks.labels;
+    }
+    if p.deleted {
+        merged.deleted = local.deleted;
+        merged.clocks.deleted = local.clocks.deleted;
+    }
+}
+
+/// The stack fields a post-read `RenameStack`/`DeleteStack` protects
+/// (`(rename, delete)`).
+fn pending_stack_intent(
+    outbox: &[PendingOp],
+    stack: StackId,
+    read_at: DateTime<Utc>,
+) -> (bool, bool) {
+    let mut rename = false;
+    let mut delete = false;
+    for op in outbox {
+        if op.queued_at <= read_at {
+            continue;
+        }
+        match op.op {
+            LocalOp::RenameStack(s) if s == stack => rename = true,
+            LocalOp::DeleteStack(s) if s == stack => delete = true,
+            _ => {}
+        }
+    }
+    (rename, delete)
+}
+
+/// Restores a stack's protected fields from the local state.
+fn keep_stack_intent(merged: &mut Stack, local: &Stack, rename: bool, delete: bool) {
+    if rename {
+        merged.title.clone_from(&local.title);
+        merged.order = local.order;
+        merged.clocks.title = local.clocks.title;
+        merged.clocks.order = local.clocks.order;
+    }
+    if delete {
+        merged.deleted = local.deleted;
+        merged.clocks.deleted = local.clocks.deleted;
+    }
+}
+
+/// The label fields a post-read `UpdateLabel`/`DeleteLabel` protects
+/// (`(update, delete)`).
+fn pending_label_intent(
+    outbox: &[PendingOp],
+    label: LabelId,
+    read_at: DateTime<Utc>,
+) -> (bool, bool) {
+    let mut update = false;
+    let mut delete = false;
+    for op in outbox {
+        if op.queued_at <= read_at {
+            continue;
+        }
+        match op.op {
+            LocalOp::UpdateLabel(l) if l == label => update = true,
+            LocalOp::DeleteLabel(l) if l == label => delete = true,
+            _ => {}
+        }
+    }
+    (update, delete)
+}
+
+/// Restores a label's protected fields from the local state.
+fn keep_label_intent(merged: &mut Label, local: &Label, update: bool, delete: bool) {
+    if update {
+        merged.title.clone_from(&local.title);
+        merged.color.clone_from(&local.color);
+        merged.clocks.title = local.clocks.title;
+        merged.clocks.color = local.clocks.color;
+    }
+    if delete {
+        merged.deleted = local.deleted;
+        merged.clocks.deleted = local.clocks.deleted;
+    }
+}
+
 /// The pipeline the engine calls once per `SyncReport::Completed`.
 ///
 /// Processing order is fixed (and tested): **push outcomes first** (they
@@ -70,6 +251,7 @@ pub fn apply_sync_report(
     outbox: &[PendingOp],
     snapshot: &RemoteBoardSnapshot,
     pushes: &[PushOutcome],
+    read_at: DateTime<Utc>,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
 ) -> (AppState, Vec<PersistenceAction>) {
@@ -88,6 +270,7 @@ pub fn apply_sync_report(
         &mut labels,
         &mut ctx,
         now,
+        read_at,
     );
 
     // ---- 2. Board ---------------------------------------------------
@@ -130,12 +313,17 @@ pub fn apply_sync_report(
                 remote.last_modified,
                 local.remote_seen.unwrap_or_else(utc_min),
             ) {
-                let merged = merge_stack(local, remote);
-                let now_tombstoned = merged.deleted && !local.deleted;
+                let merged_stack = {
+                    let mut merged = merge_stack(local, remote);
+                    let (rename, delete) = pending_stack_intent(outbox, id, read_at);
+                    keep_stack_intent(&mut merged, local, rename, delete);
+                    merged
+                };
+                let now_tombstoned = merged_stack.deleted && !local.deleted;
                 if now_tombstoned {
                     newly_tombstoned_stack_refs.push(remote.id.stack);
                 }
-                stacks.insert(id, merged);
+                stacks.insert(id, merged_stack);
             }
         } else {
             let id = ids.new_stack_id();
@@ -152,7 +340,9 @@ pub fn apply_sync_report(
                 remote.last_modified,
                 local.remote_seen.unwrap_or_else(utc_min),
             ) {
-                let merged = merge_label(local, remote);
+                let mut merged = merge_label(local, remote);
+                let (update, delete) = pending_label_intent(outbox, id, read_at);
+                keep_label_intent(&mut merged, local, update, delete);
                 labels.insert(id, merged);
             }
         } else {
@@ -175,6 +365,7 @@ pub fn apply_sync_report(
         .map(|(r, id)| ((r.board, r.card), id))
         .collect();
     let mut newly_adopted: HashMap<(RemoteBoardId, RemoteCardId), TaskId> = HashMap::new();
+    let task_intents = pending_task_intents(outbox, read_at);
     for remote in &snapshot.tasks {
         let key = (remote.id.board, remote.id.card);
         let bound = task_by_board_card
@@ -189,14 +380,23 @@ pub fn apply_sync_report(
                 remote.last_modified,
                 local.remote_seen.unwrap_or_else(utc_min),
             ) {
-                let merged = merge_task(&local, remote, &ctx);
+                let mut merged = merge_task(&local, remote, &ctx);
+                keep_task_intent(
+                    &mut merged,
+                    &local,
+                    task_intents.get(&id).copied().unwrap_or_default(),
+                );
                 let resurrected = was_deleted && !merged.deleted;
                 tasks.insert(id, merged);
-                // R5 resurrect: the pending DeleteTask op is dropped.
+                // R5 resurrect: the pending DeleteTask op is dropped — but
+                // only one the cycle actually saw. A delete queued after
+                // the read is intent the push never carried; resurrecting
+                // over it would drop it silently.
                 if resurrected {
                     for other in outbox {
                         if !op_results.contains_key(&other.op_id)
                             && other.op == LocalOp::DeleteTask(id)
+                            && other.queued_at <= read_at
                         {
                             op_results.insert(other.op_id, false);
                         }
@@ -388,6 +588,7 @@ pub fn apply_push_report(
     current: &AppState,
     outbox: &[PendingOp],
     pushes: &[PushOutcome],
+    read_at: DateTime<Utc>,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
 ) -> (AppState, Vec<PersistenceAction>) {
@@ -406,6 +607,7 @@ pub fn apply_push_report(
         &mut labels,
         &mut ctx,
         now,
+        read_at,
     );
 
     let mut actions = actions_for_changed_entities(current, &boards, &stacks, &labels, &tasks);
@@ -455,6 +657,7 @@ pub fn apply_push_report(
 /// returns the op bookkeeping: `op_id -> true` (completed) / `false`
 /// (failed/cancelled); ops absent from the map stay queued untouched.
 #[allow(clippy::too_many_lines)] // one R9 decision table; splitting hides the cases
+#[allow(clippy::too_many_arguments)] // the R9 inputs are exactly these
 fn apply_push_outcomes(
     pushes: &[PushOutcome],
     outbox: &[PendingOp],
@@ -463,8 +666,13 @@ fn apply_push_outcomes(
     labels: &mut BTreeMap<LabelId, Label>,
     ctx: &mut RemoteIndex,
     now: DateTime<Utc>,
+    read_at: DateTime<Utc>,
 ) -> HashMap<OpId, bool> {
     let mut op_results: HashMap<OpId, bool> = HashMap::new();
+    // The self-clobber guard applies to echo adoption too: an echo carries
+    // the plan-time values of every shape field, so an edit queued after
+    // the cycle's read must survive it exactly like the pull's stamps.
+    let task_intents = pending_task_intents(outbox, read_at);
     let op_by_id: HashMap<OpId, &PendingOp> = outbox.iter().map(|op| (op.op_id, op)).collect();
 
     for outcome in pushes {
@@ -516,7 +724,12 @@ fn apply_push_outcomes(
                         if let LocalOp::CreateTask(id) | LocalOp::UpdateTask(id) = op.op
                             && let Some(local) = tasks.get(&id)
                         {
-                            let merged = adopt_task_after_push(local, echo, ctx);
+                            let mut merged = adopt_task_after_push(local, echo, ctx);
+                            keep_task_intent(
+                                &mut merged,
+                                local,
+                                task_intents.get(&id).copied().unwrap_or_default(),
+                            );
                             tasks.insert(id, merged);
                         }
                         op_results.insert(outcome.op, true);
@@ -525,7 +738,9 @@ fn apply_push_outcomes(
                         if let LocalOp::CreateStack(id) | LocalOp::RenameStack(id) = op.op
                             && let Some(local) = stacks.get(&id)
                         {
-                            let merged = adopt_stack_after_push(local, echo);
+                            let mut merged = adopt_stack_after_push(local, echo);
+                            let (rename, delete) = pending_stack_intent(outbox, id, read_at);
+                            keep_stack_intent(&mut merged, local, rename, delete);
                             stacks.insert(id, merged);
                             ctx.stack_by_ref.insert(echo.id, id);
                         }
@@ -535,7 +750,9 @@ fn apply_push_outcomes(
                         if let LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) = op.op
                             && let Some(local) = labels.get(&id)
                         {
-                            let merged = adopt_label_after_push(local, echo);
+                            let mut merged = adopt_label_after_push(local, echo);
+                            let (update, delete) = pending_label_intent(outbox, id, read_at);
+                            keep_label_intent(&mut merged, local, update, delete);
                             labels.insert(id, merged);
                             ctx.label_by_ref.insert(echo.id, id);
                         }
@@ -669,6 +886,7 @@ mod tests {
             &[op],
             &empty_snapshot,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 3_600),
         );
@@ -710,6 +928,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 600),
         );
@@ -744,6 +963,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 3_660),
         );
@@ -774,6 +994,7 @@ mod tests {
                 op: crate::outbox::OpId(uuid::Uuid::from_u128(1)),
                 result: PushResult::Applied { echo: None },
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -805,6 +1026,7 @@ mod tests {
                 op: op_id,
                 result: PushResult::RemoteMissing,
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -835,6 +1057,7 @@ mod tests {
                     kind: SyncErrorKind::Network,
                 },
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -854,6 +1077,7 @@ mod tests {
                     kind: SyncErrorKind::BadRequest,
                 },
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -898,6 +1122,7 @@ mod tests {
             &[],
             &snap_labels,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -937,6 +1162,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -946,6 +1172,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 180),
         );
@@ -989,6 +1216,7 @@ mod tests {
                     echo: Some(RemoteEcho::Task(echo)),
                 },
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 3_660),
         );
@@ -1023,6 +1251,7 @@ mod tests {
                     echo: Some(RemoteEcho::Task(echo)),
                 },
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1064,6 +1293,7 @@ mod tests {
             &[delete_op, stack_op],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 420),
         );
@@ -1104,6 +1334,7 @@ mod tests {
             &[update_op, stack_op2],
             &snap2,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1181,6 +1412,7 @@ mod tests {
             &[move_op, stack_op],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -1227,6 +1459,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 180),
         );
@@ -1258,6 +1491,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 90),
         );
@@ -1323,6 +1557,7 @@ mod tests {
             &[op, stack_op],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -1379,6 +1614,7 @@ mod tests {
                     echo: Some(crate::remote::RemoteEcho::Task(echo)),
                 },
             }],
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 3_660),
         );
@@ -1413,6 +1649,7 @@ mod tests {
                     kind: SyncErrorKind::Forbidden,
                 },
             }],
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1446,6 +1683,7 @@ mod tests {
                     kind: SyncErrorKind::BadRequest,
                 },
             }],
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1506,9 +1744,9 @@ mod tests {
             let app: AppState = state.clone().into();
             let now = ts(2_000_000_000);
             let (pushed_state, pushed_actions) = apply_push_report(
-                &app, &state.outbox, &pushes, &CountingIds::default(), now);
+                &app, &state.outbox, &pushes, chrono::DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now);
             let (full_state, full_actions) = apply_sync_report(
-                &app, &state.outbox, &snapshot, &pushes, &CountingIds::default(), now);
+                &app, &state.outbox, &snapshot, &pushes, DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now);
             prop_assert_eq!(pushed_state, full_state);
             prop_assert_eq!(pushed_actions, full_actions);
         }
@@ -1619,6 +1857,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 180),
         );
@@ -1699,6 +1938,7 @@ mod tests {
                 op: op_id,
                 result: PushResult::Applied { echo: None },
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1746,6 +1986,7 @@ mod tests {
                     echo: Some(RemoteEcho::Stack(echo)),
                 },
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1784,6 +2025,7 @@ mod tests {
                     echo: Some(RemoteEcho::Label(echo)),
                 },
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1834,6 +2076,7 @@ mod tests {
                     result: PushResult::Applied { echo: None },
                 },
             ],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1879,6 +2122,7 @@ mod tests {
                     result: PushResult::RemoteMissing,
                 },
             ],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1932,6 +2176,7 @@ mod tests {
                     result: PushResult::RemoteMissing,
                 },
             ],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -1974,6 +2219,7 @@ mod tests {
                 op: crate::outbox::OpId(uuid::Uuid::from_u128(28)),
                 result: PushResult::RemoteMissing,
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -2018,6 +2264,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -2040,6 +2287,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -2078,6 +2326,7 @@ mod tests {
             std::slice::from_ref(&op),
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -2116,6 +2365,7 @@ mod tests {
             std::slice::from_ref(&op),
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -2144,6 +2394,7 @@ mod tests {
             std::slice::from_ref(&op),
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 420),
         );
@@ -2173,6 +2424,7 @@ mod tests {
             &[],
             &orphan_snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -2198,6 +2450,7 @@ mod tests {
             &[],
             &next_snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 180),
         );
@@ -2232,6 +2485,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -2264,6 +2518,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -2293,6 +2548,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -2321,6 +2577,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -2346,6 +2603,7 @@ mod tests {
             &[],
             &snap,
             &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
         );
@@ -2369,6 +2627,7 @@ mod tests {
                 op: crate::outbox::OpId(uuid::Uuid::from_u128(99)),
                 result: PushResult::Applied { echo: None },
             }],
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -2499,6 +2758,7 @@ mod tests {
             &ops,
             &snap,
             &pushes,
+            DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
         );
@@ -2533,9 +2793,229 @@ mod tests {
         let remote = remote_task(1, card, remote_last_modified);
         let snap = single_stack_snapshot(vec![remote], remote_last_modified.max(BASE));
 
-        let a = apply_sync_report(&state, &[], &snap, &[], &CountingIds::default(), ts(20_000));
-        let b = apply_sync_report(&state, &[], &snap, &[], &CountingIds::default(), ts(20_000));
+        let a = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000));
+        let b = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000));
         prop_assert_eq!(a.0.tasks, b.0.tasks);
     }
+    }
+
+    // ---- self-clobber guard: ops queued after `read_at` -------------
+
+    #[test]
+    fn a_post_read_done_edit_survives_the_same_cycle_pull() {
+        // The D6 race: the cycle planned before `SetTaskDone` executed,
+        // pushed a due-date PUT (advancing Deck's whole-card stamp), and
+        // the pull then reported `done: null` stamped newer than the
+        // local edit's clock. The edit was queued after the cycle's read
+        // — the push never carried it — so the merge must keep it.
+        let mut local = bound_task(1);
+        local.done = Some(ts(BASE + 120));
+        local.clocks.done = ts(BASE + 120);
+        let state = base_state(local);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(9)),
+            op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE + 120),
+        };
+        // Remote: no done, whole-card stamp newer than the local edit's
+        // clock (our own push advanced it).
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE), // the cycle read before the edit was queued
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let state_after = app_into_state(&app);
+        let merged = task_by_card(&state_after, 1);
+        assert_eq!(
+            merged.done,
+            Some(ts(BASE + 120)),
+            "protected intent survives"
+        );
+        assert_eq!(merged.clocks.done, ts(BASE + 120));
+        // The pending op is field-coarse (UpdateTask covers title too),
+        // so the title is protected as well; the observation stamp still
+        // advances.
+        assert_eq!(merged.title, "local 1");
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+    }
+
+    #[test]
+    fn an_op_queued_before_the_read_is_not_protected() {
+        // The cycle saw the edit (queued before `read_at`): the snapshot
+        // is the post-push truth for its fields and adoption proceeds.
+        let mut local = bound_task(1);
+        local.done = Some(ts(BASE - 120));
+        local.clocks.done = ts(BASE - 120);
+        let state = base_state(local);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(9)),
+            op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE - 60),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            &[op],
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let state_after = app_into_state(&app);
+        let merged = task_by_card(&state_after, 1);
+        assert_eq!(merged.done, None, "the cycle saw the op: remote truth wins");
+    }
+
+    #[test]
+    fn a_post_read_delete_is_not_resurrected_away() {
+        // Local deleted the task after the cycle read; the pull reports a
+        // live remote card stamped newer. The tombstone must stand and
+        // the pending DeleteTask must stay queued (not dropped as
+        // "resurrected" — the cycle never saw it).
+        let mut local = bound_task(1);
+        local.deleted = true;
+        local.clocks.deleted = ts(BASE + 120);
+        let state = base_state(local);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(77)),
+            op: LocalOp::DeleteTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE + 120),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let state_after = app_into_state(&app);
+        let merged = task_by_card(&state_after, 1);
+        assert!(merged.deleted, "post-read delete intent must survive");
+        assert!(
+            app.1
+                .iter()
+                .all(|a| !matches!(a, PersistenceAction::FailOp(id) if *id == op.op_id)),
+            "the unseen delete op must stay queued"
+        );
+    }
+
+    #[test]
+    fn a_pre_read_delete_still_yields_to_a_newer_remote_write() {
+        // The cycle saw the local delete (queued before the read) but the
+        // remote moved on afterwards: R5 resurrect applies and drops the op.
+        let mut local = bound_task(1);
+        local.deleted = true;
+        local.clocks.deleted = ts(BASE - 120);
+        let state = base_state(local);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(78)),
+            op: LocalOp::DeleteTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE - 60),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let state_after = app_into_state(&app);
+        let merged = task_by_card(&state_after, 1);
+        assert!(!merged.deleted, "R5: the newer remote write resurrects");
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == op.op_id)),
+            "the seen delete op is dropped by the resurrect"
+        );
+    }
+
+    #[test]
+    fn a_post_read_stack_rename_survives_the_same_cycle_pull() {
+        let mut local = local_stack();
+        local.title = "renamed".into();
+        local.clocks.title = ts(BASE + 120);
+        let mut state = base_state(bound_task(1));
+        state.stacks.insert(local.id, local.clone());
+
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(9)),
+            op: LocalOp::RenameStack(local.id),
+            queued_at: ts(BASE + 120),
+        };
+        let mut remote = remote_stack(1, BASE + 300);
+        remote.title = "remote rename".into();
+        let snap = crate::merge_testutil::snapshot(vec![remote], vec![]);
+
+        let app = apply_sync_report(
+            &state,
+            &[op],
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let merged = app.0.stacks[&local.id].clone();
+        assert_eq!(merged.title, "renamed", "protected intent survives");
+        assert_eq!(merged.clocks.title, ts(BASE + 120));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+    }
+
+    #[test]
+    fn a_post_read_label_edit_survives_the_same_cycle_pull() {
+        let mut state = base_state(bound_task(1));
+        let label_id = LabelId::from(uuid::Uuid::from_u128(950));
+        let mut local = crate::merge_testutil::bound_label(1);
+        local.id = label_id;
+        local.title = "local label".into();
+        local.clocks.title = ts(BASE + 120);
+        state.labels.insert(label_id, local.clone());
+
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(9)),
+            op: LocalOp::UpdateLabel(label_id),
+            queued_at: ts(BASE + 120),
+        };
+        let mut remote = crate::merge_testutil::remote_label(1, BASE + 300);
+        remote.title = "remote label".into();
+        let mut snap = single_stack_snapshot(vec![], BASE + 300);
+        snap.labels = vec![remote];
+
+        let app = apply_sync_report(
+            &state,
+            &[op],
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let merged = &app.0.labels[&label_id];
+        assert_eq!(merged.title, "local label", "protected intent survives");
+        assert_eq!(merged.clocks.title, ts(BASE + 120));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
     }
 }

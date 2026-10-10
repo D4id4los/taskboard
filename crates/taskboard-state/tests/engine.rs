@@ -349,6 +349,7 @@ async fn a5_completed_report_ingestion_publishes() {
             }),
             validators: test_validators(),
             pushes: vec![],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
         })
         .await
         .expect("report channel open");
@@ -373,6 +374,8 @@ async fn a6_failed_report_sets_typed_phase() {
         .send(SyncReport::Failed {
             kind: SyncErrorKind::Auth,
             pushes: vec![],
+
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
         })
         .await
         .expect("report channel open");
@@ -643,6 +646,7 @@ async fn completed_report_persists_validators_under_the_board_binding() {
             }),
             validators: validators.clone(),
             pushes: vec![],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
         })
         .await
         .expect("report channel open");
@@ -713,6 +717,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
             }),
             validators: test_validators(),
             pushes: vec![],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
         })
         .await
         .expect("report channel open");
@@ -787,6 +792,8 @@ async fn failed_report_with_pushes_applies_the_evidence() {
                     echo: Some(taskboard_domain::RemoteEcho::Task(echo)),
                 },
             }],
+
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
         })
         .await
         .expect("report channel open");

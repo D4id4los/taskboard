@@ -200,6 +200,14 @@ pub enum SyncReport {
         validators: crate::remote::BoardPullValidators,
         /// Outcomes of the ops pushed during this cycle.
         pushes: Vec<PushOutcome>,
+        /// The instant the actor read the engine state this cycle planned
+        /// from. Outbox ops queued after it were never seen by the cycle's
+        /// push, so the snapshot's values for their fields are not evidence
+        /// against the local intent — the merge protects those fields
+        /// instead of letting the pull's stamps self-clobber newer local
+        /// edits (see `apply_sync_report`). The engine passes this through
+        /// verbatim; both sides share one process clock.
+        read_at: chrono::DateTime<chrono::Utc>,
     },
     /// The cycle failed before producing a snapshot.
     Failed {
@@ -208,6 +216,10 @@ pub enum SyncReport {
         /// Successful push outcomes from the aborted cycle; empty when the
         /// cycle failed before (or during) its first push.
         pushes: Vec<PushOutcome>,
+        /// Same contract as `Completed::read_at`: the echo adoption in the
+        /// landed push evidence must not clobber edits queued after the
+        /// cycle's read either.
+        read_at: chrono::DateTime<chrono::Utc>,
     },
 }
 

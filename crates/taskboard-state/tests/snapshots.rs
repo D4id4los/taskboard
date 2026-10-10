@@ -254,6 +254,7 @@ async fn s3_sync_ingestion_binds_and_pulls() {
             }),
             validators: test_validators(),
             pushes: vec![],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
         })
         .await
         .expect("report channel open");
@@ -340,6 +341,7 @@ async fn s4_sync_resolution_drains_outbox() {
             }),
             pushes,
             validators: test_validators(),
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
         })
         .await
         .expect("report channel open");
@@ -465,6 +467,8 @@ async fn s6_network_lost_restored_cycle() {
         .send(SyncReport::Failed {
             kind: SyncErrorKind::Network,
             pushes: vec![],
+
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
         })
         .await
         .expect("report channel open");

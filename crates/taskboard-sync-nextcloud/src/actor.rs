@@ -54,6 +54,61 @@ pub struct SyncActorConfig {
 /// engine's nudge/SetBoard inbox, `reports` carries cycle reports to the
 /// engine, `system` is the broadcast this actor publishes network events
 /// on (and subscribes to for `Shutdown`).
+///
+/// # Examples
+///
+/// Wiring the actor over the Phase 5 channel graph (the bootstrap owns
+/// every half; the engine handle implements [`taskboard_domain::
+/// SyncStateReader`], and the actor publishes `NetworkLost`/`Restored`
+/// next to the engine's own system feed):
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use std::time::Duration;
+///
+/// use taskboard_domain::{
+///     PersistedState, RepositoryError, SyncCommand, SyncReport, SyncStateReader,
+///     SystemEvent,
+/// };
+/// use taskboard_sync_nextcloud::{DeckClient, SyncActorConfig, spawn_sync_actor};
+/// use tokio::sync::{broadcast, mpsc};
+///
+/// // In production: `taskboard_state::EngineHandle` implements the port.
+/// #[derive(Debug)]
+/// struct EngineView;
+///
+/// impl SyncStateReader for EngineView {
+///     fn read_state(
+///         &self,
+///     ) -> taskboard_domain::BoxFuture<'_, Result<PersistedState, RepositoryError>> {
+///         Box::pin(async { Ok(PersistedState::default()) })
+///     }
+/// }
+///
+/// # fn main() {
+/// let client = DeckClient::new("https://cloud.example.com", "user", "app-password")
+///     .expect("base URL must be valid");
+/// let (nudges_tx, nudges_rx) = mpsc::channel::<SyncCommand>(16);
+/// let (report_tx, report_rx) = mpsc::channel::<SyncReport>(16);
+/// let (system_tx, _system_rx) = broadcast::channel::<SystemEvent>(16);
+///
+/// let cfg = SyncActorConfig {
+///     poll_interval: Duration::from_secs(30),
+///     backoff_initial: Duration::from_secs(5),
+///     backoff_max: Duration::from_secs(300),
+/// };
+/// let actor = spawn_sync_actor(
+///     client,
+///     Arc::new(EngineView),
+///     nudges_rx,
+///     report_tx,
+///     system_tx,
+///     cfg,
+/// );
+/// // The engine consumes `report_rx`, sends `SyncNow`/`SetBoard` over
+/// // `nudges_tx`, and `actor` is aborted last at shutdown.
+/// # let _ = (nudges_tx, report_rx, _system_rx, actor);
+/// # }
 #[allow(clippy::too_many_arguments)] // the injected seams ARE the constructor
 #[must_use]
 pub fn spawn_sync_actor(
@@ -66,6 +121,13 @@ pub fn spawn_sync_actor(
 ) -> JoinHandle<()> {
     tokio::spawn(run(client, state, commands, reports, system, cfg))
 }
+
+/// Local stamps of the bound cards (archived flag + `remote_seen`), the
+/// detail refresh's comparison baseline keyed by remote ref.
+type LocalCardStamps = std::collections::HashMap<
+    (RemoteBoardId, taskboard_domain::RemoteCardId),
+    (bool, Option<chrono::DateTime<chrono::Utc>>),
+>;
 
 /// In-memory cache of the last decoded listings, fill for `304`s and
 /// cleared on `SetBoard`. A cold cache with warm validators forces one
@@ -220,6 +282,10 @@ async fn cycle(
             return;
         }
     };
+    // The read instant: outbox ops queued after it were never seen by this
+    // cycle's push, so the report lets the merge protect their fields from
+    // the pull's stamps (the self-clobber guard on `SyncReport::Completed`).
+    let read_at = Utc::now();
 
     // The pull target: the commanded one, else the persisted board binding
     // (a restarted actor resumes its target from `read_state` — decision
@@ -240,6 +306,7 @@ async fn cycle(
                 SyncReport::Failed {
                     kind: SyncErrorKind::NoBoard,
                     pushes: Vec::new(),
+                    read_at: Utc::now(),
                 },
             )
             .await;
@@ -280,7 +347,7 @@ async fn cycle(
                 GroupOutcome::Aborted => {
                     // Transport failure: no pull — the snapshot would
                     // predate the unfinished pushes anyway.
-                    fail_cycle(st, reports, system, SyncErrorKind::Network, pushes).await;
+                    fail_cycle(st, reports, system, SyncErrorKind::Network, pushes, read_at).await;
                     return;
                 }
             }
@@ -289,19 +356,32 @@ async fn cycle(
 
     // ---- pull ----------------------------------------------------------
     let local_board = bound_board.map(|b| (b.title.clone(), b.color.as_str().to_owned()));
+    // Bound cards' (archived, remote_seen), for the listing-lag detail
+    // refresh (tier-2 verified: Deck's listings lag its cache, so an
+    // archive/unarchive can carry a stale version stamp that LWW would
+    // silently drop).
+    let local_cards: LocalCardStamps = persisted
+        .tasks
+        .values()
+        .filter_map(|t| {
+            let r = t.remote.as_ref()?;
+            Some(((r.board, r.card), (t.archived, t.remote_seen)))
+        })
+        .collect();
     let pull = pull_snapshot(
         client,
         target,
         &persisted.validators,
         &mut st.cache,
         local_board,
+        &local_cards,
     )
     .await;
     let (snapshot, validators) = match pull {
         Ok(pulled) => pulled,
         Err(err) => {
             let kind = classify_read(&err);
-            fail_cycle(st, reports, system, kind, pushes).await;
+            fail_cycle(st, reports, system, kind, pushes, read_at).await;
             return;
         }
     };
@@ -315,6 +395,7 @@ async fn cycle(
             snapshot: Box::new(snapshot),
             validators,
             pushes,
+            read_at,
         },
     )
     .await;
@@ -337,6 +418,7 @@ async fn fail_cycle(
     system: &broadcast::Sender<SystemEvent>,
     kind: SyncErrorKind,
     pushes: Vec<PushOutcome>,
+    read_at: chrono::DateTime<chrono::Utc>,
 ) {
     if matches!(kind, SyncErrorKind::Network) && !st.offline {
         let _ = system.send(SystemEvent::NetworkLost);
@@ -345,7 +427,15 @@ async fn fail_cycle(
     }
     st.failure_streak = st.failure_streak.saturating_add(1);
     tracing::warn!(?kind, streak = st.failure_streak, "sync cycle failed");
-    send_report(reports, SyncReport::Failed { kind, pushes }).await;
+    send_report(
+        reports,
+        SyncReport::Failed {
+            kind,
+            pushes,
+            read_at,
+        },
+    )
+    .await;
 }
 
 /// `None` when the reports channel closed (engine restart): the cycle's
@@ -362,12 +452,14 @@ async fn send_report(reports: &mpsc::Sender<SyncReport>, report: SyncReport) -> 
 /// (decisions 9 and 11). All-or-nothing: any read failing after retries
 /// fails the whole pull — never a partial snapshot.
 #[allow(clippy::too_many_lines)] // three endpoints + confirm/synthesis, one order
+#[allow(clippy::too_many_arguments)]
 async fn pull_snapshot(
     client: &DeckClient,
     target: RemoteBoardId,
     persisted: &std::collections::BTreeMap<ValidatorKey, SyncValidators>,
     cache: &mut PullCache,
     local_board: Option<(String, String)>,
+    local_cards: &LocalCardStamps,
 ) -> Result<(RemoteBoardSnapshot, BoardPullValidators), crate::error::DeckError> {
     let boards_v = persisted
         .get(&ValidatorKey::Boards)
@@ -391,9 +483,44 @@ async fn pull_snapshot(
     // Board absence from the listing is a tombstone, confirmed in a second
     // step (decision 11) — a filtered listing must never cascade-destruct.
     let (board, labels, dead_board) = match listed {
-        Some(board) => {
-            let dead = !board.is_live();
-            (mapping::map_board(&board), inline_labels(&board), dead)
+        Some(listed_board) => {
+            // The listing entry is only a hint; labels and board content
+            // are authoritative in the board *detail* payload (tier-2
+            // verified: the boards listing carries `labels: []` even for
+            // labelled boards on Nextcloud 35).
+            match client.board(target.get()).await {
+                Ok(detail) => (
+                    mapping::map_board(&detail),
+                    inline_labels(&detail),
+                    !detail.is_live(),
+                ),
+                Err(err)
+                    if matches!(
+                        err,
+                        crate::error::DeckError::NotFound | crate::error::DeckError::Forbidden
+                    ) =>
+                {
+                    // A listed-but-unreadable board is dead (tier-2
+                    // verified: a soft-deleted board's detail answers 403
+                    // while the lagging listing may still claim it live).
+                    tracing::debug!(
+                        board = target.get(),
+                        ?err,
+                        "listed board unreadable: treating as dead"
+                    );
+                    // The delete observation is stamped "now": Deck does
+                    // not advance `lastModified` on a soft delete (tier-2
+                    // verified), so the listed stamps would lose every LWW
+                    // comparison against the local board's `remote_seen`
+                    // and the tombstone could never be adopted. The
+                    // deletion itself is the freshest fact we hold.
+                    let mut dead = mapping::map_board(&listed_board);
+                    dead.deleted_at = Some(Utc::now());
+                    dead.last_modified = dead.last_modified.max(Utc::now());
+                    (dead, inline_labels(&listed_board), true)
+                }
+                Err(err) => return Err(err),
+            }
         }
         None => match client.board(target.get()).await {
             Ok(board) => (
@@ -479,6 +606,51 @@ async fn pull_snapshot(
         }
     }
 
+    // Detail refresh for every *bound* card (tier-2 verified on Nextcloud
+    // 35: an archive/unarchive does not advance the card's last_modified —
+    // no stamp-based rule can ever observe the flag — and the listings lag
+    // Deck's cache besides). The authoritative per-card detail settles the
+    // flag; one GET per bound card per cycle is negligible at kiosk scale.
+    // Unbound (freshly echoed) cards keep the listing view. Per-card
+    // *conditional* detail fetches are the scaling path (backlog).
+    //
+    // When the flag disagrees with the local one, the view is stamped with
+    // the observation time: the server offers no version stamp for the
+    // archive flag, so "observed now" is the only truthful recency and
+    // LWW adopts it (same reasoning as the synthesized dead-board stamp).
+    //
+    // All-or-nothing: a bound card whose authoritative detail cannot be
+    // read fails the whole cycle — reporting the stale listing view would
+    // merge its stamp first and lock the truth out of LWW forever. A 404
+    // detail keeps the listing view (read-your-writes lag; presence is
+    // re-observed next cycle).
+    //
+    // A dead board skips the refresh entirely: every read of a dead board
+    // answers 404/403 (tier-2 verified), the tombstone snapshot is valid
+    // from the empty listings alone, and per-card details would fail the
+    // cycle forever — the cascade could never land.
+    if !dead_board {
+        for view in &mut tasks {
+            let Some(&(local_archived, _)) = local_cards.get(&(view.id.board, view.id.card)) else {
+                continue;
+            };
+            match client
+                .card(target.get(), view.id.stack.get(), view.id.card.get())
+                .await
+            {
+                Ok(detail) => {
+                    let mut refreshed = mapping::map_card(&detail, target);
+                    if refreshed.archived != local_archived {
+                        refreshed.last_modified = refreshed.last_modified.max(Utc::now());
+                    }
+                    *view = refreshed;
+                }
+                Err(crate::error::DeckError::NotFound) => {}
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     let validators = BoardPullValidators {
         boards: to_sync(&boards_val),
         stacks: to_sync(&active_v),
@@ -506,7 +678,11 @@ async fn fetch_stacks_listing(
 ) -> Result<(Vec<Stack>, Validators), crate::error::DeckError> {
     let fetched = match client.fetch_stacks(target.get(), filter, &validators).await {
         Ok(fetched) => fetched,
-        Err(crate::error::DeckError::NotFound) if dead_board => {
+        Err(crate::error::DeckError::NotFound | crate::error::DeckError::Forbidden)
+            if dead_board =>
+        {
+            // All reads of a dead board answer 404/403 (tier-2 verified):
+            // empty listings make the tombstone snapshot valid.
             tracing::debug!(board = target.get(), ?filter, "dead board: empty listing");
             return Ok((Vec::new(), Validators::default()));
         }

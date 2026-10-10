@@ -102,8 +102,10 @@ avoiding central runtime bottlenecks.
 | *State Engine → UI (Read)* | =arc_swap::ArcSwap<AppState>= | Provides lock-free, zero-contention state inspection during UI repaints. |
 | *State Engine → UI (Signal)* | =tokio::sync::broadcast= | Emits lightweight triggers (=EngineSignal::StateUpdated=) to prompt GUI repaints. |
 | *UI/CLI → State Engine* | =tokio::sync::mpsc= + =oneshot= | =EngineCommand::Execute= carries a =StateCommand= payload with an optional oneshot receipt (typed =Result<CommandOutcome, ExecuteError>=; a received reply implies durability). =EngineCommand::Flush= is the reply-less dispatch durability barrier (CLI exit). |
-| *State Engine → Sync Actor* | =tokio::sync::mpsc= | Fire-and-forget =SyncCommand::SyncNow= nudges, forwarded iff an accepted batch enqueued an op (or on =RequestSync= / =NetworkRestored=). |
-| *Sync Actor → State Engine* | =tokio::sync::mpsc= | =SyncReport::{Completed, Failed}= ingestion through the Phase 1 conflict pipeline. |
+| *State Engine → Sync Actor* | =tokio::sync::mpsc= | =SyncCommand= nudges: =SyncNow= (forwarded iff an accepted batch enqueued an op, or on =RequestSync= / =NetworkRestored=) and =SetBoard= (pull-target selection, Phase 6's CLI path). The actor dedupes =SyncNow= while a cycle runs. |
+| *Sync Actor → State Engine* | =tokio::sync::mpsc= | =SyncReport::{Completed, Failed}= ingestion through the conflict pipeline (ADR 0007's evidence-then-verdict: =Completed= carries snapshot + validators + pushes + =read_at=; =Failed= carries the pushes that landed before the abort). |
+| *Sync Actor → Everyone* | =tokio::sync::broadcast= | Produces =SystemEvent::NetworkLost= / =NetworkRestored= (this actor is the network authority) and consumes only =Shutdown= from the same channel. |
+| *Sync Actor → State Engine (reads)* | domain port =SyncStateReader= | =EngineCommand::ReadState= envelope behind the port: the cycle reads outbox, bindings, and validators via the engine, never direct SQL (ADR 0005/0007). |
 | *Actors ↔ Actors* | =tokio::sync::mpsc= | Direct point-to-point command delivery between backend actors (e.g., State Engine → Storage via the =TaskRepository= port adapter). |
 | *System Notifications* | =tokio::sync::broadcast= | Broadcasts global status changes (=SystemEvent::NetworkLost=) to all interested actors. |
 | *Asynchronous Queries* | =tokio::sync::oneshot= | Embedded inside an =mpsc= message payload for direct, async request-response cycles. Payloads are pure domain types; the channel-bearing envelope is declared by the actor crate (payload/envelope split, ADR 0004). |
@@ -145,10 +147,20 @@ dependency hierarchies.
    channels, publishing, and sequencing only. Dependencies:
    =taskboard-domain=, =arc-swap=, =chrono=, =tokio=.
 
-3. *taskboard-sync-nextcloud* — Manages remote sync with Nextcloud API
-   endpoints. Handles network errors and publishes sync status to the State
-   Engine. Dependencies: =taskboard-domain=, =reqwest=, =tokio=,
-   =serde_json=.
+3. *taskboard-sync-nextcloud* — The sync actor (ADR 0007): a scheduled
+   cycle that reads the engine's persisted state through the domain's
+   =SyncStateReader= port (never direct SQL, ADR 0005), pushes the
+   coalesced outbox via the pure =plan_pushes= planner + push executor
+   (binding overlay, fetch-before-write, typed error classification),
+   pulls the bound board through three conditional reads into a complete
+   =RemoteBoardSnapshot= (both stack listings; per-card detail refresh),
+   and reports =SyncReport=s with evidence-then-verdict semantics. Owns
+   the offline FSM: broadcasts =SystemEvent::NetworkLost/Restored=,
+   failure backoff, cycle-in-flight dedupe; =SetBoard= sets the pull
+   target (binding happens by adoption in the engine). Stateless across
+   restarts except the injected =DeckClient=. Dependencies:
+   =taskboard-domain=, =reqwest=, =serde=, =serde_json=, =chrono=,
+   =tokio=, =thiserror=, =tracing=.
 
 4. *taskboard-storage-sqlite* — Manages local SQLite disk persistence.
    Ensures the app boots immediately with cached data if network

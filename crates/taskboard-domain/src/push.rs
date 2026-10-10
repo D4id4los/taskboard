@@ -223,6 +223,73 @@ pub struct PushGroup {
 /// its group's `primary` or in its `subsumed` list. Groups are ordered
 /// stacks-first, labels-second, tasks-last; within a kind, by the queue
 /// position of the group's first op.
+///
+/// # Examples
+///
+/// Repeated edits of one card collapse into a single full-send PUT; the
+/// subsumed op ids ride on the materialized op's outcome:
+///
+/// ```
+/// use std::collections::BTreeMap;
+///
+/// use chrono::{TimeZone, Utc};
+/// use taskboard_domain::{
+///     plan_pushes, EntityTables, LocalOp, OpId, PendingOp, StackId, Task, TaskClocks,
+///     TaskId,
+/// };
+///
+/// let t = |secs: i64| Utc.timestamp_opt(secs, 0).unwrap();
+/// let task_id = TaskId::from(uuid::Uuid::from_u128(1));
+/// let stack_id = StackId::from(uuid::Uuid::from_u128(2));
+/// let clocks = TaskClocks {
+///     title: t(100),
+///     description: t(100),
+///     duedate: t(100),
+///     done: t(100),
+///     position: t(100),
+///     labels: t(100),
+///     archived: t(100),
+///     deleted: t(100),
+/// };
+/// let task = Task {
+///     id: task_id,
+///     remote: None,
+///     title: "edited twice".into(),
+///     description: String::new(),
+///     duedate: None,
+///     done: None,
+///     stack: stack_id,
+///     order: 0,
+///     labels: std::collections::BTreeSet::new(),
+///     archived: false,
+///     deleted: false,
+///     clocks,
+///     remote_seen: None,
+/// };
+/// let mut tasks = BTreeMap::new();
+/// tasks.insert(task_id, task);
+///
+/// let op = |n: u128, op: LocalOp| PendingOp {
+///     op_id: OpId(uuid::Uuid::from_u128(n)),
+///     op,
+///     queued_at: t(200),
+/// };
+/// let outbox = vec![
+///     op(10, LocalOp::UpdateTask(task_id)),
+///     op(11, LocalOp::UpdateTask(task_id)),
+/// ];
+///
+/// let stacks: BTreeMap<StackId, taskboard_domain::Stack> = BTreeMap::new();
+/// let labels: BTreeMap<taskboard_domain::LabelId, taskboard_domain::Label> = BTreeMap::new();
+/// let groups = plan_pushes(&outbox, EntityTables {
+///     tasks: &tasks,
+///     stacks: &stacks,
+///     labels: &labels,
+/// });
+/// assert_eq!(groups.len(), 1);
+/// assert_eq!(groups[0].primary, OpId(uuid::Uuid::from_u128(10)));
+/// assert_eq!(groups[0].subsumed, vec![OpId(uuid::Uuid::from_u128(11))]);
+/// ```
 #[must_use]
 pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<PushGroup> {
     // Bucket op (queue index, op) pairs per entity, preserving queue order.

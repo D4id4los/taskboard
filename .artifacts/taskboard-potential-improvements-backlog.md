@@ -829,3 +829,116 @@ throughput still cannot fit, scope the job's test filter (unit + A-series
 + P2/P3 at reduced cases) with the scope documented in
 testing_strategy §10. Landing state must keep the property: every
 reduction is an environment/speed gate, never a weakened assertion.
+
+## [2026-10-10] Duplicate-create crash window reconciliation
+
+- **Category**: `Architecture` / `Reliability`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase4-sync-actor-plan.md` §8
+- **Target Area**: `crates/taskboard-sync-nextcloud/`, `crates/taskboard-domain/src/pipeline.rs`
+
+### Context & Description
+Deck has no idempotency keys: a crash after a create POST but before the
+outcome reaches the engine re-POSTs on the next cycle, producing a
+duplicate card. The evidence-then-verdict reporting (ADR 0007) narrows
+the window to one oneshot hop; it cannot close it.
+
+### Proposed Approach
+Reconcile duplicate titles+timestamps at pull time (detect same-title
+cards created within the crash window and adopt one binding), triggered
+only when an observed duplicate exists.
+
+## [2026-10-10] `Retry-After` handling in the poll backoff
+
+- **Category**: `Performance` / `Reliability`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase4-sync-actor-plan.md` §8 (client plan §9 leftover)
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/poll.rs`, `src/client.rs`
+
+### Context & Description
+The client's retry policy ignores `Retry-After` on 429s and the poll
+backoff (`poll_backoff`) is a pure doubling curve; a rate-limiting server
+cannot tell the actor how long to wait.
+
+### Proposed Approach
+Parse the header into `poll_backoff`'s floor: the actor's next deadline
+is at least the advertised delay. Keep the pure seam so paused-time
+tests stay deterministic.
+
+## [2026-10-10] Filtered deleted-boards listing fallback
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase4-sync-actor-plan.md` §8 (decision 11 follow-up)
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/actor.rs`
+
+### Context & Description
+Board absence from the `GET /boards` listing is a tombstone confirmed by
+a detail read (decision 11, ADR 0007). If Deck's listing ever hides
+soft-deleted boards in a way that defeats the confirm-GET (e.g. 403
+confirmations under rate limiting), the delete-wins fallback would fire
+on a false alarm.
+
+### Proposed Approach
+If the confirm-GET becomes unreliable, add an unfiltered/deleted-boards
+listing when (if) the Deck API grows one — never speculate against a
+documented endpoint.
+
+## [2026-10-10] Listing→detail field-parity cache
+
+- **Category**: `Performance`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase4-sync-actor-plan.md` §8
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/actor.rs`
+
+### Context & Description
+The pull already refreshes every *bound* card's detail per cycle (tier-2
+verified: the archive flag never advances `last_modified`, and listings
+lag Deck's cache). That is O(bound cards) unconditional GETs per cycle —
+negligible at kiosk scale but the first scaling wall.
+
+### Proposed Approach
+Per-card *conditional* detail fetches (ETags) for changed cards only;
+seeded from the card stamps already in the pull cache.
+
+## [2026-10-10] Incremental pull (per-stack validators / per-card ETags)
+
+- **Category**: `Performance` / `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase4-sync-actor-plan.md` §8
+- **Target Area**: `crates/taskboard-domain/src/persistence.rs`, `crates/taskboard-sync-nextcloud/src/actor.rs`
+
+### Context & Description
+`ValidatorKey` is per-board-listing today; any card change anywhere on
+the board invalidates the whole stack listing. Post-MVP scaling path for
+large boards.
+
+### Proposed Approach
+Per-stack (later per-card) validators stored under finer `ValidatorKey`
+tags; the pull fetches only listings whose validators changed.
+
+## [2026-10-10] Push pipeline parallelism
+
+- **Category**: `Performance`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase4-sync-actor-plan.md` §8
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/push_exec.rs`
+
+### Context & Description
+Push groups execute serially in dependency order — correct and simple.
+Independent entity groups (e.g. unrelated label groups) could be in
+flight concurrently on slow links.
+
+### Proposed Approach
+Parallelize only on measured need; keep the dependency direction
+(stacks → labels → tasks) and the abort-on-transport semantics.
+
+## [2026-10-10] Sync-actor metrics for the kiosk dashboard
+
+- **Category**: `DX` / `Observability`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase4-sync-actor-plan.md` §8
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/actor.rs`
+
+### Context & Description
+The actor logs cycle start/end, offline transitions, and per-endpoint
+conditional outcomes via `tracing`, but no machine-readable metrics
+exist for the kiosk dashboard (cycle duration, push/pull counts, retry
+depth, backoff streak).
+
+### Proposed Approach
+Fold into the observability backlog entry: a `metrics`-shaped
+`SystemEvent` or an `AppState` extension the UI can read lock-free.
