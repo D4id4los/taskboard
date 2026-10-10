@@ -3073,7 +3073,6 @@ dependencies = [
  "color-eyre",
  "console-subscriber",
  "dirs",
- "dotenvy",
  "figment",
  "keyring",
  "serde",

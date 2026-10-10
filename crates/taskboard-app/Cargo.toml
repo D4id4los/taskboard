@@ -64,7 +64,6 @@ keyring = { workspace = true, features = ["apple-native"] }
 [dev-dependencies]
 wiremock.workspace = true
 tempfile.workspace = true
-dotenvy.workspace = true
 base64.workspace = true
 serde_json.workspace = true
 

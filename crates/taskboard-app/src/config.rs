@@ -173,16 +173,10 @@ fn default_backoff_max() -> u64 {
 /// Configuration failure classes. Nothing here matches provider error
 /// *text*; semantic checks are structural.
 #[derive(Debug, thiserror::Error)]
-// Box the figment source: the error would otherwise dominate the Result
-// layout (clippy::result_large_err).
+// The figment source dominates the `Result` layout; allowed once — the
+// error is constructed only at boot.
 #[allow(clippy::result_large_err)]
 pub enum ConfigError {
-    /// A required field is absent (`field` names the dotted key).
-    #[error("configuration incomplete")]
-    Missing {
-        /// The dotted config key that is absent.
-        field: &'static str,
-    },
     /// An explicitly requested config file (`--config` /
     /// `TASKBOARD_CONFIG`) does not exist.
     #[error("explicit config file not found")]
@@ -220,7 +214,7 @@ impl AppConfig {
     /// # Errors
     ///
     /// [`ConfigError`] — typed, see the variant docs.
-    #[allow(clippy::result_large_err)] // the boxed figment source, once at boot
+    #[allow(clippy::result_large_err)] // the figment source, once at boot
     pub fn load(explicit_path: Option<PathBuf>) -> Result<Self, ConfigError> {
         let path = match explicit_path {
             Some(p) => Some(p),
@@ -246,7 +240,7 @@ impl AppConfig {
     /// # Errors
     ///
     /// The first failing check, as a typed variant.
-    #[allow(clippy::result_large_err)] // the boxed figment source, once at boot
+    #[allow(clippy::result_large_err)] // the figment source, once at boot
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Same normalization rules as `DeckClient::new`: the URL must
         // survive client construction.
