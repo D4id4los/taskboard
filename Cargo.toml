@@ -52,6 +52,12 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 # CLI surface (taskboard-app)
 clap = { version = "4", features = ["derive"] }
+# Interactive password prompt (`taskboard login`, taskboard-app)
+rpassword = "7"
+# Advisory per-database instance lock (`<db>.lock` sidecar, taskboard-app)
+fd-lock = "4"
+# Comment-preserving config read-modify-write (`login`, taskboard-app)
+toml_edit = "0.22"
 # Platform data/config directories (taskboard-app db-path default)
 dirs = "6"
 # OS keyring (taskboard-app secrets); platform stores are feature-gated

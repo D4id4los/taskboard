@@ -53,6 +53,7 @@
 //! # }
 //! ```
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -65,6 +66,7 @@ use taskboard_storage_sqlite::{StorageHandle, spawn_storage_actor};
 use taskboard_sync_nextcloud::{DeckClient, spawn_sync_actor};
 
 use crate::config::{AppConfig, AppMode, ConfigError};
+use crate::lockfile::{InstanceLock, LockError};
 use crate::secrets::{CredentialError, CredentialStore};
 
 /// Channel capacity of the system broadcast (`NetworkLost`,
@@ -91,6 +93,9 @@ pub enum BootstrapError {
     /// The database directory could not be created.
     #[error("storage directory could not be created")]
     StorageDir(#[source] std::io::Error),
+    /// The instance lock sidecar could not be opened or written.
+    #[error("instance lock could not be acquired")]
+    LockIo(#[source] std::io::Error),
     /// The state engine failed to boot (hydration).
     #[error("state engine failed to start")]
     Engine(#[from] taskboard_state::EngineStartupError),
@@ -100,6 +105,15 @@ pub enum BootstrapError {
     /// The configured `[app] mode` has no frontend yet (Phase 7).
     #[error("app mode not implemented yet")]
     ModeNotImplemented(AppMode),
+    /// Another taskboard instance already holds this database.
+    #[error("another taskboard instance holds this database")]
+    InstanceLocked {
+        /// The locked database path.
+        db: PathBuf,
+        /// The holder PID recorded in the lock sidecar (best-effort,
+        /// diagnostic only).
+        holder_pid: Option<u32>,
+    },
 }
 
 /// A running taskboard core. Not `Clone` — the shutdown sequence
@@ -116,6 +130,8 @@ pub struct App {
     storage_join: JoinHandle<()>,
     engine_join: JoinHandle<()>,
     sync_join: JoinHandle<()>,
+    /// The per-database instance lock, held for the process lifetime.
+    _lock: InstanceLock,
 }
 
 impl std::fmt::Debug for App {
@@ -210,6 +226,28 @@ pub async fn bootstrap(
         return Err(BootstrapError::ModeNotImplemented(mode));
     }
     config.validate()?;
+
+    // One core per database: acquire the instance lock before anything
+    // is opened or spawned; the OS releases it on process death. The
+    // database directory is created first — the lock sidecar lives
+    // next to the db file, so an unusable path surfaces as the
+    // `Storage`/`StorageDir` class, not a lock error.
+    let db_path = config.db_path().to_owned();
+    if let Some(parent) = db_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        tokio::fs::create_dir_all(&parent)
+            .await
+            .map_err(BootstrapError::StorageDir)?;
+    }
+    let lock = InstanceLock::acquire(&db_path).map_err(|err| match err {
+        LockError::Held { holder_pid } => BootstrapError::InstanceLocked {
+            db: db_path.clone(),
+            holder_pid,
+        },
+        LockError::Io(source) => BootstrapError::LockIo(source),
+    })?;
+
     let server = config.server_url().to_owned();
     let username = config.username().to_owned();
     tracing::info!(
@@ -227,14 +265,6 @@ pub async fn bootstrap(
     let password = credentials.load(&server, &username)?;
     let client = DeckClient::new(&server, &username, password.expose())?;
 
-    let db_path = config.db_path().to_owned();
-    if let Some(parent) = db_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        tokio::fs::create_dir_all(&parent)
-            .await
-            .map_err(BootstrapError::StorageDir)?;
-    }
     tracing::info!(db = %db_path.display(), "opening database");
     let repo = Arc::new(taskboard_storage_sqlite::open(&db_path).await?);
     let (storage, storage_join) = spawn_storage_actor(repo);
@@ -287,6 +317,7 @@ pub async fn bootstrap(
         storage_join,
         engine_join,
         sync_join,
+        _lock: lock,
     })
 }
 
