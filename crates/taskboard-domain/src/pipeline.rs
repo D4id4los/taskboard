@@ -19,7 +19,7 @@ use chrono::{DateTime, Utc};
 use crate::entities::{Board, Label, Stack, Task};
 use crate::idgen::IdGenerator;
 use crate::ids::{
-    LabelId, RemoteBoardId, RemoteCardRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
+    LabelId, RemoteBoardId, RemoteCardId, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 use crate::merge::{
     adopt_board_if_newer, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
@@ -163,8 +163,25 @@ pub fn apply_sync_report(
     }
 
     // ---- 5. Tasks (R1/R4/R5) ----------------------------------------
+    // Task identity across pulls is (board, card): Deck card ids are unique
+    // per board and a cross-stack move (remote, or a just-pushed local one
+    // whose binding update rides the next pull) changes the ref's stack
+    // component only. Matching by the full ref would read every move as
+    // delete+create and tombstone the moved task.
+    let task_by_board_card: HashMap<(RemoteBoardId, RemoteCardId), TaskId> = current
+        .tasks
+        .iter()
+        .filter_map(|(id, t)| Some((t.remote?, *id)))
+        .map(|(r, id)| ((r.board, r.card), id))
+        .collect();
+    let mut newly_adopted: HashMap<(RemoteBoardId, RemoteCardId), TaskId> = HashMap::new();
     for remote in &snapshot.tasks {
-        if let Some(id) = ctx.task_by_ref.get(&remote.id).copied() {
+        let key = (remote.id.board, remote.id.card);
+        let bound = task_by_board_card
+            .get(&key)
+            .copied()
+            .or_else(|| newly_adopted.get(&key).copied());
+        if let Some(id) = bound {
             // R4 fast path: unchanged remote keeps local entirely.
             let was_deleted = tasks[&id].deleted;
             let local = tasks[&id].clone();
@@ -194,6 +211,7 @@ pub fn apply_sync_report(
             if let Some(adopted) = adopt_remote_task(remote, id, &ctx) {
                 tasks.insert(id, adopted);
                 ctx.task_by_ref.insert(remote.id, id);
+                newly_adopted.insert(key, id);
             }
         }
     }
@@ -201,11 +219,17 @@ pub fn apply_sync_report(
     // ---- 6. Presence reconciliation (R3) ----------------------------
     // Bound-but-absent entities are gone server-side (snapshot
     // completeness contract). Cards: delete-wins fallback.
-    let present_refs: std::collections::BTreeSet<RemoteCardRef> =
-        snapshot.tasks.iter().map(|t| t.id).collect();
-    let bound_task_refs: Vec<(TaskId, RemoteCardRef)> = tasks
+    let present_refs: std::collections::BTreeSet<(RemoteBoardId, RemoteCardId)> = snapshot
+        .tasks
         .iter()
-        .filter_map(|(id, t)| Some((*id, t.remote?)))
+        .map(|t| (t.id.board, t.id.card))
+        .collect();
+    let bound_task_refs: Vec<(TaskId, (RemoteBoardId, RemoteCardId))> = tasks
+        .iter()
+        .filter_map(|(id, t)| {
+            let r = t.remote?;
+            Some((*id, (r.board, r.card)))
+        })
         .collect();
     for (id, remote_ref) in bound_task_refs {
         // No `!local.deleted` guard here, unlike stacks/labels below: a
@@ -1571,6 +1595,56 @@ mod tests {
             tasks,
             labels,
         })
+    }
+
+    #[test]
+    fn a_cross_stack_move_pulls_into_the_same_task() {
+        // Identity regression: the card moved from stack 1 to stack 3
+        // server-side (or via a just-pushed local move). Matching by the
+        // full card ref would read that as delete+create and tombstone the
+        // moved task; matching by (board, card) merges in place.
+        let state = base_state(bound_task(1));
+        let task_id = task_by_card(&state, 1).id;
+        let snap = snapshot(
+            vec![remote_stack(1, BASE), remote_stack(3, BASE + 120)],
+            vec![],
+        );
+        let mut moved = remote_task(3, 1, BASE + 120); // stack 3, card 1
+        moved.order = 4;
+        let mut snap = snap;
+        snap.tasks.push(moved);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            &CountingIds::default(),
+            ts(BASE + 180),
+        );
+
+        let merged = app.0.tasks.get(&task_id).expect("same local task");
+        assert!(!merged.deleted, "the moved task must not tombstone");
+        assert_eq!(
+            merged.remote,
+            Some(card_ref(3, 1)),
+            "the binding follows the card to the new stack"
+        );
+        assert_eq!(
+            merged.stack.as_uuid().as_u128(),
+            app.0
+                .stacks
+                .values()
+                .find(|s| s.remote == Some(stack_ref(3)))
+                .expect("stack 3 adopted")
+                .id
+                .as_uuid()
+                .as_u128(),
+            "the local stack moves with the card"
+        );
+        assert_eq!(merged.order, 4);
+        // No second (adopted) copy of the card exists.
+        assert_eq!(app.0.tasks.len(), 1);
     }
 
     #[test]

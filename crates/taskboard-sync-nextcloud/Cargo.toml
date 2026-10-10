@@ -20,6 +20,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 taskboard-domain = { workspace = true, features = ["test-support"] }
+taskboard-state.workspace = true
 proptest.workspace = true
 wiremock.workspace = true
 dotenvy.workspace = true

@@ -2416,6 +2416,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taskboard-domain",
+ "taskboard-state",
  "thiserror",
  "tokio",
  "tracing",
