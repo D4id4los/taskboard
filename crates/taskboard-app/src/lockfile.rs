@@ -111,6 +111,9 @@ impl InstanceLock {
         guard
             .seek(std::io::SeekFrom::Start(0))
             .and_then(|_| guard.write_all(body.as_bytes()))
+            // Truncate to the new body: a shorter pid following a longer
+            // one must not leave residue the diagnostic read cannot parse.
+            .and_then(|()| guard.set_len(body.len() as u64))
             .and_then(|()| guard.flush())
             .map_err(LockError::Io)?;
         tracing::info!(lock = %path.display(), "instance lock acquired");
