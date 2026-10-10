@@ -15,7 +15,10 @@
   app-level E2E test tier that drives the **real binary** against the
   tier-2 dockerized Nextcloud. Exit (M1): a deployable, real-server-
   validated headless taskboard.
-- **Status**: DRAFT (rev 1, awaiting user review)
+- **Status**: IMPLEMENTED on `feat/app-cli-e2e` (ADR 0009 records the
+  deviations from this draft; the review follow-ups — fresh-evidence
+  adoption wait, same-cycle echo test, receipt-id fix — ride the same
+  branch).
 - **Parent roadmap**: `.artifacts/plans/2026-10-08-growth-roadmap-plan.md`
   §3 Phase 6, §6 M1 acceptance.
 - **Predecessors**: Phases 1–5 all merged. Authored against merged `main`
