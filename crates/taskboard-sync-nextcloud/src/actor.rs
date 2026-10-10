@@ -272,6 +272,14 @@ async fn cycle(
     commanded: bool,
 ) {
     // ---- read ----------------------------------------------------------
+    // The read instant is stamped *before* the read issues: an op queued
+    // between the stamp and the reply was not seen by this cycle's push, so
+    // the merge must protect its fields from the pull's stamps (the
+    // self-clobber guard on `SyncReport::Completed`). Conservative by
+    // construction — over-protection only keeps a newer local intent.
+    // Wall-clock note: production runs engine and actor on one `SystemClock`;
+    // a seam here would be needed only if the clocks ever diverge.
+    let read_at = Utc::now();
     let persisted = match state.read_state().await {
         Ok(persisted) => persisted,
         Err(err) => {
@@ -282,10 +290,6 @@ async fn cycle(
             return;
         }
     };
-    // The read instant: outbox ops queued after it were never seen by this
-    // cycle's push, so the report lets the merge protect their fields from
-    // the pull's stamps (the self-clobber guard on `SyncReport::Completed`).
-    let read_at = Utc::now();
 
     // The pull target: the commanded one, else the persisted board binding
     // (a restarted actor resumes its target from `read_state` — decision
@@ -344,9 +348,12 @@ async fn cycle(
         for group in plan_pushes(&persisted.outbox, tables) {
             match executor.execute(&group, &persisted.outbox, tables).await {
                 GroupOutcome::Outcomes(mut outcomes) => pushes.append(&mut outcomes),
-                GroupOutcome::Aborted => {
+                GroupOutcome::Aborted { landed } => {
                     // Transport failure: no pull — the snapshot would
-                    // predate the unfinished pushes anyway.
+                    // predate the unfinished pushes anyway. The landed
+                    // outcomes (e.g. a create whose post-create sub-call
+                    // failed) travel as evidence so they are never re-POSTed.
+                    pushes.extend(landed);
                     fail_cycle(st, reports, system, SyncErrorKind::Network, pushes, read_at).await;
                     return;
                 }

@@ -942,3 +942,22 @@ depth, backoff streak).
 ### Proposed Approach
 Fold into the observability backlog entry: a `metrics`-shaped
 `SystemEvent` or an `AppState` extension the UI can read lock-free.
+
+## [2026-10-10] Per-card pull detail refresh is O(bound cards) per cycle
+
+- **Category**: `Performance` / `Scaling`
+- **Originating Plan/Report**: Review of `.artifacts/plans/2026-10-09-growth-roadmap-phase4-sync-actor-plan.md` (finding F4; ADR 0007's pull description)
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/actor.rs` (`pull_snapshot`)
+
+### Context & Description
+Tier 2 showed Deck's archive flag never advances the card's
+`last_modified` and its listings lag the server cache, so the pull
+refreshes every *bound* card's detail (one unconditional GET per bound
+card per cycle) to observe the flag truthfully. Fine at kiosk scale;
+4 + N requests per cycle grows linearly with the bound-card count.
+
+### Proposed Approach
+Trigger: a board with hundreds of bound cards or measured cycle cost.
+Mitigation: conditional (`If-None-Match`) per-card detail fetches for
+changed cards only, or refresh details only when the listing's
+`lastModified` batch actually moved.
