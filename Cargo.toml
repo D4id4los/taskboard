@@ -50,6 +50,14 @@ figment = { version = "0.10", features = ["toml", "env"] }
 chrono = { version = "0.4", features = ["serde", "clock"] }
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
+# CLI surface (taskboard-app)
+clap = { version = "4", features = ["derive"] }
+# Platform data/config directories (taskboard-app db-path default)
+dirs = "6"
+# OS keyring (taskboard-app secrets); platform stores are feature-gated
+# via target-specific deps in the app manifest.
+keyring = { version = "3", default-features = false }
+
 # Error handling
 thiserror = "2"
 color-eyre = "0.6"

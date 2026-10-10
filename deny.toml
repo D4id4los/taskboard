@@ -19,6 +19,8 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CDLA-Permissive-2.0",
+    # `option-ext` via `dirs` (the app crate's data-dir default)
+    "MPL-2.0",
 ]
 # Some crates ship their license text in unusual formats; resolve rather than deny.
 confidence-threshold = 0.93
