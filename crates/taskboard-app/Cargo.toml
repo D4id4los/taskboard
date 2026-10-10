@@ -6,7 +6,11 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license = "AGPL-3.0-only"
-description = "Executable runner for the taskboard kiosk and desktop application: wires channels, loads config, spawns Tokio actors"
+description = "Executable runner for the taskboard kiosk and desktop application: bootstrap library (config, secrets, actor graph) and the `taskboard` binary"
+
+[lib]
+name = "taskboard_app"
+path = "src/lib.rs"
 
 [[bin]]
 name = "taskboard"
@@ -27,12 +31,42 @@ taskboard-ui-slint.workspace = true
 tokio.workspace = true
 arc-swap.workspace = true
 figment.workspace = true
+serde.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+clap.workspace = true
+dirs.workspace = true
+thiserror.workspace = true
 color-eyre.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 console-subscriber = { workspace = true, optional = true }
+
+# OS keyring: keyring 3 gates every platform store behind features. The
+# feature sets union across declarations; platforms outside the release
+# matrix compile the mock store (default-features = false upstream).
+#
+# Linux linkage note (ADR 0008 §dependencies): `sync-secret-service`
+# routes through `dbus-secret-service` → `libdbus-sys`, which links the
+# *system* `libdbus-1` C library (pkg-config). Every desktop Linux has
+# it; cross builds (aarch64) need the target sysroot's libdbus-1-dev +
+# a cross pkg-config — the same class of C-toolchain requirement the
+# ring build (rustls) already imposes. The pure-Rust zbus path
+# (`async-secret-service`) only exposes async APIs and would rework the
+# store; revisit if the release pipeline ever drops system dbus.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] }
+[target.'cfg(windows)'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[dev-dependencies]
+wiremock.workspace = true
+tempfile.workspace = true
+dotenvy.workspace = true
+base64.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

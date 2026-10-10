@@ -1,26 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `taskboard` application runner.
 //!
-//! Entry point of the kiosk/desktop application. Responsibilities:
-//! 1. Load hierarchical configuration (figment: defaults → `taskboard.toml`
-//!    → `TASKBOARD_` environment overrides).
-//! 2. Initialize `tracing` (with `log` compatibility for dependencies) and,
-//!    when built with `--features tokio-console`, the console subscriber.
-//! 3. Wire the actor channels (`mpsc` commands, `broadcast` signals,
-//!    `ArcSwap<AppState>`).
-//! 4. Spawn the background actors (state engine, sync, storage) and mount
-//!    the UI, then step aside.
-//!
-//! Actor wiring is currently a scaffold: each subsystem lands incrementally
-//! behind its own feature work. The channel topology contract lives in
-//! `docs/architecture.org`.
+//! Thin process glue (ADR 0008): parse the CLI, initialize `tracing`,
+//! load the config, pick the credential store, boot the in-process core
+//! through the library's `bootstrap`, and run the daemon lifecycle with
+//! a second-signal force exit. All wiring lives in the `taskboard_app`
+//! library so tests and future frontends reuse it.
 
 #![forbid(unsafe_code)]
 
-use taskboard_domain::AppState;
+use std::sync::Arc;
 
-/// Application version, taken from the shared workspace version.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+use clap::Parser as _;
+
+use taskboard_app::bootstrap::{bootstrap, wait_for_signal};
+use taskboard_app::cli::{Cli, Command};
+use taskboard_app::config::{AppConfig, CredentialStoreKind};
+use taskboard_app::secrets::{CredentialStore, EnvCredentialStore, KeyringStore};
 
 fn init_tracing() {
     #[cfg(feature = "tokio-console")]
@@ -43,26 +39,60 @@ fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     init_tracing();
-    tracing::info!(version = VERSION, "starting taskboard");
-
-    // Placeholder state holder: the state engine will own the write side of
-    // this ArcSwap; the UI will load from it lock-free.
-    let _state = arc_swap::ArcSwap::from_pointee(AppState::default());
+    let cli = Cli::parse();
+    tracing::info!(version = taskboard_app::VERSION, "starting taskboard");
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(async_main())?;
+        .block_on(run(cli))?;
 
     tracing::info!("taskboard shut down cleanly");
     Ok(())
 }
 
-// Kept async in anticipation of the actor wiring; the first await points
-// (state engine, sync, storage actors) arrive with their own feature work.
-#[allow(clippy::unused_async)]
-async fn async_main() -> color_eyre::Result<()> {
-    // TODO(feature work): wire figment config, actor channels, spawn the
-    // state engine / sync / storage actors, mount the UI.
+async fn run(cli: Cli) -> color_eyre::Result<()> {
+    let config = AppConfig::load(cli.config)?;
+    let store: Arc<dyn CredentialStore> = match config.nextcloud.credential_store {
+        CredentialStoreKind::Keyring => Arc::new(KeyringStore),
+        CredentialStoreKind::Env => Arc::new(EnvCredentialStore),
+    };
+
+    // `Desktop`/`Kiosk` decode but have no frontend yet (Phase 7): the
+    // typed error is the placeholder arm that gets replaced there.
+    let app = match bootstrap(config, store).await {
+        Ok(app) => app,
+        Err(taskboard_app::BootstrapError::ModeNotImplemented(mode)) => {
+            tracing::error!(?mode, "this mode is not implemented yet");
+            color_eyre::eyre::bail!("app mode {mode:?} is not implemented yet (Phase 7)");
+        }
+        Err(err) => return Err(err.into()),
+    };
+
+    // Dispatch shape: `None` resolves `[app] mode` (already enforced by
+    // the bootstrap mode check); `daemon` is explicit. Phase 6 grows
+    // this match with `login`/`boards`/`tasks`/`sync`.
+    match cli.command {
+        Some(Command::Daemon) | None => {}
+    }
+
+    // Daemon lifecycle: the first signal starts the graceful drain; a
+    // second signal during the drain force-exits (standard daemon UX;
+    // deliberately untested glue). The first-signal wait happens here —
+    // *before* arming the force-exit watcher — because `ctrl_c` and
+    // SIGTERM notify every listener: an early watcher would catch the
+    // first signal instead of the second.
+    wait_for_signal().await;
+    tracing::info!("shutdown signal received");
+    let outcome = tokio::select! {
+        outcome = app.shutdown() => outcome,
+        () = wait_for_signal() => {
+            tracing::warn!("second signal during shutdown; forcing exit");
+            std::process::exit(130);
+        }
+    };
+    if outcome.actor_aborted {
+        tracing::warn!("sync actor did not stop in time and was aborted");
+    }
     Ok(())
 }
