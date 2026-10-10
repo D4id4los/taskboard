@@ -13,6 +13,9 @@
 // Not every tier's test binary uses every helper.
 #![allow(dead_code)]
 
+pub(crate) mod hermetic;
+pub(crate) mod sync_pair;
+
 use std::time::Duration;
 
 use taskboard_sync_nextcloud::DeckClient;
@@ -97,9 +100,8 @@ pub(crate) fn deck_client(cfg: &LiveCfg) -> DeckClient {
 /// real servers, so the bodies live here exactly once and each tier file
 /// keeps only config resolution, skip logic, and its `it_nextcloud_*` test
 /// names. Client *behavior* (envelope, headers, errors, retries) is asserted
-/// at Tiers 0/1 and deliberately not duplicated here.
-pub(crate) mod sync_pair;
-
+/// at Tiers 0/1 and deliberately not duplicated here. The hermetic suites'
+/// shared harness lives in [`hermetic`].
 pub(crate) mod suite {
     use super::run_id;
     use taskboard_sync_nextcloud::{DeckClient, DeckColor, DeckError};

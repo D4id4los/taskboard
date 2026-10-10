@@ -24,29 +24,26 @@ use taskboard_domain::{
 use taskboard_state::spawn_state_engine;
 use taskboard_sync_nextcloud::{DeckClient, SyncActorConfig, spawn_sync_actor};
 use tokio::sync::{broadcast, mpsc};
-use uuid::Uuid;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-const BOARD: u64 = 42;
-const STACK: u64 = 7;
-const T: i64 = 1_700_000_000;
+mod common;
+use common::hermetic::{
+    BOARD, STACK, T, board_json, boards_json, card_json, mount_conditional_pull, stacks_json,
+    start_server, ts, uuid, wait_subscribed,
+};
+
+/// This suite's boards carry the seeded "urgent" label in listings and
+/// detail payloads alike.
+fn board_labels() -> serde_json::Value {
+    serde_json::json!([{ "id": 3, "title": "urgent", "color": "ff0000", "boardId": BOARD }])
+}
 
 const CFG: SyncActorConfig = SyncActorConfig {
     poll_interval: Duration::from_millis(200),
     backoff_initial: Duration::from_millis(100),
     backoff_max: Duration::from_millis(400),
 };
-
-fn uuid(raw: u128) -> Uuid {
-    Uuid::from_u128(raw)
-}
-
-fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc.timestamp_opt(secs, 0).unwrap()
-}
-
-use chrono::TimeZone as _;
 
 /// The engine half of the pair, plus every channel half a test needs to
 /// spawn (and re-spawn) actors against it.
@@ -124,35 +121,6 @@ async fn bind_board(commands: &mpsc::Sender<SyncCommand>) {
 // `RemoteBoardId` alias to keep the helper signatures short.
 use taskboard_domain::RemoteBoardId as RemoteBoardId0;
 
-/// Starts a wiremock server under paused time: the server's startup polls
-/// readiness with a 25 ms sleep, so time must advance while it boots.
-async fn start_server() -> MockServer {
-    let started = tokio::spawn(MockServer::start());
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        if started.is_finished() {
-            return started.await.expect("wiremock server starts");
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "wiremock never became ready"
-        );
-        tokio::time::advance(Duration::from_millis(10)).await;
-    }
-}
-
-/// Waits until both subscribers (engine and actor) are on the system
-/// broadcast — a structural fact, not a timed one; no sleeps.
-async fn wait_subscribed(system_tx: &broadcast::Sender<SystemEvent>) {
-    for _ in 0..10_000 {
-        if system_tx.receiver_count() >= 2 {
-            return;
-        }
-        tokio::task::yield_now().await;
-    }
-    panic!("engine and actor never both subscribed to the system broadcast");
-}
-
 async fn eventually(engine: &taskboard_state::EngineHandle, pred: impl Fn(&AppState) -> bool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
@@ -167,41 +135,6 @@ async fn eventually(engine: &taskboard_state::EngineHandle, pred: impl Fn(&AppSt
         // test waits, never between assertions.
         tokio::time::advance(Duration::from_millis(5)).await;
     }
-}
-
-fn boards_json() -> String {
-    serde_json::json!([{
-        "id": BOARD, "title": "board", "color": "00ff00",
-        "lastModified": T, "deletedAt": 0, "archived": false,
-        "labels": [{"id": 3, "title": "urgent", "color": "ff0000", "boardId": BOARD}]
-    }])
-    .to_string()
-}
-
-fn board_json() -> String {
-    serde_json::json!({
-        "id": BOARD, "title": "board", "color": "00ff00",
-        "lastModified": T, "deletedAt": 0, "archived": false,
-        "labels": [{"id": 3, "title": "urgent", "color": "ff0000", "boardId": BOARD}]
-    })
-    .to_string()
-}
-
-fn stacks_json(cards: &serde_json::Value) -> String {
-    serde_json::json!([{
-        "id": STACK, "title": "col", "boardId": BOARD, "order": 0,
-        "lastModified": T, "deletedAt": 0, "archived": false,
-        "cards": cards
-    }])
-    .to_string()
-}
-
-fn card_json(id: u64, title: &str) -> serde_json::Value {
-    serde_json::json!({
-        "id": id, "title": title, "stackId": STACK, "type": "plain",
-        "order": 0, "lastModified": T, "labels": [], "archived": false,
-        "duedate": null, "done": null
-    })
 }
 
 /// The seeded state: a bound board + bound stack, nothing else.
@@ -245,11 +178,11 @@ async fn mount_pull(server: &MockServer, cards: serde_json::Value) {
     for (p, body) in [
         (
             "/index.php/apps/deck/api/v1.0/boards".to_string(),
-            boards_json(),
+            boards_json(false, &board_labels()),
         ),
         (
             format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}"),
-            board_json(),
+            board_json(false, &board_labels()),
         ),
         (
             format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
@@ -337,14 +270,14 @@ impl DeckSim {
             .respond_with(move |_req: &wiremock::Request| {
                 ResponseTemplate::new(200)
                     .insert_header("ETag", "\"gen-1\"")
-                    .set_body_string(boards_json())
+                    .set_body_string(boards_json(false, &board_labels()))
             })
             .mount(server)
             .await;
         Mock::given(method("GET"))
             .and(path(base.clone()))
             .respond_with(move |_req: &wiremock::Request| {
-                ResponseTemplate::new(200).set_body_string(board_json())
+                ResponseTemplate::new(200).set_body_string(board_json(false, &board_labels()))
             })
             .mount(server)
             .await;
@@ -906,7 +839,7 @@ async fn eventually_no_state(pred: impl Fn() -> bool) {
 #[tokio::test(start_paused = true)]
 async fn i5_restart_resumes_conditional_polling() {
     let server = start_server().await;
-    mount_conditional_pull(&server).await;
+    mount_conditional_pull(&server, &board_labels()).await;
 
     // First lifetime: one full cycle (cold cache → fresh data + validators
     // persisted by the engine).
@@ -956,43 +889,4 @@ async fn i5_restart_resumes_conditional_polling() {
         after > before,
         "the restarted actor polled (its nudges come from poll ticks)"
     );
-}
-
-/// Pull endpoints that answer 304 whenever the caller re-emits the `ETag`
-/// they issued, else fresh data.
-async fn mount_conditional_pull(server: &MockServer) {
-    let conditional = move |req: &wiremock::Request| {
-        let warm = req
-            .headers
-            .get("If-None-Match")
-            .is_some_and(|v| v.to_str().unwrap_or("").contains("gen-1"));
-        if warm {
-            return ResponseTemplate::new(304).insert_header("ETag", "\"gen-1\"");
-        }
-        let p = req.url.path().to_string();
-        let body = if p.ends_with("/stacks") {
-            stacks_json(&serde_json::json!([]))
-        } else if p.ends_with("/stacks/archived") {
-            "[]".to_string()
-        } else if p.ends_with(&format!("/boards/{BOARD}")) {
-            board_json()
-        } else {
-            boards_json()
-        };
-        ResponseTemplate::new(200)
-            .insert_header("ETag", "\"gen-1\"")
-            .set_body_string(body)
-    };
-    for p in [
-        "/index.php/apps/deck/api/v1.0/boards".to_string(),
-        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}"),
-        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
-        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"),
-    ] {
-        Mock::given(method("GET"))
-            .and(path(p))
-            .respond_with(conditional)
-            .mount(server)
-            .await;
-    }
 }
