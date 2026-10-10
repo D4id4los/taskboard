@@ -30,9 +30,9 @@
 
 ## 0. Phase 3 Reconciliation Gate — executed (2026-10-09, against `main` @ `93ab5fb`)
 
-Authored against `feat/state-engine-actor` @ `726a765`; Phase 3 merged to
-`main` as one squash (`93ab5fb` "Phase 3 review fixes — Miri gates,
-single publish, coherence"). Gate findings, each re-verified in the
+Authored against `feat/state-engine-actor` @ `726a765`; Phase 3 landed on
+`main` as a single merge commit (`93ab5fb` "Phase 3 review fixes — Miri
+gates, single publish, coherence"). Gate findings, each re-verified in the
 merged tree:
 
 - **`spawn_state_engine` — unchanged** (same six injected parameters);
