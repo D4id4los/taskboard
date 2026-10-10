@@ -8,9 +8,48 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use taskboard_app::secrets::{AppPassword, CredentialError, CredentialStore};
+
+/// A per-test tempdir (fails the test, never silently reuses).
+#[must_use]
+pub fn tempdir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("tempdir")
+}
+
+/// A scripted [`taskboard_app::commands::login::PromptReader`] (fakes
+/// over mocks): answers are consumed strictly in order, so a test
+/// proves the prompt order by exhausting the queue.
+#[derive(Debug, Default)]
+pub struct FakePrompts {
+    answers: Mutex<std::collections::VecDeque<String>>,
+}
+
+impl FakePrompts {
+    #[must_use]
+    pub fn new(answers: &[&str]) -> Self {
+        Self {
+            answers: Mutex::new(answers.iter().map(|s| (*s).to_owned()).collect()),
+        }
+    }
+}
+
+impl taskboard_app::commands::login::PromptReader for FakePrompts {
+    fn read_line(&mut self) -> Result<String, std::io::Error> {
+        self.answers
+            .lock()
+            .expect("fake prompts lock")
+            .pop_front()
+            .ok_or_else(|| std::io::Error::other("no scripted answer"))
+    }
+
+    fn read_secret(&mut self) -> Result<String, std::io::Error> {
+        self.read_line()
+    }
+}
 
 /// Process env is a shared resource and nextest runs test binaries in
 /// parallel processes: every env-mutating test takes this lock (per
@@ -269,3 +308,115 @@ pub async fn retry<T>(
         }
     }
 }
+
+/// Create a fresh run-scoped board with one stack on the live server.
+pub async fn create_board_and_stack(
+    client: &DeckClient,
+    run: &str,
+) -> (
+    taskboard_sync_nextcloud::Board,
+    taskboard_sync_nextcloud::Stack,
+) {
+    use taskboard_sync_nextcloud::DeckColor;
+    let board = retry(|| async {
+        client
+            .create_board(run, &DeckColor::from_hex("00c2e0").expect("hex"))
+            .await
+    })
+    .await
+    .expect("board creation must succeed");
+    let stack = retry(|| async {
+        client
+            .create_stack(board.id, &format!("{run}-col"), 0)
+            .await
+    })
+    .await
+    .expect("stack creation must succeed");
+    (board, stack)
+}
+
+/// Seed the local database with a board binding for the remote board
+/// through the storage crate's public API (tests that must not go
+/// through the binding ceremony itself).
+pub async fn seed_board_binding(db_path: &Path, local_id: u128, remote_id: u64, run: &str) {
+    let repo = std::sync::Arc::new(
+        taskboard_storage_sqlite::open(db_path)
+            .await
+            .expect("seed db"),
+    );
+    let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
+    handle
+        .apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
+            taskboard_domain::Board {
+                id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(local_id)),
+                remote: Some(taskboard_domain::RemoteBoardId(remote_id)),
+                title: run.to_owned(),
+                color: taskboard_domain::Color::new("00c2e0"),
+                archived: false,
+                deleted: false,
+                remote_seen: None,
+            },
+        )])
+        .await
+        .expect("seed applies");
+    drop(handle);
+    join.await.expect("seed actor exits");
+}
+
+/// Env-store config pointed at the live server and the test db.
+pub fn live_config(cfg: &LiveCfg, db_path: &Path) -> taskboard_app::config::AppConfig {
+    use taskboard_app::config::{AppConfig, CredentialStoreKind};
+    let mut config = AppConfig::default();
+    config.nextcloud.server_url = Some(cfg.url.clone());
+    config.nextcloud.username = Some(cfg.user.clone());
+    config.nextcloud.credential_store = CredentialStoreKind::Env;
+    config.storage.db_path = Some(db_path.to_owned());
+    config
+}
+
+/// A `taskboard` binary command with per-child env hygiene: every
+/// `TASKBOARD_*` variable of the *test* process is removed so children
+/// cannot inherit foreign config; the caller re-sets exactly what the
+/// child needs (`--config` names the config file; the password, when
+/// used, travels via `TASKBOARD_APP_PASSWORD`).
+#[must_use]
+pub fn binary_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_taskboard"));
+    for (key, _) in std::env::vars_os() {
+        let is_taskboard = key.as_encoded_bytes().starts_with(b"TASKBOARD_");
+        if is_taskboard {
+            cmd.env_remove(&key);
+        }
+    }
+    cmd
+}
+
+/// Writes a minimal env-store config file for binary-driving tests:
+/// fast polling, bounded shutdown, per-test db. `server_url`/`user`
+/// are omitted for `login` (which writes them).
+pub fn write_test_config(
+    path: &Path,
+    server_url: Option<&str>,
+    user: Option<&str>,
+) -> std::io::Result<()> {
+    let db = path.parent().unwrap_or(Path::new(".")).join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    if let Some(url) = server_url {
+        toml.push_str("server_url = '");
+        toml.push_str(url);
+        toml.push_str("'\n");
+    }
+    if let Some(user) = user {
+        toml.push_str("username = '");
+        toml.push_str(user);
+        toml.push_str("'\n");
+    }
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str(
+        "[sync]\npoll_interval_secs = 1\nbackoff_initial_secs = 1\nbackoff_max_secs = 5\n",
+    );
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(path, toml)
+}
+
+use taskboard_sync_nextcloud::DeckClient;
