@@ -159,7 +159,9 @@ Then bind the installation to one Deck board and go:
 #+begin_src sh
 taskboard boards list          # remote ids feed select
 taskboard boards select <id>
-taskboard tasks add "first task"
+# On a board with several stacks, name the target (--stack <title>);
+# a bare add requires exactly one live stack:
+taskboard tasks add "first task" --stack <stack-title>
 taskboard sync                 # push now; durability is local immediately
 taskboard tasks list
 taskboard daemon               # headless sync loop until Ctrl-C/SIGTERM

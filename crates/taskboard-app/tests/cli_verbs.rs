@@ -449,6 +449,8 @@ async fn v10_ambiguous_and_missing_stacks_are_typed() {
         .await
         .expect_err("ambiguous");
     assert_eq!(err.error_kind(), "ambiguous-stack");
+    // The candidates are structural: the two live stack titles.
+    assert_eq!(err.error_detail().as_deref(), Some("dup, dup"));
 
     // Zero stacks, add without --stack.
     let dir = tempdir();

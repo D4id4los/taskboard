@@ -82,9 +82,13 @@ pub enum CommandError {
     /// No stack matches the selector.
     #[error("no such stack")]
     UnknownStack(String),
-    /// The stack selector matches several stacks.
-    #[error("stack selector matches several stacks")]
-    AmbiguousStack,
+    /// The stack selector matches several stacks; carries the live
+    /// stack titles the user can pass to `--stack`.
+    #[error("stack selector matches several stacks — pass one of --stack <{}>", candidates.join(" | "))]
+    AmbiguousStack {
+        /// The live stack titles (deterministic board order).
+        candidates: Vec<String>,
+    },
     /// There is no stack to target.
     #[error("no stacks to target")]
     NoStacks,
@@ -151,7 +155,7 @@ impl CommandError {
             Self::BoardAlreadyBound { .. } => "board-already-bound",
             Self::UnknownTask(_) => "unknown-task",
             Self::UnknownStack(_) => "unknown-stack",
-            Self::AmbiguousStack => "ambiguous-stack",
+            Self::AmbiguousStack { .. } => "ambiguous-stack",
             Self::NoStacks => "no-stacks",
             Self::SyncFailed(_) => "sync-failed",
             Self::SyncTimedOut => "sync-timed-out",
@@ -169,6 +173,7 @@ impl CommandError {
             Self::UnknownBoard(id) => Some(id.to_string()),
             Self::BoardAlreadyBound { current } => Some(current.to_string()),
             Self::UnknownTask(sel) | Self::UnknownStack(sel) => Some(sel.clone()),
+            Self::AmbiguousStack { candidates } => Some(candidates.join(", ")),
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
             _ => None,
         }

@@ -73,12 +73,16 @@ async fn wait_for_boot_pull(app: &crate::App, timeout: Duration) {
 /// Resolves a stack selector: exact uuid wins, then exact live title;
 /// `None` requires exactly one live stack.
 fn resolve_stack(state: &AppState, selector: Option<&str>) -> Result<StackId, CommandError> {
-    let live: Vec<&Stack> = state.stacks.values().filter(|s| !s.deleted).collect();
+    let mut live: Vec<&Stack> = state.stacks.values().filter(|s| !s.deleted).collect();
+    live.sort_by_key(|s| (s.order, s.id));
+    let candidates = || live.iter().map(|s| s.title.clone()).collect();
     let Some(selector) = selector else {
         return match live.len() {
             0 => Err(CommandError::NoStacks),
             1 => Ok(live[0].id),
-            _ => Err(CommandError::AmbiguousStack),
+            _ => Err(CommandError::AmbiguousStack {
+                candidates: candidates(),
+            }),
         };
     };
     if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
@@ -95,7 +99,9 @@ fn resolve_stack(state: &AppState, selector: Option<&str>) -> Result<StackId, Co
     match matches.len() {
         0 => Err(CommandError::UnknownStack(selector.to_owned())),
         1 => Ok(matches[0]),
-        _ => Err(CommandError::AmbiguousStack),
+        _ => Err(CommandError::AmbiguousStack {
+            candidates: candidates(),
+        }),
     }
 }
 
