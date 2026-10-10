@@ -1135,3 +1135,48 @@ them anyway.
 When real consumers appear: a schema version field (or `--json=v2`
 gate), serde renames frozen, and payload diffs covered by snapshot
 tests in the app crate.
+
+## [2026-10-10] Stand-alone-first product shape: optional, pluggable sync connectors
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` (user decision, 2026-10-10)
+- **Target Area**: `crates/taskboard-app/` (bootstrap/config), `taskboard-sync-nextcloud` (becomes the first connector), `taskboard-domain` (connector port), `docs/architecture.org`
+
+### Context & Description
+The M1 milestone couples the core to Nextcloud: `bootstrap()` requires a
+validated `server_url`/`username` and an app password before it will
+spawn anything, so no command runs on a never-logged-in machine. The
+**intended final configuration at M2 (v0.1.0)** — per the user's
+2026-10-10 decision — is an app that **works fully stand-alone** (local
+task management with no server configured) and treats Nextcloud sync as
+an **optional connector**, with room for future connectors of the same
+shape: a plain-file backend on a synchronized folder (Dropbox, OneDrive,
+ownCloud/Nextcloud desktop client), etc.
+
+### Proposed Approach
+Implement shortly after Phase 6, while the architecture change is still
+minor. Sketch:
+
+1. Introduce a sync-connector **port** in `taskboard-domain` (the
+   existing `SyncCommand`/`SyncReport`/`SyncStateReader` vocabulary is
+   already connector-agnostic — ADR 0007's engine contract needs no
+   change) and make `taskboard-sync-nextcloud` its first implementation.
+2. Make the connector optional in config: `[sync] backend = "none" |
+   "nextcloud"` (default `none` for fresh installs; a config carrying a
+   `[nextcloud]` table keeps today's behavior). `bootstrap` spawns the
+   sync actor only for a real connector; `none` means local-only mode
+   with `SyncPhase::Idle` forever, no credentials required, and
+   `boards select` absent from the ceremony.
+3. The state engine, storage, outbox, and UI layers are already
+   connector-blind and should need zero or near-zero changes — the
+   outbox simply stays the local write-ahead queue that a connector
+   drains when one is configured (adding a connector to an existing
+   local database must drain the accumulated outbox safely; verify the
+   merge pipeline's behavior for ops authored with no remote bindings).
+4. Each new connector is a new `taskboard-sync-<name>` crate; the
+   domain stays Deck-agnostic (already true since Phase 1).
+
+This effectively re-frames the roadmap's "offline-first" from
+"sync-capable-when-offline" to "stand-alone by default, sync when
+configured", and should be reflected in `docs/architecture.org` and a
+roadmap amendment when picked up.
