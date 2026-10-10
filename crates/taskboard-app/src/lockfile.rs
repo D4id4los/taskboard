@@ -86,7 +86,17 @@ impl InstanceLock {
     /// [`LockError`] — typed, see the variant docs.
     pub fn acquire(db_path: &Path) -> Result<Self, LockError> {
         let path = lock_path(db_path);
-        let file = File::create(&path).map_err(LockError::Io)?;
+        // Create without truncating: an existing sidecar's recorded
+        // holder PID must survive until *this* acquire overwrites it
+        // (it is read for the `Held` diagnostic after a failed
+        // try_lock).
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(LockError::Io)?;
         let lock: &'static mut RwLock<File> = Box::leak(Box::new(RwLock::new(file)));
         let mut guard = match lock.try_write() {
             Ok(guard) => guard,
