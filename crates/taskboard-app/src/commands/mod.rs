@@ -190,6 +190,8 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::UnknownTask(_) | D::TaskDeleted(_) => "unknown-task",
         D::UnknownStack(_) | D::StackDeleted(_) => "unknown-stack",
         D::UnknownLabel(_) | D::LabelDeleted(_) => "unknown-label",
+        D::BoardExists => "board-exists",
+        D::BoardAlreadyBound(_) => "board-already-bound",
     }
 }
 

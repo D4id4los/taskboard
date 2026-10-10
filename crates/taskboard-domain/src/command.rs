@@ -32,7 +32,7 @@ use chrono::{DateTime, Utc};
 
 use crate::entities::{Label, Stack, Task, TaskClocks};
 use crate::idgen::IdGenerator;
-use crate::ids::{BoardId, LabelId, StackId, TaskId};
+use crate::ids::{BoardId, LabelId, RemoteBoardId, StackId, TaskId};
 use crate::messages::{LabelChanges, StateCommand, TaskChanges};
 use crate::outbox::{LocalOp, OpId, PendingOp};
 use crate::persistence::PersistenceAction;
@@ -74,6 +74,13 @@ pub enum CommandError {
     /// No live board is bound, so board-scoped creates are impossible.
     #[error("no live board is bound")]
     NoBoard,
+    /// A live board already exists; the single-board MVP refuses a second.
+    #[error("a live board already exists")]
+    BoardExists,
+    /// The live board is already bound to a remote board (differing from
+    /// the bind target).
+    #[error("the board is already bound to a remote board")]
+    BoardAlreadyBound(RemoteBoardId),
 }
 
 /// Typed receipt of an accepted command.
@@ -85,6 +92,8 @@ pub enum CommandOutcome {
     CreatedStack(StackId),
     /// The command created a label with this id.
     CreatedLabel(LabelId),
+    /// The command created the board with this id.
+    CreatedBoard(BoardId),
     /// The command changed state.
     Applied,
     /// Accepted, redundant repeat: nothing changed, nothing persisted.
@@ -519,6 +528,43 @@ pub fn plan_command(
                     PersistenceAction::UpsertTask(updated),
                     enqueue(LocalOp::UnassignLabel(*task, *label), ids, now),
                 ],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::CreateBoard { title, color } => {
+            // Single-board invariant, create-side guard.
+            if live_board(app).is_some() {
+                return Err(CommandError::BoardExists);
+            }
+            let id = ids.new_board_id();
+            let board = crate::entities::Board {
+                id,
+                remote: None,
+                title: title.clone(),
+                color: color.clone(),
+                archived: false,
+                deleted: false,
+                remote_seen: None,
+            };
+            // No outbox op: a local board creation is not a remote intent —
+            // server-side creation is the publish ceremony's job.
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertBoard(board)],
+                outcome: CommandOutcome::CreatedBoard(id),
+            })
+        }
+        StateCommand::BindBoard { remote } => {
+            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+            let board = &app.boards[&board_id];
+            match board.remote {
+                Some(bound) if bound == *remote => return Ok(no_op()),
+                Some(bound) => return Err(CommandError::BoardAlreadyBound(bound)),
+                None => {}
+            }
+            let mut updated = board.clone();
+            updated.remote = Some(*remote);
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertBoard(updated)],
                 outcome: CommandOutcome::Applied,
             })
         }
@@ -1535,6 +1581,152 @@ mod tests {
         };
         assert!(!updated.labels.contains(&label_id()));
         assert_eq!(updated.clocks.labels, now());
+    }
+
+    // ---- Boards --------------------------------------------------------
+
+    fn unbound_board_state() -> AppState {
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let mut app = AppState {
+            boards: [(
+                board_id,
+                crate::entities::Board {
+                    id: board_id,
+                    remote: None,
+                    title: "local".into(),
+                    color: crate::entities::Color::new("00ccff"),
+                    archived: false,
+                    deleted: false,
+                    remote_seen: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            stacks: std::collections::BTreeMap::new(),
+            tasks: std::collections::BTreeMap::new(),
+            labels: std::collections::BTreeMap::new(),
+            sync: SyncStatus::default(),
+            last_updated: None,
+        };
+        // Give the board content so bind tests exercise a non-empty board.
+        let stack = stack(901, false);
+        app.stacks.insert(stack.id, stack);
+        app
+    }
+
+    #[test]
+    fn create_board_mints_a_local_board_without_an_outbox_op() {
+        let empty = AppState::default();
+        let outbox: Vec<PendingOp> = Vec::new();
+        let plan = run(
+            &empty,
+            &outbox,
+            &StateCommand::CreateBoard {
+                title: "Personal".into(),
+                color: crate::entities::Color::new("3366cc"),
+            },
+        )
+        .unwrap();
+        let CommandOutcome::CreatedBoard(id) = plan.outcome else {
+            panic!("wrong outcome");
+        };
+        assert_eq!(
+            plan.actions,
+            vec![PersistenceAction::UpsertBoard(crate::entities::Board {
+                id,
+                remote: None,
+                title: "Personal".into(),
+                color: crate::entities::Color::new("3366cc"),
+                archived: false,
+                deleted: false,
+                remote_seen: None,
+            })],
+            "exactly the board upsert; no outbox op"
+        );
+    }
+
+    #[test]
+    fn create_board_refuses_when_a_live_board_exists() {
+        let (app, outbox) = base();
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::CreateBoard {
+                    title: "second".into(),
+                    color: crate::entities::Color::new("000000"),
+                }
+            ),
+            Err(CommandError::BoardExists)
+        );
+    }
+
+    #[test]
+    fn bind_board_sets_the_remote_binding_without_an_outbox_op() {
+        let app = unbound_board_state();
+        let outbox: Vec<PendingOp> = Vec::new();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::BindBoard {
+                remote: crate::ids::RemoteBoardId(42),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
+            panic!("first action must be the board upsert");
+        };
+        assert_eq!(updated.remote, Some(crate::ids::RemoteBoardId(42)));
+        assert_eq!(plan.actions.len(), 1, "bind carries no outbox op");
+    }
+
+    #[test]
+    fn bind_board_without_a_live_board_is_rejected() {
+        let empty = AppState::default();
+        let outbox: Vec<PendingOp> = Vec::new();
+        assert_eq!(
+            run(
+                &empty,
+                &outbox,
+                &StateCommand::BindBoard {
+                    remote: crate::ids::RemoteBoardId(1)
+                }
+            ),
+            Err(CommandError::NoBoard)
+        );
+    }
+
+    #[test]
+    fn bind_repeat_to_the_same_remote_is_a_no_op_but_a_new_remote_is_rejected() {
+        let outbox: Vec<PendingOp> = Vec::new();
+        let bound = {
+            let mut app = unbound_board_state();
+            let board_id = live_board(&app).unwrap();
+            app.boards.get_mut(&board_id).unwrap().remote = Some(crate::ids::RemoteBoardId(42));
+            app
+        };
+        let plan = run(
+            &bound,
+            &outbox,
+            &StateCommand::BindBoard {
+                remote: crate::ids::RemoteBoardId(42),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan, no_op());
+        assert_eq!(
+            run(
+                &bound,
+                &outbox,
+                &StateCommand::BindBoard {
+                    remote: crate::ids::RemoteBoardId(43)
+                }
+            ),
+            Err(CommandError::BoardAlreadyBound(crate::ids::RemoteBoardId(
+                42
+            )))
+        );
     }
 
     // ---- RequestSync ----------------------------------------------------

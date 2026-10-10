@@ -119,6 +119,11 @@ id_strategy!(stack_id_strategy, StackId);
 id_strategy!(task_id_strategy, TaskId);
 id_strategy!(label_id_strategy, LabelId);
 
+/// A positive remote board id (0 is the epoch-0 sentinel of old servers).
+pub fn remote_board_id_strategy() -> impl Strategy<Value = crate::ids::RemoteBoardId> {
+    remote_number().prop_map(crate::ids::RemoteBoardId)
+}
+
 /// A random op id.
 pub fn op_id_strategy() -> impl Strategy<Value = OpId> {
     any::<u128>().prop_map(|raw| OpId(Uuid::from_u128(raw)))

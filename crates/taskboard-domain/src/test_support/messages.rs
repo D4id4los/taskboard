@@ -82,6 +82,12 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             .prop_map(|(task, label)| StateCommand::AssignLabel { task, label }),
         (super::task_id_strategy(), super::label_id_strategy())
             .prop_map(|(task, label)| StateCommand::UnassignLabel { task, label }),
+        // 2: board commands
+        string_strategy().prop_map(|title| StateCommand::CreateBoard {
+            title,
+            color: crate::entities::Color::new("3366cc"),
+        }),
+        super::remote_board_id_strategy().prop_map(|remote| StateCommand::BindBoard { remote }),
         // 1: sync request
         Just(StateCommand::RequestSync),
     ]
