@@ -18,7 +18,9 @@ path = "src/main.rs"
 
 [features]
 default = []
-# Compile-time opt-in for tokio-console instrumentation (gRPC on 127.0.0.1:6669).
+# Compile-time opt-in for tokio-console instrumentation (gRPC on 127.0.0.1:6669);
+# activation at runtime requires TASKBOARD_CONSOLE=1 (an --all-features build
+# must not bind the console port in every spawned binary).
 tokio-console = ["dep:console-subscriber", "tokio/tracing"]
 
 [dependencies]
