@@ -209,7 +209,30 @@ async fn cycle(
     _cfg: &SyncActorConfig,
     commanded: bool,
 ) {
-    let Some(target) = st.target else {
+    // ---- read ----------------------------------------------------------
+    let persisted = match state.read_state().await {
+        Ok(persisted) => persisted,
+        Err(err) => {
+            // Engine mid-restart (or a corrupted store): back off, no
+            // report — the engine re-nudges or the poll tick retries.
+            tracing::error!(?err, "cycle aborted: engine state unreadable");
+            st.failure_streak += 1;
+            return;
+        }
+    };
+
+    // The pull target: the commanded one, else the persisted board binding
+    // (a restarted actor resumes its target from `read_state` — decision
+    // 13's durability consequence; a fresh install with no binding keeps
+    // the decision 10 `NoBoard` reporting).
+    let target = st.target.or_else(|| {
+        persisted
+            .boards
+            .values()
+            .find(|b| b.remote.is_some())
+            .and_then(|b| b.remote)
+    });
+    let Some(target) = target else {
         if commanded {
             tracing::debug!("cycle skipped: no board bound");
             send_report(
@@ -223,19 +246,8 @@ async fn cycle(
         }
         return;
     };
+    st.target = Some(target);
     tracing::info!(board = target.get(), "sync cycle started");
-
-    // ---- read ----------------------------------------------------------
-    let persisted = match state.read_state().await {
-        Ok(persisted) => persisted,
-        Err(err) => {
-            // Engine mid-restart (or a corrupted store): back off, no
-            // report — the engine re-nudges or the poll tick retries.
-            tracing::error!(?err, "cycle aborted: engine state unreadable");
-            st.failure_streak += 1;
-            return;
-        }
-    };
     let tables = EntityTables {
         tasks: &persisted.tasks,
         stacks: &persisted.stacks,
