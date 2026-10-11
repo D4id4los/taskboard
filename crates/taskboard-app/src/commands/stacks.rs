@@ -109,6 +109,11 @@ pub async fn rename(
 /// # Errors
 ///
 /// [`CommandError`] — typed, see the variant docs.
+///
+/// # Panics
+///
+/// Never in practice: resolution guarantees the snapshot lookup hits
+/// (`expect` guards an engine contract break, not user input).
 pub async fn delete(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
@@ -131,18 +136,20 @@ pub async fn delete(
             }
             other => Err(other),
         })?;
-        let snapshot = state.stacks.get(&id).map(|row| StackDeleteReceipt {
-            id: row.id.as_uuid().to_string(),
-            title: row.title.clone(),
-            cascaded_tasks: state.tasks_in_stack(id).len(),
-        });
+        // Resolution guarantees the row exists (the live cascade or the
+        // exact-uuid fallback both hit `contains_key`).
+        let snapshot = state
+            .stacks
+            .get(&id)
+            .map(|row| StackDeleteReceipt {
+                id: row.id.as_uuid().to_string(),
+                title: row.title.clone(),
+                cascaded_tasks: state.tasks_in_stack(id).len(),
+            })
+            .expect("resolved stack exists");
         drop(state);
         app.engine.execute(StateCommand::DeleteStack { id }).await?;
-        Ok(snapshot.unwrap_or(StackDeleteReceipt {
-            id: id.as_uuid().to_string(),
-            title: String::new(),
-            cascaded_tasks: 0,
-        }))
+        Ok(snapshot)
     })
     .await
 }
@@ -182,7 +189,7 @@ pub async fn move_(
     .await
 }
 
-/// The human-readable add receipt./// The human-readable add receipt.
+/// The human-readable add/rename/move receipt.
 #[must_use]
 pub fn render_text_add(receipt: &StackReceipt) -> String {
     format!(

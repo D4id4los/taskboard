@@ -373,7 +373,7 @@ async fn selector_label(
     .await
 }
 
-/// Exact-uuid match over *all* tasks (tombstones included) — the/// Exact-uuid match over *all* tasks (tombstones included) — the
+/// Exact-uuid match over *all* tasks (tombstones included) — the
 /// delete-repeat affordance.
 fn resolve_task_exact_any(state: &AppState, selector: &str) -> Result<TaskId, CommandError> {
     if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
@@ -426,6 +426,11 @@ pub async fn edit(
 /// # Errors
 ///
 /// [`CommandError`] — typed, see the variant docs.
+///
+/// # Panics
+///
+/// Never in practice: resolution guarantees the snapshot lookup hits
+/// (`expect` guards an engine contract break, not user input).
 pub async fn delete(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
@@ -441,6 +446,8 @@ pub async fn delete(
             CommandError::UnknownTask(_) => resolve_task_exact_any(&state, &task),
             other => Err(other),
         })?;
+        // Resolution guarantees the row exists (the live cascade or the
+        // exact-uuid-any fallback both hit `contains_key`).
         let snapshot = state
             .tasks
             .get(&task_id)
@@ -448,10 +455,7 @@ pub async fn delete(
                 id: t.id.as_uuid().to_string(),
                 title: t.title.clone(),
             })
-            .unwrap_or(crate::commands::output::TaskDeleteReceipt {
-                id: task_id.as_uuid().to_string(),
-                title: String::new(),
-            });
+            .expect("resolved task exists");
         drop(state);
         app.engine
             .execute(StateCommand::DeleteTask { id: task_id })

@@ -53,9 +53,7 @@ pub async fn list(
     crate::commands::tasks::with_core(config, store, async |app| {
         let state = app.engine.shared_state().load_full();
         if !state.boards.values().any(|b| !b.deleted) {
-            return Err(CommandError::Engine(Box::new(
-                taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard),
-            )));
+            return Err(CommandError::NoBoard);
         }
         let mut rows: Vec<LabelRow> = state
             .labels
@@ -103,9 +101,11 @@ pub async fn add(
             })
             .await?;
         let CommandOutcome::CreatedLabel(id) = outcome else {
-            return Err(CommandError::Engine(Box::new(
-                taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard),
-            )));
+            // The engine's own rejection (e.g. `NoBoard`) already
+            // surfaced via `?` above; a different accepted outcome would
+            // be an engine contract break, reported as the missing
+            // board's kind.
+            return Err(CommandError::NoBoard);
         };
         Ok(LabelReceipt {
             id: id.as_uuid().to_string(),
@@ -163,6 +163,11 @@ pub async fn edit(
 /// # Errors
 ///
 /// [`CommandError`] — typed, see the variant docs.
+///
+/// # Panics
+///
+/// Never in practice: resolution guarantees the snapshot lookup hits
+/// (`expect` guards an engine contract break, not user input).
 pub async fn delete(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
@@ -185,18 +190,20 @@ pub async fn delete(
             }
             other => Err(other),
         })?;
-        let snapshot = state.labels.get(&id).map(|row| LabelReceipt {
-            id: row.id.as_uuid().to_string(),
-            title: row.title.clone(),
-            color: row.color.as_str().to_owned(),
-        });
+        // Resolution guarantees the row exists (the live cascade or the
+        // exact-uuid fallback both hit `contains_key`).
+        let snapshot = state
+            .labels
+            .get(&id)
+            .map(|row| LabelReceipt {
+                id: row.id.as_uuid().to_string(),
+                title: row.title.clone(),
+                color: row.color.as_str().to_owned(),
+            })
+            .expect("resolved label exists");
         drop(state);
         app.engine.execute(StateCommand::DeleteLabel { id }).await?;
-        Ok(snapshot.unwrap_or(LabelReceipt {
-            id: id.as_uuid().to_string(),
-            title: String::new(),
-            color: String::new(),
-        }))
+        Ok(snapshot)
     })
     .await
 }
