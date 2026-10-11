@@ -291,6 +291,12 @@ fn o3_error_kinds_cover_every_variant() {
     let v = serde_json::to_value(&envelope).unwrap();
     assert_eq!(v["error"]["kind"], "board-already-bound");
     assert_eq!(v["error"]["detail"], "9");
+    let version_err = CommandError::IpcVersion { server_v: 2 };
+    assert_eq!(
+        version_err.error_detail().as_deref(),
+        Some("2"),
+        "the mismatched protocol version rides the detail field"
+    );
     let sync_err = CommandError::SyncFailed(SyncErrorKind::Server);
     let envelope = ErrorEnvelope {
         error: taskboard_app::commands::output::ErrorBody {
