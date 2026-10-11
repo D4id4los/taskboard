@@ -531,6 +531,7 @@ change, or memoize per `AppState` version counter.
 - **Category**: `Architecture`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-phase1-domain-model-plan.md` §12
 - **Target Area**: `crates/taskboard-domain/src/entities.rs`, `messages.rs`
+- **Status**: ✅ PARTIALLY DONE — title half landed 2026-10-11 (WI-3: `boards rename`, `BoardClocks.title`, migration 0002, field-wise title merge, ADR 0004 amendment); color/archive verbs and their clocks remain.
 
 ### Context & Description
 `Board` has no per-field clocks and there are no local board-edit
@@ -727,6 +728,7 @@ their consumers.
 - **Category**: `Architecture` / `UI`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md` (§9)
 - **Target Area**: `crates/taskboard-state/`, `crates/taskboard-domain/` (`SystemEvent`)
+- **Status**: ✅ DONE (implemented 2026-10-11, WI-3: `SystemEvent::StorageFailed`, edge-triggered at the engine storage reply site, daemon logger).
 
 ### Context & Description
 `ExecuteError::Storage` currently surfaces only as a command reply plus
@@ -1012,6 +1014,7 @@ changed cards only, or refresh details only when the listing's
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase5-app-bootstrap-plan.md` §8
 - **Target Area**: `crates/taskboard-app/src/config.rs`
+- **Status**: ✅ DONE (implemented 2026-10-11, WI-3: presence-checked XDG candidate between `TASKBOARD_CONFIG` and the CWD default; the write-target flip stays a backlog entry below).
 
 ### Context & Description
 Phase 5's config path resolution is `--config` > `TASKBOARD_CONFIG` >
@@ -1065,6 +1068,7 @@ start-up ordering actually needs it.
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase5-app-bootstrap-plan.md` §8
 - **Target Area**: `crates/taskboard-app`
+- **Status**: ✅ DONE (implemented 2026-10-11, WI-3: decode-only `config print` with `valid`/`invalid_kind` in the payload, `ConfigError::kind()`).
 
 ### Context & Description
 Support conversations need the *effective* config (post-defaults, post-
@@ -1099,6 +1103,7 @@ documented in the runbook.
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
 - **Target Area**: `crates/taskboard-app/src/commands/`
+- **Status**: ✅ DONE (implemented 2026-10-11, WI-3: the cascading task selector — exact uuid → unique ≥8-char prefix → exact title, typed ambiguity; stacks/labels keep the two-tier shape by design).
 
 ### Context & Description
 M1 `tasks done/move` take the exact local `TaskId` uuid (scripting-first).
@@ -1115,6 +1120,7 @@ unique id prefix (≥8 chars), then an exact-title match — mirroring
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
 - **Target Area**: `crates/taskboard-app/src/commands/`
+- **Status**: ✅ DONE (implemented 2026-10-11, WI-3: `tasks edit/delete/label/unlabel`, `stacks rename/delete/move` — `stacks move` grew the domain `MoveStack` — and `labels list/add/edit/delete`).
 
 ### Context & Description
 The domain commands exist (`UpdateTask`, `DeleteTask`, the full
@@ -1132,6 +1138,7 @@ reusing the Phase 6 handler pattern.
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
 - **Target Area**: `crates/taskboard-app/src/commands/`
+- **Status**: ✅ DONE (implemented 2026-10-11, WI-3: secret delete always, config strip iff auto backend; the open backend-interaction question is decided in the ADR 0009 amendment).
 
 ### Context & Description
 `CredentialStore::delete` shipped in Phase 5 unused; rotating away a
@@ -1302,3 +1309,93 @@ verify-then-persist ceremony. Must respect ADR 0010's loudness rule —
 no silent backend flips without an explicit command — and reuse the
 L-series ceremony + test harness. Related open question already
 tracked for WI-3: `logout`'s interaction with `backend`.
+
+## [2026-10-11] Undo/redo functionality
+
+- **Category**: `Architecture`, `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi3-cli-editing-surface-plan.md` §7
+- **Target Area**: `crates/taskboard-domain/` (inverse commands or a mutation journal), `crates/taskboard-app/src/commands/`
+
+### Context & Description
+Mutations are persistent (tombstones, outbox ops), so undo means either
+inverse commands or a journaled mutation history — a domain-level
+feature, not a CLI wrapper. Redo of an already-pushed edit is a *new*
+edit remote-side (not a retraction), and undo before a sync push could
+instead retract the queued op — the outbox is a natural seam either way.
+
+### Proposed Approach
+**Open decision for that plan: undo *stack* vs undo *tree*** — a linear
+stack is simpler and matches most CLI conventions but discards the redo
+branch when new input follows an undo; a tree preserves every branch
+(the Phase 7 UI's natural model) at the cost of a navigation/selection
+UX. Decide when planning the feature; record in an ADR.
+
+## [2026-10-11] Board color/archive edit verbs and their clocks
+
+- **Category**: `Feature`
+- **Originating Plan/Report**: remainder of the "[2026-10-09] Local
+  board-edit commands and `Board` clocks" entry; WI-3 delivered its title half
+- **Target Area**: `crates/taskboard-domain/` (entities, messages,
+  command, merge, push), `crates/taskboard-storage-sqlite/` (migration),
+  `crates/taskboard-app/src/commands/boards.rs`
+
+### Context & Description
+`BoardClocks` has room for `color`/`deleted` clocks; the field-wise
+title merge (ADR 0004 amendment) is the template. No local verbs exist
+yet, so those fields remain adoption-governed.
+
+## [2026-10-11] XDG write-target flip for `login`
+
+- **Category**: `DX`
+- **Originating Plan/Report**: WI-3 (reads shipped first, deliberately)
+- **Target Area**: `crates/taskboard-app/src/commands/login.rs`
+
+### Context & Description
+`login` on a machine with *no* config anywhere still creates
+`./taskboard.toml` (the CWD default). Desktop nicety: write XDG-first
+when no config exists anywhere. Cheap follow-up now that reads ship.
+
+## [2026-10-11] `--forget-board` / board unbind
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: "[2026-10-10] `logout` subcommand" follow-up, triaged out of WI-3
+- **Target Area**: `crates/taskboard-domain/` (new `UnbindBoard` command), `crates/taskboard-app/src/commands/boards.rs`
+
+### Context & Description
+No `UnbindBoard` domain command exists; logout deliberately leaves the
+board binding and local db untouched. Own design question: what happens
+to remote-bound content on unbind (keep local copies? re-adopt on
+rebind?).
+
+## [2026-10-11] Prefix selectors for stacks/labels
+
+- **Category**: `DX`
+- **Originating Plan/Report**: WI-3 scope decision (task-only prefixes)
+- **Target Area**: `crates/taskboard-app/src/commands/tasks.rs` (`resolve_stack`), `commands/labels.rs` (`resolve_label`)
+
+### Context & Description
+The cascading prefix selector is a task-only affordance; stacks and
+labels keep the two-tier uuid-or-exact-title shape. Lift the tier if
+users ask.
+
+## [2026-10-11] `StorageFailed` for the report-apply path
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: WI-3 scope note (command-reply path only)
+- **Target Area**: `crates/taskboard-state/src/actor.rs` (`ingest_sync_report`)
+
+### Context & Description
+Persistence failures while applying sync reports (no reply channel)
+still only log; extending the edge-trigger there needs a broadcast seam
+in `ingest_sync_report`. Do it when Phase 7 actually needs it.
+
+## [2026-10-11] `CommandError::Config` kind refinement
+
+- **Category**: `DX`
+- **Originating Plan/Report**: WI-3 (deferred to WI-5's wire-format pass)
+- **Target Area**: `crates/taskboard-app/src/commands/mod.rs`
+
+### Context & Description
+Other commands could surface `ConfigError::kind()` instead of the flat
+`"config"` kind in the JSON error envelope; defer so the wire format
+changes once, together with WI-5's IPC payload pass.

@@ -158,6 +158,24 @@ Changes are durable locally the moment the command replies; the
 =sync: idle (N pending)= footer counts the local write-ahead queue
 nothing drains until a connector attaches.
 
+*Editing* the board needs no server either:
+
+#+begin_src sh
+taskboard tasks edit "first task" --due 2026-10-20 --json
+taskboard labels add urgent
+taskboard tasks label "first task" urgent
+taskboard stacks rename Todo Backlog
+taskboard stacks move Backlog --order 2
+taskboard boards rename "Personal Work"
+taskboard tasks delete "first task"      # no confirmation; repeats are idempotent
+#+end_src
+
+Selectors are uuids, unique 8+-character uuid prefixes, or exact
+titles; destructive verbs cascade what the server would cascade
+(=stacks delete= takes its tasks with it). =labels list= shows
+assignment counts, and =config print= dumps the effective
+(secret-free) configuration with its validity diagnosis.
+
 ** Attaching a server (optional)
 
 #+begin_src sh
@@ -169,6 +187,12 @@ taskboard boards select <id> --bind-local-board
 taskboard sync
 taskboard daemon                      # headless sync loop until Ctrl-C/SIGTERM
 #+end_src
+
+=logout= deletes the stored app password and — under the auto backend
+— clears the config's server/user keys, returning the install to
+stand-alone (an explicit =backend = "nextcloud"= stays as written; the
+next boot then fails loudly at credential resolution). A later =login=
+to the same server resumes sync without data loss.
 
 Connector-only verbs (=sync=, =daemon=, =boards list/select/publish=)
 refuse with the typed =sync-disabled= error while no server is
