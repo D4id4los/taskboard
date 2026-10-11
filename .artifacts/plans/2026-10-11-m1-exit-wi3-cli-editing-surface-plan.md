@@ -1,14 +1,17 @@
 # [Plan] M1 Exit WI-3 — Full CLI Editing Surface (+ XDG Discovery, Storage-Failure Event, `logout`, `config print`)
 
 - **Date**: 2026-10-11
-- **Target**: `taskboard-app` (`cli.rs`, `commands/{mod,tasks,stacks,labels,logout,config}.rs`,
-  `output.rs`, `config.rs`, `bootstrap.rs`, `main.rs` daemon arm),
-  `taskboard-domain` (`messages.rs`, `outbox.rs`, `command.rs` one plan arm,
-  `pipeline.rs` one intent arm, proptest strategies, `SystemEvent`),
-  `taskboard-state` (`actor.rs` broadcast + spawn signature),
-  `taskboard-storage-sqlite` (`codec.rs` one arm), `taskboard-sync-nextcloud`
-  (`push_exec.rs` one executor). **No changes** to `taskboard-ui-slint`.
-  **No new workspace dependencies** (`dirs`, `toml_edit`, `chrono` all present).
+- **Target**: `taskboard-app` (`cli.rs`, `commands/{mod,tasks,stacks,boards,
+  labels,logout,config}.rs`, `output.rs`, `config.rs`, `bootstrap.rs`,
+  `main.rs` daemon arm), `taskboard-domain` (`messages.rs`, `outbox.rs`,
+  `entities.rs` board clocks, `command.rs` two plan arms, `merge.rs`,
+  `pipeline.rs` intent arms, `push.rs` grouping, proptest strategies,
+  `SystemEvent`), `taskboard-state` (`actor.rs` broadcast + spawn
+  signature), `taskboard-storage-sqlite` (migration 0002, board row,
+  `codec.rs` two arms), `taskboard-sync-nextcloud` (`push_exec.rs` two
+  executors, `mapping.rs` board echo). **No changes** to
+  `taskboard-ui-slint`. **No new workspace dependencies** (`dirs`,
+  `toml_edit`, `chrono` all present).
 - **Goal**: complete the M1-exit report's work item 3 (report §4 B / §7 row 3):
   surface every existing domain verb in the CLI (`tasks edit/delete`,
   `stacks rename/delete/move`, `labels list/add/edit/delete`,
@@ -16,8 +19,11 @@
   cascading resolver (exact uuid → unique ≥8-char prefix → exact title), and
   land the two pre-GUI riders: XDG config discovery and the storage-failure
   `SystemEvent` (the Phase 7 error banner's input), plus `logout` and
-  `config print`. After WI-3 the CLI is the complete daily driver the WI-4
-  REPL wraps.
+  `config print`. Scope amendment (user, 2026-10-11 PR review):
+  **`boards rename` joins the WI** — title-only, both backends (local-only
+  and bound/pushed), absorbing the title half of the "[2026-10-09] Local
+  board-edit commands and `Board` clocks" backlog entry. After WI-3 the CLI
+  is the complete daily driver the WI-4 REPL wraps.
 - **Status**: PROPOSED — implementation may start immediately on
   `feat/app-cli-editing-surface` (steps §6).
 - **Parent**: `.artifacts/reports/2026-10-11-m1-exit-pre-gui-analysis-report.md`
@@ -25,7 +31,8 @@
   selectors beyond exact uuid", "`tasks edit/delete`, `stacks`/`labels`
   subcommands", "`logout`", "[2026-10-10] XDG config discovery", "[2026-10-10]
   Config doctoring / `taskboard config print`", "[2026-10-09] Storage-failure
-  `SystemEvent`".
+  `SystemEvent`"; scope amendment (user, 2026-10-11): the title half of
+  "[2026-10-09] Local board-edit commands and `Board` clocks".
 - **Predecessors**: WI-0 (backlog dedup, f61397d), WI-2 (hermetic stack/label
   push tests + D-series routing suite, 84fa33b), WI-1 / Phase 6b (stand-alone
   first, 2377771..13e1891) — all merged on `main`. Authored against `main` @
@@ -39,25 +46,29 @@
 
 ## 1. Context & Known Facts (do not re-derive; verified on `main` @ `13e1891`)
 
-- **Every verb this plan surfaces already exists in the domain and is
-  pinned by the domain/state suites.** `StateCommand` carries `UpdateTask`
-  (command.rs:259), `DeleteTask` (:315), `RenameStack` (:368), `DeleteStack`
-  (:384), `UpdateLabel` (:450), `DeleteLabel` (:473), `AssignLabel` (:499),
-  `UnassignLabel` (:517); replies are `CommandOutcome` (command.rs:88-103),
-  rejections are `CommandError::{UnknownTask, TaskDeleted, UnknownStack,
-  StackDeleted, UnknownLabel, LabelDeleted, NoBoard, …}` (command.rs:55-84).
-  The backlog entry states it outright: "the outbox/push machinery needs no
-  changes for the missing verbs."
+- **Every verb this plan surfaces except two already exists in the domain
+  and is pinned by the domain/state suites.** `StateCommand` carries
+  `UpdateTask` (command.rs:259), `DeleteTask` (:315), `RenameStack`
+  (:368), `DeleteStack` (:384), `UpdateLabel` (:450), `DeleteLabel`
+  (:473), `AssignLabel` (:499), `UnassignLabel` (:517); replies are
+  `CommandOutcome` (command.rs:88-103), rejections are `CommandError::
+  {UnknownTask, TaskDeleted, UnknownStack, StackDeleted, UnknownLabel,
+  LabelDeleted, NoBoard, …}` (command.rs:55-84). The backlog entry states
+  it outright: "the outbox/push machinery needs no changes for the missing
+  verbs." The two exceptions — `MoveStack` and `RenameBoard` — are new
+  domain surface with everything they need already in place (next two
+  bullets).
 - **The push chain for all surfaced verbs is implemented and, since WI-2,
   hermetically tested.** `push_exec.rs` has executors + wiremock tests for
   `RenameStack` (test :1582), `DeleteStack` (:1650-1714), `CreateLabel`
   (:1746-1849), `UpdateLabel` (:1871-1941), `DeleteLabel` (:1971+); the
   client carries `update_stack` (client.rs:594), `delete_stack` (:616),
   `assign_label` (:792), `remove_label` (:808), `create_label` (:824),
-  `update_label` (:847), `delete_label` (:869). WI-3 adds **one** new push
-  executor (§1 next item) and otherwise never touches the sync crate's
-  logic.
-- **`stacks move` is the single verb that needs new domain surface** (the
+  `update_label` (:847), `delete_label` (:869), and — for the board half —
+  `update_board(id, &BoardChanges)` (:516) with `BoardChanges { title,
+  color, archived }` (:85-89). WI-3 adds **two** new push executors
+  (§4.4, §4.5) and otherwise never touches the sync crate's logic.
+- **`stacks move` needs new domain surface** (the
   report names it; the domain has no `MoveStack`). Everything it needs is
   already in place: `StackClocks.order` exists (entities.rs:74); the
   pipeline's post-read intent protection already restores a stack's
@@ -70,6 +81,29 @@
   `LocalOp::MoveStack(StackId)` (outbox.rs grows one variant), one
   `pending_stack_intent` arm (pipeline.rs:163-181), one storage codec arm
   (`"move_stack"`, codec.rs:42-93 pattern).
+- **`boards rename` is the second new-surface verb, and boards are the
+  one entity family without merge machinery.** `Board` deliberately has
+  no clocks ("no local board-edit commands exist, so board content only
+  arrives via remote adoption", entities.rs:90-108), the `boards` table
+  has zero `ck_*` columns (migrations/0001_init.sql:15-24), and pull-side
+  merging is whole-entity remote-wins (`adopt_board_if_newer`, keyed on
+  `remote_seen` vs `remote.last_modified`, merge.rs:432-448). Contrast
+  stacks, which merge **field-wise by clocks** (`merge_stack`:
+  `remote_wins(ts_r, local.clocks.title)` per field, merge.rs:247-267)
+  *plus* post-read intent protection (pipeline.rs:326-332) — that is the
+  house treatment `RenameBoard` must replicate for the title, because a
+  bare local rename would be clobbered by the very next pull
+  (`remote_seen` doesn't move on a local edit). The wire half exists:
+  `update_board` + `BoardChanges` (previous bullet). Consequences, all
+  accepted: `Board` grows `clocks: BoardClocks { title }`; storage gains
+  migration 0002 (`boards.ck_title`, epoch default so existing rows keep
+  today's behavior); the sqlite row codec and the committed `.sqlx`
+  offline cache regenerate (`scripts/sqlx-prepare.sh`; `query_as!`
+  macros, repo.rs:32-33); `AppState` insta snapshots that serialize
+  boards regenerate mechanically. The [2026-10-09] backlog entry
+  anticipated exactly this bundling ("local board-edit commands *and*
+  `Board` clocks"); this WI delivers its title half, leaving color and
+  archive verbs (§7).
 - **The task selector is exact-uuid only today.** `parse_task_id`
   (tasks.rs:303-307) rejects anything else with `UnknownTask`; the backlog
   pins the upgrade: "exact id, then a unique id prefix (≥8 chars), then an
@@ -108,7 +142,7 @@
   `CredentialError::NotFound`), the env store refuses `Unsupported`
   (:182-184), and the key is `user@host` (`credential_key`, :193-204).
   The open question "logout's interaction with `backend`" (backlog,
-  2026-10-11 entry) is decided in §4.8.
+  2026-10-11 entry) is decided in §4.9.
 - **The storage-failure event's plumbing points exist but the engine
   cannot broadcast yet.** `SystemEvent` is a `Copy` enum
   `NetworkLost|NetworkRestored|Shutdown` (messages.rs:172-180); bootstrap
@@ -128,7 +162,7 @@
   color poisons the outbox. Board colors tolerate this because `publish`
   maps defensively with a fallback (boards.rs:157-159) — **labels have no
   such fallback**, so the CLI must validate label colors strictly at the
-  argument boundary (§4.7).
+  argument boundary (§4.8).
 - **Suite inventory for the new tests**: D-series routing
   (`tests/dispatch_routing.rs`, one exit-code test per `Command` variant,
   WI-2), ST-series stand-alone journeys (`tests/cli_standalone.rs`),
@@ -145,25 +179,36 @@
 2. **`tasks edit` is flag-sparse** (`--title`, `--description`, `--due`,
    `--archive`/`--unarchive`); at least one change is required (clap
    usage error, exit 2, not a runtime error).
-3. **`stacks move` is in scope** (the report names it); it is the one
-   verb that grows the domain (§4.4) — everything else is app-layer.
-4. **`labels list` joins the bundle** (report omits it): labels are
+3. **`stacks move` is in scope** (the report names it); it is one of the
+   two verbs that grow the domain (§4.4) — most of the rest is app-layer.
+4. **`boards rename <title>` is in scope** (user, 2026-10-11 PR review;
+   title only): works on a local-only board (stand-alone) and pushes the
+   rename when the board is bound — the "both local and remote" ask. It
+   carries the title half of the board-clocks backlog entry with it
+   (§4.5); board color and archive verbs stay out (§7).
+5. **Undo functionality is backlog, not WI-3** (§7): it is a domain-level
+   feature (inverse commands or a mutation journal over tombstones and
+   the outbox), and its central open question — **undo *stack* vs undo
+   *tree*** — must be decided when that feature gets its own plan (a
+   linear stack is simpler but discards branches after a redo divergence;
+   a tree preserves them at UI cost).
+6. **`labels list` joins the bundle** (report omits it): labels are
    otherwise invisible until assigned, which would make the label verbs
    untargetable. `stacks list` stays out (`tasks list` already shows
    stacks).
-5. **No interactive confirmations on destructive verbs** (`tasks
+7. **No interactive confirmations on destructive verbs** (`tasks
    delete`, `stacks delete`, `labels delete`): the M1 CLI is
    scripting-first; the cascade semantics are documented in `--help`.
-6. **`logout` deletes the stored secret and returns the install to
+8. **`logout` deletes the stored secret and returns the install to
    stand-alone under the auto backend**; an explicit
    `backend = "nextcloud"` is never rewritten (ADR 0010 loudness rule —
-   the decision the 2026-10-11 backlog entry deferred to WI-3, §4.8).
-7. **`config print` is a decode-only diagnostic** that always prints
+   the decision the 2026-10-11 backlog entry deferred to WI-3, §4.9).
+9. **`config print` is a decode-only diagnostic** that always prints
    (validity is reported *in the payload*, not via the exit code).
-8. **XDG discovery changes reads only**; the write target policy
+10. **XDG discovery changes reads only**; the write target policy
    (`login` creates `./taskboard.toml` on a fresh machine) is unchanged
    this WI (§7 notes the follow-up).
-9. **`StorageFailed` is edge-triggered** (fires on the ok→fail
+11. **`StorageFailed` is edge-triggered** (fires on the ok→fail
    transition, not per command — the backlog's debounce concern), and the
    daemon logs it; the Phase 7 UI banner is the real consumer.
 
@@ -176,6 +221,7 @@
 | Task selector | `resolve_task` cascade (uuid → ≥8-char unique prefix → exact title); `CommandError::AmbiguousTask`; wired into `done/move` + the new verbs |
 | Tasks | `tasks edit` (sparse `TaskChanges` via flags), `tasks delete` (tombstone receipt), `tasks label`, `tasks unlabel` |
 | Stacks | `stacks rename`, `stacks delete` (cascade-count receipt), `stacks move --order` (new domain `MoveStack` end-to-end, §4.4) |
+| Boards | `boards rename <title>` (§4.5): `RenameBoard` end-to-end — domain command, `BoardClocks.title` + migration 0002, field-wise title merge + push op, both backends |
 | Labels | `labels list/add/edit/delete`; `resolve_label` cascade (uuid → title); strict six-hex color parser at the CLI boundary |
 | Config | XDG read-path discovery (`--config` > `TASKBOARD_CONFIG` > XDG-if-present > `./taskboard.toml`); `ConfigError::kind()`; `config print` handler + `ConfigView` |
 | Logout | `logout` handler: secret delete + config strip under auto backend; `LogoutReceipt` |
@@ -186,11 +232,13 @@
 
 **Out of scope** (backlog or later WIs): connector-management verbs
 (`connect add` — existing 2026-10-11 entry; composes with `logout`
-afterwards); board unbind/`--forget-board` and any `DeleteBoard`; local
-board-edit verbs (`RenameBoard`, existing entry); ordinal selectors and
+afterwards); board unbind/`--forget-board` and any `DeleteBoard`; board
+color/archive edit verbs and their clocks (the remainder of the
+2026-10-09 board-edit entry — this WI takes its title half); undo/redo
+(§7, own plan); ordinal selectors and
 `--title` search flags (cascade already covers prefix + title);
 `tasks list` filtering/sorting options; XDG write-target flip (§7);
-storage-failure events for the *report-apply* path (§4.9 note);
+storage-failure events for the *report-apply* path (§4.10 note);
 REPL/IPC (WI-4/5); any UI work.
 
 ### 3.1 CLI surface after this WI
@@ -217,6 +265,9 @@ taskboard labels list
 taskboard labels add <title> [--color <6-hex>]
 taskboard labels edit <label> (--title s | --color <6-hex>)
 taskboard labels delete <label>
+
+# boards
+taskboard boards rename <title>                             # both backends; pushes when bound
 
 # connection & diagnostics
 taskboard login […]                                         # unchanged
@@ -271,7 +322,7 @@ maps defensively).
    Repeats are idempotent successes (`DeleteTask` on a tombstone is the
    domain's accepted no-op; `DeleteStack` likewise) — the receipt then
    reports the already-deleted entity's snapshot. No confirmation
-   prompts (§2.5); `--help` documents the cascade.
+   prompts (§2.7); `--help` documents the cascade.
 
 4. **`MoveStack { id, order }` follows `MoveTask`'s shape, minus the
    stack half.** Domain: plan arm rejects `UnknownStack`/`StackDeleted`,
@@ -294,7 +345,52 @@ maps defensively).
    `state_command_strategy` grows the variant; the existing totality
    property covers it with no new harness code (Phase 6b precedent).
 
-5. **`labels` verbs resolve labels by uuid or exact title**
+5. **`boards rename <title>` gets the stack treatment for the title, and
+   only the title** (user decision §2.4; boards are the one entity family
+   still on adoption-only merging — §1). Domain: `StateCommand::
+   RenameBoard { title }` — no id (single-board MVP, `CreateStack`'s
+   board scoping); `NoBoard` without a live board; unchanged title is an
+   accepted `NoOp` (nothing enqueued); else stamp the new `clocks.title`,
+   mutate, persist `UpsertBoard`, enqueue `LocalOp::RenameBoard(BoardId)`
+   (enqueue-on-change only). Entity: `Board` grows
+   `clocks: BoardClocks { title }` (room for color/deleted later, the
+   struct the 2026-10-09 entry anticipated); `CreateBoard` stamps
+   creation — it *is* a local title write; adoption constructors stamp
+   from `last_modified`. Merge (pull): surgical, preserving every
+   existing board behavior — keep the whole-entity `adopt_board_if_newer`
+   freshness gate and every field it sets **except title**, which becomes
+   field-wise by the `merge_stack` rule for one field
+   (`!remote_wins(remote.last_modified, local.clocks.title)` keeps the
+   local title and clock); plus post-read intent protection — a queued
+   `RenameBoard` op keeps the local title against the same-cycle pull
+   (a `pending_board_intent`/`keep_board_title` pair mirroring the stack
+   functions). Push: `MaterializedOp::RenameBoard` PUTs
+   `update_board(overlay.board, BoardChanges { title, color:
+   DeckColor::from_hex(row.color) falling back to
+   `DEFAULT_BOARD_COLOR` (the publish precedent), archived })` — a
+   full-send like every Deck write; the echo lands via a merge helper
+   mirroring `adopt_stack_after_push` (title from echo,
+   `remote_seen`/`clocks.title` advanced to the echo stamp;
+   `mapping.rs` gains the board-echo mapper if absent). A board unbound
+   at push time (local-only, cycle running anyway) completes
+   synthetically without sending — the `delete_stack`-unbound precedent,
+   safer than failing the op. Push grouping: a board-scoped group ranked
+   *before* stacks (`kind_rank` 0; board writes precede their
+   children's). Stand-alone: no push ever runs; `boards publish`
+   creates the remote board from the *current* local title, so a
+   pre-publish rename is inherently reflected, and the still-queued op
+   PUTs the same title idempotently after binding. Storage: migration
+   0002 adds `boards.ck_title` (epoch default — existing rows mean
+   "never locally written", so never-renamed boards keep today's
+   remote-wins behavior bit-for-bit); the sqlite board row reads/writes
+   the clock and the committed `.sqlx` cache regenerates via
+   `scripts/sqlx-prepare.sh`; `AppState` insta snapshots that
+   serialize boards regenerate mechanically (review with `cargo insta`).
+   CLI: `boards rename <title>` — core-booting, backend-agnostic;
+   receipt = `BoardReceipt` (reused, post-state projection); board-less
+   db → the `no-board` kind; a same-title repeat exits 0.
+
+6. **`labels` verbs resolve labels by uuid or exact title**
    (`resolve_label`, the `resolve_stack` shape verbatim over the
    board's live labels), with `CommandError::UnknownLabel(String)` /
    `AmbiguousLabel { candidates }` at the CLI layer (the domain's typed
@@ -306,21 +402,22 @@ maps defensively).
    live tasks carrying it) in board order — the discoverability floor
    that makes the other three verbs usable.
 
-6. **`tasks label/unlabel` are selector composition, nothing more**:
+7. **`tasks label/unlabel` are selector composition, nothing more**:
    `resolve_task` + `resolve_label` → `AssignLabel`/`UnassignLabel`,
    receipt = `MutationReceipt` (with the new `labels` field reflecting
    the post-state set). `UnassignLabel` of an absent assignment is the
    domain's accepted no-op (idempotent, exit 0).
 
-7. **Label colors are validated by a clap value parser** (`parse_color`
+8. **Label colors are validated by a clap value parser** (`parse_color`
    in `cli.rs`: exactly six hex digits, normalized lowercase, usage
    error otherwise). Rationale §1: unlike board colors (lenient, with
    a publish-time fallback), an invalid label color is a permanent
    `BadRequest` push rejection that strands the outbox op — refuse it
    at the boundary. `boards create --color` stays lenient (its
-   fallback exists; not this WI's business).
+   fallback exists; not this WI's business — nor is a board *color*
+   edit verb, §7).
 
-8. **`logout` = delete the secret, then de-configure iff the backend
+9. **`logout` = delete the secret, then de-configure iff the backend
    is auto-resolved.** Pre-core command (no lock, no db). Requires
    `nextcloud.server_url` + `username` to be present — else the typed
    `CommandError::NotConfigured` (kind `not-configured`; nothing to
@@ -349,7 +446,7 @@ maps defensively).
    territory: logout never edits the process environment, and
    `config_cleared` reflects the *file* (documented).
 
-9. **`config print` decodes, validates, reports — never refuses.**
+10. **`config print` decodes, validates, reports — never refuses.**
    Pre-core. Uses `extract_raw` (decode + db-path fill, no validation
    gate — the `login` precedent) and prints
    `ConfigView { config_path: Option<String>, backend: String,
@@ -369,7 +466,7 @@ maps defensively).
    `CommandError::Config`'s kind (`"config"`) for other commands —
    `ConfigError::kind()` is a `config print`-scoped accessor.
 
-10. **XDG discovery: presence-checked candidate between env and CWD.**
+11. **XDG discovery: presence-checked candidate between env and CWD.**
     New resolution in `AppConfig::config_path`:
     `--config` > `TASKBOARD_CONFIG` > XDG candidate *when the file
     exists* > absent (→ `./taskboard.toml` as today). The candidate is
@@ -388,7 +485,7 @@ maps defensively).
     three consumers stay intact (`load`, dispatcher/login, `CommandCtx`
     in `main`). Help text of `--config` updated to name the full order.
 
-11. **`SystemEvent::StorageFailed` is edge-triggered at the reply
+12. **`SystemEvent::StorageFailed` is edge-triggered at the reply
     site.** Domain: one `Copy` unit variant (messages.rs) — it is a
     banner signal, not an error report (the command reply already
     carries the typed `RepositoryError`). Engine:
@@ -412,7 +509,7 @@ maps defensively).
     `Lagged`/channel close; `main`'s daemon arm spawns it before the
     signal wait (log-only by design; no text assertions anywhere).
 
-12. **Dispatch keeps one arm per verb, and `run_mutation` generalizes.**
+13. **Dispatch keeps one arm per verb, and `run_mutation` generalizes.**
     `run_mutation` (mod.rs:430) is retyped to
     `run_verb<F, Fut, T>(json, ctx, render: fn(&T) -> String, body)`
     so delete/label/config receipts flow through the same
@@ -496,7 +593,7 @@ pub enum LabelsCmd {
 /// `--due` grammar: set (RFC-3339 or bare date → midnight UTC) or clear.
 pub enum DueSpec { Set(chrono::DateTime<chrono::Utc>), Clear }
 
-/// Six lowercase hex digits or a clap usage error (labels only — §4.7).
+/// Six lowercase hex digits or a clap usage error (labels only — §4.8).
 fn parse_color(raw: &str) -> Result<String, String> { /* … */ }
 fn parse_due(raw: &str) -> Result<DueSpec, String> { /* … */ }
 ```
@@ -518,14 +615,47 @@ MoveStack {
 /// first failure since the last success.
 StorageFailed,
 
+// messages.rs — StateCommand grows (board half):
+/// Rename the board's title (single-board; accepted no-op when unchanged).
+RenameBoard {
+    /// New title.
+    title: String,
+},
+
+// entities.rs — Board grows the clock the 2026-10-09 entry anticipated:
+pub struct BoardClocks {
+    /// Write time of `title`.
+    pub title: chrono::DateTime<chrono::Utc>,
+}
+// `Board { …, clocks: BoardClocks }`; `CreateBoard` and the adoption
+// constructors stamp it (creation / `last_modified` respectively).
+
 // outbox.rs — LocalOp grows:
 /// Stack reorder (full-send on push, like RenameStack).
 MoveStack(StackId),
+/// Board rename (full-send on push, like RenameStack).
+RenameBoard(BoardId),
 
 // pipeline.rs — pending_stack_intent grows one arm:
 LocalOp::MoveStack(s) | LocalOp::RenameStack(s) if s == stack => rename = true,
 // (fold into the existing match; `keep_stack_intent` already restores
 //  title+order+clocks — exactly the fields a pending move protects)
+
+// merge.rs — the board title becomes field-wise over the adoption result
+// (surgical: every other board field keeps `adopt_board_if_newer` as-is):
+pub fn merge_board(local: &Board, remote: &RemoteBoard) -> Board {
+    let mut merged = adopt_board_if_newer(local, remote);
+    if !remote_wins(remote.last_modified, local.clocks.title) {
+        merged.title = local.title.clone();
+        merged.clocks.title = local.clocks.title;
+    }
+    merged
+}
+// + adopt_board_after_push(local, echo) mirroring adopt_stack_after_push
+//   (title from echo; remote_seen/clocks.title advance to the echo stamp)
+// pipeline.rs — the board pull site wraps merge_board with a
+// pending_board_intent check that restores the local title + clock while
+// a post-read RenameBoard op is queued (the keep_stack_intent shape).
 ```
 
 ### 5.3 State engine (`actor.rs`, `lib.rs`)
@@ -621,14 +751,30 @@ impl ConfigError {
 // tasks.rs — replaces parse_task_id; the shared selector seam:
 fn resolve_task(state: &AppState, selector: &str) -> Result<TaskId, CommandError>;
 
+// boards.rs — grows rename (BoardReceipt reused, post-state projection).
 // stacks.rs — grows rename/delete/move in the `add` shape.
 // labels.rs — NEW module: list/add/edit/delete + resolve_label.
 // logout.rs — NEW module: run(config_path, raw, store) -> LogoutReceipt
-//             (§4.8 sequence: require fields → delete secret → strip file
+//             (§4.9 sequence: require fields → delete secret → strip file
 //              iff auto backend → receipt).
 // config.rs — NEW module (`crate::commands::config`, no clash with
-//             `crate::config`): print(ctx) -> ConfigView (§4.9).
+//             `crate::config`): print(ctx) -> ConfigView (§4.10).
 ```
+
+### 5.8 Storage (`taskboard-storage-sqlite`)
+
+```sql
+-- migrations/0002_board_title_clock.sql
+ALTER TABLE boards ADD COLUMN ck_title TEXT NOT NULL DEFAULT '<epoch-min>';
+-- epoch default = "never locally written": existing rows keep today's
+-- remote-wins behavior bit-for-bit (verify in the migration test).
+```
+
+The board row (`repo.rs` `BoardRow`) reads/writes `ck_title`;
+`LocalOp::RenameBoard` joins the codec's op-kind table
+(`"rename_board"`, board-scoped `OpColumns`); the committed `.sqlx`
+offline cache regenerates via `scripts/sqlx-prepare.sh` (the
+`cargo sqlx prepare --check` gate must pass).
 
 ## 6. Worktree, Branch & TDD Implementation Order
 
@@ -667,23 +813,43 @@ passing the full gate (§9):
    hermetic wiremock tests (PUT carries the full row; echo applied;
    unbound → synthetic-complete; 404 → remote-missing classification;
    transport failure aborts).
-6. **`stacks rename/delete/move` CLI**: handlers + receipts
+6. **`RenameBoard` end-to-end** (§4.5): migration 0002 + board-row clock
+   read/write + `.sqlx` cache regen (`scripts/sqlx-prepare.sh` — the
+   `prepare --check` gate must pass); `BoardClocks` + constructor
+   stamping (`CreateBoard` stamps creation; adoption stamps
+   `last_modified`) with domain unit tests; `RenameBoard` plan arm +
+   unit tests (happy path stamps the clock, mutates, persists
+   `UpsertBoard`, enqueues the op; unchanged title → `NoOp` with
+   nothing enqueued; `NoBoard`) + strategy arm (totality property
+   covers it); state S/A-series routing; merge tests (`merge_board`:
+   remote-newer adopts the title, local-newer keeps it, epoch-local
+   always loses — never-renamed boards behave exactly as today; the
+   post-read queued op protects the local title against the same-cycle
+   pull); push grouping (board rank before stacks) +
+   `MaterializedOp::RenameBoard` executor + hermetic wiremock tests
+   (full `BoardChanges` PUT with the color fallback; echo adoption;
+   unbound → synthetic-complete; 404 classification; transport abort);
+   CLI `boards rename` + ST-series (stand-alone happy path durable
+   across invocations, same-title repeat exit 0, board-less db
+   `no-board`); insta snapshot regeneration reviewed with `cargo insta`.
+
+7. **`stacks rename/delete/move` CLI**: handlers + receipts
    (`StackDeleteReceipt` with cascade count); `run_mutation` →
    `run_verb` generalization (mechanical; existing arms unchanged in
    behavior); ST-series: rename happy + unknown/ambiguous selectors,
    delete cascade receipt + idempotent repeat, move order change +
    no-op repeat + `--order` required (clap). D-series arms.
-7. **`labels` group**: `commands/labels.rs` + `resolve_label` +
+8. **`labels` group**: `commands/labels.rs` + `resolve_label` +
    `parse_color` (unit tests: six hex, case normalization, rejects
    `#fff`, 5/7 digits, non-hex) + `DEFAULT_LABEL_COLOR`; ST-series:
    list (empty + populated with assigned counts), add (default +
    explicit color), edit (title/color/no-op), delete (+ idempotent),
    selector ambiguity/unknown kinds, color rejection is exit 2.
    D-series arms.
-8. **`tasks label/unlabel`**: ST-series: assign shows the label in the
+9. **`tasks label/unlabel`**: ST-series: assign shows the label in the
    receipt's `labels`, unlabel removes it, unlabel-absent is exit 0,
    unknown task/label kinds, label selector ambiguity. D-series arms.
-9. **XDG + `config print`**: `xdg_candidate` + new `config_path`
+10. **XDG + `config print`**: `xdg_candidate` + new `config_path`
    order + `ConfigError::kind()` (unit tests, config.rs); C-series
    tests: XDG file wins over CWD when both exist, absent XDG falls
    through, explicit `--config`/env still win, `FileNotFound` only for
@@ -692,7 +858,7 @@ passing the full gate (§9):
    invalid config (`valid: false` + `invalid_kind`, exit 0), env
    overlay visible in the dump, garbage TOML → exit 1 kind `config`.
    D-series arm. `--config` help text + `architecture.org` order note.
-10. **`logout`** (`commands/logout.rs`): the §4.8 sequence with a
+11. **`logout`** (`commands/logout.rs`): the §4.9 sequence with a
     `toml_edit` strip helper (mirror of `write_config_overlay`; unit:
     keys removed, comments/unknown tables preserved); L-series
     extension: logout deletes from a `FakeCredentialStore` and strips
@@ -700,7 +866,7 @@ passing the full gate (§9):
     (`config_cleared: false`); repeat logout idempotent
     (NotFound-success); env store → `credential` kind; unconfigured →
     `not-configured`; D-series arm.
-11. **`StorageFailed`**: domain variant; `spawn_state_engine` sender
+12. **`StorageFailed`**: domain variant; `spawn_state_engine` sender
     param (ripple through the 8 call sites, compiler-driven); actor
     edge-trigger at the reply site; ignore-arms in engine + sync actor
     event matches; state test with `FailingRepo` (fail → one event,
@@ -708,20 +874,36 @@ passing the full gate (§9):
     extend the test-local `FailingRepo` with a re-arm, it is test
     code); bootstrap wiring + `spawn_system_event_logger` (unit:
     terminates when the channel closes) + `main` daemon-arm spawn.
-12. **Docs, bookkeeping, gates, docker**: ADR 0009 amendment (§8);
-    `architecture.org`; README quickstart edits; CHANGELOG; backlog
-    status flips (six entries → ✅ DONE with plan ref) + §7 appends;
+13. **Docs, bookkeeping, gates, docker**: ADR 0004 + ADR 0009
+    amendments (§8); `architecture.org`; README quickstart edits;
+    CHANGELOG; backlog status flips (six entries → ✅ DONE, the
+    2026-10-09 board-edit entry → ✅ PARTIALLY DONE) + §7 appends
+    (undo entry first);
     full §9 gates; J5 docker journey
     (`it_nextcloud_docker_cli_editing_push` in `tests/it_cli.rs`):
     fresh board via `boards create` + `login` + `publish` (J4 shape),
-    then `stacks rename/move`, `labels add/edit`, `tasks edit`, `tasks
-    label`, `tasks delete`, `sync --json` → `Succeeded`, server-side
-    truth via raw `DeckClient` (stack title/order, label exists+color,
-    card title/duedate/label set, deleted card absent); local `tasks
+    then `boards rename`, `stacks rename/move`, `labels add/edit`,
+    `tasks edit`, `tasks label`, `tasks delete`, `sync --json` →
+    `Succeeded`, server-side truth via raw `DeckClient` (board title,
+    stack title/order, label exists+color, card title/duedate/label
+    set, deleted card absent); local `tasks
     list --json` still serves survivors.
 
 ## 7. Out of Scope → Backlog (entries appended with this plan)
 
+- **Undo/redo functionality**: a domain-level feature, not a CLI wrapper —
+  mutations are persistent (tombstones, outbox ops), so undo means either
+  inverse commands or a journaled mutation history; redo of an
+  already-pushed edit is a *new* edit remote-side (not a retraction), and
+  undo before a sync push could instead retract the queued op — the
+  outbox is a natural seam either way. **Open decision for that plan:
+  undo *stack* vs undo *tree*** — a linear stack is simpler and matches
+  most CLI conventions but discards the redo branch when new input
+  follows an undo; a tree preserves every branch (the Phase 7 UI's
+  natural model) at the cost of a navigation/selection UX. Decide when
+  planning the feature; record in an ADR.
+- **Board color/archive edit verbs + their clocks** (the remainder of
+  the 2026-10-09 board-edit entry; this WI delivers its title half).
 - **XDG write-target flip**: `login` on a machine with *no* config
   anywhere still creates `./taskboard.toml`; desktop nicety would be
   XDG-first writes. Cheap follow-up once reads ship.
@@ -738,10 +920,18 @@ passing the full gate (§9):
   to WI-5's wire-format pass so the JSON contract changes once.
 - (Existing entries referenced but untouched: connector-management
   verbs 2026-10-11 — composes with logout afterwards; ordinal
-  selectors; local board-edit verbs; multi-board.)
+  selectors; multi-board. The 2026-10-09 board-edit entry flips to
+  *partially done*: title + `BoardClocks.title` land here.)
 
 ## 8. Docs & Bookkeeping (part of this WI's PR)
 
+- **ADR 0004 amendment** (sync conflict policy, dated section): boards
+  move from adoption-only to **field-wise title merging** —
+  `BoardClocks.title` vs `remote.last_modified` under the unchanged
+  whole-entity freshness gate, plus post-read intent protection for a
+  queued `RenameBoard` op; the epoch-default migration keeps existing
+  rows' behavior bit-for-bit; color/deleted remain adoption-governed
+  until their verbs exist.
 - **ADR 0009 amendment** (append a dated section, status stays
   Accepted): the editing verb catalogue and the two command classes'
   new members (`logout`/`config print` pre-core; editing verbs
@@ -756,7 +946,8 @@ passing the full gate (§9):
   exit 0); `StorageFailed` edge-trigger semantics and its Phase 7
   consumer.
 - **`docs/architecture.org`**: CLI verb table gains the editing
-  surface; the config section documents the full discovery order
+  surface (including `boards rename` and the field-wise board-title
+  merge note); the config section documents the full discovery order
   (`--config` > `TASKBOARD_CONFIG` > XDG-if-present >
   `./taskboard.toml`); the events section names
   `StorageFailed` and the daemon logger.
@@ -771,7 +962,12 @@ passing the full gate (§9):
   `tasks done/move` accept prefixes and titles (exact uuid still
   first); `MutationReceipt` JSON gains `labels`.
 - **Backlog**: flip the six consumed entries to ✅ DONE with this plan
-  as reference; append §7's new entries.
+  as reference; flip the 2026-10-09 board-edit entry to ✅ PARTIALLY
+  DONE (title half here; color/archive + their clocks remain); append
+  §7's new entries (undo with its stack-vs-tree decision, board
+  color/archive, XDG write-target, `--forget-board`, prefix selectors
+  for stacks/labels, report-apply `StorageFailed`, `CommandError::
+  Config` kind refinement).
 
 ## 9. Verification & Acceptance
 
@@ -781,7 +977,9 @@ passing the full gate (§9):
   --workspace`, `cargo deny check`, `cargo llvm-cov --workspace`
   (`SQLX_OFFLINE=true`; the app crate must not drop below its current
   ~80.3% line floor — all new verbs arrive ST/D-tested, and the new
-  dispatch arms are D-covered).
+  dispatch arms are D-covered), plus `scripts/sqlx-prepare.sh --check`
+  after the migration (the committed `.sqlx` cache must match the new
+  board-row queries).
 - Tier 2 (docker, once at the end): `eval "$(scripts/
   nextcloud_it_setup.sh up)" && cargo nextest run -p taskboard-app
   --run-ignored only -E 'test(it_nextcloud_docker)'` green including
@@ -792,12 +990,14 @@ passing the full gate (§9):
   empty `labels`; (3) `labels add "urgent" --json`; `tasks label
   <title> urgent --json` → receipt's `labels` lists it; (4)
   `stacks rename Todo/Backlog`-style rename + `stacks move --order`;
-  (5) `tasks list` reflects everything; (6) `tasks delete` of a
-  helper task → exit 0, absent from `tasks list`; (7) `config print`
-  names the resolved path, `backend: standalone`; (8) repeat each
-  mutation → idempotent exit 0. On the Nextcloud profile: (9) edit +
+  (5) `boards rename "Renamed Board" --json` → receipt with the new
+  title, durable across invocations (same-title repeat → exit 0);
+  (6) `tasks list` reflects everything; (7) `tasks delete` of a
+  helper task → exit 0, absent from `tasks list`; (8) `config print`
+  names the resolved path, `backend: standalone`; (9) repeat each
+  mutation → idempotent exit 0. On the Nextcloud profile: (10) edit +
   label + delete land server-side after `sync` (J5 proves this
-  automatically); (10) `logout --json` → receipt `config_cleared:
+  automatically); (11) `logout --json` → receipt `config_cleared:
   true` (auto backend), `taskboard sync` afterwards → kind
   `sync-disabled`; re-`login` resumes sync without data loss.
   Acceptance: user confirms.
@@ -808,7 +1008,7 @@ passing the full gate (§9):
 |---|---|
 | WI-4 (REPL) | The complete verb surface to wrap (its premise — "a REPL is only as useful as its verb surface" — is satisfied); `resolve_task/resolve_stack/resolve_label` as the interactive name-resolution layer; `run_verb` as the `&App`-extraction stepping stone |
 | WI-5 (daemon IPC) | `ConfigError::kind()` + the error-kind table as wire-format inputs; receipts (`LogoutReceipt`, `ConfigView`) as payload precedents; `StorageFailed` as a broadcast-to-IPC forwarding candidate |
-| Phase 7 UI | `StorageFailed` drives the error banner (the event's stated consumer); `config print`'s view parity for the settings screen; label colors arrive pre-validated |
+| Phase 7 UI | `StorageFailed` drives the error banner (the event's stated consumer); `config print`'s view parity for the settings screen; label colors arrive pre-validated; the board title is now locally editable (settings surface) |
 | Future connectors | The label-color lesson recorded in ADR 0009 (boundary validation where the wire has no fallback); `MoveStack` completes the op vocabulary every connector must drain |
 
 ## 11. Risks & Mitigations
@@ -825,6 +1025,20 @@ passing the full gate (§9):
   already makes, and the post-read intent arm protects a queued move
   against the same-cycle pull; hermetic wiremock + pipeline tests pin
   both halves.
+- **Board-title conflict window**: a remote title change landing
+  between our read and our push wins after the op drains (whole-entity
+  remote-wins on the next pull, by design for every other board field).
+  This is the same granularity class stacks/tasks already accept (the
+  "[2026-10-09] Field-level merge refinement" backlog entry owns it
+  generally); the queued-op window itself is protected by intent.
+- **Migration on existing databases**: `ck_title` defaults to epoch =
+  never-locally-written, so pre-WI rows keep today's merge behavior
+  bit-for-bit; a migration test pins an adopted-then-renamed db
+  upgrading cleanly; `sqlx::migrate!` runs at open (connect.rs:16).
+- **Snapshot + offline-cache churn**: `Board.clocks` changes `AppState`
+  insta snapshots (regenerate + review) and the new board-row queries
+  change the committed `.sqlx` cache (script regen) — both mechanical,
+  both gated (§9).
 - **`spawn_state_engine` signature ripple** (8 call sites): purely
   compiler-driven mechanical edits; no behavioral change anywhere
   except the new broadcast; the D/ST/L-series + state suites prove no
@@ -843,4 +1057,5 @@ passing the full gate (§9):
   (`cli_editing.rs`) keeps nextest's parallelism doing the work.
 - **Scope creep** (connect verbs, unbind, ordinals, board edits,
   report-apply events): each triaged to §7 with its owner named; the
-  domain additions are exactly one command and one op.
+  domain additions are exactly two commands, two ops, one clock, and
+  one migration.
