@@ -159,8 +159,13 @@ fn tty_bare_invocation_opens_a_repl_session_and_persists() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn script(1) pty wrapper");
+    // CR line endings: rustyline owns the pty in raw mode (ICRNL off),
+    // where only CR is Enter. In canonical mode ICRNL maps CR to NL, so
+    // CR survives both sides of the raw-mode race (an LF sent before
+    // the editor goes raw terminates the line; after, it is not a key
+    // at all — the CI flake this replaces).
     let session_input =
-        "boards create \"Personal\"\nstacks add \"Todo\"\ntasks add \"first task\"\nexit\n";
+        "boards create \"Personal\"\rstacks add \"Todo\"\rtasks add \"first task\"\rexit\r";
     // The session may exit before the write lands (boot refusal) — a
     // dead pty stdin is not a test failure by itself.
     let _ = child
