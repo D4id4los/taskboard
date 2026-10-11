@@ -143,6 +143,18 @@ pub struct MutationReceipt {
     pub labels: Vec<String>,
 }
 
+/// The `logout` receipt. No secret ever appears in any projection.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LogoutReceipt {
+    /// The server the credentials were deleted for.
+    pub server_url: String,
+    /// The login name.
+    pub username: String,
+    /// Whether the config file's server/user keys were stripped (the
+    /// auto backend only; an explicit backend is never rewritten).
+    pub config_cleared: bool,
+}
+
 /// One row of `labels list`.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LabelRow {

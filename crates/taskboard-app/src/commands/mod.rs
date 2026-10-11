@@ -16,6 +16,7 @@ pub mod boards;
 pub mod config;
 pub mod labels;
 pub mod login;
+pub mod logout;
 pub mod output;
 pub mod stacks;
 pub mod sync;
@@ -151,6 +152,10 @@ pub enum CommandError {
     /// migration path (`--bind-local-board` or `boards publish`).
     #[error("a local board exists — pass --bind-local-board or use boards publish")]
     LocalBoardExists,
+    /// A command needs a configured connector that this install lacks
+    /// (`logout` with no configured server/username).
+    #[error("no Nextcloud connection is configured")]
+    NotConfigured,
 }
 
 impl From<crate::config::ConfigError> for CommandError {
@@ -211,6 +216,7 @@ impl CommandError {
             Self::Deck(_) => "deck",
             Self::SyncDisabled => "sync-disabled",
             Self::LocalBoardExists => "local-board-exists",
+            Self::NotConfigured => "not-configured",
         }
     }
 
@@ -303,6 +309,23 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
                 }
                 // A not-yet-valid config must not block login (first-run
                 // bootstrap command); undecodable ones still fail.
+                Err(err) => report(json, &CommandError::from(err)),
+            }
+        }
+        Command::Logout => {
+            let path = AppConfig::config_path(ctx.config_path.clone())
+                .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
+            match AppConfig::extract_raw(Some(&path)) {
+                Ok(raw) => {
+                    let store = production_store(raw.nextcloud.credential_store);
+                    match logout::run(&path, &raw, store.as_ref()) {
+                        Ok(receipt) => {
+                            emit(json, &receipt, &logout::render_text(&receipt));
+                            0
+                        }
+                        Err(err) => report(json, &err),
+                    }
+                }
                 Err(err) => report(json, &CommandError::from(err)),
             }
         }

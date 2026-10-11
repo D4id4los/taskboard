@@ -228,6 +228,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::Deck(_) => "deck",
             CommandError::SyncDisabled => "sync-disabled",
             CommandError::LocalBoardExists => "local-board-exists",
+            CommandError::NotConfigured => "not-configured",
         }
     }
 
@@ -265,6 +266,7 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::ConfigWrite(std::io::Error::other("x")),
         CommandError::Prompt(std::io::Error::other("x")),
         CommandError::from(DeckError::BadRequest),
+        CommandError::NotConfigured,
     ];
     for err in &samples {
         assert_eq!(err.error_kind(), expected(err), "{err}");

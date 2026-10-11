@@ -57,6 +57,10 @@ pub enum Command {
         #[command(subcommand)]
         cmd: LabelsCmd,
     },
+    /// Delete the stored Nextcloud credentials (and, under the auto
+    /// backend, the config's server/user keys). Idempotent; the board
+    /// binding and local db are untouched.
+    Logout,
     /// Run one full sync cycle now and report the status.
     Sync {
         /// Return immediately after nudging the sync actor.
