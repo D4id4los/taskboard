@@ -95,6 +95,8 @@ pub async fn open_memory() -> Result<SqliteTaskRepository, OpenError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taskboard_domain::ids::BoardId;
+    use taskboard_domain::outbox::LocalOp;
     use taskboard_domain::persistence::{PersistedState, TaskRepository};
 
     /// A fresh database loads a default-shaped state (derived
@@ -122,7 +124,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 2, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 3, "each shipped migration recorded exactly once");
     }
 
     /// A pre-0002 database (no `ck_title`) upgrades cleanly: the epoch
@@ -166,6 +168,120 @@ mod tests {
             taskboard_domain::BoardClocks::epoch(),
             "the epoch default means never-locally-written"
         );
+    }
+
+    type LegacyRow = (
+        &'static str,
+        &'static str,
+        Option<uuid::Uuid>,
+        Option<uuid::Uuid>,
+        Option<uuid::Uuid>,
+    );
+
+    /// A pre-0003 database (no outbox `board_id`) upgrades cleanly: the
+    /// legacy `rename_board` wire shape (the board id riding `stack_id`)
+    /// is backfilled into the board column and `stack_id` is cleared,
+    /// while unrelated op rows keep their columns untouched.
+    #[tokio::test]
+    async fn migration_0003_backfills_legacy_rename_board_rows() {
+        let board_uuid = uuid::Uuid::from_u128(0xa1);
+        let stack_uuid = uuid::Uuid::from_u128(0xa2);
+        let task_uuid = uuid::Uuid::from_u128(0xa3);
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
+            .await
+            .expect("raw connect");
+        // Simulate a 0002-era database: run the shipped migrations, then
+        // strip the 0003 column and its bookkeeping row.
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        sqlx::query("ALTER TABLE outbox DROP COLUMN board_id")
+            .execute(&raw)
+            .await
+            .expect("strip board_id");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 3")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        // Legacy shape: the board id rides `stack_id` under the
+        // `rename_board` tag; control rows use their ordinary columns.
+        let legacy_rows: [LegacyRow; 3] = [
+            (
+                "0197c0ff-eeee-7ccc-8ddd-0000000000a1",
+                "rename_board",
+                None,
+                Some(board_uuid),
+                None,
+            ),
+            (
+                "0197c0ff-eeee-7ccc-8ddd-0000000000a2",
+                "rename_stack",
+                None,
+                Some(stack_uuid),
+                None,
+            ),
+            (
+                "0197c0ff-eeee-7ccc-8ddd-0000000000a3",
+                "create_task",
+                Some(task_uuid),
+                None,
+                None,
+            ),
+        ];
+        for (op_id, kind, task, stack, label) in legacy_rows {
+            let _ = sqlx::query(
+                "INSERT INTO outbox (op_id, op_kind, task_id, stack_id, label_id, queued_at) \
+                 VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00+00:00')",
+            )
+            .bind(op_id)
+            .bind(kind)
+            .bind(task.map(|u| u.to_string()))
+            .bind(stack.map(|u| u.to_string()))
+            .bind(label.map(|u| u.to_string()))
+            .execute(&raw)
+            .await
+            .expect("seed outbox row");
+        }
+        raw.close().await;
+
+        let repo = open(file.path()).await.expect("migrating open");
+        let state = repo.load().await.expect("load");
+        assert!(
+            state
+                .outbox
+                .iter()
+                .any(|o| o.op == LocalOp::RenameBoard(BoardId::from(board_uuid))),
+            "the backfilled rename_board row must still decode to its op"
+        );
+        drop(repo);
+
+        let raw = SqlitePool::connect(&format!("sqlite://{}", file.path().display()))
+            .await
+            .expect("raw connect");
+        let (board_id, stack_id): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT board_id, stack_id FROM outbox WHERE op_kind = 'rename_board'")
+                .fetch_one(&raw)
+                .await
+                .expect("rename_board row");
+        assert_eq!(board_id.as_deref(), Some(board_uuid.to_string().as_str()));
+        assert_eq!(stack_id, None, "the legacy stack_id copy must be cleared");
+        let (board_id, stack_id): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT board_id, stack_id FROM outbox WHERE op_kind = 'rename_stack'")
+                .fetch_one(&raw)
+                .await
+                .expect("rename_stack row");
+        assert_eq!(board_id, None);
+        assert_eq!(stack_id.as_deref(), Some(stack_uuid.to_string().as_str()));
+        let (task_id, board_id): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT task_id, board_id FROM outbox WHERE op_kind = 'create_task'")
+                .fetch_one(&raw)
+                .await
+                .expect("create_task row");
+        assert_eq!(task_id.as_deref(), Some(task_uuid.to_string().as_str()));
+        assert_eq!(board_id, None);
+        raw.close().await;
     }
 
     /// The durability pragmas are actually in force: `journal_mode` is WAL.

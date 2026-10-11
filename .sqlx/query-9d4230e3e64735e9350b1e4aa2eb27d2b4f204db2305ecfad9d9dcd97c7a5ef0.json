@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT op_id, op_kind, task_id, stack_id, label_id,\n                      queued_at as \"queued_at: DateTime<Utc>\"\n               FROM outbox ORDER BY op_seq",
+  "query": "SELECT op_id, op_kind, task_id, stack_id, label_id, board_id,\n                      queued_at as \"queued_at: DateTime<Utc>\"\n               FROM outbox ORDER BY op_seq",
   "describe": {
     "columns": [
       {
@@ -59,8 +59,19 @@
         }
       },
       {
-        "name": "queued_at: DateTime<Utc>",
+        "name": "board_id",
         "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "board_id"
+          }
+        }
+      },
+      {
+        "name": "queued_at: DateTime<Utc>",
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -79,8 +90,9 @@
       true,
       true,
       true,
+      true,
       false
     ]
   },
-  "hash": "97d703f004294710665431246629aa54b40d47405c44f142321e912fe486bbee"
+  "hash": "9d4230e3e64735e9350b1e4aa2eb27d2b4f204db2305ecfad9d9dcd97c7a5ef0"
 }
