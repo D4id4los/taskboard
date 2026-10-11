@@ -15,10 +15,10 @@
 //!   lock for its lifetime, exactly like the daemon — a running daemon
 //!   makes the session boot fail typed (`instance-locked`), and
 //!   vice versa.
-//! - **In-session refusals**: `daemon`, `login`, and per-line
-//!   `--config` are refused at parse/route level — they would need a
-//!   second process, a credential ceremony on the busy terminal, or a
-//!   config different from the booted one.
+//! - **In-session refusals**: `daemon`, `login`, `logout`, `config`,
+//!   and per-line `--config` are refused at parse/route level — they
+//!   would need a second process, a credential ceremony on the busy
+//!   terminal, or a config different from the booted one.
 //! - **Lines never abort the session**: failures report and return to
 //!   the prompt; the process exit code is the session's, not any
 //!   line's.
@@ -114,7 +114,11 @@ pub fn spawn_line_reader() -> mpsc::Receiver<LineEvent> {
             loop {
                 match editor.readline(PROMPT) {
                     Ok(line) => {
-                        let _ = editor.add_history_entry(line.as_str());
+                        // Empty and whitespace-only lines are prompt
+                        // noise, not recallable entries.
+                        if !line.trim().is_empty() {
+                            let _ = editor.add_history_entry(line.as_str());
+                        }
                         if tx.blocking_send(LineEvent::Line(line)).is_err() {
                             return;
                         }
@@ -168,6 +172,13 @@ pub(crate) enum LineRefusal {
     /// Mid-session login cannot activate a connector in the running
     /// session (credential + client wiring happens at boot).
     Login,
+    /// The credential store and connector are fixed for the session's
+    /// lock epoch, exactly like `login`.
+    Logout,
+    /// Config commands read and write the config file; the session's
+    /// config is fixed at boot and `config print` is the one-shot
+    /// diagnostic.
+    ConfigCommand,
 }
 
 impl std::fmt::Display for LineRefusal {
@@ -180,6 +191,12 @@ impl std::fmt::Display for LineRefusal {
             Self::Daemon => f.write_str("the daemon cannot run inside the session; exit first"),
             Self::Login => f.write_str(
                 "login is not available mid-session; exit, run `taskboard login`, re-enter",
+            ),
+            Self::Logout => f.write_str(
+                "logout is not available mid-session; exit, run `taskboard logout`, re-enter",
+            ),
+            Self::ConfigCommand => f.write_str(
+                "config commands act on the config file; run them one-shot outside the session",
             ),
         }
     }
@@ -234,6 +251,8 @@ pub(crate) fn resolve_line(line: &str, json_default: bool) -> LineAction {
         None => LineAction::Reprompt,
         Some(Command::Daemon) => LineAction::Refuse(LineRefusal::Daemon),
         Some(Command::Login { .. }) => LineAction::Refuse(LineRefusal::Login),
+        Some(Command::Logout) => LineAction::Refuse(LineRefusal::Logout),
+        Some(Command::Config { .. }) => LineAction::Refuse(LineRefusal::ConfigCommand),
         Some(command) => LineAction::Execute(command, cli.json || json_default),
     }
 }
@@ -266,12 +285,22 @@ pub async fn repl_loop(
             LineAction::Reprompt => {}
             LineAction::Exit => break,
             LineAction::PrintClap(err) => {
-                // clap routes by kind: help/version to stdout, usage
-                // errors to stderr. A closed stream must not kill the
-                // session.
-                let _ = err.print();
+                // clap's routing, replicated through the injected
+                // writers: help/version to `out`, usage errors to
+                // `err`. A closed sink must not kill the session.
+                tracing::debug!(kind = %err.kind(), "line did not parse; showing clap output");
+                let rendered = err.render().to_string();
+                if matches!(
+                    err.kind(),
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                ) {
+                    let _ = writeln!(io.out, "{rendered}");
+                } else {
+                    let _ = writeln!(io.err, "{rendered}");
+                }
             }
             LineAction::Refuse(kind) => {
+                tracing::debug!(refusal = %kind, "line refused");
                 let _ = writeln!(io.err, "{kind}");
             }
             LineAction::Execute(command, json) => {
@@ -321,8 +350,10 @@ pub async fn run_session_with_lines(
         let timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs.max(1));
         crate::bootstrap::wait_for_boot_pull(&app, timeout).await;
     }
-    let _ = writeln!(
-        io.out,
+    // The banner is human surface: under a `--json` session default it
+    // goes to stderr so stdout stays a pure machine stream (every
+    // payload line parses).
+    let banner = format!(
         "taskboard {} — interactive session (backend: {})",
         crate::VERSION,
         match backend {
@@ -330,6 +361,11 @@ pub async fn run_session_with_lines(
             SyncBackend::Standalone => "standalone",
         }
     );
+    if json_default {
+        let _ = writeln!(io.err, "{banner}");
+    } else {
+        let _ = writeln!(io.out, "{banner}");
+    }
     let _exit = repl_loop(app, session, lines, io).await;
     0
 }
@@ -424,6 +460,8 @@ mod tests {
         };
         assert_eq!(refuse("daemon"), LineRefusal::Daemon);
         assert_eq!(refuse("login --server http://x"), LineRefusal::Login);
+        assert_eq!(refuse("logout"), LineRefusal::Logout);
+        assert_eq!(refuse("config print"), LineRefusal::ConfigCommand);
         assert_eq!(
             refuse("tasks list --config other.toml"),
             LineRefusal::ConfigFlag
