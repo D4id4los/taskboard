@@ -564,6 +564,20 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     let server_card = &server_stacks[0].cards[0];
     assert_eq!(server_card.title, format!("{run}-edited"));
     assert!(server_card.duedate.is_some(), "the due date was pushed");
+    // Deck's stack *listing* omits card labels; the card detail is the
+    // authoritative read for the assignment.
+    let server_card = common::retry(|| async {
+        client
+            .card(
+                remote_board_id,
+                server_stacks[0].id,
+                server_stacks[0].cards[0].id,
+            )
+            .await
+    })
+    .await
+    .expect("card detail");
+
     let server_board = common::retry(|| async { client.board(remote_board_id).await })
         .await
         .expect("server board");
@@ -586,5 +600,4 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     assert_eq!(list.stacks[0].tasks.len(), 1);
     assert_eq!(list.stacks[0].tasks[0].title, format!("{run}-edited"));
     assert_eq!(list.stacks[0].tasks[0].labels, vec!["critical".to_owned()]);
-    let _ = server_card;
 }

@@ -134,7 +134,9 @@ impl<'a> PushExecutor<'a> {
                 self.create_task(group, task, stack, &new_card, outbox)
                     .await
             }
-            MaterializedOp::UpdateTask { task, card } => self.update_task(group, task, &card).await,
+            MaterializedOp::UpdateTask { task, card } => {
+                self.update_task(group, task, &card, outbox).await
+            }
             MaterializedOp::MoveTask { task, to } => self.move_task(group, task, to).await,
             MaterializedOp::DeleteTask { task } => match self.overlay.card_of(task) {
                 None => GroupOutcome::Outcomes(Self::all_applied(group)),
@@ -514,13 +516,16 @@ impl<'a> PushExecutor<'a> {
         GroupOutcome::Outcomes(outcomes)
     }
 
-    /// Full-send PUT built from the fetched card (fetch-before-write).
-    /// A group whose only delta is unresolvable labels defers entirely.
+    /// Field PUT built from the fetched card (fetch-before-write),
+    /// then the label-set delta through the sub-endpoints. A group
+    /// whose only delta is unresolvable labels defers entirely.
+    #[allow(clippy::too_many_lines)] // one wire contract; the phases read in order
     async fn update_task(
         &mut self,
         group: &PushGroup,
         task: taskboard_domain::TaskId,
         shape: &CardShape,
+        outbox: &[PendingOp],
     ) -> GroupOutcome {
         let Some(card_ref) = self.overlay.card_of(task) else {
             return Self::reject_primary(group);
@@ -546,7 +551,7 @@ impl<'a> PushExecutor<'a> {
                 );
             }
         };
-        let (resolved, has_unresolved): (Vec<u64>, bool) = {
+        let (desired, has_unresolved): (Vec<u64>, bool) = {
             let mut resolved = Vec::new();
             let mut unresolved = false;
             for label in &shape.labels {
@@ -568,7 +573,7 @@ impl<'a> PushExecutor<'a> {
             || fetched.archived != shape.archived;
         if has_unresolved
             && !fields_differ
-            && resolved.as_slice()
+            && desired.as_slice()
                 == fetched_labels
                     .iter()
                     .copied()
@@ -579,37 +584,149 @@ impl<'a> PushExecutor<'a> {
             tracing::debug!(task = %task.as_uuid(), "deferring push group: unresolvable labels only");
             return GroupOutcome::Outcomes(Vec::new());
         }
-        let resolved_refs: Vec<u64> = if has_unresolved {
-            resolved
-        } else {
-            shape
-                .labels
-                .iter()
-                .filter_map(|l| self.overlay.label_by_local.get(l).map(|n| n.get()))
-                .collect()
-        };
-        let body = mapping::apply_card_shape(&fetched, shape, Some(&resolved_refs));
-        match self.client.update_card(card_ref.board.get(), &body).await {
-            Ok(updated) => GroupOutcome::Outcomes(Self::primary_outcome(
-                group,
-                PushResult::Applied {
-                    echo: Some(mapping::map_echo(&updated, card_ref.board)),
-                },
-            )),
+        // Tier-2 verified (Deck 1.19): the card-update PUT rejects a
+        // non-empty `labels` field with 400 — label assignments ride the
+        // dedicated `assignLabel`/`removeLabel` sub-endpoints (the
+        // create path's contract). The PUT therefore strips the label
+        // list, and the desired set is applied below; the end state
+        // always converges to `shape.labels`.
+        let body = mapping::apply_card_shape(&fetched, shape, Some(&[]));
+        let updated = match self.client.update_card(card_ref.board.get(), &body).await {
+            Ok(updated) => updated,
             // A 2xx write whose echo failed to decode still landed.
-            Err(DeckError::Envelope(_)) => GroupOutcome::Outcomes(Self::primary_outcome(
-                group,
-                PushResult::Applied { echo: None },
-            )),
-            Err(err) => Self::classify(
-                group,
-                &err,
-                PushCtx {
-                    existing: true,
-                    delete: false,
-                },
-            ),
+            Err(DeckError::Envelope(_)) => fetched.clone(),
+            Err(err) => {
+                return Self::classify(
+                    group,
+                    &err,
+                    PushCtx {
+                        existing: true,
+                        delete: false,
+                    },
+                );
+            }
+        };
+
+        // Apply the label-set delta through the sub-endpoints. The PUT
+        // may have cleared the server-side set, so "assigned" is decided
+        // against the *fetched* set and re-assignment is idempotent.
+        let mut current = fetched_labels;
+        for label_num in &desired {
+            if current.contains(label_num) {
+                continue;
+            }
+            match self
+                .client
+                .assign_label(
+                    card_ref.board.get(),
+                    card_ref.stack.get(),
+                    card_ref.card.get(),
+                    *label_num,
+                )
+                .await
+            {
+                Ok(_) => {
+                    current.insert(*label_num);
+                }
+                Err(err) => {
+                    let ctx = PushCtx {
+                        existing: true,
+                        delete: false,
+                    };
+                    if mapping::classify_push(&err, ctx).is_some() {
+                        // A classified rejection: report the fields' PUT
+                        // (it landed) and let the label ops retry.
+                        return GroupOutcome::Outcomes(Self::primary_outcome(
+                            group,
+                            PushResult::Applied {
+                                echo: Some(mapping::map_echo(&updated, card_ref.board)),
+                            },
+                        ));
+                    }
+                    tracing::warn!(error = %err, "push aborted: transport failure");
+                    // The fields' PUT landed, but it is a full-send of
+                    // unchanged-after-retry fields: reporting nothing is
+                    // safe, the whole group retried next cycle.
+                    return GroupOutcome::Aborted { landed: Vec::new() };
+                }
+            }
         }
+        for label_num in current {
+            if desired.contains(&label_num) {
+                continue;
+            }
+            match self
+                .client
+                .remove_label(
+                    card_ref.board.get(),
+                    card_ref.stack.get(),
+                    card_ref.card.get(),
+                    label_num,
+                )
+                .await
+            {
+                Ok(_) => {}
+                Err(err) => {
+                    let ctx = PushCtx {
+                        existing: true,
+                        delete: false,
+                    };
+                    if mapping::classify_push(&err, ctx).is_some() {
+                        return GroupOutcome::Outcomes(Self::primary_outcome(
+                            group,
+                            PushResult::Applied {
+                                echo: Some(mapping::map_echo(&updated, card_ref.board)),
+                            },
+                        ));
+                    }
+                    tracing::warn!(error = %err, "push aborted: transport failure");
+                    return GroupOutcome::Aborted { landed: Vec::new() };
+                }
+            }
+        }
+
+        // One outcome per queued label op (the `create_task` precedent):
+        // the delta phase brought the server to the desired set, so a
+        // resolvable op is Applied and an unresolvable one rejects.
+        let mut outcomes = Self::primary_outcome(
+            group,
+            PushResult::Applied {
+                echo: Some(mapping::map_echo(&updated, card_ref.board)),
+            },
+        );
+        for op_id in &group.subsumed {
+            let Some(op) = outbox.iter().find(|entry| &entry.op_id == op_id) else {
+                continue;
+            };
+            let label = match op.op {
+                LocalOp::AssignLabel(_, label) | LocalOp::UnassignLabel(_, label) => label,
+                // Updates/moves rode the PUT's field state; nothing else
+                // can be subsumed under a task group.
+                LocalOp::UpdateTask(_)
+                | LocalOp::MoveTask(_)
+                | LocalOp::CreateTask(_)
+                | LocalOp::DeleteTask(_)
+                | LocalOp::CreateStack(_)
+                | LocalOp::RenameStack(_)
+                | LocalOp::MoveStack(_)
+                | LocalOp::DeleteStack(_)
+                | LocalOp::CreateLabel(_)
+                | LocalOp::UpdateLabel(_)
+                | LocalOp::DeleteLabel(_)
+                | LocalOp::RenameBoard(_) => continue,
+            };
+            outcomes.push(PushOutcome {
+                op: *op_id,
+                result: if self.overlay.label_by_local.contains_key(&label) {
+                    PushResult::Applied { echo: None }
+                } else {
+                    PushResult::Rejected {
+                        kind: taskboard_domain::SyncErrorKind::LocalData,
+                    }
+                },
+            });
+        }
+        GroupOutcome::Outcomes(outcomes)
     }
 
     /// The reorder primitive (destination stack in the body); skipped when
@@ -1208,6 +1325,75 @@ mod tests {
         assert_eq!(requests.len(), 2, "GET first, then the PUT");
         assert_eq!(requests[0].method.as_str(), "GET");
         assert_eq!(requests[1].method.as_str(), "PUT");
+    }
+
+    #[tokio::test]
+    async fn label_assignment_on_an_update_rides_the_sub_endpoint() {
+        // Tier-2 verified (Deck 1.19): the card-update PUT rejects a
+        // non-empty `labels` field with 400 — the PUT carries an empty
+        // list and the assignment rides `assignLabel`.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/assignLabel",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+        let shape = CardShape {
+            title: "edited".into(),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            order: 3,
+            archived: false,
+            labels: std::collections::BTreeSet::from([label_id(6)]),
+        };
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: shape,
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(outcomes[0].result, PushResult::Applied { .. }));
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3, "GET, PUT (fields), PUT (assignLabel)");
+        // The field PUT carries no label ids: the wire has no fallback.
+        let put_body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(put_body["labels"], serde_json::json!([]));
     }
 
     #[tokio::test]
