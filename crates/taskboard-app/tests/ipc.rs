@@ -83,6 +83,10 @@ async fn bounded<T>(body: impl std::future::Future<Output = T>) -> T {
         .expect("journey completes within the deadline")
 }
 
+/// The drain budget handed to every test's `join` — comfortably above
+/// the hermetic server's millisecond drains, far under the deadline.
+const DRAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Parses a newline-separated JSON stream (one value per line).
 fn json_lines(bytes: &[u8]) -> Vec<serde_json::Value> {
     String::from_utf8_lossy(bytes)
@@ -128,7 +132,7 @@ async fn ip1_core_verbs_serve_and_persist_over_ipc() {
             .collect();
         assert_eq!(titles, ["first task"]);
 
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -154,7 +158,7 @@ async fn ip2_typed_failures_cross_the_wire_as_envelopes() {
         let envelope = &json_lines(outcome.err.as_bytes())[0];
         assert_eq!(envelope["error"]["kind"], "unknown-task");
 
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -177,7 +181,7 @@ async fn ip3_clap_surface_routes_help_and_usage_errors() {
         assert_ne!(outcome.out, String::new(), "help on out");
         assert_eq!(outcome.err, "");
 
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -205,7 +209,7 @@ async fn ip4_refusals_are_usage_class_and_leave_the_session_healthy() {
         let outcome = exec_once(&db, &argv("boards create Personal")).await;
         assert_eq!(outcome.code, 0);
 
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -242,7 +246,7 @@ async fn ip5_version_mismatch_is_typed_and_parseable() {
         );
         drop(stream);
 
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
@@ -264,13 +268,16 @@ async fn ip6_status_answers_live_without_triggering_a_cycle() {
             assert_eq!(sync.phase, "idle", "status must never trigger a cycle");
         }
 
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
 
 /// IP7: the `Shutdown` request acks, the drain completes, the join
-/// finishes, and the unix socket artifact is removed.
+/// finishes, and the unix socket artifact is removed. (Unix-only: the
+/// socket *artifact* is a unix concept — Windows named pipes have no
+/// filesystem sidecar to assert on.)
+#[cfg(unix)]
 #[tokio::test]
 async fn ip7_shutdown_acks_drains_and_removes_the_socket() {
     bounded(async {
@@ -284,7 +291,7 @@ async fn ip7_shutdown_acks_drains_and_removes_the_socket() {
         tokio::time::timeout(common::LIVE_DEADLINE, handle.stopped())
             .await
             .expect("stopped resolves");
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
         assert!(
             !sidecar.exists(),
             "graceful shutdown removes the socket artifact"
@@ -323,13 +330,16 @@ async fn ip8_concurrent_connections_serialize_and_both_answer() {
             .collect();
         assert_eq!(titles, ["from-one", "from-two"]);
 
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
     })
     .await;
 }
 
 /// IP9: a stale socket artifact (a crashed daemon's file) is recovered
 /// at bind time — the junk file is replaced by a serving listener.
+/// (Unix-only: the stale *file* is the unix sidecar; Windows namespaced
+/// names have no artifact that can go stale.)
+#[cfg(unix)]
 #[tokio::test]
 async fn ip9_stale_socket_artifacts_are_recovered_at_bind() {
     bounded(async {
@@ -343,7 +353,7 @@ async fn ip9_stale_socket_artifacts_are_recovered_at_bind() {
         let outcome = exec_once(&db, &argv("boards create Personal")).await;
         assert_eq!(outcome.code, 0);
 
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
         assert!(!sidecar.exists());
     })
     .await;
@@ -418,8 +428,44 @@ async fn ip11_connector_daemon_serves_even_when_sync_fails() {
         let outcome = exec_once(&db, &argv("stacks add Todo")).await;
         assert_eq!(outcome.code, 0, "{}", outcome.err);
 
-        handle.join().await;
+        handle.join(DRAIN_BUDGET).await;
         drop(password);
+    })
+    .await;
+}
+
+/// IP12 (the WI-5 review regression): a connected-but-silent peer must
+/// not hold the daemon's shutdown hostage — `join` completes within its
+/// budget and the wedged connection is dropped, so the daemon's own
+/// shutdown (engine flush, actor joins) always proceeds.
+#[tokio::test]
+async fn ip12_a_silent_connection_cannot_wedge_the_drain() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, db) = served(dir.path(), "ip12.db").await;
+
+        let name = taskboard_app::ipc::socket_name(&db).expect("socket name");
+        let _silent = interprocess::local_socket::tokio::Stream::connect(name)
+            .await
+            .expect("connect");
+        // No frame follows: the connection sits silent in its read, the
+        // exact state that used to stall the drain forever.
+
+        // A budget far under the journey deadline: the join must make
+        // it anyway.
+        tokio::time::timeout(
+            common::LIVE_DEADLINE,
+            handle.join(std::time::Duration::from_millis(300)),
+        )
+        .await
+        .expect("join completes despite a silent connection");
+
+        // The server is gone, but a fresh boot on the same db still
+        // binds (the artifact was removed even on the aborted path).
+        let (reborn, db) = served(dir.path(), "ip12.db").await;
+        let outcome = exec_once(&db, &argv("boards create Personal")).await;
+        assert_eq!(outcome.code, 0);
+        reborn.join(DRAIN_BUDGET).await;
     })
     .await;
 }

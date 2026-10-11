@@ -95,7 +95,10 @@ names mean worktrees and CI never collide. A stale artifact from a
 crashed daemon is recovered at the next bind (bind fails → connect
 probe answers nobody → remove file → rebind once; a live answerer is
 impossible while the lock discipline holds and surfaces as a typed
-bind error, never a loop). Graceful shutdown removes the file. Unix
+bind error, never a loop). Graceful shutdown removes the file; the
+drain is bounded by the configured shutdown timeout — a
+connected-but-silent peer is dropped at the budget rather than holding
+the daemon's own shutdown hostage. Unix
 sockets are chmod 0600 after bind (a brief pre-chmod window is
 accepted and documented).
 
@@ -134,7 +137,9 @@ read-only fast lane is the documented alternative if pain appears).
 
 A relayed =--config= naming the config file the daemon itself booted
 with is honored (stripped — the client already consumed it for
-routing); any *other* file over the same socket is the degenerate
+routing; matched by *canonicalized* path on both sides, so a relative
+or symlinked boot spelling binds a differently spelled client flag);
+any *other* file over the same socket is the degenerate
 same-db-different-file case and gets the usage-class refusal
 (=LineRefusal::ConfigFlag= text, code 2). A =--config= naming a
 *different* database never reaches this path: it derives that db's

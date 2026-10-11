@@ -696,7 +696,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 Err(err) => return report_to(&mut ctx.io, &CommandError::from(err)),
             };
             let view = status::StatusView::no_daemon(&db_path);
-            emit_to(&mut ctx.io, &view, &status::render_text(&view));
+            status::emit(&mut ctx.io, &view);
             0
         }
         Command::Daemon { .. } => unreachable!("main handles the daemon arms itself"),
@@ -796,7 +796,7 @@ pub async fn dispatch_line(
             // The session *is* the core holder; the honest client-side
             // answer names it. Never boots, never syncs.
             let view = status::StatusView::in_session();
-            emit_to(io, &view, &status::render_text(&view));
+            status::emit(io, &view);
             0
         }
         Command::Boards {

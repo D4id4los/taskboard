@@ -312,3 +312,56 @@ async fn e5_concurrent_cli_processes_both_serve() {
     assert_eq!(code, Some(0));
     drop(daemon);
 }
+
+/// A daemon booted with a *relative* `--config` honors a client's
+/// identical flag over IPC (the WI-5 review regression: identity is by
+/// canonicalized path, not by the raw string — a relative boot spelling
+/// used to refuse the daemon's own config, exit 2).
+#[tokio::test]
+async fn e6_a_relative_config_spelling_binds_the_relay() {
+    let install = Install::new("e6");
+    let dir = install.dir.path().to_path_buf();
+
+    let daemon = Child(
+        binary_command()
+            .args(["--config", "taskboard.toml", "daemon"])
+            .current_dir(&dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn daemon (relative --config)"),
+    );
+
+    // Ready over the same relative spelling: `status` reaching the
+    // daemon proves the client resolved the identical install.
+    wait_until(
+        || {
+            let out = binary_command()
+                .args(["--config", "taskboard.toml", "--json", "status"])
+                .current_dir(&dir)
+                .output()
+                .expect("status runs");
+            read_to_string(out.stdout).contains("\"daemon\":true")
+        },
+        "daemon serves status over the relative --config",
+    )
+    .await;
+
+    // A core verb relayed over the socket under that spelling: the
+    // daemon's own config must be stripped, not refused.
+    let out = binary_command()
+        .args(["--config", "taskboard.toml", "tasks", "list"])
+        .current_dir(&dir)
+        .output()
+        .expect("tasks list runs");
+    assert_eq!(out.status.code(), Some(0), "{}", read_to_string(out.stderr));
+
+    // The remote stop under the same spelling.
+    let out = binary_command()
+        .args(["--config", "taskboard.toml", "daemon", "stop"])
+        .current_dir(&dir)
+        .output()
+        .expect("daemon stop runs");
+    assert_eq!(out.status.code(), Some(0), "{}", read_to_string(out.stderr));
+    drop(daemon);
+}
