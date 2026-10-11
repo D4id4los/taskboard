@@ -206,12 +206,16 @@ async fn status_command(config_path: Option<std::path::PathBuf>, json: bool) -> 
         },
         None => taskboard_app::commands::status::StatusView::no_daemon(config.db_path()),
     };
-    if json {
-        let line = serde_json::to_string(&view).expect("status serialization is total");
-        println!("{line}");
-    } else {
-        println!("{}", taskboard_app::commands::status::render_text(&view));
-    }
+    // The one shared emission path (`dispatch`'s client-side arm uses
+    // it too), so the two surfaces cannot drift.
+    let mut out = std::io::stdout();
+    let mut err = std::io::stderr();
+    let mut io = taskboard_app::commands::CommandIo {
+        out: &mut out,
+        err: &mut err,
+        json,
+    };
+    taskboard_app::commands::status::emit(&mut io, &view);
     0
 }
 
@@ -305,14 +309,11 @@ async fn daemon_lifecycle(
     }
     let shutdown_timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs);
     let drain = async {
-        if tokio::time::timeout(shutdown_timeout, server.join())
-            .await
-            .is_err()
-        {
-            tracing::warn!("ipc drain did not finish in time; shutting down anyway");
-        }
-        // The server is joined and dropped: the refcount is back to 1.
-        let app = Arc::try_unwrap(app).expect("the ipc server drained");
+        // Bounded: past the budget the server aborts its tasks (a
+        // wedged peer must never hold the daemon's shutdown hostage)
+        // and the refcount is released either way.
+        server.join(shutdown_timeout).await;
+        let app = Arc::try_unwrap(app).expect("the ipc server released the core");
         app.shutdown().await
     };
     let outcome = tokio::select! {

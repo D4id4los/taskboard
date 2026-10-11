@@ -89,17 +89,37 @@ impl IpcServerHandle {
     /// be answered and for the dispatcher to go idle, then removes the
     /// socket artifact (unix).
     ///
+    /// `drain_budget` bounds the wait. Past it the drain is declared
+    /// over — the accept loop and dispatcher are *aborted* (in-flight
+    /// connections are dropped; typically one wedged peer) so this
+    /// future always completes and the caller's `Arc<App>` refcount is
+    /// released either way. The daemon's shutdown must never depend on
+    /// a peer's behavior.
+    ///
     /// # Panics
     ///
     /// Never on the happy path; an internal task panicking (a bug)
     /// surfaces here as a join error, logged and swallowed — the
     /// daemon's own shutdown must proceed regardless.
-    pub async fn join(self) {
+    pub async fn join(self, drain_budget: Duration) {
         // Stop accepting (idempotent — a `Shutdown` request may have
         // fired already); then drain what was accepted.
         self.request_shutdown();
-        let _ = self.accept.await;
-        let _ = self.dispatcher.await;
+        let mut accept = self.accept;
+        let mut dispatcher = self.dispatcher;
+        let drain = async {
+            // By reference: the handles must survive the timeout so the
+            // abort path below can still reach them.
+            let _ = (&mut accept).await;
+            let _ = (&mut dispatcher).await;
+        };
+        if tokio::time::timeout(drain_budget, drain).await.is_err() {
+            tracing::warn!("ipc drain did not finish in time; dropping in-flight connections");
+            accept.abort();
+            dispatcher.abort();
+            let _ = accept.await;
+            let _ = dispatcher.await;
+        }
         if let Some(sidecar) = &self.sidecar
             && std::fs::remove_file(sidecar).is_ok()
         {
@@ -157,10 +177,6 @@ pub async fn spawn_server(
     })
 }
 
-fn clone_first(err: &std::io::Error) -> std::io::Error {
-    std::io::Error::new(err.kind(), err.to_string())
-}
-
 /// Binds the listener, recovering a stale socket artifact (a crashed
 /// daemon's `<db>.sock`) exactly once: on bind failure, probe the name
 /// — nobody answers ⇒ remove the file and rebind; somebody answers ⇒ a
@@ -177,6 +193,7 @@ async fn bind_with_recovery(
             Ok(listener)
         }
         Err(first) => {
+            tracing::debug!(?first, "ipc bind failed; probing for a stale artifact");
             let probe = tokio::time::timeout(STALE_PROBE_BUDGET, Stream::connect(name.clone()))
                 .await
                 .ok();
@@ -185,20 +202,26 @@ async fn bind_with_recovery(
                 return Err(IpcBindError::AddrInUse);
             }
             // Nobody answered (or the probe failed): stale artifact —
-            // remove and rebind once.
+            // remove and rebind once. A failed removal keeps the first
+            // bind error as the typed cause.
             if let Some(sidecar) = sidecar {
-                std::fs::remove_file(sidecar)
-                    .map_err(|_| IpcBindError::Create(clone_first(&first)))?;
-                tracing::warn!(socket = %sidecar.display(), "stale ipc socket removed");
+                match std::fs::remove_file(sidecar) {
+                    Ok(()) => {
+                        tracing::warn!(socket = %sidecar.display(), "stale ipc socket removed");
+                    }
+                    Err(_) => return Err(IpcBindError::Create(first)),
+                }
             }
-            ListenerOptions::new()
-                .name(name)
-                .create_tokio()
-                .map_err(|second| {
-                    tracing::warn!(?first, ?second, "ipc bind failed after stale recovery");
-                    IpcBindError::Create(second)
-                })
-                .inspect(|_| harden(sidecar))
+            match ListenerOptions::new().name(name).create_tokio() {
+                Ok(listener) => {
+                    harden(sidecar);
+                    Ok(listener)
+                }
+                Err(second) => {
+                    tracing::warn!(?second, "ipc bind failed after stale recovery");
+                    Err(IpcBindError::Create(second))
+                }
+            }
         }
     }
 }
@@ -228,23 +251,30 @@ fn harden(_sidecar: Option<&std::path::Path>) {}
 /// forwards the request to the serial dispatcher, and writes the answer.
 /// A connection task that dies (transport garbage, peer gone) only ends
 /// that connection. On the stop signal: stop accepting, then drain the
-/// already-accepted connections (their handles are awaited here).
+/// already-accepted connections (their handles are awaited here). The
+/// `JoinSet` reaps finished tasks as they are awaited, so a long-lived
+/// daemon's per-connection bookkeeping does not accumulate.
 async fn accept_loop(
     listener: Listener,
     in_tx: mpsc::Sender<InboundRequest>,
     stop: watch::Sender<bool>,
 ) {
     let mut stop_rx = stop.subscribe();
-    let mut connections = Vec::new();
+    let mut connections = tokio::task::JoinSet::new();
     loop {
+        // Biased, accept first: a connection completed in the same poll
+        // cycle as the stop signal is still served (the stop is noticed
+        // on the next iteration), so `daemon stop` racing one client
+        // cannot strand an accepted connection.
         let accepted = tokio::select! {
-            () = wait_stopped(&mut stop_rx) => None,
+            biased;
             accepted = listener.accept() => accepted.ok(),
+            () = wait_stopped(&mut stop_rx) => None,
         };
         match accepted {
             Some(stream) => {
                 let tx = in_tx.clone();
-                connections.push(tokio::spawn(serve_connection(stream, tx)));
+                connections.spawn(serve_connection(stream, tx));
             }
             None => break,
         }
@@ -252,9 +282,7 @@ async fn accept_loop(
     drop(listener);
     // Drain: every accepted connection is answered (or dies) before the
     // accept task — and therefore `join` — completes.
-    for connection in connections {
-        let _ = connection.await;
-    }
+    while connections.join_next().await.is_some() {}
 }
 
 /// Resolves when the stop flag is set (borrows the receiver so the
@@ -350,26 +378,28 @@ async fn handle(app: &App, session: &BasicSession, req: Request) -> Response {
 /// Scans the relayed argv for a `--config` flag: an identical config
 /// file is stripped (both the `--config value` and `--config=value`
 /// shapes), a different one is refused. No flag → the argv unchanged.
+/// Identity is by *canonicalized* path on both sides: the daemon may
+/// have been pointed at its config through a relative path (or a
+/// symlink), and the client through another spelling of the same file.
 fn strip_matching_config(
     argv: &[String],
     session_config_path: Option<&std::path::Path>,
 ) -> Result<Vec<String>, ()> {
+    let session_canon = session_config_path.and_then(|path| path.canonicalize().ok());
     let mut cleaned = Vec::with_capacity(argv.len());
     let mut index = 0;
     while index < argv.len() {
         let word = &argv[index];
-        let (value, consumed_next): (Option<&String>, bool) = if word == "--config" {
-            (argv.get(index + 1), true)
-        } else if let Some(inline) = word.strip_prefix("--config=") {
-            (Some(&inline.to_owned()), false)
+        let (value, consumed_next): (Option<&str>, bool) = if word == "--config" {
+            (argv.get(index + 1).map(String::as_str), true)
         } else {
-            (None, false)
+            (word.strip_prefix("--config="), false)
         };
         match value {
             None => cleaned.push(word.clone()),
             Some(value) => {
                 let same = matches!(
-                    (session_config_path, std::path::Path::new(value.as_str()).canonicalize()),
+                    (session_canon.as_deref(), std::path::Path::new(value).canonicalize()),
                     (Some(session_path), Ok(client_path)) if session_path == client_path
                 );
                 if !same {
@@ -442,5 +472,73 @@ async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, St
             tracing::debug!("unreachable argv action over ipc");
             (0, String::new(), String::new())
         }
+    }
+}
+
+#[cfg(test)]
+mod config_binding_tests {
+    use super::strip_matching_config;
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    /// The `--config` binding (ADR 0012 §2.10): the daemon's own config
+    /// file is stripped in both flag shapes and across path *spellings*
+    /// (a relative or `..`-laden boot path vs a different spelling on
+    /// the wire — identity is by canonicalized path); any other file is
+    /// refused, and a flag-less argv passes through untouched.
+    #[test]
+    fn the_daemons_own_config_is_stripped_across_spellings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(&config, "[app]\n").expect("write config");
+        let abs = config.to_string_lossy().into_owned();
+        let roundabout = dir
+            .path()
+            .join("..")
+            .join(dir.path().file_name().expect("dir name"))
+            .join("taskboard.toml")
+            .to_string_lossy()
+            .into_owned();
+
+        // Absolute flag over an absolute session path: stripped.
+        let cleaned =
+            strip_matching_config(&argv(&["--config", &abs, "tasks", "list"]), Some(&config))
+                .expect("the same file");
+        assert_eq!(cleaned, argv(&["tasks", "list"]));
+
+        // A non-canonical spelling of the same file: stripped too (the
+        // review regression — identity is not by raw string).
+        let cleaned = strip_matching_config(
+            &argv(&["--config", &roundabout, "tasks", "list"]),
+            Some(&config),
+        )
+        .expect("the same file under another spelling");
+        assert_eq!(cleaned, argv(&["tasks", "list"]));
+
+        // The inline shape: stripped as well.
+        let inline = format!("--config={abs}");
+        let cleaned = strip_matching_config(&argv(&[&inline, "--json", "status"]), Some(&config))
+            .expect("the same file");
+        assert_eq!(cleaned, argv(&["--json", "status"]));
+
+        // No flag: the argv is unchanged.
+        let cleaned =
+            strip_matching_config(&argv(&["tasks", "list"]), Some(&config)).expect("no flag");
+        assert_eq!(cleaned, argv(&["tasks", "list"]));
+
+        // A different file: refused — also when the session has no
+        // config path at all.
+        let other = dir.path().join("other.toml");
+        std::fs::write(&other, "").expect("write other");
+        assert!(
+            strip_matching_config(
+                &argv(&["--config", &other.to_string_lossy()]),
+                Some(&config)
+            )
+            .is_err()
+        );
+        assert!(strip_matching_config(&argv(&["--config", &abs]), None).is_err());
     }
 }

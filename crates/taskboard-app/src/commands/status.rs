@@ -112,6 +112,14 @@ pub fn render_text(view: &StatusView) -> String {
     }
 }
 
+/// The one emission path for the status answer — the client-side
+/// `dispatch` arm and the binary's IPC-relayed `status` both print
+/// through here, so the two surfaces cannot drift: the JSON payload on
+/// `out` under `--json`, the rendered line otherwise.
+pub fn emit(io: &mut crate::commands::CommandIo<'_>, view: &StatusView) {
+    crate::commands::emit_to(io, view, &render_text(view));
+}
+
 #[cfg(test)]
 mod tests {
     use super::{StatusView, render_text};
