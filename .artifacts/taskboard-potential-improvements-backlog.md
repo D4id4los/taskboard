@@ -1479,3 +1479,81 @@ cursor synced via `set-selection-offsets`, `StyledText` rendered
 preview) instead of bespoke editing logic.
 ####### Ancestor
 ======= end
+## [2026-10-11] `parted`-style interactive REPL mode — *implemented* (WI-4, ADR 0011; kept for the completion-history of its open sub-questions)
+
+### [2026-10-11] `login` inside a running session (REPL / GUI)
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi4-repl-interactive-frontend-plan.md` §2.4/§7 + user decision at plan review (2026-10-11)
+- **Target Area**: `crates/taskboard-app` (`repl.rs`, `commands/login.rs`, `bootstrap.rs`)
+
+#### Context & Description
+The REPL refuses `login` in-session (ADR 0011): credential +
+`DeckClient` wiring happens in `bootstrap`, so a mid-session login
+cannot activate the connector in the already-running core — the honest
+v1 UX is "exit, `taskboard login`, re-enter". This is more than a CLI
+nicety: the Phase 7 GUI will need *login while the app is running* for
+good interaction flows around the Nextcloud login feature anyway (a
+desktop app cannot ask users to quit and relaunch to connect), so the
+design should be done once for both frontends.
+
+#### Proposed Approach
+A session-level connect flow: after credentials are verified and
+persisted (the L-series ceremony, minus the process-exit shell), mutate
+the *running* session — build a `DeckClient` from the live config +
+store and attach a sync actor to the booted core (bootstrap currently
+commits to `sync: Option<SyncActor>` at construction; an attach path
+needs that to become settable, or a dedicated re-wiring of the sync
+channel halves). Interacts with the "CLI commands to add a Nextcloud
+connection" entry above (the persistence half is shared) and with
+rustyline's terminal for the masked-secret prompt.
+
+### [2026-10-11] REPL history persistence (file-backed)
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi4-repl-interactive-frontend-plan.md` §2.7/§7
+- **Target Area**: `crates/taskboard-app` (`repl.rs`)
+
+#### Context & Description
+v1 REPL history is in-memory only (rustyline session history). File
+persistence needs the XDG data-dir story WI-3 owns (where the history
+file lives, permissions); coupling WI-4 to it would have widened the
+rebase for no functional loss.
+
+#### Proposed Approach
+rustyline's `with-file-history` once a data-dir decision exists;
+load/save around `spawn_line_reader`'s editor construction.
+
+### [2026-10-11] REPL tab-completion / hints
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi4-repl-interactive-frontend-plan.md` §7
+- **Target Area**: `crates/taskboard-app` (`repl.rs`)
+
+#### Context & Description
+No completion over verbs, selectors, or board/stack/task titles yet.
+Worthwhile once the verb surface settles post-WI-3 (completing a moving
+target doubles the churn).
+
+#### Proposed Approach
+rustyline `Helper` trait: verb/flag completion from the static CLI
+shape; board/stack/title completion from the live `ArcSwap<AppState>`
+(read lock-free on the editor thread).
+
+### [2026-10-11] Graceful Ctrl-C line-cancellation in the REPL
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi4-repl-interactive-frontend-plan.md` §2.6/§7
+- **Target Area**: `crates/taskboard-app` (`repl.rs`)
+
+#### Context & Description
+Ctrl-C while a REPL command runs keeps the default SIGINT disposition:
+it kills the session. Safe by construction (state is durable per
+`execute`; the OS releases the instance lock), but a long `sync` line
+dying to a stray Ctrl-C is rough. v1 accepts this.
+
+#### Proposed Approach
+A SIGINT handler during dispatch that aborts the *line* (drop the
+in-flight future), not the session. Design it together with WI-5's
+process-signal story (the daemon's second-signal force exit) — one
+signal design, once.

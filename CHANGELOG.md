@@ -10,6 +10,13 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The interactive REPL frontend (ADR 0011): bare `taskboard` with a
+  TTY on stdin opens a parted-style session over one booted core —
+  each line is one CLI invocation (`shell-words` quoting, per-line
+  `--json`), `exit`/`quit`/Ctrl-D shut the core down gracefully, and
+  failed lines never abort the session. `daemon`, `login`, and
+  per-line `--config` are refused in-session; the per-database
+  instance lock keeps the session and the daemon mutually exclusive.
 
 - The full CLI editing surface (WI-3): `tasks edit/delete/label/
   unlabel`, `stacks rename/delete/move`, `labels list/add/edit/
@@ -84,6 +91,10 @@ The workspace carries a single global version (see `docs/architecture.org`);
   → local ids preserved.
 
 ### Changed
+- Bare `taskboard` with a TTY on stdin now opens the interactive REPL
+  instead of resolving `[app] mode` (the daemon); non-TTY invocations
+  are unchanged, and every explicit subcommand behaves exactly as
+  before.
 
 - Fresh installs default to the `standalone` backend: `[sync]
   backend` is optional and `[nextcloud] server_url`/`username` are
@@ -222,7 +233,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
   boards/stacks/labels, delete-wins fallback for cards), unconditional
   echo adoption, and the engine-executes-merge split.
 
-### Changed
 
 - `login` replaces the manual `secret-tool` dance of the Phase 5 M1
   quickstart: the ceremony verifies against the server before anything
