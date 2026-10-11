@@ -22,6 +22,10 @@ use common::{binary_command, tempdir, write_test_config};
 
 const BOARDS_PATH: &str = "/index.php/apps/deck/api/v1.0/boards";
 
+/// The session prompt (kept in sync with `repl::PROMPT`; wording is
+/// never asserted — only its *arrival* gates the scripted input).
+const SESSION_PROMPT: &str = "taskboard> ";
+
 /// `script` wraps the binary in a pty; `timeout` guards the hang
 /// regression (a wedged prompt must fail the test, not stall it).
 fn run_login_under_pty(config: &std::path::Path, url: &str, input: &str) -> std::process::Output {
@@ -159,20 +163,49 @@ fn tty_bare_invocation_opens_a_repl_session_and_persists() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn script(1) pty wrapper");
-    // CR line endings: rustyline owns the pty in raw mode (ICRNL off),
-    // where only CR is Enter. In canonical mode ICRNL maps CR to NL, so
-    // CR survives both sides of the raw-mode race (an LF sent before
-    // the editor goes raw terminates the line; after, it is not a key
-    // at all — the CI flake this replaces).
-    let session_input =
-        "boards create \"Personal\"\rstacks add \"Todo\"\rtasks add \"first task\"\rexit\r";
-    // The session may exit before the write lands (boot refusal) — a
-    // dead pty stdin is not a test failure by itself.
-    let _ = child
-        .stdin
-        .take()
-        .expect("stdin piped")
-        .write_all(session_input.as_bytes());
+    // Feed the script only after the editor's first prompt shows up in
+    // the captured output. `script` forwards piped stdin to the pty
+    // immediately, and bytes parked in the pty input queue while
+    // rustyline switches the terminal to raw mode are flushed by the
+    // termios change — the whole script was silently lost (the CI
+    // flake this replaces). Once the prompt is echoed, raw mode is
+    // active and nothing is pending: writes land in the editor. CR is
+    // the Enter key in raw mode (LF is not a key at all with ICRNL
+    // off); in canonical mode ICRNL maps CR to NL, so CR works on both
+    // sides of the switch.
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut out_pipe = child.stdout.take().expect("stdout piped");
+    let mut seen = Vec::new();
+    let prompt_seen = loop {
+        let mut chunk = [0u8; 256];
+        match std::io::Read::read(&mut out_pipe, &mut chunk) {
+            Ok(0) | Err(_) => break false,
+            Ok(n) => {
+                seen.extend_from_slice(&chunk[..n]);
+                if seen
+                    .windows(SESSION_PROMPT.len())
+                    .any(|w| w == SESSION_PROMPT.as_bytes())
+                {
+                    break true;
+                }
+            }
+        }
+    };
+    assert!(
+        prompt_seen,
+        "the session never reached its first prompt: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    stdin
+        .write_all(
+            b"boards create \"Personal\"\rstacks add \"Todo\"\rtasks add \"first task\"\rexit\r",
+        )
+        .expect("write scripted session");
+    drop(stdin);
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut out_pipe, &mut tail).expect("drain session output");
+    seen.extend_from_slice(&tail);
+    drop(out_pipe);
     let output = child.wait_with_output().expect("pty run completes");
 
     // The hang guard: `timeout 60` exits 124 when the session wedges.
