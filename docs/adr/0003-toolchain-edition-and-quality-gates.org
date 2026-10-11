@@ -47,3 +47,24 @@ fuzzing, sanitizers) enters the pipeline.
 - *Negative:* Edition 2024 raises the minimum toolchain (acceptable: MSRV
   1.96 is the current stable); the deferred Slint dependency means the UI
   crate's manifests will change when UI work begins.
+
+* Amendment (2026-10-12): MSRV verification & float policy
+
+- The MSRV does not float. It moves only by an explicit bump of
+  =[workspace.package] rust-version= in a dedicated, single-purpose
+  commit that updates this ADR in the same change. It never tracks
+  "stable minus N" or any derived channel.
+- Acceptable reasons to bump: a dependency or language feature
+  requires a newer compiler, or a target platform's support window
+  forces it. Convenience alone is not a reason.
+- Enforcement: the =MSRV Check= CI job (=.github/workflows/ci.yml=)
+  compiles the workspace with the toolchain named by =rust-version=
+  (=cargo check --workspace --all-features --locked=) on every PR and
+  =main= push, and is intended as a required status check. The job
+  reads the version from the root =Cargo.toml=, so the manifest is the
+  single source of truth: this ADR records the *why*, the manifest
+  records the *what*.
+- Division of labor unchanged: =rust-toolchain.toml= stays on =stable=
+  — development and the quality-gate CI jobs (fmt, clippy) ride the
+  current stable compiler; the MSRV job is the backstop that keeps the
+  declared floor honest as stable advances past it.
