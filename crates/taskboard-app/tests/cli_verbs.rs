@@ -593,19 +593,17 @@ async fn v14_done_and_move_reject_unknown_task_selectors() {
     let config = config_for(&server.uri(), dir.path(), "v14.db");
     let store = store_for(&server.uri());
 
-    // Non-uuid: rejected at parse time, before any boot (no requests).
+    // Since the WI-3 cascade, resolution happens against the published
+    // state inside the booted core: a selector that matches nothing (be
+    // it uuid-shaped or free text) surfaces as the same typed
+    // `unknown-task` kind after the boot cycle.
     let err = tasks::done(config.clone(), Arc::clone(&store), "not-a-uuid", false)
         .await
         .expect_err("non-uuid selector");
     assert_eq!(err.error_kind(), "unknown-task");
     assert_eq!(err.error_detail().as_deref(), Some("not-a-uuid"));
-    let requests = server.received_requests().await.expect("requests recorded");
-    assert!(
-        requests.is_empty(),
-        "a non-uuid selector must not boot the core"
-    );
 
-    // Well-formed but unknown uuid: the engine's typed rejection.
+    // Well-formed but unknown uuid: the same typed miss.
     let missing = uuid::Uuid::new_v4().to_string();
     let err = tasks::done(config.clone(), Arc::clone(&store), &missing, false)
         .await

@@ -243,8 +243,11 @@ pub async fn done(
     task: &str,
     undo: bool,
 ) -> Result<MutationReceipt, CommandError> {
-    let task_id = parse_task_id(task)?;
+    let task = task.to_owned();
     with_core(config, store, async |app| {
+        let state = app.engine.shared_state().load_full();
+        let task_id = resolve_task(&state, &task)?;
+        drop(state);
         app.engine
             .execute(StateCommand::SetTaskDone {
                 id: task_id,
@@ -275,11 +278,13 @@ pub async fn move_(
     stack: Option<&str>,
     order: Option<i64>,
 ) -> Result<MutationReceipt, CommandError> {
-    let task_id = parse_task_id(task)?;
+    let task = task.to_owned();
     with_core(config, store, async |app| {
         let state = app.engine.shared_state().load_full();
+        let task_id = resolve_task(&state, &task)?;
         let stack = resolve_target(&state, stack)?;
         let order = order.unwrap_or_else(|| append_order(&state, stack));
+        drop(state);
         app.engine
             .execute(StateCommand::MoveTask {
                 id: task_id,
@@ -298,12 +303,55 @@ pub async fn move_(
     .await
 }
 
-/// The exact local task selector: an exact uuid, nothing else
-/// (scripting-first M1; prefix selectors are backlog).
-fn parse_task_id(raw: &str) -> Result<TaskId, CommandError> {
-    uuid::Uuid::parse_str(raw)
-        .map(TaskId::from_uuid)
-        .map_err(|_| CommandError::UnknownTask(raw.to_owned()))
+/// Resolves a task selector (the cascading selector, ADR 0009): exact
+/// uuid → unique ≥8-char uuid prefix → exact live-title match. Ambiguity
+/// and misses are typed errors carrying the candidate titles. Exact uuid
+/// stays first, so existing scripts keep working; a uuid-shaped selector
+/// that hits no live task falls through to prefix/title rather than
+/// erroring (`UUIDv7` prefixes can collide within about a minute — the honest
+/// answer is then the ambiguity error, not a silent mis-target).
+fn resolve_task(state: &AppState, selector: &str) -> Result<TaskId, CommandError> {
+    let mut live: Vec<&taskboard_domain::Task> =
+        state.tasks.values().filter(|t| t.is_live()).collect();
+    live.sort_by_key(|t| (t.stack, t.order, t.id));
+    if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
+        let id = TaskId::from_uuid(uuid);
+        if live.iter().any(|t| t.id == id) {
+            return Ok(id);
+        }
+    }
+    let candidates = |matched: &[&taskboard_domain::Task]| -> Vec<String> {
+        matched.iter().map(|t| t.title.clone()).collect()
+    };
+    if selector.len() >= 8 {
+        let needle = selector.to_lowercase();
+        let prefix_hits: Vec<&taskboard_domain::Task> = live
+            .iter()
+            .filter(|t| t.id.as_uuid().to_string().starts_with(&needle))
+            .copied()
+            .collect();
+        match prefix_hits.len() {
+            1 => return Ok(prefix_hits[0].id),
+            n if n > 1 => {
+                return Err(CommandError::AmbiguousTask {
+                    candidates: candidates(&prefix_hits),
+                });
+            }
+            _ => {}
+        }
+    }
+    let title_hits: Vec<&taskboard_domain::Task> = live
+        .iter()
+        .filter(|t| t.title == selector)
+        .copied()
+        .collect();
+    match title_hits.len() {
+        0 => Err(CommandError::UnknownTask(selector.to_owned())),
+        1 => Ok(title_hits[0].id),
+        _ => Err(CommandError::AmbiguousTask {
+            candidates: candidates(&title_hits),
+        }),
+    }
 }
 
 /// The human-readable task list; under the resolved `standalone` backend
@@ -345,4 +393,147 @@ pub fn render_text_receipt(receipt: &MutationReceipt) -> String {
         "{} \"{}\" in {} at position {} ({})",
         receipt.id, receipt.title, receipt.stack_title, receipt.order, state
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use taskboard_domain::{StackId, TaskClocks, TaskId};
+    use uuid::Uuid;
+
+    fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        use chrono::TimeZone as _;
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn task(raw: u128, title: &str, order: i64) -> taskboard_domain::Task {
+        taskboard_domain::Task {
+            id: TaskId::from(Uuid::from_u128(raw)),
+            remote: None,
+            title: title.to_owned(),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            stack: StackId::from(Uuid::from_u128(2)),
+            order,
+            labels: std::collections::BTreeSet::default(),
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: ts(100),
+                description: ts(100),
+                duedate: ts(100),
+                done: ts(100),
+                position: ts(100),
+                labels: ts(100),
+                archived: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn state_with(tasks: Vec<taskboard_domain::Task>) -> AppState {
+        let mut state = AppState::default();
+        for t in tasks {
+            state.tasks.insert(t.id, t);
+        }
+        state
+    }
+
+    #[test]
+    fn exact_uuid_wins_even_when_a_title_also_matches() {
+        let a = task(0x100, "alpha", 0);
+        let id = a.id;
+        let mut state = state_with(vec![a, task(0x200, "alpha", 1)]);
+        state
+            .tasks
+            .get_mut(&TaskId::from(Uuid::from_u128(0x200)))
+            .unwrap()
+            .title = "alpha".to_owned();
+        assert!(matches!(resolve_task(&state, &id.as_uuid().to_string()), Ok(got) if got == id));
+    }
+
+    #[test]
+    fn unique_eight_char_prefix_resolves() {
+        let a = task(0x1234_0000_0000_0000_0000_0000_0000_0000, "alpha", 0);
+        let id = a.id;
+        let state = state_with(vec![
+            a,
+            task(0xabcd_0000_0000_0000_0000_0000_0000_0000, "beta", 1),
+        ]);
+        let selector = id.as_uuid().to_string()[..8].to_owned();
+        assert!(matches!(resolve_task(&state, &selector), Ok(got) if got == id));
+    }
+
+    #[test]
+    fn colliding_prefix_is_an_ambiguity_error_listing_titles() {
+        // Same millisecond of UUIDv7 time ⇒ shared ≥12-char prefixes; the
+        // minimum-length shared prefix is engineered via adjacent u128s.
+        let a = task(0x0000_0000_0000_00aa, "alpha", 0);
+        let b = task(0x0000_0000_0000_00bb, "beta", 1);
+        let state = state_with(vec![a, b]);
+        // Both hyphenated forms share the leading "00000000-0000-0000"
+        // (19 chars ≥ 8): a prefix that matches both must be ambiguous.
+        let shared = "00000000";
+        let err = resolve_task(&state, shared).expect_err("ambiguous");
+        match err {
+            CommandError::AmbiguousTask { candidates } => {
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.contains(&"alpha".to_owned()));
+                assert!(candidates.contains(&"beta".to_owned()));
+            }
+            other => panic!("expected AmbiguousTask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exact_title_resolves_and_duplicates_are_ambiguous() {
+        let a = task(0x100, "alpha", 0);
+        let id = a.id;
+        assert!(
+            matches!(resolve_task(&state_with(vec![a]), "alpha"), Ok(got) if got == id),
+            "unique title resolves"
+        );
+        let err = resolve_task(
+            &state_with(vec![task(0x100, "alpha", 0), task(0x200, "alpha", 1)]),
+            "alpha",
+        )
+        .expect_err("duplicate titles ambiguous");
+        assert!(
+            matches!(err, CommandError::AmbiguousTask { ref candidates } if candidates.len() == 2)
+        );
+    }
+
+    #[test]
+    fn unknown_selector_is_typed_and_tombstones_are_invisible() {
+        assert!(matches!(
+            resolve_task(&state_with(vec![task(0x100, "alpha", 0)]), "nope"),
+            Err(CommandError::UnknownTask(sel)) if sel == "nope"
+        ));
+        let mut dead = task(0x100, "alpha", 0);
+        dead.deleted = true;
+        assert!(
+            matches!(
+                resolve_task(&state_with(vec![dead]), "alpha"),
+                Err(CommandError::UnknownTask(sel)) if sel == "alpha"
+            ),
+            "a tombstoned task is not a title hit"
+        );
+    }
+
+    #[test]
+    fn a_uuid_shaped_selector_that_hits_nothing_falls_through() {
+        // A full uuid of a task that does not exist must not error out of
+        // the cascade: the fall-through keeps prefix/title working.
+        let a = task(0x100, "00001111", 0);
+        let id = a.id;
+        let state = state_with(vec![a]);
+        let missing = Uuid::from_u128(0xdead_beef).to_string();
+        assert!(matches!(
+            resolve_task(&state, &missing),
+            Err(CommandError::UnknownTask(_))
+        ));
+        assert!(matches!(resolve_task(&state, "00001111"), Ok(got) if got == id));
+    }
 }

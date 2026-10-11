@@ -94,6 +94,13 @@ pub enum CommandError {
     /// No task matches the selector.
     #[error("no such task")]
     UnknownTask(String),
+    /// The task selector matches several live tasks; carries their
+    /// titles (deterministic board order).
+    #[error("task selector matches several tasks — pass one of {}", candidates.join(" | "))]
+    AmbiguousTask {
+        /// The matched tasks' titles.
+        candidates: Vec<String>,
+    },
     /// No stack matches the selector.
     #[error("no such stack")]
     UnknownStack(String),
@@ -179,6 +186,7 @@ impl CommandError {
             Self::UnknownBoard(_) => "unknown-board",
             Self::BoardAlreadyBound { .. } => "board-already-bound",
             Self::UnknownTask(_) => "unknown-task",
+            Self::AmbiguousTask { .. } => "ambiguous-task",
             Self::UnknownStack(_) => "unknown-stack",
             Self::AmbiguousStack { .. } => "ambiguous-stack",
             Self::NoStacks => "no-stacks",
@@ -200,7 +208,9 @@ impl CommandError {
             Self::UnknownBoard(id) => Some(id.to_string()),
             Self::BoardAlreadyBound { current } => Some(current.to_string()),
             Self::UnknownTask(sel) | Self::UnknownStack(sel) => Some(sel.clone()),
-            Self::AmbiguousStack { candidates } => Some(candidates.join(", ")),
+            Self::AmbiguousTask { candidates } | Self::AmbiguousStack { candidates } => {
+                Some(candidates.join(", "))
+            }
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
             _ => None,
         }
