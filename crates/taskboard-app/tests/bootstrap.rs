@@ -508,3 +508,50 @@ async fn b7_restart_continuity_with_validators() {
     );
     app.shutdown().await;
 }
+
+/// B8: the standalone shape — bootstrap consults no credential store
+/// (an empty one would fail `load`), the engine+storage graph serves
+/// `CreateBoard`, `RequestSync` fails closed (`NoOp`, phase stays
+/// `Idle`), and shutdown is clean with no sync actor to join.
+#[tokio::test]
+async fn b8_standalone_boot_never_touches_credentials_and_serves_commands() {
+    let dir = tempdir();
+    let mut config = common::valid_config("https://unused.example.com");
+    config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
+    config.nextcloud.server_url = None;
+    config.nextcloud.username = None;
+    config.storage.db_path = Some(dir.path().join("taskboard.db"));
+
+    // The empty fake would answer `NotFound` if consulted.
+    let app = bootstrap(config, Arc::new(common::FakeCredentialStore::default()))
+        .await
+        .expect("standalone boot needs no credentials");
+
+    let outcome = app
+        .engine
+        .execute(StateCommand::CreateBoard {
+            title: "personal".into(),
+            color: Color::new("3366cc"),
+        })
+        .await
+        .expect("accepted");
+    assert!(matches!(
+        outcome,
+        taskboard_domain::CommandOutcome::CreatedBoard(_)
+    ));
+
+    // The nudge fails closed: `NoOp` (no `Syncing` transient), idle phase.
+    let outcome = app
+        .engine
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert!(matches!(outcome, taskboard_domain::CommandOutcome::NoOp));
+    assert_eq!(
+        app.engine.shared_state().load_full().sync.phase,
+        SyncPhase::Idle
+    );
+
+    let outcome = app.shutdown().await;
+    assert!(!outcome.actor_aborted);
+}
