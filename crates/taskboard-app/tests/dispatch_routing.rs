@@ -645,3 +645,79 @@ async fn one_shot_core_verbs_route_success_end_to_end() {
         .collect();
     assert!(receipts.len() >= 20, "{} receipts", receipts.len());
 }
+
+/// D-sync: the one-shot sync arm's outcome arms route in-process — a
+/// wiremock that answers slower than the budget yields the typed
+/// timeout exit, and a fast auth failure yields the failed exit (both
+/// envelopes on stderr, exit 1). The success arm rides the binary-level
+/// V/J suites (llvm-cov cannot see subprocesses).
+#[tokio::test]
+async fn sync_routes_the_timeout_and_failure_outcomes() {
+    use common::EnvOverride;
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(401).set_delay(std::time::Duration::from_secs(5)),
+        )
+        .mount(&server)
+        .await;
+
+    let dir = tempdir();
+    common::write_test_config(
+        &dir.path().join("taskboard.toml"),
+        Some(&server.uri()),
+        Some("alice"),
+    )
+    .expect("write config");
+    let _guard = env_lock();
+    let _password = EnvOverride::set("TASKBOARD_APP_PASSWORD", "pw");
+
+    // The cycle's first request outruns the one-second budget: the
+    // typed timeout, exit 1. (The board binding makes the cycle pull —
+    // without one it skips silently and never touches the server.)
+    common::seed_board_binding(
+        &dir.path().join("taskboard.db"),
+        1,
+        common::BOARD,
+        "d-sync-run",
+    )
+    .await;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(
+        Command::Sync {
+            no_wait: false,
+            timeout_secs: 1,
+        },
+        ctx(dir.path(), &mut out, &mut err),
+    )
+    .await;
+    assert_eq!(code, 1);
+
+    // A fast 401: the cycle fails auth within the budget.
+    let fast = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(wiremock::ResponseTemplate::new(401))
+        .mount(&fast)
+        .await;
+    common::write_test_config(
+        &dir.path().join("taskboard.toml"),
+        Some(&fast.uri()),
+        Some("alice"),
+    )
+    .expect("rewrite config");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(
+        Command::Sync {
+            no_wait: false,
+            timeout_secs: 30,
+        },
+        ctx(dir.path(), &mut out, &mut err),
+    )
+    .await;
+    assert_eq!(code, 1);
+    let envelope: serde_json::Value = serde_json::from_slice(&err).expect("one error envelope");
+    assert_eq!(envelope["error"]["kind"], "sync-failed");
+}

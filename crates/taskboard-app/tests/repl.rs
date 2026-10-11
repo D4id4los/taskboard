@@ -757,6 +757,10 @@ async fn r12_session_arms_route_success_end_to_end() {
             .await,
             0
         );
+        assert_eq!(
+            route_line(&session, &app, Command::Status, &mut io).await,
+            0
+        );
 
         // tasks: add two; label/unlabel, move, edit, done, delete.
         for title in ["t1", "t2"] {
@@ -875,6 +879,20 @@ async fn r12_session_arms_route_success_end_to_end() {
                 Command::Tasks {
                     cmd: TasksCmd::Delete {
                         task: "t1".to_owned(),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Labels {
+                    cmd: taskboard_app::cli::LabelsCmd::Delete {
+                        label: "critical".to_owned(),
                     },
                 },
                 &mut io,
