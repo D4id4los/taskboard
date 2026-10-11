@@ -62,6 +62,7 @@ impl Scenario {
             clock.clone(),
             sync_out,
             report_rx,
+            system_tx.clone(),
             system_rx,
         )
         .await

@@ -183,6 +183,7 @@ pub async fn spawn_state_engine(
     clock: Arc<dyn Clock>,
     sync_out: mpsc::Sender<SyncCommand>,
     sync_reports: mpsc::Receiver<taskboard_domain::SyncReport>,
+    system_out: broadcast::Sender<SystemEvent>,
     system: broadcast::Receiver<SystemEvent>,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
@@ -213,6 +214,7 @@ pub async fn spawn_state_engine(
             ids,
             clock,
             sync_out,
+            system_out,
         },
         shared,
         signals,
@@ -230,6 +232,7 @@ struct EngineParts {
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
     sync_out: mpsc::Sender<SyncCommand>,
+    system_out: broadcast::Sender<SystemEvent>,
 }
 
 #[allow(
@@ -250,7 +253,12 @@ async fn run_loop(
         ids,
         clock,
         sync_out,
+        system_out,
     } = parts;
+    // Edge-trigger state for `StorageFailed`: the event fires on the
+    // ok->fail transition (a dying disk fires once per failure epoch,
+    // not once per command) and any successful persistence resets it.
+    let mut storage_failing = false;
     let mut commands_open = true;
     let mut reports_open = true;
     let mut system_open = true;
@@ -286,9 +294,10 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (&repo, ids.as_ref(), clock.as_ref(), &sync_out),
+                        (&repo, ids.as_ref(), clock.as_ref(), &sync_out, &system_out),
                         command,
                         reply,
+                        &mut storage_failing,
                     )
                     .await;
                 }
@@ -351,6 +360,9 @@ async fn run_loop(
                 Ok(SystemEvent::NetworkLost | SystemEvent::NetworkRestored) => {
                     tracing::debug!("network event ignored: engine draining");
                 }
+                // The engine never acts on its own StorageFailed: it is
+                // the producer (compiler-forced arm).
+                Ok(SystemEvent::StorageFailed) => {}
                 Err(broadcast::error::RecvError::Closed) => system_open = false,
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     tracing::warn!(missed, "system event backlog overflowed");
@@ -372,21 +384,23 @@ fn publish(
     let _ = signals.send(EngineSignal::StateUpdated);
 }
 
-/// The seams tuple: `(repo, ids, clock, sync_out)`.
+/// The seams tuple: `(repo, ids, clock, sync_out, system_out)`.
 type Seams<'a> = (
     &'a Arc<dyn TaskRepository>,
     &'a dyn IdGenerator,
     &'a dyn Clock,
     &'a mpsc::Sender<SyncCommand>,
+    &'a broadcast::Sender<SystemEvent>,
 );
 
 async fn execute_command(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock, sync_out): Seams<'_>,
+    (repo, ids, clock, sync_out, system_out): Seams<'_>,
     command: StateCommand,
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
+    storage_failing: &mut bool,
 ) {
     tracing::debug!("command received");
     let now = clock.now();
@@ -430,11 +444,16 @@ async fn execute_command(
         // Memory never advanced (interpret runs only after a
         // successful apply) — no rollback needed.
         tracing::error!(?err, "persisted batch lost; state unchanged");
+        if !*storage_failing {
+            let _ = system_out.send(SystemEvent::StorageFailed); // no receivers: fine
+        }
+        *storage_failing = true;
         if let Some(reply) = reply {
             let _ = reply.send(Err(ExecuteError::Storage(err)));
         }
         return;
     }
+    *storage_failing = false;
     let changed = core.interpret(&plan.actions, now);
     // Nudge iff the batch enqueued >= 1 op; a successful forward marks
     // the memory-only `Syncing` transient. One mutating message publishes

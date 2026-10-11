@@ -71,6 +71,7 @@ async fn boot(server: MockServer, repo_state: taskboard_domain::PersistedState) 
         clock,
         nudges_tx,
         report_rx,
+        system_tx.clone(),
         system_engine_rx,
     )
     .await

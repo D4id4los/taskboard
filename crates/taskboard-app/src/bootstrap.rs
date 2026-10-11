@@ -318,6 +318,7 @@ pub async fn bootstrap(
         Arc::new(taskboard_domain::SystemClock),
         sync_commands.clone(),
         report_rx,
+        system.clone(),
         system_rx_engine,
     )
     .await;
@@ -366,6 +367,32 @@ pub async fn bootstrap(
         storage_join,
         engine_join,
         _lock: lock,
+    })
+}
+
+/// Subscribes to the system broadcast and logs every event — the
+/// daemon-side observability for `StorageFailed` (warn) and the network
+/// events (info). Exits on channel close or a `Lagged` backlog; the
+/// Phase 7 UI banner is the real consumer.
+#[must_use]
+pub fn spawn_system_event_logger(
+    system: &broadcast::Sender<SystemEvent>,
+) -> tokio::task::JoinHandle<()> {
+    let mut events = system.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(SystemEvent::StorageFailed) => {
+                    tracing::warn!("persistence failed; state unchanged (StorageFailed)");
+                }
+                Ok(event) => tracing::info!(?event, "system event"),
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::warn!(missed, "system event backlog overflowed");
+                    return;
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
     })
 }
 

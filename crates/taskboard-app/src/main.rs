@@ -105,6 +105,9 @@ async fn run(cli: Cli) -> color_eyre::Result<()> {
         Err(err) => return Err(err.into()),
     };
 
+    // The daemon logs system events (StorageFailed et al.) until exit.
+    let _logger = taskboard_app::bootstrap::spawn_system_event_logger(&app.system);
+
     // The first-signal wait happens here — *before* arming the
     // force-exit watcher — because `ctrl_c` and SIGTERM notify every
     // listener: an early watcher would catch the first signal instead

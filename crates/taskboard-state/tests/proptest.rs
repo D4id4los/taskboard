@@ -439,7 +439,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
         let (sync_out, sync_in) = tokio::sync::mpsc::channel::<taskboard_domain::SyncCommand>(8);
         drop(sync_in);
         let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<taskboard_domain::SyncReport>(8);
-        let (_system_tx, system_rx) =
+        let (system_tx, system_rx) =
             tokio::sync::broadcast::channel::<taskboard_domain::SystemEvent>(8);
         let (handle, _join) = spawn_state_engine(
             repo.clone(),
@@ -447,6 +447,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
             Arc::new(FixedTestClock),
             sync_out,
             report_rx,
+            system_tx,
             system_rx,
         )
         .await
