@@ -132,11 +132,25 @@ pub struct StorageSection {
     pub db_path: Option<PathBuf>,
 }
 
+/// `[sync] backend`: which connector drives sync (ADR 0010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyncBackend {
+    /// No connector: fully local operation (fresh-install default).
+    Standalone,
+    /// The Nextcloud Deck connector (first implementation).
+    Nextcloud,
+}
+
 /// `[sync]` table: plain seconds fields converted at the
 /// [`SyncActorConfig`] mapping — no string duration parsing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SyncSection {
+    /// Which connector drives sync; `None` = auto — `nextcloud` iff
+    /// `nextcloud.server_url` is present, else `standalone` (ADR 0010).
+    #[serde(default)]
+    pub backend: Option<SyncBackend>,
     /// Idle wait between cycles after a success.
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
@@ -151,6 +165,7 @@ pub struct SyncSection {
 impl Default for SyncSection {
     fn default() -> Self {
         Self {
+            backend: None,
             poll_interval_secs: default_poll_interval(),
             backoff_initial_secs: default_backoff_initial(),
             backoff_max_secs: default_backoff_max(),
@@ -257,6 +272,22 @@ impl AppConfig {
         Ok(config)
     }
 
+    /// The effective sync backend (ADR 0010): the explicit `[sync]
+    /// backend` value, else auto — `nextcloud` iff
+    /// `nextcloud.server_url` is present (a half-configured file stays
+    /// loud), else `standalone`. Every consumer resolves through this
+    /// one accessor.
+    #[must_use]
+    pub fn sync_backend(&self) -> SyncBackend {
+        self.sync.backend.unwrap_or_else(|| {
+            if self.nextcloud.server_url.is_some() {
+                SyncBackend::Nextcloud
+            } else {
+                SyncBackend::Standalone
+            }
+        })
+    }
+
     /// Structural validation of the decoded values. `load` runs this
     /// last; hand-built configs (tests, embedders) can call it directly.
     ///
@@ -265,23 +296,30 @@ impl AppConfig {
     /// The first failing check, as a typed variant.
     #[allow(clippy::result_large_err)] // the figment source, once at boot
     pub fn validate(&self) -> Result<(), ConfigError> {
-        // Same normalization rules as `DeckClient::new`: the URL must
-        // survive client construction.
-        let url_ok = self
-            .nextcloud
-            .server_url
-            .as_deref()
-            .is_some_and(reqwest_host_ok);
-        if !url_ok {
+        // Same normalization rules as `DeckClient::new`: a *present* URL
+        // must survive client construction (typo guard, both backends).
+        if let Some(raw) = self.nextcloud.server_url.as_deref()
+            && !reqwest_host_ok(raw)
+        {
             return Err(ConfigError::InvalidServerUrl);
         }
-        if self
+        // A present username must be non-empty; under the resolved
+        // `nextcloud` backend both values are additionally required.
+        let username_empty = self
             .nextcloud
             .username
             .as_deref()
-            .is_none_or(|u| u.trim().is_empty())
-        {
+            .is_some_and(|u| u.trim().is_empty());
+        if username_empty {
             return Err(ConfigError::EmptyUsername);
+        }
+        if self.sync_backend() == SyncBackend::Nextcloud {
+            if self.nextcloud.server_url.is_none() {
+                return Err(ConfigError::InvalidServerUrl);
+            }
+            if self.nextcloud.username.is_none() {
+                return Err(ConfigError::EmptyUsername);
+            }
         }
         if self.sync.poll_interval_secs == 0 {
             return Err(ConfigError::InvalidDuration {

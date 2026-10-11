@@ -74,11 +74,14 @@ fn c2_toml_then_env_precedence() {
     assert_eq!(config.sync.poll_interval_secs, 99);
 }
 
-/// C3: absent required fields surface one typed `Missing`-class failure
-/// each; `validate` never panics on a partial config.
+/// C3: under the resolved `nextcloud` backend the required fields
+/// surface one typed failure each; `validate` never panics on a partial
+/// config. (Without a backend key the default config resolves
+/// `standalone` and validates — C10.)
 #[test]
 fn c3_required_fields_missing() {
     let mut config = AppConfig::default();
+    config.sync.backend = Some(taskboard_app::config::SyncBackend::Nextcloud);
     config.storage.db_path = Some(PathBuf::from("/tmp/x.db"));
     // `nextcloud` untouched: both required fields absent.
     assert!(matches!(
@@ -193,4 +196,85 @@ fn c9_backoff_ordering_enforced() {
         config.validate(),
         Err(ConfigError::InvalidDuration { .. })
     ));
+}
+
+/// C10: backend auto-resolution (ADR 0010) — no `[nextcloud] server_url`
+/// resolves `standalone`, a present one resolves `nextcloud`, through
+/// both the file and the env provider.
+#[test]
+fn c10_backend_auto_resolves_on_server_url() {
+    let _env = env_lock();
+    let mut config = AppConfig::default();
+    config.storage.db_path = Some(PathBuf::from("/tmp/x.db"));
+    config.validate().expect("stand-alone default validates");
+    assert_eq!(
+        config.sync_backend(),
+        taskboard_app::config::SyncBackend::Standalone
+    );
+
+    config.nextcloud.server_url = Some("https://cloud.example.com".into());
+    config.nextcloud.username = Some("alice".into());
+    assert_eq!(
+        config.sync_backend(),
+        taskboard_app::config::SyncBackend::Nextcloud
+    );
+
+    // The env provider keys the same rule.
+    let dir = tempdir();
+    let file = dir.path().join("taskboard.toml");
+    std::fs::write(&file, "").expect("write empty toml");
+    let _server = EnvOverride::set("TASKBOARD_NEXTCLOUD__SERVER_URL", "https://env.example.com");
+    let _user = EnvOverride::set("TASKBOARD_NEXTCLOUD__USERNAME", "alice");
+    let config = AppConfig::load(Some(file)).expect("loads");
+    assert_eq!(
+        config.sync_backend(),
+        taskboard_app::config::SyncBackend::Nextcloud
+    );
+}
+
+/// C11: explicit `backend = "standalone"` keeps a `[nextcloud]` table
+/// inert — missing credentials validate — but a *present* malformed URL
+/// stays a loud typo guard.
+#[test]
+fn c11_explicit_standalone_inerts_nextcloud_but_keeps_typo_guard() {
+    let mut config = AppConfig::default();
+    config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
+    config.storage.db_path = Some(PathBuf::from("/tmp/x.db"));
+    config.validate().expect("standalone needs no credentials");
+
+    config.nextcloud.server_url = Some("not a url".into());
+    assert!(matches!(
+        config.validate(),
+        Err(ConfigError::InvalidServerUrl)
+    ));
+}
+
+/// C12: the explicit `nextcloud` backend requires both fields — a
+/// `[sync] backend` alone without a server stays typed-rejected.
+#[test]
+fn c12_explicit_nextcloud_requires_credentials() {
+    let mut config = AppConfig::default();
+    config.sync.backend = Some(taskboard_app::config::SyncBackend::Nextcloud);
+    config.storage.db_path = Some(PathBuf::from("/tmp/x.db"));
+    assert!(matches!(
+        config.validate(),
+        Err(ConfigError::InvalidServerUrl)
+    ));
+    config.nextcloud.server_url = Some("https://cloud.example.com".into());
+    assert!(matches!(config.validate(), Err(ConfigError::EmptyUsername)));
+}
+
+/// C13: a typo'd backend value cannot decode (`deny_unknown_fields`
+/// plus the kebab-case enum).
+#[test]
+fn c13_typoed_backend_value_is_a_decode_error() {
+    let dir = tempdir();
+    let file = dir.path().join("taskboard.toml");
+    std::fs::write(
+        &file,
+        "[nextcloud]\nserver_url = 'https://cloud.example.com'\nusername = 'alice'\n\n[sync]\nbackend = 'none'\n",
+    )
+    .expect("write toml");
+    let err = AppConfig::load(Some(file)).expect_err("typo must not decode");
+    assert!(matches!(err, ConfigError::Decode(_)));
 }
