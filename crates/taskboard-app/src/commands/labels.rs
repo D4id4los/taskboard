@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use taskboard_domain::{AppState, CommandOutcome, LabelChanges, LabelId, StateCommand};
 
-use crate::cli::DEFAULT_LABEL_COLOR;
+pub(crate) use crate::cli::DEFAULT_LABEL_COLOR;
 use crate::commands::CommandError;
 use crate::commands::output::{LabelReceipt, LabelRow};
 use crate::config::AppConfig;
@@ -50,7 +50,12 @@ pub async fn list(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
 ) -> Result<Vec<LabelRow>, CommandError> {
-    crate::commands::tasks::with_core(config, store, async |app| {
+    crate::commands::tasks::with_core(config, store, async |app| list_on(app)).await
+}
+
+/// The `labels list` steps on a booted core (the REPL/session seam).
+pub(crate) fn list_on(app: &crate::App) -> Result<Vec<LabelRow>, CommandError> {
+    {
         let state = app.engine.shared_state().load_full();
         if !state.boards.values().any(|b| !b.deleted) {
             return Err(CommandError::NoBoard);
@@ -72,8 +77,7 @@ pub async fn list(
             .collect();
         rows.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(rows)
-    })
-    .await
+    }
 }
 
 /// Creates a label (default color when `--color` is omitted — the value
@@ -93,6 +97,19 @@ pub async fn add(
     // path (this crate's tests) normalizes here too.
     let color = color.map_or_else(|| DEFAULT_LABEL_COLOR.to_owned(), str::to_lowercase);
     crate::commands::tasks::with_core(config, store, async |app| {
+        add_on(app, title, color).await
+    })
+    .await
+}
+
+/// The `labels add` steps on a booted core (the REPL/session seam);
+/// `color` arrives normalized (lowercase hex, default applied).
+pub(crate) async fn add_on(
+    app: &crate::App,
+    title: String,
+    color: String,
+) -> Result<LabelReceipt, CommandError> {
+    {
         let outcome = app
             .engine
             .execute(StateCommand::CreateLabel {
@@ -112,8 +129,7 @@ pub async fn add(
             title,
             color,
         })
-    })
-    .await
+    }
 }
 
 /// Edits a label's title and/or color. A changeset touching nothing that
@@ -131,8 +147,21 @@ pub async fn edit(
 ) -> Result<LabelReceipt, CommandError> {
     let label = label.to_owned();
     crate::commands::tasks::with_core(config, store, async |app| {
+        edit_on(app, &label, title, color).await
+    })
+    .await
+}
+
+/// The `labels edit` steps on a booted core (the REPL/session seam).
+pub(crate) async fn edit_on(
+    app: &crate::App,
+    label: &str,
+    title: Option<String>,
+    color: Option<String>,
+) -> Result<LabelReceipt, CommandError> {
+    {
         let state = app.engine.shared_state().load_full();
-        let id = resolve_label(&state, &label)?;
+        let id = resolve_label(&state, label)?;
         drop(state);
         app.engine
             .execute(StateCommand::UpdateLabel {
@@ -148,14 +177,13 @@ pub async fn edit(
             .labels
             .get(&id)
             .filter(|l| !l.deleted)
-            .ok_or_else(|| CommandError::UnknownLabel(label))?;
+            .ok_or_else(|| CommandError::UnknownLabel(label.to_owned()))?;
         Ok(LabelReceipt {
             id: row.id.as_uuid().to_string(),
             title: row.title.clone(),
             color: row.color.as_str().to_owned(),
         })
-    })
-    .await
+    }
 }
 
 /// Deletes a label. Repeats are idempotent successes.
@@ -174,19 +202,28 @@ pub async fn delete(
     label: &str,
 ) -> Result<LabelReceipt, CommandError> {
     let label = label.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| {
+    crate::commands::tasks::with_core(config, store, async |app| delete_on(app, &label).await)
+        .await
+}
+
+/// The `labels delete` steps on a booted core (the REPL/session seam).
+pub(crate) async fn delete_on(
+    app: &crate::App,
+    label: &str,
+) -> Result<LabelReceipt, CommandError> {
+    {
         let state = app.engine.shared_state().load_full();
         // Terminal intent: a repeat still resolves its target, so a
         // tombstoned label stays reachable by exact uuid.
-        let id = resolve_label(&state, &label).or_else(|err| match err {
+        let id = resolve_label(&state, label).or_else(|err| match err {
             CommandError::UnknownLabel(_) => {
-                if let Ok(uuid) = uuid::Uuid::parse_str(&label) {
+                if let Ok(uuid) = uuid::Uuid::parse_str(label) {
                     let id = LabelId::from_uuid(uuid);
                     if state.labels.contains_key(&id) {
                         return Ok(id);
                     }
                 }
-                Err(CommandError::UnknownLabel(label.clone()))
+                Err(CommandError::UnknownLabel(label.to_owned()))
             }
             other => Err(other),
         })?;
@@ -204,8 +241,7 @@ pub async fn delete(
         drop(state);
         app.engine.execute(StateCommand::DeleteLabel { id }).await?;
         Ok(snapshot)
-    })
-    .await
+    }
 }
 
 /// The human-readable labels listing.

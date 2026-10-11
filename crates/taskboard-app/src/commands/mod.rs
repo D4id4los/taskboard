@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use taskboard_domain::SyncErrorKind;
+use taskboard_domain::{StateCommand, SyncErrorKind};
 use taskboard_sync_nextcloud::DeckError;
 
 use crate::bootstrap::BootstrapError;
@@ -666,6 +666,315 @@ fn task_changes(
             Some(true)
         } else {
             unarchive.then_some(false)
+        },
+    }
+}
+
+/// Routes one parsed line against the booted session core (ADR 0011).
+/// The session loop has already intercepted `Daemon`/`Login`; this is
+/// the per-verb table over the shared `*_on` seam. Never exits; the
+/// returned code is informational — a failed line never aborts the
+/// session nor shapes its exit code.
+///
+/// Connector verbs run their prelude against the *session* config and
+/// store (typed `sync-disabled` under `standalone`, fresh remote reads
+/// for the binding ceremonies); everything else hits the session core
+/// directly — no boot, no shutdown, no lock churn.
+/// Routes one parsed line against the booted session core (ADR 0011).
+/// The session loop has already intercepted `Daemon`/`Login`/`Logout`/
+/// `Config`; this is the per-verb table over the shared `*_on` seam.
+/// Never exits; the returned code is informational — a failed line never
+/// aborts the session nor shapes its exit code.
+///
+/// Connector verbs run their prelude against the *session* config and
+/// store (typed `sync-disabled` under `standalone`, fresh remote reads
+/// for the binding ceremonies); everything else hits the session core
+/// directly — no boot, no shutdown, no lock churn.
+#[allow(clippy::too_many_lines)] // one arm per subcommand, kept flat for review
+pub async fn dispatch_line(
+    session: &crate::repl::ReplSession,
+    app: &crate::App,
+    command: Command,
+    io: &mut CommandIo<'_>,
+) -> u8 {
+    tracing::info!(?command, json = io.json, "session line");
+    match command {
+        Command::Login { .. }
+        | Command::Logout
+        | Command::Config { .. }
+        | Command::Daemon => {
+            unreachable!("the session loop intercepts daemon, login, logout, and config before routing")
+        }
+        Command::Boards {
+            cmd: BoardsCmd::List,
+        } => match boards::list(&session.config, &session.store).await {
+            Ok(entries) => {
+                emit_to(io, &entries, &boards::render_text_list(&entries));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Boards {
+            cmd:
+                BoardsCmd::Select {
+                    board,
+                    timeout_secs,
+                    bind_local_board,
+                },
+        } => match boards::select_prelude(&session.config, &session.store, board).await {
+            Ok(()) => match boards::select_on(
+                app,
+                board,
+                Duration::from_secs(timeout_secs),
+                bind_local_board,
+            )
+            .await
+            {
+                Ok(receipt) => {
+                    emit_to(io, &receipt, &boards::render_text_select(&receipt));
+                    0
+                }
+                Err(err) => report_to(io, &err),
+            },
+            Err(err) => report_to(io, &err),
+        },
+        Command::Boards {
+            cmd: BoardsCmd::Create { title, color },
+        } => {
+            let color = boards::resolved_color(color.as_deref());
+            let color_str = color.as_str().to_owned();
+            match boards::create_on(app, title, color, color_str).await {
+                Ok(receipt) => {
+                    emit_to(io, &receipt, &boards::render_text_create(&receipt));
+                    0
+                }
+                Err(err) => report_to(io, &err),
+            }
+        }
+        Command::Boards {
+            cmd: BoardsCmd::Rename { title },
+        } => match boards::rename_on(app, title).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &boards::render_text_rename(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Boards {
+            cmd: BoardsCmd::Publish { timeout_secs },
+        } => match boards::publish_prelude(&session.config, &session.store) {
+            Ok(client) => {
+                match boards::publish_on(app, &client, Duration::from_secs(timeout_secs)).await {
+                    Ok(receipt) => {
+                        emit_to(io, &receipt, &boards::render_text_select(&receipt));
+                        0
+                    }
+                    Err(err) => report_to(io, &err),
+                }
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Stacks {
+            cmd: StacksCmd::Add { title, order },
+        } => match stacks::add_on(app, title, order).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &stacks::render_text_add(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Stacks {
+            cmd: StacksCmd::Rename { stack, title },
+        } => match stacks::rename_on(app, &stack, title).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &stacks::render_text_add(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Stacks {
+            cmd: StacksCmd::Delete { stack },
+        } => match stacks::delete_on(app, &stack).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &stacks::render_text_delete(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Stacks {
+            cmd: StacksCmd::Move { stack, order },
+        } => match stacks::move_on(app, &stack, order).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &stacks::render_text_add(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Labels {
+            cmd: LabelsCmd::List,
+        } => match labels::list_on(app) {
+            Ok(rows) => {
+                emit_to(io, &rows, &labels::render_text_list(&rows));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Labels {
+            cmd: LabelsCmd::Add { title, color },
+        } => {
+            // The clap value parser normalizes to lowercase; the
+            // session arm normalizes like the one-shot wrapper does.
+            let color =
+                color.map_or_else(|| labels::DEFAULT_LABEL_COLOR.to_owned(), |c| c.to_lowercase());
+            match labels::add_on(app, title, color).await {
+                Ok(receipt) => {
+                    emit_to(io, &receipt, &labels::render_text_receipt(&receipt));
+                    0
+                }
+                Err(err) => report_to(io, &err),
+            }
+        }
+        Command::Labels {
+            cmd:
+                LabelsCmd::Edit {
+                    label,
+                    title,
+                    color,
+                },
+        } => match labels::edit_on(app, &label, title, color).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &labels::render_text_receipt(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Labels {
+            cmd: LabelsCmd::Delete { label },
+        } => match labels::delete_on(app, &label).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &labels::render_text_receipt(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Tasks {
+            cmd: TasksCmd::List { stack },
+        } => {
+            let standalone = session.config.sync_backend() == SyncBackend::Standalone;
+            match tasks::list_on(app, stack.as_deref()) {
+                Ok(list) => {
+                    emit_to(io, &list, &tasks::render_text_list(&list, standalone));
+                    0
+                }
+                Err(err) => report_to(io, &err),
+            }
+        }
+        Command::Tasks {
+            cmd: TasksCmd::Add { title, stack },
+        } => match tasks::add_on(app, title, stack.as_deref()).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Tasks {
+            cmd: TasksCmd::Done { task, undo },
+        } => match tasks::done_on(app, &task, undo).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Tasks {
+            cmd: TasksCmd::Move { task, stack, order },
+        } => match tasks::move_on(app, &task, stack.as_deref(), order).await {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Tasks {
+            cmd:
+                TasksCmd::Edit {
+                    task,
+                    title,
+                    description,
+                    due,
+                    archive,
+                    unarchive,
+                },
+        } => {
+            let changes = task_changes(title, description, due, archive, unarchive);
+            match tasks::edit_on(app, &task, changes).await {
+                Ok(receipt) => {
+                    emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
+                    0
+                }
+                Err(err) => report_to(io, &err),
+            }
+        }
+        Command::Tasks {
+            cmd: TasksCmd::Delete { task },
+        } => match tasks::delete_on(app, &task).await {
+            Ok(receipt) => {
+                emit_to(
+                    io,
+                    &receipt,
+                    &format!("deleted \"{}\" ({})", receipt.title, receipt.id),
+                );
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Tasks {
+            cmd: TasksCmd::Label { task, label },
+        } => match tasks::label_on(app, &task, &label, |t, l| {
+            StateCommand::AssignLabel { task: t, label: l }
+        })
+        .await
+        {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Tasks {
+            cmd: TasksCmd::Unlabel { task, label },
+        } => match tasks::label_on(app, &task, &label, |t, l| {
+            StateCommand::UnassignLabel { task: t, label: l }
+        })
+        .await
+        {
+            Ok(receipt) => {
+                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
+                0
+            }
+            Err(err) => report_to(io, &err),
+        },
+        Command::Sync {
+            no_wait,
+            timeout_secs,
+        } => match crate::commands::require_connector(&session.config) {
+            Ok(()) => match sync::sync_on(app, no_wait, Duration::from_secs(timeout_secs)).await {
+                Ok(outcome) => {
+                    emit_to(io, outcome.view(), &sync::render_text(&outcome));
+                    match outcome {
+                        sync::SyncOutcome::Succeeded(_) | sync::SyncOutcome::NoWait(_) => 0,
+                        sync::SyncOutcome::Failed(kind, _) => {
+                            report_to(io, &CommandError::SyncFailed(kind))
+                        }
+                        sync::SyncOutcome::TimedOut(_) => {
+                            report_to(io, &CommandError::SyncTimedOut)
+                        }
+                    }
+                }
+                Err(err) => report_to(io, &err),
+            },
+            Err(err) => report_to(io, &err),
         },
     }
 }

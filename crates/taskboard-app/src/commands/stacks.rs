@@ -86,8 +86,20 @@ pub async fn rename(
     let stack = stack.to_owned();
     let title = title.to_owned();
     crate::commands::tasks::with_core(config, store, async |app| {
+        rename_on(app, &stack, title).await
+    })
+    .await
+}
+
+/// The `stacks rename` steps on a booted core (the REPL/session seam).
+pub(crate) async fn rename_on(
+    app: &crate::App,
+    stack: &str,
+    title: String,
+) -> Result<StackReceipt, CommandError> {
+    {
         let state = app.engine.shared_state().load_full();
-        let id = resolve(&state, &stack)?;
+        let id = resolve(&state, stack)?;
         drop(state);
         app.engine
             .execute(StateCommand::RenameStack {
@@ -100,14 +112,13 @@ pub async fn rename(
             .stacks
             .get(&id)
             .filter(|s| !s.deleted)
-            .ok_or_else(|| CommandError::UnknownStack(stack))?;
+            .ok_or_else(|| CommandError::UnknownStack(stack.to_owned()))?;
         Ok(StackReceipt {
             id: row.id.as_uuid().to_string(),
             title: row.title.clone(),
             order: row.order,
         })
-    })
-    .await
+    }
 }
 
 /// Deletes (tombstones) a stack, cascading to its live tasks. Repeats
@@ -127,19 +138,28 @@ pub async fn delete(
     stack: &str,
 ) -> Result<StackDeleteReceipt, CommandError> {
     let stack = stack.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| {
+    crate::commands::tasks::with_core(config, store, async |app| delete_on(app, &stack).await)
+        .await
+}
+
+/// The `stacks delete` steps on a booted core (the REPL/session seam).
+pub(crate) async fn delete_on(
+    app: &crate::App,
+    stack: &str,
+) -> Result<StackDeleteReceipt, CommandError> {
+    {
         let state = app.engine.shared_state().load_full();
         // Terminal intent: a repeat still resolves its target, so a
         // tombstoned stack stays reachable by exact uuid.
-        let id = resolve(&state, &stack).or_else(|err| match err {
+        let id = resolve(&state, stack).or_else(|err| match err {
             CommandError::UnknownStack(_) => {
-                if let Ok(uuid) = uuid::Uuid::parse_str(&stack) {
+                if let Ok(uuid) = uuid::Uuid::parse_str(stack) {
                     let id = StackId::from_uuid(uuid);
                     if state.stacks.contains_key(&id) {
                         return Ok(id);
                     }
                 }
-                Err(CommandError::UnknownStack(stack.clone()))
+                Err(CommandError::UnknownStack(stack.to_owned()))
             }
             other => Err(other),
         })?;
@@ -157,8 +177,7 @@ pub async fn delete(
         drop(state);
         app.engine.execute(StateCommand::DeleteStack { id }).await?;
         Ok(snapshot)
-    })
-    .await
+    }
 }
 
 /// Reorders a stack within the board. Repeats with the same order are
@@ -174,9 +193,19 @@ pub async fn move_(
     order: i64,
 ) -> Result<StackReceipt, CommandError> {
     let stack = stack.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| {
+    crate::commands::tasks::with_core(config, store, async |app| move_on(app, &stack, order).await)
+        .await
+}
+
+/// The `stacks move` steps on a booted core (the REPL/session seam).
+pub(crate) async fn move_on(
+    app: &crate::App,
+    stack: &str,
+    order: i64,
+) -> Result<StackReceipt, CommandError> {
+    {
         let state = app.engine.shared_state().load_full();
-        let id = resolve(&state, &stack)?;
+        let id = resolve(&state, stack)?;
         drop(state);
         app.engine
             .execute(StateCommand::MoveStack { id, order })
@@ -186,14 +215,13 @@ pub async fn move_(
             .stacks
             .get(&id)
             .filter(|s| !s.deleted)
-            .ok_or_else(|| CommandError::UnknownStack(stack))?;
+            .ok_or_else(|| CommandError::UnknownStack(stack.to_owned()))?;
         Ok(StackReceipt {
             id: row.id.as_uuid().to_string(),
             title: row.title.clone(),
             order: row.order,
         })
-    })
-    .await
+    }
 }
 
 /// The human-readable add/rename/move receipt.

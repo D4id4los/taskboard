@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::io::IsTerminal as _;
 use std::sync::Arc;
 
 use clap::Parser as _;
@@ -65,11 +66,11 @@ fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
-async fn run(cli: Cli) -> color_eyre::Result<()> {
+async fn run(mut cli: Cli) -> color_eyre::Result<()> {
     // Subcommand arms are lib code (`commands::dispatch`); the process
     // exits with the returned code (0 success / 1 runtime failure).
     // Exit 2 is clap's usage error, 130 the second-signal force exit.
-    if let Some(command) = cli.command
+    if let Some(command) = cli.command.take()
         && !matches!(command, Command::Daemon)
     {
         let mut out = std::io::stdout();
@@ -86,8 +87,31 @@ async fn run(cli: Cli) -> color_eyre::Result<()> {
         std::process::exit(i32::from(code));
     }
 
-    // Daemon lifecycle (explicit `daemon`, or no subcommand: `[app]
-    // mode` resolution — the daemon until the UI phases land).
+    // Bare `taskboard` is TTY-sensitive (ADR 0011): an interactive
+    // terminal opens the REPL session over one booted core; without a
+    // TTY the `[app] mode` resolution keeps today's behavior (the
+    // systemd/SSH-piped deployments).
+    if cli.command.is_none() {
+        let config = AppConfig::load(cli.config.clone())?;
+        match taskboard_app::repl::entry_point(
+            false,
+            std::io::stdin().is_terminal(),
+            config.app.mode,
+        ) {
+            taskboard_app::repl::Entry::Repl => {
+                let code = taskboard_app::repl::run_session(config, cli.json).await;
+                std::process::exit(i32::from(code));
+            }
+            // Fall through to the daemon lifecycle below.
+            taskboard_app::repl::Entry::ModeResolution(_) => {}
+            taskboard_app::repl::Entry::Subcommand => {
+                unreachable!("entry resolution ran with no subcommand given")
+            }
+        }
+    }
+
+    // Daemon lifecycle (explicit `daemon`, or mode resolution — the
+    // daemon until the UI phases land).
     let config = AppConfig::load(cli.config)?;
     if taskboard_app::commands::require_connector(&config).is_err() {
         // The daemon's entire purpose is the connector: fail loudly

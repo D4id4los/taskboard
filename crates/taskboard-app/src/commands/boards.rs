@@ -63,6 +63,16 @@ pub async fn list(
     Ok(entries)
 }
 
+/// The board color for `create`: lenient by domain design, with the
+/// default constant when omitted (`publish` maps defensively via
+/// `DeckColor::from_hex` with a fallback).
+pub(crate) fn resolved_color(color: Option<&str>) -> taskboard_domain::Color {
+    color.map_or_else(
+        || taskboard_domain::Color::new(DEFAULT_BOARD_COLOR),
+        taskboard_domain::Color::new,
+    )
+}
+
 /// Creates the local board (the stand-alone first-run command; works
 /// under both backends). The single-board refusal is the engine's own
 /// `BoardExists` rejection, surfaced with the `board-exists` kind.
@@ -77,12 +87,7 @@ pub async fn create(
     color: Option<&str>,
 ) -> Result<BoardReceipt, CommandError> {
     let title = title.to_owned();
-    // Lenient by domain design; `publish` maps defensively via
-    // `DeckColor::from_hex` with a fallback.
-    let color = color.map_or_else(
-        || taskboard_domain::Color::new(DEFAULT_BOARD_COLOR),
-        taskboard_domain::Color::new,
-    );
+    let color = resolved_color(color);
     let color_str = color.as_str().to_owned();
     crate::commands::tasks::with_core(config, store, async |app| {
         create_on(app, title, color, color_str).await
@@ -161,15 +166,31 @@ pub async fn publish(
     store: Arc<dyn CredentialStore>,
     timeout: Duration,
 ) -> Result<PublishReceipt, CommandError> {
-    crate::commands::require_connector(&config)?;
-    // The client is built from config + store before the core boots
-    // (the same shape `select` uses); the dispatcher already refused
-    // the standalone backend.
-    let client = client_for(&config, &store)?;
+    let client = publish_prelude(&config, &store)?;
+
     let app = crate::bootstrap::bootstrap(config, store).await?;
     let result = publish_on(&app, &client, timeout).await;
     let _ = app.shutdown().await;
     result
+}
+
+/// The pre-boot half of `boards publish` (the standalone gate + the
+/// client construction): shared verbatim by the one-shot wrapper and
+/// the session dispatcher.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed: `SyncDisabled`, credential/transport
+/// classes.
+pub(crate) fn publish_prelude(
+    config: &AppConfig,
+    store: &Arc<dyn CredentialStore>,
+) -> Result<DeckClient, CommandError> {
+    crate::commands::require_connector(config)?;
+    // The client is built from config + store before the core boots
+    // (the same shape `select` uses); the dispatcher already refused
+    // the standalone backend.
+    client_for(config, store)
 }
 
 /// The publish steps on a booted core; the caller owns the shutdown
@@ -269,18 +290,7 @@ pub async fn select(
     timeout: Duration,
     bind_local_board: bool,
 ) -> Result<SelectReceipt, CommandError> {
-    crate::commands::require_connector(&config)?;
-    // Pre-validation: a bogus id inside a sync cycle would only surface
-    // as the generic `Failed { Server }` — check the fresh listing
-    // first, before anything boots.
-    let client = client_for(&config, &store)?;
-    let listing = client.boards().await.map_err(map_deck_error)?;
-    if !listing
-        .iter()
-        .any(|b| b.id == board && !b.archived && b.is_live())
-    {
-        return Err(CommandError::UnknownBoard(board));
-    }
+    select_prelude(&config, &store, board).await?;
 
     let app = crate::bootstrap::bootstrap(config, store).await?;
     let result = select_on(&app, board, timeout, bind_local_board).await;
@@ -288,10 +298,41 @@ pub async fn select(
     result
 }
 
+/// The pre-boot half of `boards select` (the standalone gate + the
+/// fresh-listing pre-validation): shared verbatim by the one-shot
+/// wrapper and the session dispatcher.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed: `SyncDisabled`, credential/transport
+/// classes, [`CommandError::UnknownBoard`].
+pub(crate) async fn select_prelude(
+    config: &AppConfig,
+    store: &Arc<dyn CredentialStore>,
+    board: u64,
+) -> Result<(), CommandError> {
+    crate::commands::require_connector(config)?;
+    // Pre-validation: a bogus id inside a sync cycle would only surface
+    // as the generic `Failed { Server }` — check the fresh listing
+    // first, before anything boots.
+    let client = client_for(config, store)?;
+    let listing = client.boards().await.map_err(map_deck_error)?;
+    if !listing
+        .iter()
+        .any(|b| b.id == board && !b.archived && b.is_live())
+    {
+        return Err(CommandError::UnknownBoard(board));
+    }
+    Ok(())
+}
+
 /// Runs the binding steps on a booted core; the caller owns the
 /// shutdown (the session dispatcher calls this directly against the
 /// session core).
-pub(crate) async fn select_on(
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn select_on(
     app: &crate::App,
     board: u64,
     timeout: Duration,

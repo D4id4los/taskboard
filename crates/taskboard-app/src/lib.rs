@@ -18,6 +18,8 @@
 //! - [`commands`]: the operator-facing command handlers (ADR 0009) —
 //!   `login`, `boards`, `tasks`, `sync` — with the `--json` output
 //!   contract; the binary is dispatch + exit codes.
+//! - [`repl`]: the interactive session frontend (ADR 0011) — one booted
+//!   core, one line per invocation.
 //! - [`cli`]: the clap surface.
 //!
 //! This is internal API (the workspace is `publish = false`): no
@@ -32,6 +34,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod lockfile;
+pub mod repl;
 pub mod secrets;
 
 /// Application version, taken from the shared workspace version.
