@@ -263,3 +263,123 @@ async fn eventually(app: &taskboard_app::App, pred: impl Fn(&taskboard_domain::A
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
+
+/// J4: the stand-alone publish journey — author offline with zero
+/// server configured (`boards create` → `stacks add` → `tasks add`),
+/// then attach via `login` + `boards publish`: the local board, stack,
+/// and task land on a fresh Deck board, and a fresh invocation still
+/// serves the local ids (binding preserved).
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+#[allow(clippy::items_after_statements)] // the journey reads as one narrative
+async fn it_nextcloud_docker_cli_standalone_publish() {
+    use taskboard_app::commands::boards;
+    use taskboard_app::commands::login;
+    use taskboard_app::commands::stacks;
+    use taskboard_app::commands::tasks;
+    use taskboard_app::config::{AppConfig, StorageSection};
+
+    let Some(cfg) = common::live_docker_config() else {
+        return; // skip, never fail: tier not configured
+    };
+    common::with_deadline(standalone_publish_journey(&cfg))
+        .await
+        .expect("test must finish within the live deadline");
+
+    async fn standalone_publish_journey(cfg: &common::LiveCfg) {
+        let _env = common::env_lock();
+        let run = common::run_id();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("taskboard.db");
+
+        // Phase 1 — fully stand-alone: no server_url, no credentials.
+        let standalone = AppConfig {
+            storage: StorageSection {
+                db_path: Some(db_path.clone()),
+            },
+            ..AppConfig::default()
+        };
+        let no_store: Arc<dyn taskboard_app::secrets::CredentialStore> =
+            Arc::new(common::FakeCredentialStore::default());
+        let board_receipt = boards::create(standalone.clone(), Arc::clone(&no_store), &run, None)
+            .await
+            .expect("stand-alone board create");
+        let stack_receipt = stacks::add(
+            standalone.clone(),
+            Arc::clone(&no_store),
+            &format!("{run}-col"),
+            None,
+        )
+        .await
+        .expect("stand-alone stack add");
+        let task_receipt = tasks::add(
+            standalone,
+            Arc::clone(&no_store),
+            &format!("{run}-task"),
+            None,
+        )
+        .await
+        .expect("stand-alone task add");
+
+        // Phase 2 — attach: login, then publish the local board.
+        let _password = common::EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
+        let client = DeckClient::new(&cfg.url, &cfg.user, &cfg.token).expect("base URL");
+        let config_path = dir.path().join("taskboard.toml");
+        let raw = AppConfig::extract_raw(Some(&config_path)).expect("raw config");
+        let store: Arc<dyn taskboard_app::secrets::CredentialStore> =
+            Arc::new(taskboard_app::secrets::EnvCredentialStore);
+        let mut prompts = common::FakePrompts::new(&[&cfg.token]);
+        let receipt = login::run(
+            &config_path,
+            raw,
+            Some(cfg.url.clone()),
+            Some(cfg.user.clone()),
+            &mut prompts,
+            &store,
+        )
+        .await
+        .expect("login verifies");
+        assert!(receipt.verified);
+
+        let attached = common::live_config(cfg, &db_path);
+        let publish = boards::publish(
+            attached.clone(),
+            Arc::clone(&store),
+            Duration::from_secs(120),
+        )
+        .await
+        .expect("publish succeeds");
+        let remote_board_id = publish.board.id;
+
+        // Server-side truth: the published board holds the local stack
+        // and card, with the authored titles.
+        let stacks =
+            common::retry(|| async { client.stacks(remote_board_id, StackFilter::Active).await })
+                .await
+                .expect("server listing");
+        assert_eq!(stacks.len(), 1, "the local stack was pushed");
+        assert_eq!(stacks[0].title, format!("{run}-col"));
+        assert!(
+            stacks[0]
+                .cards
+                .iter()
+                .any(|c| c.title == format!("{run}-task")),
+            "the local task was pushed onto the published board"
+        );
+
+        // A fresh invocation still serves the local ids (binding
+        // preserved, no re-adoption duplicates).
+        let list = tasks::list(attached, Arc::clone(&store), None)
+            .await
+            .expect("list");
+        assert_eq!(list.stacks.len(), 1);
+        assert_eq!(list.stacks[0].id, stack_receipt.id);
+        assert_eq!(list.stacks[0].tasks.len(), 1);
+        assert_eq!(list.stacks[0].tasks[0].id, task_receipt.id);
+        assert_eq!(list.stacks[0].tasks[0].title, format!("{run}-task"));
+        let _ = board_receipt;
+
+        let deleted = common::retry(|| async { client.delete_board(remote_board_id).await }).await;
+        assert!(deleted.is_ok(), "board teardown must succeed");
+    }
+}
