@@ -1430,6 +1430,7 @@ changes once, together with WI-5's IPC payload pass.
 
 ## [2026-10-11] Outbox `board_id` column for board-scoped ops
 
+- **Status**: ✅ DONE (implemented 2026-10-12, branch `fix/storage-outbox-board-id`: migration 0003 + backfill, codec/repo board column, zero BoardId↔StackId casts remain).
 - **Category**: `Refactoring`
 - **Originating Plan/Report**: WI-3 review (the `RenameBoard` codec workaround)
 - **Target Area**: `crates/taskboard-storage-sqlite/` (migrations, codec.rs, repo.rs)
