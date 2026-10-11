@@ -8,7 +8,7 @@
 
 mod common;
 
-use taskboard_app::cli::{BoardsCmd, Command, LabelsCmd, StacksCmd, TasksCmd};
+use taskboard_app::cli::{BoardsCmd, Command, ConfigCmd, LabelsCmd, StacksCmd, TasksCmd};
 use taskboard_app::commands::{CommandCtx, dispatch};
 
 use common::{env_lock, remove_env, tempdir};
@@ -181,8 +181,6 @@ async fn sync_routes_a_failed_credential_load_to_exit_one() {
     assert_eq!(code, 1);
 }
 
-/// Every core-booting arm also rejects an undecodable config before any
-/// boot work (the `core_ctx` Err branch each arm shares).
 /// WI-3 editing verbs: one routing test per new `Command` variant, in
 /// the `failing_setup` shape (exit 1 at the credential load).
 #[tokio::test]
@@ -375,12 +373,43 @@ async fn tasks_unlabel_routes_a_failed_credential_load_to_exit_one() {
     assert_eq!(code, 1);
 }
 
+/// Every core-booting arm also rejects an undecodable config before any
+/// boot work (the `core_ctx` Err branch each arm shares).
 #[tokio::test]
 async fn a_core_command_with_an_undecodable_config_routes_to_exit_one() {
     let (_guard, dir) = garbage_setup();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::List { stack: None },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+/// `logout` routing: the env-selected store cannot delete (the typed
+/// `credential` refusal), and the secret-first ordering means the config
+/// file is untouched — deterministic exit 1, no keyring, no writes.
+#[tokio::test]
+async fn logout_routes_an_unsupportable_credential_store_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(Command::Logout, ctx(dir.path())).await;
+    assert_eq!(code, 1);
+    assert!(
+        dir.path().join("taskboard.toml").is_file(),
+        "the config file survives the refused delete"
+    );
+}
+
+/// `config print` routing: an undecodable config fails the decode-only
+/// gate (the one exit-1 case of that arm).
+#[tokio::test]
+async fn config_print_routes_an_undecodable_config_to_exit_one() {
+    let (_guard, dir) = garbage_setup();
+    let code = dispatch(
+        Command::Config {
+            cmd: ConfigCmd::Print,
         },
         ctx(dir.path()),
     )

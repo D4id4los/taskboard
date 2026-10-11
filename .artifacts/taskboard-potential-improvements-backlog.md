@@ -1399,3 +1399,23 @@ in `ingest_sync_report`. Do it when Phase 7 actually needs it.
 Other commands could surface `ConfigError::kind()` instead of the flat
 `"config"` kind in the JSON error envelope; defer so the wire format
 changes once, together with WI-5's IPC payload pass.
+
+## [2026-10-11] Outbox `board_id` column for board-scoped ops
+
+- **Category**: `Refactoring`
+- **Originating Plan/Report**: WI-3 review (the `RenameBoard` codec workaround)
+- **Target Area**: `crates/taskboard-storage-sqlite/` (migrations, codec.rs, repo.rs)
+
+### Context & Description
+The outbox ops table has task/stack/label id columns but no board
+column. `LocalOp::RenameBoard` therefore rides `stack_id` under its own
+`rename_board` op-kind tag (a `BoardId` cast through `StackId`). It is
+documented, type-sound at the codec boundary, and roundtrip-tested, but
+the cast is a hack a future reader can trip over — and the next
+board-scoped op (color/archive verbs, unbind) would widen it.
+
+### Proposed Approach
+Migration 0003: add a nullable `board_id` column, backfill it from
+`stack_id` where `op_kind = 'rename_board'`, and teach `op_to_columns`/
+`op_from_columns` the proper column. One migration, mechanical codec
+edits, existing roundtrip test extended.

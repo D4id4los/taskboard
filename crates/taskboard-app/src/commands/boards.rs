@@ -122,19 +122,17 @@ pub async fn rename(
 ) -> Result<BoardReceipt, CommandError> {
     let title = title.to_owned();
     crate::commands::tasks::with_core(config, store, async |app| {
-        let outcome = app
-            .engine
+        app.engine
             .execute(StateCommand::RenameBoard {
                 title: title.clone(),
             })
             .await?;
         let state = app.engine.shared_state().load_full();
-        let board = state.boards.values().find(|b| !b.deleted).ok_or_else(|| {
-            CommandError::Engine(Box::new(taskboard_state::ExecuteError::Rejected(
-                taskboard_domain::CommandError::NoBoard,
-            )))
-        })?;
-        let _ = outcome;
+        let board = state
+            .boards
+            .values()
+            .find(|b| !b.deleted)
+            .ok_or(CommandError::NoBoard)?;
         Ok(BoardReceipt {
             id: board.id.as_uuid().to_string(),
             title: board.title.clone(),
@@ -430,8 +428,14 @@ pub fn render_text_select(receipt: &SelectReceipt) -> String {
     )
 }
 
-/// The human-readable create/rename receipt.
+/// The human-readable create receipt.
 #[must_use]
 pub fn render_text_create(receipt: &BoardReceipt) -> String {
-    format!("board \"{}\" ({})", receipt.title, receipt.id)
+    format!("created board \"{}\" ({})", receipt.title, receipt.id)
+}
+
+/// The human-readable rename receipt.
+#[must_use]
+pub fn render_text_rename(receipt: &BoardReceipt) -> String {
+    format!("renamed board \"{}\" ({})", receipt.title, receipt.id)
 }

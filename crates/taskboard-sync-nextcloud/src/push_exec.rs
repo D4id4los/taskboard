@@ -590,6 +590,14 @@ impl<'a> PushExecutor<'a> {
         // create path's contract). The PUT therefore strips the label
         // list, and the desired set is applied below; the end state
         // always converges to `shape.labels`.
+        //
+        // Structurally safe against clears, too (v1.19.0
+        // `CardApiController::update` / `CardService::update`): the
+        // update endpoint's parameter list has no `labels` parameter and
+        // the update service path never touches card labels — the field
+        // is response-only serialization. A PUT can thus never clear or
+        // set server-side labels; the only writes are the sub-endpoints
+        // below, so "assigned" is decided against the *fetched* set.
         let body = mapping::apply_card_shape(&fetched, shape, Some(&[]));
         let updated = match self.client.update_card(card_ref.board.get(), &body).await {
             Ok(updated) => updated,
@@ -607,9 +615,10 @@ impl<'a> PushExecutor<'a> {
             }
         };
 
-        // Apply the label-set delta through the sub-endpoints. The PUT
-        // may have cleared the server-side set, so "assigned" is decided
-        // against the *fetched* set and re-assignment is idempotent.
+        // Apply the label-set delta through the sub-endpoints: only
+        // missing assignments are sent (redundant on a PUT-clear would
+        // be harmless, but the update path cannot clear — see above), so
+        // "assigned" is decided against the *fetched* set.
         let mut current = fetched_labels;
         for label_num in &desired {
             if current.contains(label_num) {
@@ -1394,6 +1403,82 @@ mod tests {
         // The field PUT carries no label ids: the wire has no fallback.
         let put_body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
         assert_eq!(put_body["labels"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn label_removal_on_an_update_rides_the_sub_endpoint() {
+        // Mirror of the assign test: a fetched card carrying label 3 and
+        // a desired set without it — the removal rides `removeLabel`,
+        // never the field PUT (the update path cannot touch labels).
+        let server = MockServer::start().await;
+        let labelled_card = serde_json::json!({
+            "id": 55, "title": "old", "stackId": 7, "type": "plain",
+            "order": 3, "labels": [3], "archived": false,
+            "duedate": null, "done": null
+        })
+        .to_string();
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(labelled_card.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(labelled_card.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/removeLabel",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(labelled_card))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+        let shape = CardShape {
+            title: "edited".into(),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            order: 3,
+            archived: false,
+            labels: std::collections::BTreeSet::new(),
+        };
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: shape,
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(outcomes[0].result, PushResult::Applied { .. }));
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3, "GET, PUT (fields), PUT (removeLabel)");
+        assert_eq!(
+            requests[2].url.path(),
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/removeLabel"
+        );
     }
 
     #[tokio::test]

@@ -418,16 +418,16 @@ pub fn adopt_label_after_push(local: &Label, echo: &RemoteLabel) -> Label {
     }
 }
 
-/// R6 for boards: adopt changed remote board content. Boards have no
-/// local-edit commands in the MVP, so the remote content is authoritative
-/// whenever it is strictly newer than `remote_seen`.
+/// R6 for boards, whole-entity: adopt changed remote board content
+/// whenever it is strictly newer than `remote_seen`. The *title* half
+/// now defends a local write through [`merge_board`]; color and archive
+/// still have no local-edit commands, so the remote content stays
+/// authoritative for them and all-or-nothing adoption is exactly
+/// equivalent.
 ///
-/// This is deliberately *not* a per-field merge: a true field-level board
-/// merge needs `BoardClocks` plus local board-edit commands to stamp them
-/// (see `entities.rs`). Until those exist there is nothing local to
-/// defend, so every difference would resolve to remote anyway and
-/// all-or-nothing adoption is exactly equivalent. Introduce the per-field
-/// variant together with board-edit commands, not before.
+/// Callers of board pulls go through [`merge_board`], which wraps this
+/// result with the field-wise title defense (`BoardClocks.title`); this
+/// function alone is the freshness gate every board field shares.
 #[must_use]
 pub fn adopt_board_if_newer(local: &Board, remote: &RemoteBoard) -> Board {
     if !remote_wins(

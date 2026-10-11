@@ -127,6 +127,11 @@ pub enum CommandError {
     /// There is no stack to target.
     #[error("no stacks to target")]
     NoStacks,
+    /// No live board exists (the single-board MVP's precondition failed
+    /// in a CLI handler before any command reached the engine; the
+    /// engine's own rejection keeps the same kind via `domain_error_kind`).
+    #[error("no board")]
+    NoBoard,
     /// The sync cycle failed with the given classification.
     #[error("sync cycle failed")]
     SyncFailed(SyncErrorKind),
@@ -209,6 +214,7 @@ impl CommandError {
             Self::UnknownLabel(_) => "unknown-label",
             Self::AmbiguousLabel { .. } => "ambiguous-label",
             Self::NoStacks => "no-stacks",
+            Self::NoBoard => "no-board",
             Self::SyncFailed(_) => "sync-failed",
             Self::SyncTimedOut => "sync-timed-out",
             Self::ConfigWrite(_) => "config-write",
@@ -387,7 +393,7 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
         } => match core_ctx(&ctx) {
             Ok((config, store)) => match boards::rename(config, store, &title).await {
                 Ok(receipt) => {
-                    emit(json, &receipt, &boards::render_text_create(&receipt));
+                    emit(json, &receipt, &boards::render_text_rename(&receipt));
                     0
                 }
                 Err(err) => report(json, &err),
