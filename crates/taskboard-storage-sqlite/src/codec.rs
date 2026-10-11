@@ -8,7 +8,7 @@
 //! columns decode to [`Corrupted`](taskboard_domain::persistence::RepositoryError)
 //! via [`CodecError`].
 
-use taskboard_domain::ids::{LabelId, RemoteBoardId, StackId, TaskId};
+use taskboard_domain::ids::{BoardId, LabelId, RemoteBoardId, StackId, TaskId};
 use taskboard_domain::outbox::LocalOp;
 use taskboard_domain::persistence::ValidatorKey;
 use taskboard_domain::state::{SyncErrorKind, SyncPhase};
@@ -63,6 +63,7 @@ pub(crate) struct OpColumns {
     pub(crate) task_id: Option<TaskId>,
     pub(crate) stack_id: Option<StackId>,
     pub(crate) label_id: Option<LabelId>,
+    pub(crate) board_id: Option<BoardId>,
 }
 
 /// Decomposes an op into the id columns it addresses (storage plan §4.1:
@@ -77,6 +78,7 @@ pub(crate) fn op_to_columns(op: &LocalOp) -> OpColumns {
             task_id: Some(task),
             stack_id: None,
             label_id: None,
+            board_id: None,
         },
         LocalOp::CreateStack(stack)
         | LocalOp::RenameStack(stack)
@@ -85,26 +87,27 @@ pub(crate) fn op_to_columns(op: &LocalOp) -> OpColumns {
             task_id: None,
             stack_id: Some(stack),
             label_id: None,
+            board_id: None,
         },
         LocalOp::CreateLabel(label) | LocalOp::UpdateLabel(label) | LocalOp::DeleteLabel(label) => {
             OpColumns {
                 task_id: None,
                 stack_id: None,
                 label_id: Some(label),
+                board_id: None,
             }
         }
         LocalOp::AssignLabel(task, label) | LocalOp::UnassignLabel(task, label) => OpColumns {
             task_id: Some(task),
             stack_id: None,
             label_id: Some(label),
+            board_id: None,
         },
-        // Board-scoped op: the outbox has no board column, so the board id
-        // rides `stack_id` under the `rename_board` tag (the only op kind
-        // that reads it back).
         LocalOp::RenameBoard(board) => OpColumns {
             task_id: None,
-            stack_id: Some(taskboard_domain::StackId::from_uuid(board.as_uuid())),
+            stack_id: None,
             label_id: None,
+            board_id: Some(board),
         },
     }
 }
@@ -121,6 +124,7 @@ pub fn op_from_columns(
     task_id: Option<&str>,
     stack_id: Option<&str>,
     label_id: Option<&str>,
+    board_id: Option<&str>,
 ) -> Result<LocalOp, CodecError> {
     fn parse_id<T: From<Uuid>>(raw: Option<&str>) -> Result<T, CodecError> {
         raw.map(uuid_from_text)
@@ -148,9 +152,7 @@ pub fn op_from_columns(
             parse_id(task_id)?,
             parse_id(label_id)?,
         )),
-        "rename_board" => Ok(LocalOp::RenameBoard(taskboard_domain::BoardId::from_uuid(
-            parse_id::<taskboard_domain::StackId>(stack_id)?.as_uuid(),
-        ))),
+        "rename_board" => Ok(LocalOp::RenameBoard(parse_id::<BoardId>(board_id)?)),
         _ => Err(CodecError),
     }
 }
@@ -344,11 +346,13 @@ mod tests {
             let task_text = cols.task_id.map(|t| uuid_to_text(t.as_uuid()));
             let stack_text = cols.stack_id.map(|s| uuid_to_text(s.as_uuid()));
             let label_text = cols.label_id.map(|l| uuid_to_text(l.as_uuid()));
+            let board_text = cols.board_id.map(|b| uuid_to_text(b.as_uuid()));
             let back = op_from_columns(
                 op_kind_to_text(&op),
                 task_text.as_deref(),
                 stack_text.as_deref(),
                 label_text.as_deref(),
+                board_text.as_deref(),
             );
             assert_eq!(back, Ok(op), "{op:?} must round-trip through columns");
         }
@@ -356,24 +360,33 @@ mod tests {
 
     #[test]
     fn unknown_op_tag_is_rejected() {
-        assert_eq!(op_from_columns("nope", None, None, None), Err(CodecError));
+        assert_eq!(
+            op_from_columns("nope", None, None, None, None),
+            Err(CodecError)
+        );
     }
 
     #[test]
     fn missing_required_op_column_is_rejected() {
         // Task ops need task_id.
         assert_eq!(
-            op_from_columns("create_task", None, None, None),
+            op_from_columns("create_task", None, None, None, None),
             Err(CodecError)
         );
         // assign_label needs both columns.
         assert_eq!(
-            op_from_columns("assign_label", Some(&uuid_to_text(id(1))), None, None),
+            op_from_columns("assign_label", Some(&uuid_to_text(id(1))), None, None, None),
+            Err(CodecError)
+        );
+        // rename_board needs the board column; the cast-era shape (the
+        // board id riding stack_id) is a rejection, not a silent cast.
+        assert_eq!(
+            op_from_columns("rename_board", None, Some(&uuid_to_text(id(2))), None, None),
             Err(CodecError)
         );
         // Unparseable id text counts as missing.
         assert_eq!(
-            op_from_columns("create_task", Some("junk"), None, None),
+            op_from_columns("create_task", Some("junk"), None, None, None),
             Err(CodecError)
         );
     }

@@ -106,6 +106,7 @@ struct OutboxRow {
     task_id: Option<String>,
     stack_id: Option<String>,
     label_id: Option<String>,
+    board_id: Option<String>,
     queued_at: DateTime<Utc>,
 }
 
@@ -310,6 +311,7 @@ fn decode_outbox_row(row: &OutboxRow) -> Result<PendingOp, RepositoryError> {
         row.task_id.as_deref(),
         row.stack_id.as_deref(),
         row.label_id.as_deref(),
+        row.board_id.as_deref(),
     )
     .map_err(|_| RepositoryError::Corrupted)?;
     Ok(PendingOp {
@@ -401,7 +403,7 @@ impl SqliteTaskRepository {
 
         let outbox_rows = sqlx::query_as!(
             OutboxRow,
-            r#"SELECT op_id, op_kind, task_id, stack_id, label_id,
+            r#"SELECT op_id, op_kind, task_id, stack_id, label_id, board_id,
                       queued_at as "queued_at: DateTime<Utc>"
                FROM outbox ORDER BY op_seq"#
         )
@@ -755,23 +757,26 @@ async fn execute_batch(
             let task_id = cols.task_id.map(|t| codec::uuid_to_text(t.as_uuid()));
             let stack_id = cols.stack_id.map(|s| codec::uuid_to_text(s.as_uuid()));
             let label_id = cols.label_id.map(|l| codec::uuid_to_text(l.as_uuid()));
+            let board_id = cols.board_id.map(|b| codec::uuid_to_text(b.as_uuid()));
             // Upsert on op_id: re-enqueueing an existing id refreshes the
             // row in place and keeps the original queue position — the
             // `UNIQUE` constraint stays the integrity backstop (plan P4).
             sqlx::query!(
-                r#"INSERT INTO outbox (op_id, op_kind, task_id, stack_id, label_id, queued_at)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                r#"INSERT INTO outbox (op_id, op_kind, task_id, stack_id, label_id, board_id, queued_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(op_id) DO UPDATE SET
                        op_kind = excluded.op_kind,
                        task_id = excluded.task_id,
                        stack_id = excluded.stack_id,
                        label_id = excluded.label_id,
+                       board_id = excluded.board_id,
                        queued_at = excluded.queued_at"#,
                 codec::uuid_to_text(op.op_id.0),
                 codec::op_kind_to_text(&op.op),
                 task_id,
                 stack_id,
                 label_id,
+                board_id,
                 op.queued_at,
             )
             .execute(&mut *tx)

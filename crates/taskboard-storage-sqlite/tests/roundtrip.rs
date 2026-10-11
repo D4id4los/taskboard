@@ -337,6 +337,43 @@ async fn failed_batch_rolls_back_atomically() {
     assert!(loaded.outbox.is_empty(), "enqueue must be rolled back");
 }
 
+/// T9 — a `RenameBoard` op is stored in the outbox `board_id` column with
+/// `stack_id` NULL (structural column facts; the cast-era shape would put
+/// the board id in `stack_id` and pass every semantic roundtrip).
+#[tokio::test]
+async fn rename_board_op_lands_in_the_board_column() {
+    let board_uuid = uuid::Uuid::from_u128(0xb1);
+    let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+    let repo = open(file.path()).await.expect("open");
+    let op_id = OpId(uuid::Uuid::from_u128(0xb2));
+    repo.apply(vec![PersistenceAction::EnqueueOp(PendingOp {
+        op_id,
+        op: LocalOp::RenameBoard(BoardId::from(board_uuid)),
+        queued_at: ts(42),
+    })])
+    .await
+    .expect("enqueue");
+
+    let raw = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", file.path().display()))
+        .await
+        .expect("raw connect");
+    let (board_id, stack_id): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT board_id, stack_id FROM outbox WHERE op_id = ?")
+            .bind(op_id.0.to_string())
+            .fetch_one(&raw)
+            .await
+            .expect("outbox row");
+    raw.close().await;
+    assert_eq!(board_id.as_deref(), Some(board_uuid.to_string().as_str()));
+    assert_eq!(stack_id, None, "the board id must not ride stack_id");
+
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(
+        loaded.outbox.iter().map(|o| o.op).collect::<Vec<_>>(),
+        vec![LocalOp::RenameBoard(BoardId::from(board_uuid))]
+    );
+}
+
 /// T7 — raw-inserted corrupt rows decode to `Err(Corrupted)`, per class.
 #[tokio::test]
 async fn corrupt_rows_decode_to_corrupted() {
@@ -368,6 +405,14 @@ async fn corrupt_rows_decode_to_corrupted() {
     // Missing required id column for the op kind.
     let result = corrupt_and_load(
         "INSERT INTO outbox (op_id, op_kind, queued_at) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000002', 'create_task', '2026-01-01T00:00:00+00:00')",
+    )
+    .await;
+    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+
+    // rename_board without its board column (the cast-era shape — the
+    // board id riding stack_id — is now a rejection, not a silent cast).
+    let result = corrupt_and_load(
+        "INSERT INTO outbox (op_id, op_kind, queued_at) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000008', 'rename_board', '2026-01-01T00:00:00+00:00')",
     )
     .await;
     assert!(matches!(result, Err(RepositoryError::Corrupted)));
