@@ -21,6 +21,9 @@ allow = [
     "CDLA-Permissive-2.0",
     # `option-ext` via `dirs` (the app crate's data-dir default)
     "MPL-2.0",
+    # `clipboard-win` + `error-code` via rustyline (the REPL's line
+    # editor, WI-4) — Windows-only targets, the permissive Boost license
+    "BSL-1.0",
 ]
 # Some crates ship their license text in unusual formats; resolve rather than deny.
 confidence-threshold = 0.93
