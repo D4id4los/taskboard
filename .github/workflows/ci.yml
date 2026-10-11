@@ -56,6 +56,41 @@ jobs:
         # release workflow) against regressions in its golden cases.
         run: python3 scripts/changelog.py self-test
 
+  msrv:
+    name: MSRV Check
+    runs-on: ubuntu-latest
+    env:
+      # Same offline-cache guarantee as the check job: the sqlx query!
+      # macros expand during cargo check and must not need a live
+      # DATABASE_URL.
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Read MSRV from the workspace manifest
+        # Single source of truth: [workspace.package] rust-version. Fail
+        # loudly on an empty parse rather than checking the wrong
+        # toolchain silently.
+        id: msrv
+        run: |
+          msrv=$(grep -m1 '^rust-version' Cargo.toml | sed 's/^rust-version *= *"\(.*\)"/\1/')
+          test -n "$msrv"
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+
+      # README: with an explicit toolchain input the action ref is @master.
+      # '1.96' resolves to the newest 1.96.x patch release.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check on MSRV
+        run: cargo check --workspace --all-features --locked
+
   deny:
     name: Security & License Audit
     runs-on: ubuntu-latest
