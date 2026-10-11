@@ -286,6 +286,9 @@ fn c13_typoed_backend_value_is_a_decode_error() {
 /// exits 1.
 #[test]
 fn c10_config_print_reports_validity_in_the_payload() {
+    // The env is process-global and other C-series tests override
+    // `TASKBOARD_*`: hold the lock so the payload reflects the file.
+    let _env = env_lock();
     let dir = tempdir();
     std::fs::write(
         dir.path().join("valid.toml"),

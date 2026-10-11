@@ -42,6 +42,7 @@
 //!     Arc::new(taskboard_domain::SystemClock),
 //!     sync_out,
 //!     report_rx,
+//!     system_tx.clone(),
 //!     system_rx,
 //! )
 //! .await?;
