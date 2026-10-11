@@ -29,14 +29,19 @@ use crate::secrets::CredentialStore;
 /// sync shows up only after `taskboard sync` or the daemon. The boot
 /// cycle's push still drains the outbox during the patient shutdown
 /// join; durability is local the moment `execute` replies.
-async fn with_core<T>(
+pub(crate) async fn with_core<T>(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
     body: impl AsyncFnOnce(&crate::App) -> Result<T, CommandError>,
 ) -> Result<T, CommandError> {
     let timeout = Duration::from_secs(config.app.shutdown_timeout_secs.max(1));
+    let standalone = config.sync_backend() == crate::config::SyncBackend::Standalone;
     let app = crate::bootstrap::bootstrap(config, store).await?;
-    wait_for_boot_pull(&app, timeout).await;
+    // A connector-less core can never run a cycle: skip the boot-pull
+    // wait entirely (it would only burn the shutdown budget).
+    if !standalone {
+        wait_for_boot_pull(&app, timeout).await;
+    }
     let result = body(&app).await;
     let _ = app.shutdown().await;
     result
@@ -301,9 +306,11 @@ fn parse_task_id(raw: &str) -> Result<TaskId, CommandError> {
         .map_err(|_| CommandError::UnknownTask(raw.to_owned()))
 }
 
-/// The human-readable task list.
+/// The human-readable task list; under the resolved `standalone` backend
+/// an informational footer names the outbox depth (presentation-only —
+/// the JSON payload is unchanged).
 #[must_use]
-pub fn render_text_list(list: &TaskList) -> String {
+pub fn render_text_list(list: &TaskList, standalone: bool) -> String {
     let mut lines = Vec::new();
     for group in &list.stacks {
         lines.push(format!("== {} ==", group.title));
@@ -323,6 +330,10 @@ pub fn render_text_list(list: &TaskList) -> String {
         "sync: {} ({} pending)",
         list.sync.phase, list.sync.pending_ops
     ));
+    if let Some(note) = crate::commands::output::standalone_note(standalone, list.sync.pending_ops)
+    {
+        lines.push(note);
+    }
     lines.join("\n")
 }
 

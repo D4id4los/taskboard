@@ -83,6 +83,12 @@ async fn run(cli: Cli) -> color_eyre::Result<()> {
     // Daemon lifecycle (explicit `daemon`, or no subcommand: `[app]
     // mode` resolution — the daemon until the UI phases land).
     let config = AppConfig::load(cli.config)?;
+    if taskboard_app::commands::require_connector(&config).is_err() {
+        // The daemon's entire purpose is the connector: fail loudly
+        // (typed `sync-disabled`) instead of idling without one.
+        let err = taskboard_app::commands::CommandError::SyncDisabled;
+        std::process::exit(i32::from(taskboard_app::commands::report(cli.json, &err)));
+    }
     let store: Arc<dyn CredentialStore> = match config.nextcloud.credential_store {
         CredentialStoreKind::Keyring => Arc::new(KeyringStore),
         CredentialStoreKind::Env => Arc::new(EnvCredentialStore),

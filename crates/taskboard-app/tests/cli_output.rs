@@ -213,6 +213,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::ConfigWrite(_) => "config-write",
             CommandError::Prompt(_) => "prompt",
             CommandError::Deck(_) => "deck",
+            CommandError::SyncDisabled => "sync-disabled",
+            CommandError::LocalBoardExists => "local-board-exists",
         }
     }
 
