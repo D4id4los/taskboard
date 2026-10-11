@@ -1248,3 +1248,33 @@ so changing the default is cheapest now. A REPL session holds the
 instance lock for its lifetime (stop the daemon first). Sequence
 after the CLI-completeness work so the verb surface justifies
 entering the shell.
+
+### [2026-10-11] Title-match reconciliation for board attach
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-growth-roadmap-phase6b-standalone-first-plan.md` §7
+- **Target Area**: `taskboard-domain` (merge/pipeline), `taskboard-app` (`commands/boards.rs`)
+
+#### Context & Description
+Attach is identity-based (ADR 0010): binding a local board onto a
+remote board that already holds similarly-named content *unions* both
+sets — the outbox re-creates the local entities remotely while the
+pull adopts the remote ones. Accepted and documented in Phase 6b
+because `boards publish` onto a fresh board avoids the situation
+entirely.
+
+#### Proposed Approach
+Only if real usage hits it: a reconciliation pass at bind time that
+matches local-only entities to remote ones by normalized title and
+adopts the remote identity instead of enqueueing the create op.
+
+### [2026-10-11] Board reset/delete ceremony
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-growth-roadmap-phase6b-standalone-first-plan.md` §7
+- **Target Area**: `taskboard-domain` (new `DeleteBoard` command + cascade), `taskboard-app`
+
+#### Context & Description
+There is no `boards delete` with cascade + confirmation; the documented
+reset is "new db path". A destructive ceremony needs its own design
+round (tombstone semantics, remote cascade, confirmations).

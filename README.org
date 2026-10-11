@@ -6,8 +6,9 @@
 =taskboard= is a cross-platform task management and reminder application
 designed for both low-power, ambient display *Kiosks* and interactive
 *Desktop* workstations. Built in Rust, it features an asynchronous,
-event-driven multi-actor core with an offline-first architecture powered by
-Nextcloud API synchronization and local SQLite caching.
+event-driven multi-actor core with a *stand-alone-first* architecture:
+local task management works with no server at all, and Nextcloud Deck
+synchronization is an optional connector (ADR 0010).
 
 * Key Features
 
@@ -16,9 +17,12 @@ Nextcloud API synchronization and local SQLite caching.
 - *Headless Core Architecture:* Decoupled presentation layer enabling
   non-blocking UI rendering and interchangeable front-end drivers (Slint,
   iced, egui).
-- *Offline-First Synchronization:* Local SQLite caching ensures continuous
-  operation during network drops, background-syncing with Nextcloud when
-  reconnected.
+- *Stand-alone First:* Work fully offline with zero network and zero
+  credentials; local SQLite is the source of truth (durable from the
+  reply, no keyring needed).
+- *Optional Nextcloud Sync:* When (and only when) a server is
+  configured, background-syncing with Nextcloud Deck drains the local
+  write-ahead queue and pulls remote content.
 - *Lock-Free State Reads:* Zero-contention UI frame rendering powered by
   atomic state pointer swaps (=arc-swap=).
 
@@ -126,7 +130,8 @@ silent fallback).
 
 Replace every =<placeholder>= below with your own values.
 
-Example =taskboard.toml=:
+Example =taskboard.toml= (a *Nextcloud* setup — a fresh install needs
+no config at all):
 
 #+begin_src toml
 [nextcloud]
@@ -134,10 +139,43 @@ server_url = "https://<your-nextcloud-host>"   # e.g. https://cloud.example.com
 username = "<your-nextcloud-username>"
 
 [sync]
+backend = "nextcloud"   # optional; absent = auto: nextcloud iff server_url is set
 poll_interval_secs = 30
 #+end_src
 
-** M1 Quickstart: the =taskboard= CLI
+** Quickstart: stand-alone first
+
+No server, no keyring, no network — create a board and work:
+
+#+begin_src sh
+taskboard boards create "Personal"
+taskboard stacks add "Todo"
+taskboard tasks add "first task"
+taskboard tasks list           # shows board/stack/task + the stand-alone note
+#+end_src
+
+Changes are durable locally the moment the command replies; the
+=sync: idle (N pending)= footer counts the local write-ahead queue
+nothing drains until a connector attaches.
+
+** Attaching a server (optional)
+
+#+begin_src sh
+cargo run -p taskboard-app -- login   # prompts for server, user, app password
+taskboard boards publish              # migrate: local board → new Deck board
+# or, onto an existing board (union semantics — see ADR 0010):
+taskboard boards list
+taskboard boards select <id> --bind-local-board
+taskboard sync
+taskboard daemon                      # headless sync loop until Ctrl-C/SIGTERM
+#+end_src
+
+Connector-only verbs (=sync=, =daemon=, =boards list/select/publish=)
+refuse with the typed =sync-disabled= error while no server is
+configured; =boards create=, =stacks add=, and =tasks *= work under
+every backend.
+
+** Legacy path: sync-only install
 
 First-run ceremony — =login= creates or updates =taskboard.toml= (the
 example config above is optional; =login= writes =server_url= and
