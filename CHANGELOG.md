@@ -37,6 +37,15 @@ The workspace carries a single global version (see `docs/architecture.org`);
 - The J5 tier-2 journey (`it_nextcloud_docker_cli_editing_push`): the
   editing surface lands server-side after one sync.
 
+### Fixed
+
+- Label assignment on an *existing* card now actually lands: Deck 1.19
+  rejects card-update PUTs carrying a non-empty `labels` field (HTTP
+  400), so the push executor strips the label list from the field PUT
+  and applies the desired set through the dedicated
+  `assignLabel`/`removeLabel` sub-endpoints (tier-2 verified by the J5
+  journey; previously the op dead-lettered as `bad-request`).
+
 ### Changed
 
 - `tasks done/move` accept prefixes and exact titles (exact uuid stays
