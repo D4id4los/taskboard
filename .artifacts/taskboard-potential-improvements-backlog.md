@@ -323,6 +323,12 @@ Nextcloud instance is an open problem to solve first.
 
 ## [2026-10-08] Daemon IPC for remote control (kiosk management)
 
+> **Status (2026-10-11): IMPLEMENTED** by M1-exit WI-5 (ADR 0012,
+> plan `2026-10-11-m1-exit-wi5-daemon-ipc-frontend-plan.md`) —
+> transparent auto-routing over a per-database local socket, `status`,
+> `daemon stop`, systemd template. Remaining follow-ups live in the
+> appended WI-5 entries below (keep-alive, auth knobs, TCP).
+
 - **Category**: `Architecture`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-08-growth-roadmap-plan.md` §2/§4
 - **Target Area**: `crates/taskboard-app/`
@@ -1047,6 +1053,12 @@ drop-in addition.
 
 ## [2026-10-10] Systemd/journald packaging
 
+> **Status (2026-10-11): PARTIAL — template DONE** (ADR 0012 ships
+> `contrib/taskboard.service`, a `Type=simple` user unit with
+> `Restart=on-failure`; tracing already logs to stderr → journald).
+> Still open: `Type=notify` / sd_notify readiness (conditional on a
+> deployment actually needing it).
+
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase5-app-bootstrap-plan.md` §8
 - **Target Area**: packaging / `taskboard-app`
@@ -1152,6 +1164,10 @@ a separate, destructive design question.
 
 ## [2026-10-10] `taskboard status` without triggering a cycle
 
+> **Status (2026-10-11): DONE** — `taskboard status` (ADR 0012) reads
+> the daemon's live engine state over IPC (never a cycle trigger,
+> pinned by IP6/IP11) or the lock sidecar's holder pid client-side.
+
 - **Category**: `Architecture`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
 - **Target Area**: `crates/taskboard-app/`
@@ -1169,6 +1185,13 @@ handoff map). Note: once the stand-alone-first work lands,
 case is a configured connector — exactly what daemon IPC answers.
 
 ## [2026-10-10] Versioned `--json` schema
+
+> **Status (2026-10-11): ENVELOPE DONE, payloads deferred** — the
+> stated trigger (first IPC consumer) is served by the versioned wire
+> envelope (`"v": 1` per variant, typed `VersionMismatch`/
+> `ipc-version`, ADR 0012). The `--json` payload shapes inside `out`
+> stay explicitly unversioned; when an external consumer appears,
+> payload versioning copies the envelope pattern.
 
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-10-growth-roadmap-phase6-cli-and-e2e-plan.md` §7
@@ -1554,3 +1577,91 @@ A SIGINT handler during dispatch that aborts the *line* (drop the
 in-flight future), not the session. Design it together with WI-5's
 process-signal story (the daemon's second-signal force exit) — one
 signal design, once.
+
+## [2026-10-11] IPC keep-alive / pipelining / event streams
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi5-daemon-ipc-frontend-plan.md` §7
+- **Target Area**: `crates/taskboard-app/src/ipc/`
+
+### Context & Description
+Wire protocol v1 is one request per connection (connect → frame →
+response frame → close): right for a CLI process, wasteful for a
+chatty client. A subscribe-style push channel (UI repaints or reminder
+events over the socket) is the natural protocol-v2 design and has a
+topology to grow from (the serial dispatcher + per-connection tasks).
+
+### Proposed Approach
+Version the framing negotiation into the existing envelope
+(`PROTOCOL_VERSION = 2`), keep argv+rendered-text as one request class
+and add a `Subscribe` variant; the dispatcher gains per-subscriber
+fan-out beside the serial exec queue.
+
+## [2026-10-11] IPC disable knob (`daemon --no-ipc` / `[ipc] enabled`)
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi5-daemon-ipc-frontend-plan.md` §7
+- **Target Area**: `crates/taskboard-app/src/{main.rs,ipc}`
+
+### Context & Description
+IPC is always-on in v1. Minimal-image hardening may want the daemon
+bound to nothing; when asked for, a flag/config key skips
+`spawn_server` (the rest of the lifecycle is unchanged).
+
+### Proposed Approach
+A `#[serde(default = "default_true")]` `[ipc] enabled` plus a
+`--no-ipc` override; documented as reducing `status`/`daemon stop` to
+typed `no-daemon`.
+
+## [2026-10-11] Multi-user / socket-path overrides for IPC
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi5-daemon-ipc-frontend-plan.md` §7
+- **Target Area**: `crates/taskboard-app/src/ipc/`
+
+### Context & Description
+v1's whole auth story is OS object permissions under the
+single-user-per-db model (same trust class as the config/db/lock
+files). A second-user story (shared db, distinct operators) or a
+socket-path override needs a real design: identity on the socket
+(peercreds), tokens, or both.
+
+### Proposed Approach
+Start from `interprocess`'s peer-credentials support on unix
+(`local_socket::peer_creds`); pair an allow-list with the existing
+0600 default; keep "local socket = the security boundary" until then.
+
+## [2026-10-11] Client read deadlines / request cancellation over IPC
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi5-daemon-ipc-frontend-plan.md` §7
+- **Target Area**: `crates/taskboard-app/src/ipc/{client,server}`
+
+### Context & Description
+v1 has no client read deadline: every verb self-bounds
+(`--timeout-secs`, engine receipts), and a wedged daemon is a
+supervision problem (`status`/`daemon stop`). A hard client cap
+interacts with user-set timeouts and with Ctrl-C cancellation of
+in-flight requests — design them together, not ad hoc.
+
+### Proposed Approach
+One signal/cancellation design round covering: the REPL's line
+abort, the daemon's second-signal escalation, and an IPC
+`Cancel`/deadline extension to the v1 envelope.
+
+## [2026-10-11] `logout` while a daemon runs: credential-liveness warning
+
+- **Category**: `UX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi5-daemon-ipc-frontend-plan.md` §7
+- **Target Area**: `crates/taskboard-app/src/commands/{logout,status}`
+
+### Context & Description
+`logout` stays permitted while a daemon serves the database (documented
+in ADR 0012): the daemon keeps its booted credentials until restart, so
+sync may continue with "deleted" credentials. Honest, but surprising.
+
+### Proposed Approach
+A settings-work-round UX decision: `status` could surface
+`credentials_revoked: true` (the daemon's store load now fails), or
+`logout` could nudge the daemon to drop its connector — the latter is
+the cleaner semantic and reuses the sync actor's shutdown path.

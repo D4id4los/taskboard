@@ -1,0 +1,176 @@
+#+title: ADR 0012: Daemon IPC — the Local-Socket Command Transport
+#+options: toc:nil
+
+- *Date:* 2026-10-11
+- *Status:* Accepted (post-review, 2026-10-11)
+- *Deciders:* Viktoria Pogrzebacz
+- *Amends:* ADR 0010 (decision 9 — the daemon's =standalone= refusal)
+- *Implements:* M1-exit work item WI-5 (plan
+  =.artifacts/plans/2026-10-11-m1-exit-wi5-daemon-ipc-frontend-plan.md=)
+
+* Context
+
+After WI-4 the app has two frontends over one seam: the CLI one-shot
+(full bootstrap per command, ADR 0009) and the interactive REPL (one
+boot per session, ADR 0011). The daemon boots a core and then idles:
+nothing serves requests while it runs, so a CLI invocation against the
+daemon's database fails typed =instance-locked= — the two frontends
+*contend* for the per-database lock instead of cooperating. Three
+operator needs ride on fixing this:
+
+- *Kiosk management*: a long-running daemon must be stoppable and
+  observable remotely (=daemon stop=, =status=).
+- *Latency*: scripters pay a full bootstrap per command even while a
+  warm core sits in memory.
+- *The versioned-wire trigger*: the first consumer that crosses a
+  process boundary needs a versioned envelope (the stated trigger of
+  the "versioned =--json= schema" backlog entry).
+
+* Decision
+
+** A third frontend over the shared seam
+
+The daemon =Arc=s its =App=, binds a per-database local socket, and
+serves commands; =dispatch_line= (the REPL's routing table over the
+shared =*_on(&App)= verb bodies) is the execution stack, with
+=Vec<u8>= sinks injected as the socket stand-ins for stdout/stderr. No
+new dispatch layer exists — IPC is a third caller of the same table
+(ADR 0008's "one bootstrap, N frontends", now three frontends: CLI
+one-shot, REPL, IPC client).
+
+** Transparent auto-routing, silently
+
+Every =taskboard <core-verb>= invocation resolves its config, derives
+the socket from the database path, and tries the daemon first:
+
+| lane        | verbs                                             | behavior when a daemon serves | behavior when none does |
+|-------------+---------------------------------------------------+-------------------------------+-------------------------|
+| =Local=     | =login=, =logout=, =config print=, =boards list=   | in-process (unchanged)        | in-process (unchanged)  |
+| =IpcOrLocal=| =tasks *=, =stacks *=, =labels *=, boards select/create/rename/publish, =sync= | served over IPC (no boot)     | in-process boot (today's path) |
+| =IpcOnly=   | =status=, =daemon stop=                            | answered over IPC             | typed =no-daemon= (stop, exit 1) / client-side answer (status, exit 0) |
+
+Routing is *silent* in human and JSON modes (a =tracing::debug= only):
+the observable contract — exit code, stdout payload, stderr envelope —
+is byte-identical on both paths, and the binary E2E pins the byte
+identity. The lane table is an exhaustive pure function
+(=route_for_ipc=), so every future verb must pick a lane. =logout=
+while a daemon runs stays permitted: the daemon keeps its booted
+credentials until restart (documented; a warning is a UX decision for
+the settings round).
+
+** Argv on the wire; rendered text back; the client is a dumb relay
+
+The request carries the *raw argv words* (=std::env::args().skip(1)=,
+captured before clap parses) — a stable wire immune to clap type
+churn. The *server* is the single parse authority
+(=Cli::try_parse_from=, the same parse the REPL runs via the shared
+=resolve_words=). The response carries ={code, out, err}= — the exact
+bytes the in-process dispatch would have printed and the exact exit
+code — so one wire shape covers every verb: payloads, clap help
+(code 0), usage errors (code 2), refusal guidance (code 2). Typed
+payloads were rejected: they would duplicate the projection layer per
+verb and pin the =--json= shapes as wire contracts years early (the
+payload-versioning backlog entry keeps its own trigger).
+
+** The wire envelope: versioned now; payloads stay deferred
+
+=PROTOCOL_VERSION = 1=; every request and response variant carries
+="v"=, and any request whose version mismatches gets a typed
+=VersionMismatch= response — parseable by any client that knows *any*
+version, so an old client talking to a new daemon fails
+=ipc-version=, never misparses. One request per connection (connect →
+frame → response frame → close); keep-alive/pipelining is protocol v2
+territory. Framing: =u32= LE length + JSON bytes, caps 64 KiB
+(request) / 16 MiB (response), over-length/truncated/undecodable
+frames are typed transport failures and the connection is dropped.
+
+** Naming, lifecycle, and self-healing
+
+The socket follows the lock sidecar's argument: unix
+=<<db>.sock= sibling of the database (=taskboard.db= →
+=taskboard.sock=); Windows named pipes use the namespaced
+taskboard-<fnv1a64(abs-db-path)>.sock (a hand-rolled FNV-1a, pinned by
+fixed vectors — =DefaultHasher= makes no stability guarantee). Per-db
+names mean worktrees and CI never collide. A stale artifact from a
+crashed daemon is recovered at the next bind (bind fails → connect
+probe answers nobody → remove file → rebind once; a live answerer is
+impossible while the lock discipline holds and surfaces as a typed
+bind error, never a loop). Graceful shutdown removes the file. Unix
+sockets are chmod 0600 after bind (a brief pre-chmod window is
+accepted and documented).
+
+** OS object permissions are the whole auth story (v1)
+
+No tokens, no handshake: a local socket restricted to the db's owner
+is exactly as trusted as the =taskboard.toml=, db, and lock files
+beside it — same user, same machine. Kiosk is single-user by design.
+Multi-user/socket-path knobs are backlogged behind a real second-user
+story; TCP/ssh remote management is explicitly not v1 ("local" is the
+security boundary).
+
+** Serial execution; accept concurrently
+
+Requests execute one at a time on a single dispatcher task (the only
+=&App= holder) — the same engine-fairness the REPL loop and sync actor
+get. Concurrent connections are accepted and queued, never errored.
+Accepted consequence: one long =sync --timeout-secs N= holds the
+queue; =status= after it is available once the queue drains (a
+read-only fast lane is the documented alternative if pain appears).
+
+** Two new operator verbs
+
+- =taskboard status= — *who serves this db and how is sync*: with a
+  daemon, ={daemon: true, version, backend, pid, sync: SyncStatusView}=
+  read live off the engine's =ArcSwap= (never boots, never triggers a
+  cycle — pinned by the IP-series polling a connector daemon to its
+  failed/auth settling); without, ={daemon: false, holder_pid?}= from
+  the lock sidecar's diagnostic PID. Exit 0 both ways.
+- =taskboard daemon stop= — the graceful remote shutdown: the daemon
+  acks (exit 0 at the client), then drains (stop accepting → in-flight
+  answered → socket removed) and runs the normal signal-path
+  =app.shutdown()=. Without a daemon: typed =no-daemon=, exit 1.
+
+** =--config= over IPC: the socket is the config binding
+
+A relayed =--config= naming the config file the daemon itself booted
+with is honored (stripped — the client already consumed it for
+routing); any *other* file over the same socket is the degenerate
+same-db-different-file case and gets the usage-class refusal
+(=LineRefusal::ConfigFlag= text, code 2). A =--config= naming a
+*different* database never reaches this path: it derives that db's
+socket, finds no daemon, and runs in-process.
+
+** Standalone gate removed (ADR 0010 decision 9, amended)
+
+The daemon no longer refuses the resolved =standalone= backend. With
+IPC its purpose is "own the core, serve commands", which is meaningful
+under both backends; a standalone daemon gives scripters the same
+no-boot-per-command latency the connector profile gets, and it is what
+keeps the binary E2E tier hermetic.
+
+* Consequences
+
+- CLI invocations stop fighting the daemon for the lock: the K-series'
+  "second core fails =instance-locked=" journey now applies to a second
+  *daemon* (run arms never route); CLI core verbs cooperate instead.
+- New typed =CommandError= arms: =NoDaemon= ("no-daemon"),
+  =IpcTransport= ("ipc-transport"), =IpcVersion{server_v}
+  ("ipc-version"). Kinds are the stable contract; text is UX.
+- =dispatch_line= now routes over =&impl CoreSession= — a trait over
+  ={config, store}= implemented by the REPL session and the IPC
+  server's =BasicSession=; the REPL's public shape (and every existing
+  test) is untouched.
+- The =interprocess= 2.x crate (MIT OR Apache-2.0, =tokio= feature)
+  provides cross-platform local sockets; every =interprocess= type is
+  confined to =ipc/= modules, framing is hand-rolled.
+- Backlog outcomes: daemon-IPC entry *implemented*; =status=-without-
+  cycle *DONE*; systemd packaging gets its template (=contrib/
+  taskboard.service=; =sd_notify= readiness stays conditional);
+  versioned-JSON entry gets its envelope half (payloads stay deferred
+  with their own trigger).
+
+* Security scope
+
+Owner-only unix permissions (Windows: session-local namespace); no
+auth beyond the OS object; no network listeners. A remote (TCP/ssh)
+management surface requires a real auth design first (backlogged).

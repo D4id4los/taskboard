@@ -117,6 +117,7 @@ avoiding central runtime bottlenecks.
 | *Sync Actor → State Engine (reads)* | domain port =SyncStateReader= | =EngineCommand::ReadState= envelope behind the port: the cycle reads outbox, bindings, and validators via the engine, never direct SQL (ADR 0005/0007). |
 | *Actors ↔ Actors* | =tokio::sync::mpsc= | Direct point-to-point command delivery between backend actors (e.g., State Engine → Storage via the =TaskRepository= port adapter). |
 | *System Notifications* | =tokio::sync::broadcast= | Broadcasts global status changes (=SystemEvent::NetworkLost=) to all interested actors. |
+| *CLI ⇄ Daemon (local socket)* | =interprocess= local sockets + length-framed JSON | Transport-only reuse of =dispatch_line= (ADR 0012): the daemon serves the per-database socket (<db>.sock sidecar); a CLI invocation relays raw argv and prints the daemon's rendered ={code, out, err}= verbatim — byte-identical to the in-process dispatch. Versioned envelopes (v1); one request per connection; serial execution on one dispatcher task. |
 | *Asynchronous Queries* | =tokio::sync::oneshot= | Embedded inside an =mpsc= message payload for direct, async request-response cycles. Payloads are pure domain types; the channel-bearing envelope is declared by the actor crate (payload/envelope split, ADR 0004). |
 
 All inter-actor channels — the system broadcast, both sync =mpsc=
@@ -230,11 +231,20 @@ dependency hierarchies.
    =dispatch_line= through the same =*_on(&App)= verb bodies the
    one-shot wrappers call; the rustyline editor lives on a dedicated
    thread streaming =LineEvent=s through a bounded channel, so no async
-   runtime worker ever blocks on stdin. Dependencies: all workspace
+   runtime worker ever blocks on stdin. =ipc= (ADR 0012): the daemon
+   IPC frontend — the third frontend over the shared seam. The server
+   binds the per-database socket (=<<db>.sock= sidecar, stale-artifact
+   recovery, unix 0600), accepts connections concurrently, and executes
+   requests serially on one dispatcher task (engine fairness); the
+   client relays rendered ={code, out, err}= verbatim with typed
+   =NoDaemon=/=IpcTransport=/=IpcVersion= failures; =route_for_ipc=
+   picks each verb's transport lane (Local / IpcOrLocal / IpcOnly) and
+   =status=/=daemon stop= are the operator verbs over the wire.
+   Dependencies: all workspace
    crates, =figment=, =clap=, =keyring= (platform features via
    target-specific deps), =rpassword=, =fd-lock=, =toml_edit=,
    =serde_json=, =dirs=, =color-eyre=, =tracing=, =tokio=, =rustyline=,
-   =shell-words=.
+   =shell-words=, =interprocess=.
 
 * Tech Stack & External Crates Specification
 
@@ -250,6 +260,7 @@ dependency hierarchies.
 | *REPL Line Editing* | =rustyline= | The interactive session's line editor/history (ADR 0011); confined to one reader thread. |
 | *REPL Word Splitting* | =shell-words= | POSIX-ish word splitting for REPL lines (one line = one CLI invocation). |
 | *Instance Lock* | =fd-lock= | Cross-platform advisory file lock; the per-database instance lock sidecar. |
+| *Local Sockets* | =interprocess= (tokio feature) | Cross-platform local sockets for the daemon IPC frontend (ADR 0012): unix-domain sockets on Linux/macOS, named pipes on Windows; MIT OR Apache-2.0. |
 | *Identifiers* | =uuid= | Generates collision-resistant v4/v7 UUIDs for client-side task creation before remote synchronization. |
 | *Date & Time* | =chrono= | Time, schedule, and timezone handling with support for =sqlx= and API string formatting. |
 | *Domain Errors* | =thiserror= | Derives static, strongly-typed error enums in library crates for programmatic pattern matching. |

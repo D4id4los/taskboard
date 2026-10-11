@@ -10,6 +10,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Daemon IPC (ADR 0012, WI-5): while `taskboard daemon` runs it serves
+  a per-database local socket, and every core verb (`tasks`/`stacks`/
+  `labels`, `boards select/create/rename/publish`, `sync`) is
+  transparently served over it — no per-command core boot, no
+  `instance-locked` friction; without a daemon the invocation boots
+  in-process exactly as before (byte-identical output, silent
+  routing). New operator verbs: `taskboard status [--json]` (live
+  daemon/backend/pid/sync view, or the lock holder pid — never boots a
+  core, never triggers a cycle) and `taskboard daemon stop` (graceful
+  remote shutdown; typed `no-daemon`, exit 1, when none serves). A
+  versioned wire envelope (protocol v1) crosses the socket; the
+  systemd user-unit template ships in `contrib/taskboard.service`.
 - The interactive REPL frontend (ADR 0011): bare `taskboard` with a
   TTY on stdin opens a parted-style session over one booted core —
   each line is one CLI invocation (`shell-words` quoting, per-line
@@ -55,6 +67,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Changed
 
+- The daemon no longer refuses the `standalone` backend (ADR 0010
+  decision 9 amended): it owns the core and serves commands over IPC
+  under both backends.
+- `taskboard <core verb>` now prefers a running daemon (served over
+  its socket) and boots in-process only when none answers.
 - `tasks done/move` accept prefixes and exact titles (exact uuid stays
   first, so existing scripts keep working); task resolution now
   happens in-core against the published state.

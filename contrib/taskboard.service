@@ -1,0 +1,38 @@
+# systemd *user*-unit template for the taskboard daemon (ADR 0012).
+#
+# Install (per user, no root):
+#   mkdir -p ~/.config/systemd/user ~/.local/bin
+#   cp contrib/taskboard.service ~/.config/systemd/user/
+#   # Adjust paths below if the binary/config live elsewhere. The config
+#   # file is resolved by the daemon itself (--config > TASKBOARD_CONFIG
+#   # > $XDG_CONFIG_HOME/taskboard/taskboard.toml > ./taskboard.toml);
+#   # point TASKBOARD_CONFIG at yours or drop a %h override:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now taskboard
+#
+# Operate:
+#   systemctl --user status taskboard        # supervision view
+#   taskboard status --json                  # taskboard's own view
+#   taskboard daemon stop                    # taskboard's graceful stop
+#   systemctl --user stop taskboard          # also graceful (SIGTERM)
+#   journalctl --user -u taskboard -f        # logs (tracing → stderr)
+
+[Unit]
+Description=taskboard sync daemon
+Documentation=https://github.com/D4id4los/taskboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/taskboard daemon
+# The daemon resolves the config itself; uncomment to pin one:
+# Environment=TASKBOARD_CONFIG=%h/.config/taskboard/taskboard.toml
+Restart=on-failure
+RestartSec=5
+# SIGTERM triggers the graceful drain (flush → broadcast → bounded
+# actor joins, ADR 0008 §5); the second signal force-exits (130).
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target
