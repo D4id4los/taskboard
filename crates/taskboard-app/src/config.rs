@@ -185,6 +185,20 @@ fn default_backoff_max() -> u64 {
     DEFAULT_BACKOFF_MAX_SECS
 }
 
+/// The XDG read-path candidate, pure over an injected base dir:
+/// `<config-dir>/taskboard/taskboard.toml` (`$XDG_CONFIG_HOME/taskboard/…`
+/// on Linux, platform-appropriate elsewhere).
+#[must_use]
+pub fn xdg_candidate(config_dir: Option<&Path>) -> Option<PathBuf> {
+    config_dir.map(|dir| dir.join("taskboard").join("taskboard.toml"))
+}
+
+/// The XDG candidate *when the file exists* — presence-checked, so an
+/// absent XDG file falls through to the CWD default.
+fn xdg_if_present(config_dir: Option<&Path>) -> Option<PathBuf> {
+    xdg_candidate(config_dir).filter(|path| path.is_file())
+}
+
 /// Configuration failure classes. Nothing here matches provider error
 /// *text*; semantic checks are structural.
 #[derive(Debug, thiserror::Error)]
@@ -219,6 +233,24 @@ pub enum ConfigError {
     EmptyDbPath,
 }
 
+impl ConfigError {
+    /// The stable per-variant discriminant for `config print`'s payload
+    /// (`invalid_kind`; typed variant names, never message text). The
+    /// other commands' `CommandError::Config` kind stays the flat
+    /// `"config"` — this accessor is `config print`-scoped.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::FileNotFound(_) => "file-not-found",
+            Self::Decode(_) => "decode",
+            Self::InvalidServerUrl => "invalid-server-url",
+            Self::EmptyUsername => "empty-username",
+            Self::InvalidDuration { .. } => "invalid-duration",
+            Self::EmptyDbPath => "empty-db-path",
+        }
+    }
+}
+
 impl AppConfig {
     /// Loads and validates the configuration:
     /// defaults → toml (`--config` path > `TASKBOARD_CONFIG` >
@@ -243,12 +275,19 @@ impl AppConfig {
     }
 
     /// Resolves the config path: the explicit `--config` value, else
-    /// `TASKBOARD_CONFIG`, else `None` (→ [`DEFAULT_CONFIG_PATH`] in
-    /// the provider chain). [`AppConfig::load`] and the Phase 6
-    /// commands share this single rule.
+    /// `TASKBOARD_CONFIG`, else the XDG candidate *when it exists*, else
+    /// `None` (→ [`DEFAULT_CONFIG_PATH`] in the provider chain).
+    /// [`AppConfig::load`], the dispatcher, and `config print` share
+    /// this single rule.
     #[must_use]
     pub fn config_path(explicit_path: Option<PathBuf>) -> Option<PathBuf> {
-        explicit_path.or_else(|| std::env::var_os("TASKBOARD_CONFIG").map(PathBuf::from))
+        if explicit_path.is_some() {
+            return explicit_path;
+        }
+        if let Some(env) = std::env::var_os("TASKBOARD_CONFIG") {
+            return Some(PathBuf::from(env));
+        }
+        xdg_if_present(dirs::config_dir().as_deref())
     }
 
     /// Decodes the config *without validation* and fills the default db
@@ -538,6 +577,62 @@ mod tests {
                 .extract()
                 .expect("kebab-case credential store decodes");
         assert_eq!(store.credential_store, CredentialStoreKind::Env);
+    }
+
+    #[test]
+    fn xdg_candidate_builds_the_platform_shape() {
+        let dir = Path::new("/home/u/.config");
+        assert_eq!(
+            xdg_candidate(Some(dir)),
+            Some(PathBuf::from("/home/u/.config/taskboard/taskboard.toml"))
+        );
+        assert_eq!(xdg_candidate(None), None);
+    }
+
+    #[test]
+    fn xdg_if_present_requires_the_file_to_exist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let candidate = dir.path().join("taskboard").join("taskboard.toml");
+        assert_eq!(
+            xdg_if_present(Some(dir.path())),
+            None,
+            "absent XDG falls through"
+        );
+        std::fs::create_dir_all(candidate.parent().expect("parent")).expect("mkdir");
+        std::fs::write(
+            &candidate, "[sync]
+",
+        )
+        .expect("write");
+        assert_eq!(xdg_if_present(Some(dir.path())), Some(candidate));
+    }
+
+    #[test]
+    fn config_error_kinds_are_stable_discriminants() {
+        for (err, kind) in [
+            (ConfigError::InvalidServerUrl, "invalid-server-url"),
+            (ConfigError::EmptyUsername, "empty-username"),
+            (
+                ConfigError::InvalidDuration {
+                    field: "sync.poll_interval_secs",
+                },
+                "invalid-duration",
+            ),
+            (ConfigError::EmptyDbPath, "empty-db-path"),
+        ] {
+            assert_eq!(err.kind(), kind);
+        }
+        // The provider-backed variants need real errors; assert via a
+        // decode failure and an explicit file-not-found.
+        let decode = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string("not toml"))
+            .extract::<AppConfig>()
+            .expect_err("garbage");
+        assert_eq!(ConfigError::Decode(decode).kind(), "decode");
+        assert_eq!(
+            ConfigError::FileNotFound(PathBuf::from("/x")).kind(),
+            "file-not-found"
+        );
     }
 
     /// The normative secret-in-TOML case: a `token` key inside a table

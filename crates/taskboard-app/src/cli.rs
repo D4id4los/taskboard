@@ -10,8 +10,9 @@ use clap::Subcommand;
 #[derive(Debug, clap::Parser)]
 #[command(name = "taskboard", version = crate::VERSION, about = "Taskboard: offline-first task sync for desktop and kiosk")]
 pub struct Cli {
-    /// Path to the config file (default: ./taskboard.toml if present;
-    /// `TASKBOARD_CONFIG` as the environment fallback).
+    /// Path to the config file. Resolution order: this flag >
+    /// `TASKBOARD_CONFIG` > `$XDG_CONFIG_HOME/taskboard/taskboard.toml`
+    /// (when it exists) > `./taskboard.toml` (absent tolerated).
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
     /// Machine-readable output on stdout; errors as JSON on stderr.
@@ -64,6 +65,11 @@ pub enum Command {
         /// Wait budget for the cycle, in seconds (default 60).
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
+    },
+    /// Effective-configuration diagnostics.
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
     },
     /// Run the headless sync daemon (M1).
     Daemon,
@@ -203,6 +209,13 @@ fn parse_due(raw: &str) -> Result<DueSpec, String> {
             })
         })
         .map_err(|_| "expected RFC-3339 (2026-10-24T09:00:00Z), YYYY-MM-DD, or 'none'".to_owned())
+}
+
+/// `config` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum ConfigCmd {
+    /// Print the effective config (secret-free by construction).
+    Print,
 }
 
 /// `labels` subcommands.
