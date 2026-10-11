@@ -10,7 +10,7 @@
 //! versioning). No projection type ever carries a secret.
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use taskboard_domain::{AppState, SyncErrorKind, SyncPhase, SyncStatus, Task};
 
@@ -75,7 +75,7 @@ pub struct TaskList {
 }
 
 /// The sync status footer shared by payloads that report one.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SyncStatusView {
     /// `"idle" | "syncing" | "offline" | "failed"`.
     pub phase: String,

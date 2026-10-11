@@ -33,6 +33,7 @@ pub mod bootstrap;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod ipc;
 pub mod lockfile;
 pub mod repl;
 pub mod secrets;

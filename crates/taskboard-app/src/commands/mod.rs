@@ -19,6 +19,7 @@ pub mod login;
 pub mod logout;
 pub mod output;
 pub mod stacks;
+pub mod status;
 pub mod sync;
 pub mod tasks;
 

@@ -62,6 +62,9 @@ shell-words = "1"
 fd-lock = "4"
 # Comment-preserving config read-modify-write (`login`, taskboard-app)
 toml_edit = "0.22"
+# Cross-platform local sockets for the daemon IPC frontend (taskboard-app):
+# unix-domain sockets on Linux/macOS, named pipes on Windows
+interprocess = { version = "2.2", features = ["tokio"] }
 # Platform data/config directories (taskboard-app db-path default)
 dirs = "6"
 # OS keyring (taskboard-app secrets); platform stores are feature-gated
