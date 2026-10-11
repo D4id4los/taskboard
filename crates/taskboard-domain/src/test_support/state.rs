@@ -380,15 +380,16 @@ pub fn app_state_strategy() -> impl Strategy<Value = AppState> {
 pub struct OutboxRow {
     /// Operation id.
     pub op_id: crate::outbox::OpId,
-    /// Operation kind (index into `LocalOp` variants; resolved against the
-    /// generated entity lists, rows without a matching entity are dropped).
+    /// Operation kind (index into all 14 `LocalOp` variants; resolved
+    /// against the generated entity lists, rows without a matching entity
+    /// are dropped).
     pub kind: usize,
     /// Queue timestamp.
     pub queued_at: DateTime<Utc>,
 }
 
 fn outbox_rows() -> impl Strategy<Value = Vec<OutboxRow>> {
-    prop::collection::vec((op_id_strategy(), 0_usize..13, timestamp_strategy()), 0..6).prop_map(
+    prop::collection::vec((op_id_strategy(), 0_usize..14, timestamp_strategy()), 0..6).prop_map(
         |rows| {
             rows.into_iter()
                 .map(|(op_id, kind, queued_at)| OutboxRow {
@@ -451,11 +452,13 @@ fn build_outbox(state: &AppState, op_rows: Vec<OutboxRow>) -> Vec<PendingOp> {
     let task_id = state.tasks.keys().next().copied();
     let stack_id = state.stacks.keys().next().copied();
     let label_id = state.labels.keys().next().copied();
+    let board_id = state.boards.keys().next().copied();
     let mut outbox = Vec::new();
     for row in op_rows {
         let t = task_id;
         let s = stack_id;
         let l = label_id;
+        let b = board_id;
         let op = match row.kind {
             0 => t.map(LocalOp::CreateTask),
             1 => t.map(LocalOp::UpdateTask),
@@ -470,7 +473,9 @@ fn build_outbox(state: &AppState, op_rows: Vec<OutboxRow>) -> Vec<PendingOp> {
             10 => t.zip(l).map(|(t, l)| LocalOp::AssignLabel(t, l)),
             11 => t.zip(l).map(|(t, l)| LocalOp::UnassignLabel(t, l)),
             12 => s.map(LocalOp::MoveStack),
-            _ => t.zip(l).map(|(t, l)| LocalOp::AssignLabel(t, l)),
+            13 => b.map(LocalOp::RenameBoard),
+            // All 14 variants are named above; unreachable, defensive only.
+            _ => None,
         };
         if let Some(op) = op {
             outbox.push(PendingOp {
