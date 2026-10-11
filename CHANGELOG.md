@@ -233,6 +233,7 @@ The workspace carries a single global version (see `docs/architecture.org`);
   boards/stacks/labels, delete-wins fallback for cards), unconditional
   echo adoption, and the engine-executes-merge split.
 
+### Changed
 
 - `login` replaces the manual `secret-tool` dance of the Phase 5 M1
   quickstart: the ceremony verifies against the server before anything
