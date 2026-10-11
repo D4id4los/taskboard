@@ -26,6 +26,57 @@ const BOARDS_PATH: &str = "/index.php/apps/deck/api/v1.0/boards";
 /// never asserted — only its *arrival* gates the scripted input).
 const SESSION_PROMPT: &str = "taskboard> ";
 
+/// The scripted session journey.
+const SESSION_LINES: [&str; 4] = [
+    "boards create \"Personal\"",
+    "stacks add \"Todo\"",
+    "tasks add \"first task\"",
+    "exit",
+];
+
+/// Writes each line only after its prompt was echoed (a prompt on the
+/// wire means raw mode is active and that readline is reading). Two
+/// pty hazards make batch writes unusable: bytes parked in the input
+/// queue while rustyline switches the terminal in or out of raw mode
+/// are flushed by the termios change (the whole script or every line
+/// after the first was silently lost), and `script` tears the pty
+/// down when *its* stdin EOFs. CR is the Enter key in raw mode (LF is
+/// not a key at all with ICRNL off); in canonical mode ICRNL maps CR
+/// to NL, so CR works on both sides of the switch.
+fn feed_session_lines(
+    stdin: &mut std::process::ChildStdin,
+    out_pipe: &mut std::process::ChildStdout,
+    seen: &mut Vec<u8>,
+    lines: &[&str],
+) {
+    let prompt_count = |seen: &[u8]| -> usize {
+        seen.windows(SESSION_PROMPT.len())
+            .filter(|w| *w == SESSION_PROMPT.as_bytes())
+            .count()
+    };
+    for (index, line) in lines.iter().enumerate() {
+        let target = index + 1;
+        loop {
+            if prompt_count(seen) >= target {
+                break;
+            }
+            let mut chunk = [0u8; 256];
+            match std::io::Read::read(out_pipe, &mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => seen.extend_from_slice(&chunk[..n]),
+            }
+        }
+        assert!(
+            prompt_count(seen) >= target,
+            "the session never reached prompt {target}: {}",
+            String::from_utf8_lossy(seen)
+        );
+        stdin
+            .write_all(format!("{line}\r").as_bytes())
+            .expect("write scripted session line");
+    }
+}
+
 /// `script` wraps the binary in a pty; `timeout` guards the hang
 /// regression (a wedged prompt must fail the test, not stall it).
 fn run_login_under_pty(config: &std::path::Path, url: &str, input: &str) -> std::process::Output {
@@ -163,62 +214,48 @@ fn tty_bare_invocation_opens_a_repl_session_and_persists() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn script(1) pty wrapper");
-    // Feed the script only after the editor's first prompt shows up in
-    // the captured output. `script` forwards piped stdin to the pty
-    // immediately, and bytes parked in the pty input queue while
-    // rustyline switches the terminal to raw mode are flushed by the
-    // termios change — the whole script was silently lost (the CI
-    // flake this replaces). Once the prompt is echoed, raw mode is
-    // active and nothing is pending: writes land in the editor. CR is
-    // the Enter key in raw mode (LF is not a key at all with ICRNL
-    // off); in canonical mode ICRNL maps CR to NL, so CR works on both
-    // sides of the switch.
+    // Feed the script one line at a time, each only after its prompt
+    // was echoed (a prompt on the wire means raw mode is active and
+    // that readline is reading). Two pty hazards make batch writes
+    // unusable: bytes parked in the input queue while rustyline
+    // switches the terminal in or out of raw mode are flushed by the
+    // termios change (the whole script or every line after the first
+    // was silently lost), and `script` tears the pty down when *its*
+    // stdin EOFs. CR is the Enter key in raw mode (LF is not a key at
+    // all with ICRNL off); in canonical mode ICRNL maps CR to NL, so
+    // CR works on both sides of the switch.
     let mut stdin = child.stdin.take().expect("stdin piped");
     let mut out_pipe = child.stdout.take().expect("stdout piped");
     let mut seen = Vec::new();
-    let prompt_seen = loop {
-        let mut chunk = [0u8; 256];
-        match std::io::Read::read(&mut out_pipe, &mut chunk) {
-            Ok(0) | Err(_) => break false,
-            Ok(n) => {
-                seen.extend_from_slice(&chunk[..n]);
-                if seen
-                    .windows(SESSION_PROMPT.len())
-                    .any(|w| w == SESSION_PROMPT.as_bytes())
-                {
-                    break true;
-                }
-            }
-        }
-    };
-    assert!(
-        prompt_seen,
-        "the session never reached its first prompt: {}",
-        String::from_utf8_lossy(&seen)
-    );
-    stdin
-        .write_all(
-            b"boards create \"Personal\"\rstacks add \"Todo\"\rtasks add \"first task\"\rexit\r",
-        )
-        .expect("write scripted session");
-    drop(stdin);
+    feed_session_lines(&mut stdin, &mut out_pipe, &mut seen, &SESSION_LINES);
+    // Hold `stdin` open: `script` tears the pty down when *its* stdin
+    // EOFs, and a session still booting would lose every queued line
+    // after the first. The session ends itself on `exit`, so nothing
+    // hangs; the handle closes when this scope ends.
+    let mut err_pipe = child.stderr.take().expect("stderr piped");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut err_pipe, &mut buf);
+        buf
+    });
     let mut tail = Vec::new();
     std::io::Read::read_to_end(&mut out_pipe, &mut tail).expect("drain session output");
     seen.extend_from_slice(&tail);
     drop(out_pipe);
-    let output = child.wait_with_output().expect("pty run completes");
+    let stderr = stderr_thread.join().expect("stderr drained");
+    let status = child.wait().expect("pty run completes");
 
     // The hang guard: `timeout 60` exits 124 when the session wedges.
     assert_ne!(
-        output.status.code(),
+        status.code(),
         Some(124),
         "the REPL session hung (exit never completed)"
     );
     assert_eq!(
-        output.status.code(),
+        status.code(),
         Some(0),
         "REPL session failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&stderr)
     );
     assert!(db.exists(), "the session's core created its database");
 
@@ -236,13 +273,24 @@ fn tty_bare_invocation_opens_a_repl_session_and_persists() {
     assert_eq!(
         outcome.status.code(),
         Some(0),
-        "one-shot after the session: {}",
-        String::from_utf8_lossy(&outcome.stderr)
+        "one-shot after the session: {}; session stdout: {}; session stderr: {}",
+        String::from_utf8_lossy(&outcome.stderr),
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
     );
     let list: serde_json::Value =
         serde_json::from_slice(&outcome.stdout).expect("one list payload");
-    assert_eq!(list["stacks"][0]["title"], "Todo");
-    assert_eq!(list["stacks"][0]["tasks"][0]["title"], "first task");
+    assert_eq!(
+        list["stacks"][0]["title"],
+        serde_json::json!("Todo"),
+        "session stdout: {}; session stderr: {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(
+        list["stacks"][0]["tasks"][0]["title"],
+        serde_json::json!("first task")
+    );
 }
 
 /// The instance-lock mutex runs both ways (ADR 0011): with the daemon
