@@ -348,6 +348,7 @@ async fn v7_select_binds_and_adopts() {
         Arc::clone(&store),
         common::BOARD,
         Duration::from_secs(30),
+        false,
     )
     .await
     .expect("select binds");
@@ -374,6 +375,7 @@ async fn v8_select_unknown_board_never_boots() {
         store_for(&server.uri()),
         999,
         Duration::from_secs(5),
+        false,
     )
     .await
     .expect_err("unknown board");
@@ -403,6 +405,7 @@ async fn v9_select_refuses_rebind_and_accepts_same_id() {
         store_for(&server.uri()),
         common::BOARD,
         Duration::from_secs(5),
+        false,
     )
     .await
     .expect_err("rebind refused");
@@ -421,6 +424,7 @@ async fn v9_select_refuses_rebind_and_accepts_same_id() {
         store_for(&server.uri()),
         common::BOARD,
         Duration::from_secs(15),
+        false,
     )
     .await
     .expect("same-id select succeeds");
@@ -505,7 +509,7 @@ async fn v11_select_ignores_a_stale_persisted_failure() {
     let config = config_for(&server.uri(), dir.path(), "v11.db");
     let store = store_for(&server.uri());
 
-    let receipt = boards::select(config, store, common::BOARD, Duration::from_secs(30))
+    let receipt = boards::select(config, store, common::BOARD, Duration::from_secs(30), false)
         .await
         .expect("stale failure must not block the adoption");
     assert_eq!(receipt.board.id, common::BOARD);
@@ -539,7 +543,7 @@ async fn v12_select_reports_a_fresh_failure() {
     let config = config_for(&server.uri(), dir.path(), "v12.db");
     let store = store_for(&server.uri());
 
-    let err = boards::select(config, store, common::BOARD, Duration::from_secs(30))
+    let err = boards::select(config, store, common::BOARD, Duration::from_secs(30), false)
         .await
         .expect_err("the fresh cycle failure must surface");
     assert_eq!(err.error_kind(), "sync-failed");

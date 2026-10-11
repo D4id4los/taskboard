@@ -60,6 +60,7 @@ pub async fn run(
     no_wait: bool,
     timeout: Duration,
 ) -> Result<SyncOutcome, CommandError> {
+    crate::commands::require_connector(&config)?;
     let app = crate::bootstrap::bootstrap(config, store).await?;
     let result = run_locked(&app, no_wait, timeout).await;
     let _ = app.shutdown().await;

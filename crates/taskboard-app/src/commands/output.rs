@@ -165,6 +165,42 @@ pub struct SelectReceipt {
     pub sync: SyncStatusView,
 }
 
+/// The `boards publish` receipt: the created remote board plus the
+/// settling cycle's outcome. The same shape as `SelectReceipt` (the
+/// binding adoption *is* the select ceremony onto a fresh board).
+pub type PublishReceipt = SelectReceipt;
+
+/// The `boards create` receipt: the new local board projection.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BoardReceipt {
+    /// Local board uuid.
+    pub id: String,
+    /// Board title.
+    pub title: String,
+    /// Board color as stored (lenient string).
+    pub color: String,
+}
+
+/// The `stacks add` receipt: the new stack projection.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct StackReceipt {
+    /// Local stack uuid.
+    pub id: String,
+    /// Stack title.
+    pub title: String,
+    /// Sort position within the board.
+    pub order: i64,
+}
+
+/// The informational `tasks list` stand-alone footer, or `None` when the
+/// resolved backend is a connector (`standalone` is the caller's
+/// decision; the note is presentation-only and carries the outbox depth
+/// so operators see *why* nothing drains).
+#[must_use]
+pub fn standalone_note(standalone: bool, pending_ops: u32) -> Option<String> {
+    standalone.then(|| format!("stand-alone: {pending_ops} changes waiting for a sync connector"))
+}
+
 /// The stderr error shape under `--json`.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ErrorEnvelope {

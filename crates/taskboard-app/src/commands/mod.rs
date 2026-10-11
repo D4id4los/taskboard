@@ -15,6 +15,7 @@
 pub mod boards;
 pub mod login;
 pub mod output;
+pub mod stacks;
 pub mod sync;
 pub mod tasks;
 
@@ -26,9 +27,23 @@ use taskboard_domain::SyncErrorKind;
 use taskboard_sync_nextcloud::DeckError;
 
 use crate::bootstrap::BootstrapError;
-use crate::cli::{BoardsCmd, Command, TasksCmd};
-use crate::config::{AppConfig, CredentialStoreKind};
+use crate::cli::{BoardsCmd, Command, StacksCmd, TasksCmd};
+use crate::config::{AppConfig, CredentialStoreKind, SyncBackend};
 use crate::secrets::{CredentialError, CredentialStore};
+
+/// The connector-only gate (ADR 0010 decision 9): runs at handler entry
+/// — after config load, before any core boot or client construction —
+/// so connector verbs fail loudly under `standalone`.
+/// # Errors
+///
+/// [`CommandError::SyncDisabled`] when the resolved backend is
+/// `standalone`.
+pub fn require_connector(config: &AppConfig) -> Result<(), CommandError> {
+    if config.sync_backend() == SyncBackend::Standalone {
+        return Err(CommandError::SyncDisabled);
+    }
+    Ok(())
+}
 
 /// Everything a handler needs; built by `main` once per invocation.
 pub struct CommandCtx {
@@ -107,6 +122,16 @@ pub enum CommandError {
     /// A Deck API error outside the credential/reachability classes.
     #[error("deck api error")]
     Deck(Box<DeckError>),
+    /// No sync connector is configured (resolved `standalone` backend):
+    /// the connector-only verbs refuse loudly instead of hanging or
+    /// silently doing local work (ADR 0010).
+    #[error("no sync connector configured")]
+    SyncDisabled,
+    /// A live local-only board exists: plain `boards select` would
+    /// silently adopt alongside it; the operator must choose the
+    /// migration path (`--bind-local-board` or `boards publish`).
+    #[error("a local board exists — pass --bind-local-board or use boards publish")]
+    LocalBoardExists,
 }
 
 impl From<crate::config::ConfigError> for CommandError {
@@ -162,6 +187,8 @@ impl CommandError {
             Self::ConfigWrite(_) => "config-write",
             Self::Prompt(_) => "prompt",
             Self::Deck(_) => "deck",
+            Self::SyncDisabled => "sync-disabled",
+            Self::LocalBoardExists => "local-board-exists",
         }
     }
 
@@ -231,6 +258,13 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
                 .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
             match AppConfig::extract_raw(Some(&path)) {
                 Ok(raw) => {
+                    // Explicit `standalone` refuses before any prompting
+                    // or store touch; auto behaves as today (and after
+                    // login writes `server_url`, auto resolves
+                    // `nextcloud`).
+                    if raw.sync.backend == Some(SyncBackend::Standalone) {
+                        return report(json, &CommandError::SyncDisabled);
+                    }
                     let store = production_store(raw.nextcloud.credential_store);
                     let mut prompts = login::StdinPrompts;
                     match login::run(&path, raw, server, user, &mut prompts, &store).await {
@@ -263,10 +297,18 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
                 BoardsCmd::Select {
                     board,
                     timeout_secs,
+                    bind_local_board,
                 },
         } => match core_ctx(&ctx) {
             Ok((config, store)) => {
-                match boards::select(config, store, board, Duration::from_secs(timeout_secs)).await
+                match boards::select(
+                    config,
+                    store,
+                    board,
+                    Duration::from_secs(timeout_secs),
+                    bind_local_board,
+                )
+                .await
                 {
                     Ok(receipt) => {
                         emit(json, &receipt, &boards::render_text_select(&receipt));
@@ -277,16 +319,59 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
             }
             Err(err) => report(json, &err),
         },
-        Command::Tasks {
-            cmd: TasksCmd::List { stack },
+        Command::Boards {
+            cmd: BoardsCmd::Create { title, color },
         } => match core_ctx(&ctx) {
-            Ok((config, store)) => match tasks::list(config, store, stack.as_deref()).await {
-                Ok(list) => {
-                    emit(json, &list, &tasks::render_text_list(&list));
+            Ok((config, store)) => {
+                match boards::create(config, store, &title, color.as_deref()).await {
+                    Ok(receipt) => {
+                        emit(json, &receipt, &boards::render_text_create(&receipt));
+                        0
+                    }
+                    Err(err) => report(json, &err),
+                }
+            }
+            Err(err) => report(json, &err),
+        },
+        Command::Boards {
+            cmd: BoardsCmd::Publish { timeout_secs },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => {
+                match boards::publish(config, store, Duration::from_secs(timeout_secs)).await {
+                    Ok(receipt) => {
+                        emit(json, &receipt, &boards::render_text_select(&receipt));
+                        0
+                    }
+                    Err(err) => report(json, &err),
+                }
+            }
+            Err(err) => report(json, &err),
+        },
+        Command::Stacks {
+            cmd: StacksCmd::Add { title, order },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => match stacks::add(config, store, &title, order).await {
+                Ok(receipt) => {
+                    emit(json, &receipt, &stacks::render_text_add(&receipt));
                     0
                 }
                 Err(err) => report(json, &err),
             },
+            Err(err) => report(json, &err),
+        },
+        Command::Tasks {
+            cmd: TasksCmd::List { stack },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => {
+                let standalone = config.sync_backend() == SyncBackend::Standalone;
+                match tasks::list(config, store, stack.as_deref()).await {
+                    Ok(list) => {
+                        emit(json, &list, &tasks::render_text_list(&list, standalone));
+                        0
+                    }
+                    Err(err) => report(json, &err),
+                }
+            }
             Err(err) => report(json, &err),
         },
         Command::Tasks {
@@ -381,8 +466,13 @@ fn emit<T: serde::Serialize>(json: bool, payload: &T, text: &str) {
 }
 
 /// Reports a failure: `{"error":{…}}` on stderr under `--json`, the
-/// `Display` text otherwise. Always yields exit code 1.
-fn report(json: bool, err: &CommandError) -> u8 {
+/// `Display` text otherwise. Always yields exit code 1. Also used by
+/// `main`'s daemon arm (the standalone refusal).
+///
+/// # Panics
+///
+/// Never: the error envelope serialization is total.
+pub fn report(json: bool, err: &CommandError) -> u8 {
     tracing::error!(kind = err.error_kind(), "command failed");
     if json {
         let envelope = output::ErrorEnvelope {

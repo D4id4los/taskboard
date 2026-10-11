@@ -8,13 +8,21 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use taskboard_domain::{RemoteBoardId, SyncCommand, SyncPhase, SyncStatus};
+use taskboard_domain::{
+    CommandOutcome, RemoteBoardId, StateCommand, SyncCommand, SyncPhase, SyncStatus,
+};
 
-use crate::commands::output::{BoardsListEntry, SelectReceipt, SyncStatusView};
+use crate::commands::output::{
+    BoardReceipt, BoardsListEntry, PublishReceipt, SelectReceipt, SyncStatusView,
+};
 use crate::commands::{CommandError, map_deck_error};
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
-use taskboard_sync_nextcloud::DeckClient;
+use taskboard_sync_nextcloud::{DeckClient, DeckColor};
+
+/// The publish/create color fallback when the stored (lenient) board
+/// color is not valid hex (CLI-validated input makes this defensive).
+pub(crate) const DEFAULT_BOARD_COLOR: &str = "0082c9";
 
 /// Builds the Deck client from config + credential store (the shared
 /// construction of `bootstrap`, `boards list`, and `login`).
@@ -39,6 +47,7 @@ pub async fn list(
     config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
 ) -> Result<Vec<BoardsListEntry>, CommandError> {
+    crate::commands::require_connector(config)?;
     let client = client_for(config, store)?;
     let boards = client.boards().await.map_err(map_deck_error)?;
     let mut entries: Vec<BoardsListEntry> = boards
@@ -54,23 +63,175 @@ pub async fn list(
     Ok(entries)
 }
 
-/// The one-time binding ceremony: pre-validate → boot → refuse rebind →
-/// `SetBoard` → wait for adoption → receipt. The adoption persists the
-/// binding (the adopted board row); a later daemon resumes it from the
-/// database.
+/// Creates the local board (the stand-alone first-run command; works
+/// under both backends). The single-board refusal is the engine's own
+/// `BoardExists` rejection, surfaced with the `board-exists` kind.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn create(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    title: &str,
+    color: Option<&str>,
+) -> Result<BoardReceipt, CommandError> {
+    let title = title.to_owned();
+    // Lenient by domain design; `publish` maps defensively via
+    // `DeckColor::from_hex` with a fallback.
+    let color = color.map_or_else(
+        || taskboard_domain::Color::new(DEFAULT_BOARD_COLOR),
+        taskboard_domain::Color::new,
+    );
+    let color_str = color.as_str().to_owned();
+    crate::commands::tasks::with_core(config, store, async |app| {
+        let outcome = app
+            .engine
+            .execute(StateCommand::CreateBoard {
+                title: title.clone(),
+                color: color.clone(),
+            })
+            .await?;
+        let CommandOutcome::CreatedBoard(board_id) = outcome else {
+            return Err(CommandError::Engine(Box::new(
+                taskboard_state::ExecuteError::Rejected(
+                    taskboard_domain::CommandError::BoardExists,
+                ),
+            )));
+        };
+        Ok(BoardReceipt {
+            id: board_id.as_uuid().to_string(),
+            title,
+            color: color_str,
+        })
+    })
+    .await
+}
+
+/// The publish ceremony: create a fresh Deck board from the local one
+/// and bind to it, letting the first cycle drain the outbox onto the
+/// new board. A transport failure mid-ceremony is safe-but-messy: the
+/// board may exist server-side unbound (retrying publishes a second
+/// board; delete the orphan in the Nextcloud UI — the duplicate-create
+/// crash-window backlog entry owns the general problem).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed: `NoBoard`/`BoardAlreadyBound` from the
+/// engine, sync classes while the first cycle settles.
+pub async fn publish(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    timeout: Duration,
+) -> Result<PublishReceipt, CommandError> {
+    crate::commands::require_connector(&config)?;
+    // The client is built from config + store before the core boots
+    // (the same shape `select` uses); the dispatcher already refused
+    // the standalone backend.
+    let client = client_for(&config, &store)?;
+    let app = crate::bootstrap::bootstrap(config, store).await?;
+    let result = publish_locked(&app, &client, timeout).await;
+    let _ = app.shutdown().await;
+    result
+}
+
+/// The publish steps on a booted core; the caller owns the shutdown.
+async fn publish_locked(
+    app: &crate::App,
+    client: &DeckClient,
+    timeout: Duration,
+) -> Result<PublishReceipt, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let local = state.boards.values().find(|b| !b.deleted);
+    let Some(local) = local else {
+        return Err(CommandError::Engine(Box::new(
+            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard),
+        )));
+    };
+    if let Some(current) = local.remote {
+        return Err(CommandError::BoardAlreadyBound { current: current.0 });
+    }
+    let title = local.title.clone();
+    // Defensive color mapping: the stored value is lenient, Deck's is
+    // strict six-hex.
+    let color = DeckColor::from_hex(local.color.as_str())
+        .or_else(|_| DeckColor::from_hex(DEFAULT_BOARD_COLOR))
+        .expect("the fallback constant is valid hex");
+    drop(state);
+
+    let created = client
+        .create_board(&title, &color)
+        .await
+        .map_err(map_deck_error)?;
+
+    // Bind locally, then hand the binding to the connector: the next
+    // cycle's pull matches by `remote` (merge, not duplicate) and the
+    // outbox drains onto the fresh board.
+    let outcome = app
+        .engine
+        .execute(StateCommand::BindBoard {
+            remote: RemoteBoardId(created.id),
+        })
+        .await?;
+    debug_assert!(matches!(
+        outcome,
+        CommandOutcome::Applied | CommandOutcome::NoOp
+    ));
+    send_set_board(app, created.id).await?;
+
+    let startup = app.engine.shared_state().load_full().sync.clone();
+    let receipt = match crate::commands::sync::wait_for_sync_result(app, &startup, timeout).await {
+        crate::commands::sync::SyncOutcome::Succeeded(view)
+        | crate::commands::sync::SyncOutcome::NoWait(view) => view,
+        crate::commands::sync::SyncOutcome::Failed(kind, _) => {
+            return Err(CommandError::SyncFailed(kind));
+        }
+        crate::commands::sync::SyncOutcome::TimedOut(_) => {
+            return Err(CommandError::SyncTimedOut);
+        }
+    };
+    Ok(PublishReceipt {
+        board: BoardsListEntry {
+            id: created.id,
+            title: created.title.clone(),
+            archived: created.archived,
+            deleted: !created.is_live(),
+        },
+        sync: receipt,
+    })
+}
+
+/// Sends `SetBoard` through the sync seam; a closed channel (a
+/// standalone-configured core reaching here despite the gate) is the
+/// engine-gone class, not a panic.
+async fn send_set_board(app: &crate::App, board: u64) -> Result<(), CommandError> {
+    app.sync_commands()
+        .send(SyncCommand::SetBoard(RemoteBoardId(board)))
+        .await
+        .map_err(|_| CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone)))
+}
+
+/// The binding ceremony: pre-validate → boot → (migrate or refuse) →
+/// bind/select → `SetBoard` → wait for adoption → receipt. With a live
+/// local-only board present, plain select refuses (`LocalBoardExists`)
+/// and `--bind-local-board` migrates: `BindBoard` sets the binding, the
+/// next cycle merges remote content alongside the queued local ops.
 ///
 /// # Errors
 ///
 /// [`CommandError`] — typed: [`CommandError::UnknownBoard`] before any
-/// core boot, [`CommandError::BoardAlreadyBound`] for the single-board
-/// invariant, [`CommandError::SyncFailed`]/[`CommandError::SyncTimedOut`]
-/// while waiting for adoption.
+/// core boot, [`CommandError::LocalBoardExists`] /
+/// [`CommandError::BoardAlreadyBound`] for the board invariants,
+/// [`CommandError::SyncFailed`]/[`CommandError::SyncTimedOut`] while
+/// waiting for adoption.
 pub async fn select(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
     board: u64,
     timeout: Duration,
+    bind_local_board: bool,
 ) -> Result<SelectReceipt, CommandError> {
+    crate::commands::require_connector(&config)?;
     // Pre-validation: a bogus id inside a sync cycle would only surface
     // as the generic `Failed { Server }` — check the fresh listing
     // first, before anything boots.
@@ -84,7 +245,7 @@ pub async fn select(
     }
 
     let app = crate::bootstrap::bootstrap(config, store).await?;
-    let result = select_locked(&app, board, timeout).await;
+    let result = select_locked(&app, board, timeout, bind_local_board).await;
     let _ = app.shutdown().await;
     result
 }
@@ -95,6 +256,7 @@ async fn select_locked(
     app: &crate::App,
     board: u64,
     timeout: Duration,
+    bind_local_board: bool,
 ) -> Result<SelectReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
     let bound = state.boards.values().find(|b| !b.deleted);
@@ -116,17 +278,34 @@ async fn select_locked(
         let current = remote.0;
         return Err(CommandError::BoardAlreadyBound { current });
     }
+    let has_local_board = bound.is_some();
     drop(state);
+
+    if has_local_board {
+        if !bind_local_board {
+            return Err(CommandError::LocalBoardExists);
+        }
+        // Migration: attach the local board onto the remote one. The
+        // next pull matches by `remote` and merges instead of adopting
+        // a duplicate; the outbox then drains onto the remote board.
+        let outcome = app
+            .engine
+            .execute(StateCommand::BindBoard {
+                remote: RemoteBoardId(board),
+            })
+            .await?;
+        debug_assert!(matches!(
+            outcome,
+            CommandOutcome::Applied | CommandOutcome::NoOp
+        ));
+    }
 
     // Snapshot the hydrated status before the send: a *stale* persisted
     // `Failed` (e.g. from a `sync` run before any binding) must not mask
     // the fresh adoption cycle — the same S0 guard `wait_for_sync_result`
     // applies.
     let startup = app.engine.shared_state().load_full().sync.clone();
-    app.sync_commands()
-        .send(SyncCommand::SetBoard(RemoteBoardId(board)))
-        .await
-        .map_err(|_| CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone)))?;
+    send_set_board(app, board).await?;
 
     wait_for_adoption(app, board, &startup, timeout).await
 }
@@ -206,11 +385,17 @@ pub fn render_text_list(entries: &[BoardsListEntry]) -> String {
     lines.join("\n")
 }
 
-/// The human-readable select receipt.
+/// The human-readable select/publish receipt.
 #[must_use]
 pub fn render_text_select(receipt: &SelectReceipt) -> String {
     format!(
         "bound to board {} ({}) — sync: {}",
         receipt.board.id, receipt.board.title, receipt.sync.phase
     )
+}
+
+/// The human-readable create receipt.
+#[must_use]
+pub fn render_text_create(receipt: &BoardReceipt) -> String {
+    format!("created board \"{}\" ({})", receipt.title, receipt.id)
 }

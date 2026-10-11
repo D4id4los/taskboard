@@ -35,10 +35,16 @@ pub enum Command {
         #[arg(long)]
         user: Option<String>,
     },
-    /// Board discovery and the one-time single-board binding.
+    /// Board discovery, stand-alone board creation, and the sync
+    /// binding/publish ceremonies.
     Boards {
         #[command(subcommand)]
         cmd: BoardsCmd,
+    },
+    /// Stack verbs over the in-process core.
+    Stacks {
+        #[command(subcommand)]
+        cmd: StacksCmd,
     },
     /// Task verbs over the in-process core.
     Tasks {
@@ -63,13 +69,49 @@ pub enum Command {
 pub enum BoardsCmd {
     /// List the server's boards (remote ids feed `boards select`).
     List,
-    /// Bind this installation to one board (refuses a rebind).
+    /// Bind this installation to one board (refuses a rebind; migrates a
+    /// local board with `--bind-local-board`).
     Select {
         /// The remote Deck board id (from `boards list`).
         board: u64,
         /// Adoption wait budget, in seconds (default 60).
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
+        /// Bind the existing local board onto the remote board
+        /// (migration path for stand-alone data).
+        #[arg(long)]
+        bind_local_board: bool,
+    },
+    /// Create the local board (stand-alone first-run command; refuses
+    /// when a board already exists).
+    Create {
+        /// The board title.
+        title: String,
+        /// Board color as six hex digits (no `#`); a default applies
+        /// when omitted.
+        #[arg(long)]
+        color: Option<String>,
+    },
+    /// Publish the local board as a new Nextcloud board and bind it
+    /// (the migration path for stand-alone data; sync-only).
+    Publish {
+        /// Wait budget for the settling first sync cycle, in seconds
+        /// (default 60).
+        #[arg(long, default_value_t = 60)]
+        timeout_secs: u64,
+    },
+}
+
+/// `stacks` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum StacksCmd {
+    /// Create a stack on the board (appended by default).
+    Add {
+        /// The stack title.
+        title: String,
+        /// Explicit sort order; default appends to the end of the board.
+        #[arg(long)]
+        order: Option<i64>,
     },
 }
 
