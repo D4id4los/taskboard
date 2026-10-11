@@ -87,8 +87,27 @@ pub struct LabelClocks {
     pub deleted: DateTime<Utc>,
 }
 
-/// A board. No per-field clocks in the MVP: no local board-edit commands
-/// exist, so board content only arrives via remote adoption.
+/// Per-field write timestamps of a [`Board`]. Room for the color/deleted
+/// clocks the board color/archive verbs will grow (the remainder of the
+/// board-edit backlog entry); today only `title` is locally writable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoardClocks {
+    /// Write time of `title`.
+    pub title: DateTime<Utc>,
+}
+
+impl BoardClocks {
+    /// The epoch clock: "never locally written" — every remote stamp
+    /// wins, so pre-clock rows keep the remote-wins behavior bit-for-bit.
+    #[must_use]
+    pub fn epoch() -> DateTime<Utc> {
+        use chrono::TimeZone as _;
+        chrono::Utc.timestamp_opt(-62_135_596_800, 0).unwrap()
+    }
+}
+
+/// A board. Title is locally editable (`boards rename`); color and
+/// archive still arrive only via remote adoption.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Board {
     /// Local identity.
@@ -103,6 +122,8 @@ pub struct Board {
     pub archived: bool,
     /// Tombstone flag (boards have real remote delete timestamps).
     pub deleted: bool,
+    /// Per-field write clocks.
+    pub clocks: BoardClocks,
     /// Remote `lastModified` at last adoption; `None` = never synced.
     pub remote_seen: Option<DateTime<Utc>>,
 }
@@ -202,6 +223,17 @@ mod tests {
     use super::*;
     use crate::test_support;
     use proptest::prelude::*;
+
+    #[test]
+    fn epoch_clock_roundtrips_through_rfc3339() {
+        let text = BoardClocks::epoch().to_rfc3339();
+        let back: DateTime<Utc> = text.parse().expect("parse");
+        assert_eq!(
+            back,
+            BoardClocks::epoch(),
+            "storage decode must accept the epoch"
+        );
+    }
 
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(256))]

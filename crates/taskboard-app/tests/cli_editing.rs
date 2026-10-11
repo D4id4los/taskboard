@@ -284,3 +284,41 @@ async fn e3b_deleted_task_is_not_a_selector_hit() {
     .expect_err("edit against a tombstone");
     assert_eq!(err.error_kind(), "unknown-task");
 }
+
+/// E4: `boards rename` — the title change is durable across invocations,
+/// a same-title repeat exits 0 (`NoOp`), and a board-less db is the typed
+/// `no-board` kind.
+#[tokio::test]
+async fn e4_boards_rename_is_durable_and_idempotent() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e4.db");
+
+    let err = boards::rename(config.clone(), forbidden_store(), "ghost").await;
+    assert_eq!(
+        err.expect_err("no board").error_kind(),
+        "no-board",
+        "a board-less db surfaces the engine's own rejection"
+    );
+
+    boards::create(config.clone(), forbidden_store(), "Personal", None)
+        .await
+        .expect("board");
+    let receipt = boards::rename(config.clone(), forbidden_store(), "Renamed Board")
+        .await
+        .expect("rename");
+    assert_eq!(receipt.title, "Renamed Board");
+
+    // Durability: a fresh invocation still sees the rename; a repeat of
+    // the same title is an idempotent success.
+    let config2 = standalone_config(dir.path(), "e4.db");
+    let repeat = boards::rename(config2.clone(), forbidden_store(), "Renamed Board")
+        .await
+        .expect("repeat rename");
+    assert_eq!(repeat.title, "Renamed Board");
+
+    // The rename coexists with the rest of the editing surface: tasks
+    // still list against the renamed board's stacks.
+    stacks::add(config2, forbidden_store(), "Todo", None)
+        .await
+        .expect("stack after rename");
+}

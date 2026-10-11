@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{
-    LabelId, RemoteBoardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId,
+    BoardId, LabelId, RemoteBoardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId,
     RemoteStackRef, StackId, TaskId,
 };
 use crate::outbox::OpId;
@@ -132,6 +132,8 @@ pub struct RemoteIndex {
     pub stack_by_ref: HashMap<RemoteStackRef, StackId>,
     /// Label id by remote label ref.
     pub label_by_ref: HashMap<RemoteLabelRef, LabelId>,
+    /// Board id by remote board id (echo adoption of a board rename).
+    pub board_by_ref: HashMap<RemoteBoardId, BoardId>,
 }
 
 impl RemoteIndex {
@@ -147,13 +149,14 @@ impl RemoteIndex {
             task_by_ref: tasks.collect(),
             stack_by_ref: stacks.collect(),
             label_by_ref: labels.collect(),
+            board_by_ref: HashMap::new(),
         }
     }
 
     /// Builds the index for the bound entities of an [`AppState`].
     #[must_use]
     pub fn from_state(state: &crate::state::AppState) -> Self {
-        Self::from_bindings(
+        let mut index = Self::from_bindings(
             state
                 .tasks
                 .iter()
@@ -166,7 +169,13 @@ impl RemoteIndex {
                 .labels
                 .iter()
                 .filter_map(|(id, l)| Some((l.remote?, *id))),
-        )
+        );
+        index.board_by_ref = state
+            .boards
+            .iter()
+            .filter_map(|(id, b)| Some((b.remote?, *id)))
+            .collect();
+        index
     }
 }
 
@@ -223,6 +232,8 @@ pub enum RemoteEcho {
     Stack(RemoteStack),
     /// Echoed label.
     Label(RemoteLabel),
+    /// Echoed board.
+    Board(RemoteBoard),
 }
 
 /// Conditional-read validators for one board pull (phase 4 decision 4).

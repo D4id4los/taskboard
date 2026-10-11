@@ -92,6 +92,12 @@ pub enum BoardsCmd {
         #[arg(long)]
         color: Option<String>,
     },
+    /// Rename the local board's title (both backends; the rename pushes
+    /// when the board is bound, and rides the next `publish` otherwise).
+    Rename {
+        /// The new board title.
+        title: String,
+    },
     /// Publish the local board as a new Nextcloud board and bind it
     /// (the migration path for stand-alone data; sync-only).
     Publish {

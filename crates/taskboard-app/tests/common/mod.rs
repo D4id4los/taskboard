@@ -354,6 +354,9 @@ pub async fn seed_board_binding(db_path: &Path, local_id: u128, remote_id: u64, 
                 color: taskboard_domain::Color::new("00c2e0"),
                 archived: false,
                 deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                },
                 remote_seen: None,
             },
         )])

@@ -213,7 +213,28 @@ pub fn new_card_from(shape: &NewCardShape) -> NewCard {
     }
 }
 
-/// Builds the full-send stack changeset from the current local stack.
+/// The lenient stored board color's fallback when it is not six hex
+/// digits (the `boards create`/`publish` precedent — a malformed color
+/// would otherwise be a permanent push rejection).
+pub(crate) const DEFAULT_BOARD_COLOR: &str = "0082c9";
+
+/// Builds a full-send [`BoardChanges`] from a local board row: title
+/// from the row, the lenient color mapped defensively, archived as-is.
+///
+/// # Panics
+///
+/// Never: the fallback constant is valid hex, so the `expect` on the
+/// fallback path cannot fire.
+#[must_use]
+pub fn board_changes_from(board: &taskboard_domain::Board) -> crate::client::BoardChanges {
+    crate::client::BoardChanges {
+        title: board.title.clone(),
+        color: DeckColor::from_hex(board.color.as_str())
+            .unwrap_or_else(|_| DeckColor::from_hex(DEFAULT_BOARD_COLOR).expect("valid fallback")),
+        archived: board.archived,
+    }
+}
+
 #[must_use]
 pub fn stack_changes_from(stack: &taskboard_domain::Stack) -> StackChanges {
     StackChanges {

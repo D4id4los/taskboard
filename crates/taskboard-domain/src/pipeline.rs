@@ -19,13 +19,13 @@ use chrono::{DateTime, Utc};
 use crate::entities::{Board, Label, Stack, Task};
 use crate::idgen::IdGenerator;
 use crate::ids::{
-    LabelId, RemoteBoardId, RemoteCardId, RemoteStackId, RemoteStackRef, StackId, TaskId,
+    BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 use crate::merge::{
-    adopt_board_if_newer, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
+    adopt_board_after_push, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
     adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, adopt_task_after_push,
-    finalize_pushed_task_delete, merge_label, merge_stack, merge_task, remote_wins,
-    tombstone_label, tombstone_stack, tombstone_task, utc_min,
+    finalize_pushed_task_delete, merge_board, merge_label, merge_stack, merge_task, remote_wins,
+    tombstone_board, tombstone_label, tombstone_stack, tombstone_task, utc_min,
 };
 use crate::outbox::{LocalOp, OpId, PendingOp};
 use crate::persistence::PersistenceAction;
@@ -46,7 +46,8 @@ fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
         | LocalOp::DeleteStack(_)
         | LocalOp::CreateLabel(_)
         | LocalOp::UpdateLabel(_)
-        | LocalOp::DeleteLabel(_) => false,
+        | LocalOp::DeleteLabel(_)
+        | LocalOp::RenameBoard(_) => false,
     }
 }
 
@@ -94,7 +95,8 @@ fn pending_task_intents(
             | LocalOp::DeleteStack(_)
             | LocalOp::CreateLabel(_)
             | LocalOp::UpdateLabel(_)
-            | LocalOp::DeleteLabel(_) => continue,
+            | LocalOp::DeleteLabel(_)
+            | LocalOp::RenameBoard(_) => continue,
         });
         match op.op {
             LocalOp::UpdateTask(_) => {
@@ -196,6 +198,21 @@ fn keep_stack_intent(merged: &mut Stack, local: &Stack, rename: bool, delete: bo
     }
 }
 
+/// Whether a post-read `RenameBoard` op is queued for the board.
+fn pending_board_intent(outbox: &[PendingOp], board: BoardId, read_at: DateTime<Utc>) -> bool {
+    outbox
+        .iter()
+        .any(|op| op.queued_at > read_at && matches!(op.op, LocalOp::RenameBoard(b) if b == board))
+}
+
+/// Restores the board's protected title from the local state.
+fn keep_board_title(merged: &mut Board, local: &Board, rename: bool) {
+    if rename {
+        merged.title.clone_from(&local.title);
+        merged.clocks.title = local.clocks.title;
+    }
+}
+
 /// The label fields a post-read `UpdateLabel`/`DeleteLabel` protects
 /// (`(update, delete)`).
 fn pending_label_intent(
@@ -267,6 +284,7 @@ pub fn apply_sync_report(
     let mut op_results = apply_push_outcomes(
         pushes,
         outbox,
+        &mut boards,
         &mut tasks,
         &mut stacks,
         &mut labels,
@@ -296,7 +314,9 @@ pub fn apply_sync_report(
     let remote_board = &snapshot.board;
     let board_id = if let Some(id) = board_ids_by_remote.get(&remote_board.id).copied() {
         let local = &boards[&id];
-        let merged = adopt_board_if_newer(local, remote_board);
+        let mut merged = merge_board(local, remote_board);
+        let rename = pending_board_intent(outbox, id, read_at);
+        keep_board_title(&mut merged, local, rename);
         boards.insert(id, merged);
         id
     } else {
@@ -601,7 +621,7 @@ pub fn apply_push_report(
     now: DateTime<Utc>,
 ) -> (AppState, Vec<PersistenceAction>) {
     let _ = ids;
-    let boards = current.boards.clone();
+    let mut boards = current.boards.clone();
     let mut stacks = current.stacks.clone();
     let mut tasks = current.tasks.clone();
     let mut labels = current.labels.clone();
@@ -610,6 +630,7 @@ pub fn apply_push_report(
     let op_results = apply_push_outcomes(
         pushes,
         outbox,
+        &mut boards,
         &mut tasks,
         &mut stacks,
         &mut labels,
@@ -669,6 +690,7 @@ pub fn apply_push_report(
 fn apply_push_outcomes(
     pushes: &[PushOutcome],
     outbox: &[PendingOp],
+    boards: &mut BTreeMap<BoardId, Board>,
     tasks: &mut BTreeMap<TaskId, Task>,
     stacks: &mut BTreeMap<StackId, Stack>,
     labels: &mut BTreeMap<LabelId, Label>,
@@ -726,7 +748,8 @@ fn apply_push_outcomes(
                     | LocalOp::CreateLabel(_)
                     | LocalOp::UpdateLabel(_)
                     | LocalOp::AssignLabel(..)
-                    | LocalOp::UnassignLabel(..) => {}
+                    | LocalOp::UnassignLabel(..)
+                    | LocalOp::RenameBoard(_) => {}
                 }
                 match echo {
                     Some(RemoteEcho::Task(echo)) => {
@@ -754,6 +777,18 @@ fn apply_push_outcomes(
                             keep_stack_intent(&mut merged, local, rename, delete);
                             stacks.insert(id, merged);
                             ctx.stack_by_ref.insert(echo.id, id);
+                        }
+                        op_results.insert(outcome.op, true);
+                    }
+                    Some(RemoteEcho::Board(echo)) => {
+                        if let LocalOp::RenameBoard(id) = op.op
+                            && let Some(local) = boards.get(&id)
+                        {
+                            let mut merged = adopt_board_after_push(local, echo);
+                            let rename = pending_board_intent(outbox, id, read_at);
+                            keep_board_title(&mut merged, local, rename);
+                            boards.insert(id, merged);
+                            ctx.board_by_ref.insert(echo.id, id);
                         }
                         op_results.insert(outcome.op, true);
                     }
@@ -803,6 +838,12 @@ fn apply_push_outcomes(
                 | LocalOp::DeleteStack(id) => {
                     if let Some(local) = stacks.get(&id) {
                         stacks.insert(id, tombstone_stack(local, now));
+                    }
+                    op_results.insert(outcome.op, true);
+                }
+                LocalOp::RenameBoard(id) => {
+                    if let Some(local) = boards.get(&id) {
+                        boards.insert(id, tombstone_board(local, now));
                     }
                     op_results.insert(outcome.op, true);
                 }
@@ -2726,6 +2767,9 @@ mod tests {
             color: crate::entities::Color::new("0000ff"),
             archived: false,
             deleted: false,
+            clocks: crate::entities::BoardClocks {
+                title: crate::entities::BoardClocks::epoch(),
+            },
             remote_seen: None,
         };
         state.boards.insert(unbound_board.id, unbound_board);
@@ -3085,6 +3129,42 @@ mod tests {
         let merged = app.0.stacks[&local.id].clone();
         assert_eq!(merged.order, 9, "protected move intent survives");
         assert_eq!(merged.clocks.order, ts(BASE + 120));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+    }
+
+    #[test]
+    fn a_post_read_board_rename_survives_the_same_cycle_pull() {
+        let mut local = crate::merge_testutil::base_board();
+        local.title = "locally renamed".into();
+        local.clocks.title = ts(BASE + 120);
+        let mut state = base_state(bound_task(1));
+        state.boards.insert(local.id, local.clone());
+
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(9)),
+            op: LocalOp::RenameBoard(local.id),
+            queued_at: ts(BASE + 120),
+        };
+        let mut remote = crate::merge_testutil::remote_board(REMOTE_BOARD_NUM, BASE + 300);
+        remote.title = "remote rename".into();
+        let snap = single_stack_snapshot(vec![], BASE + 300);
+        let mut snap = snap;
+        // Rebuild the snapshot's board with the remote title.
+        snap.board = remote;
+
+        let app = apply_sync_report(
+            &state,
+            &[op],
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let merged = app.0.boards[&local.id].clone();
+        assert_eq!(merged.title, "locally renamed", "protected intent survives");
+        assert_eq!(merged.clocks.title, ts(BASE + 120));
         assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
     }
 

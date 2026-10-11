@@ -323,6 +323,7 @@ async fn cycle(
         tasks: &persisted.tasks,
         stacks: &persisted.stacks,
         labels: &persisted.labels,
+        boards: &persisted.boards,
     };
     let bound_board = persisted.boards.values().find(|b| b.remote == Some(target));
 

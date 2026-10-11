@@ -170,6 +170,37 @@ impl<'a> PushExecutor<'a> {
                     ),
                 }
             }
+            MaterializedOp::RenameBoard { board } => {
+                let Some(row) = tables.boards.get(&board) else {
+                    return GroupOutcome::Outcomes(Self::all_applied(group));
+                };
+                // Full-send like every Deck write; the lenient stored
+                // color falls back (the `publish` precedent) because a
+                // malformed color would be a permanent rejection.
+                let changes = mapping::board_changes_from(row);
+                match self
+                    .client
+                    .update_board(self.overlay.board.get(), &changes)
+                    .await
+                {
+                    Ok(updated) => GroupOutcome::Outcomes(Self::primary_outcome(
+                        group,
+                        PushResult::Applied {
+                            echo: Some(taskboard_domain::RemoteEcho::Board(mapping::map_board(
+                                &updated,
+                            ))),
+                        },
+                    )),
+                    Err(err) => Self::classify(
+                        group,
+                        &err,
+                        PushCtx {
+                            existing: true,
+                            delete: false,
+                        },
+                    ),
+                }
+            }
             // A rename and a move share one full-send wire call
             // (`update_stack` carries title + order), so one executor
             // arm serves both materializations.
@@ -447,7 +478,8 @@ impl<'a> PushExecutor<'a> {
                 | LocalOp::DeleteStack(_)
                 | LocalOp::CreateLabel(_)
                 | LocalOp::UpdateLabel(_)
-                | LocalOp::DeleteLabel(_) => {}
+                | LocalOp::DeleteLabel(_)
+                | LocalOp::RenameBoard(_) => {}
             }
         }
         if new_card.archived
@@ -812,6 +844,7 @@ mod tests {
             tasks: Box::leak(Box::new(BTreeMap::new())),
             stacks: Box::leak(Box::new(BTreeMap::new())),
             labels: Box::leak(Box::new(BTreeMap::new())),
+            boards: Box::leak(Box::new(BTreeMap::new())),
         }
     }
 
@@ -826,6 +859,15 @@ mod tests {
 
     fn stack_json(id: u64, title: &str, order: i64) -> String {
         serde_json::json!({"id": id, "title": title, "order": order, "archived": false}).to_string()
+    }
+
+    fn board_json(id: u64, title: &str) -> String {
+        serde_json::json!({
+            "id": id, "title": title, "color": "00c2e0",
+            "lastModified": 1_700_000_000, "deletedAt": 0,
+            "archived": false, "labels": []
+        })
+        .to_string()
     }
 
     fn label_json(id: u64, title: &str, color: &str) -> String {
@@ -877,6 +919,34 @@ mod tests {
             tasks: Box::leak(Box::new(BTreeMap::new())),
             stacks: Box::leak(Box::new(stacks.iter().map(|s| (s.id, s.clone())).collect())),
             labels: Box::leak(Box::new(labels.iter().map(|l| (l.id, l.clone())).collect())),
+            boards: Box::leak(Box::new(BTreeMap::new())),
+        }
+    }
+
+    fn board_id(raw: u128) -> taskboard_domain::BoardId {
+        taskboard_domain::BoardId::from(uid(raw))
+    }
+
+    fn board_row(raw: u128, title: &str) -> taskboard_domain::Board {
+        let now = chrono::Utc::now();
+        taskboard_domain::Board {
+            id: taskboard_domain::BoardId::from(uid(raw)),
+            remote: Some(RemoteBoardId(42)),
+            title: title.into(),
+            color: taskboard_domain::Color::new("00c2e0"),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks { title: now },
+            remote_seen: None,
+        }
+    }
+
+    fn tables_with_boards(boards: &[taskboard_domain::Board]) -> EntityTables<'static> {
+        EntityTables {
+            tasks: Box::leak(Box::new(BTreeMap::new())),
+            stacks: Box::leak(Box::new(BTreeMap::new())),
+            labels: Box::leak(Box::new(BTreeMap::new())),
+            boards: Box::leak(Box::new(boards.iter().map(|b| (b.id, b.clone())).collect())),
         }
     }
 
@@ -1774,6 +1844,140 @@ mod tests {
             }
         ));
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rename_board_puts_the_full_changeset_and_applies_the_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(board_json(42, "renamed board")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::RenameBoard { board: board_id(1) },
+                    taskboard_domain::PushTarget::Board(board_id(1)),
+                    &[],
+                ),
+                &[],
+                tables_with_boards(&[board_row(1, "renamed board")]),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            &outcomes[0].result,
+            PushResult::Applied { echo: Some(taskboard_domain::RemoteEcho::Board(view)) }
+                if view.title == "renamed board"
+        ));
+        // Full-send: title + color + archived in the body.
+        let body: serde_json::Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["title"], "renamed board");
+        assert_eq!(body["color"], "00c2e0");
+    }
+
+    #[tokio::test]
+    async fn rename_board_falls_back_on_an_invalid_stored_color() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(board_json(42, "x")))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let mut row = board_row(1, "x");
+        row.color = taskboard_domain::Color::new("not-hex");
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::RenameBoard { board: board_id(1) },
+                    taskboard_domain::PushTarget::Board(board_id(1)),
+                    &[],
+                ),
+                &[],
+                tables_with_boards(&[row]),
+            )
+            .await;
+        server.verify().await;
+
+        assert!(matches!(
+            outcome,
+            GroupOutcome::Outcomes(ref o) if matches!(o[0].result, PushResult::Applied { .. })
+        ));
+        let body: serde_json::Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["color"], "0082c9", "the fallback color is sent");
+    }
+
+    #[tokio::test]
+    async fn rename_board_404_maps_to_remote_missing() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::RenameBoard { board: board_id(1) },
+                    taskboard_domain::PushTarget::Board(board_id(1)),
+                    &[],
+                ),
+                &[],
+                tables_with_boards(&[board_row(1, "x")]),
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            GroupOutcome::Outcomes(ref o) if matches!(o[0].result, PushResult::RemoteMissing)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rename_board_transport_failure_aborts_the_cycle() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::RenameBoard { board: board_id(1) },
+                    taskboard_domain::PushTarget::Board(board_id(1)),
+                    &[],
+                ),
+                &[],
+                tables_with_boards(&[board_row(1, "x")]),
+            )
+            .await;
+        assert!(matches!(outcome, GroupOutcome::Aborted { landed } if landed.is_empty()));
     }
 
     #[tokio::test]

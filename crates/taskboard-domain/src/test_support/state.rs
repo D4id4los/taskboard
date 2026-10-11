@@ -277,6 +277,9 @@ pub fn app_state_strategy() -> impl Strategy<Value = AppState> {
                     color: Color::new(board.color),
                     archived: board.archived,
                     deleted: board.deleted,
+                    clocks: crate::entities::BoardClocks {
+                        title: crate::entities::BoardClocks::epoch(),
+                    },
                     remote_seen: board.remote_seen,
                 },
             );

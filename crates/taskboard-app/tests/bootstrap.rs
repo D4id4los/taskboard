@@ -88,6 +88,9 @@ fn bound_board() -> Board {
         color: Color::new("00ff00"),
         archived: false,
         deleted: false,
+        clocks: taskboard_domain::BoardClocks {
+            title: taskboard_domain::BoardClocks::epoch(),
+        },
         remote_seen: None,
     }
 }

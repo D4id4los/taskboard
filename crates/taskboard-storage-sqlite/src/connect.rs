@@ -122,7 +122,50 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 1, "exactly one migration must be recorded");
+        assert_eq!(applied, 2, "each shipped migration recorded exactly once");
+    }
+
+    /// A pre-0002 database (no `ck_title`) upgrades cleanly: the epoch
+    /// default keeps the never-locally-written semantics and the row
+    /// decodes into the clocked entity.
+    #[tokio::test]
+    async fn migration_0002_upgrades_a_pre_clock_database() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
+            .await
+            .expect("raw connect");
+        // Simulate a 0001-era database: run the shipped migrations, then
+        // strip the 0002 column and its bookkeeping row.
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        sqlx::query("ALTER TABLE boards DROP COLUMN ck_title")
+            .execute(&raw)
+            .await
+            .expect("strip ck_title");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 2")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        let _ = sqlx::query(
+            "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, remote_seen) \
+             VALUES ('00000000-0000-0000-0000-00000000000b', 42, 'board', '00ff00', 0, 0, NULL)",
+        )
+        .execute(&raw)
+        .await
+        .expect("seed row");
+        raw.close().await;
+
+        let repo = open(file.path()).await.expect("migrating open");
+        let state = repo.load().await.expect("load");
+        let board = state.boards.values().next().expect("board row");
+        assert_eq!(board.title, "board");
+        assert_eq!(
+            board.clocks.title,
+            taskboard_domain::BoardClocks::epoch(),
+            "the epoch default means never-locally-written"
+        );
     }
 
     /// The durability pragmas are actually in force: `journal_mode` is WAL.

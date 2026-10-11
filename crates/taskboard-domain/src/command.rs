@@ -170,7 +170,8 @@ fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
         | LocalOp::DeleteStack(_)
         | LocalOp::CreateLabel(_)
         | LocalOp::UpdateLabel(_)
-        | LocalOp::DeleteLabel(_) => false,
+        | LocalOp::DeleteLabel(_)
+        | LocalOp::RenameBoard(_) => false,
     }
 }
 
@@ -561,6 +562,8 @@ pub fn plan_command(
                 color: color.clone(),
                 archived: false,
                 deleted: false,
+                // Board creation *is* a local title write.
+                clocks: crate::entities::BoardClocks { title: now },
                 remote_seen: None,
             };
             // No outbox op: a local board creation is not a remote intent —
@@ -568,6 +571,23 @@ pub fn plan_command(
             Ok(CommandPlan {
                 actions: vec![PersistenceAction::UpsertBoard(board)],
                 outcome: CommandOutcome::CreatedBoard(id),
+            })
+        }
+        StateCommand::RenameBoard { title } => {
+            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+            let board = &app.boards[&board_id];
+            if board.title == *title {
+                return Ok(no_op());
+            }
+            let mut updated = board.clone();
+            updated.title.clone_from(title);
+            updated.clocks.title = now;
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertBoard(updated),
+                    enqueue(LocalOp::RenameBoard(board_id), ids, now),
+                ],
+                outcome: CommandOutcome::Applied,
             })
         }
         StateCommand::BindBoard { remote } => {
@@ -745,6 +765,9 @@ mod tests {
                     color: crate::entities::Color::new("0000ff"),
                     archived: false,
                     deleted: false,
+                    clocks: crate::entities::BoardClocks {
+                        title: crate::entities::BoardClocks::epoch(),
+                    },
                     remote_seen: None,
                 },
             )]
@@ -1288,6 +1311,56 @@ mod tests {
     }
 
     #[test]
+    fn rename_board_stamps_the_title_clock_and_enqueues_the_op() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::RenameBoard {
+                title: "renamed".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.title, "renamed");
+        assert_eq!(updated.clocks.title, now());
+        let PersistenceAction::EnqueueOp(pending) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert_eq!(
+            pending.op,
+            LocalOp::RenameBoard(BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))))
+        );
+    }
+
+    #[test]
+    fn rename_board_with_unchanged_title_is_a_no_op() {
+        let (app, outbox) = base();
+        let title = app.boards[&BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)))]
+            .title
+            .clone();
+        let plan = run(&app, &outbox, &StateCommand::RenameBoard { title }).unwrap();
+        assert_eq!(plan, no_op());
+    }
+
+    #[test]
+    fn rename_board_without_a_live_board_is_no_board() {
+        let (mut app, outbox) = base();
+        app.boards.clear();
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::RenameBoard { title: "x".into() }
+            ),
+            Err(CommandError::NoBoard)
+        );
+    }
+
+    #[test]
     fn move_stack_stamps_order_clock_enqueues_and_persists() {
         let (app, outbox) = base();
         let plan = run(
@@ -1692,6 +1765,9 @@ mod tests {
                     color: crate::entities::Color::new("00ccff"),
                     archived: false,
                     deleted: false,
+                    clocks: crate::entities::BoardClocks {
+                        title: crate::entities::BoardClocks::epoch(),
+                    },
                     remote_seen: None,
                 },
             )]
@@ -1734,6 +1810,7 @@ mod tests {
                 color: crate::entities::Color::new("3366cc"),
                 archived: false,
                 deleted: false,
+                clocks: crate::entities::BoardClocks { title: now() },
                 remote_seen: None,
             })],
             "exactly the board upsert; no outbox op"
@@ -1848,6 +1925,7 @@ mod proptests {
     /// The entity an op addresses, if it is still in the post-batch maps.
     fn op_target_exists(
         op: &LocalOp,
+        boards: &std::collections::BTreeMap<BoardId, crate::entities::Board>,
         stacks: &std::collections::BTreeMap<StackId, Stack>,
         tasks: &std::collections::BTreeMap<TaskId, Task>,
         labels: &std::collections::BTreeMap<LabelId, Label>,
@@ -1867,6 +1945,7 @@ mod proptests {
             LocalOp::AssignLabel(task, label) | LocalOp::UnassignLabel(task, label) => {
                 tasks.contains_key(task) && labels.contains_key(label)
             }
+            LocalOp::RenameBoard(id) => boards.contains_key(id),
         }
     }
 
@@ -1915,7 +1994,7 @@ mod proptests {
             for action in &plan.actions {
                 if let PersistenceAction::EnqueueOp(pending) = action {
                     prop_assert!(
-                        op_target_exists(&pending.op, &post.stacks, &post.tasks, &post.labels),
+                        op_target_exists(&pending.op, &post.boards, &post.stacks, &post.tasks, &post.labels),
                         "enqueued op {:?} must target an existing entity",
                         pending.op
                     );

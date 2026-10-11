@@ -42,6 +42,9 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         color: crate::entities::Color::new("ff0000"),
         archived: false,
         deleted: false,
+        clocks: crate::entities::BoardClocks {
+            title: crate::entities::BoardClocks::epoch(),
+        },
         remote_seen: None,
     };
     let stack = crate::entities::Stack {

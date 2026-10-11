@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(id) DO UPDATE SET\n                       remote_board_id = excluded.remote_board_id,\n                       title = excluded.title,\n                       color = excluded.color,\n                       archived = excluded.archived,\n                       deleted = excluded.deleted,\n                       ck_title = excluded.ck_title,\n                       remote_seen = excluded.remote_seen",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "44566e8822380aa6cf128158d6c4fc16c43cfaf63c5931dbcfca5e6980dda960"
+}

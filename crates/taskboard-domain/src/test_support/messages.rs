@@ -89,6 +89,7 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             title,
             color: crate::entities::Color::new("3366cc"),
         }),
+        string_strategy().prop_map(|title| StateCommand::RenameBoard { title }),
         super::remote_board_id_strategy().prop_map(|remote| StateCommand::BindBoard { remote }),
         // 1: sync request
         Just(StateCommand::RequestSync),

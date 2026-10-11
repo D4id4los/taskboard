@@ -69,6 +69,7 @@ fn board(id: u128) -> Board {
         color: Color::new("ff0000"),
         archived: false,
         deleted: false,
+        clocks: taskboard_domain::BoardClocks { title: ts(100) },
         remote_seen: Some(ts(100)),
     }
 }

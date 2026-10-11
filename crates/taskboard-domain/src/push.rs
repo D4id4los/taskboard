@@ -23,13 +23,15 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::entities::{Label, Stack, Task};
-use crate::ids::{LabelId, StackId, TaskId};
+use crate::entities::{Board, Label, Stack, Task};
+use crate::ids::{BoardId, LabelId, StackId, TaskId};
 use crate::outbox::{LocalOp, OpId, PendingOp};
 
 /// Which entity a [`PushGroup`] materializes against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PushTarget {
+    /// A board entity (board writes precede their children's).
+    Board(BoardId),
     /// A task (card) entity.
     Task(TaskId),
     /// A stack entity.
@@ -75,6 +77,11 @@ pub enum MaterializedOp {
     DeleteTask {
         /// The task to delete.
         task: TaskId,
+    },
+    /// PUT the board's full changeset (title + color + archived).
+    RenameBoard {
+        /// The bound board to update.
+        board: BoardId,
     },
     /// POST a new stack.
     CreateStack {
@@ -197,7 +204,7 @@ impl CardShape {
 /// The current entity tables the planner materializes intents from.
 ///
 /// One borrow group instead of a full [`crate::persistence::PersistedState`]:
-/// the planner needs exactly these three maps and nothing else.
+/// the planner needs exactly these four maps and nothing else.
 #[derive(Debug, Clone, Copy)]
 pub struct EntityTables<'a> {
     /// Current tasks.
@@ -206,6 +213,9 @@ pub struct EntityTables<'a> {
     pub stacks: &'a BTreeMap<StackId, Stack>,
     /// Current labels.
     pub labels: &'a BTreeMap<LabelId, Label>,
+    /// Current boards (a queued `RenameBoard` materializes only for a
+    /// *bound* board; a local-only one completes synthetically).
+    pub boards: &'a BTreeMap<BoardId, Board>,
 }
 
 /// One coalesced push: a materialized client intent plus the outbox ops
@@ -287,10 +297,12 @@ pub struct PushGroup {
 ///
 /// let stacks: BTreeMap<StackId, taskboard_domain::Stack> = BTreeMap::new();
 /// let labels: BTreeMap<taskboard_domain::LabelId, taskboard_domain::Label> = BTreeMap::new();
+/// let boards: BTreeMap<taskboard_domain::BoardId, taskboard_domain::Board> = BTreeMap::new();
 /// let groups = plan_pushes(&outbox, EntityTables {
 ///     tasks: &tasks,
 ///     stacks: &stacks,
 ///     labels: &labels,
+///     boards: &boards,
 /// });
 /// assert_eq!(groups.len(), 1);
 /// assert_eq!(groups[0].primary, OpId(uuid::Uuid::from_u128(10)));
@@ -302,6 +314,7 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
     let mut task_ops: Vec<(TaskId, usize, &PendingOp)> = Vec::new();
     let mut stack_ops: Vec<(StackId, usize, &PendingOp)> = Vec::new();
     let mut label_ops: Vec<(LabelId, usize, &PendingOp)> = Vec::new();
+    let mut board_ops: Vec<(BoardId, usize, &PendingOp)> = Vec::new();
     for (idx, entry) in outbox.iter().enumerate() {
         match entry.op {
             LocalOp::CreateTask(id)
@@ -319,10 +332,12 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
             LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                 label_ops.push((id, idx, entry));
             }
+            LocalOp::RenameBoard(id) => board_ops.push((id, idx, entry)),
         }
     }
 
     let mut groups: Vec<(usize, PushGroup)> = Vec::new();
+    groups.extend(plan_board_groups(&board_ops, entities.boards));
     groups.extend(plan_stack_groups(&stack_ops, entities.stacks));
     groups.extend(plan_label_groups(&label_ops, entities.labels));
     groups.extend(plan_task_groups(&task_ops, entities.tasks));
@@ -332,12 +347,14 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
     groups.into_iter().map(|(_, group)| group).collect()
 }
 
-/// The cross-entity dependency rank: stacks, then labels, then tasks.
+/// The cross-entity dependency rank: board first (a board write precedes
+/// its children's), then stacks, labels, tasks.
 fn kind_rank(target: PushTarget) -> u8 {
     match target {
-        PushTarget::Stack(_) => 0,
-        PushTarget::Label(_) => 1,
-        PushTarget::Task(_) => 2,
+        PushTarget::Board(_) => 0,
+        PushTarget::Stack(_) => 1,
+        PushTarget::Label(_) => 2,
+        PushTarget::Task(_) => 3,
     }
 }
 
@@ -411,6 +428,35 @@ fn plan_stack_groups(
                 }
             } else {
                 noop_group(PushTarget::Stack(stack), &members)
+            };
+            (first_idx, group)
+        })
+        .collect()
+}
+
+/// Plans the board groups: one full-send PUT per bound board with a
+/// queued rename; a local-only board's op completes synthetically (the
+/// `publish` ceremony re-sends the same title idempotently after
+/// binding).
+fn plan_board_groups(
+    ops: &[(BoardId, usize, &PendingOp)],
+    boards: &BTreeMap<BoardId, Board>,
+) -> Vec<(usize, PushGroup)> {
+    grouped(ops)
+        .into_iter()
+        .map(|(board, members)| {
+            let first_idx = members[0].0;
+            let group = match boards.get(&board) {
+                Some(row) if row.remote.is_some() && !row.deleted => {
+                    let (_, first) = members[0];
+                    PushGroup {
+                        target: PushTarget::Board(board),
+                        materialized: MaterializedOp::RenameBoard { board },
+                        primary: first.op_id,
+                        subsumed: others(&members, first.op_id),
+                    }
+                }
+                _ => noop_group(PushTarget::Board(board), &members),
             };
             (first_idx, group)
         })
@@ -689,6 +735,19 @@ mod tests {
         }
     }
 
+    fn board_row(raw: u128) -> Board {
+        Board {
+            id: crate::ids::BoardId::from(uuid(raw)),
+            remote: None,
+            title: format!("board {raw}"),
+            color: crate::entities::Color::new("00ff00"),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::BoardClocks { title: ts(100) },
+            remote_seen: None,
+        }
+    }
+
     fn op(raw: u128, kind: LocalOp) -> PendingOp {
         PendingOp {
             op_id: OpId(uuid(raw)),
@@ -696,6 +755,9 @@ mod tests {
             queued_at: ts(200),
         }
     }
+
+    static EMPTY: std::sync::LazyLock<BTreeMap<crate::ids::BoardId, Board>> =
+        std::sync::LazyLock::new(BTreeMap::new);
 
     fn tables<'a>(
         tasks: &'a BTreeMap<TaskId, Task>,
@@ -706,6 +768,7 @@ mod tests {
             tasks,
             stacks,
             labels,
+            boards: &EMPTY,
         }
     }
 
@@ -1032,6 +1095,7 @@ mod tests {
                 tasks: &state.tasks,
                 stacks: &state.stacks,
                 labels: &state.labels,
+                boards: &state.boards,
             };
             let groups = plan_pushes(&state.outbox, tables);
 
@@ -1061,6 +1125,7 @@ mod tests {
                 tasks: &state.tasks,
                 stacks: &state.stacks,
                 labels: &state.labels,
+                boards: &state.boards,
             };
             let groups = plan_pushes(&state.outbox, tables);
             let ranks: Vec<u8> = groups.iter().map(|g| kind_rank(g.target)).collect();
@@ -1077,6 +1142,7 @@ mod tests {
                 tasks: &state.tasks,
                 stacks: &state.stacks,
                 labels: &state.labels,
+                boards: &state.boards,
             };
             let groups = plan_pushes(&state.outbox, tables);
             for group in &groups {
@@ -1105,6 +1171,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn board_rename_materializes_only_for_a_bound_board() {
+        let mut bound = board_row(1);
+        bound.remote = Some(crate::ids::RemoteBoardId(42));
+        let unbound = board_row(2);
+        let bound_id = bound.id;
+        let unbound_id = unbound.id;
+        let mut boards = BTreeMap::new();
+        boards.insert(bound_id, bound);
+        boards.insert(unbound_id, unbound);
+        let tasks = BTreeMap::new();
+        let stacks = BTreeMap::new();
+        let labels = BTreeMap::new();
+
+        let outbox = vec![
+            op(100, LocalOp::RenameBoard(bound_id)),
+            op(101, LocalOp::RenameBoard(unbound_id)),
+        ];
+        let groups = plan_pushes(
+            &outbox,
+            EntityTables {
+                tasks: &tasks,
+                stacks: &stacks,
+                labels: &labels,
+                boards: &boards,
+            },
+        );
+        assert_eq!(groups.len(), 2);
+        assert!(matches!(
+            groups
+                .iter()
+                .find(|g| g.target == PushTarget::Board(bound_id))
+                .expect("bound group")
+                .materialized,
+            MaterializedOp::RenameBoard { .. }
+        ));
+        assert!(
+            groups
+                .iter()
+                .find(|g| g.target == PushTarget::Board(unbound_id))
+                .expect("unbound group")
+                .materialized
+                .is_noop(),
+            "a local-only board completes synthetically"
+        );
+    }
+
+    #[test]
+    fn board_groups_precede_their_children() {
+        let mut board = board_row(1);
+        board.remote = Some(crate::ids::RemoteBoardId(42));
+        let stack = stack_row(10);
+        let board_id = board.id;
+        let stack_id = stack.id;
+        let mut boards = BTreeMap::new();
+        boards.insert(board_id, board);
+        let mut stacks = BTreeMap::new();
+        stacks.insert(stack_id, stack);
+        let tasks = BTreeMap::new();
+        let labels = BTreeMap::new();
+
+        // Queue order reversed: the stack op is queued first.
+        let outbox = vec![
+            op(100, LocalOp::RenameStack(stack_id)),
+            op(101, LocalOp::RenameBoard(board_id)),
+        ];
+        let groups = plan_pushes(
+            &outbox,
+            EntityTables {
+                tasks: &tasks,
+                stacks: &stacks,
+                labels: &labels,
+                boards: &boards,
+            },
+        );
+        assert_eq!(groups[0].target, PushTarget::Board(board_id));
+        assert_eq!(groups[1].target, PushTarget::Stack(stack_id));
     }
 
     #[test]

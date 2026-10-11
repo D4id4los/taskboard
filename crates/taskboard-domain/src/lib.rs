@@ -51,7 +51,9 @@ pub(crate) mod merge_testutil;
 
 pub use clock::{Clock, SystemClock};
 pub use command::{CommandError, CommandOutcome, CommandPlan, plan_command};
-pub use entities::{Board, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks};
+pub use entities::{
+    Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
+};
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
     BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
