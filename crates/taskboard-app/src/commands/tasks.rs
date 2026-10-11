@@ -305,6 +305,18 @@ pub async fn move_(
     .await
 }
 
+/// Exact-uuid match over *all* tasks (tombstones included) — the
+/// delete-repeat affordance.
+fn resolve_task_exact_any(state: &AppState, selector: &str) -> Result<TaskId, CommandError> {
+    if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
+        let id = TaskId::from_uuid(uuid);
+        if state.tasks.contains_key(&id) {
+            return Ok(id);
+        }
+    }
+    Err(CommandError::UnknownTask(selector.to_owned()))
+}
+
 /// Edits a task's fields (sparse changeset; at least one flag required —
 /// enforced by clap as a usage error). A repeated identical edit is an
 /// accepted no-op (`NoOp`, exit 0).
@@ -336,6 +348,47 @@ pub async fn edit(
             .filter(|t| t.is_live())
             .ok_or_else(|| CommandError::UnknownTask(task_id.as_uuid().to_string()))?;
         Ok(mutation_receipt(&state, task))
+    })
+    .await
+}
+
+/// Deletes (tombstones) a task. Repeats are idempotent successes: a
+/// repeat reports the already-deleted entity's snapshot.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn delete(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    task: &str,
+) -> Result<crate::commands::output::TaskDeleteReceipt, CommandError> {
+    let task = task.to_owned();
+    with_core(config, store, async |app| {
+        let state = app.engine.shared_state().load_full();
+        // Terminal intent: a repeat must still resolve its target, so a
+        // tombstoned task stays reachable by exact uuid (the live cascade
+        // deliberately hides tombstones from prefix/title selection).
+        let task_id = resolve_task(&state, &task).or_else(|err| match err {
+            CommandError::UnknownTask(_) => resolve_task_exact_any(&state, &task),
+            other => Err(other),
+        })?;
+        let snapshot = state
+            .tasks
+            .get(&task_id)
+            .map(|t| crate::commands::output::TaskDeleteReceipt {
+                id: t.id.as_uuid().to_string(),
+                title: t.title.clone(),
+            })
+            .unwrap_or(crate::commands::output::TaskDeleteReceipt {
+                id: task_id.as_uuid().to_string(),
+                title: String::new(),
+            });
+        drop(state);
+        app.engine
+            .execute(StateCommand::DeleteTask { id: task_id })
+            .await?;
+        Ok(snapshot)
     })
     .await
 }

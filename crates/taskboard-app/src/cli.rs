@@ -204,6 +204,12 @@ pub enum TasksCmd {
         #[arg(long)]
         unarchive: bool,
     },
+    /// Delete (tombstone) a task; no confirmation (scripting-first —
+    /// repeats are idempotent, the tombstone is permanent).
+    Delete {
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
+        task: String,
+    },
 }
 
 #[cfg(test)]
