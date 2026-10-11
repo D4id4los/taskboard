@@ -60,7 +60,9 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
-use taskboard_domain::{SyncCommand, SyncReport, SyncStateReader, SystemEvent, TaskRepository};
+use taskboard_domain::{
+    SyncCommand, SyncPhase, SyncReport, SyncStateReader, SystemEvent, TaskRepository,
+};
 use taskboard_state::{EngineHandle, spawn_state_engine};
 use taskboard_storage_sqlite::{StorageHandle, spawn_storage_actor};
 use taskboard_sync_nextcloud::{DeckClient, spawn_sync_actor};
@@ -394,6 +396,44 @@ pub fn spawn_system_event_logger(
             }
         }
     })
+}
+
+/// Gives the boot cycle's first pull (a `Syncing` → settled
+/// transition) a bounded chance to land before the verb reads the
+/// state. Only a cycle *in flight right now* is awaited; a settled
+/// hydrated status (the common case) returns immediately — freshness
+/// beyond the last sync is `taskboard sync`'s job. A board-less db can
+/// only ever skip silently (`NoBoard`), so it returns immediately; a
+/// deadline expiry degrades gracefully — offline-first: local data
+/// serves the command.
+pub(crate) async fn wait_for_boot_pull(app: &App, timeout: Duration) {
+    let mut signals = app.engine.subscribe();
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut seen_syncing = false;
+    loop {
+        let state = app.engine.shared_state().load_full();
+        match state.sync.phase {
+            SyncPhase::Syncing => seen_syncing = true,
+            _ if seen_syncing => return,
+            // The cycle already settled before we started watching.
+            _ if state.sync.last_success.is_some()
+                || matches!(
+                    state.sync.phase,
+                    SyncPhase::Offline | SyncPhase::Failed { .. }
+                ) =>
+            {
+                return;
+            }
+            // No live board: the cycle can only skip silently.
+            _ if !state.boards.values().any(|b| !b.deleted) => return,
+            _ => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!("boot pull did not settle in time; serving local data");
+            return;
+        }
+        let _ = tokio::time::timeout(Duration::from_millis(200), signals.recv()).await;
+    }
 }
 
 /// Daemon lifecycle: await `ctrl_c` (and SIGTERM on unix), then run the

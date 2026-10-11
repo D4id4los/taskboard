@@ -62,13 +62,14 @@ pub async fn run(
 ) -> Result<SyncOutcome, CommandError> {
     crate::commands::require_connector(&config)?;
     let app = crate::bootstrap::bootstrap(config, store).await?;
-    let result = run_locked(&app, no_wait, timeout).await;
+    let result = sync_on(&app, no_wait, timeout).await;
     let _ = app.shutdown().await;
     result
 }
 
-/// The sync steps on a booted core; the caller owns the shutdown.
-async fn run_locked(
+/// The sync steps on a booted core; the caller owns the shutdown (the
+/// session dispatcher calls this directly against the session core).
+pub(crate) async fn sync_on(
     app: &crate::App,
     no_wait: bool,
     timeout: Duration,

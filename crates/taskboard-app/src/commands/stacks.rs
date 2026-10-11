@@ -26,37 +26,44 @@ pub async fn add(
     order: Option<i64>,
 ) -> Result<StackReceipt, CommandError> {
     let title = title.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| {
-        let state = app.engine.shared_state().load_full();
-        let order = order.unwrap_or_else(|| {
-            state
-                .stacks
-                .values()
-                .filter(|s| !s.deleted)
-                .map(|s| s.order)
-                .max()
-                .map_or(0, |max| max + 1)
-        });
-        drop(state);
-        let outcome = app
-            .engine
-            .execute(StateCommand::CreateStack {
-                title: title.clone(),
-                order,
-            })
-            .await?;
-        let CommandOutcome::CreatedStack(stack_id) = outcome else {
-            return Err(CommandError::Engine(Box::new(
-                taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard),
-            )));
-        };
-        Ok(StackReceipt {
-            id: stack_id.as_uuid().to_string(),
-            title,
+    crate::commands::tasks::with_core(config, store, async |app| add_on(app, title, order).await)
+        .await
+}
+
+/// The `stacks add` steps on a booted core (the REPL/session seam).
+pub(crate) async fn add_on(
+    app: &crate::App,
+    title: String,
+    order: Option<i64>,
+) -> Result<StackReceipt, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let order = order.unwrap_or_else(|| {
+        state
+            .stacks
+            .values()
+            .filter(|s| !s.deleted)
+            .map(|s| s.order)
+            .max()
+            .map_or(0, |max| max + 1)
+    });
+    drop(state);
+    let outcome = app
+        .engine
+        .execute(StateCommand::CreateStack {
+            title: title.clone(),
             order,
         })
+        .await?;
+    let CommandOutcome::CreatedStack(stack_id) = outcome else {
+        return Err(CommandError::Engine(Box::new(
+            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard),
+        )));
+    };
+    Ok(StackReceipt {
+        id: stack_id.as_uuid().to_string(),
+        title,
+        order,
     })
-    .await
 }
 
 /// Resolves a stack selector against the published state (shared with
