@@ -170,7 +170,10 @@ impl<'a> PushExecutor<'a> {
                     ),
                 }
             }
-            MaterializedOp::RenameStack { stack } => {
+            // A rename and a move share one full-send wire call
+            // (`update_stack` carries title + order), so one executor
+            // arm serves both materializations.
+            MaterializedOp::RenameStack { stack } | MaterializedOp::MoveStack { stack } => {
                 let Some(stack_num) = self.overlay.stack_by_local.get(&stack).copied() else {
                     return Self::reject_primary(group);
                 };
@@ -440,6 +443,7 @@ impl<'a> PushExecutor<'a> {
                 | LocalOp::DeleteTask(_)
                 | LocalOp::CreateStack(_)
                 | LocalOp::RenameStack(_)
+                | LocalOp::MoveStack(_)
                 | LocalOp::DeleteStack(_)
                 | LocalOp::CreateLabel(_)
                 | LocalOp::UpdateLabel(_)
@@ -1614,6 +1618,132 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert_eq!(body["title"], "Doing");
+    }
+
+    #[tokio::test]
+    async fn move_stack_puts_the_full_row_and_applies_the_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stack_json(7, "Doing", 3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::MoveStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[stack_row(5, "Doing", 3)], &[]),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            &outcomes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Stack(view)) } if view.order == 3
+        ));
+        // Full-send: the PUT body carries the whole row (title + order).
+        let body: serde_json::Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["title"], "Doing");
+        assert_eq!(body["order"], 3);
+    }
+
+    #[tokio::test]
+    async fn move_of_an_unbound_stack_rejects_local_data_without_sending() {
+        let server = MockServer::start().await;
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::MoveStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[stack_row(5, "Doing", 0)], &[]),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::LocalData
+            }
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn move_stack_404_maps_to_remote_missing() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks/7"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::MoveStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[stack_row(5, "Doing", 0)], &[]),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+    }
+
+    #[tokio::test]
+    async fn move_stack_transport_failure_aborts_the_cycle() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks/7"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::MoveStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[stack_row(5, "Doing", 0)], &[]),
+            )
+            .await;
+        assert!(matches!(outcome, GroupOutcome::Aborted { landed } if landed.is_empty()));
     }
 
     #[tokio::test]

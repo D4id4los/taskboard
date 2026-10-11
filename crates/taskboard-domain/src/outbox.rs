@@ -32,6 +32,8 @@ pub enum LocalOp {
     CreateStack(StackId),
     /// Stack rename.
     RenameStack(StackId),
+    /// Stack reorder (full-send on push, like [`LocalOp::RenameStack`]).
+    MoveStack(StackId),
     /// Stack delete.
     DeleteStack(StackId),
     /// Label create.

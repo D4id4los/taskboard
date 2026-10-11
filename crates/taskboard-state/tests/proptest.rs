@@ -605,9 +605,10 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 | LocalOp::UpdateTask(id)
                 | LocalOp::MoveTask(id)
                 | LocalOp::DeleteTask(id) => disk.tasks.contains_key(&id),
-                LocalOp::CreateStack(id) | LocalOp::RenameStack(id) | LocalOp::DeleteStack(id) => {
-                    disk.stacks.contains_key(&id)
-                }
+                LocalOp::CreateStack(id)
+                | LocalOp::RenameStack(id)
+                | LocalOp::MoveStack(id)
+                | LocalOp::DeleteStack(id) => disk.stacks.contains_key(&id),
                 LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                     disk.labels.contains_key(&id)
                 }

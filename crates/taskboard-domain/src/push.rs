@@ -86,6 +86,12 @@ pub enum MaterializedOp {
         /// The stack to update.
         stack: StackId,
     },
+    /// PUT the stack's full changeset (order + title; the same full-send
+    /// wire call as [`MaterializedOp::RenameStack`]).
+    MoveStack {
+        /// The stack to update.
+        stack: StackId,
+    },
     /// DELETE the stack.
     DeleteStack {
         /// The stack to delete.
@@ -304,7 +310,10 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
             | LocalOp::DeleteTask(id)
             | LocalOp::AssignLabel(id, _)
             | LocalOp::UnassignLabel(id, _) => task_ops.push((id, idx, entry)),
-            LocalOp::CreateStack(id) | LocalOp::RenameStack(id) | LocalOp::DeleteStack(id) => {
+            LocalOp::CreateStack(id)
+            | LocalOp::RenameStack(id)
+            | LocalOp::MoveStack(id)
+            | LocalOp::DeleteStack(id) => {
                 stack_ops.push((id, idx, entry));
             }
             LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
@@ -386,12 +395,19 @@ fn plan_stack_groups(
                     subsumed: others(&members, create.op_id),
                 }
             } else if stacks.contains_key(&stack) {
-                let (_, rename) = members[0];
+                let (_, first) = members[0];
+                // A rename and a move share one full-send PUT; the first
+                // queued op decides which tag the group carries.
+                let materialized = if matches!(first.op, LocalOp::MoveStack(_)) {
+                    MaterializedOp::MoveStack { stack }
+                } else {
+                    MaterializedOp::RenameStack { stack }
+                };
                 PushGroup {
                     target: PushTarget::Stack(stack),
-                    materialized: MaterializedOp::RenameStack { stack },
-                    primary: rename.op_id,
-                    subsumed: others(&members, rename.op_id),
+                    materialized,
+                    primary: first.op_id,
+                    subsumed: others(&members, first.op_id),
                 }
             } else {
                 noop_group(PushTarget::Stack(stack), &members)

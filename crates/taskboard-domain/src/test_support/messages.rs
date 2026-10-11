@@ -68,6 +68,8 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
         (super::stack_id_strategy(), string_strategy())
             .prop_map(|(id, new_title)| StateCommand::RenameStack { id, new_title }),
         super::stack_id_strategy().prop_map(|id| StateCommand::DeleteStack { id }),
+        (super::stack_id_strategy(), -100_i64..=100)
+            .prop_map(|(id, order)| StateCommand::MoveStack { id, order }),
         // 3: label commands
         (string_strategy(), string_strategy()).prop_map(|(title, color)| {
             StateCommand::CreateLabel {

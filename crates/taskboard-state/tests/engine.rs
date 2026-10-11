@@ -1066,3 +1066,54 @@ async fn a15_bind_board_sets_the_remote_binding() {
     );
     drop(h);
 }
+
+/// A16: `MoveStack` routes end to end — `Applied`, the order change is
+/// published, the sync nudge rides the enqueued op; an unchanged order
+/// is an accepted `NoOp` that enqueues nothing.
+#[tokio::test]
+async fn a16_move_stack_routes_applies_and_nudges_iff_changed() {
+    let mut h = harness().await;
+    let created = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            title: "todo".into(),
+            order: 0,
+        })
+        .await
+        .expect("accepted");
+    let CommandOutcome::CreatedStack(stack_id) = created else {
+        panic!("wrong receipt");
+    };
+    // Drain the setup's nudge + signal.
+    while h.sync_in.try_recv().is_ok() {}
+
+    let outcome = h
+        .handle
+        .execute(StateCommand::MoveStack {
+            id: stack_id,
+            order: 7,
+        })
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::Applied);
+    let app = h.handle.shared_state().load_full();
+    assert_eq!(app.stacks[&stack_id].order, 7);
+    drop(app);
+    assert!(
+        h.sync_in.recv().await.is_some(),
+        "an enqueued op forwards the sync nudge"
+    );
+
+    // Unchanged order: NoOp, no nudge.
+    let outcome = h
+        .handle
+        .execute(StateCommand::MoveStack {
+            id: stack_id,
+            order: 7,
+        })
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::NoOp);
+    assert!(h.sync_in.try_recv().is_err(), "a no-op enqueues nothing");
+    drop(h);
+}
