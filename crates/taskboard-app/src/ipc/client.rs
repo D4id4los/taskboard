@@ -194,8 +194,10 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::validate_response;
+    use super::{CONNECT_BUDGET, try_connect};
     use crate::commands::CommandError;
     use crate::ipc::protocol::{PROTOCOL_VERSION, Response};
+    use crate::ipc::socket_sidecar;
 
     /// The response-side version gate: mismatch variants are typed
     /// failures carrying the peer's version; well-versioned responses
@@ -224,5 +226,32 @@ mod tests {
             }),
             Ok(Response::Exec { code: 0, .. })
         ));
+    }
+    /// The connect budget is a hard bound: a socket name that answers
+    /// every connect attempt with an *ambiguous* failure (here: a
+    /// symlink loop where the sidecar would be — the kernel answers
+    /// `ELOOP`, which is neither refused/not-found/permission-shaped)
+    /// is retried until the budget expires, then answers `None` — the
+    /// caller falls through to the in-process path, never hangs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_ambiguous_socket_name_falls_through_within_the_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("budget.db");
+        let sidecar = socket_sidecar(&db);
+        std::os::unix::fs::symlink(&sidecar, &sidecar).expect("symlink loop");
+
+        let started = std::time::Instant::now();
+        let outcome = try_connect(&db).await;
+        assert!(outcome.is_none(), "nothing can answer on a junk file");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= CONNECT_BUDGET,
+            "ambiguous failures must consume the budget, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < CONNECT_BUDGET + std::time::Duration::from_secs(5),
+            "the budget bounds the wait, took {elapsed:?}"
+        );
     }
 }
