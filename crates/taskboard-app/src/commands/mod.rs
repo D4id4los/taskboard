@@ -325,61 +325,20 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
     tracing::info!(?command, config = ?ctx.config_path, json, "running command");
     match command {
         Command::Login { server, user } => {
-            let path = AppConfig::config_path(ctx.config_path)
-                .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
-            match AppConfig::extract_raw(Some(&path)) {
-                Ok(raw) => {
-                    // Explicit `standalone` refuses before any prompting
-                    // or store touch; auto behaves as today (and after
-                    // login writes `server_url`, auto resolves
-                    // `nextcloud`).
-                    if raw.sync.backend == Some(SyncBackend::Standalone) {
-                        return report_to(&mut ctx.io, &CommandError::SyncDisabled);
-                    }
-                    let store = production_store(raw.nextcloud.credential_store);
-                    let mut prompts = login::StdinPrompts;
-                    match login::run(&path, raw, server, user, &mut prompts, &store).await {
-                        Ok(receipt) => {
-                            emit_to(&mut ctx.io, &receipt, &login::render_text(&receipt));
-                            0
-                        }
-                        Err(err) => report_to(&mut ctx.io, &err),
-                    }
-                }
-                // A not-yet-valid config must not block login (first-run
-                // bootstrap command); undecodable ones still fail.
-                Err(err) => report_to(&mut ctx.io, &CommandError::from(err)),
-            }
+            login_command(&mut ctx.io, ctx.config_path, server, user).await
         }
-        Command::Logout => {
-            let path = AppConfig::config_path(ctx.config_path.clone())
-                .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
-            match AppConfig::extract_raw(Some(&path)) {
-                Ok(raw) => {
-                    let store = production_store(raw.nextcloud.credential_store);
-                    match logout::run(&path, &raw, store.as_ref()) {
-                        Ok(receipt) => {
-                            emit_to(&mut ctx.io, &receipt, &logout::render_text(&receipt));
-                            0
-                        }
-                        Err(err) => report_to(&mut ctx.io, &err),
-                    }
-                }
-                Err(err) => report_to(&mut ctx.io, &CommandError::from(err)),
-            }
-        }
+        Command::Logout => logout_command(&mut ctx.io, ctx.config_path.clone()),
         Command::Boards {
             cmd: BoardsCmd::List,
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match boards::list(&config, &store).await {
-                Ok(entries) => {
-                    emit_to(&mut ctx.io, &entries, &boards::render_text_list(&entries));
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                |entries: &Vec<_>| boards::render_text_list(entries),
+                |config, store| async move { boards::list(&config, &store).await },
+            )
+            .await
+        }
         Command::Boards {
             cmd:
                 BoardsCmd::Select {
@@ -387,144 +346,125 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                     timeout_secs,
                     bind_local_board,
                 },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => {
-                match boards::select(
-                    config,
-                    store,
-                    board,
-                    Duration::from_secs(timeout_secs),
-                    bind_local_board,
-                )
-                .await
-                {
-                    Ok(receipt) => {
-                        emit_to(&mut ctx.io, &receipt, &boards::render_text_select(&receipt));
-                        0
-                    }
-                    Err(err) => report_to(&mut ctx.io, &err),
-                }
-            }
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_select,
+                move |config, store| async move {
+                    boards::select(
+                        config,
+                        store,
+                        board,
+                        Duration::from_secs(timeout_secs),
+                        bind_local_board,
+                    )
+                    .await
+                },
+            )
+            .await
+        }
         Command::Boards {
             cmd: BoardsCmd::Create { title, color },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => {
-                match boards::create(config, store, &title, color.as_deref()).await {
-                    Ok(receipt) => {
-                        emit_to(&mut ctx.io, &receipt, &boards::render_text_create(&receipt));
-                        0
-                    }
-                    Err(err) => report_to(&mut ctx.io, &err),
-                }
-            }
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_create,
+                move |config, store| async move {
+                    boards::create(config, store, &title, color.as_deref()).await
+                },
+            )
+            .await
+        }
         Command::Boards {
             cmd: BoardsCmd::Rename { title },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match boards::rename(config, store, &title).await {
-                Ok(receipt) => {
-                    emit_to(&mut ctx.io, &receipt, &boards::render_text_rename(&receipt));
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_rename,
+                move |config, store| async move { boards::rename(config, store, &title).await },
+            )
+            .await
+        }
         Command::Boards {
             cmd: BoardsCmd::Publish { timeout_secs },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => {
-                match boards::publish(config, store, Duration::from_secs(timeout_secs)).await {
-                    Ok(receipt) => {
-                        emit_to(&mut ctx.io, &receipt, &boards::render_text_select(&receipt));
-                        0
-                    }
-                    Err(err) => report_to(&mut ctx.io, &err),
-                }
-            }
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_select,
+                move |config, store| async move {
+                    boards::publish(config, store, Duration::from_secs(timeout_secs)).await
+                },
+            )
+            .await
+        }
         Command::Stacks {
             cmd: StacksCmd::Add { title, order },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match stacks::add(config, store, &title, order).await {
-                Ok(receipt) => {
-                    emit_to(&mut ctx.io, &receipt, &stacks::render_text_add(&receipt));
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                stacks::render_text_add,
+                move |config, store| async move { stacks::add(config, store, &title, order).await },
+            )
+            .await
+        }
         Command::Stacks {
             cmd: StacksCmd::Rename { stack, title },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match stacks::rename(config, store, &stack, &title).await {
-                Ok(receipt) => {
-                    emit_to(&mut ctx.io, &receipt, &stacks::render_text_add(&receipt));
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            stacks::render_text_add,
+            move |config, store| async move { stacks::rename(config, store, &stack, &title).await },
+        )
+        .await,
         Command::Stacks {
             cmd: StacksCmd::Delete { stack },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match stacks::delete(config, store, &stack).await {
-                Ok(receipt) => {
-                    emit_to(&mut ctx.io, &receipt, &stacks::render_text_delete(&receipt));
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                stacks::render_text_delete,
+                move |config, store| async move { stacks::delete(config, store, &stack).await },
+            )
+            .await
+        }
         Command::Stacks {
             cmd: StacksCmd::Move { stack, order },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match stacks::move_(config, store, &stack, order).await {
-                Ok(receipt) => {
-                    emit_to(&mut ctx.io, &receipt, &stacks::render_text_add(&receipt));
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            stacks::render_text_add,
+            move |config, store| async move { stacks::move_(config, store, &stack, order).await },
+        )
+        .await,
         Command::Labels {
             cmd: LabelsCmd::List,
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match labels::list(config, store).await {
-                Ok(rows) => {
-                    emit_to(&mut ctx.io, &rows, &labels::render_text_list(&rows));
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                |rows: &Vec<_>| labels::render_text_list(rows),
+                |config, store| async move { labels::list(config, store).await },
+            )
+            .await
+        }
         Command::Labels {
             cmd: LabelsCmd::Add { title, color },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => {
-                match labels::add(config, store, &title, color.as_deref()).await {
-                    Ok(receipt) => {
-                        emit_to(
-                            &mut ctx.io,
-                            &receipt,
-                            &labels::render_text_receipt(&receipt),
-                        );
-                        0
-                    }
-                    Err(err) => report_to(&mut ctx.io, &err),
-                }
-            }
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                labels::render_text_receipt,
+                move |config, store| async move {
+                    labels::add(config, store, &title, color.as_deref()).await
+                },
+            )
+            .await
+        }
         Command::Labels {
             cmd:
                 LabelsCmd::Edit {
@@ -532,52 +472,38 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                     title,
                     color,
                 },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match labels::edit(config, store, &label, title, color).await {
-                Ok(receipt) => {
-                    emit_to(
-                        &mut ctx.io,
-                        &receipt,
-                        &labels::render_text_receipt(&receipt),
-                    );
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                labels::render_text_receipt,
+                move |config, store| async move {
+                    labels::edit(config, store, &label, title, color).await
+                },
+            )
+            .await
+        }
         Command::Labels {
             cmd: LabelsCmd::Delete { label },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match labels::delete(config, store, &label).await {
-                Ok(receipt) => {
-                    emit_to(
-                        &mut ctx.io,
-                        &receipt,
-                        &labels::render_text_receipt(&receipt),
-                    );
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                labels::render_text_receipt,
+                move |config, store| async move { labels::delete(config, store, &label).await },
+            )
+            .await
+        }
         Command::Tasks {
             cmd: TasksCmd::List { stack },
         } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => {
                 let standalone = config.sync_backend() == SyncBackend::Standalone;
-                match tasks::list(config, store, stack.as_deref()).await {
-                    Ok(list) => {
-                        emit_to(
-                            &mut ctx.io,
-                            &list,
-                            &tasks::render_text_list(&list, standalone),
-                        );
-                        0
-                    }
-                    Err(err) => report_to(&mut ctx.io, &err),
-                }
+                emit_result(
+                    &mut ctx.io,
+                    tasks::list(config, store, stack.as_deref()).await,
+                    |list| tasks::render_text_list(list, standalone),
+                )
             }
             Err(err) => report_to(&mut ctx.io, &err),
         },
@@ -634,20 +560,17 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         }
         Command::Tasks {
             cmd: TasksCmd::Delete { task },
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => match tasks::delete(config, store, &task).await {
-                Ok(receipt) => {
-                    emit_to(
-                        &mut ctx.io,
-                        &receipt,
-                        &format!("deleted \"{}\" ({})", receipt.title, receipt.id),
-                    );
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &err),
-            },
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                |receipt: &output::TaskDeleteReceipt| {
+                    format!("deleted \"{}\" ({})", receipt.title, receipt.id)
+                },
+                move |config, store| async move { tasks::delete(config, store, &task).await },
+            )
+            .await
+        }
         Command::Tasks {
             cmd: TasksCmd::Label { task, label },
         } => run_mutation(
@@ -667,26 +590,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         Command::Sync {
             no_wait,
             timeout_secs,
-        } => match core_ctx(ctx.config_path.clone()) {
-            Ok((config, store)) => {
-                match sync::run(config, store, no_wait, Duration::from_secs(timeout_secs)).await {
-                    Ok(outcome) => {
-                        emit_to(&mut ctx.io, outcome.view(), &sync::render_text(&outcome));
-                        match outcome {
-                            sync::SyncOutcome::Succeeded(_) | sync::SyncOutcome::NoWait(_) => 0,
-                            sync::SyncOutcome::Failed(kind, _) => {
-                                report_to(&mut ctx.io, &CommandError::SyncFailed(kind))
-                            }
-                            sync::SyncOutcome::TimedOut(_) => {
-                                report_to(&mut ctx.io, &CommandError::SyncTimedOut)
-                            }
-                        }
-                    }
-                    Err(err) => report_to(&mut ctx.io, &err),
-                }
-            }
-            Err(err) => report_to(&mut ctx.io, &err),
-        },
+        } => sync_command(&mut ctx.io, ctx.config_path.clone(), no_wait, timeout_secs).await,
         Command::Config { cmd } => config::handle(&cmd, &mut ctx),
         Command::Status => {
             // No core boot: the config resolves for the db path only; a
@@ -700,6 +604,130 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             0
         }
         Command::Daemon { .. } => unreachable!("main handles the daemon arms itself"),
+    }
+}
+
+/// The shared shape of a completed verb: print the payload (JSON under
+/// `--json`, the rendered text otherwise) and yield 0, or report the
+/// typed failure and yield 1. Every `match result { Ok => emit,
+/// Err => report }` in the dispatchers routes through here.
+fn emit_result<T: serde::Serialize>(
+    io: &mut CommandIo<'_>,
+    result: Result<T, CommandError>,
+    render: impl FnOnce(&T) -> String,
+) -> u8 {
+    match result {
+        Ok(payload) => {
+            emit_to(io, &payload, &render(&payload));
+            0
+        }
+        Err(err) => report_to(io, &err),
+    }
+}
+
+/// The shared shape of the config-backed verbs: resolve `{config,
+/// store}`, run the verb, print the payload (or the error). `render`
+/// maps the payload to its human text; `body` owns the resolved pair
+/// for the duration of its future.
+async fn run_core<T, R, F, Fut>(
+    io: &mut CommandIo<'_>,
+    config_path: Option<PathBuf>,
+    render: R,
+    body: F,
+) -> u8
+where
+    T: serde::Serialize,
+    R: FnOnce(&T) -> String,
+    F: FnOnce(AppConfig, Arc<dyn CredentialStore>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, CommandError>>,
+{
+    match core_ctx(config_path) {
+        Ok((config, store)) => emit_result(io, body(config, store).await, render),
+        Err(err) => report_to(io, &err),
+    }
+}
+
+/// One-shot `login`: resolves the config path (writing one if this is
+/// the first run), refuses an explicit `standalone` before any
+/// prompting, and persists the verified connection.
+async fn login_command(
+    io: &mut CommandIo<'_>,
+    config_path: Option<PathBuf>,
+    server: Option<String>,
+    user: Option<String>,
+) -> u8 {
+    let path = AppConfig::config_path(config_path)
+        .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
+    match AppConfig::extract_raw(Some(&path)) {
+        Ok(raw) => {
+            // Explicit `standalone` refuses before any prompting
+            // or store touch; auto behaves as today (and after
+            // login writes `server_url`, auto resolves
+            // `nextcloud`).
+            if raw.sync.backend == Some(SyncBackend::Standalone) {
+                return report_to(io, &CommandError::SyncDisabled);
+            }
+            let store = production_store(raw.nextcloud.credential_store);
+            let mut prompts = login::StdinPrompts;
+            emit_result(
+                io,
+                login::run(&path, raw, server, user, &mut prompts, &store).await,
+                login::render_text,
+            )
+        }
+        // A not-yet-valid config must not block login (first-run
+        // bootstrap command); undecodable ones still fail.
+        Err(err) => report_to(io, &CommandError::from(err)),
+    }
+}
+
+/// One-shot `logout`: reads the config without validation (the
+/// teardown command must survive a not-yet-valid file), deletes the
+/// stored secret, and clears the auto keys.
+fn logout_command(io: &mut CommandIo<'_>, config_path: Option<PathBuf>) -> u8 {
+    let path = AppConfig::config_path(config_path)
+        .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
+    match AppConfig::extract_raw(Some(&path)) {
+        Ok(raw) => {
+            let store = production_store(raw.nextcloud.credential_store);
+            emit_result(
+                io,
+                logout::run(&path, &raw, store.as_ref()),
+                logout::render_text,
+            )
+        }
+        Err(err) => report_to(io, &CommandError::from(err)),
+    }
+}
+
+/// One-shot `sync`: one cycle against the resolved config, with the
+/// outcome-specific exit codes (0 succeeded/no-wait, 1 failed/timed
+/// out, envelope on `err`).
+async fn sync_command(
+    io: &mut CommandIo<'_>,
+    config_path: Option<PathBuf>,
+    no_wait: bool,
+    timeout_secs: u64,
+) -> u8 {
+    match core_ctx(config_path) {
+        Ok((config, store)) => {
+            match sync::run(config, store, no_wait, Duration::from_secs(timeout_secs)).await {
+                Ok(outcome) => {
+                    emit_to(io, outcome.view(), &sync::render_text(&outcome));
+                    match outcome {
+                        sync::SyncOutcome::Succeeded(_) | sync::SyncOutcome::NoWait(_) => 0,
+                        sync::SyncOutcome::Failed(kind, _) => {
+                            report_to(io, &CommandError::SyncFailed(kind))
+                        }
+                        sync::SyncOutcome::TimedOut(_) => {
+                            report_to(io, &CommandError::SyncTimedOut)
+                        }
+                    }
+                }
+                Err(err) => report_to(io, &err),
+            }
+        }
+        Err(err) => report_to(io, &err),
     }
 }
 
@@ -799,283 +827,245 @@ pub async fn dispatch_line(
             status::emit(io, &view);
             0
         }
-        Command::Boards {
-            cmd: BoardsCmd::List,
-        } => match boards::list(session.session_config(), session.session_store()).await {
-            Ok(entries) => {
-                emit_to(io, &entries, &boards::render_text_list(&entries));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Boards {
-            cmd:
-                BoardsCmd::Select {
-                    board,
-                    timeout_secs,
-                    bind_local_board,
-                },
-        } => match boards::select_prelude(session.session_config(), session.session_store(), board)
-            .await
-        {
-            Ok(()) => match boards::select_on(
-                app,
-                board,
-                Duration::from_secs(timeout_secs),
-                bind_local_board,
-            )
-            .await
-            {
-                Ok(receipt) => {
-                    emit_to(io, &receipt, &boards::render_text_select(&receipt));
-                    0
-                }
-                Err(err) => report_to(io, &err),
-            },
-            Err(err) => report_to(io, &err),
-        },
-        Command::Boards {
-            cmd: BoardsCmd::Create { title, color },
+        Command::Boards { cmd } => boards_line(session, app, cmd, io).await,
+        Command::Stacks { cmd } => stacks_line(app, cmd, io).await,
+        Command::Labels { cmd } => labels_line(app, cmd, io).await,
+        Command::Tasks { cmd } => tasks_line(session, app, cmd, io).await,
+        Command::Sync {
+            no_wait,
+            timeout_secs,
+        } => sync_line(session, app, io, no_wait, timeout_secs).await,
+    }
+}
+
+/// The boards family over a booted session (ADR 0011): `list` reads the
+/// session config/store; `select`/`publish` run their connector
+/// preludes against the session before touching the core; `create`/
+/// `rename` hit the core directly.
+async fn boards_line(
+    session: &(impl CoreSession + ?Sized),
+    app: &crate::App,
+    cmd: BoardsCmd,
+    io: &mut CommandIo<'_>,
+) -> u8 {
+    match cmd {
+        BoardsCmd::List => emit_result(
+            io,
+            boards::list(session.session_config(), session.session_store()).await,
+            |entries: &Vec<_>| boards::render_text_list(entries),
+        ),
+        BoardsCmd::Select {
+            board,
+            timeout_secs,
+            bind_local_board,
         } => {
-            let color = boards::resolved_color(color.as_deref());
-            let color_str = color.as_str().to_owned();
-            match boards::create_on(app, title, color, color_str).await {
-                Ok(receipt) => {
-                    emit_to(io, &receipt, &boards::render_text_create(&receipt));
-                    0
-                }
+            match boards::select_prelude(session.session_config(), session.session_store(), board)
+                .await
+            {
+                Ok(()) => emit_result(
+                    io,
+                    boards::select_on(
+                        app,
+                        board,
+                        Duration::from_secs(timeout_secs),
+                        bind_local_board,
+                    )
+                    .await,
+                    boards::render_text_select,
+                ),
                 Err(err) => report_to(io, &err),
             }
         }
-        Command::Boards {
-            cmd: BoardsCmd::Rename { title },
-        } => match boards::rename_on(app, title).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &boards::render_text_rename(&receipt));
-                0
+        BoardsCmd::Create { title, color } => {
+            let color = boards::resolved_color(color.as_deref());
+            let color_str = color.as_str().to_owned();
+            emit_result(
+                io,
+                boards::create_on(app, title, color, color_str).await,
+                boards::render_text_create,
+            )
+        }
+        BoardsCmd::Rename { title } => emit_result(
+            io,
+            boards::rename_on(app, title).await,
+            boards::render_text_rename,
+        ),
+        BoardsCmd::Publish { timeout_secs } => {
+            match boards::publish_prelude(session.session_config(), session.session_store()) {
+                Ok(client) => emit_result(
+                    io,
+                    boards::publish_on(app, &client, Duration::from_secs(timeout_secs)).await,
+                    boards::render_text_select,
+                ),
+                Err(err) => report_to(io, &err),
             }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Boards {
-            cmd: BoardsCmd::Publish { timeout_secs },
-        } => match boards::publish_prelude(session.session_config(), session.session_store()) {
-            Ok(client) => {
-                match boards::publish_on(app, &client, Duration::from_secs(timeout_secs)).await {
-                    Ok(receipt) => {
-                        emit_to(io, &receipt, &boards::render_text_select(&receipt));
-                        0
-                    }
-                    Err(err) => report_to(io, &err),
-                }
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Stacks {
-            cmd: StacksCmd::Add { title, order },
-        } => match stacks::add_on(app, title, order).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &stacks::render_text_add(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Stacks {
-            cmd: StacksCmd::Rename { stack, title },
-        } => match stacks::rename_on(app, &stack, title).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &stacks::render_text_add(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Stacks {
-            cmd: StacksCmd::Delete { stack },
-        } => match stacks::delete_on(app, &stack).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &stacks::render_text_delete(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Stacks {
-            cmd: StacksCmd::Move { stack, order },
-        } => match stacks::move_on(app, &stack, order).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &stacks::render_text_add(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Labels {
-            cmd: LabelsCmd::List,
-        } => match labels::list_on(app) {
-            Ok(rows) => {
-                emit_to(io, &rows, &labels::render_text_list(&rows));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Labels {
-            cmd: LabelsCmd::Add { title, color },
-        } => {
+        }
+    }
+}
+
+/// The stacks family over a booted session: pure core mutations, no
+/// prelude.
+async fn stacks_line(app: &crate::App, cmd: StacksCmd, io: &mut CommandIo<'_>) -> u8 {
+    match cmd {
+        StacksCmd::Add { title, order } => emit_result(
+            io,
+            stacks::add_on(app, title, order).await,
+            stacks::render_text_add,
+        ),
+        StacksCmd::Rename { stack, title } => emit_result(
+            io,
+            stacks::rename_on(app, &stack, title).await,
+            stacks::render_text_add,
+        ),
+        StacksCmd::Delete { stack } => emit_result(
+            io,
+            stacks::delete_on(app, &stack).await,
+            stacks::render_text_delete,
+        ),
+        StacksCmd::Move { stack, order } => emit_result(
+            io,
+            stacks::move_on(app, &stack, order).await,
+            stacks::render_text_add,
+        ),
+    }
+}
+
+/// The labels family over a booted session: `list` reads the core's
+/// published state; the rest are core mutations.
+async fn labels_line(app: &crate::App, cmd: LabelsCmd, io: &mut CommandIo<'_>) -> u8 {
+    match cmd {
+        LabelsCmd::List => emit_result(io, labels::list_on(app), |rows: &Vec<_>| {
+            labels::render_text_list(rows)
+        }),
+        LabelsCmd::Add { title, color } => {
             // The clap value parser normalizes to lowercase; the
             // session arm normalizes like the one-shot wrapper does.
             let color = color.map_or_else(
                 || labels::DEFAULT_LABEL_COLOR.to_owned(),
                 |c| c.to_lowercase(),
             );
-            match labels::add_on(app, title, color).await {
-                Ok(receipt) => {
-                    emit_to(io, &receipt, &labels::render_text_receipt(&receipt));
-                    0
-                }
-                Err(err) => report_to(io, &err),
-            }
+            emit_result(
+                io,
+                labels::add_on(app, title, color).await,
+                labels::render_text_receipt,
+            )
         }
-        Command::Labels {
-            cmd:
-                LabelsCmd::Edit {
-                    label,
-                    title,
-                    color,
-                },
-        } => match labels::edit_on(app, &label, title, color).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &labels::render_text_receipt(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Labels {
-            cmd: LabelsCmd::Delete { label },
-        } => match labels::delete_on(app, &label).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &labels::render_text_receipt(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Tasks {
-            cmd: TasksCmd::List { stack },
-        } => {
+        LabelsCmd::Edit {
+            label,
+            title,
+            color,
+        } => emit_result(
+            io,
+            labels::edit_on(app, &label, title, color).await,
+            labels::render_text_receipt,
+        ),
+        LabelsCmd::Delete { label } => emit_result(
+            io,
+            labels::delete_on(app, &label).await,
+            labels::render_text_receipt,
+        ),
+    }
+}
+
+/// The tasks family over a booted session: `list` renders against the
+/// session backend; the rest are core mutations (`label`/`unlabel`
+/// share one `*_on` body over the two state commands).
+async fn tasks_line(
+    session: &(impl CoreSession + ?Sized),
+    app: &crate::App,
+    cmd: TasksCmd,
+    io: &mut CommandIo<'_>,
+) -> u8 {
+    match cmd {
+        TasksCmd::List { stack } => {
             let standalone = session.session_config().sync_backend() == SyncBackend::Standalone;
-            match tasks::list_on(app, stack.as_deref()) {
-                Ok(list) => {
-                    emit_to(io, &list, &tasks::render_text_list(&list, standalone));
-                    0
-                }
-                Err(err) => report_to(io, &err),
-            }
+            emit_result(io, tasks::list_on(app, stack.as_deref()), |list| {
+                tasks::render_text_list(list, standalone)
+            })
         }
-        Command::Tasks {
-            cmd: TasksCmd::Add { title, stack },
-        } => match tasks::add_on(app, title, stack.as_deref()).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Tasks {
-            cmd: TasksCmd::Done { task, undo },
-        } => match tasks::done_on(app, &task, undo).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Tasks {
-            cmd: TasksCmd::Move { task, stack, order },
-        } => match tasks::move_on(app, &task, stack.as_deref(), order).await {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Tasks {
-            cmd:
-                TasksCmd::Edit {
-                    task,
-                    title,
-                    description,
-                    due,
-                    archive,
-                    unarchive,
-                },
+        TasksCmd::Add { title, stack } => emit_result(
+            io,
+            tasks::add_on(app, title, stack.as_deref()).await,
+            tasks::render_text_receipt,
+        ),
+        TasksCmd::Done { task, undo } => emit_result(
+            io,
+            tasks::done_on(app, &task, undo).await,
+            tasks::render_text_receipt,
+        ),
+        TasksCmd::Move { task, stack, order } => emit_result(
+            io,
+            tasks::move_on(app, &task, stack.as_deref(), order).await,
+            tasks::render_text_receipt,
+        ),
+        TasksCmd::Edit {
+            task,
+            title,
+            description,
+            due,
+            archive,
+            unarchive,
         } => {
             let changes = task_changes(title, description, due, archive, unarchive);
-            match tasks::edit_on(app, &task, changes).await {
-                Ok(receipt) => {
-                    emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
-                    0
-                }
-                Err(err) => report_to(io, &err),
-            }
+            emit_result(
+                io,
+                tasks::edit_on(app, &task, changes).await,
+                tasks::render_text_receipt,
+            )
         }
-        Command::Tasks {
-            cmd: TasksCmd::Delete { task },
-        } => match tasks::delete_on(app, &task).await {
-            Ok(receipt) => {
-                emit_to(
-                    io,
-                    &receipt,
-                    &format!("deleted \"{}\" ({})", receipt.title, receipt.id),
-                );
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Tasks {
-            cmd: TasksCmd::Label { task, label },
-        } => match tasks::label_on(app, &task, &label, |t, l| StateCommand::AssignLabel {
-            task: t,
-            label: l,
-        })
-        .await
-        {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Tasks {
-            cmd: TasksCmd::Unlabel { task, label },
-        } => match tasks::label_on(app, &task, &label, |t, l| StateCommand::UnassignLabel {
-            task: t,
-            label: l,
-        })
-        .await
-        {
-            Ok(receipt) => {
-                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
-                0
-            }
-            Err(err) => report_to(io, &err),
-        },
-        Command::Sync {
-            no_wait,
-            timeout_secs,
-        } => match crate::commands::require_connector(session.session_config()) {
-            Ok(()) => match sync::sync_on(app, no_wait, Duration::from_secs(timeout_secs)).await {
-                Ok(outcome) => {
-                    emit_to(io, outcome.view(), &sync::render_text(&outcome));
-                    match outcome {
-                        sync::SyncOutcome::Succeeded(_) | sync::SyncOutcome::NoWait(_) => 0,
-                        sync::SyncOutcome::Failed(kind, _) => {
-                            report_to(io, &CommandError::SyncFailed(kind))
-                        }
-                        sync::SyncOutcome::TimedOut(_) => {
-                            report_to(io, &CommandError::SyncTimedOut)
-                        }
-                    }
-                }
-                Err(err) => report_to(io, &err),
+        TasksCmd::Delete { task } => emit_result(
+            io,
+            tasks::delete_on(app, &task).await,
+            |receipt: &output::TaskDeleteReceipt| {
+                format!("deleted \"{}\" ({})", receipt.title, receipt.id)
             },
+        ),
+        TasksCmd::Label { task, label } => emit_result(
+            io,
+            tasks::label_on(app, &task, &label, |t, l| StateCommand::AssignLabel {
+                task: t,
+                label: l,
+            })
+            .await,
+            tasks::render_text_receipt,
+        ),
+        TasksCmd::Unlabel { task, label } => emit_result(
+            io,
+            tasks::label_on(app, &task, &label, |t, l| StateCommand::UnassignLabel {
+                task: t,
+                label: l,
+            })
+            .await,
+            tasks::render_text_receipt,
+        ),
+    }
+}
+
+/// The session `sync`: connector-only (`sync-disabled` under
+/// `standalone`), one cycle against the booted core, outcome-specific
+/// exit codes.
+async fn sync_line(
+    session: &(impl CoreSession + ?Sized),
+    app: &crate::App,
+    io: &mut CommandIo<'_>,
+    no_wait: bool,
+    timeout_secs: u64,
+) -> u8 {
+    match crate::commands::require_connector(session.session_config()) {
+        Ok(()) => match sync::sync_on(app, no_wait, Duration::from_secs(timeout_secs)).await {
+            Ok(outcome) => {
+                emit_to(io, outcome.view(), &sync::render_text(&outcome));
+                match outcome {
+                    sync::SyncOutcome::Succeeded(_) | sync::SyncOutcome::NoWait(_) => 0,
+                    sync::SyncOutcome::Failed(kind, _) => {
+                        report_to(io, &CommandError::SyncFailed(kind))
+                    }
+                    sync::SyncOutcome::TimedOut(_) => report_to(io, &CommandError::SyncTimedOut),
+                }
+            }
             Err(err) => report_to(io, &err),
         },
+        Err(err) => report_to(io, &err),
     }
 }
 

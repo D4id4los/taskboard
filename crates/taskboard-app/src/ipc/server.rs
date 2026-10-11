@@ -117,8 +117,14 @@ impl IpcServerHandle {
             tracing::warn!("ipc drain did not finish in time; dropping in-flight connections");
             accept.abort();
             dispatcher.abort();
-            let _ = accept.await;
-            let _ = dispatcher.await;
+            // Await only the handles the timed-out drain did *not*
+            // consume: a JoinHandle polled past its completion panics.
+            if !accept.is_finished() {
+                let _ = accept.await;
+            }
+            if !dispatcher.is_finished() {
+                let _ = dispatcher.await;
+            }
         }
         if let Some(sidecar) = &self.sidecar
             && std::fs::remove_file(sidecar).is_ok()
@@ -540,5 +546,33 @@ mod config_binding_tests {
             .is_err()
         );
         assert!(strip_matching_config(&argv(&["--config", &abs]), None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::{Duration, IpcServerHandle, watch};
+
+    /// The drain budget is a hard bound: a task that never finishes
+    /// (here: a dispatcher stuck forever) is aborted at the budget and
+    /// `join` still completes — the daemon's own shutdown must never
+    /// depend on a peer's or an in-flight request's behavior (the
+    /// WI-5 review regression).
+    #[tokio::test]
+    async fn join_bounds_the_drain_even_with_a_task_that_never_finishes() {
+        let (stop, stop_rx) = watch::channel(false);
+        let handle = IpcServerHandle {
+            stop,
+            stop_rx,
+            accept: tokio::spawn(async {}),
+            dispatcher: tokio::spawn(std::future::pending::<()>()),
+            sidecar: None,
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            handle.join(Duration::from_millis(100)),
+        )
+        .await
+        .expect("join completes although the dispatcher never does");
     }
 }
