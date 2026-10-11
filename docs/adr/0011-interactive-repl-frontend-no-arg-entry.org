@@ -88,10 +88,12 @@ compose per line:
 - a line's =--json= overrides the session default *for that line only*;
 - a line carrying =--config= is refused (the session's config is fixed
   at boot);
-- =daemon= and =login= are refused at parse level: a nested daemon is
-  meaningless, and mid-session login cannot activate a connector in the
-  running session (credential + =DeckClient= wiring happens in
-  =bootstrap=) — the honest UX is "exit, =taskboard login=, re-enter".
+- =daemon=, =login=, =logout=, and =config= are refused at parse
+  level: a nested daemon is meaningless; mid-session login/logout
+  cannot reshape the running session's connector (credential +
+  =DeckClient= wiring happens in =bootstrap=) — the honest UX is
+  "exit, run the ceremony one-shot, re-enter"; and config commands act
+  on the config file the session already resolved.
 - clap failures print via =clap_err.print()= (help/version to stdout,
   usage errors to stderr) and the loop continues; *the process never
   exits 2 from a REPL line*.

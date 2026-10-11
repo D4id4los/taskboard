@@ -195,8 +195,9 @@ Line grammar: every line is one CLI invocation (quoting with
 prompt cancels the line; an empty line re-prompts. Mutations are
 durable the moment the line replies; the outbox drains on the sync
 actor's cadence or a =sync= line. Refused in-session: =daemon=,
-=login=, and per-line =--config= (the session's config and connector
-are fixed at boot). The instance-lock mutex applies both ways — a
+=login=, =logout=, =config=, and per-line =--config= (the session's
+config, connector, and credential store are fixed for the lock
+epoch). The instance-lock mutex applies both ways — a
 running daemon makes bare =taskboard= fail with =instance-locked=:
 stop the daemon first. Without a TTY (systemd units, pipes), bare
 =taskboard= keeps the old behavior: the =[app] mode= resolution
