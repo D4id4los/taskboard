@@ -56,6 +56,7 @@ async fn serve_with_config(
     let session = Arc::new(BasicSession {
         config: app.config.clone(),
         store,
+        config_path: None,
     });
     let handle = server::spawn_server(app, session, &db)
         .await

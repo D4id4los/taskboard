@@ -742,12 +742,18 @@ pub trait CoreSession: Send + Sync {
 }
 
 /// The minimal concrete session for frontends holding exactly
-/// `{config, store}` — the daemon IPC server's dispatcher.
+/// `{config, store}` — the daemon IPC server's dispatcher. The resolved
+/// config path rides along so the server can honor an identical
+/// `--config` (the socket *is* the config binding; a *different* file
+/// over the same socket is the degenerate case §2.10 refuses).
 pub struct BasicSession {
     /// The resolved, validated config the core booted with.
     pub config: AppConfig,
     /// The credential store picked from the config at boot.
     pub store: Arc<dyn CredentialStore>,
+    /// The config file the core's config was resolved from (the
+    /// daemon's `--config` answer), if one was named.
+    pub config_path: Option<PathBuf>,
 }
 
 impl CoreSession for BasicSession {

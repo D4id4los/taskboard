@@ -167,14 +167,14 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
                 unreachable!("entry resolution ran with no subcommand given")
             }
         }
-        return daemon_lifecycle(config, cli.json).await;
+        return daemon_lifecycle(config, cli.config, cli.json).await;
     }
 
-    let config = match AppConfig::load(cli.config) {
+    let config = match AppConfig::load(cli.config.clone()) {
         Ok(config) => config,
         Err(err) => std::process::exit(i32::from(report(cli.json, &CommandError::from(err)))),
     };
-    daemon_lifecycle(config, cli.json).await
+    daemon_lifecycle(config, cli.config, cli.json).await
 }
 
 /// Relays the daemon's rendered answer and exits with its code — the
@@ -236,7 +236,11 @@ async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool
 /// per-database IPC socket, wait for the first signal or `daemon stop`,
 /// drain the server, then run the graceful app shutdown — the
 /// second-signal force exit stays armed throughout.
-async fn daemon_lifecycle(config: AppConfig, json: bool) -> color_eyre::Result<()> {
+async fn daemon_lifecycle(
+    config: AppConfig,
+    config_path: Option<std::path::PathBuf>,
+    json: bool,
+) -> color_eyre::Result<()> {
     // The daemon's entry owns the `[app] mode` gate (the core itself is
     // mode-agnostic — the REPL serves any mode's console, ADR 0011):
     // `Desktop`/`Kiosk` have no daemon-side frontend until Phase 7.
@@ -247,12 +251,10 @@ async fn daemon_lifecycle(config: AppConfig, json: bool) -> color_eyre::Result<(
         tracing::error!(?mode, "this mode is not implemented yet");
         color_eyre::eyre::bail!("app mode {mode:?} is not implemented yet (Phase 7)");
     }
-    if taskboard_app::commands::require_connector(&config).is_err() {
-        // The daemon's entire purpose is the connector: fail loudly
-        // (typed `sync-disabled`) instead of idling without one.
-        let err = CommandError::SyncDisabled;
-        std::process::exit(i32::from(report(json, &err)));
-    }
+    // Backend-agnostic (ADR 0010 decision 9, amended 2026-10-11): with
+    // IPC the daemon's purpose is "own the core, serve commands" — a
+    // `standalone` daemon gives scripters the same no-boot-per-command
+    // latency the connector profile gets, and idling is over.
     let store: Arc<dyn CredentialStore> = match config.nextcloud.credential_store {
         CredentialStoreKind::Keyring => Arc::new(KeyringStore),
         CredentialStoreKind::Env => Arc::new(EnvCredentialStore),
@@ -275,6 +277,7 @@ async fn daemon_lifecycle(config: AppConfig, json: bool) -> color_eyre::Result<(
     let session = Arc::new(BasicSession {
         config: app.config.clone(),
         store,
+        config_path: AppConfig::config_path(config_path),
     });
     let server =
         match taskboard_app::ipc::server::spawn_server(app.clone(), session, app.config.db_path())

@@ -25,7 +25,7 @@ use interprocess::local_socket::{
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::App;
-use crate::commands::{CommandIo, CoreSession, dispatch_line};
+use crate::commands::{BasicSession, CommandIo, dispatch_line};
 use crate::ipc::protocol::{PROTOCOL_VERSION, Request, Response};
 use crate::ipc::{codec, socket_name, socket_sidecar};
 
@@ -115,7 +115,7 @@ impl IpcServerHandle {
 /// [`IpcBindError`] — typed, see the variant docs.
 pub async fn spawn_server(
     app: Arc<App>,
-    session: Arc<dyn CoreSession>,
+    session: Arc<BasicSession>,
     db_path: &std::path::Path,
 ) -> Result<IpcServerHandle, IpcBindError> {
     let name = socket_name(db_path).map_err(IpcBindError::Create)?;
@@ -323,7 +323,7 @@ fn request_version(req: &Request) -> u32 {
 
 /// The serial execution of one request against the booted core.
 #[allow(clippy::too_many_lines)] // one arm per request kind, kept flat
-async fn handle(app: &App, session: &dyn CoreSession, req: Request) -> Response {
+async fn handle(app: &App, session: &BasicSession, req: Request) -> Response {
     match req {
         Request::Exec { argv, .. } => {
             let (code, out, err) = run_argv(app, session, &argv).await;
@@ -347,11 +347,61 @@ async fn handle(app: &App, session: &dyn CoreSession, req: Request) -> Response 
     }
 }
 
+/// Scans the relayed argv for a `--config` flag: an identical config
+/// file is stripped (both the `--config value` and `--config=value`
+/// shapes), a different one is refused. No flag → the argv unchanged.
+fn strip_matching_config(
+    argv: &[String],
+    session_config_path: Option<&std::path::Path>,
+) -> Result<Vec<String>, ()> {
+    let mut cleaned = Vec::with_capacity(argv.len());
+    let mut index = 0;
+    while index < argv.len() {
+        let word = &argv[index];
+        let (value, consumed_next): (Option<&String>, bool) = if word == "--config" {
+            (argv.get(index + 1), true)
+        } else if let Some(inline) = word.strip_prefix("--config=") {
+            (Some(&inline.to_owned()), false)
+        } else {
+            (None, false)
+        };
+        match value {
+            None => cleaned.push(word.clone()),
+            Some(value) => {
+                let same = matches!(
+                    (session_config_path, std::path::Path::new(value.as_str()).canonicalize()),
+                    (Some(session_path), Ok(client_path)) if session_path == client_path
+                );
+                if !same {
+                    return Err(());
+                }
+                if consumed_next {
+                    index += 1;
+                }
+            }
+        }
+        index += 1;
+    }
+    Ok(cleaned)
+}
+
 /// Runs one argv invocation through the real parse-and-route stack into
 /// injected buffers — the exact bytes the in-process dispatch would
 /// have printed (ADR 0009's contract), plus the process-shaped code.
-async fn run_argv(app: &App, session: &dyn CoreSession, argv: &[String]) -> (u8, String, String) {
-    match crate::repl::resolve_words(argv, false) {
+async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, String, String) {
+    // The socket is the config binding (ADR 0012 §2.10): a relayed
+    // `--config` naming the config the daemon itself booted with is
+    // honored (stripped — it was already consumed for routing); any
+    // *other* file is the degenerate same-db-different-file case and
+    // gets the usage-class refusal.
+    let Ok(argv) = strip_matching_config(argv, session.config_path.as_deref()) else {
+        return (
+            2,
+            String::new(),
+            format!("{}\n", crate::repl::LineRefusal::ConfigFlag),
+        );
+    };
+    match crate::repl::resolve_words(&argv, false) {
         crate::repl::LineAction::Execute(command, json) => {
             let mut out = Vec::new();
             let mut err = Vec::new();
