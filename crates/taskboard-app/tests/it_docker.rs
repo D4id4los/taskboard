@@ -640,7 +640,7 @@ async fn it_nextcloud_docker_sync_over_ipc() {
         let binary = env!("CARGO_BIN_EXE_taskboard");
         let ready = std::time::Instant::now() + LIVE_DEADLINE;
         loop {
-            let output = std::process::Command::new(binary)
+            let output = tokio::process::Command::new(binary)
                 .args([
                     "--config",
                     config.to_str().expect("utf8"),
@@ -649,6 +649,7 @@ async fn it_nextcloud_docker_sync_over_ipc() {
                 ])
                 .env("TASKBOARD_APP_PASSWORD", &cfg.token)
                 .output()
+                .await
                 .expect("status runs");
             if String::from_utf8_lossy(&output.stdout).contains("\"daemon\":true") {
                 break;
@@ -681,10 +682,11 @@ async fn it_nextcloud_docker_sync_over_ipc() {
         .expect("server-side card creation must succeed");
         let deadline = std::time::Instant::now() + LIVE_DEADLINE;
         loop {
-            let output = std::process::Command::new(binary)
+            let output = tokio::process::Command::new(binary)
                 .args(["--config", config.to_str().expect("utf8"), "sync"])
                 .env("TASKBOARD_APP_PASSWORD", &cfg.token)
                 .output()
+                .await
                 .expect("sync runs");
             assert_eq!(
                 output.status.code(),
@@ -692,10 +694,11 @@ async fn it_nextcloud_docker_sync_over_ipc() {
                 "sync over ipc exits 0: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let list = std::process::Command::new(binary)
+            let list = tokio::process::Command::new(binary)
                 .args(["--config", config.to_str().expect("utf8"), "tasks", "list"])
                 .env("TASKBOARD_APP_PASSWORD", &cfg.token)
                 .output()
+                .await
                 .expect("tasks list runs");
             if String::from_utf8_lossy(&list.stdout).contains(&server_card.title) {
                 break;
@@ -708,10 +711,11 @@ async fn it_nextcloud_docker_sync_over_ipc() {
         }
 
         // Graceful remote stop.
-        let stop = std::process::Command::new(binary)
+        let stop = tokio::process::Command::new(binary)
             .args(["--config", config.to_str().expect("utf8"), "daemon", "stop"])
             .env("TASKBOARD_APP_PASSWORD", &cfg.token)
             .output()
+            .await
             .expect("daemon stop runs");
         assert_eq!(stop.status.code(), Some(0));
         let deadline = std::time::Instant::now() + Duration::from_secs(30);

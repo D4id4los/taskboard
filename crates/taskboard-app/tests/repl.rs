@@ -565,3 +565,336 @@ async fn r13_a_kiosk_mode_session_boots_and_serves() {
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0]["title"], "Kiosk");
 }
+
+/// R12: the remaining session arms' *success* paths route end to end —
+/// every family arm the r7 refusals/creation rows don't reach, driven
+/// against one booted session core (rename/move/delete/edit/label across
+/// boards, stacks, labels, and tasks). llvm-cov cannot see the
+/// subprocess-driving suites, so this is the in-process slice.
+/// One routed line against the session (the R12 walk calls this once
+/// per arm).
+async fn route_line(
+    session: &ReplSession,
+    app: &taskboard_app::App,
+    command: Command,
+    io: &mut CommandIo<'_>,
+) -> u8 {
+    dispatch_line(session, app, command, io).await
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // the full arm walk, one row per arm
+
+async fn r12_session_arms_route_success_end_to_end() {
+    let dir = tempdir();
+    let db = dir.path().join("r12.db");
+    let app = taskboard_app::bootstrap::bootstrap(standalone_config(&db), forbidden_store())
+        .await
+        .expect("session core boots");
+    let session = ReplSession {
+        config: app.config.clone(),
+        store: forbidden_store(),
+        json_default: true,
+    };
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    {
+        let mut io = CommandIo {
+            out: &mut out,
+            err: &mut err,
+            json: true,
+        };
+
+        // Setup: the board and stack every other verb shapes.
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Boards {
+                    cmd: BoardsCmd::Create {
+                        title: "Personal".to_owned(),
+                        color: None,
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Stacks {
+                    cmd: StacksCmd::Add {
+                        title: "Todo".to_owned(),
+                        order: None,
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+
+        // boards rename; stacks rename → move → delete (a second stack).
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Boards {
+                    cmd: BoardsCmd::Rename {
+                        title: "Work".to_owned(),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Stacks {
+                    cmd: StacksCmd::Add {
+                        title: "Scratch".to_owned(),
+                        order: None,
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Stacks {
+                    cmd: StacksCmd::Rename {
+                        stack: "Scratch".to_owned(),
+                        title: "Someday".to_owned(),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Stacks {
+                    cmd: StacksCmd::Move {
+                        stack: "Someday".to_owned(),
+                        order: 3,
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Stacks {
+                    cmd: StacksCmd::Delete {
+                        stack: "Someday".to_owned(),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+
+        // labels add → list → edit → delete.
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Labels {
+                    cmd: taskboard_app::cli::LabelsCmd::Add {
+                        title: "urgent".to_owned(),
+                        color: Some("ff0000".to_owned()),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Labels {
+                    cmd: taskboard_app::cli::LabelsCmd::List,
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Labels {
+                    cmd: taskboard_app::cli::LabelsCmd::Edit {
+                        label: "urgent".to_owned(),
+                        title: Some("critical".to_owned()),
+                        color: Some("0000ff".to_owned()),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+
+        // tasks: add two; label/unlabel, move, edit, done, delete.
+        for title in ["t1", "t2"] {
+            assert_eq!(
+                route_line(
+                    &session,
+                    &app,
+                    Command::Tasks {
+                        cmd: TasksCmd::Add {
+                            title: title.to_owned(),
+                            stack: None,
+                        },
+                    },
+                    &mut io,
+                )
+                .await,
+                0
+            );
+        }
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Tasks {
+                    cmd: TasksCmd::List { stack: None },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Tasks {
+                    cmd: TasksCmd::Label {
+                        task: "t1".to_owned(),
+                        label: "critical".to_owned(),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Tasks {
+                    cmd: TasksCmd::Unlabel {
+                        task: "t1".to_owned(),
+                        label: "critical".to_owned(),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Tasks {
+                    cmd: TasksCmd::Move {
+                        task: "t2".to_owned(),
+                        stack: Some("Todo".to_owned()),
+                        order: Some(0),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Tasks {
+                    cmd: TasksCmd::Edit {
+                        task: "t2".to_owned(),
+                        title: Some("t2-renamed".to_owned()),
+                        description: None,
+                        due: None,
+                        archive: false,
+                        unarchive: false,
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Tasks {
+                    cmd: TasksCmd::Done {
+                        task: "t2-renamed".to_owned(),
+                        undo: false,
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Tasks {
+                    cmd: TasksCmd::Delete {
+                        task: "t1".to_owned(),
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+    }
+    // No failures anywhere in the walk.
+    assert!(err.is_empty(), "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert!(receipts.len() >= 15, "{} receipts", receipts.len());
+    // The edited label's shape survived rendering (the edit receipt's
+    // fields are the typed outcome).
+    assert!(
+        receipts
+            .iter()
+            .any(|r| r.get("title").and_then(|t| t.as_str()) == Some("critical")),
+        "the label edit receipt is on stdout"
+    );
+
+    app.shutdown().await;
+}

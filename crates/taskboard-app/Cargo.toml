@@ -74,6 +74,9 @@ keyring = { workspace = true, features = ["apple-native"] }
 wiremock.workspace = true
 tempfile.workspace = true
 base64.workspace = true
+# The docker-tier journeys drive the real binary (tokio::process, the
+# async subprocess API the blocking-std one would tie up a worker for)
+tokio = { workspace = true, features = ["process"] }
 
 [lints]
 workspace = true
