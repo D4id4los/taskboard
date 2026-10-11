@@ -158,6 +158,7 @@ Changes are durable locally the moment the command replies; the
 =sync: idle (N pending)= footer counts the local write-ahead queue
 nothing drains until a connector attaches.
 
+<<<<<<< HEAD
 *Editing* the board needs no server either:
 
 #+begin_src sh
@@ -175,6 +176,35 @@ titles; destructive verbs cascade what the server would cascade
 (=stacks delete= takes its tasks with it). =labels list= shows
 assignment counts, and =config print= dumps the effective
 (secret-free) configuration with its validity diagnosis.
+||||||| parent of f84f7df (docs(app): ADR 0011 — interactive REPL frontend and no-arg entry)
+=======
+** Interactive shell (no arguments on a terminal)
+
+Bare =taskboard= with a terminal on stdin opens a =parted=-style REPL
+over *one* booted core (ADR 0011) — no bootstrap per command:
+
+#+begin_src sh
+taskboard
+# taskboard 0.1.0 — interactive session (backend: standalone)
+# taskboard> boards create "Personal"
+# taskboard> stacks add "Todo"
+# taskboard> tasks add "first task" --json
+# taskboard> exit
+#+end_src
+
+Line grammar: every line is one CLI invocation (quoting with
+=shell-words=, a line's =--json= wins for that line only);
+=exit=/=quit=/Ctrl-D leave (graceful shutdown, exit 0); Ctrl-C at the
+prompt cancels the line; an empty line re-prompts. Mutations are
+durable the moment the line replies; the outbox drains on the sync
+actor's cadence or a =sync= line. Refused in-session: =daemon=,
+=login=, and per-line =--config= (the session's config and connector
+are fixed at boot). The instance-lock mutex applies both ways — a
+running daemon makes bare =taskboard= fail with =instance-locked=:
+stop the daemon first. Without a TTY (systemd units, pipes), bare
+=taskboard= keeps the old behavior: the =[app] mode= resolution
+(daemon default).
+>>>>>>> f84f7df (docs(app): ADR 0011 — interactive REPL frontend and no-arg entry)
 
 ** Attaching a server (optional)
 

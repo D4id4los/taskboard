@@ -175,6 +175,20 @@ Attachments writes/comments/ACL writes remain backlog entries by design.
   network) green; tier-2 J4 publish journey green; ADR 0010 accepted.
 - Plan: `2026-10-11-growth-roadmap-phase6b-standalone-first-plan.md`.
 
+### Phase 6c — Interactive REPL frontend (WI-4, post-M1)
+- A `parted`-style interactive session over one booted core (ADR 0011):
+  bare `taskboard` on a TTY opens a shell where each line is one CLI
+  invocation dispatched against the session core; `exit`/Ctrl-D leave.
+  Every verb stops paying bootstrap-per-command; the `*_on(&App)` seam
+  and injectable `CommandIo` writers this phase extracts are exactly
+  what the daemon-IPC work item reuses. Ordering note: the M1-exit
+  report §7 table (WI-3 CLI completeness before WI-4 REPL) is about
+  user value at release time, not implementation coupling — either
+  merge order survives (rebase playbook in the WI-4 plan §6.2).
+- **Exit**: R-series + pty journeys green; REPL runbook (clean machine)
+  confirmed by the user.
+- Plan: `2026-10-11-m1-exit-wi4-repl-interactive-frontend-plan.md`.
+
 ### Phase 7 — `taskboard-ui-slint` (M2 → v0.1.0)
 - Add the `slint` dependency (renderer decision per the existing backlog
   entry: renderer-skia vs renderer-femtovg for kiosk hardware); board /

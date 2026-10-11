@@ -1,0 +1,138 @@
+#+title: ADR 0011: The Interactive REPL Frontend and the No-Argument Entry
+#+options: toc:nil
+
+- *Date:* 2026-10-11
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+The M1-exit analysis (2026-10-11, §4C) identified the operator
+experience gap: every CLI verb pays a full bootstrap-per-command —
+boot, (bounded boot-pull wait), work, =shutdown()=, exit. For
+SSH/kiosk administration and daily driving this is one process per
+command where one process per *session* would do. The core was already
+a long-lived servant (the daemon boots an =App= and holds it
+indefinitely); what was missing was an interactive frontend over ADR
+0008's "one bootstrap, N frontends" seam.
+
+* Decision
+
+** TTY-sensitive no-argument entry
+
+Bare =taskboard= resolves by stdin's terminal-ness (a pure
+=repl::entry_point= function over =has_command × stdin_tty × mode=):
+
+| invocation                     | behavior                                    |
+|--------------------------------+---------------------------------------------|
+| explicit subcommand            | one-shot dispatch, unchanged                |
+| bare, stdin is a TTY           | *interactive REPL session*                  |
+| bare, no TTY (systemd, pipes)  | =[app] mode= resolution (daemon default), unchanged |
+
+Nothing ships pre-v0.1.0, so this is the cheapest moment to change the
+no-argument default. Accepted consequence: an =[app] mode = "kiosk"=
+machine with a human console used to die with =ModeNotImplemented=
+(Phase 7 placeholder); it now gets a REPL — strictly more useful
+pre-Phase-7. Non-TTY deployments are byte-for-byte unaffected.
+
+** One core per session, boot-once semantics
+
+The session boots the core at start (including the one-time
+=wait_for_boot_pull= under a connector backend) and runs
+=App::shutdown()= exactly once at exit — never per line. The honesty
+contract carries over from the one-shot CLI:
+
+- mutations are *durable locally* the moment the line's =execute=
+  replies (outbox semantics);
+- the outbox drains via the session sync actor's poll cadence or a
+  =sync= line (there is no per-line shutdown-join push — that push was
+  an artifact of boot-per-verb);
+- reads are as fresh as the last completed cycle.
+
+** One lock epoch, mutual exclusion by construction
+
+The session holds the per-database instance lock for its lifetime,
+exactly like the daemon: a running daemon makes the session boot fail
+typed (=instance-locked=, exit 1), and the daemon cannot start while a
+session runs. The runbook answer is "stop the daemon first". No
+lock-sharing mechanism exists — that is WI-5's IPC story.
+
+** Two dispatchers over one verb seam
+
+=dispatch()= keeps its one-shot semantics verbatim; a new
+=dispatch_line(session, app, command, io)= routes the same =Command=
+enum against the session =&App=. Both are thin parse-level match arms
+calling shared functions — the enabler is that every core verb body now
+lives in a =*_on(&App, …)= function (the extraction was
+behavior-preserving; the one-shot wrappers are boot/shutdown shells
+around them). Unifying the tables was rejected: the one-shot arms must
+decide *per arm* whether a core boots at all (pre-core verbs must not
+take the lock), which a data-driven table would smuggle control flow
+into. The =*_on= seam, =CommandIo= injectable writers, and
+=dispatch_line= are deliberately the shape WI-5's socket server needs.
+
+** Per-line parsing with in-loop usage errors
+
+Each line is =shell_words::split= (POSIX-ish quoting) and then
+=Cli::try_parse_from= — one line is one CLI invocation, so global flags
+compose per line:
+
+- a line's =--json= overrides the session default *for that line only*;
+- a line carrying =--config= is refused (the session's config is fixed
+  at boot);
+- =daemon= and =login= are refused at parse level: a nested daemon is
+  meaningless, and mid-session login cannot activate a connector in the
+  running session (credential + =DeckClient= wiring happens in
+  =bootstrap=) — the honest UX is "exit, =taskboard login=, re-enter".
+- clap failures print via =clap_err.print()= (help/version to stdout,
+  usage errors to stderr) and the loop continues; *the process never
+  exits 2 from a REPL line*.
+
+=boards list= stays allowed in-session (a stateless remote read;
+credentials exist whenever the session booted =nextcloud=). Connector
+verbs under a =standalone= session keep refusing typed
+(=sync-disabled=) at their preludes — the same gate the one-shot CLI
+applies.
+
+** The line editor never blocks a runtime worker
+
+rustyline's =readline= is synchronous; calling it inside an async task
+would pin a tokio worker — fatal on a 1-core kiosk. The =Editor= is
+created and confined to a dedicated reader thread that streams
+=LineEvent={Line, Eof, Interrupted}= through a bounded channel; the
+async loop consumes events. Backpressure is the channel bound: the
+editor never runs ahead of execution. Tests inject their own channel,
+so the terminal never appears in hermetic suites.
+
+** Exit and signal semantics
+
+=exit=/=quit=/Ctrl-D (EOF) shut the core down gracefully and exit 0.
+Ctrl-C *at the prompt* cancels the current input line (rustyline
+=Interrupted=) and re-prompts. Ctrl-C *while a command runs* keeps the
+default SIGINT disposition — it kills the process. That is safe by
+construction: state is durable per =execute= and the OS releases the
+instance lock. A failed line never aborts the session and never shapes
+its exit code. Graceful in-command line cancellation is backloged
+alongside WI-5's process-signal story (one design, once).
+
+** Dependencies
+
+=rustyline= 17 (line editing, history, raw-mode Ctrl-C/D; MIT; its
+Windows-target clipboard deps are permissive BSL-1.0, allow-listed in
+=deny.toml=) and =shell-words= 1 (word splitting; MIT). Both pinned in
+=[workspace.dependencies]=. History is in-memory only in v1 — file
+persistence rides WI-3's XDG data-dir work.
+
+* Consequences
+
+- The =*_on(&App)= seam and =CommandIo= are the in-process handler
+  table and transport sinks WI-5 reuses; the channel-vs-runtime lesson
+  (never block a worker on input) transfers to frame readers.
+- The REPL is the dry run of the Phase 7 UI lifecycle: a boot-once
+  frontend making live =ArcSwap= reads between commands and a graceful
+  =shutdown()= on exit — the exact loop a Slint window runs. (Login
+  becoming an in-session action — needed for good GUI flows around
+  Nextcloud login — is backloged for that same reason.)
+- Per-line =--config= / =daemon= / =login= refusals are parse-level
+  routing rules, not handler errors: they produce no JSON envelope and
+  no exit-code change.
