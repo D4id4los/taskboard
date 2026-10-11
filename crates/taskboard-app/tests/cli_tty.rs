@@ -307,3 +307,65 @@ fn tty_repl_refuses_while_the_daemon_holds_the_database() {
         String::from_utf8_lossy(&outcome.stderr)
     );
 }
+
+/// Regression (review 2026-10-11): `taskboard daemon` under a pty must
+/// run the daemon, not the TTY-sensitive no-argument entry — the
+/// explicit subcommand wins over the REPL in every environment. A
+/// standalone config makes the daemon's own gate the observable
+/// outcome: typed `sync-disabled`, exit 1.
+#[test]
+fn tty_explicit_daemon_stays_the_daemon_and_refuses_standalone() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[sync]\nbackend = 'standalone'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    std::fs::write(&config, toml).expect("write config");
+
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let inner = format!("{} --config {} daemon --json", binary, config.display());
+    let mut child = std::process::Command::new("timeout")
+        .arg("30")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn script(1) pty wrapper");
+    // The daemon refuses before reading anything; a dead pty stdin is
+    // not a test failure by itself.
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("pty run completes");
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "the daemon hung instead of refusing the standalone config"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "the explicit daemon must refuse standalone (exit 1), stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // `script(1)` serves the child one pty for both streams: the JSON
+    // envelope can land on either captured buffer, so scan both.
+    let mut combined = output.stdout.clone();
+    combined.extend_from_slice(&output.stderr);
+    let errors: Vec<serde_json::Value> = String::from_utf8_lossy(&combined)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    assert_eq!(errors.len(), 1, "exactly one JSON error envelope");
+    assert_eq!(errors[0]["error"]["kind"], "sync-disabled");
+}

@@ -70,8 +70,14 @@ async fn run(mut cli: Cli) -> color_eyre::Result<()> {
     // Subcommand arms are lib code (`commands::dispatch`); the process
     // exits with the returned code (0 success / 1 runtime failure).
     // Exit 2 is clap's usage error, 130 the second-signal force exit.
+    // Both flags are read *before* the take: `daemon` must fall through
+    // to the daemon lifecycle, never into the bare-invocation entry
+    // (the review-2026-10-11 regression: a `take()` inside the guard
+    // swallowed it and a TTY then opened the REPL).
+    let bare_invocation = cli.command.is_none();
+    let explicit_daemon = matches!(cli.command, Some(Command::Daemon));
     if let Some(command) = cli.command.take()
-        && !matches!(command, Command::Daemon)
+        && !explicit_daemon
     {
         let mut out = std::io::stdout();
         let mut err = std::io::stderr();
@@ -90,9 +96,18 @@ async fn run(mut cli: Cli) -> color_eyre::Result<()> {
     // Bare `taskboard` is TTY-sensitive (ADR 0011): an interactive
     // terminal opens the REPL session over one booted core; without a
     // TTY the `[app] mode` resolution keeps today's behavior (the
-    // systemd/SSH-piped deployments).
-    if cli.command.is_none() {
-        let config = AppConfig::load(cli.config.clone())?;
+    // systemd/SSH-piped deployments). An explicit `daemon` is `Some`
+    // here and skips straight to the daemon lifecycle.
+    if bare_invocation {
+        let config = match AppConfig::load(cli.config.clone()) {
+            Ok(config) => config,
+            // The session boot's typed failure class, reported through
+            // the same envelope a one-shot uses (JSON under `--json`).
+            Err(err) => std::process::exit(i32::from(taskboard_app::commands::report(
+                cli.json,
+                &taskboard_app::commands::CommandError::from(err),
+            ))),
+        };
         match taskboard_app::repl::entry_point(
             false,
             std::io::stdin().is_terminal(),
@@ -102,22 +117,34 @@ async fn run(mut cli: Cli) -> color_eyre::Result<()> {
                 let code = taskboard_app::repl::run_session(config, cli.json).await;
                 std::process::exit(i32::from(code));
             }
-            // Fall through to the daemon lifecycle below.
+            // Fall through to the daemon lifecycle with the config the
+            // entry resolution already loaded (read once, not twice).
             taskboard_app::repl::Entry::ModeResolution(_) => {}
             taskboard_app::repl::Entry::Subcommand => {
                 unreachable!("entry resolution ran with no subcommand given")
             }
         }
+        return daemon_lifecycle(config, cli.json).await;
     }
 
-    // Daemon lifecycle (explicit `daemon`, or mode resolution — the
-    // daemon until the UI phases land).
-    let config = AppConfig::load(cli.config)?;
+    let config = match AppConfig::load(cli.config) {
+        Ok(config) => config,
+        Err(err) => std::process::exit(i32::from(taskboard_app::commands::report(
+            cli.json,
+            &taskboard_app::commands::CommandError::from(err),
+        ))),
+    };
+    daemon_lifecycle(config, cli.json).await
+}
+
+/// The daemon lifecycle (explicit `daemon`, or the `[app] mode`
+/// resolution from a bare non-TTY invocation).
+async fn daemon_lifecycle(config: AppConfig, json: bool) -> color_eyre::Result<()> {
     if taskboard_app::commands::require_connector(&config).is_err() {
         // The daemon's entire purpose is the connector: fail loudly
         // (typed `sync-disabled`) instead of idling without one.
         let err = taskboard_app::commands::CommandError::SyncDisabled;
-        std::process::exit(i32::from(taskboard_app::commands::report(cli.json, &err)));
+        std::process::exit(i32::from(taskboard_app::commands::report(json, &err)));
     }
     let store: Arc<dyn CredentialStore> = match config.nextcloud.credential_store {
         CredentialStoreKind::Keyring => Arc::new(KeyringStore),
