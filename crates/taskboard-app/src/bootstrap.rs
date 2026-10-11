@@ -65,7 +65,7 @@ use taskboard_state::{EngineHandle, spawn_state_engine};
 use taskboard_storage_sqlite::{StorageHandle, spawn_storage_actor};
 use taskboard_sync_nextcloud::{DeckClient, spawn_sync_actor};
 
-use crate::config::{AppConfig, AppMode, ConfigError};
+use crate::config::{AppConfig, AppMode, ConfigError, SyncBackend};
 use crate::lockfile::{InstanceLock, LockError};
 use crate::secrets::{CredentialError, CredentialStore};
 
@@ -116,6 +116,13 @@ pub enum BootstrapError {
     },
 }
 
+/// The running sync actor's halves: its inbox sender (also cloned out
+/// through [`App::sync_commands`]) and its join handle.
+struct SyncActor {
+    commands: mpsc::Sender<SyncCommand>,
+    join: JoinHandle<()>,
+}
+
 /// A running taskboard core. Not `Clone` — the shutdown sequence
 /// consumes it exactly once.
 pub struct App {
@@ -125,11 +132,13 @@ pub struct App {
     pub engine: EngineHandle,
     /// The system broadcast (the engine and the sync actor's events).
     pub system: broadcast::Sender<SystemEvent>,
-    sync_commands: mpsc::Sender<SyncCommand>,
+    /// The sync connector; `None` under the resolved `standalone`
+    /// backend (ADR 0010) — the engine sees the closed-channel world it
+    /// already handles, and every send fails closed.
+    sync: Option<SyncActor>,
     storage: StorageHandle,
     storage_join: JoinHandle<()>,
     engine_join: JoinHandle<()>,
-    sync_join: JoinHandle<()>,
     /// The per-database instance lock, held for the process lifetime.
     _lock: InstanceLock,
 }
@@ -143,12 +152,19 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
-    /// A second sender into the sync actor's inbox — the Phase 6
-    /// `SetBoard` seam (`boards select`). Keeping it open is also why
-    /// actor shutdown keys on `Shutdown`, never on inbox close.
+    /// The sync-command seam (`SetBoard` ceremonies, sync nudges). Under
+    /// `standalone` the connector is absent: the returned sender feeds a
+    /// dropped receiver, so sends fail closed (`Closed`) exactly as a
+    /// dead connector — callers must not rely on delivery.
     #[must_use]
     pub fn sync_commands(&self) -> mpsc::Sender<SyncCommand> {
-        self.sync_commands.clone()
+        if let Some(actor) = &self.sync {
+            actor.commands.clone()
+        } else {
+            let (tx, rx) = mpsc::channel::<SyncCommand>(1);
+            drop(rx);
+            tx
+        }
     }
 
     /// The graceful shutdown sequence (ADR 0008 §5): engine flush →
@@ -168,7 +184,10 @@ impl App {
         // No live receivers is fine (engine-only setups in tests).
         let _ = self.system.send(SystemEvent::Shutdown);
 
-        let actor_aborted = join_bounded(self.sync_join, timeout, "sync actor").await;
+        let actor_aborted = match self.sync {
+            Some(actor) => join_bounded(actor.join, timeout, "sync actor").await,
+            None => false,
+        };
         join_bounded(self.engine_join, timeout, "state engine").await;
 
         tracing::info!("shutdown: stopping the storage actor");
@@ -218,6 +237,7 @@ async fn join_bounded(join: JoinHandle<()>, timeout: Duration, what: &str) -> bo
 ///
 /// [`BootstrapError`] — typed, see the variant docs.
 #[allow(clippy::result_large_err)] // the error is constructed once at boot
+#[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
 pub async fn bootstrap(
     config: AppConfig,
     credentials: Arc<dyn CredentialStore>,
@@ -248,22 +268,38 @@ pub async fn bootstrap(
         LockError::Io(source) => BootstrapError::LockIo(source),
     })?;
 
-    let server = config.server_url().to_owned();
-    let username = config.username().to_owned();
-    tracing::info!(
-        server = %server,
-        username = %username,
-        store = ?config.nextcloud.credential_store,
-        db = %config.db_path().display(),
-        mode = ?config.app.mode,
-        poll = config.sync.poll_interval_secs,
-        "resolved configuration"
-    );
-
     // Credential resolution before anything spawns: a missing secret
-    // must not leave half a graph behind.
-    let password = credentials.load(&server, &username)?;
-    let client = DeckClient::new(&server, &username, password.expose())?;
+    // must not leave half a graph behind. Under `standalone` no
+    // credential store is consulted and no client is built (ADR 0010 —
+    // the kiosk/no-keyring story improves accordingly).
+    let client = match config.sync_backend() {
+        SyncBackend::Nextcloud => {
+            let server = config.server_url().to_owned();
+            let username = config.username().to_owned();
+            tracing::info!(
+                server = %server,
+                username = %username,
+                store = ?config.nextcloud.credential_store,
+                db = %config.db_path().display(),
+                mode = ?config.app.mode,
+                poll = config.sync.poll_interval_secs,
+                "resolved configuration (backend: nextcloud)"
+            );
+            Some(DeckClient::new(
+                &server,
+                &username,
+                credentials.load(&server, &username)?.expose(),
+            )?)
+        }
+        SyncBackend::Standalone => {
+            tracing::info!(
+                db = %config.db_path().display(),
+                mode = ?config.app.mode,
+                "resolved configuration (backend: standalone — no connector)"
+            );
+            None
+        }
+    };
 
     tracing::info!(db = %db_path.display(), "opening database");
     let repo = Arc::new(taskboard_storage_sqlite::open(&db_path).await?);
@@ -298,25 +334,37 @@ pub async fn bootstrap(
         }
     };
 
-    let sync_join = spawn_sync_actor(
-        client,
-        Arc::new(engine.clone()) as Arc<dyn SyncStateReader>,
-        sync_rx,
-        reports,
-        system.clone(),
-        config.sync_actor_config(),
-    );
-    tracing::info!("actor graph spawned: storage, state engine, sync");
+    let sync = if let Some(client) = client {
+        let join = spawn_sync_actor(
+            client,
+            Arc::new(engine.clone()) as Arc<dyn SyncStateReader>,
+            sync_rx,
+            reports,
+            system.clone(),
+            config.sync_actor_config(),
+        );
+        Some(SyncActor {
+            commands: sync_commands.clone(),
+            join,
+        })
+    } else {
+        // Standalone: the receiver and the report sender are dropped
+        // immediately — the engine sees the closed-channel world its
+        // loop already handles, and its nudges fail closed.
+        drop(sync_rx);
+        drop(reports);
+        None
+    };
+    tracing::info!("actor graph spawned: storage, state engine");
 
     Ok(App {
         config,
         engine,
         system,
-        sync_commands,
+        sync,
         storage,
         storage_join,
         engine_join,
-        sync_join,
         _lock: lock,
     })
 }
