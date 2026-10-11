@@ -189,6 +189,26 @@ pub struct TaskDeleteReceipt {
     pub title: String,
 }
 
+/// The `config print` payload: the effective configuration plus the
+/// diagnosis (validity travels *in* the payload; exit 0 either way).
+///
+/// Not `PartialEq` — [`crate::config::AppConfig`] carries provider state
+/// that does not implement it; assertions go through the field values.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigView {
+    /// The resolved config file path, or `None` (defaults only).
+    pub config_path: Option<String>,
+    /// The resolved sync backend: `"standalone"` or `"nextcloud"`.
+    pub backend: String,
+    /// `false` when the decoded config failed validation.
+    pub valid: bool,
+    /// The [`crate::config::ConfigError::kind`] discriminant when
+    /// invalid.
+    pub invalid_kind: Option<String>,
+    /// The effective configuration (secret-free by construction).
+    pub config: crate::config::AppConfig,
+}
+
 /// The `login` receipt. No secret ever appears in any projection.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LoginReceipt {

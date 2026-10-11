@@ -13,6 +13,7 @@
 //!   `shutdown()`, exit (roadmap §2.4: one bootstrap, N frontends).
 
 pub mod boards;
+pub mod config;
 pub mod labels;
 pub mod login;
 pub mod output;
@@ -598,6 +599,7 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
             }
             Err(err) => report(json, &err),
         },
+        Command::Config { cmd } => config::handle(&cmd, &ctx, json),
         Command::Daemon => unreachable!("main handles the daemon arm itself"),
     }
 }
@@ -656,7 +658,7 @@ fn core_ctx(ctx: &CommandCtx) -> Result<(AppConfig, Arc<dyn CredentialStore>), C
 
 /// Prints a payload: JSON on stdout under `--json`, the human text
 /// otherwise.
-fn emit<T: serde::Serialize>(json: bool, payload: &T, text: &str) {
+pub(crate) fn emit<T: serde::Serialize>(json: bool, payload: &T, text: &str) {
     if json {
         println!(
             "{}",

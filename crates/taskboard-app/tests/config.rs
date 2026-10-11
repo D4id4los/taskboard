@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use common::{EnvOverride, env_lock, remove_env, set_env};
+use taskboard_app::commands::{CommandCtx, config};
 use taskboard_app::config::{
     AppConfig, ConfigError, CredentialStoreKind, DEFAULT_BACKOFF_INITIAL_SECS,
     DEFAULT_BACKOFF_MAX_SECS, DEFAULT_POLL_INTERVAL_SECS,
@@ -277,4 +278,78 @@ fn c13_typoed_backend_value_is_a_decode_error() {
     .expect("write toml");
     let err = AppConfig::load(Some(file)).expect_err("typo must not decode");
     assert!(matches!(err, ConfigError::Decode(_)));
+}
+
+/// C10: `config print` — valid config prints (exit 0) with the resolved
+/// path and backend; a decodes-but-invalid config reports `valid: false`
+/// plus the typed `invalid_kind`, still exit 0; only an undecodable file
+/// exits 1.
+#[test]
+fn c10_config_print_reports_validity_in_the_payload() {
+    let dir = tempdir();
+    std::fs::write(
+        dir.path().join("valid.toml"),
+        "[nextcloud]\nserver_url = 'https://cloud.example.com'\nusername = 'alice'\n\
+         credential_store = 'env'\n[storage]\ndb_path = '/tmp/c10.db'\n",
+    )
+    .expect("write valid");
+    std::fs::write(
+        dir.path().join("invalid.toml"),
+        "[nextcloud]\nserver_url = 'not a url'\nusername = 'alice'\ncredential_store = 'env'\n\
+         [storage]\ndb_path = '/tmp/c10.db'\n",
+    )
+    .expect("write invalid");
+    std::fs::write(dir.path().join("garbage.toml"), "= not toml =").expect("write garbage");
+
+    let view = config::print(&CommandCtx {
+        json: true,
+        config_path: Some(dir.path().join("valid.toml")),
+    })
+    .expect("valid config");
+    assert!(view.valid);
+    assert_eq!(view.invalid_kind, None);
+    assert_eq!(
+        view.backend, "nextcloud",
+        "server_url present: auto resolves"
+    );
+    assert_eq!(
+        view.config_path.as_deref(),
+        Some(dir.path().join("valid.toml").to_str().expect("utf8"))
+    );
+
+    let view = config::print(&CommandCtx {
+        json: true,
+        config_path: Some(dir.path().join("invalid.toml")),
+    })
+    .expect("invalid still prints");
+    assert!(!view.valid);
+    assert_eq!(view.invalid_kind.as_deref(), Some("invalid-server-url"));
+
+    let err = config::print(&CommandCtx {
+        json: true,
+        config_path: Some(dir.path().join("garbage.toml")),
+    })
+    .expect_err("garbage exits 1");
+    assert_eq!(err.error_kind(), "config");
+}
+
+/// C11: `config print` reflects the env overlay (the effective
+/// configuration, not just the file).
+#[test]
+fn c11_config_print_includes_the_env_overlay() {
+    let dir = tempdir();
+    std::fs::write(dir.path().join("empty.toml"), "").expect("write empty");
+    let _guard = env_lock();
+    let _server = EnvOverride::set("TASKBOARD_NEXTCLOUD__SERVER_URL", "https://env.example.com");
+    let _user = EnvOverride::set("TASKBOARD_NEXTCLOUD__USERNAME", "alice");
+    let view = config::print(&CommandCtx {
+        json: true,
+        config_path: Some(dir.path().join("empty.toml")),
+    })
+    .expect("print");
+    assert_eq!(
+        view.config.nextcloud.server_url.as_deref(),
+        Some("https://env.example.com")
+    );
+    assert_eq!(view.backend, "nextcloud");
 }
