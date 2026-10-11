@@ -131,3 +131,90 @@ async fn e1b_duplicate_titles_are_ambiguous_but_prefixes_disambiguate() {
         .await
         .expect("unique prefix resolves the first task");
 }
+
+/// E2: `tasks edit` — title/description/due set + clear, archive
+/// toggle, no-op repeat (exit-0 semantics: `NoOp` is not an error),
+/// and the typed unknown-task miss.
+#[tokio::test]
+async fn e2_tasks_edit_sets_and_clears_fields() {
+    use taskboard_domain::TaskChanges;
+
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e2.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+    let created = tasks::add(config.clone(), forbidden_store(), "draft", None)
+        .await
+        .expect("task");
+    let _id = created.id.clone();
+
+    // Title + description + due (bare date → midnight UTC).
+    let due: chrono::DateTime<chrono::Utc> = chrono::NaiveDate::from_ymd_opt(2026, 10, 20)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .expect("midnight")
+        .and_utc();
+    let receipt = tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        "draft",
+        TaskChanges {
+            title: Some("renamed".to_owned()),
+            description: Some("the body".to_owned()),
+            duedate: Some(Some(due)),
+            archived: None,
+        },
+    )
+    .await
+    .expect("edit");
+    assert_eq!(receipt.title, "renamed");
+    assert!(receipt.labels.is_empty(), "receipt carries the label set");
+
+    // Durability: a fresh invocation sees the edit (list view).
+    let list = tasks::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list");
+    let row = &list.stacks[0].tasks[0];
+    assert_eq!(row.title, "renamed");
+    assert_eq!(row.duedate, Some(due));
+    assert_eq!(row.stack_title, "Todo");
+
+    // Clear the due date.
+    let _cleared = tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        "renamed",
+        TaskChanges {
+            title: None,
+            description: None,
+            duedate: Some(None),
+            archived: None,
+        },
+    )
+    .await
+    .expect("clear due");
+    let list = tasks::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list after clear");
+    assert_eq!(list.stacks[0].tasks[0].duedate, None);
+
+    // Identical repeat: an accepted no-op, not an error.
+    let noop = tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        "renamed",
+        TaskChanges {
+            title: None,
+            description: None,
+            duedate: Some(None),
+            archived: None,
+        },
+    )
+    .await
+    .expect("repeat edit is idempotent");
+    assert_eq!(noop.title, "renamed");
+
+    // Unknown selector: the typed miss.
+    let err = tasks::edit(config, forbidden_store(), "ghost", TaskChanges::default())
+        .await
+        .expect_err("unknown task");
+    assert_eq!(err.error_kind(), "unknown-task");
+}

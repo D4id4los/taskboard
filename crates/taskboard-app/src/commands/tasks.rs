@@ -10,7 +10,9 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-use taskboard_domain::{AppState, CommandOutcome, Stack, StackId, StateCommand, SyncPhase, TaskId};
+use taskboard_domain::{
+    AppState, CommandOutcome, Stack, StackId, StateCommand, SyncPhase, TaskChanges, TaskId,
+};
 
 use crate::commands::CommandError;
 use crate::commands::output::{
@@ -303,6 +305,41 @@ pub async fn move_(
     .await
 }
 
+/// Edits a task's fields (sparse changeset; at least one flag required —
+/// enforced by clap as a usage error). A repeated identical edit is an
+/// accepted no-op (`NoOp`, exit 0).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn edit(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    task: &str,
+    changes: TaskChanges,
+) -> Result<MutationReceipt, CommandError> {
+    let task = task.to_owned();
+    with_core(config, store, async |app| {
+        let state = app.engine.shared_state().load_full();
+        let task_id = resolve_task(&state, &task)?;
+        drop(state);
+        app.engine
+            .execute(StateCommand::UpdateTask {
+                id: task_id,
+                changes,
+            })
+            .await?;
+        let state = app.engine.shared_state().load_full();
+        let task = state
+            .tasks
+            .get(&task_id)
+            .filter(|t| t.is_live())
+            .ok_or_else(|| CommandError::UnknownTask(task_id.as_uuid().to_string()))?;
+        Ok(mutation_receipt(&state, task))
+    })
+    .await
+}
+
 /// Resolves a task selector (the cascading selector, ADR 0009): exact
 /// uuid → unique ≥8-char uuid prefix → exact live-title match. Ambiguity
 /// and misses are typed errors carrying the candidate titles. Exact uuid
@@ -389,10 +426,14 @@ pub fn render_text_list(list: &TaskList, standalone: bool) -> String {
 #[must_use]
 pub fn render_text_receipt(receipt: &MutationReceipt) -> String {
     let state = if receipt.done { "done" } else { "open" };
-    format!(
+    let mut line = format!(
         "{} \"{}\" in {} at position {} ({})",
         receipt.id, receipt.title, receipt.stack_title, receipt.order, state
-    )
+    );
+    if !receipt.labels.is_empty() {
+        let _ = write!(line, " [{}]", receipt.labels.join(", "));
+    }
+    line
 }
 
 #[cfg(test)]

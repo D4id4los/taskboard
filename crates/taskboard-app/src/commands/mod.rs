@@ -408,6 +408,23 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
             })
             .await
         }
+        Command::Tasks {
+            cmd:
+                TasksCmd::Edit {
+                    task,
+                    title,
+                    description,
+                    due,
+                    archive,
+                    unarchive,
+                },
+        } => {
+            let changes = task_changes(title, description, due, archive, unarchive);
+            run_mutation(json, &ctx, move |config, store| async move {
+                tasks::edit(config, store, &task, changes).await
+            })
+            .await
+        }
         Command::Sync {
             no_wait,
             timeout_secs,
@@ -432,6 +449,31 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
             Err(err) => report(json, &err),
         },
         Command::Daemon => unreachable!("main handles the daemon arm itself"),
+    }
+}
+
+/// Maps the `tasks edit` flags onto the domain's sparse changeset:
+/// `DueSpec::Clear` becomes `Some(None)` (the clear-vs-untouched
+/// distinction), `--archive`/`--unarchive` are mutually exclusive (clap).
+fn task_changes(
+    title: Option<String>,
+    description: Option<String>,
+    due: Option<crate::cli::DueSpec>,
+    archive: bool,
+    unarchive: bool,
+) -> taskboard_domain::TaskChanges {
+    taskboard_domain::TaskChanges {
+        title,
+        description,
+        duedate: due.map(|spec| match spec {
+            crate::cli::DueSpec::Set(dt) => Some(dt),
+            crate::cli::DueSpec::Clear => None,
+        }),
+        archived: if archive {
+            Some(true)
+        } else {
+            unarchive.then_some(false)
+        },
     }
 }
 
