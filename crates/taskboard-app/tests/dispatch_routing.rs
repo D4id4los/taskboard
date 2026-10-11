@@ -496,3 +496,152 @@ async fn status_routes_client_side_without_booting() {
     let envelope: serde_json::Value = serde_json::from_slice(&err).expect("envelope");
     assert_eq!(envelope["error"]["kind"], "config");
 }
+
+/// D-success: the one-shot arms' success paths route end to end — a
+/// standalone install's core-verb chain through `dispatch()`, each
+/// invocation booting its own core and printing the JSON receipt
+/// (llvm-cov cannot see the subprocess-driving V-series, so this is the
+/// in-process slice for the `run_core` bodies). The connector-gated
+/// verbs (boards select/publish, a real sync) keep their wiremock- and
+/// binary-level suites.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one verb chain, one row per arm
+async fn one_shot_core_verbs_route_success_end_to_end() {
+    let dir = tempdir();
+    common::write_test_config(&dir.path().join("taskboard.toml"), None, None).expect("config");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    macro_rules! run {
+        ($command:expr) => {{
+            let code = dispatch($command, ctx(dir.path(), &mut out, &mut err)).await;
+            assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+        }};
+    }
+
+    run!(Command::Boards {
+        cmd: BoardsCmd::Create {
+            title: "Personal".to_owned(),
+            color: None,
+        },
+    });
+    run!(Command::Boards {
+        cmd: BoardsCmd::Rename {
+            title: "Work".to_owned(),
+        },
+    });
+    run!(Command::Stacks {
+        cmd: StacksCmd::Add {
+            title: "Todo".to_owned(),
+            order: None,
+        },
+    });
+    run!(Command::Stacks {
+        cmd: StacksCmd::Add {
+            title: "Scratch".to_owned(),
+            order: None,
+        },
+    });
+    run!(Command::Stacks {
+        cmd: StacksCmd::Rename {
+            stack: "Scratch".to_owned(),
+            title: "Someday".to_owned(),
+        },
+    });
+    run!(Command::Stacks {
+        cmd: StacksCmd::Move {
+            stack: "Someday".to_owned(),
+            order: 3,
+        },
+    });
+    run!(Command::Stacks {
+        cmd: StacksCmd::Delete {
+            stack: "Someday".to_owned(),
+        },
+    });
+    run!(Command::Labels {
+        cmd: LabelsCmd::Add {
+            title: "urgent".to_owned(),
+            color: Some("ff0000".to_owned()),
+        },
+    });
+    run!(Command::Labels {
+        cmd: LabelsCmd::List,
+    });
+    run!(Command::Labels {
+        cmd: LabelsCmd::Edit {
+            label: "urgent".to_owned(),
+            title: Some("critical".to_owned()),
+            color: Some("0000ff".to_owned()),
+        },
+    });
+    run!(Command::Tasks {
+        cmd: TasksCmd::Add {
+            title: "t1".to_owned(),
+            stack: None,
+        },
+    });
+    run!(Command::Tasks {
+        cmd: TasksCmd::Add {
+            title: "t2".to_owned(),
+            stack: None,
+        },
+    });
+    run!(Command::Tasks {
+        cmd: TasksCmd::List { stack: None },
+    });
+    run!(Command::Tasks {
+        cmd: TasksCmd::Label {
+            task: "t1".to_owned(),
+            label: "critical".to_owned(),
+        },
+    });
+    run!(Command::Tasks {
+        cmd: TasksCmd::Unlabel {
+            task: "t1".to_owned(),
+            label: "critical".to_owned(),
+        },
+    });
+    run!(Command::Labels {
+        cmd: LabelsCmd::Delete {
+            label: "critical".to_owned(),
+        },
+    });
+    run!(Command::Tasks {
+        cmd: TasksCmd::Move {
+            task: "t2".to_owned(),
+            stack: Some("Todo".to_owned()),
+            order: Some(0),
+        },
+    });
+    run!(Command::Tasks {
+        cmd: TasksCmd::Edit {
+            task: "t2".to_owned(),
+            title: Some("t2-renamed".to_owned()),
+            description: None,
+            due: None,
+            archive: false,
+            unarchive: false,
+        },
+    });
+    run!(Command::Tasks {
+        cmd: TasksCmd::Done {
+            task: "t2-renamed".to_owned(),
+            undo: false,
+        },
+    });
+    run!(Command::Tasks {
+        cmd: TasksCmd::Delete {
+            task: "t1".to_owned(),
+        },
+    });
+
+    // Every arm printed its JSON receipt; stderr stayed clean.
+    assert_eq!(err.len(), 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts: Vec<serde_json::Value> = String::from_utf8_lossy(&out)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("one JSON payload per line"))
+        .collect();
+    assert!(receipts.len() >= 20, "{} receipts", receipts.len());
+}

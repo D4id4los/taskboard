@@ -127,7 +127,7 @@ impl IpcServerHandle {
             }
         }
         if let Some(sidecar) = &self.sidecar
-            && std::fs::remove_file(sidecar).is_ok()
+            && tokio::fs::remove_file(sidecar).await.is_ok()
         {
             tracing::debug!(socket = %sidecar.display(), "ipc socket removed");
         }
@@ -211,7 +211,7 @@ async fn bind_with_recovery(
             // remove and rebind once. A failed removal keeps the first
             // bind error as the typed cause.
             if let Some(sidecar) = sidecar {
-                match std::fs::remove_file(sidecar) {
+                match tokio::fs::remove_file(sidecar).await {
                     Ok(()) => {
                         tracing::warn!(socket = %sidecar.display(), "stale ipc socket removed");
                     }
