@@ -316,7 +316,7 @@ async fn l8_login_invalid_server_url_is_typed() {
 #[tokio::test]
 async fn l9_explicit_standalone_refuses_login_before_prompting() {
     use taskboard_app::cli::Command;
-    use taskboard_app::commands::{CommandCtx, dispatch};
+    use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
 
     let dir = tempdir();
     let config_path = dir.path().join("taskboard.toml");
@@ -331,8 +331,12 @@ async fn l9_explicit_standalone_refuses_login_before_prompting() {
             user: None,
         },
         CommandCtx {
-            json: true,
             config_path: Some(config_path.clone()),
+            io: CommandIo {
+                out: &mut Vec::new(),
+                err: &mut Vec::new(),
+                json: true,
+            },
         },
     )
     .await;

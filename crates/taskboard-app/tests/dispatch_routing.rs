@@ -9,15 +9,20 @@
 mod common;
 
 use taskboard_app::cli::{BoardsCmd, Command, ConfigCmd, LabelsCmd, StacksCmd, TasksCmd};
-use taskboard_app::commands::{CommandCtx, dispatch};
+use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
 
 use common::{env_lock, remove_env, tempdir};
 
-/// The dispatcher's per-invocation context over a per-test config file.
-fn ctx(dir: &std::path::Path) -> CommandCtx {
+/// The dispatcher's per-invocation context over a per-test config file,
+/// writing into the test's buffers.
+fn ctx<'a>(dir: &std::path::Path, out: &'a mut Vec<u8>, err: &'a mut Vec<u8>) -> CommandCtx<'a> {
     CommandCtx {
-        json: true,
         config_path: Some(dir.join("taskboard.toml")),
+        io: CommandIo {
+            out,
+            err,
+            json: true,
+        },
     }
 }
 
@@ -48,12 +53,14 @@ fn garbage_setup() -> (common::EnvGuard, tempfile::TempDir) {
 #[tokio::test]
 async fn login_with_an_undecodable_config_routes_to_exit_one() {
     let (_guard, dir) = garbage_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Login {
             server: None,
             user: None,
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -64,12 +71,14 @@ async fn login_with_an_undecodable_config_routes_to_exit_one() {
 #[tokio::test]
 async fn login_with_unverifiable_credentials_routes_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Login {
             server: Some("http://127.0.0.1:1".to_owned()),
             user: Some("alice".to_owned()),
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -78,11 +87,13 @@ async fn login_with_unverifiable_credentials_routes_to_exit_one() {
 #[tokio::test]
 async fn boards_list_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Boards {
             cmd: BoardsCmd::List,
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -91,6 +102,8 @@ async fn boards_list_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn boards_select_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Boards {
             cmd: BoardsCmd::Select {
@@ -99,7 +112,7 @@ async fn boards_select_routes_a_failed_credential_load_to_exit_one() {
                 bind_local_board: false,
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -108,11 +121,13 @@ async fn boards_select_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn tasks_list_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::List { stack: None },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -121,6 +136,8 @@ async fn tasks_list_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn tasks_add_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::Add {
@@ -128,7 +145,7 @@ async fn tasks_add_routes_a_failed_credential_load_to_exit_one() {
                 stack: None,
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -137,6 +154,8 @@ async fn tasks_add_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn tasks_done_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::Done {
@@ -144,7 +163,7 @@ async fn tasks_done_routes_a_failed_credential_load_to_exit_one() {
                 undo: false,
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -153,6 +172,8 @@ async fn tasks_done_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn tasks_move_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::Move {
@@ -161,7 +182,7 @@ async fn tasks_move_routes_a_failed_credential_load_to_exit_one() {
                 order: None,
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -170,12 +191,14 @@ async fn tasks_move_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn sync_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Sync {
             no_wait: false,
             timeout_secs: 1,
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -186,6 +209,8 @@ async fn sync_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn tasks_edit_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::Edit {
@@ -197,7 +222,7 @@ async fn tasks_edit_routes_a_failed_credential_load_to_exit_one() {
                 unarchive: false,
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -206,13 +231,15 @@ async fn tasks_edit_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn tasks_delete_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::Delete {
                 task: "x".to_owned(),
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -221,13 +248,15 @@ async fn tasks_delete_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn boards_rename_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Boards {
             cmd: BoardsCmd::Rename {
                 title: "t".to_owned(),
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -236,6 +265,8 @@ async fn boards_rename_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn stacks_rename_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Stacks {
             cmd: StacksCmd::Rename {
@@ -243,7 +274,7 @@ async fn stacks_rename_routes_a_failed_credential_load_to_exit_one() {
                 title: "t".to_owned(),
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -252,13 +283,15 @@ async fn stacks_rename_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn stacks_delete_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Stacks {
             cmd: StacksCmd::Delete {
                 stack: "s".to_owned(),
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -267,6 +300,8 @@ async fn stacks_delete_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn stacks_move_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Stacks {
             cmd: StacksCmd::Move {
@@ -274,7 +309,7 @@ async fn stacks_move_routes_a_failed_credential_load_to_exit_one() {
                 order: 1,
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -283,11 +318,13 @@ async fn stacks_move_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn labels_list_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Labels {
             cmd: LabelsCmd::List,
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -296,6 +333,8 @@ async fn labels_list_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn labels_add_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Labels {
             cmd: LabelsCmd::Add {
@@ -303,7 +342,7 @@ async fn labels_add_routes_a_failed_credential_load_to_exit_one() {
                 color: None,
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -312,6 +351,8 @@ async fn labels_add_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn labels_edit_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Labels {
             cmd: LabelsCmd::Edit {
@@ -320,7 +361,7 @@ async fn labels_edit_routes_a_failed_credential_load_to_exit_one() {
                 color: None,
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -329,13 +370,15 @@ async fn labels_edit_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn labels_delete_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Labels {
             cmd: LabelsCmd::Delete {
                 label: "l".to_owned(),
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -344,6 +387,8 @@ async fn labels_delete_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn tasks_label_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::Label {
@@ -351,7 +396,7 @@ async fn tasks_label_routes_a_failed_credential_load_to_exit_one() {
                 label: "l".to_owned(),
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -360,6 +405,8 @@ async fn tasks_label_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn tasks_unlabel_routes_a_failed_credential_load_to_exit_one() {
     let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::Unlabel {
@@ -367,7 +414,7 @@ async fn tasks_unlabel_routes_a_failed_credential_load_to_exit_one() {
                 label: "l".to_owned(),
             },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -378,11 +425,13 @@ async fn tasks_unlabel_routes_a_failed_credential_load_to_exit_one() {
 #[tokio::test]
 async fn a_core_command_with_an_undecodable_config_routes_to_exit_one() {
     let (_guard, dir) = garbage_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Tasks {
             cmd: TasksCmd::List { stack: None },
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);
@@ -394,7 +443,9 @@ async fn a_core_command_with_an_undecodable_config_routes_to_exit_one() {
 #[tokio::test]
 async fn logout_routes_an_unsupportable_credential_store_to_exit_one() {
     let (_guard, dir) = failing_setup();
-    let code = dispatch(Command::Logout, ctx(dir.path())).await;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(Command::Logout, ctx(dir.path(), &mut out, &mut err)).await;
     assert_eq!(code, 1);
     assert!(
         dir.path().join("taskboard.toml").is_file(),
@@ -407,11 +458,13 @@ async fn logout_routes_an_unsupportable_credential_store_to_exit_one() {
 #[tokio::test]
 async fn config_print_routes_an_undecodable_config_to_exit_one() {
     let (_guard, dir) = garbage_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     let code = dispatch(
         Command::Config {
             cmd: ConfigCmd::Print,
         },
-        ctx(dir.path()),
+        ctx(dir.path(), &mut out, &mut err),
     )
     .await;
     assert_eq!(code, 1);

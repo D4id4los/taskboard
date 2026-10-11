@@ -48,13 +48,25 @@ pub fn require_connector(config: &AppConfig) -> Result<(), CommandError> {
     Ok(())
 }
 
-/// Everything a handler needs; built by `main` once per invocation.
-pub struct CommandCtx {
-    /// `--json`: machine-readable payloads on stdout, error JSON on
-    /// stderr.
+/// Where a dispatch writes its output. The binary wires stdout/stderr;
+/// tests inject buffers and the future daemon-IPC frontend (WI-5) will
+/// inject socket sinks. `json` rides per invocation (REPL: per line).
+pub struct CommandIo<'a> {
+    /// Payloads (or human text) — stdout in the binary.
+    pub out: &'a mut dyn std::io::Write,
+    /// Error reports — stderr in the binary.
+    pub err: &'a mut dyn std::io::Write,
+    /// `--json`: machine-readable payloads on `out`, error JSON on
+    /// `err`.
     pub json: bool,
+}
+
+/// Everything a handler needs; built by `main` once per invocation.
+pub struct CommandCtx<'a> {
     /// The resolved config path (by [`crate::config::config_path`]).
     pub config_path: Option<PathBuf>,
+    /// Where payloads and reports are written.
+    pub io: CommandIo<'a>,
 }
 
 /// Typed failure of one CLI invocation. `Display` is UX text (never
@@ -287,8 +299,8 @@ pub(crate) fn map_deck_error(err: DeckError) -> CommandError {
 /// failure. Exit `2` (clap usage errors) and `130` (second-signal force
 /// exit) never flow through here.
 #[allow(clippy::too_many_lines)] // one arm per subcommand, kept flat for review
-pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
-    let json = ctx.json;
+pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
+    let json = ctx.io.json;
     tracing::info!(?command, config = ?ctx.config_path, json, "running command");
     match command {
         Command::Login { server, user } => {
@@ -301,21 +313,21 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
                     // login writes `server_url`, auto resolves
                     // `nextcloud`).
                     if raw.sync.backend == Some(SyncBackend::Standalone) {
-                        return report(json, &CommandError::SyncDisabled);
+                        return report_to(&mut ctx.io, &CommandError::SyncDisabled);
                     }
                     let store = production_store(raw.nextcloud.credential_store);
                     let mut prompts = login::StdinPrompts;
                     match login::run(&path, raw, server, user, &mut prompts, &store).await {
                         Ok(receipt) => {
-                            emit(json, &receipt, &login::render_text(&receipt));
+                            emit_to(&mut ctx.io, &receipt, &login::render_text(&receipt));
                             0
                         }
-                        Err(err) => report(json, &err),
+                        Err(err) => report_to(&mut ctx.io, &err),
                     }
                 }
                 // A not-yet-valid config must not block login (first-run
                 // bootstrap command); undecodable ones still fail.
-                Err(err) => report(json, &CommandError::from(err)),
+                Err(err) => report_to(&mut ctx.io, &CommandError::from(err)),
             }
         }
         Command::Logout => {
@@ -326,26 +338,26 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
                     let store = production_store(raw.nextcloud.credential_store);
                     match logout::run(&path, &raw, store.as_ref()) {
                         Ok(receipt) => {
-                            emit(json, &receipt, &logout::render_text(&receipt));
+                            emit_to(&mut ctx.io, &receipt, &logout::render_text(&receipt));
                             0
                         }
-                        Err(err) => report(json, &err),
+                        Err(err) => report_to(&mut ctx.io, &err),
                     }
                 }
-                Err(err) => report(json, &CommandError::from(err)),
+                Err(err) => report_to(&mut ctx.io, &CommandError::from(err)),
             }
         }
         Command::Boards {
             cmd: BoardsCmd::List,
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match boards::list(&config, &store).await {
                 Ok(entries) => {
-                    emit(json, &entries, &boards::render_text_list(&entries));
+                    emit_to(&mut ctx.io, &entries, &boards::render_text_list(&entries));
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Boards {
             cmd:
@@ -354,7 +366,7 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
                     timeout_secs,
                     bind_local_board,
                 },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => {
                 match boards::select(
                     config,
@@ -366,127 +378,127 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
                 .await
                 {
                     Ok(receipt) => {
-                        emit(json, &receipt, &boards::render_text_select(&receipt));
+                        emit_to(&mut ctx.io, &receipt, &boards::render_text_select(&receipt));
                         0
                     }
-                    Err(err) => report(json, &err),
+                    Err(err) => report_to(&mut ctx.io, &err),
                 }
             }
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Boards {
             cmd: BoardsCmd::Create { title, color },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => {
                 match boards::create(config, store, &title, color.as_deref()).await {
                     Ok(receipt) => {
-                        emit(json, &receipt, &boards::render_text_create(&receipt));
+                        emit_to(&mut ctx.io, &receipt, &boards::render_text_create(&receipt));
                         0
                     }
-                    Err(err) => report(json, &err),
+                    Err(err) => report_to(&mut ctx.io, &err),
                 }
             }
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Boards {
             cmd: BoardsCmd::Rename { title },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match boards::rename(config, store, &title).await {
                 Ok(receipt) => {
-                    emit(json, &receipt, &boards::render_text_rename(&receipt));
+                    emit_to(&mut ctx.io, &receipt, &boards::render_text_rename(&receipt));
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Boards {
             cmd: BoardsCmd::Publish { timeout_secs },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => {
                 match boards::publish(config, store, Duration::from_secs(timeout_secs)).await {
                     Ok(receipt) => {
-                        emit(json, &receipt, &boards::render_text_select(&receipt));
+                        emit_to(&mut ctx.io, &receipt, &boards::render_text_select(&receipt));
                         0
                     }
-                    Err(err) => report(json, &err),
+                    Err(err) => report_to(&mut ctx.io, &err),
                 }
             }
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Stacks {
             cmd: StacksCmd::Add { title, order },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match stacks::add(config, store, &title, order).await {
                 Ok(receipt) => {
-                    emit(json, &receipt, &stacks::render_text_add(&receipt));
+                    emit_to(&mut ctx.io, &receipt, &stacks::render_text_add(&receipt));
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Stacks {
             cmd: StacksCmd::Rename { stack, title },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match stacks::rename(config, store, &stack, &title).await {
                 Ok(receipt) => {
-                    emit(json, &receipt, &stacks::render_text_add(&receipt));
+                    emit_to(&mut ctx.io, &receipt, &stacks::render_text_add(&receipt));
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Stacks {
             cmd: StacksCmd::Delete { stack },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match stacks::delete(config, store, &stack).await {
                 Ok(receipt) => {
-                    emit(json, &receipt, &stacks::render_text_delete(&receipt));
+                    emit_to(&mut ctx.io, &receipt, &stacks::render_text_delete(&receipt));
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Stacks {
             cmd: StacksCmd::Move { stack, order },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match stacks::move_(config, store, &stack, order).await {
                 Ok(receipt) => {
-                    emit(json, &receipt, &stacks::render_text_add(&receipt));
+                    emit_to(&mut ctx.io, &receipt, &stacks::render_text_add(&receipt));
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Labels {
             cmd: LabelsCmd::List,
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match labels::list(config, store).await {
                 Ok(rows) => {
-                    emit(json, &rows, &labels::render_text_list(&rows));
+                    emit_to(&mut ctx.io, &rows, &labels::render_text_list(&rows));
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Labels {
             cmd: LabelsCmd::Add { title, color },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => {
                 match labels::add(config, store, &title, color.as_deref()).await {
                     Ok(receipt) => {
-                        emit(json, &receipt, &labels::render_text_receipt(&receipt));
+                        emit_to(&mut ctx.io, &receipt, &labels::render_text_receipt(&receipt));
                         0
                     }
-                    Err(err) => report(json, &err),
+                    Err(err) => report_to(&mut ctx.io, &err),
                 }
             }
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Labels {
             cmd:
@@ -495,47 +507,47 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
                     title,
                     color,
                 },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match labels::edit(config, store, &label, title, color).await {
                 Ok(receipt) => {
-                    emit(json, &receipt, &labels::render_text_receipt(&receipt));
+                    emit_to(&mut ctx.io, &receipt, &labels::render_text_receipt(&receipt));
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Labels {
             cmd: LabelsCmd::Delete { label },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match labels::delete(config, store, &label).await {
                 Ok(receipt) => {
-                    emit(json, &receipt, &labels::render_text_receipt(&receipt));
+                    emit_to(&mut ctx.io, &receipt, &labels::render_text_receipt(&receipt));
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Tasks {
             cmd: TasksCmd::List { stack },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => {
                 let standalone = config.sync_backend() == SyncBackend::Standalone;
                 match tasks::list(config, store, stack.as_deref()).await {
                     Ok(list) => {
-                        emit(json, &list, &tasks::render_text_list(&list, standalone));
+                        emit_to(&mut ctx.io, &list, &tasks::render_text_list(&list, standalone));
                         0
                     }
-                    Err(err) => report(json, &err),
+                    Err(err) => report_to(&mut ctx.io, &err),
                 }
             }
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Tasks {
             cmd: TasksCmd::Add { title, stack },
         } => {
-            run_mutation(json, &ctx, move |config, store| async move {
+            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
                 tasks::add(config, store, &title, stack.as_deref()).await
             })
             .await
@@ -543,7 +555,7 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
         Command::Tasks {
             cmd: TasksCmd::Done { task, undo },
         } => {
-            run_mutation(json, &ctx, move |config, store| async move {
+            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
                 tasks::done(config, store, &task, undo).await
             })
             .await
@@ -551,7 +563,7 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
         Command::Tasks {
             cmd: TasksCmd::Move { task, stack, order },
         } => {
-            run_mutation(json, &ctx, move |config, store| async move {
+            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
                 tasks::move_(config, store, &task, stack.as_deref(), order).await
             })
             .await
@@ -568,31 +580,31 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
                 },
         } => {
             let changes = task_changes(title, description, due, archive, unarchive);
-            run_mutation(json, &ctx, move |config, store| async move {
+            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
                 tasks::edit(config, store, &task, changes).await
             })
             .await
         }
         Command::Tasks {
             cmd: TasksCmd::Delete { task },
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match tasks::delete(config, store, &task).await {
                 Ok(receipt) => {
-                    emit(
-                        json,
+                    emit_to(
+                        &mut ctx.io,
                         &receipt,
                         &format!("deleted \"{}\" ({})", receipt.title, receipt.id),
                     );
                     0
                 }
-                Err(err) => report(json, &err),
+                Err(err) => report_to(&mut ctx.io, &err),
             },
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Tasks {
             cmd: TasksCmd::Label { task, label },
         } => {
-            run_mutation(json, &ctx, move |config, store| async move {
+            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
                 tasks::label(config, store, &task, &label).await
             })
             .await
@@ -600,7 +612,7 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
         Command::Tasks {
             cmd: TasksCmd::Unlabel { task, label },
         } => {
-            run_mutation(json, &ctx, move |config, store| async move {
+            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
                 tasks::unlabel(config, store, &task, &label).await
             })
             .await
@@ -608,27 +620,27 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
         Command::Sync {
             no_wait,
             timeout_secs,
-        } => match core_ctx(&ctx) {
+        } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => {
                 match sync::run(config, store, no_wait, Duration::from_secs(timeout_secs)).await {
                     Ok(outcome) => {
-                        emit(json, outcome.view(), &sync::render_text(&outcome));
+                        emit_to(&mut ctx.io, outcome.view(), &sync::render_text(&outcome));
                         match outcome {
                             sync::SyncOutcome::Succeeded(_) | sync::SyncOutcome::NoWait(_) => 0,
                             sync::SyncOutcome::Failed(kind, _) => {
-                                report(json, &CommandError::SyncFailed(kind))
+                                report_to(&mut ctx.io, &CommandError::SyncFailed(kind))
                             }
                             sync::SyncOutcome::TimedOut(_) => {
-                                report(json, &CommandError::SyncTimedOut)
+                                report_to(&mut ctx.io, &CommandError::SyncTimedOut)
                             }
                         }
                     }
-                    Err(err) => report(json, &err),
+                    Err(err) => report_to(&mut ctx.io, &err),
                 }
             }
-            Err(err) => report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
-        Command::Config { cmd } => config::handle(&cmd, &ctx, json),
+        Command::Config { cmd } => config::handle(&cmd, &mut ctx),
         Command::Daemon => unreachable!("main handles the daemon arm itself"),
     }
 }
@@ -660,66 +672,87 @@ fn task_changes(
 
 /// The shared shape of the mutation verbs: boot the core, run the verb,
 /// print the receipt (or the error).
-async fn run_mutation<F, Fut>(json: bool, ctx: &CommandCtx, body: F) -> u8
+async fn run_mutation<F, Fut>(io: &mut CommandIo<'_>, config_path: Option<PathBuf>, body: F) -> u8
 where
     F: FnOnce(AppConfig, Arc<dyn CredentialStore>) -> Fut,
     Fut: std::future::Future<Output = Result<output::MutationReceipt, CommandError>>,
 {
-    match core_ctx(ctx) {
+    match core_ctx(config_path) {
         Ok((config, store)) => match body(config, store).await {
             Ok(receipt) => {
-                emit(json, &receipt, &tasks::render_text_receipt(&receipt));
+                emit_to(io, &receipt, &tasks::render_text_receipt(&receipt));
                 0
             }
-            Err(err) => report(json, &err),
+            Err(err) => report_to(io, &err),
         },
-        Err(err) => report(json, &err),
+        Err(err) => report_to(io, &err),
     }
 }
 
 /// Loads and validates the config and picks the production credential
 /// store. Not `Result`-returning so callers can `report` and exit 1.
-fn core_ctx(ctx: &CommandCtx) -> Result<(AppConfig, Arc<dyn CredentialStore>), CommandError> {
-    let config = AppConfig::load(ctx.config_path.clone())?;
+fn core_ctx(
+    config_path: Option<PathBuf>,
+) -> Result<(AppConfig, Arc<dyn CredentialStore>), CommandError> {
+    let config = AppConfig::load(config_path)?;
     let store = production_store(config.nextcloud.credential_store);
     Ok((config, store))
 }
 
-/// Prints a payload: JSON on stdout under `--json`, the human text
-/// otherwise.
-pub(crate) fn emit<T: serde::Serialize>(json: bool, payload: &T, text: &str) {
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string(payload).expect("projection serialization is total")
-        );
+/// Prints a payload to the injected writers: JSON on `out` under
+/// `--json`, the human text otherwise. Write failures are ignored: a
+/// closed sink (a dead pty, a socket peer) must not panic a dispatch —
+/// the process exit code, not the write, carries the outcome.
+pub(crate) fn emit_to<T: serde::Serialize>(io: &mut CommandIo<'_>, payload: &T, text: &str) {
+    if io.json {
+        let line = serde_json::to_string(payload).expect("projection serialization is total");
+        let _ = writeln!(io.out, "{line}");
     } else {
-        println!("{text}");
+        let _ = writeln!(io.out, "{text}");
     }
 }
 
-/// Reports a failure: `{"error":{…}}` on stderr under `--json`, the
-/// `Display` text otherwise. Always yields exit code 1. Also used by
-/// `main`'s daemon arm (the standalone refusal).
+/// Reports a failure to the injected writers: `{"error":{…}}` on `err`
+/// under `--json`, the `Display` text otherwise. Always yields exit
+/// code 1. Write failures are ignored (see [`emit_to`]).
 ///
 /// # Panics
 ///
 /// Never: the error envelope serialization is total.
-pub fn report(json: bool, err: &CommandError) -> u8 {
+#[must_use]
+pub fn report_to(io: &mut CommandIo<'_>, err: &CommandError) -> u8 {
     tracing::error!(kind = err.error_kind(), "command failed");
-    if json {
+    if io.json {
         let envelope = output::ErrorEnvelope {
             error: output::ErrorBody {
                 kind: err.error_kind().to_owned(),
                 detail: err.error_detail(),
             },
         };
-        eprintln!(
-            "{}",
-            serde_json::to_string(&envelope).expect("error envelope serialization is total")
-        );
+        let line = serde_json::to_string(&envelope).expect("error envelope serialization is total");
+        let _ = writeln!(io.err, "{line}");
     } else {
-        eprintln!("{err}");
+        let _ = writeln!(io.err, "{err}");
     }
     1
+}
+
+/// Reports a failure: `{"error":{…}}` on stderr under `--json`, the
+/// `Display` text otherwise. Always yields exit code 1. Also used by
+/// `main`'s daemon arm (the standalone refusal) — the stdout/stderr
+/// convenience over [`report_to`].
+///
+/// # Panics
+///
+/// Never: the error envelope serialization is total.
+#[must_use]
+pub fn report(json: bool, err: &CommandError) -> u8 {
+    let mut out = std::io::stdout();
+    let mut errw = std::io::stderr();
+    let mut io = CommandIo {
+        out: &mut out,
+        err: &mut errw,
+        json,
+    };
+    report_to(&mut io, err)
 }

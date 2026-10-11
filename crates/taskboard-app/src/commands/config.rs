@@ -5,7 +5,7 @@
 
 use crate::cli::ConfigCmd;
 use crate::commands::output::ConfigView;
-use crate::commands::{CommandCtx, CommandError};
+use crate::commands::{CommandCtx, CommandError, emit_to, report_to};
 use crate::config::{AppConfig, ConfigError, SyncBackend};
 
 /// Prints the effective config. Only an undecodable config fails (exit
@@ -16,8 +16,8 @@ use crate::config::{AppConfig, ConfigError, SyncBackend};
 ///
 /// [`CommandError`] — the flat `config` kind for provider failures
 /// (decode); never a validation failure (that travels in the payload).
-pub fn print(ctx: &CommandCtx) -> Result<ConfigView, CommandError> {
-    let config_path = AppConfig::config_path(ctx.config_path.clone());
+pub fn print(config_path: Option<std::path::PathBuf>) -> Result<ConfigView, CommandError> {
+    let config_path = AppConfig::config_path(config_path);
     // Decode + db-path fill, no validation gate (the `login` precedent).
     let config = AppConfig::extract_raw(config_path.as_deref())?;
     let invalid_kind = config
@@ -103,14 +103,14 @@ pub fn render_text(view: &ConfigView) -> String {
 }
 
 /// Dispatch glue so `dispatch` stays a flat table.
-pub(crate) fn handle(cmd: &ConfigCmd, ctx: &CommandCtx, json: bool) -> u8 {
+pub(crate) fn handle(cmd: &ConfigCmd, ctx: &mut CommandCtx<'_>) -> u8 {
     match *cmd {
-        ConfigCmd::Print => match print(ctx) {
+        ConfigCmd::Print => match print(ctx.config_path.clone()) {
             Ok(view) => {
-                crate::commands::emit(json, &view, &render_text(&view));
+                emit_to(&mut ctx.io, &view, &render_text(&view));
                 0
             }
-            Err(err) => crate::commands::report(json, &err),
+            Err(err) => report_to(&mut ctx.io, &err),
         },
     }
 }

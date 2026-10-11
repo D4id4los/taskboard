@@ -72,9 +72,15 @@ async fn run(cli: Cli) -> color_eyre::Result<()> {
     if let Some(command) = cli.command
         && !matches!(command, Command::Daemon)
     {
+        let mut out = std::io::stdout();
+        let mut err = std::io::stderr();
         let ctx = CommandCtx {
-            json: cli.json,
             config_path: AppConfig::config_path(cli.config),
+            io: taskboard_app::commands::CommandIo {
+                out: &mut out,
+                err: &mut err,
+                json: cli.json,
+            },
         };
         let code = dispatch(command, ctx).await;
         std::process::exit(i32::from(code));
