@@ -261,3 +261,54 @@ async fn e4_stale_socket_recovered_after_kill_nine() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// Concurrent CLI *processes* at binary level (IP8's in-process
+/// counterpart): both connect, both are answered, both receipts are in
+/// the state afterwards.
+#[tokio::test]
+async fn e5_concurrent_cli_processes_both_serve() {
+    let install = Install::new("e5");
+    let daemon = install.spawn_daemon();
+    install.wait_ready().await;
+    for command in [
+        &["boards", "create", "Personal"][..],
+        &["stacks", "add", "Todo"][..],
+    ] {
+        let (code, out, err) = install.run(command);
+        assert_eq!(code, Some(0), "{command:?}: {out} {err}");
+    }
+
+    let first = binary_command()
+        .args(["--config", &install.config(), "tasks", "add", "from-one"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn first client");
+    let second = binary_command()
+        .args(["--config", &install.config(), "tasks", "add", "from-two"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn second client");
+    let one = first.wait_with_output().expect("first waits");
+    let two = second.wait_with_output().expect("second waits");
+    assert_eq!(one.status.code(), Some(0));
+    assert_eq!(two.status.code(), Some(0));
+
+    let (code, out, _) = install.run(&["--json", "tasks", "list"]);
+    assert_eq!(code, Some(0));
+    let listing: serde_json::Value = serde_json::from_str(out.trim()).expect("list json");
+    let titles: Vec<&str> = listing["stacks"][0]["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .map(|t| t["title"].as_str().expect("title"))
+        .collect();
+    assert_eq!(titles.len(), 2);
+    assert!(titles.contains(&"from-one"));
+    assert!(titles.contains(&"from-two"));
+
+    let (code, _, _) = install.run(&["daemon", "stop"]);
+    assert_eq!(code, Some(0));
+    drop(daemon);
+}

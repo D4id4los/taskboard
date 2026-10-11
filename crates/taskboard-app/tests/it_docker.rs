@@ -601,3 +601,128 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     assert_eq!(list.stacks[0].tasks[0].title, format!("{run}-edited"));
     assert_eq!(list.stacks[0].tasks[0].labels, vec!["critical".to_owned()]);
 }
+
+/// J8: sync over IPC (runbook step 12's automated counterpart): the
+/// *binary* daemon serves the dockerized tier, and a one-shot `sync`
+/// rides the socket — a fresh cycle outcome, no per-command boot.
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_sync_over_ipc() {
+    let Some(cfg) = common::live_docker_config() else {
+        return; // skip, never fail: tier not configured
+    };
+    common::with_deadline(async {
+        let _env = env_lock();
+        let _password = EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        common::write_test_config(&config, Some(&cfg.url), Some(&cfg.user)).expect("write config");
+        let client = DeckClient::new(&cfg.url, &cfg.user, &cfg.token).expect("base URL");
+        let run = common::run_id();
+        let (board, stack) = create_board_and_stack(&client, &run).await;
+        seed_board_binding(
+            &dir.path().join("taskboard.db"),
+            0x00DA_001C5,
+            board.id,
+            &run,
+        )
+        .await;
+
+        let mut daemon = std::process::Command::new(env!("CARGO_BIN_EXE_taskboard"))
+            .args(["--config", config.to_str().expect("utf8 path"), "daemon"])
+            .env("TASKBOARD_APP_PASSWORD", &cfg.token)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn daemon");
+        // Socket readiness: status answers daemon:true over IPC.
+        let binary = env!("CARGO_BIN_EXE_taskboard");
+        let ready = std::time::Instant::now() + LIVE_DEADLINE;
+        loop {
+            let output = std::process::Command::new(binary)
+                .args([
+                    "--config",
+                    config.to_str().expect("utf8"),
+                    "--json",
+                    "status",
+                ])
+                .env("TASKBOARD_APP_PASSWORD", &cfg.token)
+                .output()
+                .expect("status runs");
+            if String::from_utf8_lossy(&output.stdout).contains("\"daemon\":true") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < ready,
+                "daemon never served status"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // A server-side card appears via the IPC-served list after a
+        // cycle; `sync` over IPC produces a fresh cycle outcome (exit 0).
+        let server_card = common::retry(|| async {
+            client
+                .create_card(
+                    board.id,
+                    stack.id,
+                    &NewCard {
+                        title: format!("{run}-ipc"),
+                        order: Some(0),
+                        description: None,
+                        duedate: None,
+                        kind: None,
+                    },
+                )
+                .await
+        })
+        .await
+        .expect("server-side card creation must succeed");
+        let deadline = std::time::Instant::now() + LIVE_DEADLINE;
+        loop {
+            let output = std::process::Command::new(binary)
+                .args(["--config", config.to_str().expect("utf8"), "sync"])
+                .env("TASKBOARD_APP_PASSWORD", &cfg.token)
+                .output()
+                .expect("sync runs");
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "sync over ipc exits 0: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let list = std::process::Command::new(binary)
+                .args(["--config", config.to_str().expect("utf8"), "tasks", "list"])
+                .env("TASKBOARD_APP_PASSWORD", &cfg.token)
+                .output()
+                .expect("tasks list runs");
+            if String::from_utf8_lossy(&list.stdout).contains(&server_card.title) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the card never pulled"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        // Graceful remote stop.
+        let stop = std::process::Command::new(binary)
+            .args(["--config", config.to_str().expect("utf8"), "daemon", "stop"])
+            .env("TASKBOARD_APP_PASSWORD", &cfg.token)
+            .output()
+            .expect("daemon stop runs");
+        assert_eq!(stop.status.code(), Some(0));
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            if daemon.try_wait().expect("poll daemon").is_some() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "daemon did not exit");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("test must finish within the live deadline");
+}
