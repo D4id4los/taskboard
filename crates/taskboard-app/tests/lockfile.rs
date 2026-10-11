@@ -108,3 +108,23 @@ async fn k5_different_databases_do_not_contend() {
     one.shutdown().await;
     two.shutdown().await;
 }
+
+/// K6: the `status` client-side answer's diagnostic field — the
+/// recorded holder PID is readable *while* the lock is held, and it is
+/// the holder's own pid (the binary-level REPL row is composition:
+/// R-series covers the session boot, K3 the cross-process lock).
+#[tokio::test]
+async fn k6_holder_pid_reads_the_recorded_holder_while_locked() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    let store: Arc<dyn CredentialStore> =
+        Arc::new(FakeCredentialStore::with(&server.uri(), "alice", "pw"));
+    let db = dir.path().join("k6.db");
+    let _app = bootstrap(config_for(&server.uri(), dir.path(), "k6.db"), store)
+        .await
+        .expect("boots");
+    assert_eq!(
+        taskboard_app::lockfile::holder_pid(&db),
+        Some(std::process::id())
+    );
+}
