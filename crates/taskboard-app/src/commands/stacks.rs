@@ -138,8 +138,7 @@ pub async fn delete(
     stack: &str,
 ) -> Result<StackDeleteReceipt, CommandError> {
     let stack = stack.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| delete_on(app, &stack).await)
-        .await
+    crate::commands::tasks::with_core(config, store, async |app| delete_on(app, &stack).await).await
 }
 
 /// The `stacks delete` steps on a booted core (the REPL/session seam).

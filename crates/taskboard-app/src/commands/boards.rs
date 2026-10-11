@@ -95,6 +95,13 @@ pub async fn create(
     .await
 }
 
+/// Renames the single live board (both backends). The engine stamps the
+/// title clock and enqueues the push op when the board is bound; a
+/// same-title repeat is an accepted no-op (exit 0).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
 pub async fn rename(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
@@ -105,7 +112,10 @@ pub async fn rename(
 }
 
 /// The `boards rename` steps on a booted core (the REPL/session seam).
-pub(crate) async fn rename_on(app: &crate::App, title: String) -> Result<BoardReceipt, CommandError> {
+pub(crate) async fn rename_on(
+    app: &crate::App,
+    title: String,
+) -> Result<BoardReceipt, CommandError> {
     app.engine
         .execute(StateCommand::RenameBoard {
             title: title.clone(),
