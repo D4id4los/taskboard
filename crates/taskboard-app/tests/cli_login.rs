@@ -308,3 +308,38 @@ async fn l8_login_invalid_server_url_is_typed() {
     assert_eq!(err.error_kind(), "deck");
     assert!(!config_path.exists());
 }
+
+/// L9: explicit `[sync] backend = "standalone"` refuses login *before
+/// any prompting or store touch* — the dispatcher's gate (ADR 0010).
+/// Under auto the ceremony behaves exactly as today (L1–L8 carry no
+/// backend key and stay green).
+#[tokio::test]
+async fn l9_explicit_standalone_refuses_login_before_prompting() {
+    use taskboard_app::cli::Command;
+    use taskboard_app::commands::{CommandCtx, dispatch};
+
+    let dir = tempdir();
+    let config_path = dir.path().join("taskboard.toml");
+    std::fs::write(&config_path, "[sync]\nbackend = 'standalone'\n").expect("write toml");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+
+    // `server: None` would prompt on real stdin if the gate failed —
+    // the prompt would hang the test; the timely exit-1 is the proof.
+    let code = dispatch(
+        Command::Login {
+            server: None,
+            user: None,
+        },
+        CommandCtx {
+            json: true,
+            config_path: Some(config_path.clone()),
+        },
+    )
+    .await;
+    assert_eq!(code, 1);
+    // Nothing was persisted through the store.
+    assert!(matches!(
+        store.load("https://unused.example.com", "alice"),
+        Err(CredentialError::NotFound)
+    ));
+}
