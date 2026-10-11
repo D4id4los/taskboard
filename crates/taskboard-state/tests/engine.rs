@@ -44,6 +44,13 @@ impl FlakyRepository {
             remaining_failures: std::sync::atomic::AtomicU32::new(failures),
         }
     }
+
+    /// Re-arms the failure injector (the edge-trigger test walks the
+    /// fail -> recover -> fail cycle).
+    fn rearm(&self, failures: u32) {
+        self.remaining_failures
+            .store(failures, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl TaskRepository for FlakyRepository {
@@ -124,6 +131,7 @@ async fn spawn(spawner: Spawner) -> Harness {
         spawner.clock,
         sync_out,
         report_rx,
+        system_tx.clone(),
         system_rx,
     )
     .await
@@ -498,6 +506,84 @@ async fn a9_storage_failure_reverts_nothing_and_recovers() {
     assert!(matches!(retried, Ok(CommandOutcome::CreatedStack(_))));
 }
 
+/// A17: `StorageFailed` is edge-triggered — one event per failure epoch
+/// (a dying disk fires once, not once per command), reset by any
+/// successful persistence.
+#[tokio::test]
+async fn a17_storage_failed_is_edge_triggered_per_epoch() {
+    let repo = Arc::new(FlakyRepository::new(1));
+    let h = spawn(Spawner {
+        repo: repo.clone() as Arc<dyn TaskRepository>,
+        ..Spawner::default()
+    })
+    .await;
+    let mut events = h.system_tx.subscribe();
+
+    let drain = |events: &mut tokio::sync::broadcast::Receiver<SystemEvent>| {
+        let mut count = 0;
+        while matches!(
+            events.try_recv(),
+            Ok(SystemEvent::StorageFailed
+                | SystemEvent::NetworkLost
+                | SystemEvent::NetworkRestored
+                | SystemEvent::Shutdown)
+        ) {
+            count += 1;
+        }
+        count
+    };
+
+    // First failure: the event fires.
+    let failed = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            title: "doomed".into(),
+            order: 1,
+        })
+        .await;
+    assert!(matches!(
+        failed,
+        Err(ExecuteError::Storage(RepositoryError::Unavailable))
+    ));
+    h.handle.flush().await;
+    assert_eq!(drain(&mut events), 1, "the first failure fires the event");
+
+    // A second command failing in the same epoch: still one event.
+    repo.rearm(1);
+    let _ = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            title: "doomed again".into(),
+            order: 2,
+        })
+        .await;
+    h.handle.flush().await;
+    assert_eq!(drain(&mut events), 0, "the same epoch must not re-fire");
+
+    // Recovery resets the edge; the next failure fires again.
+    let retried = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            title: "survivor".into(),
+            order: 1,
+        })
+        .await;
+    assert!(retried.is_ok(), "recovery succeeds");
+    h.handle.flush().await;
+    assert_eq!(drain(&mut events), 0);
+    repo.rearm(1);
+    let _ = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            title: "doomed once more".into(),
+            order: 3,
+        })
+        .await;
+    h.handle.flush().await;
+    assert_eq!(drain(&mut events), 1, "a new epoch fires again");
+    drop(h);
+}
+
 /// A10: executing on a stopped engine yields `EngineGone`.
 #[tokio::test]
 async fn a10_execute_after_shutdown_is_engine_gone() {
@@ -547,13 +633,14 @@ async fn a11_boot_hydration_publishes_pre_loop() {
 async fn a12_boot_failure_surfaces_load_error() {
     let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
-    let (_system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+    let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
     let result = spawn_state_engine(
         Arc::new(DeadRepository),
         Arc::new(CountingIds::new()),
         FixedClock::new(T0),
         sync_out,
         report_rx,
+        system_tx,
         system_rx,
     )
     .await;

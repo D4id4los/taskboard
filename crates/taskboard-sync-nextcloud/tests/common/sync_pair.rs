@@ -48,6 +48,7 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
         clock,
         nudges_tx.clone(),
         report_rx,
+        system_tx.clone(),
         system_engine_rx,
     )
     .await

@@ -191,6 +191,11 @@ pub enum SystemEvent {
     NetworkRestored,
     /// Graceful shutdown requested.
     Shutdown,
+    /// A persistence write failed and was rejected (memory unchanged);
+    /// first failure since the last success — the banner signal for the
+    /// UI, not an error report (the command reply carries the typed
+    /// repository error).
+    StorageFailed,
 }
 
 /// Engine → UI repaint trigger (broadcast payload).

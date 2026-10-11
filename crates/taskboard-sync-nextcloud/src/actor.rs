@@ -214,9 +214,13 @@ async fn run(
                     tracing::info!("sync actor stopping: shutdown event");
                     return;
                 }
-                Ok(SystemEvent::NetworkLost | SystemEvent::NetworkRestored) => {
-                    // This actor *is* the network authority; events from
-                    // elsewhere are ignored.
+                Ok(
+                    SystemEvent::StorageFailed
+                        | SystemEvent::NetworkLost
+                        | SystemEvent::NetworkRestored,
+                ) => {
+                    // The engine's persistence signal is no sync concern;
+                    // and this actor *is* the network authority anyway.
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     tracing::warn!("system broadcast closed; continuing without shutdown watch");

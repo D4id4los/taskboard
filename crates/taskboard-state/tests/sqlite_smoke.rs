@@ -50,6 +50,7 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
             FixedClock::new(T0),
             sync_out,
             report_rx,
+            system_tx.clone(),
             system_rx,
         )
         .await
