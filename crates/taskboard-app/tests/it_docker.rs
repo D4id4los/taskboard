@@ -383,3 +383,208 @@ async fn it_nextcloud_docker_cli_standalone_publish() {
         assert!(deleted.is_ok(), "board teardown must succeed");
     }
 }
+
+/// J5: the editing surface lands server-side — a fresh stand-alone
+/// board/stack/task is published (the J4 shape), then every WI-3 edit
+/// verb runs against the bound core: `boards rename`, `stacks
+/// rename`/`move`, `labels add`/`edit`, `tasks edit`/`label`/`delete`;
+/// one sync drains the outbox and the raw `DeckClient` verifies the
+/// server-side truth. Local `tasks list` still serves the survivors.
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_cli_editing_push() {
+    let Some(cfg) = common::live_docker_config() else {
+        return; // skip, never fail: tier not configured
+    };
+    common::with_deadline(editing_push_journey(&cfg))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+async fn editing_push_journey(cfg: &common::LiveCfg) {
+    use taskboard_app::commands::{boards, labels, login, stacks, sync, tasks};
+    use taskboard_app::config::{AppConfig, StorageSection};
+    use taskboard_domain::TaskChanges;
+
+    let _env = common::env_lock();
+    let run = common::run_id();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("taskboard.db");
+
+    // Phase 1 — stand-alone authoring: board + stack + two tasks.
+    let standalone = AppConfig {
+        storage: StorageSection {
+            db_path: Some(db_path.clone()),
+        },
+        ..AppConfig::default()
+    };
+    let no_store: Arc<dyn taskboard_app::secrets::CredentialStore> =
+        Arc::new(common::FakeCredentialStore::default());
+    boards::create(standalone.clone(), Arc::clone(&no_store), &run, None)
+        .await
+        .expect("board");
+    let stack_receipt = stacks::add(standalone.clone(), Arc::clone(&no_store), "col", None)
+        .await
+        .expect("stack");
+    let survivor = tasks::add(standalone.clone(), Arc::clone(&no_store), "survivor", None)
+        .await
+        .expect("task");
+    let doomed = tasks::add(standalone, Arc::clone(&no_store), "doomed", None)
+        .await
+        .expect("task");
+
+    // Phase 2 — attach: login, publish, edit against the bound core.
+    let _password = common::EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
+    let client = DeckClient::new(&cfg.url, &cfg.user, &cfg.token).expect("base URL");
+    let config_path = dir.path().join("taskboard.toml");
+    let raw = AppConfig::extract_raw(Some(&config_path)).expect("raw config");
+    let store: Arc<dyn taskboard_app::secrets::CredentialStore> =
+        Arc::new(taskboard_app::secrets::EnvCredentialStore);
+    let mut prompts = common::FakePrompts::new(&[&cfg.token]);
+    login::run(
+        &config_path,
+        raw,
+        Some(cfg.url.clone()),
+        Some(cfg.user.clone()),
+        &mut prompts,
+        &store,
+    )
+    .await
+    .expect("login verifies");
+    let attached = common::live_config(cfg, &db_path);
+    let publish = boards::publish(
+        attached.clone(),
+        Arc::clone(&store),
+        Duration::from_secs(120),
+    )
+    .await
+    .expect("publish succeeds");
+    let remote_board_id = publish.board.id;
+
+    // The editing surface, both backends, on the bound board:
+    let renamed = boards::rename(
+        attached.clone(),
+        Arc::clone(&store),
+        &format!("{run}-renamed"),
+    )
+    .await
+    .expect("boards rename");
+    assert_eq!(renamed.title, format!("{run}-renamed"));
+    let renamed_stack = stacks::rename(
+        attached.clone(),
+        Arc::clone(&store),
+        "col",
+        &format!("{run}-col2"),
+    )
+    .await
+    .expect("stacks rename");
+    assert_eq!(renamed_stack.title, format!("{run}-col2"));
+    let moved = stacks::move_(
+        attached.clone(),
+        Arc::clone(&store),
+        &format!("{run}-col2"),
+        4,
+    )
+    .await
+    .expect("stacks move");
+    assert_eq!(moved.order, 4);
+    let _urgent = labels::add(
+        attached.clone(),
+        Arc::clone(&store),
+        "urgent",
+        Some("ff0000"),
+    )
+    .await
+    .expect("labels add");
+    let _ = labels::edit(
+        attached.clone(),
+        Arc::clone(&store),
+        "urgent",
+        Some("critical".to_owned()),
+        Some("0000ff".to_owned()),
+    )
+    .await
+    .expect("labels edit");
+    let edited = tasks::edit(
+        attached.clone(),
+        Arc::clone(&store),
+        &survivor.id,
+        TaskChanges {
+            title: Some(format!("{run}-edited")),
+            description: Some("the body".to_owned()),
+            duedate: Some(Some(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 20)
+                    .and_then(|d| d.and_hms_opt(0, 0, 0))
+                    .expect("midnight")
+                    .and_utc(),
+            )),
+            archived: None,
+        },
+    )
+    .await
+    .expect("tasks edit");
+    assert_eq!(edited.title, format!("{run}-edited"));
+    let labeled = tasks::label(
+        attached.clone(),
+        Arc::clone(&store),
+        &survivor.id,
+        "critical",
+    )
+    .await
+    .expect("tasks label");
+    assert_eq!(labeled.labels, vec!["critical".to_owned()]);
+    let deleted = tasks::delete(attached.clone(), Arc::clone(&store), &doomed.id)
+        .await
+        .expect("tasks delete");
+    assert_eq!(deleted.id, doomed.id);
+
+    // One sync drains the outbox.
+    let outcome = sync::run(
+        attached.clone(),
+        Arc::clone(&store),
+        false,
+        Duration::from_secs(120),
+    )
+    .await
+    .expect("sync runs");
+    assert!(matches!(
+        outcome,
+        sync::SyncOutcome::Succeeded(_) | sync::SyncOutcome::NoWait(_)
+    ));
+
+    // Server-side truth via the raw DeckClient.
+    let server_stacks =
+        common::retry(|| async { client.stacks(remote_board_id, StackFilter::Active).await })
+            .await
+            .expect("server listing");
+    assert_eq!(server_stacks.len(), 1);
+    assert_eq!(server_stacks[0].title, format!("{run}-col2"));
+    assert_eq!(server_stacks[0].order, 4);
+    assert_eq!(server_stacks[0].cards.len(), 1, "the doomed card is gone");
+    let server_card = &server_stacks[0].cards[0];
+    assert_eq!(server_card.title, format!("{run}-edited"));
+    assert!(server_card.duedate.is_some(), "the due date was pushed");
+    let server_board = common::retry(|| async { client.board(remote_board_id).await })
+        .await
+        .expect("server board");
+    assert_eq!(server_board.title, format!("{run}-renamed"));
+    let critical = server_board
+        .labels
+        .iter()
+        .find(|l| l.title == "critical" && l.color.as_str() == "0000ff")
+        .expect("the edited label exists server-side");
+    assert!(
+        server_card.labels.iter().any(|l| l.id == critical.id),
+        "the label is attached to the card"
+    );
+
+    // Local truth: the survivors list with the edited fields.
+    let list = tasks::list(attached, Arc::clone(&store), None)
+        .await
+        .expect("list");
+    assert_eq!(list.stacks[0].id, stack_receipt.id);
+    assert_eq!(list.stacks[0].tasks.len(), 1);
+    assert_eq!(list.stacks[0].tasks[0].title, format!("{run}-edited"));
+    assert_eq!(list.stacks[0].tasks[0].labels, vec!["critical".to_owned()]);
+    let _ = server_card;
+}
