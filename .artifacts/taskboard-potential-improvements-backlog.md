@@ -1310,6 +1310,7 @@ no silent backend flips without an explicit command — and reuse the
 L-series ceremony + test harness. Related open question already
 tracked for WI-3: `logout`'s interaction with `backend`.
 
+<<<<<<< variant A
 ## [2026-10-11] Undo/redo functionality
 
 - **Category**: `Architecture`, `DX`
@@ -1419,3 +1420,62 @@ Migration 0003: add a nullable `board_id` column, backfill it from
 `stack_id` where `op_kind = 'rename_board'`, and teach `op_to_columns`/
 `op_from_columns` the proper column. One migration, mechanical codec
 edits, existing roundtrip test extended.
+>>>>>>> variant B
+### [2026-10-11] Org-mode markup fields + two-way local .org sync connector
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/reports/2026-10-11-org-mode-support-viability-report.md`
+- **Target Area**: new `taskboard-org` + `taskboard-sync-org` crates; `taskboard-domain` (`SyncReport` payload generalization); `taskboard-app` (config/bootstrap); `taskboard-ui-slint` (rendering)
+
+#### Context & Description
+Analysis confirmed both org-mode features viable: (A) rendering
+org-markup text fields (emphasis, headings, lists, blocks, drawers,
+TAB folding) and (B) two-way sync with a local `.org` file (h1 =
+boards, h2 = tasks, TODO keywords ↔ stacks, idempotent
+read→parse→map→write loop). No maintained permissively-licensed Rust
+crate combines lossless parsing with write-back (orgize 0.10-alpha is
+closest but dormant since 2025-01); Slint rich-text display exists only
+since 1.16 (`StyledText`) and rich-text editing is still open upstream.
+Estimated 4–7 weeks for B, 2.5–5 for A, sharing one parser core.
+
+#### Proposed Approach
+Per the report §8: 2–4 day orgize spike behind a `taskboard-org`
+wrapper (fork/vendor if adopted), else build the scoped two-layer
+parser; phases = org read-only import → rendering MVP (StyledText +
+custom block layout, source-edit toggle) → surgical write-back
+(splice edits + canonical emitter with proptest idempotency fixpoint)
+→ WYSIWYG deferred to Slint upstream. Requires a small ADR to
+generalize the Deck-typed `SyncReport::Completed` snapshot for a
+second connector. Out-of-scope mapping gaps surfaced by the analysis:
+`SCHEDULED:` lines, priority cookies `[#A]`, and org CLOCK logbooks
+have no domain fields (preserved verbatim for now).
+
+## [2026-10-11] Emacs/org edit-backend crate + per-UI adapters
+
+- **Category**: `UI` / `Architecture`
+- **Originating Plan/Report**: `.artifacts/reports/2026-10-11-emacs-org-edit-backend-viability-report.md`
+- **Target Area**: external `orgedit-core` crate (standalone repo); `crates/taskboard-ui-slint/` (future consumer)
+
+### Context & Description
+Viability confirmed for a framework-agnostic emacs/org editing backend
+(buffer, point/mark/region, kill-ring + append rules, yank/yank-pop,
+mark ring, chained undo, universal argument, chord keymap, org
+folding/structure commands driven by the `taskboard-org` parser spans)
+with thin egui/iced/Slint adapters — the seam drawn at byte offsets and
+abstract events, never pixels. No existing Rust crate fills the
+emacs-semantics gap (rustyline/reedline are line editors;
+floem-editor-core is modal). Slint cannot host live-decorated editing
+until upstream rich-text editing (#2723) lands, so its adapter is a
+source-edit surface plus a rendered preview. Out of scope for taskboard
+now: the crate is cross-project personal infrastructure and the UI
+crate is still an empty shell.
+
+### Proposed Approach
+Build the crate standalone (MIT/Apache; report §4/§8 sequencing —
+Emacs-manual conformance corpus first) when the org-mode work starts;
+taskboard's editor fields then consume it as a thin `orgedit-slint`
+widget (stock `TextEdit` editing surface with intercepted emacs keys,
+cursor synced via `set-selection-offsets`, `StyledText` rendered
+preview) instead of bespoke editing logic.
+####### Ancestor
+======= end
