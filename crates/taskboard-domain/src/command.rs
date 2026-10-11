@@ -166,6 +166,7 @@ fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
         | LocalOp::UnassignLabel(id, _) => *id == task,
         LocalOp::CreateStack(_)
         | LocalOp::RenameStack(_)
+        | LocalOp::MoveStack(_)
         | LocalOp::DeleteStack(_)
         | LocalOp::CreateLabel(_)
         | LocalOp::UpdateLabel(_)
@@ -377,6 +378,22 @@ pub fn plan_command(
                 actions: vec![
                     PersistenceAction::UpsertStack(updated),
                     enqueue(LocalOp::RenameStack(*id), ids, now),
+                ],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::MoveStack { id, order } => {
+            let stack = live_stack(app, *id)?;
+            if stack.order == *order {
+                return Ok(no_op());
+            }
+            let mut updated = stack.clone();
+            updated.order = *order;
+            updated.clocks.order = now;
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertStack(updated),
+                    enqueue(LocalOp::MoveStack(*id), ids, now),
                 ],
                 outcome: CommandOutcome::Applied,
             })
@@ -1271,6 +1288,84 @@ mod tests {
     }
 
     #[test]
+    fn move_stack_stamps_order_clock_enqueues_and_persists() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::MoveStack {
+                id: stack_id(),
+                order: 7,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertStack(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.order, 7);
+        assert_eq!(updated.clocks.order, now());
+        assert_eq!(
+            updated.clocks.title,
+            ts(T0 - 3_600),
+            "title clock untouched"
+        );
+        let PersistenceAction::EnqueueOp(pending) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert_eq!(pending.op, LocalOp::MoveStack(stack_id()));
+    }
+
+    #[test]
+    fn move_stack_with_unchanged_order_is_a_no_op_without_an_outbox_op() {
+        let (app, outbox) = base();
+        let order = app.stacks[&stack_id()].order;
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::MoveStack {
+                id: stack_id(),
+                order,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan, no_op());
+    }
+
+    #[test]
+    fn move_stack_rejects_unknown_and_deleted_stacks() {
+        let (mut app, outbox) = base();
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::MoveStack {
+                    id: StackId::from(uuid::Uuid::from_u128(999)),
+                    order: 1,
+                }
+            ),
+            Err(CommandError::UnknownStack(StackId::from(
+                uuid::Uuid::from_u128(999)
+            )))
+        );
+        let mut dead = stack(903, true);
+        dead.deleted = true;
+        let dead_id = dead.id;
+        app.stacks.insert(dead_id, dead);
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::MoveStack {
+                    id: dead_id,
+                    order: 1,
+                }
+            ),
+            Err(CommandError::StackDeleted(dead_id))
+        );
+    }
+
+    #[test]
     fn rename_deleted_stack_is_rejected_but_delete_repeat_is_a_no_op() {
         let (mut app, outbox) = base();
         let mut dead = stack(903, true);
@@ -1762,9 +1857,10 @@ mod proptests {
             | LocalOp::UpdateTask(id)
             | LocalOp::MoveTask(id)
             | LocalOp::DeleteTask(id) => tasks.contains_key(id),
-            LocalOp::CreateStack(id) | LocalOp::RenameStack(id) | LocalOp::DeleteStack(id) => {
-                stacks.contains_key(id)
-            }
+            LocalOp::CreateStack(id)
+            | LocalOp::RenameStack(id)
+            | LocalOp::MoveStack(id)
+            | LocalOp::DeleteStack(id) => stacks.contains_key(id),
             LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                 labels.contains_key(id)
             }

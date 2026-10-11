@@ -73,6 +73,14 @@ pub enum StateCommand {
         /// Stack to delete.
         id: StackId,
     },
+    /// Reorder a stack on the bound board (no-op when the order is
+    /// unchanged; pushes as a full-send like [`StateCommand::RenameStack`]).
+    MoveStack {
+        /// Stack to reorder.
+        id: StackId,
+        /// Requested sort order within the board.
+        order: i64,
+    },
     /// Create a label on the bound board.
     CreateLabel {
         /// Label title.

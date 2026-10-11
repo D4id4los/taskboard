@@ -45,6 +45,7 @@ pub fn op_kind_to_text(op: &LocalOp) -> &'static str {
         LocalOp::DeleteTask(_) => "delete_task",
         LocalOp::CreateStack(_) => "create_stack",
         LocalOp::RenameStack(_) => "rename_stack",
+        LocalOp::MoveStack(_) => "move_stack",
         LocalOp::DeleteStack(_) => "delete_stack",
         LocalOp::CreateLabel(_) => "create_label",
         LocalOp::UpdateLabel(_) => "update_label",
@@ -76,13 +77,14 @@ pub(crate) fn op_to_columns(op: &LocalOp) -> OpColumns {
             stack_id: None,
             label_id: None,
         },
-        LocalOp::CreateStack(stack) | LocalOp::RenameStack(stack) | LocalOp::DeleteStack(stack) => {
-            OpColumns {
-                task_id: None,
-                stack_id: Some(stack),
-                label_id: None,
-            }
-        }
+        LocalOp::CreateStack(stack)
+        | LocalOp::RenameStack(stack)
+        | LocalOp::MoveStack(stack)
+        | LocalOp::DeleteStack(stack) => OpColumns {
+            task_id: None,
+            stack_id: Some(stack),
+            label_id: None,
+        },
         LocalOp::CreateLabel(label) | LocalOp::UpdateLabel(label) | LocalOp::DeleteLabel(label) => {
             OpColumns {
                 task_id: None,
@@ -124,6 +126,7 @@ pub fn op_from_columns(
         "delete_task" => Ok(LocalOp::DeleteTask(parse_id(task_id)?)),
         "create_stack" => Ok(LocalOp::CreateStack(parse_id(stack_id)?)),
         "rename_stack" => Ok(LocalOp::RenameStack(parse_id(stack_id)?)),
+        "move_stack" => Ok(LocalOp::MoveStack(parse_id(stack_id)?)),
         "delete_stack" => Ok(LocalOp::DeleteStack(parse_id(stack_id)?)),
         "create_label" => Ok(LocalOp::CreateLabel(parse_id(label_id)?)),
         "update_label" => Ok(LocalOp::UpdateLabel(parse_id(label_id)?)),
@@ -315,6 +318,7 @@ mod tests {
             LocalOp::DeleteTask(task),
             LocalOp::CreateStack(stack),
             LocalOp::RenameStack(stack),
+            LocalOp::MoveStack(stack),
             LocalOp::DeleteStack(stack),
             LocalOp::CreateLabel(label),
             LocalOp::UpdateLabel(label),

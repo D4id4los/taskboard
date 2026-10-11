@@ -466,6 +466,7 @@ fn build_outbox(state: &AppState, op_rows: Vec<OutboxRow>) -> Vec<PendingOp> {
             9 => l.map(LocalOp::DeleteLabel),
             10 => t.zip(l).map(|(t, l)| LocalOp::AssignLabel(t, l)),
             11 => t.zip(l).map(|(t, l)| LocalOp::UnassignLabel(t, l)),
+            12 => s.map(LocalOp::MoveStack),
             _ => t.zip(l).map(|(t, l)| LocalOp::AssignLabel(t, l)),
         };
         if let Some(op) = op {

@@ -42,6 +42,7 @@ fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
         | LocalOp::UnassignLabel(id, _) => *id == task,
         LocalOp::CreateStack(_)
         | LocalOp::RenameStack(_)
+        | LocalOp::MoveStack(_)
         | LocalOp::DeleteStack(_)
         | LocalOp::CreateLabel(_)
         | LocalOp::UpdateLabel(_)
@@ -89,6 +90,7 @@ fn pending_task_intents(
             LocalOp::CreateTask(_)
             | LocalOp::CreateStack(_)
             | LocalOp::RenameStack(_)
+            | LocalOp::MoveStack(_)
             | LocalOp::DeleteStack(_)
             | LocalOp::CreateLabel(_)
             | LocalOp::UpdateLabel(_)
@@ -172,7 +174,7 @@ fn pending_stack_intent(
             continue;
         }
         match op.op {
-            LocalOp::RenameStack(s) if s == stack => rename = true,
+            LocalOp::RenameStack(s) | LocalOp::MoveStack(s) if s == stack => rename = true,
             LocalOp::DeleteStack(s) if s == stack => delete = true,
             _ => {}
         }
@@ -720,6 +722,7 @@ fn apply_push_outcomes(
                     | LocalOp::MoveTask(_)
                     | LocalOp::CreateStack(_)
                     | LocalOp::RenameStack(_)
+                    | LocalOp::MoveStack(_)
                     | LocalOp::CreateLabel(_)
                     | LocalOp::UpdateLabel(_)
                     | LocalOp::AssignLabel(..)
@@ -741,7 +744,9 @@ fn apply_push_outcomes(
                         op_results.insert(outcome.op, true);
                     }
                     Some(RemoteEcho::Stack(echo)) => {
-                        if let LocalOp::CreateStack(id) | LocalOp::RenameStack(id) = op.op
+                        if let LocalOp::CreateStack(id)
+                        | LocalOp::RenameStack(id)
+                        | LocalOp::MoveStack(id) = op.op
                             && let Some(local) = stacks.get(&id)
                         {
                             let mut merged = adopt_stack_after_push(local, echo);
@@ -792,7 +797,10 @@ fn apply_push_outcomes(
                     }
                     op_results.insert(outcome.op, true);
                 }
-                LocalOp::CreateStack(id) | LocalOp::RenameStack(id) | LocalOp::DeleteStack(id) => {
+                LocalOp::CreateStack(id)
+                | LocalOp::RenameStack(id)
+                | LocalOp::MoveStack(id)
+                | LocalOp::DeleteStack(id) => {
                     if let Some(local) = stacks.get(&id) {
                         stacks.insert(id, tombstone_stack(local, now));
                     }
@@ -3041,6 +3049,42 @@ mod tests {
         let merged = app.0.stacks[&local.id].clone();
         assert_eq!(merged.title, "renamed", "protected intent survives");
         assert_eq!(merged.clocks.title, ts(BASE + 120));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+    }
+
+    #[test]
+    fn a_post_read_stack_move_survives_the_same_cycle_pull() {
+        // A MoveStack is a full-send push like a rename: the pending op
+        // protects the stack's order (and title) from the same-cycle
+        // pull whose stamps advanced with the previous cycle's writes.
+        let mut local = local_stack();
+        local.order = 9;
+        local.clocks.order = ts(BASE + 120);
+        let mut state = base_state(bound_task(1));
+        state.stacks.insert(local.id, local.clone());
+
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(9)),
+            op: LocalOp::MoveStack(local.id),
+            queued_at: ts(BASE + 120),
+        };
+        let mut remote = remote_stack(1, BASE + 300);
+        remote.order = 2;
+        let snap = crate::merge_testutil::snapshot(vec![remote], vec![]);
+
+        let app = apply_sync_report(
+            &state,
+            &[op],
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let merged = app.0.stacks[&local.id].clone();
+        assert_eq!(merged.order, 9, "protected move intent survives");
+        assert_eq!(merged.clocks.order, ts(BASE + 120));
         assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
     }
 
