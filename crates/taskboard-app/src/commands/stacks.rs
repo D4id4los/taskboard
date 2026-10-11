@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use taskboard_domain::{CommandOutcome, StateCommand};
+use taskboard_domain::{CommandOutcome, StackId, StateCommand};
 
 use crate::commands::CommandError;
-use crate::commands::output::StackReceipt;
+use crate::commands::output::{StackDeleteReceipt, StackReceipt};
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
 
@@ -59,12 +59,144 @@ pub async fn add(
     .await
 }
 
-/// The human-readable add receipt.
+/// Resolves a stack selector against the published state (shared with
+/// the task verbs; the board-less mapping lives in `resolve_target`).
+fn resolve(state: &taskboard_domain::AppState, selector: &str) -> Result<StackId, CommandError> {
+    crate::commands::tasks::resolve_stack(state, Some(selector))
+}
+
+/// Renames a stack. Repeats with the same title are accepted no-ops.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn rename(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    stack: &str,
+    title: &str,
+) -> Result<StackReceipt, CommandError> {
+    let stack = stack.to_owned();
+    let title = title.to_owned();
+    crate::commands::tasks::with_core(config, store, async |app| {
+        let state = app.engine.shared_state().load_full();
+        let id = resolve(&state, &stack)?;
+        drop(state);
+        app.engine
+            .execute(StateCommand::RenameStack {
+                id,
+                new_title: title.clone(),
+            })
+            .await?;
+        let state = app.engine.shared_state().load_full();
+        let row = state
+            .stacks
+            .get(&id)
+            .filter(|s| !s.deleted)
+            .ok_or_else(|| CommandError::UnknownStack(stack))?;
+        Ok(StackReceipt {
+            id: row.id.as_uuid().to_string(),
+            title: row.title.clone(),
+            order: row.order,
+        })
+    })
+    .await
+}
+
+/// Deletes (tombstones) a stack, cascading to its live tasks. Repeats
+/// are idempotent successes reporting the already-deleted snapshot.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn delete(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    stack: &str,
+) -> Result<StackDeleteReceipt, CommandError> {
+    let stack = stack.to_owned();
+    crate::commands::tasks::with_core(config, store, async |app| {
+        let state = app.engine.shared_state().load_full();
+        // Terminal intent: a repeat still resolves its target, so a
+        // tombstoned stack stays reachable by exact uuid.
+        let id = resolve(&state, &stack).or_else(|err| match err {
+            CommandError::UnknownStack(_) => {
+                if let Ok(uuid) = uuid::Uuid::parse_str(&stack) {
+                    let id = StackId::from_uuid(uuid);
+                    if state.stacks.contains_key(&id) {
+                        return Ok(id);
+                    }
+                }
+                Err(CommandError::UnknownStack(stack.clone()))
+            }
+            other => Err(other),
+        })?;
+        let snapshot = state.stacks.get(&id).map(|row| StackDeleteReceipt {
+            id: row.id.as_uuid().to_string(),
+            title: row.title.clone(),
+            cascaded_tasks: state.tasks_in_stack(id).len(),
+        });
+        drop(state);
+        app.engine.execute(StateCommand::DeleteStack { id }).await?;
+        Ok(snapshot.unwrap_or(StackDeleteReceipt {
+            id: id.as_uuid().to_string(),
+            title: String::new(),
+            cascaded_tasks: 0,
+        }))
+    })
+    .await
+}
+
+/// Reorders a stack within the board. Repeats with the same order are
+/// accepted no-ops.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn move_(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    stack: &str,
+    order: i64,
+) -> Result<StackReceipt, CommandError> {
+    let stack = stack.to_owned();
+    crate::commands::tasks::with_core(config, store, async |app| {
+        let state = app.engine.shared_state().load_full();
+        let id = resolve(&state, &stack)?;
+        drop(state);
+        app.engine
+            .execute(StateCommand::MoveStack { id, order })
+            .await?;
+        let state = app.engine.shared_state().load_full();
+        let row = state
+            .stacks
+            .get(&id)
+            .filter(|s| !s.deleted)
+            .ok_or_else(|| CommandError::UnknownStack(stack))?;
+        Ok(StackReceipt {
+            id: row.id.as_uuid().to_string(),
+            title: row.title.clone(),
+            order: row.order,
+        })
+    })
+    .await
+}
+
+/// The human-readable add receipt./// The human-readable add receipt.
 #[must_use]
 pub fn render_text_add(receipt: &StackReceipt) -> String {
     format!(
-        "created stack \"{}\" at position {} ({})",
+        "stack \"{}\" at position {} ({})",
         receipt.title, receipt.order, receipt.id
+    )
+}
+
+/// The human-readable delete receipt.
+#[must_use]
+pub fn render_text_delete(receipt: &StackDeleteReceipt) -> String {
+    format!(
+        "deleted stack \"{}\" ({}) — {} task(s) cascaded",
+        receipt.title, receipt.id, receipt.cascaded_tasks
     )
 }
 

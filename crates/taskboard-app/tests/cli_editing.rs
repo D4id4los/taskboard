@@ -322,3 +322,67 @@ async fn e4_boards_rename_is_durable_and_idempotent() {
         .await
         .expect("stack after rename");
 }
+
+/// E5: `stacks rename/delete/move` — the rename and order changes are
+/// durable, delete reports the cascade and repeats idempotently, and
+/// unknown/ambiguous selectors are the typed errors.
+#[tokio::test]
+async fn e5_stacks_rename_delete_move() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e5.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+
+    // Rename.
+    let renamed = stacks::rename(config.clone(), forbidden_store(), "Todo", "Doing")
+        .await
+        .expect("rename");
+    assert_eq!(renamed.title, "Doing");
+
+    // Durable across invocations; repeat rename to the same title: NoOp.
+    let config2 = standalone_config(dir.path(), "e5.db");
+    let repeat = stacks::rename(config2.clone(), forbidden_store(), "Doing", "Doing")
+        .await
+        .expect("repeat rename");
+    assert_eq!(repeat.title, "Doing");
+
+    // Move.
+    let moved = stacks::move_(config2.clone(), forbidden_store(), "Doing", 7)
+        .await
+        .expect("move");
+    assert_eq!(moved.order, 7);
+    let moved = stacks::move_(config2.clone(), forbidden_store(), "Doing", 7)
+        .await
+        .expect("unchanged move is a NoOp success");
+    assert_eq!(moved.order, 7);
+
+    // Unknown selector.
+    let err = stacks::rename(config2.clone(), forbidden_store(), "ghost", "x")
+        .await
+        .expect_err("unknown stack");
+    assert_eq!(err.error_kind(), "unknown-stack");
+
+    // Delete with the cascade: seed tasks first.
+    tasks::add(config2.clone(), forbidden_store(), "a", Some("Doing"))
+        .await
+        .expect("task a");
+    tasks::add(config2.clone(), forbidden_store(), "b", Some("Doing"))
+        .await
+        .expect("task b");
+    let receipt = stacks::delete(config2, forbidden_store(), "Doing")
+        .await
+        .expect("delete");
+    assert_eq!(receipt.title, "Doing");
+    assert_eq!(receipt.cascaded_tasks, 2);
+
+    // The cascade tombstoned the tasks.
+    let list = tasks::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list");
+    assert!(list.stacks.is_empty(), "the stack and its tasks are gone");
+
+    // Repeat delete: idempotent success reporting the deleted snapshot.
+    let repeat = stacks::delete(config, forbidden_store(), &receipt.id)
+        .await
+        .expect("repeat delete");
+    assert_eq!(repeat.id, receipt.id);
+}

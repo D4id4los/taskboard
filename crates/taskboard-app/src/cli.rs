@@ -108,7 +108,8 @@ pub enum BoardsCmd {
     },
 }
 
-/// `stacks` subcommands.
+/// `stacks` subcommands. The stack selector is the uuid or the exact
+/// live title (prefixes are a task-only affordance).
 #[derive(Debug, Subcommand)]
 pub enum StacksCmd {
     /// Create a stack on the board (appended by default).
@@ -118,6 +119,27 @@ pub enum StacksCmd {
         /// Explicit sort order; default appends to the end of the board.
         #[arg(long)]
         order: Option<i64>,
+    },
+    /// Rename a stack.
+    Rename {
+        /// The stack (uuid | exact title).
+        stack: String,
+        /// The new title.
+        title: String,
+    },
+    /// Delete a stack and tombstone-cascade its tasks (no confirmation;
+    /// repeats are idempotent).
+    Delete {
+        /// The stack (uuid | exact title).
+        stack: String,
+    },
+    /// Reorder a stack within the board (no-op when unchanged).
+    Move {
+        /// The stack (uuid | exact title).
+        stack: String,
+        /// The new sort position.
+        #[arg(long)]
+        order: i64,
     },
 }
 

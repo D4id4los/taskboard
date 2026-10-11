@@ -143,6 +143,18 @@ pub struct MutationReceipt {
     pub labels: Vec<String>,
 }
 
+/// The `stacks delete` receipt: the pre-execute snapshot plus the
+/// cascade's blast radius (the domain tombstones the stack's live tasks).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct StackDeleteReceipt {
+    /// Local stack uuid.
+    pub id: String,
+    /// Stack title at delete time.
+    pub title: String,
+    /// Live tasks the cascade tombstoned.
+    pub cascaded_tasks: usize,
+}
+
 /// The `tasks delete` receipt: the pre-execute snapshot (the task is
 /// tombstoned afterwards, so there is no post-state to project).
 #[derive(Debug, Clone, Serialize, PartialEq)]

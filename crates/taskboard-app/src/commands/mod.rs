@@ -381,6 +381,42 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
             },
             Err(err) => report(json, &err),
         },
+        Command::Stacks {
+            cmd: StacksCmd::Rename { stack, title },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => match stacks::rename(config, store, &stack, &title).await {
+                Ok(receipt) => {
+                    emit(json, &receipt, &stacks::render_text_add(&receipt));
+                    0
+                }
+                Err(err) => report(json, &err),
+            },
+            Err(err) => report(json, &err),
+        },
+        Command::Stacks {
+            cmd: StacksCmd::Delete { stack },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => match stacks::delete(config, store, &stack).await {
+                Ok(receipt) => {
+                    emit(json, &receipt, &stacks::render_text_delete(&receipt));
+                    0
+                }
+                Err(err) => report(json, &err),
+            },
+            Err(err) => report(json, &err),
+        },
+        Command::Stacks {
+            cmd: StacksCmd::Move { stack, order },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => match stacks::move_(config, store, &stack, order).await {
+                Ok(receipt) => {
+                    emit(json, &receipt, &stacks::render_text_add(&receipt));
+                    0
+                }
+                Err(err) => report(json, &err),
+            },
+            Err(err) => report(json, &err),
+        },
         Command::Tasks {
             cmd: TasksCmd::List { stack },
         } => match core_ctx(&ctx) {
