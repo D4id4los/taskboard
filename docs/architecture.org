@@ -197,7 +197,10 @@ dependency hierarchies.
 6. *taskboard-app* — The bootstrap library (ADR 0008) plus the thin
    =taskboard= binary. The library owns =config= (figment hierarchy
    defaults → =taskboard.toml= → =TASKBOARD_*= env, strict tables —
-   secrets in TOML cannot decode), =secrets= (the =CredentialStore=
+   secrets in TOML cannot decode; the config *file* resolution order is
+   =--config= > =TASKBOARD_CONFIG= > the XDG candidate
+   =$XDG_CONFIG_HOME/taskboard/taskboard.toml= when it exists >
+   =./taskboard.toml=, absent files tolerated), =secrets= (the =CredentialStore=
    port with the keyring and env stores, config-selected, no silent
    fallback; redacting =AppPassword=), =bootstrap=: one async fn
    that wires the whole channel graph (all channel halves created here,
@@ -207,9 +210,16 @@ dependency hierarchies.
    0010) and returns the =App= handle shared by every frontend, =lockfile= (the per-database instance lock — an
    OS-released advisory lock on a =<db>.lock= sidecar acquired before
    the db open, ADR 0009), and =commands= (ADR 0009): the operator
-   CLI's typed handlers — =login=, =boards=, =tasks=, =sync= — with
-   the =--json= output contract (typed projections on stdout, kebab-case
-   error envelopes on stderr); =main.rs= is dispatch + exit codes only.
+   CLI's typed handlers — =login=, =logout=, =boards= (list/select/
+   create/publish/rename), =stacks= (add/rename/delete/move), =tasks=
+   (list/add/done/move/edit/delete/label/unlabel), =labels=
+   (list/add/edit/delete), =sync=, =config print= — with the =--json=
+   output contract (typed projections on stdout, kebab-case error
+   envelopes on stderr). Task selectors cascade exact uuid → unique
+   ≥8-char prefix → exact title; destructive verbs are
+   confirmation-free (scripting-first) with idempotent repeats; board
+   titles are locally editable (the field-wise title merge of the ADR
+   0004 amendment). =main.rs= is dispatch + exit codes only.
    =App::shutdown()= is the graceful sequence (flush → =Shutdown=
    broadcast → bounded actor joins with the engine's linger-drain →
    storage join). Dependencies: all workspace crates, =figment=,

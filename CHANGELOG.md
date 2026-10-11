@@ -11,6 +11,40 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- The full CLI editing surface (WI-3): `tasks edit/delete/label/
+  unlabel`, `stacks rename/delete/move`, `labels list/add/edit/
+  delete`, and `boards rename <title>` (title-only, both backends —
+  the board title pushes when the board is bound and rides the next
+  `boards publish` otherwise). `boards rename` carries
+  `BoardClocks.title` (migration 0002, epoch default: pre-existing
+  rows keep the remote-wins merge behavior bit-for-bit) and the
+  field-wise board-title merge (ADR 0004 amendment).
+- The cascading task selector: exact uuid → unique ≥8-char uuid
+  prefix → exact title; ambiguity is the typed `ambiguous-task` error
+  listing candidate titles.
+- `logout`: deletes the stored secret and — under the auto backend —
+  strips the config's server/user keys (an explicit
+  `backend = "nextcloud"` is never rewritten; ADR 0010).
+- `config print`: a decode-only diagnostic that always prints; the
+  payload carries `valid` plus the typed `invalid_kind` (exit 0 unless
+  the file is undecodable).
+- XDG config discovery: `--config` > `TASKBOARD_CONFIG` >
+  `$XDG_CONFIG_HOME/taskboard/taskboard.toml` (when present) >
+  `./taskboard.toml`.
+- The `StorageFailed` system event: edge-triggered at the state
+  engine's storage-failure reply site (one event per failure epoch);
+  the daemon logs it, the Phase 7 UI banner will consume it.
+- The J5 tier-2 journey (`it_nextcloud_docker_cli_editing_push`): the
+  editing surface lands server-side after one sync.
+
+### Changed
+
+- `tasks done/move` accept prefixes and exact titles (exact uuid stays
+  first, so existing scripts keep working); task resolution now
+  happens in-core against the published state.
+- The `MutationReceipt` JSON payload gains the additive `labels` key
+  (the attached label titles after the mutation).
+
 - Growth roadmap Phase 6b (ADR 0010): *stand-alone-first* — the app
   works fully stand-alone with no server configured, and Nextcloud sync
   becomes the first optional connector selected by `[sync] backend =

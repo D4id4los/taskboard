@@ -163,3 +163,80 @@ does not instrument — the hermetic suites carry the coverage duty.
   carries =UnknownStack= and =Deck= variants (typed zero-match and
   pass-through cases), and =SyncOutcome= carries the failure kind in
   =Failed= plus a =NoWait= arm for =--no-wait=.
+
+* Amendment 2026-10-11 — the full editing surface (WI-3)
+
+The CLI becomes the complete daily driver: every existing domain verb
+is reachable, plus the two pre-GUI riders (=`logout`=, =config print=)
+and the =StorageFailed= system event.
+
+** Verb catalogue (new members)
+
+- Core-booting: =tasks edit/delete/label/unlabel=, =stacks
+  rename/delete/move= (=`stacks move` is new domain surface:
+  =StateCommand::MoveStack=, a no-op on unchanged order, pushing as the
+  same full-send =update_stack= PUT a rename makes), =labels
+  list/add/edit/delete=, =boards rename <title>= (both backends; the
+  rename pushes when the board is bound and rides the next =publish=
+  otherwise — see the ADR 0004 amendment for the merge policy).
+- Pre-core: =logout= and =config print= (config only, no core boot, no
+  lock).
+
+** Selector cascade contract
+
+Task selectors resolve as *exact uuid → unique ≥8-char uuid prefix →
+exact live title* (ambiguity and misses are typed errors —
+=ambiguous-task= lists candidate titles; a uuid-shaped selector that
+hits no live task falls through rather than masking). Stack and label
+selectors keep the two-tier shape (uuid → exact title). UUIDv7 prefixes
+can collide within about a minute of creation time; the honest answer
+is the ambiguity error listing candidates — longer prefixes resolve,
+never a silent mis-target. Prefixes stay a task-only affordance.
+
+** Destructive verbs without confirmation
+
+=tasks delete=, =stacks delete=, =labels delete= (and the tombstone
+cascades they imply) prompt nothing: the M1 CLI is scripting-first.
+Cascade semantics are documented in the =--help= text; receipts report
+the blast radius (=StackDeleteReceipt.cascaded_tasks=) and repeats are
+idempotent successes (the tombstone stays reachable by exact uuid).
+
+** Label colors are validated at the boundary
+
+=--color= for labels accepts exactly six hex digits (clap value parser,
+normalized lowercase, usage error = exit 2 otherwise). Unlike board
+colors — lenient by design, mapped defensively with a fallback at
+publish/push time — an invalid label color is a *permanent*
+=BadRequest= push rejection that would strand the outbox op forever.
+Connector lesson: validate where the wire has no fallback.
+
+** logout's backend interaction
+
+=logout= always deletes the stored secret; it strips the config file's
+=nextcloud.server_url=/=username= keys *iff* =​[sync] backend= is unset
+(auto), returning the install to stand-alone. An explicit =backend =
+"nextcloud"= is never rewritten (ADR 0010 loudness preserved): the
+next boot fails loudly at credential resolution, which is the correct
+"logged out of an explicitly-configured server" state. The board
+binding and local db are untouched — a later =login= to the same server
+resumes sync where it left off.
+
+** config print is decode-only
+
+=config print= always prints (validity is reported *in the payload* —
+=valid= + typed =invalid_kind= from the new =ConfigError::kind()=
+discriminants), exit 0 even when invalid; only an undecodable file
+exits 1. The config is secret-free by construction, so the dump needs
+no redaction. Its XDG note: config discovery order is =--config= >
+=TASKBOARD_CONFIG= > XDG candidate (when present) >
+=./taskboard.toml=.
+
+** StorageFailed is edge-triggered
+
+=SystemEvent::StorageFailed= (a =Copy= banner signal, no payload) fires
+at the =ExecuteError::Storage= reply site on the ok→fail transition
+only; any successful persistence resets the edge — a dying disk fires
+once per failure epoch, not once per command. The command reply already
+carries the typed repository error; this event is the Phase 7 UI
+banner's input, and the daemon logs it. Report-apply-path persistence
+failures still only log (Phase 7 follow-up).

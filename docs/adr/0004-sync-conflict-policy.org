@@ -128,3 +128,36 @@ snapshot would silently tombstone live tasks.
   =crates/taskboard-domain/src/pipeline.rs= (the fixed-order composition:
   idempotence, processing order, convergence, rule outcomes); mutation
   testing targets both with zero expected survivors.
+
+* Amendment 2026-10-11 — field-wise board title (WI-3)
+
+Boards move from adoption-only to *field-wise title merging* as part of
+the =boards rename= CLI verb (WI-3, M1-exit report §4 B). The
+whole-entity freshness gate and every field of =adopt_board_if_newer=
+stay exactly as they were — archived, color, tombstone still adopt
+whenever the remote entity stamp is strictly newer than =remote_seen=
+(boards have no local color/archive verbs, so there is nothing local to
+defend there). Only the *title* becomes field-wise:
+
+- =Board= grows =BoardClocks { title }= (room for the color/deleted
+  clocks their verbs will need). =CreateBoard= stamps creation; the
+  adoption constructors stamp =last_modified=.
+- =merge_board= wraps the adoption result: when the remote entity stamp
+  is *not* strictly newer than =local.clocks.title= (the =merge_stack=
+  rule for one field), the local title and its clock survive.
+- Storage migration =0002= adds =boards.ck_title= with the *epoch
+  default* — "never locally written" — so every pre-WI row keeps
+  today's remote-wins behavior bit-for-bit (pinned by an upgrade test).
+- Post-read intent protection: a queued =RenameBoard= op keeps the
+  local title against the same-cycle pull (=pending_board_intent= /
+  =keep_board_title=, the stack pair).
+- Push: =RenameBoard= is a full-send =update_board= PUT (like every
+  Deck write), the echo lands via =adopt_board_after_push= (title from
+  the echo, =remote_seen=/=clocks.title= advanced to the echo stamp),
+  and board writes group *before* stacks in the push planner.
+
+The remaining granularity class is unchanged: a remote title change
+landing between our read and our push wins after the op drains — the
+same whole-entity remote-wins every other board field already accepts
+(the "field-level merge refinement" backlog entry owns the general
+refinement).
