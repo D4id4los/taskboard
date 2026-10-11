@@ -115,6 +115,36 @@ pub enum StacksCmd {
     },
 }
 
+/// `--due` grammar: set (RFC-3339 or bare `YYYY-MM-DD` → midnight UTC)
+/// or clear (`none`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DueSpec {
+    /// Set the due date.
+    Set(chrono::DateTime<chrono::Utc>),
+    /// Clear the due date.
+    Clear,
+}
+
+/// Parses the `--due` value: RFC-3339, a bare date (midnight UTC), or
+/// the literal `none`. A malformed value is a clap usage error (exit 2).
+fn parse_due(raw: &str) -> Result<DueSpec, String> {
+    if raw == "none" {
+        return Ok(DueSpec::Clear);
+    }
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|dt| DueSpec::Set(dt.with_timezone(&chrono::Utc)))
+        .or_else(|_| {
+            chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").map(|date| {
+                DueSpec::Set(
+                    date.and_hms_opt(0, 0, 0)
+                        .expect("midnight is valid")
+                        .and_utc(),
+                )
+            })
+        })
+        .map_err(|_| "expected RFC-3339 (2026-10-24T09:00:00Z), YYYY-MM-DD, or 'none'".to_owned())
+}
+
 /// `tasks` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum TasksCmd {
@@ -154,4 +184,54 @@ pub enum TasksCmd {
         #[arg(long)]
         order: Option<i64>,
     },
+    /// Edit task fields (at least one flag required).
+    Edit {
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
+        task: String,
+        /// New title.
+        #[arg(long)]
+        title: Option<String>,
+        /// New description.
+        #[arg(long)]
+        description: Option<String>,
+        /// RFC-3339, YYYY-MM-DD (midnight UTC), or `none` (clears).
+        #[arg(long, value_parser = parse_due)]
+        due: Option<DueSpec>,
+        /// Archive the task.
+        #[arg(long, conflicts_with = "unarchive")]
+        archive: bool,
+        /// Unarchive the task.
+        #[arg(long)]
+        unarchive: bool,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_due_accepts_rfc3339_bare_date_and_none() {
+        let set = parse_due("2026-10-24T09:00:00Z").expect("rfc3339");
+        assert!(matches!(set, DueSpec::Set(_)));
+        let bare = parse_due("2026-10-24").expect("bare date");
+        match bare {
+            DueSpec::Set(dt) => {
+                let midnight = chrono::NaiveDate::from_ymd_opt(2026, 10, 24)
+                    .and_then(|d| d.and_hms_opt(0, 0, 0))
+                    .expect("valid midnight")
+                    .and_utc();
+                assert_eq!(dt, midnight, "bare date is midnight UTC");
+            }
+            DueSpec::Clear => panic!("bare date must set"),
+        }
+        assert_eq!(parse_due("none"), Ok(DueSpec::Clear));
+    }
+
+    #[test]
+    fn parse_due_rejects_garbage_as_a_usage_error() {
+        for raw in ["tomorrow", "2026-13-40", ""] {
+            assert!(parse_due(raw).is_err(), "{raw} must be rejected");
+        }
+    }
 }

@@ -90,6 +90,7 @@ fn o1b_receipt_payloads_expose_documented_fields() {
     );
 
     let mutation = MutationReceipt {
+        labels: vec![],
         id: "0193a1a2-7b3f-7cc2-9c31-4f8a1c2d3e4f".to_owned(),
         title: "t".to_owned(),
         stack_id: "0193a1a2-0000-7000-8000-000000000001".to_owned(),
@@ -98,7 +99,15 @@ fn o1b_receipt_payloads_expose_documented_fields() {
         done: false,
     };
     let v = serde_json::to_value(&mutation).unwrap();
-    for key in ["id", "title", "stack_id", "stack_title", "order", "done"] {
+    for key in [
+        "id",
+        "title",
+        "stack_id",
+        "stack_title",
+        "order",
+        "done",
+        "labels",
+    ] {
         assert!(v.get(key).is_some(), "mutation receipt has {key}");
     }
 

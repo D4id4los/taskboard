@@ -139,6 +139,8 @@ pub struct MutationReceipt {
     pub order: i64,
     /// Completed?
     pub done: bool,
+    /// Attached label titles (deterministic set order).
+    pub labels: Vec<String>,
 }
 
 /// The `login` receipt. No secret ever appears in any projection.
@@ -255,5 +257,6 @@ pub fn mutation_receipt(state: &AppState, task: &Task) -> MutationReceipt {
         stack_title: row.stack_title,
         order: row.order,
         done: row.done,
+        labels: row.labels,
     }
 }
