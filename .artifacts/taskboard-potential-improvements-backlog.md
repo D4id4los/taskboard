@@ -96,6 +96,11 @@ hand-rolled matrix workflow; trigger it from `v*` tags created by
 
 ## [2026-10-07] MSRV policy and CI job
 
+- **Status**: ✅ DONE (implemented 2026-10-12: `msrv` / "MSRV Check" job
+  in `ci.yml` compiles `--workspace --all-features --locked` on the
+  toolchain read from the root `Cargo.toml`; ADR 0003 amendment fixes
+  the policy — the MSRV does not float, it moves only by explicit
+  manifest bump + ADR update in one commit).
 - **Category**: `DX` / `CI`
 - **Originating Plan/Report**: Repository bootstrap (ADR 0003)
 - **Target Area**: `Cargo.toml`, `.github/workflows/`
