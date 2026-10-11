@@ -510,3 +510,101 @@ async fn e7_tasks_label_unlabel() {
         .expect("repeat unlabel");
     assert_eq!(receipt.labels, vec!["someday".to_owned()]);
 }
+
+/// E8: `logout` — the secret dies first, the config file strips under
+/// the auto backend (`config_cleared: true`), an explicit backend keeps
+/// the file, repeats are idempotent (`NotFound` → success), an
+/// unconfigured install is the typed `not-configured`, and the env
+/// store honestly refuses `delete` (`credential`).
+#[tokio::test]
+async fn e8_logout_deletes_and_strips_iff_auto() {
+    use std::io::Write as _;
+
+    let dir = tempdir();
+    let config_path = dir.path().join("taskboard.toml");
+    std::fs::write(
+        &config_path,
+        "# operator comment\n[nextcloud]\nserver_url = 'https://cloud.example.com'\nusername = 'alice'\n\n[storage]\ndb_path = 'x.db'\n",
+    )
+    .expect("write config");
+    let raw = AppConfig::extract_raw(Some(&config_path)).expect("raw config");
+    let store = Arc::new(common::FakeCredentialStore::with(
+        "https://cloud.example.com",
+        "alice",
+        "secret",
+    ));
+
+    let receipt =
+        taskboard_app::commands::logout::run(&config_path, &raw, store.as_ref()).expect("logout");
+    assert_eq!(receipt.server_url, "https://cloud.example.com");
+    assert_eq!(receipt.username, "alice");
+    assert!(receipt.config_cleared);
+
+    // The secret is gone; the file keeps its comment and storage table
+    // but lost the nextcloud identity keys.
+    assert!(matches!(
+        store.load("https://cloud.example.com", "alice"),
+        Err(taskboard_app::secrets::CredentialError::NotFound)
+    ));
+    let text = std::fs::read_to_string(&config_path).expect("read");
+    assert!(text.contains("# operator comment"));
+    assert!(text.contains("[storage]"));
+    assert!(!text.contains("server_url"));
+    assert!(!text.contains("username"));
+
+    // Repeat: idempotent (NotFound → success; nothing left to strip).
+    let raw = AppConfig::extract_raw(Some(&config_path)).expect("raw config");
+    let receipt = taskboard_app::commands::logout::run(&config_path, &raw, store.as_ref())
+        .expect_err("no identity left to log out from");
+    assert_eq!(receipt.error_kind(), "not-configured");
+
+    // Explicit backend: the file is never rewritten (config_cleared false).
+    let config_path = dir.path().join("explicit.toml");
+    std::fs::write(
+        &config_path,
+        "[nextcloud]\nserver_url = 'https://cloud.example.com'\nusername = 'alice'\n[sync]\nbackend = 'nextcloud'\n",
+    )
+    .expect("write explicit");
+    let raw = AppConfig::extract_raw(Some(&config_path)).expect("raw config");
+    let store = Arc::new(common::FakeCredentialStore::with(
+        "https://cloud.example.com",
+        "alice",
+        "secret",
+    ));
+    let receipt = taskboard_app::commands::logout::run(&config_path, &raw, store.as_ref())
+        .expect("explicit logout");
+    assert!(!receipt.config_cleared);
+    let text = std::fs::read_to_string(&config_path).expect("read");
+    assert!(text.contains("server_url"), "explicit backend stays loud");
+    assert!(matches!(
+        store.load("https://cloud.example.com", "alice"),
+        Err(taskboard_app::secrets::CredentialError::NotFound)
+    ));
+
+    // The env store cannot delete: the honest typed refusal.
+    let config_path = dir.path().join("env.toml");
+    std::fs::write(
+        &config_path,
+        "[nextcloud]\nserver_url = 'https://cloud.example.com'\nusername = 'alice'\n",
+    )
+    .expect("write env config");
+    let raw = AppConfig::extract_raw(Some(&config_path)).expect("raw config");
+    let err = taskboard_app::commands::logout::run(
+        &config_path,
+        &raw,
+        &taskboard_app::secrets::EnvCredentialStore,
+    )
+    .expect_err("env store refuses delete");
+    assert_eq!(err.error_kind(), "credential");
+
+    // Unconfigured: nothing to log out from.
+    let unconfigured = AppConfig::default();
+    let err = taskboard_app::commands::logout::run(
+        &config_path,
+        &unconfigured,
+        &common::FakeCredentialStore::default(),
+    )
+    .expect_err("unconfigured");
+    assert_eq!(err.error_kind(), "not-configured");
+    let _ = std::io::stdout().flush();
+}
