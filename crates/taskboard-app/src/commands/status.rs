@@ -111,3 +111,50 @@ pub fn render_text(view: &StatusView) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{StatusView, render_text};
+
+    /// The daemon-side projection: live fields present, holder pid
+    /// absent; the client-side projection is its mirror.
+    #[test]
+    fn the_two_answer_shapes_are_discriminated_by_daemon() {
+        // A throwaway db path: the lock-sidecar read is best-effort and
+        // side-effect free, and this path does not exist.
+        let db = std::env::temp_dir().join("taskboard-status-tests-nonexistent.db");
+        let client_view = StatusView::no_daemon(&db);
+        assert!(!client_view.daemon);
+        assert!(client_view.version.is_none());
+        assert!(client_view.pid.is_none());
+        assert!(client_view.sync.is_none());
+
+        let session_view = StatusView::in_session();
+        assert!(!session_view.daemon);
+        assert_eq!(session_view.holder_pid, Some(std::process::id()));
+    }
+
+    /// Human text is presentation (never asserted in journeys), but the
+    /// discriminating facts must survive rendering.
+    #[test]
+    fn render_text_names_the_facts() {
+        let daemon_view = StatusView {
+            daemon: true,
+            version: Some("9.9.9".to_owned()),
+            backend: Some("standalone".to_owned()),
+            pid: Some(42),
+            sync: None,
+            holder_pid: None,
+        };
+        let text = render_text(&daemon_view);
+        assert!(text.contains("9.9.9") && text.contains("standalone") && text.contains("42"));
+
+        let no_daemon = render_text(&StatusView::no_daemon(std::path::Path::new(
+            "/nonexistent/taskboard.db",
+        )));
+        assert!(no_daemon.contains("no daemon"));
+
+        let holder = render_text(&StatusView::in_session());
+        assert!(holder.contains("no daemon") && holder.contains("pid"));
+    }
+}

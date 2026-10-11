@@ -31,6 +31,23 @@ const CONNECT_BUDGET: Duration = Duration::from_secs(1);
 /// The ambiguous-failure retry cadence (well under the budget).
 const CONNECT_RETRY: Duration = Duration::from_millis(50);
 
+/// The response-side version gate (pure; unit-pinned): a typed
+/// `VersionMismatch` or any wrong-version answer is the `ipc-version`
+/// failure; a well-versioned response passes through.
+///
+/// # Errors
+///
+/// [`CommandError::IpcVersion`] on any version disagreement.
+pub fn validate_response(response: Response) -> Result<Response, CommandError> {
+    match response {
+        Response::VersionMismatch { server_v } => Err(CommandError::IpcVersion { server_v }),
+        other if other.version() != Some(PROTOCOL_VERSION) => Err(CommandError::IpcVersion {
+            server_v: other.version().unwrap_or(PROTOCOL_VERSION),
+        }),
+        other => Ok(other),
+    }
+}
+
 /// One CLI invocation's relayed outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecOutcome {
@@ -106,13 +123,7 @@ impl Connection {
             .map_err(|_| CommandError::IpcTransport)?;
         let response: Response =
             serde_json::from_slice(&answer).map_err(|_| CommandError::IpcTransport)?;
-        match response {
-            Response::VersionMismatch { server_v } => Err(CommandError::IpcVersion { server_v }),
-            other if other.version() != Some(PROTOCOL_VERSION) => Err(CommandError::IpcVersion {
-                server_v: other.version().unwrap_or(PROTOCOL_VERSION),
-            }),
-            other => Ok(other),
-        }
+        validate_response(response)
     }
 
     /// Runs one argv invocation on the daemon.
@@ -177,5 +188,41 @@ impl Connection {
             Response::Shutdown { .. } => Ok(()),
             _ => Err(CommandError::IpcTransport),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_response;
+    use crate::commands::CommandError;
+    use crate::ipc::protocol::{PROTOCOL_VERSION, Response};
+
+    /// The response-side version gate: mismatch variants are typed
+    /// failures carrying the peer's version; well-versioned responses
+    /// pass through untouched.
+    #[test]
+    fn the_response_gate_types_version_mismatches() {
+        assert!(matches!(
+            validate_response(Response::VersionMismatch { server_v: 7 }),
+            Err(CommandError::IpcVersion { server_v: 7 })
+        ));
+        assert!(matches!(
+            validate_response(Response::Exec {
+                v: PROTOCOL_VERSION + 1,
+                code: 0,
+                out: String::new(),
+                err: String::new(),
+            }),
+            Err(CommandError::IpcVersion { server_v: 2 })
+        ));
+        assert!(matches!(
+            validate_response(Response::Exec {
+                v: PROTOCOL_VERSION,
+                code: 0,
+                out: "out".to_owned(),
+                err: String::new(),
+            }),
+            Ok(Response::Exec { code: 0, .. })
+        ));
     }
 }

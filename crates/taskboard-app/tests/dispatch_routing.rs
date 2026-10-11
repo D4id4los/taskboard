@@ -469,3 +469,30 @@ async fn config_print_routes_an_undecodable_config_to_exit_one() {
     .await;
     assert_eq!(code, 1);
 }
+
+/// D-new: `status` routes client-side — never a core boot, exit 0, and
+/// (under `--json`) the `daemon: false` answer on stdout. A rejected
+/// config is the one typed failure (asserted via the garbage file).
+#[tokio::test]
+async fn status_routes_client_side_without_booting() {
+    let dir = tempdir();
+    common::write_test_config(&dir.path().join("taskboard.toml"), None, None)
+        .expect("write config");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(Command::Status, ctx(dir.path(), &mut out, &mut err)).await;
+    assert_eq!(code, 0);
+    let view: serde_json::Value =
+        serde_json::from_slice(&out).expect("status payload is one json line");
+    assert_eq!(view["daemon"], serde_json::Value::Bool(false));
+
+    // A rejected config reports typed, exit 1.
+    let bad = tempdir();
+    std::fs::write(bad.path().join("taskboard.toml"), "= not toml =").expect("garbage");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(Command::Status, ctx(bad.path(), &mut out, &mut err)).await;
+    assert_eq!(code, 1);
+    let envelope: serde_json::Value = serde_json::from_slice(&err).expect("envelope");
+    assert_eq!(envelope["error"]["kind"], "config");
+}
