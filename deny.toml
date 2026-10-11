@@ -24,6 +24,9 @@ allow = [
     # `clipboard-win` + `error-code` via rustyline (the REPL's line
     # editor, WI-4) — Windows-only targets, the permissive Boost license
     "BSL-1.0",
+    # `doctest-file` + `recvmsg` via interprocess (the daemon IPC
+    # frontend, WI-5) — tiny permissive helpers of the local-socket crate
+    "0BSD",
 ]
 # Some crates ship their license text in unusual formats; resolve rather than deny.
 confidence-threshold = 0.93
