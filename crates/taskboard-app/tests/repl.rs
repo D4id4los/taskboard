@@ -534,3 +534,34 @@ async fn r12_repl_loop_shuts_the_core_down_before_returning() {
     // The lock is gone the moment the loop returned: shutdown completed.
     let _next = InstanceLock::acquire(&db).expect("lock released");
 }
+
+/// R13: the core is mode-agnostic (ADR 0011): a session on a
+/// `mode = "kiosk"` config boots, serves its lines, and shuts down —
+/// the console a kiosk machine gets instead of the pre-REPL
+/// `ModeNotImplemented` dead end (the daemon/UI entry owns the Phase-7
+/// refusal, not `bootstrap`).
+#[tokio::test]
+async fn r13_a_kiosk_mode_session_boots_and_serves() {
+    let dir = tempdir();
+    let db = dir.path().join("r13.db");
+    let mut config = standalone_config(&db);
+    config.app.mode = taskboard_app::config::AppMode::Kiosk;
+    let (tx, rx) = mpsc::channel(2);
+    tx.send(line("boards create \"Kiosk\" --json"))
+        .await
+        .expect("alive");
+    tx.send(LineEvent::Eof).await.expect("alive");
+    drop(tx);
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut io = CommandIo {
+        out: &mut out,
+        err: &mut err,
+        json: true,
+    };
+    let code = run_session_with_lines(config, true, rx, &mut io).await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["title"], "Kiosk");
+}

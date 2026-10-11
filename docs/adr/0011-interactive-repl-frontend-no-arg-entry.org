@@ -35,6 +35,14 @@ machine with a human console used to die with =ModeNotImplemented=
 (Phase 7 placeholder); it now gets a REPL — strictly more useful
 pre-Phase-7. Non-TTY deployments are byte-for-byte unaffected.
 
+To make that consequence real, the =[app] mode= gate moved out of
+=bootstrap= into the daemon/UI entry (superseding the bit of ADR 0008
+that put it in the bootstrap): the core is mode-agnostic, the REPL
+serves any mode's console, and =Desktop=/=Kiosk= are refused at the
+daemon entry only — the arms Phase 7 replaces. An explicit =daemon=
+wins over the TTY-sensitive entry in every environment (the entry
+resolution runs only for bare invocations).
+
 ** One core per session, boot-once semantics
 
 The session boots the core at start (including the one-time

@@ -391,20 +391,25 @@ async fn b5_bootstrap_failure_paths_are_typed() {
     assert!(matches!(err, BootstrapError::Storage(_)));
 }
 
-/// B6: `mode = "desktop"` decodes but fails at bootstrap with the typed
-/// `ModeNotImplemented` (the Phase 7 placeholder arm).
+/// B6: the core is mode-agnostic — a `mode = "desktop"` config boots and
+/// shuts down cleanly (ADR 0011: the REPL serves any mode's console; the
+/// daemon/UI entry owns the Phase-7 refusal, not `bootstrap`).
 #[tokio::test]
-async fn b6_desktop_mode_is_not_implemented() {
+async fn b6_desktop_mode_boots_the_core() {
     let dir = tempdir();
-    let server = MockServer::start().await;
-    let mut config = config_for(&server.uri(), &dir);
+    let mut config = common::valid_config("http://127.0.0.1:1");
+    config.storage.db_path = Some(dir.path().join("taskboard.db"));
+    // Standalone shape (no server, no user): the boot must not touch a
+    // credential store — mode-independence is the point under test.
+    config.nextcloud.server_url = None;
+    config.nextcloud.username = None;
     config.app.mode = taskboard_app::config::AppMode::Desktop;
     let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
-    let err = bootstrap(config, store).await.expect_err("desktop mode");
-    assert!(matches!(
-        err,
-        BootstrapError::ModeNotImplemented(taskboard_app::config::AppMode::Desktop)
-    ));
+    let app = bootstrap(config, store)
+        .await
+        .expect("the core boots under any mode");
+    let outcome = app.shutdown().await;
+    assert!(!outcome.actor_aborted);
 }
 
 /// B7: restart continuity — after a full pull, a fresh bootstrap on the
