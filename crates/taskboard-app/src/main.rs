@@ -140,6 +140,16 @@ async fn run(mut cli: Cli) -> color_eyre::Result<()> {
 /// The daemon lifecycle (explicit `daemon`, or the `[app] mode`
 /// resolution from a bare non-TTY invocation).
 async fn daemon_lifecycle(config: AppConfig, json: bool) -> color_eyre::Result<()> {
+    // The daemon's entry owns the `[app] mode` gate (the core itself is
+    // mode-agnostic — the REPL serves any mode's console, ADR 0011):
+    // `Desktop`/`Kiosk` have no daemon-side frontend until Phase 7.
+    if let mode
+    @ (taskboard_app::config::AppMode::Desktop | taskboard_app::config::AppMode::Kiosk) =
+        config.app.mode
+    {
+        tracing::error!(?mode, "this mode is not implemented yet");
+        color_eyre::eyre::bail!("app mode {mode:?} is not implemented yet (Phase 7)");
+    }
     if taskboard_app::commands::require_connector(&config).is_err() {
         // The daemon's entire purpose is the connector: fail loudly
         // (typed `sync-disabled`) instead of idling without one.
@@ -151,14 +161,8 @@ async fn daemon_lifecycle(config: AppConfig, json: bool) -> color_eyre::Result<(
         CredentialStoreKind::Env => Arc::new(EnvCredentialStore),
     };
 
-    // `Desktop`/`Kiosk` decode but have no frontend yet (Phase 7): the
-    // typed error is the placeholder arm that gets replaced there.
     let app = match bootstrap(config, store).await {
         Ok(app) => app,
-        Err(taskboard_app::BootstrapError::ModeNotImplemented(mode)) => {
-            tracing::error!(?mode, "this mode is not implemented yet");
-            color_eyre::eyre::bail!("app mode {mode:?} is not implemented yet (Phase 7)");
-        }
         Err(err) => return Err(err.into()),
     };
 

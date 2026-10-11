@@ -67,7 +67,7 @@ use taskboard_state::{EngineHandle, spawn_state_engine};
 use taskboard_storage_sqlite::{StorageHandle, spawn_storage_actor};
 use taskboard_sync_nextcloud::{DeckClient, spawn_sync_actor};
 
-use crate::config::{AppConfig, AppMode, ConfigError, SyncBackend};
+use crate::config::{AppConfig, ConfigError, SyncBackend};
 use crate::lockfile::{InstanceLock, LockError};
 use crate::secrets::{CredentialError, CredentialStore};
 
@@ -104,9 +104,6 @@ pub enum BootstrapError {
     /// The Deck client rejected the server URL.
     #[error("deck client construction failed")]
     Client(#[from] taskboard_sync_nextcloud::DeckError),
-    /// The configured `[app] mode` has no frontend yet (Phase 7).
-    #[error("app mode not implemented yet")]
-    ModeNotImplemented(AppMode),
     /// Another taskboard instance already holds this database.
     #[error("another taskboard instance holds this database")]
     InstanceLocked {
@@ -244,9 +241,10 @@ pub async fn bootstrap(
     config: AppConfig,
     credentials: Arc<dyn CredentialStore>,
 ) -> Result<App, BootstrapError> {
-    if let mode @ (AppMode::Desktop | AppMode::Kiosk) = config.app.mode {
-        return Err(BootstrapError::ModeNotImplemented(mode));
-    }
+    // No `[app] mode` gate here: the core is mode-agnostic, and the
+    // REPL (ADR 0011) serves any mode's console. The daemon/UI entry
+    // (main) refuses `Desktop`/`Kiosk` itself until Phase 7 supplies
+    // those frontends.
     config.validate()?;
 
     // One core per database: acquire the instance lock before anything
