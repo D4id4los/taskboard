@@ -51,6 +51,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: TasksCmd,
     },
+    /// Label verbs over the in-process core (uuid | exact title selectors).
+    Labels {
+        #[command(subcommand)]
+        cmd: LabelsCmd,
+    },
     /// Run one full sync cycle now and report the status.
     Sync {
         /// Return immediately after nudging the sync actor.
@@ -143,6 +148,33 @@ pub enum StacksCmd {
     },
 }
 
+/// The default label color: Deck's UI default green. `labels add`
+/// applies it when `--color` is omitted.
+pub const DEFAULT_LABEL_COLOR: &str = "31cc7c";
+
+/// Six lowercase hex digits or a usage error — labels only (an invalid
+/// label color is a permanent push rejection; board colors stay lenient).
+fn parse_color(raw: &str) -> Result<String, String> {
+    let lower = raw.to_lowercase();
+    if lower.len() == 6 && lower.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(lower);
+    }
+    Err("expected exactly six hex digits (e.g. 31cc7c, no '#')".to_owned())
+}
+
+#[test]
+fn parse_color_normalizes_six_hex_digits() {
+    assert_eq!(parse_color("31CC7C"), Ok("31cc7c".to_owned()));
+    assert_eq!(parse_color("AbCdEf"), Ok("abcdef".to_owned()));
+}
+
+#[test]
+fn parse_color_rejects_everything_else() {
+    for bad in ["#fff", "fff", "ffffff0", "zzzzzz", "31cc7", ""] {
+        assert!(parse_color(bad).is_err(), "{bad} must be rejected");
+    }
+}
+
 /// `--due` grammar: set (RFC-3339 or bare `YYYY-MM-DD` → midnight UTC)
 /// or clear (`none`).
 #[derive(Debug, Clone, PartialEq)]
@@ -171,6 +203,37 @@ fn parse_due(raw: &str) -> Result<DueSpec, String> {
             })
         })
         .map_err(|_| "expected RFC-3339 (2026-10-24T09:00:00Z), YYYY-MM-DD, or 'none'".to_owned())
+}
+
+/// `labels` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum LabelsCmd {
+    /// List the board's labels (with live-task assignment counts).
+    List,
+    /// Create a label (color defaults to the Deck default when omitted).
+    Add {
+        /// The label title.
+        title: String,
+        /// Six hex digits (no `#`); a default applies when omitted.
+        #[arg(long, value_parser = parse_color)]
+        color: Option<String>,
+    },
+    /// Edit a label (at least one flag required).
+    Edit {
+        /// The label (uuid | exact title).
+        label: String,
+        /// New title.
+        #[arg(long)]
+        title: Option<String>,
+        /// New color (six hex digits).
+        #[arg(long, value_parser = parse_color)]
+        color: Option<String>,
+    },
+    /// Delete a label (detaches it from all tasks; idempotent).
+    Delete {
+        /// The label (uuid | exact title).
+        label: String,
+    },
 }
 
 /// `tasks` subcommands.
@@ -237,6 +300,20 @@ pub enum TasksCmd {
     Delete {
         /// The task (uuid | unique ≥8-char uuid prefix | exact title).
         task: String,
+    },
+    /// Attach a label to a task (idempotent when already attached).
+    Label {
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
+        task: String,
+        /// The label (uuid | exact title).
+        label: String,
+    },
+    /// Detach a label from a task (idempotent when absent).
+    Unlabel {
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
+        task: String,
+        /// The label (uuid | exact title).
+        label: String,
     },
 }
 

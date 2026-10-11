@@ -8,7 +8,7 @@
 
 mod common;
 
-use taskboard_app::cli::{BoardsCmd, Command, StacksCmd, TasksCmd};
+use taskboard_app::cli::{BoardsCmd, Command, LabelsCmd, StacksCmd, TasksCmd};
 use taskboard_app::commands::{CommandCtx, dispatch};
 
 use common::{env_lock, remove_env, tempdir};
@@ -274,6 +274,99 @@ async fn stacks_move_routes_a_failed_credential_load_to_exit_one() {
             cmd: StacksCmd::Move {
                 stack: "s".to_owned(),
                 order: 1,
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn labels_list_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Labels {
+            cmd: LabelsCmd::List,
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn labels_add_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Labels {
+            cmd: LabelsCmd::Add {
+                title: "l".to_owned(),
+                color: None,
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn labels_edit_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Labels {
+            cmd: LabelsCmd::Edit {
+                label: "l".to_owned(),
+                title: Some("t".to_owned()),
+                color: None,
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn labels_delete_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Labels {
+            cmd: LabelsCmd::Delete {
+                label: "l".to_owned(),
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn tasks_label_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Tasks {
+            cmd: TasksCmd::Label {
+                task: "t".to_owned(),
+                label: "l".to_owned(),
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn tasks_unlabel_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Tasks {
+            cmd: TasksCmd::Unlabel {
+                task: "t".to_owned(),
+                label: "l".to_owned(),
             },
         },
         ctx(dir.path()),

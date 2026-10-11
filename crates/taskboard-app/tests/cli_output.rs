@@ -184,6 +184,7 @@ fn o2_sync_status_view_phase_table() {
 /// below is exhaustive — the compiler forces new variants into the
 /// table) and the stderr envelope carries kind + optional detail.
 #[test]
+#[allow(clippy::too_many_lines)] // one sample per variant; the list IS the table
 fn o3_error_kinds_cover_every_variant() {
     fn expected(err: &CommandError) -> &'static str {
         match err {
@@ -217,6 +218,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::AmbiguousTask { .. } => "ambiguous-task",
             CommandError::UnknownStack(_) => "unknown-stack",
             CommandError::AmbiguousStack { .. } => "ambiguous-stack",
+            CommandError::UnknownLabel(_) => "unknown-label",
+            CommandError::AmbiguousLabel { .. } => "ambiguous-label",
             CommandError::NoStacks => "no-stacks",
             CommandError::SyncFailed(_) => "sync-failed",
             CommandError::SyncTimedOut => "sync-timed-out",
@@ -247,6 +250,10 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::UnknownTask("abc".to_owned()),
         CommandError::AmbiguousTask {
             candidates: vec!["x".to_owned(), "y".to_owned()],
+        },
+        CommandError::UnknownLabel("lab".to_owned()),
+        CommandError::AmbiguousLabel {
+            candidates: vec!["l1".to_owned(), "l2".to_owned()],
         },
         CommandError::UnknownStack("col".to_owned()),
         CommandError::AmbiguousStack {
