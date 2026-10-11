@@ -54,6 +54,10 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 clap = { version = "4", features = ["derive"] }
 # Interactive password prompt (`taskboard login`, taskboard-app)
 rpassword = "7"
+# REPL line editing/history (no-arg interactive shell, taskboard-app)
+rustyline = "17"
+# POSIX-ish word splitting for REPL lines (taskboard-app)
+shell-words = "1"
 # Advisory per-database instance lock (`<db>.lock` sidecar, taskboard-app)
 fd-lock = "4"
 # Comment-preserving config read-modify-write (`login`, taskboard-app)
