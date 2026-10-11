@@ -29,6 +29,15 @@ resilience, and maximum flexibility across different GUI frameworks and
 backend services, the application employs a *Headless Core with an
 Event-Driven Multi-Actor Architecture* built on modern async Rust.
 
+The product shape is *stand-alone by default, sync when configured*
+(ADR 0010): the app is a fully local task manager with no server
+configured — fresh installs default to it — and Nextcloud sync is the
+first optional connector, selected by the =[sync] backend= config
+value (=standalone= | =nextcloud=; absent means auto: =nextcloud= iff
+=[nextcloud] server_url= is present). Local content migrates onto a
+remote board via =boards publish= or =boards select
+--bind-local-board=.
+
 * Architecture Overview & Core Patterns
 
 #+begin_example
@@ -192,8 +201,10 @@ dependency hierarchies.
    port with the keyring and env stores, config-selected, no silent
    fallback; redacting =AppPassword=), =bootstrap=: one async fn
    that wires the whole channel graph (all channel halves created here,
-   ADR 0007's handoff note) and returns the =App= handle shared by
-   every frontend, =lockfile= (the per-database instance lock — an
+   ADR 0007's handoff note; under the resolved =standalone= backend the
+   sync connector is *not* spawned and its channel halves are dropped —
+   the engine sees the closed-channel world it already handles, ADR
+   0010) and returns the =App= handle shared by every frontend, =lockfile= (the per-database instance lock — an
    OS-released advisory lock on a =<db>.lock= sidecar acquired before
    the db open, ADR 0009), and =commands= (ADR 0009): the operator
    CLI's typed handlers — =login=, =boards=, =tasks=, =sync= — with

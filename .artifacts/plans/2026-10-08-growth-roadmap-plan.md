@@ -50,6 +50,9 @@
 2. **Two milestones, CLI-first.** M1 = headless daemon + CLI deployed and
    validated against the real Nextcloud server. M2 = Slint UI on the same
    core, tagged v0.1.0. Real-world validation precedes UI investment.
+   *(Reframed 2026-10-10, Phase 6b: the product is stand-alone-first —
+   M2's v0.1.0 ships full local operation with sync as an optional
+   connector; see decision §2.1 of the Phase 6b plan and ADR 0010.)*
 3. **Auth = app password + OS keyring.** First-run `login` prompts for
    server URL, username, and an app password created in the Nextcloud web
    UI (the model already decided in testing strategy §8). The secret goes
@@ -156,6 +159,21 @@ Attachments writes/comments/ACL writes remain backlog entries by design.
   login→select→add→verify-remote and remote-create→pull→list flows; a
   live-server manual runbook reuses tier-3 creds.
 - **Exit (M1)**: deployable, real-server-validated headless taskboard.
+
+### Phase 6b — Stand-alone-first (optional sync connector)
+- Implement the user's 2026-10-10 decision (offline-first reframing of
+  decision §2.2): the app works fully stand-alone — local task
+  management with no server configured — and Nextcloud sync becomes the
+  first *optional* connector selected by `[sync] backend`
+  (`standalone` | `nextcloud`; absent = auto on `server_url`). Local
+  board creation (`boards create`, `stacks add`), the two attach
+  ceremonies (`boards publish`, `boards select --bind-local-board`),
+  bootstrap's conditional connector spawn, and the typed
+  `sync-disabled` refusals. The engine needed nothing: closed-channel
+  contracts were already pinned.
+- **Exit**: stand-alone runbook on a clean machine (no keyring, no
+  network) green; tier-2 J4 publish journey green; ADR 0010 accepted.
+- Plan: `2026-10-11-growth-roadmap-phase6b-standalone-first-plan.md`.
 
 ### Phase 7 — `taskboard-ui-slint` (M2 → v0.1.0)
 - Add the `slint` dependency (renderer decision per the existing backlog

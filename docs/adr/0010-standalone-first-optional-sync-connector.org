@@ -1,0 +1,165 @@
+#+title: ADR 0010: Stand-alone-first — the Optional Sync Connector
+#+options: toc:nil
+
+- *Date:* 2026-10-11
+- *Status:* Accepted
+- *Deciders:* Viktoria Pogrzebacz
+
+* Context
+
+Phase 6 (ADR 0009) shipped the operator CLI on top of a core whose
+only product shape was "Nextcloud sync": =bootstrap()= unconditionally
+resolved credentials and built a =DeckClient=, =AppConfig::validate=
+required a valid =[nextcloud] server_url= and a non-empty username,
+and boards existed only via sync adoption. A fresh install could not
+even boot without a server, and the 2026-10-10 backlog entry
+("[2026-10-10] Stand-alone-first product shape") records the user's
+decision that this is backwards: at M2 (v0.1.0) the app is a local
+task manager that works with *no server configured*, and Nextcloud
+sync becomes the first *optional connector*. Future connectors
+(=taskboard-sync-<name>= crates) follow the same shape.
+
+The engine, pleasingly, already tolerated a connector-less world: the
+actor loop treats a closed sync-reports channel as one closed input
+among three; =RequestSync= with a dead connector replies =NoOp= and
+skips the memory-only =Syncing= transient; mutations mark =Syncing=
+only when the nudge actually forwards; and the outbox is
+connector-blind (creates enqueue ops unconditionally — exactly the
+"local write-ahead queue a connector drains when configured" the
+product shape wants). The coupling was entirely app-layer: config
+validation and bootstrap wiring.
+
+Two attach ceremonies are needed for stand-alone content to migrate
+onto a remote board later: =boards publish= (create a fresh Deck board
+from the local one — the ambiguity-free path) and =boards select
+--bind-local-board= (bind onto an existing board). Both rest on a
+pipeline fact verified in the phase 6b analysis: the pull matches
+boards by their =remote= binding and *merges* into the existing local
+board instead of adopting a duplicate, so setting =board.remote= before
+the first cycle is the whole attach primitive.
+
+* Decision
+
+** Backend resolution: explicit-or-auto, resolved once
+
+=[sync] backend= is an optional kebab-case value: =standalone= or
+=nextcloud=. Absence means *auto*: =nextcloud= iff
+=[nextcloud] server_url= is present, else =standalone=. One accessor
+(=AppConfig::sync_backend()=) is the single resolution every consumer
+(validate, bootstrap, CLI refusals, =login=) calls.
+
+Auto keys on =server_url= — not =username=, not "table present" — so a
+half-configured file stays *loud*: with =server_url= set, validation
+demands the username and credentials, failing typed and immediately
+instead of silently degrading to stand-alone. Explicit =backend =
+"standalone"= is the only way to keep a =[nextcloud]= table inert.
+Env override works through the existing figment chain
+(=TASKBOARD_SYNC__BACKEND=).
+
+Validation gates on the resolved backend: under =nextcloud= today's
+checks apply verbatim; under =standalone= neither field is *required*,
+but a *present* malformed =server_url= (or empty username) is still
+rejected — a typo guard, never a silent downgrade.
+
+** Bootstrap: one shape, conditionally-spawned connector
+
+The channel graph is created unconditionally; only the connector
+differs. Under =nextcloud= the credential load and =DeckClient=
+construction happen before anything spawns (unchanged). Under
+=standalone= no credential store is ever consulted (the kiosk /
+no-keyring story improves accordingly), and the sync-command receiver
+and sync-report sender are dropped immediately — the engine sees
+exactly the closed-channel world its loop already handles, and every
+send fails closed (=Closed=). =App= holds the sync actor as
+=Option<SyncActor>=; =sync_commands()= hands out a fail-closed sender
+when absent; =shutdown()= joins the sync actor only when present.
+
+** =CreateBoard=: a first-class command with no outbox op
+
+=StateCommand::CreateBoard { title, color }= refuses when a live board
+exists (=CommandError::BoardExists= — the single-board invariant's
+create-side guard), mints a =Board= with =remote: None=, and persists
+=UpsertBoard=. It deliberately carries *no outbox op*: a local board
+creation is not a remote intent — server-side creation is the
+=publish= ceremony's job. Boards keep their no-per-field-clocks design
+(there are still no local board-edit commands; board fields change
+only via adoption). Outcome: =CommandOutcome::CreatedBoard(BoardId)=.
+
+** =BindBoard=: the attach primitive
+
+=StateCommand::BindBoard { remote }= requires exactly one live board
+(=NoBoard=) that is local-only (a differing existing binding is
+=BoardAlreadyBound=; rebinding to the *same* remote is an accepted
+no-op). It sets =board.remote = Some(remote)= and persists
+=UpsertBoard= — no outbox op. Correctness rests on the pipeline's
+bind-before-pull merge: the next cycle's pull matches the board by
+this binding (=adopt_board_if_newer=; remote identity wins for board
+fields) instead of minting a duplicate, after which the queued local
+ops drain onto the remote board in the dependency order the push
+already guarantees (stacks → labels → tasks, with in-cycle create
+echoes extending the binding overlay).
+
+*Consequence (accepted, documented):* attach is *identity*-based. A
+local stack and a remote stack with the same title are two entities;
+binding onto a remote board that already holds similarly-named content
+*unions* both sets. =boards publish= onto a freshly created remote
+board avoids this entirely; title-match reconciliation is backlog, to
+revisit only if real usage hits it.
+
+** The ceremonies
+
+- =boards publish= — requires the =nextcloud= backend and exactly one
+  live local-only board. Flow: =create_board(local.title, color)=
+  (lenient stored color mapped via =DeckColor::from_hex= with a
+  =DEFAULT_BOARD_COLOR= fallback) → =BindBoard= → =SetBoard= → wait
+  for the first cycle (drains the outbox onto the fresh board).
+  Mid-ceremony transport failure is safe-but-messy: the board may
+  exist server-side unbound; a retry publishes a second board — the
+  runbook says delete the orphan in the Nextcloud UI (the
+  duplicate-create crash-window backlog entry owns the general
+  problem).
+- =boards select --bind-local-board= — the migration path onto an
+  existing board, with the same pre-validate → bind → =SetBoard= →
+  adoption-wait shape. Plain =boards select= while a live local-only
+  board exists refuses with the typed =LocalBoardExists= guidance
+  instead of silently adopting alongside it.
+
+** Typed =SyncDisabled= is the uniform connector-absent refusal
+
+=sync=, =daemon=, =boards list/select/publish= (resolved =standalone=)
+and =login= (*explicit* standalone only) refuse at handler entry —
+after config load, before any core boot or client construction — with
+kind =sync-disabled=, exit 1. Failing loudly beats hanging or silently
+doing local work for verbs whose entire purpose is the connector.
+=tasks *=, =boards create=, =stacks add= are backend-agnostic and never
+refuse. Under =standalone= a core boot performs no network I/O by
+construction. =pending_ops= keeps climbing honestly; the human =tasks
+list= carries one presentation-only stand-alone footer (the JSON
+contract is untouched).
+
+** The connector port stays vocabulary, not a trait
+
+=SyncCommand= / =SyncReport= / =SyncStateReader= already are the
+connector contract (ADR 0007). The app selects which actor to spawn
+(today: nextcloud or none) with a plain match. A second connector may
+promote this to a domain trait — not built speculatively.
+
+** Wire word
+
+The config value is =standalone= (self-describing in an operator's
+config file), not the backlog sketch's "none".
+
+* Consequences
+
+- Fresh installs boot, author boards/stacks/tasks, and list them with
+  zero network and zero keyring access; existing =[nextcloud]= configs
+  behave exactly as before (their =server_url= auto-resolves
+  =nextcloud=).
+- The engine needed no changes: every behavior the standalone shape
+  relies on was already pinned by engine-only tests (closed-channel
+  exit condition, =NoOp= sync requests, connector-blind outbox).
+- =stacks add= is the minimum verb that makes stand-alone usable; the
+  full stack/label verb surface is WI-3.
+- =logout='s interaction with =backend= is WI-3's question; a second
+  connector, board reset/delete, and title-match reconciliation are
+  backlog.

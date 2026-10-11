@@ -11,6 +11,46 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 
+- Growth roadmap Phase 6b (ADR 0010): *stand-alone-first* — the app
+  works fully stand-alone with no server configured, and Nextcloud sync
+  becomes the first optional connector selected by `[sync] backend =
+  "standalone" | "nextcloud"` (absent = auto: `nextcloud` iff
+  `[nextcloud] server_url` is present, so a half-configured file stays
+  loud). Fresh installs boot and author with zero network and zero
+  keyring access; existing `[nextcloud]` configs behave exactly as
+  before.
+- `boards create <title> [--color <hex>]` and a `stacks` group with
+  `stacks add <title> [--order <n>]`: local board/stack authoring
+  (the engine's `CreateBoard`/`BindBoard` domain commands, no outbox
+  op for board creation; `stacks add` appends by default).
+- The attach ceremonies for migrating stand-alone data onto a remote
+  board: `boards publish` (create a fresh Deck board from the local
+  one, bind, and let the first cycle drain the outbox) and
+  `boards select --bind-local-board` (bind onto an existing board;
+  union-by-identity semantics — see ADR 0010).
+- The typed `sync-disabled` refusal (`--json` kind `sync-disabled`,
+  exit 1) for the connector-only verbs — `sync`, `daemon`, `boards
+  list/select/publish`, and `login` under an *explicit* `standalone`
+  backend — enforced at handler entry before any core boot or client
+  construction.
+- The human `tasks list` stand-alone footer (`stand-alone: N changes
+  waiting for a sync connector`); presentation-only, the `--json`
+  payload is unchanged.
+- The J4 tier-2 journey (`it_nextcloud_docker_cli_standalone_publish`):
+  stand-alone authoring → login → publish → server-side verification
+  → local ids preserved.
+
+### Changed
+
+- Fresh installs default to the `standalone` backend: `[sync]
+  backend` is optional and `[nextcloud] server_url`/`username` are
+  required only when the resolved backend is `nextcloud` (a present
+  but malformed value is still a loud typed rejection). Configs with
+  `[nextcloud] server_url` are unchanged (auto resolves `nextcloud`).
+- The daemon refuses to start (typed `sync-disabled`) when no
+  connector is configured; under `standalone` the sync actor is not
+  spawned at all and no credential store is consulted.
+
 - Growth roadmap Phase 6 (ADR 0009): the operator CLI over the
   in-process core — `login` (verify-then-persist: flags/prompted
   server+user, app password via `rpassword` on a terminal or piped

@@ -20,8 +20,8 @@
   ceremonies let stand-alone content migrate onto a remote board:
   `boards publish` (create a fresh Deck board from the local one) and
   `boards select --bind-local-board` (bind onto an existing board).
-- **Status**: DRAFT — presented for review; implementation starts after
-  acceptance.
+- **Status**: ACCEPTED — implemented on `feat/standalone-sync-connector`
+  (steps 1–9 of §6; tier-2 J4 green).
 - **Parent roadmap**: `.artifacts/plans/2026-10-08-growth-roadmap-plan.md`
   §3 (this plan inserts as Phase 6b between Phase 6 and Phase 7;
   §8 of this plan amends the roadmap file), §4 backlog entry above.
