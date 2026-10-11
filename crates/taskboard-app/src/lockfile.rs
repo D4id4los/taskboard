@@ -146,3 +146,12 @@ fn read_holder_pid(path: &Path) -> Option<u32> {
     File::open(path).ok()?.read_to_string(&mut text).ok()?;
     text.trim_start_matches("pid=").trim().parse().ok()
 }
+
+/// Best-effort read of the holder PID recorded in `db_path`'s lock
+/// sidecar — the `status` client-side answer's diagnostic field. No
+/// lock is taken (or held) by this read; the recorded PID may belong to
+/// a dead process (diagnostic only, exactly like the sidecar itself).
+#[must_use]
+pub fn holder_pid(db_path: &Path) -> Option<u32> {
+    read_holder_pid(&lock_path(db_path))
+}
