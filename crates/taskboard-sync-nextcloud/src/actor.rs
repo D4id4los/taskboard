@@ -275,6 +275,7 @@ async fn cycle(
     _cfg: &SyncActorConfig,
     commanded: bool,
 ) {
+    eprintln!("DEBUG cycle commanded={commanded}");
     // ---- read ----------------------------------------------------------
     // The read instant is stamped *before* the read issues: an op queued
     // between the stamp and the reply was not seen by this cycle's push, so
@@ -295,6 +296,11 @@ async fn cycle(
         }
     };
 
+    eprintln!(
+        "DEBUG read outbox={} tasks={}",
+        persisted.outbox.len(),
+        persisted.tasks.len()
+    );
     // The pull target: the commanded one, else the persisted board binding
     // (a restarted actor resumes its target from `read_state` — decision
     // 13's durability consequence; a fresh install with no binding keeps

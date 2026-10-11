@@ -781,11 +781,15 @@ async fn i4_move_label_and_delete_push_to_the_server() {
     // The move and the label assignment both reached the server.
     eventually_no_state(|| {
         let ops = sim.ops.lock().unwrap();
-        ops.contains(&"reorder".to_string()) && ops.contains(&"put".to_string())
+        ops.contains(&"reorder".to_string())
+            && ops.contains(&"put".to_string())
+            && ops.contains(&"assign".to_string())
     })
     .await;
     {
-        // The label assignment rode the full-send PUT's label array.
+        // Tier-2 verified (Deck 1.19): the card-update PUT rejects a
+        // non-empty `labels` field, so the assignment rides the
+        // assignLabel sub-endpoint after the field PUT.
         let cards = sim.cards.lock().unwrap();
         let card = cards
             .iter()
@@ -795,7 +799,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
         let labels = card["labels"].as_array().expect("labels array");
         assert!(
             labels.iter().any(|l| l.as_u64() == Some(3)),
-            "the label rides the PUT's whole label array: {card}"
+            "the label was assigned via the sub-endpoint: {card}"
         );
     }
 
