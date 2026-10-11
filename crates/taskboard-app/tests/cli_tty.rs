@@ -396,11 +396,13 @@ fn tty_repl_refuses_while_the_daemon_holds_the_database() {
 
 /// Regression (review 2026-10-11): `taskboard daemon` under a pty must
 /// run the daemon, not the TTY-sensitive no-argument entry — the
-/// explicit subcommand wins over the REPL in every environment. A
-/// standalone config makes the daemon's own gate the observable
-/// outcome: typed `sync-disabled`, exit 1.
+/// explicit subcommand wins over the REPL in every environment. Since
+/// WI-5 the daemon is backend-agnostic (ADR 0010 amendment), so the
+/// observable outcome under a standalone config is a *serving* daemon:
+/// it binds the per-database IPC socket (the REPL boots no socket) and
+/// answers `daemon stop` with a graceful exit 0.
 #[test]
-fn tty_explicit_daemon_stays_the_daemon_and_refuses_standalone() {
+fn tty_explicit_daemon_stays_the_daemon_and_serves_standalone() {
     if std::process::Command::new("script")
         .arg("--help")
         .output()
@@ -415,9 +417,10 @@ fn tty_explicit_daemon_stays_the_daemon_and_refuses_standalone() {
     let mut toml = String::from("[sync]\nbackend = 'standalone'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
     std::fs::write(&config, toml).expect("write config");
+    let socket = dir.path().join("taskboard.sock");
 
     let binary = env!("CARGO_BIN_EXE_taskboard");
-    let inner = format!("{} --config {} daemon --json", binary, config.display());
+    let inner = format!("{} --config {} daemon", binary, config.display());
     let mut child = std::process::Command::new("timeout")
         .arg("30")
         .arg("script")
@@ -429,29 +432,43 @@ fn tty_explicit_daemon_stays_the_daemon_and_refuses_standalone() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn script(1) pty wrapper");
-    // The daemon refuses before reading anything; a dead pty stdin is
-    // not a test failure by itself.
     drop(child.stdin.take());
+
+    // The daemon arm boots and serves (the REPL would sit at a prompt
+    // and never bind the socket); then the remote stop shuts it down.
+    let ready = Instant::now() + Duration::from_secs(30);
+    while !socket.exists() {
+        assert!(
+            Instant::now() < ready,
+            "the daemon never bound the ipc socket"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let stop = std::process::Command::new(binary)
+        .args([
+            "--config",
+            config.to_str().expect("utf8 path"),
+            "daemon",
+            "stop",
+        ])
+        .output()
+        .expect("daemon stop runs");
+    assert_eq!(
+        stop.status.code(),
+        Some(0),
+        "daemon stop gracefully exits the serving daemon: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
     let output = child.wait_with_output().expect("pty run completes");
     assert_ne!(
         output.status.code(),
         Some(124),
-        "the daemon hung instead of refusing the standalone config"
+        "the daemon hung instead of stopping gracefully"
     );
     assert_eq!(
         output.status.code(),
-        Some(1),
-        "the explicit daemon must refuse standalone (exit 1), stderr: {}",
+        Some(0),
+        "the daemon exits 0 on the remote stop, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // `script(1)` serves the child one pty for both streams: the JSON
-    // envelope can land on either captured buffer, so scan both.
-    let mut combined = output.stdout.clone();
-    combined.extend_from_slice(&output.stderr);
-    let errors: Vec<serde_json::Value> = String::from_utf8_lossy(&combined)
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
-    assert_eq!(errors.len(), 1, "exactly one JSON error envelope");
-    assert_eq!(errors[0]["error"]["kind"], "sync-disabled");
 }
