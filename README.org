@@ -197,11 +197,13 @@ durable the moment the line replies; the outbox drains on the sync
 actor's cadence or a =sync= line. Refused in-session: =daemon=,
 =login=, =logout=, =config=, and per-line =--config= (the session's
 config, connector, and credential store are fixed for the lock
-epoch). The instance-lock mutex applies both ways — a
-running daemon makes bare =taskboard= fail with =instance-locked=:
-stop the daemon first. Without a TTY (systemd units, pipes), bare
-=taskboard= keeps the old behavior: the =[app] mode= resolution
-(daemon default).
+epoch). The instance-lock mutex applies both ways — a running daemon
+makes bare =taskboard= (a *second* core boot) fail with
+=instance-locked=: stop the daemon first. Core *verbs* typed while a
+daemon runs do not contend — they route over the daemon's socket (see
+[[*The daemon and IPC][The daemon and IPC]]). Without a TTY (systemd
+units, pipes), bare =taskboard= keeps the old behavior: the =[app]
+mode= resolution (daemon default).
 
 ** Attaching a server (optional)
 
@@ -214,6 +216,31 @@ taskboard boards select <id> --bind-local-board
 taskboard sync
 taskboard daemon                      # headless sync loop until Ctrl-C/SIGTERM
 #+end_src
+
+** The daemon and IPC
+
+#+begin_src sh
+taskboard daemon            # boot the core, serve the per-db socket
+taskboard status [--json]   # who serves this db + live sync status
+taskboard tasks add "x"     # daemon running? served over it (no boot)
+taskboard daemon stop       # graceful remote shutdown (exit 1 if none)
+#+end_src
+
+While the daemon runs, every core verb (=tasks=, =stacks=, =labels=,
+=boards select/create/rename/publish=, =sync=) is *transparently*
+served over the daemon's local socket — no per-command boot, and no
+=instance-locked= friction; with no daemon answering, the invocation
+boots in-process exactly as before (the observable contract is
+byte-identical on both paths). Pre-core verbs (=login=, =logout=,
+=config print=, =boards list=) always run client-side. =status= never
+boots a core and never triggers a sync cycle: with a daemon it reports
+={daemon: true, version, backend, pid, sync}= live; without, it names
+the lock sidecar's holder pid. The socket is derived from the database
+path (=taskboard.db= → the =taskboard.sock= sibling), owner-only on
+unix, and self-heals after a crashed daemon (ADR 0012). A systemd
+*user*-unit template ships in =contrib/taskboard.service= — the
+comment block at the top is the install guide; =daemon stop= and
+=systemctl --user stop taskboard= are both graceful.
 
 =logout= deletes the stored app password and — under the auto backend
 — clears the config's server/user keys, returning the install to
@@ -258,10 +285,13 @@ taskboard daemon               # headless sync loop until Ctrl-C/SIGTERM
 
 Notes:
 
-- *One core per database:* a second core-booting invocation on the same
-  database fails with the typed =instance-locked= error while a daemon
-  or another command runs — stop the daemon first. The lock is
-  OS-released on process death; there is no stale-lock cleanup.
+- *One core per database:* a second *core boot* (a second =daemon=, a
+  REPL session) on the same database fails with the typed
+  =instance-locked= error while a daemon runs — =daemon stop= first.
+  One-shot core verbs do not contend: while a daemon serves the
+  database they route over its socket (see [[*The daemon and IPC][The
+  daemon and IPC]]). The lock is OS-released on process death; there is
+  no stale-lock cleanup.
 - *Offline-first:* =tasks add= (and every verb) is durable locally when
   the reply arrives; the push rides the next =sync= or the daemon. A
   verb serves the last synced state (the boot cycle's pull is given a

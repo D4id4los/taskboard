@@ -230,7 +230,7 @@ need reshaping after reminders land.
 | 2 | **Coverage fill: hermetic stack/label push tests** (± dispatch-routing suite) | de-risks B; the gap becomes load-bearing the day B ships |
 | 3 | **B: full CLI editing surface** (+ XDG discovery, storage-failure event, `logout`, `config print`) | additive, daily value, all verbs exist in domain |
 | 4 | **C: REPL** (parted-style; `&App` seam refactor + rustyline + no-arg default decision) | cheap after B; validates the seam D reuses |
-| 5 | **D: daemon IPC** (versioned JSON protocol; `status`; kiosk management; systemd template) | biggest design piece; last of the four |
+| 5 | **D: daemon IPC** (versioned JSON protocol; `status`; kiosk management; systemd template) — *IMPLEMENTED 2026-10-11 as WI-5* (ADR 0012, `feat/app-daemon-ipc`): transparent auto-routing over `<db>.sock`, `status`, `daemon stop`, `contrib/taskboard.service` | biggest design piece; last of the four |
 | 6 | Phase 7 (Slint UI) planning — with the reminders design round (§6) folded into its front end |
 
 Mergers/trims that are defensible if capacity is tight: 2 folds into
