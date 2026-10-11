@@ -228,8 +228,9 @@ pub(crate) enum LineAction {
     Reprompt,
 }
 
-/// Parses one line: shell-word split → `Cli::try_parse_from` → the
-/// REPL-level rules. The process never exits from a line.
+/// Parses one line: shell-word split → the REPL-only exits
+/// (`exit`/`quit`) → [`resolve_words`]. The process never exits from a
+/// line.
 #[must_use]
 pub(crate) fn resolve_line(line: &str, json_default: bool) -> LineAction {
     let trimmed = line.trim();
@@ -239,12 +240,26 @@ pub(crate) fn resolve_line(line: &str, json_default: bool) -> LineAction {
     let Ok(words) = shell_words::split(trimmed) else {
         return LineAction::Refuse(LineRefusal::SplitError);
     };
-    let Some(first) = words.first() else {
+    if words
+        .first()
+        .is_some_and(|first| matches!(first.as_str(), "exit" | "quit"))
+    {
+        return LineAction::Exit;
+    }
+    resolve_words(&words, json_default)
+}
+
+/// Parses already-split words into a [`LineAction`] — everything in
+/// [`resolve_line`] after the shell-word split, shared with the daemon
+/// IPC server (ADR 0012): the argv words *are* the wire, so the server
+/// feeds `std::env::args().skip(1)` straight in. `exit`/`quit` are
+/// deliberately *not* exits here: they are not subcommands, so
+/// `resolve_words(["exit"])` is a clap usage error — unit-pinned.
+#[must_use]
+pub(crate) fn resolve_words(words: &[String], json_default: bool) -> LineAction {
+    if words.is_empty() {
         // A line of only quotes/escapes splits to nothing: re-prompt.
         return LineAction::Reprompt;
-    };
-    if matches!(first.as_str(), "exit" | "quit") {
-        return LineAction::Exit;
     }
     let cli = match crate::cli::Cli::try_parse_from(
         std::iter::once("taskboard").chain(words.iter().map(String::as_str)),
@@ -258,7 +273,7 @@ pub(crate) fn resolve_line(line: &str, json_default: bool) -> LineAction {
     match cli.command {
         // A bare global-flag line (`--json`) has nothing to execute.
         None => LineAction::Reprompt,
-        Some(Command::Daemon) => LineAction::Refuse(LineRefusal::Daemon),
+        Some(Command::Daemon { .. }) => LineAction::Refuse(LineRefusal::Daemon),
         Some(Command::Login { .. }) => LineAction::Refuse(LineRefusal::Login),
         Some(Command::Logout) => LineAction::Refuse(LineRefusal::Logout),
         Some(Command::Config { .. }) => LineAction::Refuse(LineRefusal::ConfigCommand),
@@ -503,6 +518,74 @@ mod tests {
             Command::Boards {
                 cmd: BoardsCmd::Create { .. }
             }
+        ));
+    }
+}
+
+#[cfg(test)]
+mod argv_tests {
+    use crate::cli::Command;
+    use crate::repl::{LineAction, resolve_words};
+
+    /// The argv path (daemon IPC): the same parse rules as REPL lines,
+    /// except the REPL-only exits — `exit`/`quit` are not subcommands,
+    /// so they land in clap's usage-error arm (unit-pinned by the
+    /// server's refusal table).
+    #[test]
+    fn argv_words_parse_like_lines_and_exit_is_a_usage_error() {
+        let execute = |action: LineAction| match action {
+            LineAction::Execute(command, json) => (command, json),
+            other => panic!("expected Execute, got {other:?}"),
+        };
+        // Core argv parses and routes.
+        let (command, json) = execute(resolve_words(
+            &["tasks".to_owned(), "list".to_owned(), "--json".to_owned()],
+            false,
+        ));
+        assert!(json);
+        assert!(matches!(command, Command::Tasks { .. }));
+
+        // The refusals are the same kinds the REPL gets.
+        let refuse = |words: &[&str]| match resolve_words(
+            &words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>(),
+            false,
+        ) {
+            LineAction::Refuse(kind) => kind,
+            other => panic!("expected Refuse, got {other:?}"),
+        };
+        assert_eq!(refuse(&["daemon"]), crate::repl::LineRefusal::Daemon);
+        assert_eq!(
+            refuse(&["daemon", "stop"]),
+            crate::repl::LineRefusal::Daemon
+        );
+        assert_eq!(refuse(&["login"]), crate::repl::LineRefusal::Login);
+        assert_eq!(refuse(&["logout"]), crate::repl::LineRefusal::Logout);
+        assert_eq!(
+            refuse(&["config", "print"]),
+            crate::repl::LineRefusal::ConfigCommand
+        );
+        assert_eq!(
+            refuse(&["tasks", "list", "--config", "x"]),
+            crate::repl::LineRefusal::ConfigFlag
+        );
+
+        // `exit` is not a subcommand: a clap usage print, never `Exit`.
+        assert!(matches!(
+            resolve_words(&["exit".to_owned()], false),
+            LineAction::PrintClap(_)
+        ));
+
+        // Empty argv re-prompts (nothing to do), bare flags too.
+        assert!(matches!(resolve_words(&[], false), LineAction::Reprompt));
+        assert!(matches!(
+            resolve_words(&["--json".to_owned()], false),
+            LineAction::Reprompt
+        ));
+
+        // Garbage is a clap print, never an exit.
+        assert!(matches!(
+            resolve_words(&["frobnicate".to_owned()], false),
+            LineAction::PrintClap(_)
         ));
     }
 }

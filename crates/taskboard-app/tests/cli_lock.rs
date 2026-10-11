@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! K3: the cross-process, hermetic instance-lock test — the *real*
 //! binary holds the lock (`daemon` against an unreachable server: it
-//! boots fine offline), a second invocation fails with the typed
+//! boots fine offline), a second core boot fails with the typed
 //! `instance-locked` error, and the lock is released when the holder
-//! dies.
+//! dies. (Since WI-5's daemon IPC, CLI core verbs route over the
+//! daemon's socket instead of contending for the lock; the contending
+//! second boot is therefore a second `daemon` — the run arm never
+//! routes.)
 
 use std::time::{Duration, Instant};
 
@@ -57,15 +60,10 @@ async fn k3_daemon_holds_the_lock_across_processes() {
     let mut daemon = Child(daemon);
     wait_until(|| lock_sidecar.is_file(), "daemon acquired the lock").await;
 
-    // Second process on the same database: exit 1, typed stderr JSON.
+    // Second core boot on the same database (a second `daemon`: run
+    // arms never route over IPC): exit 1, typed stderr JSON.
     let locked = binary_command()
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "--json",
-            "tasks",
-            "list",
-        ])
+        .args(["--config", config.to_str().unwrap(), "--json", "daemon"])
         .env("TASKBOARD_APP_PASSWORD", "pw")
         .stderr(std::process::Stdio::piped())
         .spawn()
