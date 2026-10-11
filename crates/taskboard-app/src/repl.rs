@@ -38,7 +38,7 @@ use tokio::sync::mpsc;
 use clap::Parser as _;
 
 use crate::cli::Command;
-use crate::commands::{CommandError, CommandIo, dispatch_line};
+use crate::commands::{CommandError, CommandIo, CoreSession, dispatch_line};
 use crate::config::{AppConfig, SyncBackend};
 use crate::secrets::CredentialStore;
 
@@ -157,6 +157,15 @@ pub struct ReplSession {
     /// The `--json` flag from the launch invocation; lines may override
     /// per line, not per session.
     pub json_default: bool,
+}
+
+impl CoreSession for ReplSession {
+    fn session_config(&self) -> &AppConfig {
+        &self.config
+    }
+    fn session_store(&self) -> &Arc<dyn CredentialStore> {
+        &self.store
+    }
 }
 
 /// Why a line was refused without reaching a handler (routing-level,
