@@ -205,6 +205,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::UnknownBoard(_) => "unknown-board",
             CommandError::BoardAlreadyBound { .. } => "board-already-bound",
             CommandError::UnknownTask(_) => "unknown-task",
+            CommandError::AmbiguousTask { .. } => "ambiguous-task",
             CommandError::UnknownStack(_) => "unknown-stack",
             CommandError::AmbiguousStack { .. } => "ambiguous-stack",
             CommandError::NoStacks => "no-stacks",
@@ -235,6 +236,9 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::UnknownBoard(7),
         CommandError::BoardAlreadyBound { current: 7 },
         CommandError::UnknownTask("abc".to_owned()),
+        CommandError::AmbiguousTask {
+            candidates: vec!["x".to_owned(), "y".to_owned()],
+        },
         CommandError::UnknownStack("col".to_owned()),
         CommandError::AmbiguousStack {
             candidates: vec!["a".to_owned(), "b".to_owned()],

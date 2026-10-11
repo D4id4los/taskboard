@@ -133,9 +133,9 @@ pub enum TasksCmd {
         #[arg(long)]
         stack: Option<String>,
     },
-    /// Complete (or with `--undo`, reopen) a task by exact local id.
+    /// Complete (or with `--undo`, reopen) a task.
     Done {
-        /// The task's local uuid (from `tasks list`).
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
         task: String,
         /// Reopen the task instead of completing it.
         #[arg(long)]
@@ -143,7 +143,7 @@ pub enum TasksCmd {
     },
     /// Move a task to a stack and/or position (one composite intent).
     Move {
-        /// The task's local uuid (from `tasks list`).
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
         task: String,
         /// Target stack (exact uuid or title); required to be unambiguous
         /// when omitted.
