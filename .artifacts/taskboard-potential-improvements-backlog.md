@@ -1278,3 +1278,27 @@ adopts the remote identity instead of enqueueing the create op.
 There is no `boards delete` with cascade + confirmation; the documented
 reset is "new db path". A destructive ceremony needs its own design
 round (tombstone semantics, remote cascade, confirmations).
+
+### [2026-10-11] CLI commands to add a Nextcloud connection
+
+- **Category**: `DX`
+- **Originating Plan/Report**: Chat/Context (follow-up to Phase 6b, ADR 0010)
+- **Target Area**: `crates/taskboard-app` (`commands/login.rs`, `commands/mod.rs`)
+
+#### Context & Description
+Since Phase 6b, `login` refuses with the typed `sync-disabled` while
+`[sync] backend = "standalone"` is explicit, and under the auto rule a
+stand-alone install has no `server_url` for `login` to verify against
+without first hand-editing `taskboard.toml`. There is no CLI path that
+*introduces* a Nextcloud connection to an existing stand-alone install
+the way `boards create`/`stacks add` introduce local content.
+
+#### Proposed Approach
+Connector-management verbs (e.g. `taskboard connect add` / `connection
+set <server> <user>` or a relaxed `login` that accepts a server
+argument under auto): write `server_url` (and switch `backend` when
+explicitly standalone) into the config, then run today's
+verify-then-persist ceremony. Must respect ADR 0010's loudness rule —
+no silent backend flips without an explicit command — and reuse the
+L-series ceremony + test harness. Related open question already
+tracked for WI-3: `logout`'s interaction with `backend`.
