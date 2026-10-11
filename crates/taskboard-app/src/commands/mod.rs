@@ -697,16 +697,37 @@ fn task_changes(
     }
 }
 
-/// Routes one parsed line against the booted session core (ADR 0011).
-/// The session loop has already intercepted `Daemon`/`Login`; this is
-/// the per-verb table over the shared `*_on` seam. Never exits; the
-/// returned code is informational — a failed line never aborts the
-/// session nor shapes its exit code.
-///
-/// Connector verbs run their prelude against the *session* config and
-/// store (typed `sync-disabled` under `standalone`, fresh remote reads
-/// for the binding ceremonies); everything else hits the session core
-/// directly — no boot, no shutdown, no lock churn.
+/// The cross-line session state every dispatch needs (ADR 0011/0012):
+/// the resolved config and the credential store it selected. A trait so
+/// `dispatch_line` routes over *any* frontend's session — the REPL's
+/// [`crate::repl::ReplSession`] (which adds its `json_default`) and the
+/// daemon IPC server's [`BasicSession`] alike — without either knowing
+/// about the other.
+pub trait CoreSession {
+    /// The resolved, validated config the session booted with.
+    fn session_config(&self) -> &AppConfig;
+    /// The credential store picked from the config at boot.
+    fn session_store(&self) -> &Arc<dyn CredentialStore>;
+}
+
+/// The minimal concrete session for frontends holding exactly
+/// `{config, store}` — the daemon IPC server's dispatcher.
+pub struct BasicSession {
+    /// The resolved, validated config the core booted with.
+    pub config: AppConfig,
+    /// The credential store picked from the config at boot.
+    pub store: Arc<dyn CredentialStore>,
+}
+
+impl CoreSession for BasicSession {
+    fn session_config(&self) -> &AppConfig {
+        &self.config
+    }
+    fn session_store(&self) -> &Arc<dyn CredentialStore> {
+        &self.store
+    }
+}
+
 /// Routes one parsed line against the booted session core (ADR 0011).
 /// The session loop has already intercepted `Daemon`/`Login`/`Logout`/
 /// `Config`; this is the per-verb table over the shared `*_on` seam.
@@ -719,7 +740,7 @@ fn task_changes(
 /// directly — no boot, no shutdown, no lock churn.
 #[allow(clippy::too_many_lines)] // one arm per subcommand, kept flat for review
 pub async fn dispatch_line(
-    session: &crate::repl::ReplSession,
+    session: &impl CoreSession,
     app: &crate::App,
     command: Command,
     io: &mut CommandIo<'_>,
@@ -733,7 +754,7 @@ pub async fn dispatch_line(
         }
         Command::Boards {
             cmd: BoardsCmd::List,
-        } => match boards::list(&session.config, &session.store).await {
+        } => match boards::list(session.session_config(), session.session_store()).await {
             Ok(entries) => {
                 emit_to(io, &entries, &boards::render_text_list(&entries));
                 0
@@ -747,7 +768,9 @@ pub async fn dispatch_line(
                     timeout_secs,
                     bind_local_board,
                 },
-        } => match boards::select_prelude(&session.config, &session.store, board).await {
+        } => match boards::select_prelude(session.session_config(), session.session_store(), board)
+            .await
+        {
             Ok(()) => match boards::select_on(
                 app,
                 board,
@@ -788,7 +811,7 @@ pub async fn dispatch_line(
         },
         Command::Boards {
             cmd: BoardsCmd::Publish { timeout_secs },
-        } => match boards::publish_prelude(&session.config, &session.store) {
+        } => match boards::publish_prelude(session.session_config(), session.session_store()) {
             Ok(client) => {
                 match boards::publish_on(app, &client, Duration::from_secs(timeout_secs)).await {
                     Ok(receipt) => {
@@ -888,7 +911,7 @@ pub async fn dispatch_line(
         Command::Tasks {
             cmd: TasksCmd::List { stack },
         } => {
-            let standalone = session.config.sync_backend() == SyncBackend::Standalone;
+            let standalone = session.session_config().sync_backend() == SyncBackend::Standalone;
             match tasks::list_on(app, stack.as_deref()) {
                 Ok(list) => {
                     emit_to(io, &list, &tasks::render_text_list(&list, standalone));
@@ -988,7 +1011,7 @@ pub async fn dispatch_line(
         Command::Sync {
             no_wait,
             timeout_secs,
-        } => match crate::commands::require_connector(&session.config) {
+        } => match crate::commands::require_connector(session.session_config()) {
             Ok(()) => match sync::sync_on(app, no_wait, Duration::from_secs(timeout_secs)).await {
                 Ok(outcome) => {
                     emit_to(io, outcome.view(), &sync::render_text(&outcome));
