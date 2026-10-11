@@ -89,7 +89,10 @@ async fn wait_for_boot_pull(app: &crate::App, timeout: Duration) {
 
 /// Resolves a stack selector: exact uuid wins, then exact live title;
 /// `None` requires exactly one live stack.
-fn resolve_stack(state: &AppState, selector: Option<&str>) -> Result<StackId, CommandError> {
+pub(crate) fn resolve_stack(
+    state: &AppState,
+    selector: Option<&str>,
+) -> Result<StackId, CommandError> {
     let mut live: Vec<&Stack> = state.stacks.values().filter(|s| !s.deleted).collect();
     live.sort_by_key(|s| (s.order, s.id));
     let candidates = || live.iter().map(|s| s.title.clone()).collect();

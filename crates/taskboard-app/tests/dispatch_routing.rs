@@ -8,7 +8,7 @@
 
 mod common;
 
-use taskboard_app::cli::{BoardsCmd, Command, TasksCmd};
+use taskboard_app::cli::{BoardsCmd, Command, StacksCmd, TasksCmd};
 use taskboard_app::commands::{CommandCtx, dispatch};
 
 use common::{env_lock, remove_env, tempdir};
@@ -183,6 +183,105 @@ async fn sync_routes_a_failed_credential_load_to_exit_one() {
 
 /// Every core-booting arm also rejects an undecodable config before any
 /// boot work (the `core_ctx` Err branch each arm shares).
+/// WI-3 editing verbs: one routing test per new `Command` variant, in
+/// the `failing_setup` shape (exit 1 at the credential load).
+#[tokio::test]
+async fn tasks_edit_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Tasks {
+            cmd: TasksCmd::Edit {
+                task: "x".to_owned(),
+                title: Some("t".to_owned()),
+                description: None,
+                due: None,
+                archive: false,
+                unarchive: false,
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn tasks_delete_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Tasks {
+            cmd: TasksCmd::Delete {
+                task: "x".to_owned(),
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn boards_rename_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Boards {
+            cmd: BoardsCmd::Rename {
+                title: "t".to_owned(),
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn stacks_rename_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Stacks {
+            cmd: StacksCmd::Rename {
+                stack: "s".to_owned(),
+                title: "t".to_owned(),
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn stacks_delete_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Stacks {
+            cmd: StacksCmd::Delete {
+                stack: "s".to_owned(),
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+#[tokio::test]
+async fn stacks_move_routes_a_failed_credential_load_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let code = dispatch(
+        Command::Stacks {
+            cmd: StacksCmd::Move {
+                stack: "s".to_owned(),
+                order: 1,
+            },
+        },
+        ctx(dir.path()),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
 #[tokio::test]
 async fn a_core_command_with_an_undecodable_config_routes_to_exit_one() {
     let (_guard, dir) = garbage_setup();
