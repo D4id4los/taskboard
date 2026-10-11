@@ -820,6 +820,73 @@ mod tests {
         .to_string()
     }
 
+    fn stack_json(id: u64, title: &str, order: i64) -> String {
+        serde_json::json!({"id": id, "title": title, "order": order, "archived": false}).to_string()
+    }
+
+    fn label_json(id: u64, title: &str, color: &str) -> String {
+        serde_json::json!({"id": id, "title": title, "color": color}).to_string()
+    }
+
+    fn stack_row(raw: u128, title: &str, order: i64) -> taskboard_domain::Stack {
+        let now = chrono::Utc::now();
+        taskboard_domain::Stack {
+            id: stack_id(raw),
+            remote: None,
+            board: taskboard_domain::BoardId::from(uid(1)),
+            title: title.into(),
+            order,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: now,
+                order: now,
+                deleted: now,
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn label_row(raw: u128, title: &str, color: &str) -> taskboard_domain::Label {
+        let now = chrono::Utc::now();
+        taskboard_domain::Label {
+            id: label_id(raw),
+            remote: None,
+            board: taskboard_domain::BoardId::from(uid(1)),
+            title: title.into(),
+            color: taskboard_domain::Color::new(color),
+            deleted: false,
+            clocks: taskboard_domain::LabelClocks {
+                title: now,
+                color: now,
+                deleted: now,
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn tables_with(
+        stacks: &[taskboard_domain::Stack],
+        labels: &[taskboard_domain::Label],
+    ) -> EntityTables<'static> {
+        EntityTables {
+            tasks: Box::leak(Box::new(BTreeMap::new())),
+            stacks: Box::leak(Box::new(stacks.iter().map(|s| (s.id, s.clone())).collect())),
+            labels: Box::leak(Box::new(labels.iter().map(|l| (l.id, l.clone())).collect())),
+        }
+    }
+
+    /// A refused local port: deterministically transport-class. The
+    /// listener is dropped before use — a bound-but-unaccepted socket
+    /// would complete the TCP handshake and hang the client instead of
+    /// refusing it.
+    fn refused_client() -> DeckClient {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        DeckClient::new(&format!("http://127.0.0.1:{port}"), "u", "t").unwrap()
+    }
+
     fn overlay_with(
         board: u64,
         stacks: &[(u128, u64)],
@@ -1378,6 +1445,591 @@ mod tests {
             PushResult::Rejected {
                 kind: taskboard_domain::SyncErrorKind::BadRequest
             }
+        ));
+    }
+
+    // ---- stack push paths --------------------------------------------
+
+    #[tokio::test]
+    async fn create_stack_posts_and_applies_the_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stack_json(9, "Todo", 2)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::CreateStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[stack_row(5, "Todo", 2)], &[]),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            &outcomes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Stack(view)) }
+                if view.id.stack == RemoteStackId(9)
+                    && view.title == "Todo"
+                    && view.order == 2
+        ));
+        let body: serde_json::Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body, serde_json::json!({"title": "Todo", "order": 2}));
+    }
+
+    #[tokio::test]
+    async fn create_stack_with_a_missing_row_completes_synthetic_without_sending() {
+        let server = MockServer::start().await;
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::CreateStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[101],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert_eq!(outcomes.len(), 2, "primary and subsumed op complete");
+        assert!(
+            outcomes
+                .iter()
+                .all(|o| matches!(o.result, PushResult::Applied { echo: None }))
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_stack_400_is_rejected_bad_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::CreateStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[stack_row(5, "Todo", 0)], &[]),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::BadRequest
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_stack_transport_failure_aborts() {
+        let client = refused_client();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::CreateStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[stack_row(5, "Todo", 0)], &[]),
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            GroupOutcome::Aborted { landed } if landed.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn rename_stack_puts_the_changeset_and_applies_the_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stack_json(7, "Doing", 0)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::RenameStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[stack_row(5, "Doing", 0)], &[]),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            &outcomes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Stack(view)) } if view.title == "Doing"
+        ));
+        let body: serde_json::Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["title"], "Doing");
+    }
+
+    #[tokio::test]
+    async fn rename_of_an_unbound_stack_rejects_local_data_without_sending() {
+        let server = MockServer::start().await;
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::RenameStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[stack_row(5, "Doing", 0)], &[]),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::LocalData
+            }
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_stack_unbound_completes_synthetic_without_sending() {
+        let server = MockServer::start().await;
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::DeleteStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Applied { echo: None }
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_stack_sends_the_delete_and_applies_the_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(stack_json(7, "Doing", 0)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::DeleteStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            &outcomes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Stack(view)) }
+                if view.id.stack == RemoteStackId(7)
+        ));
+    }
+
+    #[tokio::test]
+    async fn delete_stack_404_maps_to_remote_missing() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks/7"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::DeleteStack { stack: stack_id(5) },
+                    taskboard_domain::PushTarget::Stack(stack_id(5)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+    }
+
+    // ---- label push paths --------------------------------------------
+
+    #[tokio::test]
+    async fn create_label_posts_and_applies_the_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/labels"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(label_json(4, "bug", "ff0000")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::CreateLabel { label: label_id(6) },
+                    taskboard_domain::PushTarget::Label(label_id(6)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[], &[label_row(6, "bug", "FF0000")]),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            &outcomes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Label(view)) }
+                if view.id.label == RemoteLabelId(4) && view.title == "bug"
+        ));
+        let body: serde_json::Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"title": "bug", "color": "ff0000"}),
+            "the local lenient color is normalized for the wire"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_label_with_an_invalid_local_color_rejects_bad_request_without_sending() {
+        let server = MockServer::start().await;
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::CreateLabel { label: label_id(6) },
+                    taskboard_domain::PushTarget::Label(label_id(6)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[], &[label_row(6, "bug", "not-a-color")]),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::BadRequest
+            }
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_label_with_a_missing_row_completes_synthetic_without_sending() {
+        let server = MockServer::start().await;
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::CreateLabel { label: label_id(6) },
+                    taskboard_domain::PushTarget::Label(label_id(6)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Applied { echo: None }
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_label_transport_failure_aborts() {
+        let client = refused_client();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::CreateLabel { label: label_id(6) },
+                    taskboard_domain::PushTarget::Label(label_id(6)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[], &[label_row(6, "bug", "ff0000")]),
+            )
+            .await;
+        assert!(matches!(
+            outcome,
+            GroupOutcome::Aborted { landed } if landed.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn update_label_puts_the_changeset_and_applies_the_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/labels/3"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(label_json(3, "critical", "0000ff")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[(6, 3)]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateLabel { label: label_id(6) },
+                    taskboard_domain::PushTarget::Label(label_id(6)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[], &[label_row(6, "critical", "0000ff")]),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            &outcomes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Label(view)) } if view.title == "critical"
+        ));
+        let body: serde_json::Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(body["title"], "critical");
+    }
+
+    #[tokio::test]
+    async fn update_of_an_unbound_label_rejects_local_data_without_sending() {
+        let server = MockServer::start().await;
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateLabel { label: label_id(6) },
+                    taskboard_domain::PushTarget::Label(label_id(6)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[], &[label_row(6, "critical", "0000ff")]),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::LocalData
+            }
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_label_with_an_unencodable_color_rejects_bad_request_without_sending() {
+        let server = MockServer::start().await;
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[(6, 3)]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateLabel { label: label_id(6) },
+                    taskboard_domain::PushTarget::Label(label_id(6)),
+                    &[],
+                ),
+                &[],
+                tables_with(&[], &[label_row(6, "critical", "#0000ff")]),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::BadRequest
+            }
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_label_unbound_completes_synthetic_without_sending() {
+        let server = MockServer::start().await;
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::DeleteLabel { label: label_id(6) },
+                    taskboard_domain::PushTarget::Label(label_id(6)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Applied { echo: None }
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_label_sends_the_delete_and_applies_the_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/labels/3"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(label_json(3, "critical", "0000ff")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[(6, 3)]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::DeleteLabel { label: label_id(6) },
+                    taskboard_domain::PushTarget::Label(label_id(6)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(matches!(
+            &outcomes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Label(view)) }
+                if view.id.label == RemoteLabelId(3)
         ));
     }
 
