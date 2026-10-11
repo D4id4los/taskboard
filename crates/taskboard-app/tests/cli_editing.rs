@@ -218,3 +218,69 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
         .expect_err("unknown task");
     assert_eq!(err.error_kind(), "unknown-task");
 }
+
+/// E3: `tasks delete` — the pre-execute snapshot receipt, an idempotent
+/// repeat, deletion of a done task, and the typed unknown miss.
+#[tokio::test]
+async fn e3_tasks_delete_tombstones_idempotently() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e3.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+    let created = tasks::add(config.clone(), forbidden_store(), "chore", None)
+        .await
+        .expect("task");
+
+    let receipt = tasks::delete(config.clone(), forbidden_store(), "chore")
+        .await
+        .expect("delete");
+    assert_eq!(receipt.id, created.id);
+    assert_eq!(receipt.title, "chore");
+
+    // Absent from the list on a fresh invocation.
+    let list = tasks::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list");
+    assert!(list.stacks[0].tasks.is_empty(), "tombstoned task hidden");
+
+    // Repeat: idempotent success reporting the deleted snapshot.
+    let repeat = tasks::delete(config.clone(), forbidden_store(), &created.id)
+        .await
+        .expect("repeat delete");
+    assert_eq!(repeat.id, created.id);
+
+    // A done task deletes like any other.
+    let done = tasks::add(config.clone(), forbidden_store(), "finished thing", None)
+        .await
+        .expect("second task");
+    let _ = tasks::done(config.clone(), forbidden_store(), &done.id, false)
+        .await
+        .expect("complete");
+    let gone = tasks::delete(config, forbidden_store(), "finished thing")
+        .await
+        .expect("done task deletes");
+    assert_eq!(gone.id, done.id);
+}
+
+/// E3b: a tombstoned task is no longer a selector hit (edit-style
+/// intents against it are the typed `unknown-task`).
+#[tokio::test]
+async fn e3b_deleted_task_is_not_a_selector_hit() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e3b.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+    let created = tasks::add(config.clone(), forbidden_store(), "gone", None)
+        .await
+        .expect("task");
+    let _ = tasks::delete(config.clone(), forbidden_store(), &created.id)
+        .await
+        .expect("delete");
+    let err = tasks::edit(
+        config,
+        forbidden_store(),
+        "gone",
+        taskboard_domain::TaskChanges::default(),
+    )
+    .await
+    .expect_err("edit against a tombstone");
+    assert_eq!(err.error_kind(), "unknown-task");
+}

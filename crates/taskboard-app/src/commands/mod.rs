@@ -425,6 +425,22 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
             })
             .await
         }
+        Command::Tasks {
+            cmd: TasksCmd::Delete { task },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => match tasks::delete(config, store, &task).await {
+                Ok(receipt) => {
+                    emit(
+                        json,
+                        &receipt,
+                        &format!("deleted \"{}\" ({})", receipt.title, receipt.id),
+                    );
+                    0
+                }
+                Err(err) => report(json, &err),
+            },
+            Err(err) => report(json, &err),
+        },
         Command::Sync {
             no_wait,
             timeout_secs,

@@ -143,6 +143,16 @@ pub struct MutationReceipt {
     pub labels: Vec<String>,
 }
 
+/// The `tasks delete` receipt: the pre-execute snapshot (the task is
+/// tombstoned afterwards, so there is no post-state to project).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TaskDeleteReceipt {
+    /// Local task uuid.
+    pub id: String,
+    /// Task title at delete time.
+    pub title: String,
+}
+
 /// The `login` receipt. No secret ever appears in any projection.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LoginReceipt {
