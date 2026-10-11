@@ -13,6 +13,7 @@
 //!   `shutdown()`, exit (roadmap §2.4: one bootstrap, N frontends).
 
 pub mod boards;
+pub mod labels;
 pub mod login;
 pub mod output;
 pub mod stacks;
@@ -27,7 +28,7 @@ use taskboard_domain::SyncErrorKind;
 use taskboard_sync_nextcloud::DeckError;
 
 use crate::bootstrap::BootstrapError;
-use crate::cli::{BoardsCmd, Command, StacksCmd, TasksCmd};
+use crate::cli::{BoardsCmd, Command, LabelsCmd, StacksCmd, TasksCmd};
 use crate::config::{AppConfig, CredentialStoreKind, SyncBackend};
 use crate::secrets::{CredentialError, CredentialStore};
 
@@ -104,6 +105,16 @@ pub enum CommandError {
     /// No stack matches the selector.
     #[error("no such stack")]
     UnknownStack(String),
+    /// No label matches the selector.
+    #[error("no such label")]
+    UnknownLabel(String),
+    /// The label selector matches several live labels; carries their
+    /// titles.
+    #[error("label selector matches several labels — pass one of {}", candidates.join(" | "))]
+    AmbiguousLabel {
+        /// The matched labels' titles.
+        candidates: Vec<String>,
+    },
     /// The stack selector matches several stacks; carries the live
     /// stack titles the user can pass to `--stack`.
     #[error("stack selector matches several stacks — pass one of --stack <{}>", candidates.join(" | "))]
@@ -189,6 +200,8 @@ impl CommandError {
             Self::AmbiguousTask { .. } => "ambiguous-task",
             Self::UnknownStack(_) => "unknown-stack",
             Self::AmbiguousStack { .. } => "ambiguous-stack",
+            Self::UnknownLabel(_) => "unknown-label",
+            Self::AmbiguousLabel { .. } => "ambiguous-label",
             Self::NoStacks => "no-stacks",
             Self::SyncFailed(_) => "sync-failed",
             Self::SyncTimedOut => "sync-timed-out",
@@ -207,7 +220,9 @@ impl CommandError {
         match self {
             Self::UnknownBoard(id) => Some(id.to_string()),
             Self::BoardAlreadyBound { current } => Some(current.to_string()),
-            Self::UnknownTask(sel) | Self::UnknownStack(sel) => Some(sel.clone()),
+            Self::UnknownTask(sel) | Self::UnknownStack(sel) | Self::UnknownLabel(sel) => {
+                Some(sel.clone())
+            }
             Self::AmbiguousTask { candidates } | Self::AmbiguousStack { candidates } => {
                 Some(candidates.join(", "))
             }
@@ -417,6 +432,61 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
             },
             Err(err) => report(json, &err),
         },
+        Command::Labels {
+            cmd: LabelsCmd::List,
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => match labels::list(config, store).await {
+                Ok(rows) => {
+                    emit(json, &rows, &labels::render_text_list(&rows));
+                    0
+                }
+                Err(err) => report(json, &err),
+            },
+            Err(err) => report(json, &err),
+        },
+        Command::Labels {
+            cmd: LabelsCmd::Add { title, color },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => {
+                match labels::add(config, store, &title, color.as_deref()).await {
+                    Ok(receipt) => {
+                        emit(json, &receipt, &labels::render_text_receipt(&receipt));
+                        0
+                    }
+                    Err(err) => report(json, &err),
+                }
+            }
+            Err(err) => report(json, &err),
+        },
+        Command::Labels {
+            cmd:
+                LabelsCmd::Edit {
+                    label,
+                    title,
+                    color,
+                },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => match labels::edit(config, store, &label, title, color).await {
+                Ok(receipt) => {
+                    emit(json, &receipt, &labels::render_text_receipt(&receipt));
+                    0
+                }
+                Err(err) => report(json, &err),
+            },
+            Err(err) => report(json, &err),
+        },
+        Command::Labels {
+            cmd: LabelsCmd::Delete { label },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => match labels::delete(config, store, &label).await {
+                Ok(receipt) => {
+                    emit(json, &receipt, &labels::render_text_receipt(&receipt));
+                    0
+                }
+                Err(err) => report(json, &err),
+            },
+            Err(err) => report(json, &err),
+        },
         Command::Tasks {
             cmd: TasksCmd::List { stack },
         } => match core_ctx(&ctx) {
@@ -489,6 +559,22 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
             },
             Err(err) => report(json, &err),
         },
+        Command::Tasks {
+            cmd: TasksCmd::Label { task, label },
+        } => {
+            run_mutation(json, &ctx, move |config, store| async move {
+                tasks::label(config, store, &task, &label).await
+            })
+            .await
+        }
+        Command::Tasks {
+            cmd: TasksCmd::Unlabel { task, label },
+        } => {
+            run_mutation(json, &ctx, move |config, store| async move {
+                tasks::unlabel(config, store, &task, &label).await
+            })
+            .await
+        }
         Command::Sync {
             no_wait,
             timeout_secs,

@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use taskboard_app::commands::boards;
+use taskboard_app::commands::labels;
 use taskboard_app::commands::stacks;
 use taskboard_app::commands::tasks;
 use taskboard_app::config::{AppConfig, CredentialStoreKind};
@@ -385,4 +386,127 @@ async fn e5_stacks_rename_delete_move() {
         .await
         .expect("repeat delete");
     assert_eq!(repeat.id, receipt.id);
+}
+
+/// E6: the `labels` group — list (with assignment counts), add (default
+/// and explicit colors), edit, delete, and the typed selector errors.
+#[tokio::test]
+async fn e6_labels_group() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e6.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+
+    // Empty list on a fresh board.
+    let rows = labels::list(config.clone(), forbidden_store())
+        .await
+        .expect("list");
+    assert_eq!(rows.len(), 0);
+
+    // Add: explicit color, then the default.
+    let urgent = labels::add(config.clone(), forbidden_store(), "urgent", Some("FF00AA"))
+        .await
+        .expect("add explicit");
+    assert_eq!(urgent.color, "ff00aa", "six hex digits, lowercased");
+    let later = labels::add(config.clone(), forbidden_store(), "later", None)
+        .await
+        .expect("add default");
+    assert_eq!(later.color, taskboard_app::cli::DEFAULT_LABEL_COLOR);
+
+    // List: both rows, zero assignments so far.
+    let rows = labels::list(config.clone(), forbidden_store())
+        .await
+        .expect("list");
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.assigned_tasks == 0));
+
+    // Edit: rename + recolor.
+    let edited = labels::edit(
+        config.clone(),
+        forbidden_store(),
+        "urgent",
+        Some("critical".to_owned()),
+        Some("0000ff".to_owned()),
+    )
+    .await
+    .expect("edit");
+    assert_eq!(edited.title, "critical");
+    assert_eq!(edited.color, "0000ff");
+
+    // Assignment count reflects a live task carrying the label.
+    let created = tasks::add(config.clone(), forbidden_store(), "tagged", None)
+        .await
+        .expect("task");
+    let _ = tasks::label(config.clone(), forbidden_store(), &created.id, "critical")
+        .await
+        .expect("assign");
+    let rows = labels::list(config.clone(), forbidden_store())
+        .await
+        .expect("list");
+    let critical = rows.iter().find(|r| r.title == "critical").expect("row");
+    assert_eq!(critical.assigned_tasks, 1);
+
+    // Typed selector errors.
+    let err = labels::edit(config.clone(), forbidden_store(), "ghost", None, None)
+        .await
+        .expect_err("unknown label");
+    assert_eq!(err.error_kind(), "unknown-label");
+
+    // Delete, then the repeat is idempotent by uuid.
+    let gone = labels::delete(config.clone(), forbidden_store(), "later")
+        .await
+        .expect("delete");
+    assert_eq!(gone.title, "later");
+    let repeat = labels::delete(config.clone(), forbidden_store(), &gone.id)
+        .await
+        .expect("repeat delete");
+    assert_eq!(repeat.id, gone.id);
+    let rows = labels::list(config, forbidden_store()).await.expect("list");
+    assert_eq!(rows.len(), 1, "only 'critical' remains");
+}
+
+/// E7: `tasks label/unlabel` — the receipt's `labels` set tracks the
+/// post-state, both directions are idempotent, and unknown task/label
+/// selectors are the typed errors.
+#[tokio::test]
+async fn e7_tasks_label_unlabel() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e7.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+    let _ = labels::add(config.clone(), forbidden_store(), "urgent", None)
+        .await
+        .expect("label");
+    let _ = labels::add(config.clone(), forbidden_store(), "someday", None)
+        .await
+        .expect("second label");
+    let created = tasks::add(config.clone(), forbidden_store(), "card", None)
+        .await
+        .expect("task");
+
+    // Attach: the receipt lists the label.
+    let receipt = tasks::label(config.clone(), forbidden_store(), &created.id, "urgent")
+        .await
+        .expect("label");
+    assert_eq!(receipt.labels, vec!["urgent".to_owned()]);
+
+    // Assign-already-assigned: idempotent success.
+    let receipt = tasks::label(config.clone(), forbidden_store(), "card", "urgent")
+        .await
+        .expect("repeat label");
+    assert_eq!(receipt.labels, vec!["urgent".to_owned()]);
+
+    // The label set is whole: a second label replaces nothing.
+    let receipt = tasks::label(config.clone(), forbidden_store(), &created.id, "someday")
+        .await
+        .expect("second label");
+    assert_eq!(receipt.labels.len(), 2);
+
+    // Detach: absent from the receipt; repeat is idempotent.
+    let receipt = tasks::unlabel(config.clone(), forbidden_store(), &created.id, "urgent")
+        .await
+        .expect("unlabel");
+    assert_eq!(receipt.labels, vec!["someday".to_owned()]);
+    let receipt = tasks::unlabel(config, forbidden_store(), &created.id, "urgent")
+        .await
+        .expect("repeat unlabel");
+    assert_eq!(receipt.labels, vec!["someday".to_owned()]);
 }

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use taskboard_domain::{
-    AppState, CommandOutcome, Stack, StackId, StateCommand, SyncPhase, TaskChanges, TaskId,
+    AppState, CommandOutcome, LabelId, Stack, StackId, StateCommand, SyncPhase, TaskChanges, TaskId,
 };
 
 use crate::commands::CommandError;
@@ -308,7 +308,72 @@ pub async fn move_(
     .await
 }
 
-/// Exact-uuid match over *all* tasks (tombstones included) — the
+/// Attaches a label to a task (selector composition: `resolve_task` +
+/// `resolve_label` → `AssignLabel`). Assigning an already-assigned label
+/// is an accepted no-op.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn label(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    task: &str,
+    label: &str,
+) -> Result<MutationReceipt, CommandError> {
+    selector_label(config, store, task, label, |t, l| {
+        StateCommand::AssignLabel { task: t, label: l }
+    })
+    .await
+}
+
+/// Detaches a label from a task. Unassigning an absent assignment is an
+/// accepted no-op.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn unlabel(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    task: &str,
+    label: &str,
+) -> Result<MutationReceipt, CommandError> {
+    selector_label(config, store, task, label, |t, l| {
+        StateCommand::UnassignLabel { task: t, label: l }
+    })
+    .await
+}
+
+/// The shared label attach/detach body: both verbs compose the two
+/// selectors and project the post-state receipt.
+async fn selector_label(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    task: &str,
+    label: &str,
+    command: impl Fn(TaskId, LabelId) -> StateCommand,
+) -> Result<MutationReceipt, CommandError> {
+    let task = task.to_owned();
+    let label = label.to_owned();
+    with_core(config, store, async |app| {
+        let state = app.engine.shared_state().load_full();
+        let task_id = resolve_task(&state, &task)?;
+        let label_id = crate::commands::labels::resolve_label(&state, &label)?;
+        drop(state);
+        app.engine.execute(command(task_id, label_id)).await?;
+        let state = app.engine.shared_state().load_full();
+        let task = state
+            .tasks
+            .get(&task_id)
+            .filter(|t| t.is_live())
+            .ok_or_else(|| CommandError::UnknownTask(task_id.as_uuid().to_string()))?;
+        Ok(mutation_receipt(&state, task))
+    })
+    .await
+}
+
+/// Exact-uuid match over *all* tasks (tombstones included) — the/// Exact-uuid match over *all* tasks (tombstones included) — the
 /// delete-repeat affordance.
 fn resolve_task_exact_any(state: &AppState, selector: &str) -> Result<TaskId, CommandError> {
     if let Ok(uuid) = uuid::Uuid::parse_str(selector) {

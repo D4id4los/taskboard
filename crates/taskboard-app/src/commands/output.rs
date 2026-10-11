@@ -143,6 +143,30 @@ pub struct MutationReceipt {
     pub labels: Vec<String>,
 }
 
+/// One row of `labels list`.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LabelRow {
+    /// Local label uuid.
+    pub id: String,
+    /// Label title.
+    pub title: String,
+    /// Label color as stored (six hex digits for CLI-created labels).
+    pub color: String,
+    /// Count of live tasks carrying the label.
+    pub assigned_tasks: usize,
+}
+
+/// The `labels add/edit` receipt: the label projection.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LabelReceipt {
+    /// Local label uuid.
+    pub id: String,
+    /// Label title.
+    pub title: String,
+    /// Label color.
+    pub color: String,
+}
+
 /// The `stacks delete` receipt: the pre-execute snapshot plus the
 /// cascade's blast radius (the domain tombstones the stack's live tasks).
 #[derive(Debug, Clone, Serialize, PartialEq)]
