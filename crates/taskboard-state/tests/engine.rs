@@ -990,3 +990,79 @@ async fn eventually_idle(handle: &taskboard_state::EngineHandle) {
         .await
         .expect("engine still services commands after reports closed");
 }
+
+// ---------------------------------------------------------------------
+// A-series: stand-alone board commands
+// ---------------------------------------------------------------------
+
+/// A13: `CreateBoard` on an empty db replies `CreatedBoard`, publishes the
+/// board, and persists exactly the `UpsertBoard` (no outbox op).
+#[tokio::test]
+async fn a13_create_board_persists_and_publishes() {
+    let repo = Arc::new(InMemoryRepository::with_state(PersistedState::default()));
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        ..Spawner::default()
+    })
+    .await;
+    let mut signals = h.handle.subscribe();
+    let outcome = h
+        .handle
+        .execute(StateCommand::CreateBoard {
+            title: "personal".into(),
+            color: taskboard_domain::Color::new("3366cc"),
+        })
+        .await
+        .expect("accepted");
+    let CommandOutcome::CreatedBoard(board_id) = outcome else {
+        panic!("wrong receipt: {outcome:?}");
+    };
+    let app = h.handle.shared_state().load_full();
+    let board = &app.boards[&board_id];
+    assert_eq!(board.title, "personal");
+    assert_eq!(board.remote, None);
+    // Exactly one upsert in the batch: no outbox op was enqueued.
+    assert_eq!(repo.snapshot().outbox, [], "no outbox op was enqueued");
+    assert_eq!(drain_signals(&mut signals), 1, "published");
+    drop(h);
+}
+
+/// A14: `CreateBoard` while a live board exists is a typed rejection.
+#[tokio::test]
+async fn a14_create_board_refuses_a_second_live_board() {
+    let h = harness().await;
+    let err = h
+        .handle
+        .execute(StateCommand::CreateBoard {
+            title: "second".into(),
+            color: taskboard_domain::Color::new("000000"),
+        })
+        .await
+        .expect_err("rejected");
+    assert!(matches!(
+        err,
+        ExecuteError::Rejected(taskboard_domain::CommandError::BoardExists)
+    ));
+    drop(h);
+}
+
+/// A15: `BindBoard` mutates the board row in memory and persistence.
+#[tokio::test]
+async fn a15_bind_board_sets_the_remote_binding() {
+    let h = harness().await;
+    let outcome = h
+        .handle
+        .execute(StateCommand::BindBoard {
+            remote: RemoteBoardId(42),
+        })
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::Applied);
+    let app = h.handle.shared_state().load_full();
+    assert!(
+        app.boards
+            .values()
+            .any(|b| b.remote == Some(RemoteBoardId(42)))
+    );
+    drop(h);
+}

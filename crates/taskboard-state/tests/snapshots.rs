@@ -42,7 +42,16 @@ struct Scenario {
 
 impl Scenario {
     async fn start() -> Self {
-        let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
+        Self::start_with(seed_board_state("kiosk")).await
+    }
+
+    /// Stand-alone scenario: an empty db — `CreateBoard` is legal here.
+    async fn start_empty() -> Self {
+        Self::start_with(taskboard_domain::PersistedState::default()).await
+    }
+
+    async fn start_with(state: taskboard_domain::PersistedState) -> Self {
+        let repo = Arc::new(InMemoryRepository::with_state(state));
         let clock = FixedClock::new(T0);
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
@@ -487,4 +496,66 @@ async fn s6_network_lost_restored_cycle() {
     .await
     .expect("failed phase settles");
     s.snap("s6");
+}
+
+/// S7 — stand-alone first run: board → stack → task authored from an
+/// empty db, then `BindBoard` attaches the local board to a remote one
+/// (the outbox stays queued for the connector's first cycle).
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
+#[tokio::test]
+async fn s7_standalone_first_run_and_bind() {
+    let mut s = Scenario::start_empty().await;
+    let CommandOutcome::CreatedBoard(board) = s
+        .run(StateCommand::CreateBoard {
+            title: "personal".into(),
+            color: Color::new("3366cc"),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    // A second create hits the single-board guard.
+    assert!(matches!(
+        s.run_raw(StateCommand::CreateBoard {
+            title: "second".into(),
+            color: Color::new("000000"),
+        })
+        .await,
+        Err(taskboard_state::ExecuteError::Rejected(
+            taskboard_domain::CommandError::BoardExists
+        ))
+    ));
+    let CommandOutcome::CreatedStack(stack) = s
+        .run(StateCommand::CreateStack {
+            title: "todo".into(),
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.run(StateCommand::CreateTask {
+        title: "first task".into(),
+        stack,
+        order: 1,
+    })
+    .await;
+    s.run(StateCommand::BindBoard {
+        remote: taskboard_domain::RemoteBoardId(77),
+    })
+    .await;
+    // Rebinding to the same remote is the accepted no-op.
+    let _ = s
+        .run_raw(StateCommand::BindBoard {
+            remote: taskboard_domain::RemoteBoardId(77),
+        })
+        .await
+        .expect("accepted");
+    let app = s.handle.shared_state().load_full();
+    assert_eq!(
+        app.boards[&board].remote,
+        Some(taskboard_domain::RemoteBoardId(77))
+    );
+    s.snap("s7");
+    drop(s);
 }
