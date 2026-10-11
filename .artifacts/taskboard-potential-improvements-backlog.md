@@ -1310,7 +1310,6 @@ no silent backend flips without an explicit command — and reuse the
 L-series ceremony + test harness. Related open question already
 tracked for WI-3: `logout`'s interaction with `backend`.
 
-<<<<<<< variant A
 ## [2026-10-11] Undo/redo functionality
 
 - **Category**: `Architecture`, `DX`
@@ -1420,7 +1419,6 @@ Migration 0003: add a nullable `board_id` column, backfill it from
 `stack_id` where `op_kind = 'rename_board'`, and teach `op_to_columns`/
 `op_from_columns` the proper column. One migration, mechanical codec
 edits, existing roundtrip test extended.
->>>>>>> variant B
 ### [2026-10-11] Org-mode markup fields + two-way local .org sync connector
 
 - **Category**: `Architecture`
@@ -1477,8 +1475,7 @@ taskboard's editor fields then consume it as a thin `orgedit-slint`
 widget (stock `TextEdit` editing surface with intercepted emacs keys,
 cursor synced via `set-selection-offsets`, `StyledText` rendered
 preview) instead of bespoke editing logic.
-####### Ancestor
-======= end
+
 ## [2026-10-11] `parted`-style interactive REPL mode — *implemented* (WI-4, ADR 0011; kept for the completion-history of its open sub-questions)
 
 ### [2026-10-11] `login` inside a running session (REPL / GUI)
