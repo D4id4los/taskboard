@@ -52,6 +52,9 @@ pub fn board(title: &str) -> Board {
         color: taskboard_domain::Color::new("0000ff"),
         archived: false,
         deleted: false,
+        clocks: taskboard_domain::BoardClocks {
+            title: taskboard_domain::BoardClocks::epoch(),
+        },
         remote_seen: None,
     }
 }

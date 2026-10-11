@@ -124,6 +124,21 @@ pub(crate) fn local_stack() -> Stack {
     }
 }
 
+/// The fixture local board row (`base_state`'s board), standalone.
+pub(crate) fn base_board() -> Board {
+    let board_id = BoardId::from(uuid::Uuid::from_u128(800));
+    Board {
+        id: board_id,
+        remote: Some(board(REMOTE_BOARD_NUM)),
+        title: "board".into(),
+        color: Color::new("ff0000"),
+        archived: false,
+        deleted: false,
+        clocks: crate::entities::BoardClocks { title: ts(BASE) },
+        remote_seen: Some(ts(BASE)),
+    }
+}
+
 pub(crate) fn base_state(task: Task) -> AppState {
     let board_id = BoardId::from(uuid::Uuid::from_u128(800));
     let mut state = AppState::default();
@@ -136,6 +151,7 @@ pub(crate) fn base_state(task: Task) -> AppState {
             color: Color::new("ff0000"),
             archived: false,
             deleted: false,
+            clocks: crate::entities::BoardClocks { title: ts(BASE) },
             remote_seen: Some(ts(BASE)),
         },
     );

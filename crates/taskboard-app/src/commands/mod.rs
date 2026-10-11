@@ -344,6 +344,18 @@ pub async fn dispatch(command: Command, ctx: CommandCtx) -> u8 {
             Err(err) => report(json, &err),
         },
         Command::Boards {
+            cmd: BoardsCmd::Rename { title },
+        } => match core_ctx(&ctx) {
+            Ok((config, store)) => match boards::rename(config, store, &title).await {
+                Ok(receipt) => {
+                    emit(json, &receipt, &boards::render_text_create(&receipt));
+                    0
+                }
+                Err(err) => report(json, &err),
+            },
+            Err(err) => report(json, &err),
+        },
+        Command::Boards {
             cmd: BoardsCmd::Publish { timeout_secs },
         } => match core_ctx(&ctx) {
             Ok((config, store)) => {

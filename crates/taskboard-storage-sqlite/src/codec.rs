@@ -52,6 +52,7 @@ pub fn op_kind_to_text(op: &LocalOp) -> &'static str {
         LocalOp::DeleteLabel(_) => "delete_label",
         LocalOp::AssignLabel(_, _) => "assign_label",
         LocalOp::UnassignLabel(_, _) => "unassign_label",
+        LocalOp::RenameBoard(_) => "rename_board",
     }
 }
 
@@ -97,6 +98,14 @@ pub(crate) fn op_to_columns(op: &LocalOp) -> OpColumns {
             stack_id: None,
             label_id: Some(label),
         },
+        // Board-scoped op: the outbox has no board column, so the board id
+        // rides `stack_id` under the `rename_board` tag (the only op kind
+        // that reads it back).
+        LocalOp::RenameBoard(board) => OpColumns {
+            task_id: None,
+            stack_id: Some(taskboard_domain::StackId::from_uuid(board.as_uuid())),
+            label_id: None,
+        },
     }
 }
 
@@ -139,6 +148,9 @@ pub fn op_from_columns(
             parse_id(task_id)?,
             parse_id(label_id)?,
         )),
+        "rename_board" => Ok(LocalOp::RenameBoard(taskboard_domain::BoardId::from_uuid(
+            parse_id::<taskboard_domain::StackId>(stack_id)?.as_uuid(),
+        ))),
         _ => Err(CodecError),
     }
 }
@@ -325,6 +337,7 @@ mod tests {
             LocalOp::DeleteLabel(label),
             LocalOp::AssignLabel(task, label),
             LocalOp::UnassignLabel(task, label),
+            LocalOp::RenameBoard(taskboard_domain::ids::BoardId::from(id(9))),
         ];
         for op in ops {
             let cols = op_to_columns(&op);

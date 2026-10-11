@@ -10,6 +10,8 @@ boards:
     color: 0000ff
     archived: false
     deleted: false
+    clocks:
+      title: "1970-01-01T10:00:00Z"
     remote_seen: "1970-01-01T10:00:00Z"
 stacks:
   00000000-0000-0000-0000-000000000002:

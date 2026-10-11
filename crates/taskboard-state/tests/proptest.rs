@@ -24,9 +24,9 @@ use taskboard_domain::test_support::{
     CountingIds, InMemoryRepository, persisted_state_strategy, proptest_config, snapshot_strategy,
 };
 use taskboard_domain::{
-    AppState, Board, BoardId, Clock, Color, CommandOutcome, Label, LabelClocks, LocalOp, OpId,
-    PendingOp, PersistedState, PersistenceAction, Stack, StackClocks, StackId, SyncPhase,
-    SyncStatus, Task, TaskClocks, TaskId, apply_sync_report,
+    AppState, Board, BoardClocks, BoardId, Clock, Color, CommandOutcome, Label, LabelClocks,
+    LocalOp, OpId, PendingOp, PersistedState, PersistenceAction, Stack, StackClocks, StackId,
+    SyncPhase, SyncStatus, Task, TaskClocks, TaskId, apply_sync_report,
 };
 use taskboard_state::EngineCore;
 use taskboard_state::spawn_state_engine;
@@ -58,6 +58,9 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
             color: Color::new("0000ff"),
             archived: false,
             deleted: false,
+            clocks: BoardClocks {
+                title: BoardClocks::epoch(),
+            },
             remote_seen: None,
         })
     });
@@ -400,6 +403,9 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
             color: Color::new("0000ff"),
             archived: false,
             deleted: false,
+            clocks: BoardClocks {
+                title: BoardClocks::epoch(),
+            },
             remote_seen: None,
         },
     );
@@ -612,6 +618,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                     disk.labels.contains_key(&id)
                 }
+                LocalOp::RenameBoard(id) => disk.boards.contains_key(&id),
                 LocalOp::AssignLabel(task, label) | LocalOp::UnassignLabel(task, label) => {
                     disk.tasks.contains_key(&task) && disk.labels.contains_key(&label)
                 }

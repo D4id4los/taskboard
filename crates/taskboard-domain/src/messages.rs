@@ -130,6 +130,12 @@ pub enum StateCommand {
         /// The remote board to bind to.
         remote: RemoteBoardId,
     },
+    /// Rename the single live board's title (accepted no-op when
+    /// unchanged; pushes as a full-send when the board is bound).
+    RenameBoard {
+        /// New title.
+        title: String,
+    },
     /// User-visible refresh request; the engine forwards it to the sync
     /// actor.
     RequestSync,

@@ -443,7 +443,44 @@ pub fn adopt_board_if_newer(local: &Board, remote: &RemoteBoard) -> Board {
         color: crate::entities::Color::new(remote.color.clone()),
         archived: remote.archived,
         deleted: remote.deleted_at.is_some(),
+        clocks: crate::entities::BoardClocks {
+            title: remote.last_modified,
+        },
         remote_seen: Some(remote.last_modified),
+    }
+}
+
+/// R6 for boards, title-wise: the whole-entity freshness gate and every
+/// field of [`adopt_board_if_newer`], except the title, which is
+/// field-wise by the [`merge_stack`] rule — a local rename keeps its
+/// title until a strictly newer remote write lands (never-renamed boards
+/// carry the epoch clock, so they behave exactly as before).
+#[must_use]
+pub fn merge_board(local: &Board, remote: &RemoteBoard) -> Board {
+    let mut merged = adopt_board_if_newer(local, remote);
+    if !remote_wins(remote.last_modified, local.clocks.title) {
+        merged.title.clone_from(&local.title);
+        merged.clocks.title = local.clocks.title;
+    }
+    merged
+}
+
+/// R9a for boards: unconditional echo adoption after a rename push
+/// (mirrors [`adopt_stack_after_push`]).
+#[must_use]
+pub fn adopt_board_after_push(local: &Board, echo: &RemoteBoard) -> Board {
+    let lm = echo.last_modified;
+    Board {
+        id: local.id,
+        remote: Some(echo.id),
+        title: echo.title.clone(),
+        color: crate::entities::Color::new(echo.color.clone()),
+        archived: echo.archived,
+        deleted: false,
+        clocks: crate::entities::BoardClocks {
+            title: max_ts(local.clocks.title, lm),
+        },
+        remote_seen: Some(lm),
     }
 }
 
@@ -457,8 +494,22 @@ pub fn adopt_remote_board(remote: &RemoteBoard, id: crate::ids::BoardId) -> Boar
         color: crate::entities::Color::new(remote.color.clone()),
         archived: remote.archived,
         deleted: remote.deleted_at.is_some(),
+        clocks: crate::entities::BoardClocks {
+            title: remote.last_modified,
+        },
         remote_seen: Some(remote.last_modified),
     }
+}
+
+/// R3/R6 for boards — observed remote absence of a bound board (or a
+/// local rename push that must be finalized): tombstone it.
+#[must_use]
+pub fn tombstone_board(local: &Board, _observed_at: DateTime<Utc>) -> Board {
+    let mut b = local.clone();
+    b.deleted = true;
+    b.remote = None;
+    b.remote_seen = None;
+    b
 }
 
 /// R3/R6 for stacks — observed remote absence of a bound stack (or a
@@ -498,6 +549,11 @@ mod tests {
 
     fn ts_millis(secs: i64) -> i64 {
         secs
+    }
+
+    /// A local board row in `merge_testutil`'s fixture shape.
+    fn local_board() -> Board {
+        crate::merge_testutil::base_board()
     }
 
     #[test]
@@ -726,6 +782,57 @@ mod tests {
         let merged = merge_label(&local, &remote);
         assert!(merged.deleted);
         assert_eq!(merged.clocks.deleted, ts(BASE + 420));
+    }
+
+    #[test]
+    fn merge_board_adopts_a_remote_newer_title() {
+        let mut local = local_board();
+        local.clocks.title = ts(BASE + 60); // a local rename
+        let remote = remote_board(REMOTE_BOARD_NUM, BASE + 120);
+        let merged = merge_board(&local, &remote);
+        assert_eq!(merged.title, remote.title.clone());
+        assert_eq!(merged.clocks.title, ts(BASE + 120));
+    }
+
+    #[test]
+    fn merge_board_keeps_a_local_newer_title() {
+        let mut local = local_board();
+        local.title = "locally renamed".into();
+        local.clocks.title = ts(BASE + 600);
+        let remote = remote_board(REMOTE_BOARD_NUM, BASE + 120);
+        let merged = merge_board(&local, &remote);
+        assert_eq!(merged.title, "locally renamed");
+        assert_eq!(merged.clocks.title, ts(BASE + 600));
+        // The freshness gate still advances the observation stamp.
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 120)));
+    }
+
+    #[test]
+    fn merge_board_epoch_local_title_always_loses() {
+        // A never-locally-renamed board carries the epoch clock and
+        // behaves exactly like the pre-clock remote-wins adoption.
+        let mut local = local_board();
+        local.clocks.title = crate::entities::BoardClocks::epoch();
+        assert_eq!(local.clocks.title, crate::entities::BoardClocks::epoch());
+        let mut remote = remote_board(REMOTE_BOARD_NUM, BASE + 120);
+        remote.title = "remote title".into();
+        let merged = merge_board(&local, &remote);
+        assert_eq!(merged.title, "remote title");
+        assert_eq!(merged.clocks.title, ts(BASE + 120));
+    }
+
+    #[test]
+    fn adopt_board_after_push_takes_the_echo_title_and_stamp() {
+        let mut local = local_board();
+        local.title = "renamed".into();
+        local.clocks.title = ts(BASE + 60);
+        let echo = remote_board(REMOTE_BOARD_NUM, BASE + 120);
+        let merged = adopt_board_after_push(&local, &echo);
+        assert_eq!(merged.title, echo.title.clone());
+        assert_eq!(merged.clocks.title, ts(BASE + 120));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 120)));
+        assert!(merged.remote.is_some());
+        assert!(!merged.deleted);
     }
 
     #[test]

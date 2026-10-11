@@ -46,6 +46,8 @@ pub enum LocalOp {
     AssignLabel(TaskId, LabelId),
     /// Label removal from a card.
     UnassignLabel(TaskId, LabelId),
+    /// Board rename (full-send on push, like [`LocalOp::RenameStack`]).
+    RenameBoard(crate::ids::BoardId),
 }
 
 /// An outbox entry: which operation, when it was queued.

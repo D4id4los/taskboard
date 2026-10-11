@@ -91,6 +91,9 @@ pub async fn seed_local_board(db_path: &std::path::Path, local_id: u128, run: &s
                 color: taskboard_domain::Color::new(color),
                 archived: false,
                 deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                },
                 remote_seen: None,
             }),
             taskboard_domain::PersistenceAction::UpsertStack(taskboard_domain::Stack {

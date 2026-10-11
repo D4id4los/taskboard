@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use taskboard_domain::entities::{
-    Board, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
+    Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
 };
 use taskboard_domain::ids::{
     BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
@@ -38,6 +38,7 @@ struct BoardRow {
     color: String,
     archived: bool,
     deleted: bool,
+    ck_title: DateTime<Utc>,
     remote_seen: Option<DateTime<Utc>>,
 }
 
@@ -157,6 +158,9 @@ fn decode_board(row: BoardRow) -> Result<Board, RepositoryError> {
         color: Color::new(row.color),
         archived: row.archived,
         deleted: row.deleted,
+        clocks: BoardClocks {
+            title: row.ck_title,
+        },
         remote_seen: row.remote_seen,
     })
 }
@@ -340,6 +344,7 @@ impl SqliteTaskRepository {
             BoardRow,
             r#"SELECT id, remote_board_id, title, color,
                       archived as "archived: bool", deleted as "deleted: bool",
+                      ck_title as "ck_title: DateTime<Utc>",
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM boards ORDER BY id"#
         )
@@ -547,14 +552,15 @@ async fn execute_batch(
         if let PersistenceAction::UpsertBoard(board) = action {
             let remote = board.remote.map(|b| codec::remote_col(b.get()));
             sqlx::query!(
-                r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        remote_board_id = excluded.remote_board_id,
                        title = excluded.title,
                        color = excluded.color,
                        archived = excluded.archived,
                        deleted = excluded.deleted,
+                       ck_title = excluded.ck_title,
                        remote_seen = excluded.remote_seen"#,
                 codec::uuid_to_text(board.id.as_uuid()),
                 remote,
@@ -562,6 +568,7 @@ async fn execute_batch(
                 board.color.as_str(),
                 board.archived,
                 board.deleted,
+                board.clocks.title.to_rfc3339(),
                 board.remote_seen,
             )
             .execute(&mut *tx)
