@@ -75,8 +75,25 @@ pub enum Command {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
-    /// Run the headless sync daemon (M1).
-    Daemon,
+    /// Who serves this database and how is sync (never boots a core,
+    /// never triggers a sync cycle). With a running daemon: the live
+    /// view over IPC; without: the lock sidecar's diagnostic PID.
+    Status,
+    /// Run the headless sync daemon (M1) — boots the core, binds the
+    /// per-database IPC socket, and serves commands until a signal or
+    /// `daemon stop`.
+    Daemon {
+        #[command(subcommand)]
+        cmd: Option<DaemonCmd>,
+    },
+}
+
+/// `daemon` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum DaemonCmd {
+    /// Gracefully stop a running daemon over its IPC socket (typed
+    /// `no-daemon` failure, exit 1, when nothing serves this database).
+    Stop,
 }
 
 /// `boards` subcommands.

@@ -230,6 +230,9 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::SyncDisabled => "sync-disabled",
             CommandError::LocalBoardExists => "local-board-exists",
             CommandError::NotConfigured => "not-configured",
+            CommandError::NoDaemon => "no-daemon",
+            CommandError::IpcTransport => "ipc-transport",
+            CommandError::IpcVersion { .. } => "ipc-version",
         }
     }
 
@@ -269,6 +272,9 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::Prompt(std::io::Error::other("x")),
         CommandError::from(DeckError::BadRequest),
         CommandError::NotConfigured,
+        CommandError::NoDaemon,
+        CommandError::IpcTransport,
+        CommandError::IpcVersion { server_v: 2 },
     ];
     for err in &samples {
         assert_eq!(err.error_kind(), expected(err), "{err}");

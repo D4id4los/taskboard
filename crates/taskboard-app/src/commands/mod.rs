@@ -53,10 +53,11 @@ pub fn require_connector(config: &AppConfig) -> Result<(), CommandError> {
 /// tests inject buffers and the future daemon-IPC frontend (WI-5) will
 /// inject socket sinks. `json` rides per invocation (REPL: per line).
 pub struct CommandIo<'a> {
-    /// Payloads (or human text) — stdout in the binary.
-    pub out: &'a mut dyn std::io::Write,
+    /// Payloads (or human text) — stdout in the binary. `Send` so a
+    /// dispatch can run inside a spawned task (the IPC dispatcher).
+    pub out: &'a mut (dyn std::io::Write + Send),
     /// Error reports — stderr in the binary.
-    pub err: &'a mut dyn std::io::Write,
+    pub err: &'a mut (dyn std::io::Write + Send),
     /// `--json`: machine-readable payloads on `out`, error JSON on
     /// `err`.
     pub json: bool,
@@ -174,6 +175,21 @@ pub enum CommandError {
     /// (`logout` with no configured server/username).
     #[error("no Nextcloud connection is configured")]
     NotConfigured,
+    /// No daemon serves this database (`daemon stop` without a daemon).
+    #[error("no daemon is serving this database")]
+    NoDaemon,
+    /// The IPC transport failed mid-request (connection death, frame
+    /// garbage) — the daemon holds the instance lock, so in-process
+    /// fallback would only report `instance-locked`; the typed failure
+    /// is the honest signal (ADR 0012).
+    #[error("daemon ipc transport failed")]
+    IpcTransport,
+    /// The daemon speaks a different wire-protocol version.
+    #[error("daemon ipc protocol version mismatch")]
+    IpcVersion {
+        /// The server's protocol version.
+        server_v: u32,
+    },
 }
 
 impl From<crate::config::ConfigError> for CommandError {
@@ -236,6 +252,9 @@ impl CommandError {
             Self::SyncDisabled => "sync-disabled",
             Self::LocalBoardExists => "local-board-exists",
             Self::NotConfigured => "not-configured",
+            Self::NoDaemon => "no-daemon",
+            Self::IpcTransport => "ipc-transport",
+            Self::IpcVersion { .. } => "ipc-version",
         }
     }
 
@@ -253,6 +272,7 @@ impl CommandError {
                 Some(candidates.join(", "))
             }
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
+            Self::IpcVersion { server_v } => Some(server_v.to_string()),
             _ => None,
         }
     }
@@ -668,7 +688,18 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             Err(err) => report_to(&mut ctx.io, &err),
         },
         Command::Config { cmd } => config::handle(&cmd, &mut ctx),
-        Command::Daemon => unreachable!("main handles the daemon arm itself"),
+        Command::Status => {
+            // No core boot: the config resolves for the db path only; a
+            // rejected config is the one typed failure status reports.
+            let db_path = match AppConfig::load(ctx.config_path.clone()) {
+                Ok(config) => config.db_path().to_path_buf(),
+                Err(err) => return report_to(&mut ctx.io, &CommandError::from(err)),
+            };
+            let view = status::StatusView::no_daemon(&db_path);
+            emit_to(&mut ctx.io, &view, &status::render_text(&view));
+            0
+        }
+        Command::Daemon { .. } => unreachable!("main handles the daemon arms itself"),
     }
 }
 
@@ -703,7 +734,7 @@ fn task_changes(
 /// [`crate::repl::ReplSession`] (which adds its `json_default`) and the
 /// daemon IPC server's [`BasicSession`] alike — without either knowing
 /// about the other.
-pub trait CoreSession {
+pub trait CoreSession: Send + Sync {
     /// The resolved, validated config the session booted with.
     fn session_config(&self) -> &AppConfig;
     /// The credential store picked from the config at boot.
@@ -740,17 +771,27 @@ impl CoreSession for BasicSession {
 /// directly — no boot, no shutdown, no lock churn.
 #[allow(clippy::too_many_lines)] // one arm per subcommand, kept flat for review
 pub async fn dispatch_line(
-    session: &impl CoreSession,
+    session: &(impl CoreSession + ?Sized),
     app: &crate::App,
     command: Command,
     io: &mut CommandIo<'_>,
 ) -> u8 {
     tracing::info!(?command, json = io.json, "session line");
     match command {
-        Command::Login { .. } | Command::Logout | Command::Config { .. } | Command::Daemon => {
+        Command::Login { .. }
+        | Command::Logout
+        | Command::Config { .. }
+        | Command::Daemon { .. } => {
             unreachable!(
                 "the session loop intercepts daemon, login, logout, and config before routing"
             )
+        }
+        Command::Status => {
+            // The session *is* the core holder; the honest client-side
+            // answer names it. Never boots, never syncs.
+            let view = status::StatusView::in_session();
+            emit_to(io, &view, &status::render_text(&view));
+            0
         }
         Command::Boards {
             cmd: BoardsCmd::List,
@@ -1032,6 +1073,42 @@ pub async fn dispatch_line(
     }
 }
 
+/// Which transport lane a `Command` takes (ADR 0012): `Local` stays
+/// client-side always (pre-core verbs — no lock, no core, unchanged);
+/// `IpcOrLocal` is transparently served by a running daemon when one
+/// answers, else boots in-process as today; `IpcOnly` exists to talk to
+/// a daemon (`status`, `daemon stop`) and reports typed `no-daemon`
+/// otherwise. Exhaustive: the compiler forces every future verb to pick
+/// a lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcRoute {
+    /// Always in-process (pre-core verbs).
+    Local,
+    /// Daemon when one serves the db, else in-process boot.
+    IpcOrLocal,
+    /// Only meaningful against a running daemon.
+    IpcOnly,
+}
+
+/// The per-`Command` routing table (pure; unit-pinned).
+#[must_use]
+pub fn route_for_ipc(command: &Command) -> IpcRoute {
+    match command {
+        Command::Login { .. }
+        | Command::Logout
+        | Command::Config { .. }
+        | Command::Boards {
+            cmd: BoardsCmd::List,
+        } => IpcRoute::Local,
+        Command::Status | Command::Daemon { .. } => IpcRoute::IpcOnly,
+        Command::Boards { .. }
+        | Command::Stacks { .. }
+        | Command::Labels { .. }
+        | Command::Tasks { .. }
+        | Command::Sync { .. } => IpcRoute::IpcOrLocal,
+    }
+}
+
 /// The shared shape of the mutation verbs: boot the core, run the verb,
 /// print the receipt (or the error).
 async fn run_mutation<F, Fut>(io: &mut CommandIo<'_>, config_path: Option<PathBuf>, body: F) -> u8
@@ -1117,4 +1194,81 @@ pub fn report(json: bool, err: &CommandError) -> u8 {
         json,
     };
     report_to(&mut io, err)
+}
+
+#[cfg(test)]
+mod ipc_routing_tests {
+    use crate::cli::{BoardsCmd, DaemonCmd, TasksCmd};
+    use crate::commands::{Command, IpcRoute, route_for_ipc};
+
+    /// The transport lane table (ADR 0012 §2.1): pre-core verbs stay
+    /// client-side; core verbs prefer a daemon; the operator verbs only
+    /// talk to one. Exhaustive — the compiler forces future verbs here.
+    #[test]
+    fn the_routing_table_picks_lanes_per_command() {
+        let local = [
+            Command::Login {
+                server: None,
+                user: None,
+            },
+            Command::Logout,
+            Command::Config {
+                cmd: crate::cli::ConfigCmd::Print,
+            },
+            Command::Boards {
+                cmd: BoardsCmd::List,
+            },
+        ];
+        for command in &local {
+            assert_eq!(route_for_ipc(command), IpcRoute::Local, "{command:?}");
+        }
+
+        let ipc_only = [
+            Command::Status,
+            Command::Daemon {
+                cmd: Some(DaemonCmd::Stop),
+            },
+        ];
+        for command in &ipc_only {
+            assert_eq!(route_for_ipc(command), IpcRoute::IpcOnly, "{command:?}");
+        }
+
+        let ipc_or_local = [
+            Command::Boards {
+                cmd: BoardsCmd::Create {
+                    title: "t".to_owned(),
+                    color: None,
+                },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Select {
+                    board: 3,
+                    timeout_secs: 1,
+                    bind_local_board: false,
+                },
+            },
+            Command::Stacks {
+                cmd: crate::cli::StacksCmd::Add {
+                    title: "t".to_owned(),
+                    order: None,
+                },
+            },
+            Command::Labels {
+                cmd: crate::cli::LabelsCmd::List,
+            },
+            Command::Tasks {
+                cmd: TasksCmd::Add {
+                    title: "t".to_owned(),
+                    stack: None,
+                },
+            },
+            Command::Sync {
+                no_wait: false,
+                timeout_secs: 1,
+            },
+        ];
+        for command in &ipc_or_local {
+            assert_eq!(route_for_ipc(command), IpcRoute::IpcOrLocal, "{command:?}");
+        }
+    }
 }

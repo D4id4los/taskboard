@@ -1,25 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `taskboard` application runner.
 //!
-//! Thin process glue (ADRs 0008/0009): parse the CLI, initialize
+//! Thin process glue (ADRs 0008/0009/0012): parse the CLI, initialize
 //! `tracing`, then either hand the subcommand to the library's
-//! `commands::dispatch` (typed handlers, exit codes) or run the daemon
-//! lifecycle — boot the in-process core through `bootstrap`, wait for
-//! the signal, graceful drain with a second-signal force exit. All
-//! wiring lives in the `taskboard_app` library so tests and future
+//! `commands::dispatch` (typed handlers, exit codes) — transparently
+//! relayed over the daemon's IPC socket when one serves this database —
+//! or run the daemon lifecycle: boot the in-process core through
+//! `bootstrap`, serve the per-database IPC socket, wait for the signal
+//! or `daemon stop`, graceful drain with a second-signal force exit.
+//! All wiring lives in the `taskboard_app` library so tests and future
 //! frontends reuse it.
 
 #![forbid(unsafe_code)]
 
 use std::io::IsTerminal as _;
+use std::io::Write as _;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser as _;
 
 use taskboard_app::bootstrap::{bootstrap, wait_for_signal};
-use taskboard_app::cli::{Cli, Command};
-use taskboard_app::commands::{CommandCtx, dispatch};
+use taskboard_app::cli::{Cli, Command, DaemonCmd};
+use taskboard_app::commands::{
+    BasicSession, CommandCtx, CommandError, IpcRoute, dispatch, report, route_for_ipc,
+};
 use taskboard_app::config::{AppConfig, CredentialStoreKind};
+use taskboard_app::ipc::client;
 use taskboard_app::secrets::{CredentialStore, EnvCredentialStore, KeyringStore};
 
 fn init_tracing() {
@@ -54,31 +61,70 @@ fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
 
     init_tracing();
+    // The raw argv is captured *before* clap parses: the IPC path
+    // relays these words verbatim (the server is the single parse
+    // authority; clap's types cannot faithfully reconstruct quoting).
+    let raw_argv: Vec<String> = std::env::args().skip(1).collect();
     let cli = Cli::parse();
     tracing::info!(version = taskboard_app::VERSION, "starting taskboard");
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(cli))?;
+        .block_on(run(cli, raw_argv))?;
 
     tracing::info!("taskboard shut down cleanly");
     Ok(())
 }
 
-async fn run(mut cli: Cli) -> color_eyre::Result<()> {
+async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
     // Subcommand arms are lib code (`commands::dispatch`); the process
     // exits with the returned code (0 success / 1 runtime failure).
     // Exit 2 is clap's usage error, 130 the second-signal force exit.
-    // Both flags are read *before* the take: `daemon` must fall through
+    // The daemon-*run* arm (`daemon` with no subcommand) falls through
     // to the daemon lifecycle, never into the bare-invocation entry
     // (the review-2026-10-11 regression: a `take()` inside the guard
     // swallowed it and a TTY then opened the REPL).
     let bare_invocation = cli.command.is_none();
-    let explicit_daemon = matches!(cli.command, Some(Command::Daemon));
+    let daemon_run = matches!(cli.command, Some(Command::Daemon { cmd: None }));
     if let Some(command) = cli.command.take()
-        && !explicit_daemon
+        && !daemon_run
     {
+        // Transport auto-routing (ADR 0012): silent in both human and
+        // JSON modes — the observable contract (exit code, stdout
+        // payload, stderr envelope) is byte-identical on both paths.
+        match route_for_ipc(&command) {
+            IpcRoute::IpcOnly => {
+                let code = match command {
+                    Command::Status => status_command(cli.config.take(), cli.json).await,
+                    Command::Daemon {
+                        cmd: Some(DaemonCmd::Stop),
+                    } => daemon_stop_command(cli.config.take(), cli.json).await,
+                    // `daemon` with no subcommand is the run arm above.
+                    _ => unreachable!("the IpcOnly lanes are status and daemon stop"),
+                };
+                std::process::exit(i32::from(code));
+            }
+            IpcRoute::IpcOrLocal => {
+                // A resolved config derives the socket; a rejected
+                // config reports typed through the in-process dispatch,
+                // exactly as before.
+                if let Ok(config) = AppConfig::load(cli.config.clone())
+                    && let Some(conn) = client::try_connect(config.db_path()).await
+                {
+                    match conn.exec(&raw_argv).await {
+                        Ok(outcome) => relay(&outcome),
+                        // Mid-request death: the daemon holds the lock,
+                        // so in-process fallback would only re-report
+                        // `instance-locked`; the typed failure is the
+                        // honest signal.
+                        Err(err) => std::process::exit(i32::from(report(cli.json, &err))),
+                    }
+                }
+            }
+            IpcRoute::Local => {}
+        }
+
         let mut out = std::io::stdout();
         let mut err = std::io::stderr();
         let ctx = CommandCtx {
@@ -103,10 +149,7 @@ async fn run(mut cli: Cli) -> color_eyre::Result<()> {
             Ok(config) => config,
             // The session boot's typed failure class, reported through
             // the same envelope a one-shot uses (JSON under `--json`).
-            Err(err) => std::process::exit(i32::from(taskboard_app::commands::report(
-                cli.json,
-                &taskboard_app::commands::CommandError::from(err),
-            ))),
+            Err(err) => std::process::exit(i32::from(report(cli.json, &CommandError::from(err)))),
         };
         match taskboard_app::repl::entry_point(
             false,
@@ -129,16 +172,70 @@ async fn run(mut cli: Cli) -> color_eyre::Result<()> {
 
     let config = match AppConfig::load(cli.config) {
         Ok(config) => config,
-        Err(err) => std::process::exit(i32::from(taskboard_app::commands::report(
-            cli.json,
-            &taskboard_app::commands::CommandError::from(err),
-        ))),
+        Err(err) => std::process::exit(i32::from(report(cli.json, &CommandError::from(err)))),
     };
     daemon_lifecycle(config, cli.json).await
 }
 
+/// Relays the daemon's rendered answer and exits with its code — the
+/// client is a dumb relay; the contract is byte-identical to the
+/// in-process dispatch (ADR 0012). Never returns.
+fn relay(outcome: &client::ExecOutcome) -> ! {
+    let mut out = std::io::stdout();
+    let _ = out.write_all(outcome.out.as_bytes());
+    let _ = out.flush();
+    let mut err = std::io::stderr();
+    let _ = err.write_all(outcome.err.as_bytes());
+    let _ = err.flush();
+    std::process::exit(i32::from(outcome.code));
+}
+
+/// `taskboard status` (ADR 0012): the daemon's live view over IPC, or
+/// the client-side answer off the lock sidecar. Never boots a core,
+/// never triggers a cycle; exit 0 both ways (an observation, not a
+/// failure).
+async fn status_command(config_path: Option<std::path::PathBuf>, json: bool) -> u8 {
+    let config = match AppConfig::load(config_path) {
+        Ok(config) => config,
+        Err(err) => return report(json, &CommandError::from(err)),
+    };
+    let view = match client::try_connect(config.db_path()).await {
+        Some(conn) => match conn.status().await {
+            Ok(view) => view,
+            Err(err) => return report(json, &err),
+        },
+        None => taskboard_app::commands::status::StatusView::no_daemon(config.db_path()),
+    };
+    if json {
+        let line = serde_json::to_string(&view).expect("status serialization is total");
+        println!("{line}");
+    } else {
+        println!("{}", taskboard_app::commands::status::render_text(&view));
+    }
+    0
+}
+
+/// `taskboard daemon stop`: the graceful remote shutdown. Without a
+/// daemon: typed `no-daemon`, exit 1.
+async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool) -> u8 {
+    let config = match AppConfig::load(config_path) {
+        Ok(config) => config,
+        Err(err) => return report(json, &CommandError::from(err)),
+    };
+    let Some(conn) = client::try_connect(config.db_path()).await else {
+        return report(json, &CommandError::NoDaemon);
+    };
+    match conn.shutdown().await {
+        Ok(()) => 0,
+        Err(err) => report(json, &err),
+    }
+}
+
 /// The daemon lifecycle (explicit `daemon`, or the `[app] mode`
-/// resolution from a bare non-TTY invocation).
+/// resolution from a bare non-TTY invocation): boot the core, serve the
+/// per-database IPC socket, wait for the first signal or `daemon stop`,
+/// drain the server, then run the graceful app shutdown — the
+/// second-signal force exit stays armed throughout.
 async fn daemon_lifecycle(config: AppConfig, json: bool) -> color_eyre::Result<()> {
     // The daemon's entry owns the `[app] mode` gate (the core itself is
     // mode-agnostic — the REPL serves any mode's console, ADR 0011):
@@ -153,30 +250,70 @@ async fn daemon_lifecycle(config: AppConfig, json: bool) -> color_eyre::Result<(
     if taskboard_app::commands::require_connector(&config).is_err() {
         // The daemon's entire purpose is the connector: fail loudly
         // (typed `sync-disabled`) instead of idling without one.
-        let err = taskboard_app::commands::CommandError::SyncDisabled;
-        std::process::exit(i32::from(taskboard_app::commands::report(json, &err)));
+        let err = CommandError::SyncDisabled;
+        std::process::exit(i32::from(report(json, &err)));
     }
     let store: Arc<dyn CredentialStore> = match config.nextcloud.credential_store {
         CredentialStoreKind::Keyring => Arc::new(KeyringStore),
         CredentialStoreKind::Env => Arc::new(EnvCredentialStore),
     };
 
-    let app = match bootstrap(config, store).await {
-        Ok(app) => app,
-        Err(err) => return Err(err.into()),
+    let app = match bootstrap(config, store.clone()).await {
+        Ok(app) => Arc::new(app),
+        // Boot failures are reported typed (the `--json` envelope on
+        // stderr), exactly like every other command — `instance-locked`
+        // included: the daemon is a core boot, not a special failure.
+        Err(err) => std::process::exit(i32::from(report(json, &CommandError::from(err)))),
     };
 
     // The daemon logs system events (StorageFailed et al.) until exit.
     let _logger = taskboard_app::bootstrap::spawn_system_event_logger(&app.system);
 
+    // One core, N frontends (ADR 0008): while the daemon runs, the
+    // socket serves every core verb — CLI invocations stop paying the
+    // per-command boot cost and stop fighting the instance lock.
+    let session = Arc::new(BasicSession {
+        config: app.config.clone(),
+        store,
+    });
+    let server =
+        match taskboard_app::ipc::server::spawn_server(app.clone(), session, app.config.db_path())
+            .await
+        {
+            Ok(server) => server,
+            Err(err) => return Err(err.into()),
+        };
+    tracing::info!(
+        db = %app.config.db_path().display(),
+        "daemon serving commands over ipc"
+    );
+
     // The first-signal wait happens here — *before* arming the
     // force-exit watcher — because `ctrl_c` and SIGTERM notify every
     // listener: an early watcher would catch the first signal instead
     // of the second.
-    wait_for_signal().await;
-    tracing::info!("shutdown signal received");
+    tokio::select! {
+        () = wait_for_signal() => {
+            tracing::info!("shutdown signal received");
+        }
+        () = server.stopped() => {
+            tracing::info!("shutdown requested over ipc");
+        }
+    }
+    let shutdown_timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs);
+    let drain = async {
+        if tokio::time::timeout(shutdown_timeout, server.join())
+            .await
+            .is_err()
+        {
+            tracing::warn!("ipc drain did not finish in time; shutting down anyway");
+        }
+        // The server is joined and dropped: the refcount is back to 1.
+        let app = Arc::try_unwrap(app).expect("the ipc server drained");
+        app.shutdown().await
+    };
     let outcome = tokio::select! {
-        outcome = app.shutdown() => outcome,
+        outcome = drain => outcome,
         () = wait_for_signal() => {
             tracing::warn!("second signal during shutdown; forcing exit");
             std::process::exit(130);
