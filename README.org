@@ -158,7 +158,6 @@ Changes are durable locally the moment the command replies; the
 =sync: idle (N pending)= footer counts the local write-ahead queue
 nothing drains until a connector attaches.
 
-<<<<<<< HEAD
 *Editing* the board needs no server either:
 
 #+begin_src sh
@@ -176,8 +175,6 @@ titles; destructive verbs cascade what the server would cascade
 (=stacks delete= takes its tasks with it). =labels list= shows
 assignment counts, and =config print= dumps the effective
 (secret-free) configuration with its validity diagnosis.
-||||||| parent of f84f7df (docs(app): ADR 0011 — interactive REPL frontend and no-arg entry)
-=======
 ** Interactive shell (no arguments on a terminal)
 
 Bare =taskboard= with a terminal on stdin opens a =parted=-style REPL
@@ -204,7 +201,6 @@ running daemon makes bare =taskboard= fail with =instance-locked=:
 stop the daemon first. Without a TTY (systemd units, pipes), bare
 =taskboard= keeps the old behavior: the =[app] mode= resolution
 (daemon default).
->>>>>>> f84f7df (docs(app): ADR 0011 — interactive REPL frontend and no-arg entry)
 
 ** Attaching a server (optional)
 

@@ -492,7 +492,11 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             Ok((config, store)) => {
                 match labels::add(config, store, &title, color.as_deref()).await {
                     Ok(receipt) => {
-                        emit_to(&mut ctx.io, &receipt, &labels::render_text_receipt(&receipt));
+                        emit_to(
+                            &mut ctx.io,
+                            &receipt,
+                            &labels::render_text_receipt(&receipt),
+                        );
                         0
                     }
                     Err(err) => report_to(&mut ctx.io, &err),
@@ -510,7 +514,11 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match labels::edit(config, store, &label, title, color).await {
                 Ok(receipt) => {
-                    emit_to(&mut ctx.io, &receipt, &labels::render_text_receipt(&receipt));
+                    emit_to(
+                        &mut ctx.io,
+                        &receipt,
+                        &labels::render_text_receipt(&receipt),
+                    );
                     0
                 }
                 Err(err) => report_to(&mut ctx.io, &err),
@@ -522,7 +530,11 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => match labels::delete(config, store, &label).await {
                 Ok(receipt) => {
-                    emit_to(&mut ctx.io, &receipt, &labels::render_text_receipt(&receipt));
+                    emit_to(
+                        &mut ctx.io,
+                        &receipt,
+                        &labels::render_text_receipt(&receipt),
+                    );
                     0
                 }
                 Err(err) => report_to(&mut ctx.io, &err),
@@ -536,7 +548,11 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 let standalone = config.sync_backend() == SyncBackend::Standalone;
                 match tasks::list(config, store, stack.as_deref()).await {
                     Ok(list) => {
-                        emit_to(&mut ctx.io, &list, &tasks::render_text_list(&list, standalone));
+                        emit_to(
+                            &mut ctx.io,
+                            &list,
+                            &tasks::render_text_list(&list, standalone),
+                        );
                         0
                     }
                     Err(err) => report_to(&mut ctx.io, &err),
@@ -547,25 +563,35 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         Command::Tasks {
             cmd: TasksCmd::Add { title, stack },
         } => {
-            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
-                tasks::add(config, store, &title, stack.as_deref()).await
-            })
+            run_mutation(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                move |config, store| async move {
+                    tasks::add(config, store, &title, stack.as_deref()).await
+                },
+            )
             .await
         }
         Command::Tasks {
             cmd: TasksCmd::Done { task, undo },
         } => {
-            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
-                tasks::done(config, store, &task, undo).await
-            })
+            run_mutation(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                move |config, store| async move { tasks::done(config, store, &task, undo).await },
+            )
             .await
         }
         Command::Tasks {
             cmd: TasksCmd::Move { task, stack, order },
         } => {
-            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
-                tasks::move_(config, store, &task, stack.as_deref(), order).await
-            })
+            run_mutation(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                move |config, store| async move {
+                    tasks::move_(config, store, &task, stack.as_deref(), order).await
+                },
+            )
             .await
         }
         Command::Tasks {
@@ -603,20 +629,20 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         },
         Command::Tasks {
             cmd: TasksCmd::Label { task, label },
-        } => {
-            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
-                tasks::label(config, store, &task, &label).await
-            })
-            .await
-        }
+        } => run_mutation(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            move |config, store| async move { tasks::label(config, store, &task, &label).await },
+        )
+        .await,
         Command::Tasks {
             cmd: TasksCmd::Unlabel { task, label },
-        } => {
-            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
-                tasks::unlabel(config, store, &task, &label).await
-            })
-            .await
-        }
+        } => run_mutation(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            move |config, store| async move { tasks::unlabel(config, store, &task, &label).await },
+        )
+        .await,
         Command::Sync {
             no_wait,
             timeout_secs,
@@ -699,11 +725,10 @@ pub async fn dispatch_line(
 ) -> u8 {
     tracing::info!(?command, json = io.json, "session line");
     match command {
-        Command::Login { .. }
-        | Command::Logout
-        | Command::Config { .. }
-        | Command::Daemon => {
-            unreachable!("the session loop intercepts daemon, login, logout, and config before routing")
+        Command::Login { .. } | Command::Logout | Command::Config { .. } | Command::Daemon => {
+            unreachable!(
+                "the session loop intercepts daemon, login, logout, and config before routing"
+            )
         }
         Command::Boards {
             cmd: BoardsCmd::List,
@@ -824,8 +849,10 @@ pub async fn dispatch_line(
         } => {
             // The clap value parser normalizes to lowercase; the
             // session arm normalizes like the one-shot wrapper does.
-            let color =
-                color.map_or_else(|| labels::DEFAULT_LABEL_COLOR.to_owned(), |c| c.to_lowercase());
+            let color = color.map_or_else(
+                || labels::DEFAULT_LABEL_COLOR.to_owned(),
+                |c| c.to_lowercase(),
+            );
             match labels::add_on(app, title, color).await {
                 Ok(receipt) => {
                     emit_to(io, &receipt, &labels::render_text_receipt(&receipt));
@@ -931,8 +958,9 @@ pub async fn dispatch_line(
         },
         Command::Tasks {
             cmd: TasksCmd::Label { task, label },
-        } => match tasks::label_on(app, &task, &label, |t, l| {
-            StateCommand::AssignLabel { task: t, label: l }
+        } => match tasks::label_on(app, &task, &label, |t, l| StateCommand::AssignLabel {
+            task: t,
+            label: l,
         })
         .await
         {
@@ -944,8 +972,9 @@ pub async fn dispatch_line(
         },
         Command::Tasks {
             cmd: TasksCmd::Unlabel { task, label },
-        } => match tasks::label_on(app, &task, &label, |t, l| {
-            StateCommand::UnassignLabel { task: t, label: l }
+        } => match tasks::label_on(app, &task, &label, |t, l| StateCommand::UnassignLabel {
+            task: t,
+            label: l,
         })
         .await
         {

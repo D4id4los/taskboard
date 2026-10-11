@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use common::{EnvOverride, env_lock, remove_env, set_env};
-use taskboard_app::commands::{CommandCtx, config};
+use taskboard_app::commands::config;
 use taskboard_app::config::{
     AppConfig, ConfigError, CredentialStoreKind, DEFAULT_BACKOFF_INITIAL_SECS,
     DEFAULT_BACKOFF_MAX_SECS, DEFAULT_POLL_INTERVAL_SECS,
@@ -304,8 +304,7 @@ fn c10_config_print_reports_validity_in_the_payload() {
     .expect("write invalid");
     std::fs::write(dir.path().join("garbage.toml"), "= not toml =").expect("write garbage");
 
-    let view = config::print(Some(dir.path().join("valid.toml")))
-    .expect("valid config");
+    let view = config::print(Some(dir.path().join("valid.toml"))).expect("valid config");
     assert!(view.valid);
     assert_eq!(view.invalid_kind, None);
     assert_eq!(
@@ -317,13 +316,11 @@ fn c10_config_print_reports_validity_in_the_payload() {
         Some(dir.path().join("valid.toml").to_str().expect("utf8"))
     );
 
-    let view = config::print(Some(dir.path().join("invalid.toml")))
-    .expect("invalid still prints");
+    let view = config::print(Some(dir.path().join("invalid.toml"))).expect("invalid still prints");
     assert!(!view.valid);
     assert_eq!(view.invalid_kind.as_deref(), Some("invalid-server-url"));
 
-    let err = config::print(Some(dir.path().join("garbage.toml")))
-    .expect_err("garbage exits 1");
+    let err = config::print(Some(dir.path().join("garbage.toml"))).expect_err("garbage exits 1");
     assert_eq!(err.error_kind(), "config");
 }
 
@@ -336,8 +333,7 @@ fn c11_config_print_includes_the_env_overlay() {
     let _guard = env_lock();
     let _server = EnvOverride::set("TASKBOARD_NEXTCLOUD__SERVER_URL", "https://env.example.com");
     let _user = EnvOverride::set("TASKBOARD_NEXTCLOUD__USERNAME", "alice");
-    let view = config::print(Some(dir.path().join("empty.toml")))
-    .expect("print");
+    let view = config::print(Some(dir.path().join("empty.toml"))).expect("print");
     assert_eq!(
         view.config.nextcloud.server_url.as_deref(),
         Some("https://env.example.com")

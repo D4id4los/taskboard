@@ -96,10 +96,8 @@ pub async fn add(
     // The clap value parser normalizes to lowercase; the direct-call
     // path (this crate's tests) normalizes here too.
     let color = color.map_or_else(|| DEFAULT_LABEL_COLOR.to_owned(), str::to_lowercase);
-    crate::commands::tasks::with_core(config, store, async |app| {
-        add_on(app, title, color).await
-    })
-    .await
+    crate::commands::tasks::with_core(config, store, async |app| add_on(app, title, color).await)
+        .await
 }
 
 /// The `labels add` steps on a booted core (the REPL/session seam);
@@ -202,15 +200,11 @@ pub async fn delete(
     label: &str,
 ) -> Result<LabelReceipt, CommandError> {
     let label = label.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| delete_on(app, &label).await)
-        .await
+    crate::commands::tasks::with_core(config, store, async |app| delete_on(app, &label).await).await
 }
 
 /// The `labels delete` steps on a booted core (the REPL/session seam).
-pub(crate) async fn delete_on(
-    app: &crate::App,
-    label: &str,
-) -> Result<LabelReceipt, CommandError> {
+pub(crate) async fn delete_on(app: &crate::App, label: &str) -> Result<LabelReceipt, CommandError> {
     {
         let state = app.engine.shared_state().load_full();
         // Terminal intent: a repeat still resolves its target, so a

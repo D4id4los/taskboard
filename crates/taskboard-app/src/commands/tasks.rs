@@ -51,7 +51,10 @@ pub(crate) async fn with_core<T>(
 
 /// Resolves a stack selector: exact uuid wins, then exact live title;
 /// `None` requires exactly one live stack.
-pub(crate) fn resolve_stack(state: &AppState, selector: Option<&str>) -> Result<StackId, CommandError> {
+pub(crate) fn resolve_stack(
+    state: &AppState,
+    selector: Option<&str>,
+) -> Result<StackId, CommandError> {
     let mut live: Vec<&Stack> = state.stacks.values().filter(|s| !s.deleted).collect();
     live.sort_by_key(|s| (s.order, s.id));
     let candidates = || live.iter().map(|s| s.title.clone()).collect();
@@ -317,8 +320,9 @@ pub async fn label(
     let task = task.to_owned();
     let label = label.to_owned();
     with_core(config, store, async |app| {
-        label_on(app, &task, &label, |t, l| {
-            StateCommand::AssignLabel { task: t, label: l }
+        label_on(app, &task, &label, |t, l| StateCommand::AssignLabel {
+            task: t,
+            label: l,
         })
         .await
     })
@@ -340,8 +344,9 @@ pub async fn unlabel(
     let task = task.to_owned();
     let label = label.to_owned();
     with_core(config, store, async |app| {
-        label_on(app, &task, &label, |t, l| {
-            StateCommand::UnassignLabel { task: t, label: l }
+        label_on(app, &task, &label, |t, l| StateCommand::UnassignLabel {
+            task: t,
+            label: l,
         })
         .await
     })
@@ -385,7 +390,10 @@ pub async fn edit(
     changes: TaskChanges,
 ) -> Result<MutationReceipt, CommandError> {
     let task = task.to_owned();
-    with_core(config, store, async |app| edit_on(app, &task, changes).await).await
+    with_core(config, store, async |app| {
+        edit_on(app, &task, changes).await
+    })
+    .await
 }
 
 /// The `tasks edit` steps on a booted core (the REPL/session seam).
@@ -441,11 +449,10 @@ pub(crate) async fn delete_on(
     // Terminal intent: a repeat must still resolve its target, so a
     // tombstoned task stays reachable by exact uuid (the live cascade
     // deliberately hides tombstones from prefix/title selection).
-    let task_id = resolve_task(&state, task)
-        .or_else(|err| match err {
-            CommandError::UnknownTask(_) => resolve_task_exact_any(&state, task),
-            other => Err(other),
-        })?;
+    let task_id = resolve_task(&state, task).or_else(|err| match err {
+        CommandError::UnknownTask(_) => resolve_task_exact_any(&state, task),
+        other => Err(other),
+    })?;
     // Resolution guarantees the row exists (the live cascade or the
     // exact-uuid-any fallback both hit `contains_key`).
     let snapshot = state
