@@ -360,3 +360,66 @@ async fn ip10_no_daemon_answers_none() {
     })
     .await;
 }
+
+/// IP11 (the wiremock row): a *connector*-backend daemon — wiremock
+/// answering 401 on everything — boots, the boot cycle fails auth in
+/// the background, and the socket still serves: `status` reports
+/// `nextcloud` with the auth failure, and `tasks add` rides IPC
+/// regardless of sync health.
+#[tokio::test]
+async fn ip11_connector_daemon_serves_even_when_sync_fails() {
+    bounded(async {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir();
+        let db = dir.path().join("ip11.db");
+        // A bound board: without one the cycle skips silently (NoBoard)
+        // and never touches the server — the 401 needs a live pull.
+        common::seed_board_binding(&db, 1, common::BOARD, "ip11-run").await;
+        let mut config = common::valid_config(&server.uri());
+        config.storage.db_path = Some(db.clone());
+        let password = common::EnvOverride::set("TASKBOARD_APP_PASSWORD", "pw");
+        let (handle, db) = serve_with_config(dir.path(), "ip11.db", config).await;
+
+        // The boot cycle fails auth in the background; poll (with a
+        // deadline) until it settles — status itself never triggers it.
+        let view;
+        let settle = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let current = client::try_connect(&db)
+                .await
+                .expect("daemon answers")
+                .status()
+                .await
+                .expect("status");
+            let failed = current
+                .sync
+                .as_ref()
+                .is_some_and(|sync| sync.error_kind.as_deref() == Some("auth"));
+            if failed {
+                view = Some(current);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < settle,
+                "the boot cycle never failed auth"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let view = view.expect("settled view");
+        assert_eq!(view.backend.as_deref(), Some("nextcloud"));
+        assert_eq!(view.sync.as_ref().expect("sync view").phase, "failed");
+
+        // IPC does not depend on sync health: mutations still serve.
+        let outcome = exec_once(&db, &argv("stacks add Todo")).await;
+        assert_eq!(outcome.code, 0, "{}", outcome.err);
+
+        handle.join().await;
+        drop(password);
+    })
+    .await;
+}
