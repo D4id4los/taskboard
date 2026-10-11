@@ -85,61 +85,64 @@ pub async fn create(
     );
     let color_str = color.as_str().to_owned();
     crate::commands::tasks::with_core(config, store, async |app| {
-        let outcome = app
-            .engine
-            .execute(StateCommand::CreateBoard {
-                title: title.clone(),
-                color: color.clone(),
-            })
-            .await?;
-        let CommandOutcome::CreatedBoard(board_id) = outcome else {
-            return Err(CommandError::Engine(Box::new(
-                taskboard_state::ExecuteError::Rejected(
-                    taskboard_domain::CommandError::BoardExists,
-                ),
-            )));
-        };
-        Ok(BoardReceipt {
-            id: board_id.as_uuid().to_string(),
-            title,
-            color: color_str,
-        })
+        create_on(app, title, color, color_str).await
     })
     .await
 }
 
-/// Renames the single live board (both backends). The engine stamps the
-/// title clock and enqueues the push op when the board is bound; a
-/// same-title repeat is an accepted no-op (exit 0).
-///
-/// # Errors
-///
-/// [`CommandError`] — typed, see the variant docs.
 pub async fn rename(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
     title: &str,
 ) -> Result<BoardReceipt, CommandError> {
     let title = title.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| {
-        app.engine
-            .execute(StateCommand::RenameBoard {
-                title: title.clone(),
-            })
-            .await?;
-        let state = app.engine.shared_state().load_full();
-        let board = state
-            .boards
-            .values()
-            .find(|b| !b.deleted)
-            .ok_or(CommandError::NoBoard)?;
-        Ok(BoardReceipt {
-            id: board.id.as_uuid().to_string(),
-            title: board.title.clone(),
-            color: board.color.as_str().to_owned(),
+    crate::commands::tasks::with_core(config, store, async |app| rename_on(app, title).await).await
+}
+
+/// The `boards rename` steps on a booted core (the REPL/session seam).
+pub(crate) async fn rename_on(app: &crate::App, title: String) -> Result<BoardReceipt, CommandError> {
+    app.engine
+        .execute(StateCommand::RenameBoard {
+            title: title.clone(),
         })
+        .await?;
+    let state = app.engine.shared_state().load_full();
+    let board = state
+        .boards
+        .values()
+        .find(|b| !b.deleted)
+        .ok_or(CommandError::NoBoard)?;
+    Ok(BoardReceipt {
+        id: board.id.as_uuid().to_string(),
+        title: board.title.clone(),
+        color: board.color.as_str().to_owned(),
     })
-    .await
+}
+
+/// The `boards create` steps on a booted core (the REPL/session seam).
+pub(crate) async fn create_on(
+    app: &crate::App,
+    title: String,
+    color: taskboard_domain::Color,
+    color_str: String,
+) -> Result<BoardReceipt, CommandError> {
+    let outcome = app
+        .engine
+        .execute(StateCommand::CreateBoard {
+            title: title.clone(),
+            color,
+        })
+        .await?;
+    let CommandOutcome::CreatedBoard(board_id) = outcome else {
+        return Err(CommandError::Engine(Box::new(
+            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::BoardExists),
+        )));
+    };
+    Ok(BoardReceipt {
+        id: board_id.as_uuid().to_string(),
+        title,
+        color: color_str,
+    })
 }
 
 /// The publish ceremony: create a fresh Deck board from the local one
@@ -164,13 +167,14 @@ pub async fn publish(
     // the standalone backend.
     let client = client_for(&config, &store)?;
     let app = crate::bootstrap::bootstrap(config, store).await?;
-    let result = publish_locked(&app, &client, timeout).await;
+    let result = publish_on(&app, &client, timeout).await;
     let _ = app.shutdown().await;
     result
 }
 
-/// The publish steps on a booted core; the caller owns the shutdown.
-async fn publish_locked(
+/// The publish steps on a booted core; the caller owns the shutdown
+/// (the session dispatcher calls this directly against the session core).
+pub(crate) async fn publish_on(
     app: &crate::App,
     client: &DeckClient,
     timeout: Duration,
@@ -279,14 +283,15 @@ pub async fn select(
     }
 
     let app = crate::bootstrap::bootstrap(config, store).await?;
-    let result = select_locked(&app, board, timeout, bind_local_board).await;
+    let result = select_on(&app, board, timeout, bind_local_board).await;
     let _ = app.shutdown().await;
     result
 }
 
 /// Runs the binding steps on a booted core; the caller owns the
-/// shutdown.
-async fn select_locked(
+/// shutdown (the session dispatcher calls this directly against the
+/// session core).
+pub(crate) async fn select_on(
     app: &crate::App,
     board: u64,
     timeout: Duration,
