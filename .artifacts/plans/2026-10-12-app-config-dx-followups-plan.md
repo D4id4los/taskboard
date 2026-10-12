@@ -20,8 +20,9 @@
   with every existing install's read resolution and write target provably
   unchanged; (D2) the `--json` error envelope carries the specific
   `ConfigError::kind()` discriminants instead of the flat `"config"`.
-- **Status**: DRAFT — awaiting user review; stage 2 implements only after
-  approval.
+- **Status**: APPROVED 2026-10-12 (user review) — stage 2 implements as
+  specified; §8's two actionable candidates are filed as backlog entries
+  dated 2026-10-12.
 
 ---
 
