@@ -1,0 +1,13 @@
+# Codecov status-check tuning.
+#
+# The conflict-policy logging arms are deliberately left uncovered
+# (AGENTS §5 forbids asserting log text; the deck-client logging-arms
+# backlog entry documents the accepted gap). Any PR that adds logging
+# therefore cannot meet codecov's default near-total patch target, so
+# the patch status is informational: fully reported on every PR, never
+# gating. Project coverage keeps codecov's default target.
+coverage:
+  status:
+    patch:
+      default:
+        informational: true
