@@ -333,7 +333,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         Command::Login { server, user } => {
             login_command(&mut ctx.io, ctx.config_path, server, user).await
         }
-        Command::Logout => logout_command(&mut ctx.io, ctx.config_path.clone()),
+        Command::Logout => logout_command(&mut ctx.io, ctx.config_path.clone()).await,
         Command::Boards {
             cmd: BoardsCmd::List,
         } => {
@@ -689,18 +689,31 @@ async fn login_command(
 
 /// One-shot `logout`: reads the config without validation (the
 /// teardown command must survive a not-yet-valid file), deletes the
-/// stored secret, and clears the auto keys.
-fn logout_command(io: &mut CommandIo<'_>, config_path: Option<PathBuf>) -> u8 {
+/// stored secret, clears the auto keys — then, best-effort (WI-H),
+/// nudges the daemon serving the same database to drop its connector.
+/// The nudge never changes the exit code (D5): the secret *is* deleted;
+/// degradations ride stderr.
+async fn logout_command(io: &mut CommandIo<'_>, config_path: Option<PathBuf>) -> u8 {
     let path = AppConfig::config_path(config_path)
         .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
     match AppConfig::extract_raw(Some(&path)) {
         Ok(raw) => {
             let store = production_store(raw.nextcloud.credential_store);
-            emit_result(
-                io,
-                logout::run(&path, &raw, store.as_ref()),
-                logout::render_text,
-            )
+            match logout::run(&path, &raw, store.as_ref()) {
+                Ok(mut receipt) => {
+                    let nudge =
+                        logout::nudge_daemon(raw.db_path(), &receipt.server_url, &receipt.username)
+                            .await;
+                    let state = logout::map_nudge(&nudge);
+                    if let Some(warning) = logout::nudge_warning(state) {
+                        let _ = writeln!(io.err, "{warning}");
+                    }
+                    receipt.daemon_connector = Some(state);
+                    emit_to(io, &receipt, &logout::render_text(&receipt));
+                    0
+                }
+                Err(err) => report_to(io, &err),
+            }
         }
         Err(err) => report_to(io, &CommandError::from(err)),
     }
