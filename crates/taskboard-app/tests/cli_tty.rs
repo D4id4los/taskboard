@@ -574,3 +574,245 @@ fn tty_explicit_daemon_stays_the_daemon_and_serves_standalone() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// Tab completion through the real editor (WI-G): a Tab character in
+/// the scripted input drives rustyline's completion. Two structural
+/// proofs — a verb expansion and a live stack-title expansion — both
+/// ride on the same invariant: the JSON payload only appears if the
+/// Tab produced a *parseable* line; an unexpanded stem (`task`,
+/// `--stack=To`) is a usage error / typed `unknown-stack` failure with
+/// no such payload. Skipped when `script` is unavailable.
+#[test]
+#[allow(clippy::too_many_lines)] // the pacing table, one row per scripted line
+fn tty_repl_completion_expands_verbs_and_live_titles() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        // Skip, never fail: util-linux `script` unavailable here.
+        return;
+    }
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let inner = format!("{} --config {}", binary, config.display());
+    let mut child = std::process::Command::new("timeout")
+        .arg("60")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        // A supported TERM is part of the fixture: rustyline treats
+        // `dumb` (the CI/agent default) as an unsupported terminal and
+        // falls back to plain line reads where Tab is never a key.
+        .env("TERM", "xterm")
+        .spawn()
+        .expect("spawn script(1) pty wrapper");
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut out_pipe = child.stdout.take().expect("stdout piped");
+    let mut seen = Vec::new();
+    // Readline-cycle pacing: each scripted line is written only once
+    // the editor's Nth readline() is provably reading (see
+    // `wait_for_readline`), so no feed can land in a termios switch —
+    // the queue-flush wedge — however the session's own output
+    // interleaves under load. `\t` is the Tab key: the fourth line
+    // proves verb completion (`task` + Tab → `tasks`), the fifth
+    // proves live stack-title completion through the attached
+    // `--stack=` form.
+    feed_line(
+        &mut stdin,
+        &mut out_pipe,
+        &mut seen,
+        1,
+        "boards create \"Personal\"",
+    );
+    feed_line(
+        &mut stdin,
+        &mut out_pipe,
+        &mut seen,
+        2,
+        "stacks add \"Todo\"",
+    );
+    feed_line(
+        &mut stdin,
+        &mut out_pipe,
+        &mut seen,
+        3,
+        "tasks add \"first task\"",
+    );
+    feed_line(
+        &mut stdin,
+        &mut out_pipe,
+        &mut seen,
+        4,
+        "task\t list --json",
+    );
+    feed_line(
+        &mut stdin,
+        &mut out_pipe,
+        &mut seen,
+        5,
+        "tasks list --stack=To\t --json",
+    );
+    feed_line(&mut stdin, &mut out_pipe, &mut seen, 6, "exit");
+    let mut err_pipe = child.stderr.take().expect("stderr piped");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut err_pipe, &mut buf);
+        buf
+    });
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut out_pipe, &mut tail).expect("drain session output");
+    seen.extend_from_slice(&tail);
+    drop(out_pipe);
+    let stderr = stderr_thread.join().expect("stderr drained");
+    let status = child.wait().expect("pty run completes");
+
+    // The hang guard: `timeout 60` exits 124 when the session wedges.
+    assert_ne!(
+        status.code(),
+        Some(124),
+        "the REPL session hung (exit never completed)"
+    );
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "REPL session failed: {}; stdout: {}",
+        String::from_utf8_lossy(&stderr),
+        String::from_utf8_lossy(&seen)
+    );
+
+    // Both completed lines ran as real commands: exactly two JSON list
+    // payloads in the stream (the plain `--json` lines; the setup lines
+    // are human and skipped). Each payload is the full board listing —
+    // the verb-expanded line because only `tasks list` produces that
+    // shape, the title-expanded line because an unexpanded `To` would
+    // be an unknown-stack *error*, not a payload.
+    let payloads = json_list_payloads(&seen);
+    assert_eq!(
+        payloads.len(),
+        2,
+        "stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    for payload in &payloads {
+        assert_eq!(payload["stacks"][0]["title"], serde_json::json!("Todo"));
+        assert_eq!(
+            payload["stacks"][0]["tasks"][0]["title"],
+            serde_json::json!("first task")
+        );
+    }
+    // No errors at all: both expansions produced parseable lines. The
+    // merged pty stream is the place to look — `script(1)` attaches the
+    // inner process's stderr to the pty, so every session write (JSON
+    // payloads and JSON errors alike) lands in `seen` and the child's
+    // own stderr pipe stays empty by construction.
+    assert!(
+        json_error_lines(&seen).is_empty(),
+        "session stream: {}",
+        String::from_utf8_lossy(&seen)
+    );
+}
+
+/// The JSON list payloads of a captured session stream. The session's
+/// writes interleave with the line reader's repaints, so a payload can
+/// share its stream line with a prompt or a typed echo — extraction
+/// keys on the payload's own leading shape and takes the rest of the
+/// stream line, which nothing can follow: the payload write ends the
+/// line.
+fn json_list_payloads(buf: &[u8]) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(buf)
+        .lines()
+        .filter_map(|line| {
+            let start = line.find("{\"stacks\":")?;
+            serde_json::from_str(&line[start..]).ok()
+        })
+        .collect()
+}
+/// The JSON error objects of a captured session stream (an error line
+/// parses as an object with an `error` key; human text never does) —
+/// the same repaint-interleaving rule as [`json_list_payloads`]. The
+/// merged stream is the place to look: `script(1)` attaches the inner
+/// process's stderr to the pty, so every session write (JSON payloads
+/// and JSON errors alike) lands in the captured bytes and the child's
+/// own stderr pipe stays empty by construction.
+fn json_error_lines(buf: &[u8]) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(buf)
+        .lines()
+        .filter_map(|line| {
+            let start = line.find("{\"error\"")?;
+            serde_json::from_str::<serde_json::Value>(&line[start..]).ok()
+        })
+        .filter(|value| value.get("error").is_some())
+        .collect()
+}
+
+/// rustyline's readline-entry marker: every `readline()` opens with the
+/// bracketed-paste enable sequence and closes with its disable, and
+/// *nothing else* emits the opening bytes — refreshes (a Tab
+/// completion's full repaint emits the synchronized-update marker
+/// instead) and the session's own stdout/stderr/tracing writes never
+/// do. Counting them is therefore exact readline-cycle counting:
+/// marker N on the wire proves the editor enabled raw mode for line N
+/// and is blocked reading it, so a line fed then can never land in a
+/// termios switch (the queue-flush wedge), however the session's
+/// receipts and payloads interleave around the prompts under load.
+const READLINE_MARKER: &[u8] = b"\x1b[?2004h";
+
+/// Drains the session pipe until the Nth readline-entry marker
+/// appeared (the pacing gate). A reader that hits EOF before the
+/// marker appears fails the test via the assertion, never hangs
+/// (`timeout` guards the wedge case).
+fn wait_for_readline(out_pipe: &mut std::process::ChildStdout, seen: &mut Vec<u8>, n: usize) {
+    let count = |haystack: &[u8]| -> usize {
+        if haystack.len() < READLINE_MARKER.len() {
+            return 0;
+        }
+        haystack
+            .windows(READLINE_MARKER.len())
+            .filter(|w| *w == READLINE_MARKER)
+            .count()
+    };
+    loop {
+        if count(seen) >= n {
+            break;
+        }
+        let mut chunk = [0u8; 4096];
+        match std::io::Read::read(out_pipe, &mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(bytes) => seen.extend_from_slice(&chunk[..bytes]),
+        }
+    }
+    assert!(
+        count(seen) >= n,
+        "the session never reached readline {n}: {}",
+        String::from_utf8_lossy(seen)
+    );
+}
+
+/// Waits for the Nth readline cycle, then writes one scripted line
+/// (CR is the Enter key in raw mode — see `feed_session_lines`).
+fn feed_line(
+    stdin: &mut std::process::ChildStdin,
+    out_pipe: &mut std::process::ChildStdout,
+    seen: &mut Vec<u8>,
+    n: usize,
+    line: &str,
+) {
+    wait_for_readline(out_pipe, seen, n);
+    stdin
+        .write_all(format!("{line}\r").as_bytes())
+        .expect("write scripted session line");
+}
