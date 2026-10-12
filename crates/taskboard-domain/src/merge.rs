@@ -33,6 +33,15 @@
 //! These primitives are the public API of the sync conflict policy: the
 //! state engine may call them directly (e.g. when executing single
 //! commands); only `utc_min` and `remote_wins` stay internal.
+//!
+//! # Logging contract
+//!
+//! `trace` events carry entry identities (local id, remote ref, compared
+//! timestamps, and the title — the only user content, and only there);
+//! `debug` events carry rule verdicts as typed facts (rule tags, outcome
+//! discriminants, booleans, ids, timestamps — never prose). Unchanged-
+//! remote fast paths are silent by design. Tests never assert this text
+//! (AGENTS §5); the events are behavior-neutral by construction.
 
 use std::collections::BTreeSet;
 
@@ -43,6 +52,15 @@ use crate::ids::{LabelId, RemoteBoardId, RemoteLabelId, RemoteStackId, StackId, 
 use crate::remote::{
     RemoteBoard, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
+
+/// Rule tags for the conflict-policy `tracing` events: single
+/// definitions, because tests are forbidden from asserting log text.
+pub(crate) const RULE_R1: &str = "R1";
+pub(crate) const RULE_R3: &str = "R3";
+pub(crate) const RULE_R4: &str = "R4";
+pub(crate) const RULE_R5: &str = "R5";
+pub(crate) const RULE_R6: &str = "R6";
+pub(crate) const RULE_R9: &str = "R9";
 
 /// Smallest representable `DateTime<Utc>`: never-newer than anything.
 pub(crate) fn utc_min() -> DateTime<Utc> {
@@ -71,6 +89,25 @@ fn max_ts(a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
 /// unmapped-stack strategy).
 #[must_use]
 pub fn adopt_remote_task(remote: &RemoteTask, id: TaskId, ctx: &RemoteIndex) -> Option<Task> {
+    tracing::trace!(
+        task_id = ?id,
+        card = ?remote.id,
+        stack = ?remote.stack,
+        remote_ts = ?remote.last_modified,
+        title = %remote.title,
+        "task adopt entry"
+    );
+    let Some(stack_id) = resolve_local_stack(ctx, remote.id.board, remote.stack) else {
+        tracing::debug!(
+            rule = RULE_R1,
+            task_id = ?id,
+            card = ?remote.id,
+            outcome = "deferred_unmapped_stack",
+            "task adoption deferred"
+        );
+        return None;
+    };
+    tracing::debug!(rule = RULE_R1, task_id = ?id, stack_id = ?stack_id, "task adopted");
     Some(Task {
         id,
         remote: Some(remote.id),
@@ -78,7 +115,7 @@ pub fn adopt_remote_task(remote: &RemoteTask, id: TaskId, ctx: &RemoteIndex) -> 
         description: remote.description.clone(),
         duedate: remote.duedate,
         done: remote.done,
-        stack: resolve_local_stack(ctx, remote.id.board, remote.stack)?,
+        stack: stack_id,
         order: remote.order,
         labels: map_remote_labels(ctx, remote.id.board, &remote.labels),
         archived: remote.archived,
@@ -132,47 +169,91 @@ fn map_remote_labels(
 #[must_use]
 pub fn merge_task(local: &Task, remote: &RemoteTask, ctx: &RemoteIndex) -> Task {
     let ts_r = remote.last_modified;
+    tracing::trace!(
+        task_id = ?local.id,
+        card = ?remote.id,
+        remote_ts = ?ts_r,
+        remote_seen = ?local.remote_seen,
+        title = %local.title,
+        "task merge entry"
+    );
     let mut merged = local.clone();
 
-    if remote_wins(ts_r, local.clocks.title) {
+    let title_remote_wins = remote_wins(ts_r, local.clocks.title);
+    if title_remote_wins {
         merged.title.clone_from(&remote.title);
         merged.clocks.title = ts_r;
     }
-    if remote_wins(ts_r, local.clocks.description) {
+    let description_remote_wins = remote_wins(ts_r, local.clocks.description);
+    if description_remote_wins {
         merged.description.clone_from(&remote.description);
         merged.clocks.description = ts_r;
     }
-    if remote_wins(ts_r, local.clocks.duedate) {
+    let duedate_remote_wins = remote_wins(ts_r, local.clocks.duedate);
+    if duedate_remote_wins {
         merged.duedate = remote.duedate;
         merged.clocks.duedate = ts_r;
     }
-    if remote_wins(ts_r, local.clocks.done) {
+    let done_remote_wins = remote_wins(ts_r, local.clocks.done);
+    if done_remote_wins {
         merged.done = remote.done;
         merged.clocks.done = ts_r;
     }
     // R8: position is one composite field.
-    if remote_wins(ts_r, local.clocks.position)
-        && let Some(stack) = resolve_local_stack(ctx, remote.id.board, remote.stack)
-    {
+    let position_remote_wins = remote_wins(ts_r, local.clocks.position);
+    let position_stack = if position_remote_wins {
+        resolve_local_stack(ctx, remote.id.board, remote.stack)
+    } else {
+        None
+    };
+    if position_remote_wins && let Some(stack) = position_stack {
         merged.stack = stack;
         merged.order = remote.order;
         merged.clocks.position = ts_r;
     }
     // R7: the label set is one field; unmapped remote labels are dropped
     // (the pipeline adopts label entities first).
-    if remote_wins(ts_r, local.clocks.labels) {
+    let labels_remote_wins = remote_wins(ts_r, local.clocks.labels);
+    if labels_remote_wins {
         merged.labels = map_remote_labels(ctx, remote.id.board, &remote.labels);
         merged.clocks.labels = ts_r;
     }
-    if remote_wins(ts_r, local.clocks.archived) {
+    let archived_remote_wins = remote_wins(ts_r, local.clocks.archived);
+    if archived_remote_wins {
         merged.archived = remote.archived;
         merged.clocks.archived = ts_r;
     }
 
     // R5, `deleted`: resurrect iff the remote write is strictly newer.
-    if local.deleted && remote_wins(ts_r, local.clocks.deleted) {
+    let resurrected = local.deleted && remote_wins(ts_r, local.clocks.deleted);
+    if resurrected {
         merged.deleted = false;
         merged.clocks.deleted = ts_r;
+    }
+
+    tracing::debug!(
+        rule = RULE_R4,
+        task_id = ?local.id,
+        remote_ts = ?ts_r,
+        title_remote_wins,
+        description_remote_wins,
+        duedate_remote_wins,
+        done_remote_wins,
+        archived_remote_wins,
+        labels_remote_wins,
+        position_remote_wins,
+        position_stack_resolved = position_stack.is_some(),
+        "task field verdicts"
+    );
+    if local.deleted {
+        tracing::debug!(
+            rule = RULE_R5,
+            task_id = ?local.id,
+            outcome = if resurrected { "resurrected" } else { "tombstone_stands" },
+            remote_ts = ?ts_r,
+            deleted_clock = ?local.clocks.deleted,
+            "task tombstone verdict"
+        );
     }
 
     merged.remote = Some(remote.id);
@@ -185,11 +266,18 @@ pub fn merge_task(local: &Task, remote: &RemoteTask, ctx: &RemoteIndex) -> Task 
 /// i.e. "now" passed in by the engine); the remote binding is cleared.
 #[must_use]
 pub fn tombstone_task(local: &Task, observed_at: DateTime<Utc>) -> Task {
+    tracing::trace!(task_id = ?local.id, observed_at = ?observed_at, "task tombstone entry");
     let mut tombstoned = local.clone();
     tombstoned.deleted = true;
     tombstoned.clocks.deleted = max_ts(local.clocks.deleted, observed_at);
     tombstoned.remote = None;
     tombstoned.remote_seen = None;
+    tracing::debug!(
+        rule = RULE_R3,
+        task_id = ?local.id,
+        deleted_clock = ?tombstoned.clocks.deleted,
+        "task tombstoned"
+    );
     tombstoned
 }
 
@@ -202,6 +290,20 @@ pub fn tombstone_task(local: &Task, observed_at: DateTime<Utc>) -> Task {
 #[must_use]
 pub fn adopt_task_after_push(local: &Task, echo: &RemoteTask, ctx: &RemoteIndex) -> Task {
     let lm = echo.last_modified;
+    tracing::trace!(
+        task_id = ?local.id,
+        card = ?echo.id,
+        echo_ts = ?lm,
+        title = %echo.title,
+        "task echo entry"
+    );
+    let stack_fallback = resolve_local_stack(ctx, echo.id.board, echo.stack).is_none();
+    tracing::debug!(
+        rule = RULE_R9,
+        task_id = ?local.id,
+        stack_fallback,
+        "task echo adopted"
+    );
     Task {
         id: local.id,
         remote: Some(echo.id),
@@ -233,10 +335,12 @@ pub fn adopt_task_after_push(local: &Task, echo: &RemoteTask, ctx: &RemoteIndex)
 /// `>=` any stale listing entry (cache-lag safe by construction).
 #[must_use]
 pub fn finalize_pushed_task_delete(local: &Task) -> Task {
+    tracing::trace!(task_id = ?local.id, "task delete finalize entry");
     let mut finalized = local.clone();
     finalized.deleted = true;
     finalized.remote = None;
     finalized.remote_seen = None;
+    tracing::debug!(rule = RULE_R9, task_id = ?local.id, "pushed task delete finalized");
     finalized
 }
 
@@ -246,13 +350,23 @@ pub fn finalize_pushed_task_delete(local: &Task) -> Task {
 #[must_use]
 pub fn merge_stack(local: &Stack, remote: &RemoteStack) -> Stack {
     let ts_r = remote.last_modified;
+    tracing::trace!(
+        stack_id = ?local.id,
+        stack = ?remote.id,
+        remote_ts = ?ts_r,
+        remote_seen = ?local.remote_seen,
+        title = %local.title,
+        "stack merge entry"
+    );
     let mut merged = local.clone();
 
-    if remote_wins(ts_r, local.clocks.title) {
+    let title_remote_wins = remote_wins(ts_r, local.clocks.title);
+    if title_remote_wins {
         merged.title.clone_from(&remote.title);
         merged.clocks.title = ts_r;
     }
-    if remote_wins(ts_r, local.clocks.order) {
+    let order_remote_wins = remote_wins(ts_r, local.clocks.order);
+    if order_remote_wins {
         merged.order = remote.order;
         merged.clocks.order = ts_r;
     }
@@ -266,16 +380,26 @@ pub fn merge_stack(local: &Stack, remote: &RemoteStack) -> Stack {
         max_ts(local.clocks.title, local.clocks.order),
         local.clocks.deleted,
     );
-    if let Some((deleted, clock)) = soft_delete_verdict(
+    let (remote_delete_wins, resurrected) = apply_remote_soft_delete(
+        &mut merged.deleted,
+        &mut merged.clocks.deleted,
         local_latest,
         local.deleted,
         local.clocks.deleted,
         remote.deleted_at,
         ts_r,
-    ) {
-        merged.deleted = deleted;
-        merged.clocks.deleted = clock;
-    }
+    );
+
+    tracing::debug!(
+        rule = RULE_R6,
+        stack_id = ?local.id,
+        remote_ts = ?ts_r,
+        title_remote_wins,
+        order_remote_wins,
+        remote_delete_wins,
+        resurrected,
+        "stack field verdicts"
+    );
 
     merged.remote = Some(remote.id);
     merged.remote_seen = Some(ts_r);
@@ -301,9 +425,51 @@ fn soft_delete_verdict(
     }
 }
 
+/// Applies the [`soft_delete_verdict`] outcome to the merged entity's
+/// `deleted` flag and clock, and expands it into the two verdict facts
+/// the R6 debug events report: `(remote_delete_wins, resurrected)`.
+fn apply_remote_soft_delete(
+    merged_deleted: &mut bool,
+    merged_deleted_clock: &mut DateTime<Utc>,
+    local_latest: DateTime<Utc>,
+    local_deleted: bool,
+    local_deleted_clock: DateTime<Utc>,
+    remote_deleted_at: Option<DateTime<Utc>>,
+    ts_r: DateTime<Utc>,
+) -> (bool, bool) {
+    match soft_delete_verdict(
+        local_latest,
+        local_deleted,
+        local_deleted_clock,
+        remote_deleted_at,
+        ts_r,
+    ) {
+        Some((deleted, clock)) => {
+            *merged_deleted = deleted;
+            *merged_deleted_clock = clock;
+            (deleted, !deleted)
+        }
+        None => (false, false),
+    }
+}
+
 /// R1 for stacks: adopt a remotely-created stack under a fresh local id.
 #[must_use]
 pub fn adopt_remote_stack(remote: &RemoteStack, id: StackId, board: crate::ids::BoardId) -> Stack {
+    tracing::trace!(
+        stack_id = ?id,
+        stack = ?remote.id,
+        board_id = ?board,
+        remote_ts = ?remote.last_modified,
+        title = %remote.title,
+        "stack adopt entry"
+    );
+    tracing::debug!(
+        rule = RULE_R1,
+        stack_id = ?id,
+        adopted_tombstoned = remote.deleted_at.is_some(),
+        "stack adopted"
+    );
     Stack {
         id,
         remote: Some(remote.id),
@@ -325,6 +491,14 @@ pub fn adopt_remote_stack(remote: &RemoteStack, id: StackId, board: crate::ids::
 #[must_use]
 pub fn adopt_stack_after_push(local: &Stack, echo: &RemoteStack) -> Stack {
     let lm = echo.last_modified;
+    tracing::trace!(
+        stack_id = ?local.id,
+        stack = ?echo.id,
+        echo_ts = ?lm,
+        title = %echo.title,
+        "stack echo entry"
+    );
+    tracing::debug!(rule = RULE_R9, stack_id = ?local.id, "stack echo adopted");
     Stack {
         id: local.id,
         remote: Some(echo.id),
@@ -346,13 +520,23 @@ pub fn adopt_stack_after_push(local: &Stack, echo: &RemoteStack) -> Stack {
 #[must_use]
 pub fn merge_label(local: &Label, remote: &RemoteLabel) -> Label {
     let ts_r = remote.last_modified;
+    tracing::trace!(
+        label_id = ?local.id,
+        label = ?remote.id,
+        remote_ts = ?ts_r,
+        remote_seen = ?local.remote_seen,
+        title = %local.title,
+        "label merge entry"
+    );
     let mut merged = local.clone();
 
-    if remote_wins(ts_r, local.clocks.title) {
+    let title_remote_wins = remote_wins(ts_r, local.clocks.title);
+    if title_remote_wins {
         merged.title.clone_from(&remote.title);
         merged.clocks.title = ts_r;
     }
-    if remote_wins(ts_r, local.clocks.color) {
+    let color_remote_wins = remote_wins(ts_r, local.clocks.color);
+    if color_remote_wins {
         merged.color = crate::entities::Color::new(remote.color.clone());
         merged.clocks.color = ts_r;
     }
@@ -363,16 +547,26 @@ pub fn merge_label(local: &Label, remote: &RemoteLabel) -> Label {
         max_ts(local.clocks.title, local.clocks.color),
         local.clocks.deleted,
     );
-    if let Some((deleted, clock)) = soft_delete_verdict(
+    let (remote_delete_wins, resurrected) = apply_remote_soft_delete(
+        &mut merged.deleted,
+        &mut merged.clocks.deleted,
         local_latest,
         local.deleted,
         local.clocks.deleted,
         remote.deleted_at,
         ts_r,
-    ) {
-        merged.deleted = deleted;
-        merged.clocks.deleted = clock;
-    }
+    );
+
+    tracing::debug!(
+        rule = RULE_R6,
+        label_id = ?local.id,
+        remote_ts = ?ts_r,
+        title_remote_wins,
+        color_remote_wins,
+        remote_delete_wins,
+        resurrected,
+        "label field verdicts"
+    );
 
     merged.remote = Some(remote.id);
     merged.remote_seen = Some(ts_r);
@@ -382,6 +576,15 @@ pub fn merge_label(local: &Label, remote: &RemoteLabel) -> Label {
 /// R1 for labels: adopt a remotely-created label under a fresh local id.
 #[must_use]
 pub fn adopt_remote_label(remote: &RemoteLabel, id: LabelId, board: crate::ids::BoardId) -> Label {
+    tracing::trace!(
+        label_id = ?id,
+        label = ?remote.id,
+        board_id = ?board,
+        remote_ts = ?remote.last_modified,
+        title = %remote.title,
+        "label adopt entry"
+    );
+    tracing::debug!(rule = RULE_R1, label_id = ?id, "label adopted");
     Label {
         id,
         remote: Some(remote.id),
@@ -402,6 +605,14 @@ pub fn adopt_remote_label(remote: &RemoteLabel, id: LabelId, board: crate::ids::
 #[must_use]
 pub fn adopt_label_after_push(local: &Label, echo: &RemoteLabel) -> Label {
     let lm = echo.last_modified;
+    tracing::trace!(
+        label_id = ?local.id,
+        label = ?echo.id,
+        echo_ts = ?lm,
+        title = %echo.title,
+        "label echo entry"
+    );
+    tracing::debug!(rule = RULE_R9, label_id = ?local.id, "label echo adopted");
     Label {
         id: local.id,
         remote: Some(echo.id),
@@ -430,12 +641,23 @@ pub fn adopt_label_after_push(local: &Label, echo: &RemoteLabel) -> Label {
 /// function alone is the freshness gate every board field shares.
 #[must_use]
 pub fn adopt_board_if_newer(local: &Board, remote: &RemoteBoard) -> Board {
-    if !remote_wins(
+    tracing::trace!(
+        board_id = ?local.id,
+        remote_board = ?remote.id,
+        remote_ts = ?remote.last_modified,
+        remote_seen = ?local.remote_seen,
+        title = %local.title,
+        "board freshness-gate entry"
+    );
+    let fresher = remote_wins(
         remote.last_modified,
         local.remote_seen.unwrap_or_else(utc_min),
-    ) {
+    );
+    if !fresher {
+        tracing::debug!(rule = RULE_R6, board_id = ?local.id, outcome = "kept_not_newer", "board kept, remote not newer");
         return local.clone();
     }
+    tracing::debug!(rule = RULE_R6, board_id = ?local.id, outcome = "adopted", "board adopted");
     Board {
         id: local.id,
         remote: Some(remote.id),
@@ -457,11 +679,20 @@ pub fn adopt_board_if_newer(local: &Board, remote: &RemoteBoard) -> Board {
 /// carry the epoch clock, so they behave exactly as before).
 #[must_use]
 pub fn merge_board(local: &Board, remote: &RemoteBoard) -> Board {
+    tracing::trace!(
+        board_id = ?local.id,
+        remote_board = ?remote.id,
+        remote_ts = ?remote.last_modified,
+        title = %local.title,
+        "board merge entry"
+    );
     let mut merged = adopt_board_if_newer(local, remote);
-    if !remote_wins(remote.last_modified, local.clocks.title) {
+    let title_wins = remote_wins(remote.last_modified, local.clocks.title);
+    if !title_wins {
         merged.title.clone_from(&local.title);
         merged.clocks.title = local.clocks.title;
     }
+    tracing::debug!(rule = RULE_R6, board_id = ?local.id, title_wins, "board title verdict");
     merged
 }
 
@@ -470,6 +701,14 @@ pub fn merge_board(local: &Board, remote: &RemoteBoard) -> Board {
 #[must_use]
 pub fn adopt_board_after_push(local: &Board, echo: &RemoteBoard) -> Board {
     let lm = echo.last_modified;
+    tracing::trace!(
+        board_id = ?local.id,
+        remote_board = ?echo.id,
+        echo_ts = ?lm,
+        title = %echo.title,
+        "board echo entry"
+    );
+    tracing::debug!(rule = RULE_R9, board_id = ?local.id, "board echo adopted");
     Board {
         id: local.id,
         remote: Some(echo.id),
@@ -487,6 +726,14 @@ pub fn adopt_board_after_push(local: &Board, echo: &RemoteBoard) -> Board {
 /// R1 for boards: adopt a remotely-created board under a fresh local id.
 #[must_use]
 pub fn adopt_remote_board(remote: &RemoteBoard, id: crate::ids::BoardId) -> Board {
+    tracing::trace!(
+        board_id = ?id,
+        remote_board = ?remote.id,
+        remote_ts = ?remote.last_modified,
+        title = %remote.title,
+        "board adopt entry"
+    );
+    tracing::debug!(rule = RULE_R1, board_id = ?id, "board adopted");
     Board {
         id,
         remote: Some(remote.id),
@@ -505,10 +752,12 @@ pub fn adopt_remote_board(remote: &RemoteBoard, id: crate::ids::BoardId) -> Boar
 /// local rename push that must be finalized): tombstone it.
 #[must_use]
 pub fn tombstone_board(local: &Board, _observed_at: DateTime<Utc>) -> Board {
+    tracing::trace!(board_id = ?local.id, "board tombstone entry");
     let mut b = local.clone();
     b.deleted = true;
     b.remote = None;
     b.remote_seen = None;
+    tracing::debug!(rule = RULE_R3, board_id = ?local.id, "board tombstoned");
     b
 }
 
@@ -518,11 +767,18 @@ pub fn tombstone_board(local: &Board, _observed_at: DateTime<Utc>) -> Board {
 /// cleared.
 #[must_use]
 pub fn tombstone_stack(local: &Stack, observed_at: DateTime<Utc>) -> Stack {
+    tracing::trace!(stack_id = ?local.id, observed_at = ?observed_at, "stack tombstone entry");
     let mut s = local.clone();
     s.deleted = true;
     s.clocks.deleted = max_ts(local.clocks.deleted, observed_at);
     s.remote = None;
     s.remote_seen = None;
+    tracing::debug!(
+        rule = RULE_R3,
+        stack_id = ?local.id,
+        deleted_clock = ?s.clocks.deleted,
+        "stack tombstoned"
+    );
     s
 }
 
@@ -532,11 +788,18 @@ pub fn tombstone_stack(local: &Stack, observed_at: DateTime<Utc>) -> Stack {
 /// cleared.
 #[must_use]
 pub fn tombstone_label(local: &Label, observed_at: DateTime<Utc>) -> Label {
+    tracing::trace!(label_id = ?local.id, observed_at = ?observed_at, "label tombstone entry");
     let mut l = local.clone();
     l.deleted = true;
     l.clocks.deleted = max_ts(local.clocks.deleted, observed_at);
     l.remote = None;
     l.remote_seen = None;
+    tracing::debug!(
+        rule = RULE_R3,
+        label_id = ?local.id,
+        deleted_clock = ?l.clocks.deleted,
+        "label tombstoned"
+    );
     l
 }
 

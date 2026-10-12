@@ -11,6 +11,16 @@
 //! This module owns no policy of its own: every per-entity decision comes
 //! from [`crate::merge`]'s primitives, which never read clocks or
 //! generate ids. `ids` and `now` are injected here, not there.
+//!
+//! # Logging contract
+//!
+//! One `debug` span per pipeline entry (`apply_sync_report` /
+//! `apply_push_report`), carrying the cycle's shape; `trace` carries the
+//! entry identities (board ref, `read_at`, `now`); `debug` events report
+//! rule verdicts and the closing summary as typed facts. Unchanged-remote
+//! fast paths are silent by design: a steady-state cycle emits only the
+//! span and the closing summary. Tests never assert this text (AGENTS
+//! §5); the events are behavior-neutral by construction.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -22,15 +32,52 @@ use crate::ids::{
     BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 use crate::merge::{
-    adopt_board_after_push, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
-    adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, adopt_task_after_push,
-    finalize_pushed_task_delete, merge_board, merge_label, merge_stack, merge_task, remote_wins,
-    tombstone_board, tombstone_label, tombstone_stack, tombstone_task, utc_min,
+    RULE_R1, RULE_R3, RULE_R4, RULE_R5, RULE_R6, RULE_R9, adopt_board_after_push,
+    adopt_label_after_push, adopt_remote_board, adopt_remote_label, adopt_remote_stack,
+    adopt_remote_task, adopt_stack_after_push, adopt_task_after_push, finalize_pushed_task_delete,
+    merge_board, merge_label, merge_stack, merge_task, remote_wins, tombstone_board,
+    tombstone_label, tombstone_stack, tombstone_task, utc_min,
 };
 use crate::outbox::{LocalOp, OpId, PendingOp};
 use crate::persistence::PersistenceAction;
 use crate::remote::{PushOutcome, PushResult, RemoteBoardSnapshot, RemoteEcho, RemoteIndex};
 use crate::state::{AppState, SyncErrorKind, SyncPhase, SyncStatus};
+
+/// The entity id an op targets, for `tracing` fields on push-outcome
+/// events (the map lookup may miss; the op always names its target).
+fn op_task_id(op: &LocalOp) -> Option<TaskId> {
+    match op {
+        LocalOp::CreateTask(id)
+        | LocalOp::UpdateTask(id)
+        | LocalOp::MoveTask(id)
+        | LocalOp::DeleteTask(id) => Some(*id),
+        _ => None,
+    }
+}
+
+fn op_stack_id(op: &LocalOp) -> Option<StackId> {
+    match op {
+        LocalOp::CreateStack(id)
+        | LocalOp::RenameStack(id)
+        | LocalOp::MoveStack(id)
+        | LocalOp::DeleteStack(id) => Some(*id),
+        _ => None,
+    }
+}
+
+fn op_label_id(op: &LocalOp) -> Option<LabelId> {
+    match op {
+        LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => Some(*id),
+        _ => None,
+    }
+}
+
+fn op_board_id(op: &LocalOp) -> Option<BoardId> {
+    match op {
+        LocalOp::RenameBoard(id) => Some(*id),
+        _ => None,
+    }
+}
 
 fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
     match op {
@@ -59,7 +106,7 @@ fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
 /// silently clobber a newer local edit (the "self-clobber" race). Ops the
 /// cycle *did* see (queued no later than `read_at`) are not protected:
 /// their fields' post-push truth is exactly what the snapshot reports.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // one flag per protected task field
 struct PendingTaskIntent {
     title: bool,
@@ -126,7 +173,21 @@ fn pending_task_intents(
 /// local state over the merge result. Binding fields (`remote`,
 /// `remote_seen`) keep the merged values: the observation happened either
 /// way.
-fn keep_task_intent(merged: &mut Task, local: &Task, p: PendingTaskIntent) {
+fn keep_task_intent(merged: &mut Task, local: &Task, task_id: TaskId, p: PendingTaskIntent) {
+    if p != PendingTaskIntent::default() {
+        tracing::debug!(
+            task_id = ?task_id,
+            title = p.title,
+            description = p.description,
+            duedate = p.duedate,
+            done = p.done,
+            archived = p.archived,
+            position = p.position,
+            labels = p.labels,
+            deleted = p.deleted,
+            "self-clobber guard protected task fields"
+        );
+    }
     if p.title {
         merged.title.clone_from(&local.title);
         merged.clocks.title = local.clocks.title;
@@ -185,7 +246,21 @@ fn pending_stack_intent(
 }
 
 /// Restores a stack's protected fields from the local state.
-fn keep_stack_intent(merged: &mut Stack, local: &Stack, rename: bool, delete: bool) {
+fn keep_stack_intent(
+    merged: &mut Stack,
+    local: &Stack,
+    stack_id: StackId,
+    rename: bool,
+    delete: bool,
+) {
+    if rename || delete {
+        tracing::debug!(
+            stack_id = ?stack_id,
+            rename,
+            delete,
+            "self-clobber guard protected stack fields"
+        );
+    }
     if rename {
         merged.title.clone_from(&local.title);
         merged.order = local.order;
@@ -206,7 +281,14 @@ fn pending_board_intent(outbox: &[PendingOp], board: BoardId, read_at: DateTime<
 }
 
 /// Restores the board's protected title from the local state.
-fn keep_board_title(merged: &mut Board, local: &Board, rename: bool) {
+fn keep_board_title(merged: &mut Board, local: &Board, board_id: BoardId, rename: bool) {
+    if rename {
+        tracing::debug!(
+            board_id = ?board_id,
+            rename,
+            "self-clobber guard protected board title"
+        );
+    }
     if rename {
         merged.title.clone_from(&local.title);
         merged.clocks.title = local.clocks.title;
@@ -236,7 +318,21 @@ fn pending_label_intent(
 }
 
 /// Restores a label's protected fields from the local state.
-fn keep_label_intent(merged: &mut Label, local: &Label, update: bool, delete: bool) {
+fn keep_label_intent(
+    merged: &mut Label,
+    local: &Label,
+    label_id: LabelId,
+    update: bool,
+    delete: bool,
+) {
+    if update || delete {
+        tracing::debug!(
+            label_id = ?label_id,
+            update,
+            delete,
+            "self-clobber guard protected label fields"
+        );
+    }
     if update {
         merged.title.clone_from(&local.title);
         merged.color.clone_from(&local.color);
@@ -274,6 +370,21 @@ pub fn apply_sync_report(
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
 ) -> (AppState, Vec<PersistenceAction>) {
+    let _span = tracing::debug_span!(
+        "apply_sync_report",
+        outbox_len = outbox.len(),
+        pushes = pushes.len(),
+        snapshot_stacks = snapshot.stacks.len(),
+        snapshot_tasks = snapshot.tasks.len(),
+        snapshot_labels = snapshot.labels.len(),
+    )
+    .entered();
+    tracing::trace!(
+        board = ?snapshot.board.id,
+        read_at = ?read_at,
+        now = ?now,
+        "sync report entered"
+    );
     let mut boards = current.boards.clone();
     let mut stacks = current.stacks.clone();
     let mut tasks = current.tasks.clone();
@@ -316,17 +427,20 @@ pub fn apply_sync_report(
         let local = &boards[&id];
         let mut merged = merge_board(local, remote_board);
         let rename = pending_board_intent(outbox, id, read_at);
-        keep_board_title(&mut merged, local, rename);
+        keep_board_title(&mut merged, local, id, rename);
         boards.insert(id, merged);
+        tracing::debug!(rule = RULE_R6, board_id = ?id, "board merged");
         id
     } else {
         let id = ids.new_board_id();
         boards.insert(id, adopt_remote_board(remote_board, id));
         board_ids_by_remote.insert(remote_board.id, id);
+        tracing::debug!(rule = RULE_R1, board_id = ?id, fresh_id = ?id, "board adopted");
         id
     };
     let board_deleted = boards[&board_id].deleted;
     if board_deleted {
+        tracing::debug!(rule = RULE_R6, board_id = ?board_id, "board deletion cascade fired");
         cascade_board(
             &board_id,
             &mut stacks,
@@ -350,7 +464,7 @@ pub fn apply_sync_report(
                 let merged_stack = {
                     let mut merged = merge_stack(local, remote);
                     let (rename, delete) = pending_stack_intent(outbox, id, read_at);
-                    keep_stack_intent(&mut merged, local, rename, delete);
+                    keep_stack_intent(&mut merged, local, id, rename, delete);
                     merged
                 };
                 let now_tombstoned = merged_stack.deleted && !local.deleted;
@@ -358,11 +472,19 @@ pub fn apply_sync_report(
                     newly_tombstoned_stack_refs.push(remote.id.stack);
                 }
                 stacks.insert(id, merged_stack);
+                tracing::debug!(
+                    rule = RULE_R6,
+                    stack_id = ?id,
+                    remote_ts = ?remote.last_modified,
+                    newly_tombstoned = now_tombstoned,
+                    "stack merged"
+                );
             }
         } else {
             let id = ids.new_stack_id();
             stacks.insert(id, adopt_remote_stack(remote, id, board_id));
             ctx.stack_by_ref.insert(remote.id, id);
+            tracing::debug!(rule = RULE_R1, stack_id = ?id, fresh_id = ?id, stack = ?remote.id, "stack adopted");
         }
     }
 
@@ -376,13 +498,20 @@ pub fn apply_sync_report(
             ) {
                 let mut merged = merge_label(local, remote);
                 let (update, delete) = pending_label_intent(outbox, id, read_at);
-                keep_label_intent(&mut merged, local, update, delete);
+                keep_label_intent(&mut merged, local, id, update, delete);
                 labels.insert(id, merged);
+                tracing::debug!(
+                    rule = RULE_R6,
+                    label_id = ?id,
+                    remote_ts = ?remote.last_modified,
+                    "label merged"
+                );
             }
         } else {
             let id = ids.new_label_id();
             labels.insert(id, adopt_remote_label(remote, id, board_id));
             ctx.label_by_ref.insert(remote.id, id);
+            tracing::debug!(rule = RULE_R1, label_id = ?id, fresh_id = ?id, label = ?remote.id, "label adopted");
         }
     }
 
@@ -412,10 +541,18 @@ pub fn apply_sync_report(
                 keep_task_intent(
                     &mut merged,
                     &local,
+                    id,
                     task_intents.get(&id).copied().unwrap_or_default(),
                 );
                 let resurrected = was_deleted && !merged.deleted;
                 tasks.insert(id, merged);
+                tracing::debug!(
+                    rule = RULE_R4,
+                    task_id = ?id,
+                    remote_ts = ?remote.last_modified,
+                    resurrected,
+                    "task merged"
+                );
                 // R5 resurrect: the pending DeleteTask op is dropped — but
                 // only one the cycle actually saw. A delete queued after
                 // the read is intent the push never carried; resurrecting
@@ -427,6 +564,12 @@ pub fn apply_sync_report(
                             && other.queued_at <= read_at
                         {
                             op_results.insert(other.op_id, false);
+                            tracing::debug!(
+                                rule = RULE_R5,
+                                task_id = ?id,
+                                op_id = ?other.op_id,
+                                "resurrected task delete op dropped"
+                            );
                         }
                     }
                 }
@@ -440,6 +583,7 @@ pub fn apply_sync_report(
                 tasks.insert(id, adopted);
                 ctx.task_by_ref.insert(remote.id, id);
                 newly_adopted.insert(key, id);
+                tracing::debug!(rule = RULE_R1, task_id = ?id, fresh_id = ?id, card = ?remote.id, "task adopted");
             }
         }
     }
@@ -466,11 +610,20 @@ pub fn apply_sync_report(
         if !present_refs.contains(&remote_ref) {
             let local = &tasks[&id];
             tasks.insert(id, tombstone_task(local, now));
+            let mut cancelled_ops = 0;
             for other in outbox {
                 if !op_results.contains_key(&other.op_id) && op_targets_task(&other.op, id) {
                     op_results.insert(other.op_id, false);
+                    cancelled_ops += 1;
                 }
             }
+            tracing::debug!(
+                rule = RULE_R3,
+                task_id = ?id,
+                card = ?remote_ref,
+                cancelled_ops,
+                "task absence tombstoned"
+            );
         }
     }
     let present_stack_refs: std::collections::BTreeSet<RemoteStackRef> =
@@ -484,6 +637,7 @@ pub fn apply_sync_report(
         if !present_stack_refs.contains(&remote_ref) && !local.deleted {
             stacks.insert(id, tombstone_stack(local, now));
             newly_tombstoned_stack_refs.push(remote_ref.stack);
+            tracing::debug!(rule = RULE_R3, stack_id = ?id, stack = ?remote_ref, "stack absence tombstoned");
         }
     }
     let present_label_refs: std::collections::BTreeSet<crate::ids::RemoteLabelRef> =
@@ -496,6 +650,7 @@ pub fn apply_sync_report(
         let local = &labels[&id];
         if !present_label_refs.contains(&remote_ref) && !local.deleted {
             labels.insert(id, tombstone_label(local, now));
+            tracing::debug!(rule = RULE_R3, label_id = ?id, label = ?remote_ref, "label absence tombstoned");
         }
     }
 
@@ -522,6 +677,12 @@ pub fn apply_sync_report(
                     op_results.insert(other.op_id, false);
                 }
             }
+            tracing::debug!(
+                rule = RULE_R6,
+                task_id = ?task_id,
+                stack = ?stack_remote_num,
+                "task cascade tombstoned"
+            );
         }
     }
 
@@ -552,7 +713,6 @@ pub fn apply_sync_report(
         #[allow(clippy::cast_possible_truncation)] // outbox depth is display-scale, not data
         pending_ops: remaining_ops as u32,
     };
-
     let state = AppState {
         boards,
         stacks,
@@ -563,7 +723,36 @@ pub fn apply_sync_report(
         // stamp it like a local command would be.
         last_updated: Some(now),
     };
+    log_report_applied(
+        &state,
+        &actions,
+        &op_results,
+        remaining_ops,
+        "sync report applied",
+    );
     (state, actions)
+}
+
+/// The closing summary both pipeline entries emit — the only event a
+/// steady-state cycle produces beyond the entry span and trace entry.
+/// `message` names the entry ("sync report applied" / "push report
+/// applied"); every field is a typed fact.
+fn log_report_applied(
+    state: &AppState,
+    actions: &[PersistenceAction],
+    op_results: &HashMap<OpId, bool>,
+    remaining_ops: usize,
+    message: &'static str,
+) {
+    tracing::debug!(
+        actions = actions.len(),
+        ops_completed = op_results.values().filter(|completed| **completed).count(),
+        ops_failed = op_results.values().filter(|completed| !**completed).count(),
+        remaining_ops,
+        phase = ?state.sync.phase,
+        "{}",
+        message,
+    );
 }
 
 /// The entity-diff half of the persistence batch: one upsert per entity
@@ -621,6 +810,17 @@ pub fn apply_push_report(
     now: DateTime<Utc>,
 ) -> (AppState, Vec<PersistenceAction>) {
     let _ = ids;
+    let _span = tracing::debug_span!(
+        "apply_push_report",
+        outbox_len = outbox.len(),
+        pushes = pushes.len(),
+    )
+    .entered();
+    tracing::trace!(
+        read_at = ?read_at,
+        now = ?now,
+        "push report entered"
+    );
     let mut boards = current.boards.clone();
     let mut stacks = current.stacks.clone();
     let mut tasks = current.tasks.clone();
@@ -670,7 +870,6 @@ pub fn apply_push_report(
         #[allow(clippy::cast_possible_truncation)] // outbox depth is display-scale, not data
         pending_ops: remaining_ops as u32,
     };
-
     let state = AppState {
         boards,
         stacks,
@@ -679,6 +878,13 @@ pub fn apply_push_report(
         sync,
         last_updated: Some(now),
     };
+    log_report_applied(
+        &state,
+        &actions,
+        &op_results,
+        remaining_ops,
+        "push report applied",
+    );
     (state, actions)
 }
 
@@ -721,6 +927,7 @@ fn apply_push_outcomes(
                             tasks.insert(id, finalized);
                         }
                         op_results.insert(outcome.op, true);
+                        tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, task_id = ?id, "pushed task delete finalized");
                         continue;
                     }
                     LocalOp::DeleteStack(id) => {
@@ -729,6 +936,7 @@ fn apply_push_outcomes(
                             stacks.insert(id, finalized);
                         }
                         op_results.insert(outcome.op, true);
+                        tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, stack_id = ?id, "pushed stack delete finalized");
                         continue;
                     }
                     LocalOp::DeleteLabel(id) => {
@@ -737,6 +945,7 @@ fn apply_push_outcomes(
                             labels.insert(id, finalized);
                         }
                         op_results.insert(outcome.op, true);
+                        tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, label_id = ?id, "pushed label delete finalized");
                         continue;
                     }
                     LocalOp::CreateTask(_)
@@ -760,11 +969,19 @@ fn apply_push_outcomes(
                             keep_task_intent(
                                 &mut merged,
                                 local,
+                                id,
                                 task_intents.get(&id).copied().unwrap_or_default(),
                             );
                             tasks.insert(id, merged);
                         }
                         op_results.insert(outcome.op, true);
+                        tracing::debug!(
+                            rule = RULE_R9,
+                            op_id = ?outcome.op,
+                            task_id = ?op_task_id(&op.op),
+                            echo = ?echo.id,
+                            "task push echo adopted"
+                        );
                     }
                     Some(RemoteEcho::Stack(echo)) => {
                         if let LocalOp::CreateStack(id)
@@ -774,11 +991,18 @@ fn apply_push_outcomes(
                         {
                             let mut merged = adopt_stack_after_push(local, echo);
                             let (rename, delete) = pending_stack_intent(outbox, id, read_at);
-                            keep_stack_intent(&mut merged, local, rename, delete);
+                            keep_stack_intent(&mut merged, local, id, rename, delete);
                             stacks.insert(id, merged);
                             ctx.stack_by_ref.insert(echo.id, id);
                         }
                         op_results.insert(outcome.op, true);
+                        tracing::debug!(
+                            rule = RULE_R9,
+                            op_id = ?outcome.op,
+                            stack_id = ?op_stack_id(&op.op),
+                            echo = ?echo.id,
+                            "stack push echo adopted"
+                        );
                     }
                     Some(RemoteEcho::Board(echo)) => {
                         if let LocalOp::RenameBoard(id) = op.op
@@ -786,11 +1010,18 @@ fn apply_push_outcomes(
                         {
                             let mut merged = adopt_board_after_push(local, echo);
                             let rename = pending_board_intent(outbox, id, read_at);
-                            keep_board_title(&mut merged, local, rename);
+                            keep_board_title(&mut merged, local, id, rename);
                             boards.insert(id, merged);
                             ctx.board_by_ref.insert(echo.id, id);
                         }
                         op_results.insert(outcome.op, true);
+                        tracing::debug!(
+                            rule = RULE_R9,
+                            op_id = ?outcome.op,
+                            board_id = ?op_board_id(&op.op),
+                            echo = ?echo.id,
+                            "board push echo adopted"
+                        );
                     }
                     Some(RemoteEcho::Label(echo)) => {
                         if let LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) = op.op
@@ -798,16 +1029,28 @@ fn apply_push_outcomes(
                         {
                             let mut merged = adopt_label_after_push(local, echo);
                             let (update, delete) = pending_label_intent(outbox, id, read_at);
-                            keep_label_intent(&mut merged, local, update, delete);
+                            keep_label_intent(&mut merged, local, id, update, delete);
                             labels.insert(id, merged);
                             ctx.label_by_ref.insert(echo.id, id);
                         }
                         op_results.insert(outcome.op, true);
+                        tracing::debug!(
+                            rule = RULE_R9,
+                            op_id = ?outcome.op,
+                            label_id = ?op_label_id(&op.op),
+                            echo = ?echo.id,
+                            "label push echo adopted"
+                        );
                     }
                     // R9d: reorder returns no echo — complete and reconcile
                     // via the next pull.
                     None => {
                         op_results.insert(outcome.op, true);
+                        tracing::debug!(
+                            rule = RULE_R9,
+                            op_id = ?outcome.op,
+                            "push completed without echo"
+                        );
                     }
                 }
             }
@@ -821,14 +1064,23 @@ fn apply_push_outcomes(
                     if let Some(local) = tasks.get(&id) {
                         let tombstoned = tombstone_task(local, now);
                         tasks.insert(id, tombstoned);
+                        let mut cancelled_ops = 0;
                         for other in outbox {
                             if other.op_id != outcome.op
                                 && op_targets_task(&other.op, id)
                                 && !op_results.contains_key(&other.op_id)
                             {
                                 op_results.insert(other.op_id, false);
+                                cancelled_ops += 1;
                             }
                         }
+                        tracing::debug!(
+                            rule = RULE_R9,
+                            op_id = ?outcome.op,
+                            task_id = ?id,
+                            cancelled_ops,
+                            "remote missing, task tombstoned"
+                        );
                     }
                     op_results.insert(outcome.op, true);
                 }
@@ -840,21 +1092,25 @@ fn apply_push_outcomes(
                         stacks.insert(id, tombstone_stack(local, now));
                     }
                     op_results.insert(outcome.op, true);
+                    tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, stack_id = ?id, "remote missing, stack tombstoned");
                 }
                 LocalOp::RenameBoard(id) => {
                     if let Some(local) = boards.get(&id) {
                         boards.insert(id, tombstone_board(local, now));
                     }
                     op_results.insert(outcome.op, true);
+                    tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, board_id = ?id, "remote missing, board tombstoned");
                 }
                 LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                     if let Some(local) = labels.get(&id) {
                         labels.insert(id, tombstone_label(local, now));
                     }
                     op_results.insert(outcome.op, true);
+                    tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, label_id = ?id, "remote missing, label tombstoned");
                 }
                 LocalOp::AssignLabel(..) | LocalOp::UnassignLabel(..) => {
                     op_results.insert(outcome.op, true);
+                    tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, "remote missing, assign op finalized");
                 }
             },
             PushResult::Rejected { kind } => {
@@ -862,6 +1118,9 @@ fn apply_push_outcomes(
                 // untouched for retry.
                 if *kind == SyncErrorKind::BadRequest {
                     op_results.insert(outcome.op, false);
+                    tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, kind = ?kind, "push dead-lettered");
+                } else {
+                    tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, kind = ?kind, "push rejected, stays queued");
                 }
             }
         }
