@@ -141,8 +141,10 @@ dependency hierarchies.
    =SyncReport=), the persistence port (=TaskRepository=), and the pure
    sync conflict policy (=apply_sync_report=, ADR 0004). The policy is
    executed by the *state engine*, never by the sync actor. Dependencies:
-   minimal (=serde=, =chrono=, =uuid=, =thiserror=). Zero UI, network,
-   database, or async-runtime dependencies; async ports return a
+   minimal (=serde=, =chrono=, =uuid=, =thiserror=, =tracing= for
+   pure-macro event instrumentation of the conflict policy — no I/O, no
+   subscriber, no runtime). Zero UI, network, database, or
+   async-runtime dependencies; async ports return a
    hand-rolled =BoxFuture=. Channel-bearing envelopes (e.g. a =Flush=
    barrier wrapping =oneshot::Sender=) live in the actor crates that own
    the channels — domain owns only the pure payloads.
