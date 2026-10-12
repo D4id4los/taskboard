@@ -1204,3 +1204,58 @@ async fn a16_move_stack_routes_applies_and_nudges_iff_changed() {
     assert!(h.sync_in.try_recv().is_err(), "a no-op enqueues nothing");
     drop(h);
 }
+
+// ---------------------------------------------------------------------
+// WI-H: the engine survives connector death
+// ---------------------------------------------------------------------
+
+/// A detached/died sync actor drops the reports sender mid-life; the
+/// engine is a daemon and must keep serving local edits (the
+/// "continuing without sync" contract the WI-H detach relies on).
+/// `RequestSync` afterwards answers `NoOp` — the nudge fails closed on
+/// the dead channel without marking `Syncing`.
+#[tokio::test]
+async fn h1_engine_continues_without_sync_after_the_reports_channel_closes() {
+    let h = harness().await;
+    // The actor is gone: its inbox receiver is gone with it.
+    drop(h.sync_in);
+
+    // The connector dies: the reports sender drops (the actor's exit).
+    drop(h.report_tx);
+
+    // Local editing keeps working: create a stack and a task.
+    let stack = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            title: "backlog".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted");
+    let CommandOutcome::CreatedStack(stack_id) = stack else {
+        panic!("wrong receipt: {stack:?}");
+    };
+    let outcome = h
+        .handle
+        .execute(StateCommand::CreateTask {
+            title: "offline edit".into(),
+            stack: stack_id,
+            order: 1,
+        })
+        .await
+        .expect("accepted");
+    assert!(matches!(outcome, CommandOutcome::CreatedTask(_)));
+
+    // The sync nudge fails closed: NoOp, and the phase never lies.
+    let outcome = h
+        .handle
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("the engine still answers");
+    assert_eq!(outcome, CommandOutcome::NoOp);
+    assert_eq!(
+        h.handle.shared_state().load_full().sync.phase,
+        SyncPhase::Idle,
+        "a dead connector must not mark the engine Syncing"
+    );
+}

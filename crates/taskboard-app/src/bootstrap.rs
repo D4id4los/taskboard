@@ -133,8 +133,12 @@ pub struct App {
     pub system: broadcast::Sender<SystemEvent>,
     /// The sync connector; `None` under the resolved `standalone`
     /// backend (ADR 0010) — the engine sees the closed-channel world it
-    /// already handles, and every send fails closed.
-    sync: Option<SyncActor>,
+    /// already handles, and every send fails closed. Interior
+    /// mutability for [`App::detach_connector`] (WI-H): the IPC
+    /// dispatcher holds only `&App`. Lifecycle bookkeeping only — the
+    /// mutex is never held across `.await`, and actor messaging stays
+    /// the typed `mpsc` `SyncCommand` channel (AGENTS §3).
+    sync: std::sync::Mutex<Option<SyncActor>>,
     storage: StorageHandle,
     storage_join: JoinHandle<()>,
     engine_join: JoinHandle<()>,
@@ -152,17 +156,71 @@ impl std::fmt::Debug for App {
 
 impl App {
     /// The sync-command seam (`SetBoard` ceremonies, sync nudges). Under
-    /// `standalone` the connector is absent: the returned sender feeds a
-    /// dropped receiver, so sends fail closed (`Closed`) exactly as a
-    /// dead connector — callers must not rely on delivery.
+    /// `standalone` — or after [`App::detach_connector`] — the
+    /// connector is absent: the returned sender feeds a dropped
+    /// receiver, so sends fail closed (`Closed`) exactly as a dead
+    /// connector — callers must not rely on delivery.
+    ///
+    /// # Panics
+    ///
+    /// Only if the sync-lifecycle mutex is poisoned by a panic while
+    /// held (unreachable: the critical sections never panic).
     #[must_use]
     pub fn sync_commands(&self) -> mpsc::Sender<SyncCommand> {
-        if let Some(actor) = &self.sync {
+        if let Some(actor) = self.sync.lock().expect("sync lock").as_ref() {
             actor.commands.clone()
         } else {
             let (tx, rx) = mpsc::channel::<SyncCommand>(1);
             drop(rx);
             tx
+        }
+    }
+
+    /// Whether the sync connector is still attached (WI-H): `false`
+    /// under `standalone` or after [`App::detach_connector`]. The
+    /// daemon-side `status` answer reports it so a detached daemon does
+    /// not masquerade as a syncing one.
+    ///
+    /// # Panics
+    ///
+    /// Only if the sync-lifecycle mutex is poisoned by a panic while
+    /// held (unreachable: the critical sections never panic).
+    #[must_use]
+    pub fn connector_attached(&self) -> bool {
+        self.sync.lock().expect("sync lock").is_some()
+    }
+
+    /// Connector-only detach (WI-H option b): takes the sync actor out,
+    /// sends it `SyncCommand::Detach` (graceful — an in-flight cycle
+    /// completes first, decision D4), and joins it bounded by the
+    /// configured `shutdown_timeout_secs` (abort at the budget — the
+    /// credential dies with the task either way). Idempotent: a
+    /// `standalone` core or an already-detached one answers
+    /// [`DetachOutcome::NoConnector`]. Post-detach, the engine's own
+    /// nudge sender feeds a closed receiver, so `RequestSync` answers
+    /// `NoOp` and the engine keeps serving local edits.
+    ///
+    /// # Panics
+    ///
+    /// Only if the sync-lifecycle mutex is poisoned by a panic while
+    /// held (unreachable: the critical sections never panic).
+    pub async fn detach_connector(&self) -> DetachOutcome {
+        let actor = self.sync.lock().expect("sync lock").take();
+        let Some(actor) = actor else {
+            tracing::info!("detach: no connector attached");
+            return DetachOutcome::NoConnector;
+        };
+        if actor.commands.send(SyncCommand::Detach).await.is_err() {
+            // The actor already exited on its own (e.g. a Shutdown
+            // broadcast): the connector is gone all the same.
+            tracing::info!("detach: sync actor already gone");
+        }
+        let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
+        if join_bounded(actor.join, timeout, "sync actor").await {
+            DetachOutcome::TimedOut
+        } else {
+            tracing::info!("detach: connector dropped");
+            DetachOutcome::Detached
         }
     }
 
@@ -175,6 +233,11 @@ impl App {
     ///
     /// Never fails; the outcome reports whether the sync actor had to be
     /// aborted.
+    ///
+    /// # Panics
+    ///
+    /// Only if the sync-lifecycle mutex is poisoned by a panic while
+    /// held (unreachable: the critical sections never panic).
     pub async fn shutdown(self) -> ShutdownOutcome {
         let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
         tracing::info!("shutdown: flushing the engine");
@@ -183,7 +246,10 @@ impl App {
         // No live receivers is fine (engine-only setups in tests).
         let _ = self.system.send(SystemEvent::Shutdown);
 
-        let actor_aborted = match self.sync {
+        // Bound the lock to the take: the guard must never span the
+        // join's `.await`.
+        let actor = self.sync.lock().expect("sync lock").take();
+        let actor_aborted = match actor {
             Some(actor) => join_bounded(actor.join, timeout, "sync actor").await,
             None => false,
         };
@@ -204,6 +270,20 @@ impl App {
 pub struct ShutdownOutcome {
     /// The sync actor was aborted at the timeout instead of joining.
     pub actor_aborted: bool,
+}
+
+/// Outcome of [`App::detach_connector`] (WI-H).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetachOutcome {
+    /// The sync actor acknowledged the detach and joined within the
+    /// budget; the credential is destroyed.
+    Detached,
+    /// No connector existed to detach (`standalone` core, or already
+    /// detached) — idempotent success.
+    NoConnector,
+    /// The actor missed the join budget and was aborted; the credential
+    /// died with the task either way.
+    TimedOut,
 }
 
 /// Awaits a join handle with a deadline; on timeout aborts and reaps.
@@ -362,7 +442,7 @@ pub async fn bootstrap(
         config,
         engine,
         system,
-        sync,
+        sync: std::sync::Mutex::new(sync),
         storage,
         storage_join,
         engine_join,

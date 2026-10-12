@@ -166,6 +166,11 @@ pub enum CommandError {
     /// silently doing local work (ADR 0010).
     #[error("no sync connector configured")]
     SyncDisabled,
+    /// The daemon's sync connector was detached (WI-H: `logout` after
+    /// boot): the engine answers `RequestSync` with `NoOp` — the verb
+    /// refuses typed instead of lying via `sync-timed-out`.
+    #[error("no sync connector is attached")]
+    SyncUnavailable,
     /// A live local-only board exists: plain `boards select` would
     /// silently adopt alongside it; the operator must choose the
     /// migration path (`--bind-local-board` or `boards publish`).
@@ -250,6 +255,7 @@ impl CommandError {
             Self::Prompt(_) => "prompt",
             Self::Deck(_) => "deck",
             Self::SyncDisabled => "sync-disabled",
+            Self::SyncUnavailable => "sync-unavailable",
             Self::LocalBoardExists => "local-board-exists",
             Self::NotConfigured => "not-configured",
             Self::NoDaemon => "no-daemon",
