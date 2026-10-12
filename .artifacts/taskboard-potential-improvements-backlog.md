@@ -1671,3 +1671,45 @@ A settings-work-round UX decision: `status` could surface
 `credentials_revoked: true` (the daemon's store load now fails), or
 `logout` could nudge the daemon to drop its connector — the latter is
 the cleaner semantic and reuses the sync actor's shutdown path.
+
+## [2026-10-12] `error_detail` payload for `CommandError::Config`
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-app-config-dx-followups-plan.md` §8 (decision D2-b)
+- **Target Area**: `crates/taskboard-app/src/commands/mod.rs` (`error_detail`)
+
+### Context & Description
+WI-D's D2 change surfaces the specific `ConfigError` kinds in the
+`--json` error envelope's `kind`, but `error_detail` stays `None` for
+`Config(_)` — minimal-diff discipline while no consumer needed more.
+The natural payloads already exist on the variants: the `FileNotFound`
+path and the `InvalidDuration` field. `config print` remains the
+path-bearing diagnostic surface meanwhile.
+
+### Proposed Approach
+Map `ConfigError::FileNotFound(path)` to the path string and
+`InvalidDuration { field }` to the field name in `error_detail`; do it
+when the first external `--json` consumer actually needs the detail
+(rides the "[2026-10-10] Versioned `--json` schema" trigger), not
+speculatively.
+
+## [2026-10-12] `taskboard config path` diagnostic verb
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-app-config-dx-followups-plan.md` §8
+- **Target Area**: `crates/taskboard-app/src/commands/config.rs`
+
+### Context & Description
+After WI-D's D1, read resolution (`AppConfig::config_path`) and the
+login write target (`AppConfig::write_path`) differ only in the
+no-config-anywhere arm, and that difference is observable today only
+by running `login` and seeing where the file lands. An operator asking
+"which file am I reading / where would `login` write?" has no
+side-effect-free verb.
+
+### Proposed Approach
+A pre-core `taskboard config path` beside `config print` (same `Local`
+IPC lane): prints the resolved read path and the login write target,
+JSON and text; pure reuse of `config_path`/`write_path`, one dispatch
+arm plus a small view. Natural companion to any future
+connector-management verb round that touches the config verb family.
