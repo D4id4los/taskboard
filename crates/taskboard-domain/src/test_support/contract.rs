@@ -315,6 +315,7 @@ mod tests {
     use crate::test_support::memory::InMemoryRepository;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // contract helper stamps enqueued ops with Utc::now — environment gate
     fn in_memory_repository_satisfies_contract() {
         assert_task_repository_contract(&InMemoryRepository::new());
     }

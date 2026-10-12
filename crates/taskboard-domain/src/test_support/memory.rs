@@ -84,6 +84,7 @@ mod read_port_tests {
     /// Routing contract (one per impl): `read_state` returns the post-apply
     /// persisted shape, identical to `load`.
     #[test]
+    #[cfg_attr(miri, ignore)] // builds a PendingOp stamped with Utc::now — environment gate
     fn in_memory_read_state_returns_the_post_apply_shape() {
         let repo = InMemoryRepository::new();
         let op = crate::outbox::PendingOp {
