@@ -255,6 +255,80 @@ Miri is applied targetedly:
    pipeline. Run it locally when introducing complex serialization
    structures or concurrency primitives.
 
+** The weekly job's contract (measured 2026-10-12)
+
+The job (=.github/workflows/miri.yml=) splits the sweep into four
+parallel jobs — domain core, domain =pipeline::= tests, domain
+=remote::=/=state::= properties, and the state crate — so each family
+owns the 120-minute timeout and no single slow family starves the rest.
+Every reduction below is an *interpreter-only environment/speed gate*:
+the native suite is unchanged (256-case proptest default, failure
+persistence, and the checked-in seed replay all stay exactly as they
+are outside these jobs), and no assertion is weakened or skipped.
+
+- *Environment forwarding*: under Miri's default isolation the
+  interpreted process sees *no host environment variables*, so
+  =PROPTEST_*= settings must be forwarded explicitly with
+  =MIRIFLAGS=-Zmiri-env-forward=<VAR>=. Isolation itself stays on —
+  =-Zmiri-disable-isolation= is deliberately not used.
+
+- *Failure persistence is env-off under the interpreter*
+  (=PROPTEST_DISABLE_FAILURE_PERSISTENCE=1=): proptest's persistence
+  opens/canonicalizes the regressions file at every property start,
+  which is unsupported under isolation. Only the raw
+  =Config::with_cases= proptest blocks need this; the rest go through
+  =test_support::proptest_config=, which disables persistence under
+  =cfg!(miri)= in code. Nothing is lost semantically — persistence only
+  remembers shrinking seeds between runs, and native runs keep
+  replaying them, including the checked-in seed file.
+
+- *Per-job case caps* (=PROPTEST_CASES=): domain core 16, domain
+  =pipeline::= 1 (that family carries no properties today — the cap is
+  a guard for future additions), domain remote/state properties 16,
+  state 16. Measured wall times at these caps (2026-10-12 green run):
+  core ≈ 57 min, pipeline ≈ 21 min, properties ≈ 13 min, state
+  ≈ 10 min — all inside the ≈ 90-minute headroom bar (25% margin under
+  the timeout). Caps exist to fit the budget; they are never a coverage
+  statement, and moving one requires a measured budget justification
+  recorded in the PR that moves it.
+
+- *Do not read libtest's =finished in= figure as wall time*: under
+  isolation Miri emulates the monotonic clock from interpreted work
+  (≈ executed operations), so a job can print =finished in 4222s=
+  with a wall time of ≈ 57 min. Budget compliance is judged from the
+  job's wall time, never from this figure.
+
+- *Doctests are outside the interpreter scope* (invocations use
+  =--lib --tests=): the state crate's usage doctest boots the tokio
+  engine, which reads the realtime clock and cannot run under
+  isolation. Doctests stay compiled and executed natively in the PR
+  pipeline.
+
+- *Realtime-clock tests carry scoped =#[cfg_attr(miri, ignore)]=
+  gates* (isolation provides no =clock_gettime(REALTIME)=):
+  =clock.rs= (SystemClock), =outbox.rs= (PendingOp roundtrip),
+  =idgen.rs= (production =UuidV7Generator=),
+  =test_support/memory.rs= (read-port test), and
+  =test_support/contract.rs= (contract helper stamps enqueued ops with
+  =Utc::now=). Each runs natively unchanged; existing gates follow the
+  same pattern (insta S-series socketpair, =sqlite_smoke= tempdir+FFI,
+  P4/P5 live-engine properties).
+
+- *Why the job split exists*: interpreter cost is wildly
+  non-uniform — the plain =pipeline::= tests dominate (the slowest,
+  =apply_push_report_equals_the_pipeline_push_phase=, is ≈ 28 s
+  natively but ≈ 25 min interpreted), while whole =remote::=/=state::=
+  property passes cost ≈ 15 s per case. A single combined invocation
+  cannot order around such outliers; parallel per-family jobs keep
+  every family's wall time inside the headroom bar.
+
+- *Local-run recipe*:
+  =PROPTEST_DISABLE_FAILURE_PERSISTENCE=1 cargo +nightly miri test -p taskboard-domain -p taskboard-state=.
+  A bare =cargo miri test= without the env aborts on the raw
+  =Config::with_cases= proptest blocks (entities, state, remote,
+  messages, ids, merge); migrating those to
+  =test_support::proptest_config= is follow-up material (§9 backlog).
+
 * 11. Fuzzing: cargo-fuzz
 
 Deferred. With high-level, heavily-fuzzed ecosystem crates (=serde_json=,
