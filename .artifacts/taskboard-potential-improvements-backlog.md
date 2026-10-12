@@ -1717,6 +1717,14 @@ abort, the daemon's second-signal escalation, and an IPC
 
 ## [2026-10-11] `logout` while a daemon runs: credential-liveness warning
 
+- **Status**: ✅ DONE (implemented 2026-10-12, option (b) "act" —
+  `logout` nudges the daemon to drop its connector — per
+  `.artifacts/plans/2026-10-12-app-logout-daemon-liveness-plan.md`,
+  branch `feat/app-logout-daemon-liveness`; the ADR 0012 amendment
+  records the detach contract. Note: the "reuses the sync actor's
+  shutdown path" sketch below was corrected in the plan — the
+  `Shutdown` broadcast drains the whole engine; the mechanism is a new
+  `SyncCommand::Detach` inbox command instead)
 - **Category**: `UX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi5-daemon-ipc-frontend-plan.md` §7
 - **Target Area**: `crates/taskboard-app/src/commands/{logout,status}`
