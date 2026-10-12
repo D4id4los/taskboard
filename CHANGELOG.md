@@ -10,6 +10,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- `logout` detaches a running daemon's connector (WI-H, ADR 0012
+  amendment): after the local logout succeeds, the client best-effort
+  asks the daemon serving the same database to drop its sync actor —
+  the booted credential dies in memory and the daemon keeps serving
+  local edits connector-less (not a standalone flip; the config is
+  never rewritten). The nudge never changes the exit code: the receipt
+  gains the optional `daemon_connector` field, degradations are stderr
+  warnings, and no daemon at all is no warning. The verb is additive
+  on the protocol-v1 wire (recorded policy: additive variants never
+  bump; shape changes do), matched against the daemon's booted
+  identity (`identity-mismatch` otherwise), and idempotent. Honesty
+  riders: `sync` on a detached engine refuses typed
+  `sync-unavailable` instead of lying via `sync-timed-out`, and
+  daemon-side `status` reports `connector_attached` so a detached
+  daemon no longer masquerades as a syncing one.
 - REPL tab-completion (WI-G): inside the interactive session, Tab
   completes verbs, subverbs, long flags, and the live stack/task/label
   titles at the cursor — including the attached `--stack=<Tab>` value

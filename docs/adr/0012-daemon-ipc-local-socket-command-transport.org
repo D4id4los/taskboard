@@ -2,7 +2,8 @@
 #+options: toc:nil
 
 - *Date:* 2026-10-11
-- *Status:* Accepted (post-review, 2026-10-11)
+- *Status:* Accepted (post-review, 2026-10-11); amended 2026-10-12
+  (=logout= detaches the daemon's connector — WI-H)
 - *Deciders:* Viktoria Pogrzebacz
 - *Amends:* ADR 0010 (decision 9 — the daemon's =standalone= refusal)
 - *Implements:* M1-exit work item WI-5 (plan
@@ -54,9 +55,8 @@ the observable contract — exit code, stdout payload, stderr envelope —
 is byte-identical on both paths, and the binary E2E pins the byte
 identity. The lane table is an exhaustive pure function
 (=route_for_ipc=), so every future verb must pick a lane. =logout=
-while a daemon runs stays permitted: the daemon keeps its booted
-credentials until restart (documented; a warning is a UX decision for
-the settings round).
+while a daemon runs is the *act* option of the 2026-10-12 amendment
+below: the daemon drops its booted connector on request.
 
 ** Argv on the wire; rendered text back; the client is a dumb relay
 
@@ -179,3 +179,76 @@ keeps the binary E2E tier hermetic.
 Owner-only unix permissions (Windows: session-local namespace); no
 auth beyond the OS object; no network listeners. A remote (TCP/ssh)
 management surface requires a real auth design first (backlogged).
+
+* Amendment (2026-10-12): =logout= detaches the daemon's connector
+
+Plan =.artifacts/plans/2026-10-12-app-logout-daemon-liveness-plan.md=
+(WI-H, option (b) picked at plan review). This replaces the original
+carve-out ("the daemon keeps its booted credentials until restart").
+
+** The contract
+
+After the *local* logout work succeeds (secret deleted first, auto
+config keys stripped, idempotent), the one-shot client best-effort
+asks the daemon serving the same database to drop its sync connector:
+the sync actor stops gracefully (=SyncCommand::Detach=, a new domain
+inbox command — *never* the =Shutdown= broadcast, which drains the
+whole engine), the in-memory credential (=DeckClient=) dies with the
+actor's task, and the daemon keeps serving local edits connector-less.
+A detached daemon is *not* a standalone flip: the config is never
+rewritten in memory (ADR 0010 loudness preserved) — it is a
+nextcloud-backend daemon with no attached connector.
+
+** Identity matching
+
+The =DetachConnector= request carries =(server_url, username)= — the
+identity the client just logged out. The daemon detaches only on an
+exact match with its booted identity; a mismatch is answered
+=identity-mismatch= with no detach (never drop a connector whose
+credential was not the one revoked). A standalone daemon answers
+=no-connector= regardless.
+
+** Wire-version policy: additive variants never bump
+
+=PROTOCOL_VERSION= stays 1 for the two new envelope variants. Client
+and daemon ship as one binary, so mixed versions are the post-upgrade
+window only (old daemon still running, new CLI); a bump to 2 would
+fail *every* verb in that window, while the no-bump cost is exactly
+one verb degrading: an old daemon cannot decode the variant →
+connection dropped → the client sees typed =ipc-transport= → the
+logout warning. Policy: *additive variants are minor wire changes (no
+bump); changing an existing variant's shape bumps.* Cross-version
+matrix: new client → old daemon = typed transport failure → warning;
+old client → new daemon = unaffected (it never sends the verb); new ↔
+new = full semantics.
+
+** Post-detach honesty
+
+- =sync= on a detached engine refuses typed =sync-unavailable= (exit
+  1): the engine's =RequestSync= fails closed (=NoOp=) once the
+  actor's inbox receiver is gone, and the verb maps that instead of
+  lying via =sync-timed-out=.
+- =status= gains =connector_attached= (optional, daemon-side
+  =nextcloud= answers only): a detached daemon would otherwise answer
+  =backend: "nextcloud"= with phase =Idle= — structurally true,
+  operationally misleading.
+- The logout receipt carries =daemon_connector=
+  (="dropped"|"none"|"mismatch"|"unreachable"|"unknown"=, optional).
+  The local logout stays exit 0 in every arm (the secret *is*
+  deleted); degradations are stderr warnings, and no daemon at all is
+  no warning. The client's read is bounded by a 30s budget; on expiry
+  the daemon still completes its detach.
+
+** Graceful, bounded detach
+
+=Detach= is processed strictly between cycles — an in-flight or queued
+cycle completes first (a wedged cycle is bounded by the daemon's
+=shutdown_timeout_secs= join budget, which aborts; the credential dies
+either way). The detach is idempotent: =no-connector= on a repeat.
+
+** Out of scope (unchanged)
+
+Session-level login/logout (REPL refuses =logout= mid-session already;
+the attach/detach session flow is WI-J's design round, which evaluates
+=App::detach_connector= for reuse), remote revocation at the Nextcloud
+server, and any GUI surface.
