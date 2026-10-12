@@ -1720,3 +1720,25 @@ IPC lane): prints the resolved read path and the login write target,
 JSON and text; pure reuse of `config_path`/`write_path`, one dispatch
 arm plus a small view. Natural companion to any future
 connector-management verb round that touches the config verb family.
+||||||| parent of a66b9a5 (docs(backlog): signal-death line-discipline restore (guard can't cover it))
+## [2026-10-12] Restore the line discipline on signal death mid-REPL
+
+- **Category**: `DX`
+- **Originating Plan/Report**: Chat/Context (the tmux no-echo breakage, fixed by the `TtyStateGuard` in `run_session`)
+- **Target Area**: `crates/taskboard-app/src/repl.rs`
+
+### Context & Description
+The `exit`/`quit`/EOF paths now restore the terminal line discipline on
+session end. A process death by signal (SIGINT while a verb runs, or an
+external SIGTERM/SIGKILL while the editor thread parks in `readline()`)
+still cannot restore: no destructors run. The pane then stays in raw
+mode (invisible input echo until `stty sane`), same symptom as the
+fixed race. Out of scope for the guard change because a correct fix
+needs an actual signal handler chain, not a drop guard.
+
+### Proposed Approach
+Register the restore in the signal path: a minimal `signal-hook`-style
+handler (or tokio's ctrl_c/SIGTERM listeners, which the process already
+arms for the daemon) performs one `tcsetattr(TCSADRAIN, saved)` before
+exiting. SIGKILL stays unrestoreable by definition; document
+`reset`/`stty sane` as the user recovery for that case.
