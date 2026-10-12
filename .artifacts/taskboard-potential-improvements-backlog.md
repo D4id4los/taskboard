@@ -815,6 +815,17 @@ Only after Phase 4 lands and a benchmark shows need: collapse consecutive
 nudges while one is already queued (an `AtomicBool` or a queued-marker in
 the loop).
 
+## [2026-10-09] Miri + proptest isolation friction — ✅ DONE (SUBSUMED 2026-10-12)
+
+**Resolved** by the Miri CI tuning item: the repo-wide policy landed as
+"isolation stays on" — no `-Zmiri-disable-isolation` anywhere. The
+proptest persistence abort is handled by
+`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` forwarded into the interpreter
+via `-Zmiri-env-forward` in the weekly job (env vars are invisible under
+isolation — this is why the env gate alone never worked), wall-clock
+tests carry scoped `#[cfg_attr(miri, ignore)]` gates, and the policy is
+recorded in `docs/testing_strategy.org` §10.
+
 ## [2026-10-09] Miri + proptest isolation friction
 
 - **Category**: `Testing` / `DX`
@@ -871,6 +882,21 @@ batch given to the repository could likewise be `Arc<[PersistenceAction]>`
 or drained from the plan rather than cloned. Requires care to keep ADR
 0006's single-advance rule (memory advances only by interpreting the
 persisted batch) and the P2/P3/P4 equivalence pins intact.
+
+## [2026-10-09] Miri CI tuning: verify and time-cap the weekly job — ✅ DONE (2026-10-12)
+
+**Resolved** on `ci/miri-tuning`: the weekly job now runs four parallel
+per-family jobs (domain core / pipeline / remote+state properties /
+state crate) with `PROPTEST_CASES=16` caps and the persistence env gate
+forwarded through `-Zmiri-env-forward` (isolation stays on). Green
+in-budget full run of the final config:
+<https://github.com/D4id4los/taskboard/actions/runs/38312493624>
+(55 min wall, all jobs ≤ 55 min vs the 120-min timeout; plan §10 of
+`docs/testing_strategy.org` records the exact scope). Key finding: env
+vars do not reach the interpreted process under Miri's default
+isolation, so the caps must be forwarded with `-Zmiri-env-forward` —
+and the true interpreter-monsters are the plain `pipeline::` tests
+(≈28 s native → ≈25 min interpreted), not the properties.
 
 ## [2026-10-09] Miri CI tuning: verify and time-cap the weekly job
 
