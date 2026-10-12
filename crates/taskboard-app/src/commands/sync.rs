@@ -80,8 +80,15 @@ pub(crate) async fn sync_on(
         let view = SyncStatusView::new(&app.engine.shared_state().load_full().sync);
         return Ok(SyncOutcome::NoWait(view));
     }
-    // Belt-and-braces nudge; the boot cycle coalesces with it.
-    app.engine.execute(StateCommand::RequestSync).await?;
+    // Belt-and-braces nudge; the boot cycle coalesces with it. A
+    // connector-less engine (standalone gate passed on a booted session
+    // whose connector was detached, WI-H) answers `NoOp` — refuse typed
+    // instead of waiting out the deadline for evidence that can never
+    // arrive.
+    let outcome = app.engine.execute(StateCommand::RequestSync).await?;
+    if outcome == taskboard_domain::CommandOutcome::NoOp {
+        return Err(CommandError::SyncUnavailable);
+    }
     Ok(wait_for_sync_result(app, &startup, timeout).await)
 }
 
@@ -158,5 +165,59 @@ pub fn render_text(outcome: &SyncOutcome) -> String {
             "sync nudged — phase: {}, {} pending",
             view.phase, view.pending_ops
         ),
+    }
+}
+
+#[cfg(test)]
+mod detach_tests {
+    use super::*;
+    use crate::bootstrap::DetachOutcome;
+    use crate::config::AppConfig;
+    use crate::secrets::{AppPassword, CredentialError, CredentialStore};
+
+    /// A fixed store: the fake the bootstrap doc example uses.
+    #[derive(Debug)]
+    struct FixedStore(crate::secrets::AppPassword);
+
+    impl CredentialStore for FixedStore {
+        fn load(&self, _: &str, _: &str) -> Result<AppPassword, CredentialError> {
+            Ok(self.0.clone())
+        }
+        fn store(&self, _: &str, _: &str, _: AppPassword) -> Result<(), CredentialError> {
+            Err(CredentialError::Unsupported)
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), CredentialError> {
+            Err(CredentialError::Unsupported)
+        }
+    }
+
+    /// WI-H tier 5: on a detached core, `sync_on` refuses typed
+    /// `SyncUnavailable` instead of nudging a dead channel and lying
+    /// via `SyncTimedOut`. The pre-detach path is unchanged (the
+    /// nudge answers `SyncRequested` — pinned at the B/engine tiers).
+    #[tokio::test]
+    async fn sync_on_a_detached_core_refuses_sync_unavailable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = AppConfig::default();
+        config.nextcloud.server_url = Some("http://127.0.0.1:9".into());
+        config.nextcloud.username = Some("alice".into());
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        config.app.shutdown_timeout_secs = 2;
+        config.validate().expect("valid");
+        let store: std::sync::Arc<dyn CredentialStore> =
+            std::sync::Arc::new(FixedStore(AppPassword::new("pw")));
+        let app = crate::bootstrap::bootstrap(config, store)
+            .await
+            .expect("boots");
+
+        assert_eq!(app.detach_connector().await, DetachOutcome::Detached);
+
+        let outcome = sync_on(&app, false, Duration::from_secs(1)).await;
+        assert!(
+            matches!(outcome, Err(CommandError::SyncUnavailable)),
+            "expected the typed refusal, got {outcome:?}"
+        );
+
+        let _ = app.shutdown().await;
     }
 }

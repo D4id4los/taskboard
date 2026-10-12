@@ -28,6 +28,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 mod common;
 
 use common::{BOARD, EnvOverride, FakeCredentialStore, STACK, T, mount_standard_pull};
+use taskboard_app::bootstrap::DetachOutcome;
 
 /// The app password every hermetic B-test authenticates with.
 const PASSWORD: &str = "b-series-app-password";
@@ -562,4 +563,45 @@ async fn b8_standalone_boot_never_touches_credentials_and_serves_commands() {
 
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted);
+}
+
+// ---------------------------------------------------------------------
+// WI-H: the connector-only detach
+// ---------------------------------------------------------------------
+
+/// B9: `detach_connector` stops the sync actor gracefully, is
+/// idempotent, and leaves the engine serving local edits with a
+/// fail-closed nudge (`RequestSync` → `NoOp`, never `Syncing`).
+/// `shutdown()` after a detach completes without the sync join path.
+#[tokio::test]
+async fn b9_detach_connector_is_graceful_idempotent_and_fails_closed() {
+    let dir = tempdir();
+    let server = MockServer::start().await;
+    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
+    assert!(app.connector_attached(), "a nextcloud boot has a connector");
+
+    assert_eq!(app.detach_connector().await, DetachOutcome::Detached);
+    assert!(!app.connector_attached());
+    assert_eq!(
+        app.detach_connector().await,
+        DetachOutcome::NoConnector,
+        "the detach is idempotent"
+    );
+
+    // The nudge fails closed (the engine keeps serving; local-edit
+    // survival through a dead connector is pinned at the engine tier).
+    let outcome = app
+        .engine
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("the engine still answers");
+    assert_eq!(outcome, taskboard_domain::CommandOutcome::NoOp);
+    assert_eq!(
+        app.engine.shared_state().load_full().sync.phase,
+        SyncPhase::Idle,
+        "a detached connector must not mark the engine Syncing"
+    );
+
+    let outcome = app.shutdown().await;
+    assert!(!outcome.actor_aborted, "the actor was already joined");
 }
