@@ -575,6 +575,12 @@ before comparison) if real-server use (M1) shows revert-on-sync symptoms.
 - **Originating Plan/Report**: Chat/Context 2026-10-09 (user request during
   the Phase 2 plan review; forgotten in the initial Phase 1 commits)
 - **Target Area**: `crates/taskboard-domain/`
+- **Status**: ✅ DONE (implemented 2026-10-12, WI-F: `tracing` added with
+  the workspace pin verbatim — `log` feature per coding guidelines §4, so
+  the "no features" phrasing here was resolved against the guideline;
+  architecture.org cap amended rather than an ADR; 78 instrumentation
+  sites across `merge.rs`/`pipeline.rs`; logging arms deliberately
+  uncovered per the deck-client precedent — no log-text assertions).
 
 ### Context & Description
 The domain crate shipped without `tracing` statements, so a debug log
