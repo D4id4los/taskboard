@@ -12,10 +12,11 @@
   honest but surprising. Two candidate semantics are designed below to
   decision-ready depth; **one** is implemented by stage 2 after the user
   picks at plan review.
-- **Status**: DRAFT — **GATED**. Recommendation: **option (b)** (§6). The
-  user picks at plan review by naming the approved option here:
-  **Approved option: ______________** (stage 2 STOPs unless this names (a)
-  or (b)).
+- **Status**: **APPROVED at plan review, 2026-10-12 — option (b)** is
+  the user's pick (D1–D8 approved with it). D7 reading confirmed: the
+  REPL stays untouched; session-level login/logout — WI-J's attach flow
+  plus the matching detach semantics — belongs to WI-J's design round.
+  Stage 2 implements option (b) only (§4).
 - **Origin**: backlog "[2026-10-11] `logout` while a daemon runs:
   credential-liveness warning"; dispatched by
   `.artifacts/plans/2026-10-12-backlog-batch-dispatch-plan.md` §2/§4 WI-H.
@@ -36,9 +37,10 @@
 >   connector: the sync actor stops, the in-memory credential
 >   (`DeckClient`) dies, the daemon degrades to connector-less serving.
 >
-> **Recommended: (b)** — logout means logout, especially on a kiosk; see
-> §6. Do not implement both: their status-field additions collide and (b)
-> makes (a)'s probe redundant (§6.3).
+> **Picked at review: (b)** (2026-10-12) — logout means logout,
+> especially on a kiosk; see §6. Do not implement both: their
+> status-field additions collide and (b) makes (a)'s probe redundant
+> (§6.3).
 
 ---
 
@@ -531,7 +533,10 @@ one new domain variant.
 - **D6 — honesty riders are part of (b)**: `sync` post-detach → typed
   `sync-unavailable`; `status` → `connector_attached`.
 - **D7 — REPL untouched**: refuses logout already; session-level
-  login/attach is WI-J's design round.
+  login **and logout** (WI-J's attach flow plus the matching detach
+  semantics, REPL and the Phase 7 GUI alike) is WI-J's design round —
+  reading confirmed at plan review. WI-H's `App::detach_connector`
+  (§4.2) is the seam WI-J's designer evaluates for reuse.
 - **D8 — (a) probe semantics**: tri-state `Option<bool>`, booted
   identity as the key, `Backend|Unsupported` → `None`, `spawn_blocking`,
   env-store daemon always "live".
