@@ -34,7 +34,7 @@ use crate::entities::{Label, Stack, Task, TaskClocks};
 use crate::idgen::IdGenerator;
 use crate::ids::{BoardId, LabelId, RemoteBoardId, StackId, TaskId};
 use crate::messages::{LabelChanges, StateCommand, TaskChanges};
-use crate::outbox::{LocalOp, OpId, PendingOp};
+use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
 use crate::state::AppState;
 
@@ -152,27 +152,6 @@ fn live_label(app: &AppState, id: LabelId) -> Result<&Label, CommandError> {
 
 fn existing_label(app: &AppState, id: LabelId) -> Result<&Label, CommandError> {
     app.labels.get(&id).ok_or(CommandError::UnknownLabel(id))
-}
-
-/// `true` when the pending op addresses the given task (same id-scoping
-/// rule the sync pipeline uses for op cancellation).
-fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
-    match op {
-        LocalOp::CreateTask(id)
-        | LocalOp::UpdateTask(id)
-        | LocalOp::MoveTask(id)
-        | LocalOp::DeleteTask(id)
-        | LocalOp::AssignLabel(id, _)
-        | LocalOp::UnassignLabel(id, _) => *id == task,
-        LocalOp::CreateStack(_)
-        | LocalOp::RenameStack(_)
-        | LocalOp::MoveStack(_)
-        | LocalOp::DeleteStack(_)
-        | LocalOp::CreateLabel(_)
-        | LocalOp::UpdateLabel(_)
-        | LocalOp::DeleteLabel(_)
-        | LocalOp::RenameBoard(_) => false,
-    }
 }
 
 fn op_targets_label(op: &LocalOp, label: LabelId) -> bool {

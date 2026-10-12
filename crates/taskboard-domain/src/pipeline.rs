@@ -38,7 +38,7 @@ use crate::merge::{
     merge_board, merge_label, merge_stack, merge_task, remote_wins, tombstone_board,
     tombstone_label, tombstone_stack, tombstone_task, utc_min,
 };
-use crate::outbox::{LocalOp, OpId, PendingOp};
+use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
 use crate::remote::{PushOutcome, PushResult, RemoteBoardSnapshot, RemoteEcho, RemoteIndex};
 use crate::state::{AppState, SyncErrorKind, SyncPhase, SyncStatus};
@@ -76,25 +76,6 @@ fn op_board_id(op: &LocalOp) -> Option<BoardId> {
     match op {
         LocalOp::RenameBoard(id) => Some(*id),
         _ => None,
-    }
-}
-
-fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
-    match op {
-        LocalOp::CreateTask(id)
-        | LocalOp::UpdateTask(id)
-        | LocalOp::MoveTask(id)
-        | LocalOp::DeleteTask(id)
-        | LocalOp::AssignLabel(id, _)
-        | LocalOp::UnassignLabel(id, _) => *id == task,
-        LocalOp::CreateStack(_)
-        | LocalOp::RenameStack(_)
-        | LocalOp::MoveStack(_)
-        | LocalOp::DeleteStack(_)
-        | LocalOp::CreateLabel(_)
-        | LocalOp::UpdateLabel(_)
-        | LocalOp::DeleteLabel(_)
-        | LocalOp::RenameBoard(_) => false,
     }
 }
 

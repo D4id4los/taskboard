@@ -61,6 +61,29 @@ pub struct PendingOp {
     pub queued_at: DateTime<Utc>,
 }
 
+/// `true` when the pending op addresses the given task: the id-scoping
+/// rule for op cancellation, shared by the command layer and the sync
+/// pipeline so the two can never drift.
+#[must_use]
+pub fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
+    match op {
+        LocalOp::CreateTask(id)
+        | LocalOp::UpdateTask(id)
+        | LocalOp::MoveTask(id)
+        | LocalOp::DeleteTask(id)
+        | LocalOp::AssignLabel(id, _)
+        | LocalOp::UnassignLabel(id, _) => *id == task,
+        LocalOp::CreateStack(_)
+        | LocalOp::RenameStack(_)
+        | LocalOp::MoveStack(_)
+        | LocalOp::DeleteStack(_)
+        | LocalOp::CreateLabel(_)
+        | LocalOp::UpdateLabel(_)
+        | LocalOp::DeleteLabel(_)
+        | LocalOp::RenameBoard(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
