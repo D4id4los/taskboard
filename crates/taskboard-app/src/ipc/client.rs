@@ -21,7 +21,7 @@ use interprocess::local_socket::{tokio::Stream, traits::tokio::Stream as _};
 use crate::commands::CommandError;
 use crate::commands::status::StatusView;
 use crate::ipc::codec;
-use crate::ipc::protocol::{PROTOCOL_VERSION, Request, Response};
+use crate::ipc::protocol::{DetachWireOutcome, PROTOCOL_VERSION, Request, Response};
 use crate::ipc::socket_name;
 
 /// The connect budget for ambiguous transport failures only (see the
@@ -30,6 +30,11 @@ use crate::ipc::socket_name;
 const CONNECT_BUDGET: Duration = Duration::from_secs(1);
 /// The ambiguous-failure retry cadence (well under the budget).
 const CONNECT_RETRY: Duration = Duration::from_millis(50);
+/// The detach read budget (WI-H): the daemon's graceful join is bounded
+/// server-side by its own shutdown timeout; this generous ceiling only
+/// bounds pathological hangs, so it must comfortably exceed the largest
+/// legitimate bounded join.
+const DETACH_BUDGET: Duration = Duration::from_secs(30);
 
 /// The response-side version gate (pure; unit-pinned): a typed
 /// `VersionMismatch` or any wrong-version answer is the `ipc-version`
@@ -187,6 +192,40 @@ impl Connection {
         {
             Response::Shutdown { .. } => Ok(()),
             _ => Err(CommandError::IpcTransport),
+        }
+    }
+
+    /// Asks the daemon to drop its sync connector (WI-H): the identity
+    /// the caller just logged out. Bounded by [`DETACH_BUDGET`] — a slow
+    /// daemon join cannot hang `logout`; on budget expiry the daemon
+    /// still completes its detach and the caller degrades to the
+    /// warning.
+    ///
+    /// # Errors
+    ///
+    /// [`CommandError`] — transport and version classes (including the
+    /// budget expiry and a pre-`detach-connector` daemon, which cannot
+    /// decode the variant and drops the connection).
+    pub async fn detach(
+        self,
+        server_url: &str,
+        username: &str,
+    ) -> Result<DetachWireOutcome, CommandError> {
+        let request = Request::DetachConnector {
+            v: PROTOCOL_VERSION,
+            server_url: server_url.to_owned(),
+            username: username.to_owned(),
+        };
+        match tokio::time::timeout(
+            DETACH_BUDGET,
+            self.request(request, codec::MAX_RESPONSE_BYTES),
+        )
+        .await
+        {
+            Ok(Ok(Response::DetachConnector { outcome, .. })) => Ok(outcome),
+            Ok(Ok(_)) => Err(CommandError::IpcTransport),
+            Ok(Err(err)) => Err(err),
+            Err(_elapsed) => Err(CommandError::IpcTransport),
         }
     }
 }
