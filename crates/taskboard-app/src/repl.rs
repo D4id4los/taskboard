@@ -39,6 +39,7 @@ use clap::Parser as _;
 
 use crate::cli::Command;
 use crate::commands::{CommandError, CommandIo, CoreSession, dispatch_line};
+use crate::completion;
 use crate::config::{AppConfig, SyncBackend};
 use crate::secrets::CredentialStore;
 
@@ -89,19 +90,27 @@ pub enum LineEvent {
 /// bounded channel so the reader never runs ahead of execution. When
 /// the loop drops the receiver, the next send fails and the thread
 /// exits. The `Editor` is created and confined to this thread,
-/// sidestepping its `Send` story entirely.
+/// sidestepping its `Send` story entirely; the tab-completion helper
+/// ([`completion::ReplHelper`]) lives and dies with it and reads the
+/// session state only through one lock-free `load_full()` per Tab.
 ///
 /// # Panics
 ///
 /// Never in normal operation: the only `expect` guards the thread spawn
 /// itself (an OS-level thread-creation failure at session start).
 #[must_use]
-pub fn spawn_line_reader() -> mpsc::Receiver<LineEvent> {
+pub fn spawn_line_reader(
+    state: Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>,
+) -> mpsc::Receiver<LineEvent> {
     let (tx, rx) = mpsc::channel(1);
     std::thread::Builder::new()
         .name("repl-line-reader".to_owned())
         .spawn(move || {
-            let mut editor = match rustyline::DefaultEditor::new() {
+            let mut editor = match rustyline::Editor::<
+                completion::ReplHelper,
+                rustyline::history::DefaultHistory,
+            >::new()
+            {
                 Ok(editor) => editor,
                 Err(err) => {
                     // No line editor (e.g. no terminal): degrade to EOF —
@@ -111,6 +120,7 @@ pub fn spawn_line_reader() -> mpsc::Receiver<LineEvent> {
                     return;
                 }
             };
+            editor.set_helper(Some(completion::ReplHelper::new(state)));
             loop {
                 match editor.readline(PROMPT) {
                     Ok(line) => {
@@ -349,11 +359,14 @@ pub async fn repl_loop(
 /// Runs one session to completion against injected line events and
 /// writers: boot (typed failures reported, exit 1) → one-time boot-pull
 /// wait under a connector backend → banner → loop → graceful shutdown →
-/// exit 0.
+/// exit 0. The `lines` factory runs immediately after a successful
+/// `bootstrap` and receives the session's shared-state handle — the
+/// production factory spawns the editor thread with it, so completion
+/// always has a valid snapshot and tests inject their channel untouched.
 pub async fn run_session_with_lines(
     config: AppConfig,
     json_default: bool,
-    lines: mpsc::Receiver<LineEvent>,
+    lines: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> mpsc::Receiver<LineEvent>,
     io: &mut CommandIo<'_>,
 ) -> u8 {
     let store: Arc<dyn CredentialStore> =
@@ -363,6 +376,7 @@ pub async fn run_session_with_lines(
         Ok(app) => app,
         Err(err) => return crate::commands::report_to(io, &CommandError::from(err)),
     };
+    let lines = lines(app.engine.shared_state());
     let session = ReplSession {
         config: app.config.clone(),
         store,
@@ -460,8 +474,7 @@ pub async fn run_session(config: AppConfig, json_default: bool) -> u8 {
     // dropping at scope end (before main's `process::exit`) hands the
     // terminal back exactly as found.
     let _tty = TtyStateGuard::take();
-    let lines = spawn_line_reader();
-    run_session_with_lines(config, json_default, lines, &mut io).await
+    run_session_with_lines(config, json_default, spawn_line_reader, &mut io).await
 }
 
 #[cfg(test)]
