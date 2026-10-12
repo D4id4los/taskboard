@@ -37,6 +37,20 @@ pub enum Request {
         /// Protocol version.
         v: u32,
     },
+    /// Connector-only detach (WI-H): the daemon stops its sync actor and
+    /// destroys the in-memory credential, then keeps serving
+    /// connector-less. Additive variant (ADR 0012 amendment: no version
+    /// bump for additive changes); carries the identity the client just
+    /// logged out — the daemon detaches only on an exact match with its
+    /// booted identity (decision D3).
+    DetachConnector {
+        /// Protocol version.
+        v: u32,
+        /// The server URL of the revoked identity.
+        server_url: String,
+        /// The username of the revoked identity.
+        username: String,
+    },
 }
 
 /// The server's answer.
@@ -67,6 +81,13 @@ pub enum Response {
         /// Protocol version.
         v: u32,
     },
+    /// Detach-connector answer (WI-H).
+    DetachConnector {
+        /// Protocol version.
+        v: u32,
+        /// What the daemon did (or refused) to do.
+        outcome: DetachWireOutcome,
+    },
     /// Any request whose `v` ≠ [`PROTOCOL_VERSION`] gets this, verbatim
     /// and parseable by any client that knows *any* version.
     VersionMismatch {
@@ -82,10 +103,30 @@ impl Response {
     #[must_use]
     pub fn version(&self) -> Option<u32> {
         match self {
-            Self::Exec { v, .. } | Self::Status { v, .. } | Self::Shutdown { v } => Some(*v),
+            Self::Exec { v, .. }
+            | Self::Status { v, .. }
+            | Self::Shutdown { v }
+            | Self::DetachConnector { v, .. } => Some(*v),
             Self::VersionMismatch { .. } => None,
         }
     }
+}
+
+/// The detach-connector answer classes (WI-H), kebab-case on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DetachWireOutcome {
+    /// The sync actor was detached and joined; the credential is gone.
+    Detached,
+    /// Nothing to detach (standalone daemon, or already detached).
+    NoConnector,
+    /// The request's identity does not match the daemon's booted one —
+    /// no detach (never drop a connector whose credential was not the
+    /// one revoked, decision D3).
+    IdentityMismatch,
+    /// The actor missed the join budget and was aborted; the credential
+    /// died with the task either way.
+    TimedOut,
 }
 
 #[cfg(test)]
@@ -123,6 +164,17 @@ mod tests {
             "shutdown"
         );
 
+        let detach = Request::DetachConnector {
+            v: PROTOCOL_VERSION,
+            server_url: "https://cloud.example.com".to_owned(),
+            username: "alice".to_owned(),
+        };
+        let json = serde_json::to_value(&detach).expect("serialize");
+        assert_eq!(json["type"], "detach-connector");
+        assert_eq!(json["v"], 1);
+        assert_eq!(json["server_url"], "https://cloud.example.com");
+        assert_eq!(json["username"], "alice");
+
         let response = Response::Exec {
             v: 1,
             code: 0,
@@ -145,11 +197,20 @@ mod tests {
             pid: Some(42),
             sync: None,
             holder_pid: None,
+            connector_attached: None,
         };
         let json = serde_json::to_value(Response::Status { v: 1, status: view }).expect("s");
         assert_eq!(json["type"], "status");
         assert_eq!(json["status"]["daemon"], true);
         assert_eq!(json["status"]["pid"], 42);
+
+        let answer = Response::DetachConnector {
+            v: 1,
+            outcome: crate::ipc::protocol::DetachWireOutcome::IdentityMismatch,
+        };
+        let json = serde_json::to_value(&answer).expect("serialize");
+        assert_eq!(json["type"], "detach-connector");
+        assert_eq!(json["outcome"], "identity-mismatch");
     }
 
     /// Round-trips through serde are lossless for every variant.
@@ -162,6 +223,11 @@ mod tests {
             },
             Request::Status { v: 1 },
             Request::Shutdown { v: 1 },
+            Request::DetachConnector {
+                v: 1,
+                server_url: "https://c.example.com".to_owned(),
+                username: "bob".to_owned(),
+            },
         ];
         for request in requests {
             let bytes = serde_json::to_vec(&request).expect("serialize");
@@ -184,9 +250,14 @@ mod tests {
                     pid: None,
                     sync: None,
                     holder_pid: Some(7),
+                    connector_attached: None,
                 },
             },
             Response::Shutdown { v: 1 },
+            Response::DetachConnector {
+                v: 1,
+                outcome: super::DetachWireOutcome::Detached,
+            },
             Response::VersionMismatch { server_v: 9 },
         ];
         for response in responses {
@@ -208,6 +279,7 @@ mod tests {
             pid: None,
             sync: None,
             holder_pid: None,
+            connector_attached: None,
         };
         let json = serde_json::to_value(&view).expect("serialize");
         assert_eq!(json, serde_json::json!({ "daemon": false }));
@@ -219,5 +291,45 @@ mod tests {
     fn version_accessor_skips_only_version_mismatch() {
         assert_eq!(Response::VersionMismatch { server_v: 3 }.version(), None);
         assert_eq!(Response::Shutdown { v: 1 }.version(), Some(1));
+        assert_eq!(
+            Response::DetachConnector {
+                v: 1,
+                outcome: super::DetachWireOutcome::NoConnector,
+            }
+            .version(),
+            Some(1)
+        );
+    }
+
+    /// The WI-H status field's presence rules: daemon-side under
+    /// `nextcloud` carries `connector_attached`, every other projection
+    /// omits it (absent, not `null`).
+    #[test]
+    fn connector_attached_presence_is_pinned() {
+        let attached = StatusView {
+            daemon: true,
+            version: Some("0.1.0".to_owned()),
+            backend: Some("nextcloud".to_owned()),
+            pid: Some(1),
+            sync: None,
+            holder_pid: None,
+            connector_attached: Some(true),
+        };
+        let json = serde_json::to_value(&attached).expect("serialize");
+        assert_eq!(json["connector_attached"], true);
+
+        let detached = StatusView {
+            connector_attached: Some(false),
+            ..attached
+        };
+        let json = serde_json::to_value(&detached).expect("serialize");
+        assert_eq!(json["connector_attached"], false);
+
+        let standalone = StatusView {
+            connector_attached: None,
+            ..detached
+        };
+        let json = serde_json::to_value(&standalone).expect("serialize");
+        assert!(json.get("connector_attached").is_none());
     }
 }

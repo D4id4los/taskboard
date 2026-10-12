@@ -469,3 +469,158 @@ async fn ip12_a_silent_connection_cannot_wedge_the_drain() {
     })
     .await;
 }
+
+// ---------------------------------------------------------------------
+// WI-H: the detach-connector verb
+// ---------------------------------------------------------------------
+
+/// The detach journeys' server: a *nextcloud*-backend daemon booted with
+/// the shared fake store (boardless — cycles skip silently, no wiremock
+/// needed) plus its server identity for the wire.
+async fn served_nextcloud(
+    dir: &Path,
+    db_name: &str,
+    server_url: &str,
+) -> (
+    server::IpcServerHandle,
+    PathBuf,
+    Arc<common::FakeCredentialStore>,
+) {
+    let mut config = standalone_config(&dir.join(db_name));
+    config.nextcloud.server_url = Some(server_url.to_owned());
+    config.nextcloud.username = Some("alice".to_owned());
+    config.nextcloud.credential_store = taskboard_app::config::CredentialStoreKind::Keyring;
+    let db = dir.join(db_name);
+    let store: Arc<common::FakeCredentialStore> =
+        Arc::new(common::FakeCredentialStore::with(server_url, "alice", "pw"));
+    let app = Arc::new(
+        taskboard_app::bootstrap::bootstrap(config, store.clone())
+            .await
+            .expect("core boots"),
+    );
+    let session = Arc::new(BasicSession {
+        config: app.config.clone(),
+        store: store.clone(),
+        config_path: None,
+    });
+    let handle = server::spawn_server(app, session, &db)
+        .await
+        .expect("server binds");
+    (handle, db, store)
+}
+
+/// One detach request over a fresh connection.
+async fn detach_once(db: &Path, server_url: &str, username: &str) -> protocol::DetachWireOutcome {
+    let conn = client::try_connect(db).await.expect("daemon answers");
+    conn.detach(server_url, username).await.expect("detach")
+}
+
+/// IP13: the logout nudge's happy path — `detach` answers `detached`,
+/// `status` flips `connector_attached` to `false` (backend stays
+/// `nextcloud`), a relayed `--json sync` refuses `sync-unavailable`
+/// (code 1), and local mutations still serve (code 0). A second detach
+/// is idempotent: `no-connector`.
+#[tokio::test]
+async fn ip13_detach_drops_the_connector_and_the_daemon_still_serves() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, db, _store) =
+            served_nextcloud(dir.path(), "ip13.db", "https://cloud.example.com").await;
+
+        // Before: attached.
+        let view = client::try_connect(&db)
+            .await
+            .expect("daemon answers")
+            .status()
+            .await
+            .expect("status");
+        assert_eq!(view.connector_attached, Some(true));
+
+        assert_eq!(
+            detach_once(&db, "https://cloud.example.com", "alice").await,
+            protocol::DetachWireOutcome::Detached
+        );
+
+        let view = client::try_connect(&db)
+            .await
+            .expect("daemon answers")
+            .status()
+            .await
+            .expect("status");
+        assert_eq!(view.backend.as_deref(), Some("nextcloud"));
+        assert_eq!(view.connector_attached, Some(false));
+
+        // The relayed sync verb refuses typed (code 1, envelope kind).
+        let outcome = exec_once(&db, &argv("--json sync")).await;
+        assert_eq!(outcome.code, 1);
+        let envelope = &json_lines(outcome.err.as_bytes())[0];
+        assert_eq!(envelope["error"]["kind"], "sync-unavailable");
+
+        // Local editing still serves connector-less.
+        let outcome = exec_once(&db, &argv("boards create Personal")).await;
+        assert_eq!(outcome.code, 0, "{}", outcome.err);
+
+        // Idempotent.
+        assert_eq!(
+            detach_once(&db, "https://cloud.example.com", "alice").await,
+            protocol::DetachWireOutcome::NoConnector
+        );
+
+        handle.join(DRAIN_BUDGET).await;
+    })
+    .await;
+}
+
+/// IP14: a detach request carrying another identity is refused with
+/// `identity-mismatch` — the daemon's connector (and its booted
+/// credential) stays attached, evidence untouched.
+#[tokio::test]
+async fn ip14_a_foreign_identity_never_detaches() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, db, store) =
+            served_nextcloud(dir.path(), "ip14.db", "https://cloud.example.com").await;
+
+        assert_eq!(
+            detach_once(&db, "https://other.example.com", "alice").await,
+            protocol::DetachWireOutcome::IdentityMismatch
+        );
+        assert_eq!(
+            detach_once(&db, "https://cloud.example.com", "mallory").await,
+            protocol::DetachWireOutcome::IdentityMismatch
+        );
+
+        let view = client::try_connect(&db)
+            .await
+            .expect("daemon answers")
+            .status()
+            .await
+            .expect("status");
+        assert_eq!(view.connector_attached, Some(true));
+        assert!(
+            store.load("https://cloud.example.com", "alice").is_ok(),
+            "the booted credential is untouched by a mismatched request"
+        );
+
+        handle.join(DRAIN_BUDGET).await;
+    })
+    .await;
+}
+
+/// IP15: a standalone daemon has no connector — the detach answers
+/// `no-connector` regardless of the identity.
+#[tokio::test]
+async fn ip15_a_standalone_daemon_answers_no_connector() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, db) = served(dir.path(), "ip15.db").await;
+
+        assert_eq!(
+            detach_once(&db, "https://cloud.example.com", "alice").await,
+            protocol::DetachWireOutcome::NoConnector
+        );
+
+        handle.join(DRAIN_BUDGET).await;
+    })
+    .await;
+}

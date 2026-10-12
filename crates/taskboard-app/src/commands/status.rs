@@ -34,6 +34,14 @@ pub struct StatusView {
     /// the client-side answer; diagnostic, best-effort).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holder_pid: Option<u32>,
+    /// Whether the daemon's sync connector is still attached (WI-H):
+    /// present only in daemon-side answers under the `nextcloud`
+    /// backend — `true` live actor, `false` detached (e.g. a `logout`
+    /// nudged the daemon). A detached daemon would otherwise answer
+    /// `backend: "nextcloud"` with phase `Idle`: structurally true,
+    /// operationally misleading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connector_attached: Option<bool>,
 }
 
 impl StatusView {
@@ -45,6 +53,10 @@ impl StatusView {
             crate::config::SyncBackend::Standalone => "standalone",
             crate::config::SyncBackend::Nextcloud => "nextcloud",
         };
+        let connector_attached = match app.config.sync_backend() {
+            crate::config::SyncBackend::Nextcloud => Some(app.connector_attached()),
+            crate::config::SyncBackend::Standalone => None,
+        };
         Self {
             daemon: true,
             version: Some(crate::VERSION.to_owned()),
@@ -54,6 +66,7 @@ impl StatusView {
                 &app.engine.shared_state().load_full().sync,
             )),
             holder_pid: None,
+            connector_attached,
         }
     }
 
@@ -69,6 +82,7 @@ impl StatusView {
             pid: None,
             sync: None,
             holder_pid: crate::lockfile::holder_pid(db_path),
+            connector_attached: None,
         }
     }
 
@@ -83,6 +97,7 @@ impl StatusView {
             pid: None,
             sync: None,
             holder_pid: Some(std::process::id()),
+            connector_attached: None,
         }
     }
 }
@@ -91,19 +106,23 @@ impl StatusView {
 #[must_use]
 pub fn render_text(view: &StatusView) -> String {
     if view.daemon {
-        let daemon = format!(
+        let mut daemon = format!(
             "daemon v{} (backend: {}, pid {})",
             view.version.as_deref().unwrap_or("?"),
             view.backend.as_deref().unwrap_or("?"),
             view.pid.map_or_else(|| "?".to_owned(), |p| p.to_string())
         );
-        match &view.sync {
-            Some(sync) => format!(
-                "{daemon} — sync phase: {}, {} pending",
-                sync.phase, sync.pending_ops
-            ),
-            None => daemon,
+        if let Some(sync) = &view.sync {
+            daemon.push_str(" — sync phase: ");
+            daemon.push_str(&sync.phase);
+            daemon.push_str(", ");
+            daemon.push_str(&sync.pending_ops.to_string());
+            daemon.push_str(" pending");
         }
+        if view.connector_attached == Some(false) {
+            daemon.push_str(" — connector detached (logged out)");
+        }
+        daemon
     } else {
         match view.holder_pid {
             Some(pid) => format!("no daemon serving this database (lock holder pid {pid})"),
@@ -153,6 +172,7 @@ mod tests {
             pid: Some(42),
             sync: None,
             holder_pid: None,
+            connector_attached: None,
         };
         let text = render_text(&daemon_view);
         assert!(text.contains("9.9.9") && text.contains("standalone") && text.contains("42"));

@@ -351,7 +351,10 @@ async fn serve_connection(mut stream: Stream, in_tx: mpsc::Sender<InboundRequest
 /// The request's protocol version (every versioned variant carries one).
 fn request_version(req: &Request) -> u32 {
     match req {
-        Request::Exec { v, .. } | Request::Status { v } | Request::Shutdown { v } => *v,
+        Request::Exec { v, .. }
+        | Request::Status { v }
+        | Request::Shutdown { v }
+        | Request::DetachConnector { v, .. } => *v,
     }
 }
 
@@ -376,6 +379,39 @@ async fn handle(app: &App, session: &BasicSession, req: Request) -> Response {
             tracing::info!("graceful shutdown requested over ipc");
             Response::Shutdown {
                 v: PROTOCOL_VERSION,
+            }
+        }
+        Request::DetachConnector {
+            server_url,
+            username,
+            ..
+        } => {
+            // Identity matching (WI-H decision D3): the daemon detaches
+            // only the connector whose credential is exactly the one the
+            // client just revoked. A standalone daemon has no connector
+            // to drop regardless of the identity.
+            use crate::config::SyncBackend;
+            use crate::ipc::protocol::DetachWireOutcome;
+            let outcome = if app.config.sync_backend() == SyncBackend::Standalone {
+                DetachWireOutcome::NoConnector
+            } else if app.config.nextcloud.server_url.as_deref() == Some(server_url.as_str())
+                && app.config.nextcloud.username.as_deref() == Some(username.as_str())
+            {
+                match app.detach_connector().await {
+                    crate::bootstrap::DetachOutcome::Detached => DetachWireOutcome::Detached,
+                    crate::bootstrap::DetachOutcome::NoConnector => DetachWireOutcome::NoConnector,
+                    crate::bootstrap::DetachOutcome::TimedOut => DetachWireOutcome::TimedOut,
+                }
+            } else {
+                tracing::warn!(
+                    requested = %server_url,
+                    "detach requested for a foreign identity; refusing"
+                );
+                DetachWireOutcome::IdentityMismatch
+            };
+            Response::DetachConnector {
+                v: PROTOCOL_VERSION,
+                outcome,
             }
         }
     }
