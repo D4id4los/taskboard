@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 use taskboard_sync_nextcloud::SyncActorConfig;
 
 /// Default file consulted when neither `--config` nor `TASKBOARD_CONFIG`
-/// names one; absent means "defaults only", never an error.
+/// names one; absent means "defaults only", never an error. Also the
+/// write fallback when an existing CWD file is the active config or the
+/// platform has no config dir (see [`AppConfig::write_path`]).
 pub const DEFAULT_CONFIG_PATH: &str = "./taskboard.toml";
 
 /// The prefix every environment override carries.
@@ -199,6 +201,16 @@ fn xdg_if_present(config_dir: Option<&Path>) -> Option<PathBuf> {
     xdg_candidate(config_dir).filter(|path| path.is_file())
 }
 
+/// Rows 4–6 of the write-target table (see [`AppConfig::write_path`]):
+/// pure over injected dirs, so the decision is unit-testable without
+/// env or process-CWD control.
+fn first_run_write_target(config_dir: Option<&Path>, cwd_default: &Path) -> PathBuf {
+    if cwd_default.is_file() {
+        return cwd_default.to_path_buf();
+    }
+    xdg_candidate(config_dir).unwrap_or_else(|| cwd_default.to_path_buf())
+}
+
 /// Configuration failure classes. Nothing here matches provider error
 /// *text*; semantic checks are structural.
 #[derive(Debug, thiserror::Error)]
@@ -288,6 +300,23 @@ impl AppConfig {
             return Some(PathBuf::from(env));
         }
         xdg_if_present(dirs::config_dir().as_deref())
+    }
+
+    /// The `login` write target: [`AppConfig::config_path`]'s answer when
+    /// resolution finds one (explicit `--config` / `TASKBOARD_CONFIG` —
+    /// present or not — / an existing XDG file); else — no config
+    /// anywhere — the XDG candidate, whose directory the writer creates,
+    /// unless a CWD-default file already exists (an existing install
+    /// keeps its file). No platform config dir → the CWD default.
+    #[must_use]
+    pub fn write_path(explicit_path: Option<PathBuf>) -> PathBuf {
+        match Self::config_path(explicit_path) {
+            Some(path) => path,
+            None => first_run_write_target(
+                dirs::config_dir().as_deref(),
+                Path::new(DEFAULT_CONFIG_PATH),
+            ),
+        }
     }
 
     /// Decodes the config *without validation* and fills the default db
@@ -605,6 +634,47 @@ mod tests {
         )
         .expect("write");
         assert_eq!(xdg_if_present(Some(dir.path())), Some(candidate));
+    }
+
+    #[test]
+    fn first_run_write_target_keeps_an_existing_cwd_default() {
+        let cwd = tempfile::tempdir().expect("tempdir");
+        let xdg = tempfile::tempdir().expect("tempdir");
+        let cwd_default = cwd.path().join("taskboard.toml");
+        std::fs::write(&cwd_default, "").expect("the existing CWD install");
+        assert_eq!(
+            first_run_write_target(Some(xdg.path()), &cwd_default),
+            cwd_default,
+            "an existing CWD config stays the active file (row 4)"
+        );
+    }
+
+    #[test]
+    fn first_run_write_target_writes_the_xdg_candidate_when_nothing_exists() {
+        let xdg = tempfile::tempdir().expect("tempdir");
+        let cwd = tempfile::tempdir().expect("tempdir");
+        let cwd_default = cwd.path().join("taskboard.toml");
+        let target = first_run_write_target(Some(xdg.path()), &cwd_default);
+        assert_eq!(
+            target,
+            xdg.path().join("taskboard").join("taskboard.toml"),
+            "fresh machine: the XDG candidate (row 5)"
+        );
+        assert!(
+            !target.parent().expect("parent").exists(),
+            "the writer creates the directory, none pre-exists"
+        );
+    }
+
+    #[test]
+    fn first_run_write_target_falls_back_to_cwd_without_a_config_dir() {
+        let cwd = tempfile::tempdir().expect("tempdir");
+        let cwd_default = cwd.path().join("taskboard.toml");
+        assert_eq!(
+            first_run_write_target(None, &cwd_default),
+            cwd_default,
+            "no platform config dir: today's CWD fallback (row 6)"
+        );
     }
 
     #[test]

@@ -347,3 +347,186 @@ async fn l9_explicit_standalone_refuses_login_before_prompting() {
         Err(CredentialError::NotFound)
     ));
 }
+
+/// L10 (the flip): `login` with **no config anywhere** — no `--config`,
+/// no `TASKBOARD_CONFIG`, no XDG file — persists to the XDG candidate
+/// (`<XDG_CONFIG_HOME>/taskboard/taskboard.toml`), not `./taskboard.toml`.
+/// Runs through `dispatch` because the flip lives in `login_command`'s
+/// path resolution. The secret is read from stdin (nextest: /dev/null →
+/// the empty line; the wiremock mock accepts any credential), and the
+/// credential store is steered to `env` via the config env overlay so no
+/// keyring is touched.
+#[tokio::test]
+async fn l10_login_with_no_config_anywhere_writes_the_xdg_candidate() {
+    use taskboard_app::cli::Command;
+    use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(common::boards_json()))
+        .mount(&server)
+        .await;
+    let xdg = tempdir();
+    // Absolute path: `dirs` ignores a relative XDG_CONFIG_HOME (spec).
+    let xdg_root = xdg.path().to_path_buf();
+
+    let code = {
+        let _guard = common::env_lock();
+        let _xdg_var =
+            common::EnvOverride::set("XDG_CONFIG_HOME", xdg_root.to_str().expect("utf8"));
+        let _store_var = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__CREDENTIAL_STORE", "env");
+        common::remove_env("TASKBOARD_CONFIG");
+        dispatch(
+            Command::Login {
+                server: Some(server.uri()),
+                user: Some("alice".to_owned()),
+            },
+            CommandCtx {
+                config_path: None,
+                io: CommandIo {
+                    out: &mut Vec::new(),
+                    err: &mut Vec::new(),
+                    json: true,
+                },
+            },
+        )
+        .await
+    };
+    assert_eq!(code, 0, "login succeeds on a fresh machine");
+
+    let written_path = xdg_root.join("taskboard").join("taskboard.toml");
+    let written = std::fs::read_to_string(&written_path).expect("config written to XDG");
+    assert!(written.contains(&server.uri()), "server persisted");
+    assert!(written.contains("alice"), "username persisted");
+    let loaded = AppConfig::load(Some(written_path)).expect("the created config loads");
+    assert_eq!(loaded.username(), "alice");
+    assert!(
+        !Path::new("taskboard.toml").exists(),
+        "no CWD config appeared (fresh-machine premise)"
+    );
+}
+
+/// L11 (D1-a): an explicit `TASKBOARD_CONFIG` naming a *missing* file is
+/// the operator's "the config is this file" declaration — login writes
+/// there (symmetric with `--config`, L7), never the XDG candidate.
+#[tokio::test]
+async fn l11_login_honors_a_missing_taskboard_config_target() {
+    use taskboard_app::cli::Command;
+    use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(common::boards_json()))
+        .mount(&server)
+        .await;
+    let env_dir = tempdir();
+    let env_config = env_dir.path().join("env.toml");
+    let xdg = tempdir();
+    let xdg_root = xdg.path().to_path_buf();
+
+    let code = {
+        let _guard = common::env_lock();
+        let _xdg_var =
+            common::EnvOverride::set("XDG_CONFIG_HOME", xdg_root.to_str().expect("utf8"));
+        let _store_var = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__CREDENTIAL_STORE", "env");
+        let _cfg_var =
+            common::EnvOverride::set("TASKBOARD_CONFIG", env_config.to_str().expect("utf8"));
+        dispatch(
+            Command::Login {
+                server: Some(server.uri()),
+                user: Some("alice".to_owned()),
+            },
+            CommandCtx {
+                config_path: None,
+                io: CommandIo {
+                    out: &mut Vec::new(),
+                    err: &mut Vec::new(),
+                    json: true,
+                },
+            },
+        )
+        .await
+    };
+    assert_eq!(code, 0, "login creates the declared env target");
+    assert!(
+        env_config.is_file(),
+        "the TASKBOARD_CONFIG target was created"
+    );
+    assert!(
+        !xdg_root.join("taskboard").join("taskboard.toml").exists(),
+        "the XDG candidate stays untouched"
+    );
+}
+
+/// L12 (row 3): an *existing* XDG config is the active file — login
+/// overlays it in place (comments and unrelated overrides survive),
+/// exactly as `--config` would; the first compositional pin of the
+/// XDG-if-present read arm through the verb that owns it.
+#[tokio::test]
+async fn l12_login_overlays_an_existing_xdg_config() {
+    use taskboard_app::cli::Command;
+    use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(common::boards_json()))
+        .mount(&server)
+        .await;
+    let xdg = tempdir();
+    let xdg_root = xdg.path().to_path_buf();
+    let xdg_config = xdg_root.join("taskboard").join("taskboard.toml");
+    std::fs::create_dir_all(xdg_config.parent().expect("parent")).expect("mkdir");
+    std::fs::write(
+        &xdg_config,
+        "# my hand-tuned config\n\
+         [sync]\npoll_interval_secs = 5 # keep this\n",
+    )
+    .expect("seed xdg config");
+
+    let code = {
+        let _guard = common::env_lock();
+        let _xdg_var =
+            common::EnvOverride::set("XDG_CONFIG_HOME", xdg_root.to_str().expect("utf8"));
+        let _store_var = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__CREDENTIAL_STORE", "env");
+        common::remove_env("TASKBOARD_CONFIG");
+        let code = dispatch(
+            Command::Login {
+                server: Some(server.uri()),
+                user: Some("alice".to_owned()),
+            },
+            CommandCtx {
+                config_path: None,
+                io: CommandIo {
+                    out: &mut Vec::new(),
+                    err: &mut Vec::new(),
+                    json: true,
+                },
+            },
+        )
+        .await;
+        // Still under the env lock: the resolution arm under test.
+        let loaded = AppConfig::load(None).expect("the XDG config is the active one");
+        assert_eq!(loaded.sync.poll_interval_secs, 5);
+        assert_eq!(loaded.username(), "alice");
+        code
+    };
+    assert_eq!(code, 0, "login overlays the existing XDG config");
+
+    let written = std::fs::read_to_string(&xdg_config).expect("read back");
+    assert!(
+        written.contains("# my hand-tuned config"),
+        "comment survives"
+    );
+    assert!(
+        written.contains("poll_interval_secs = 5 # keep this"),
+        "override + inline comment survive"
+    );
+    assert!(written.contains(&server.uri()), "server overlaid in place");
+    assert!(
+        !Path::new("taskboard.toml").exists(),
+        "no CWD config appeared"
+    );
+}
