@@ -10,6 +10,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- REPL tab-completion (WI-G): inside the interactive session, Tab
+  completes verbs, subverbs, long flags, and the live stack/task/label
+  titles at the cursor — including the attached `--stack=<Tab>` value
+  form and quoting of multi-word titles. Candidates are derived from
+  the static clap surface plus a lock-free `ArcSwap<AppState>` read on
+  the editor thread (strictly read-only), parity the selector
+  semantics; the in-session-refused verbs (`daemon`, `login`,
+  `logout`, `config`) and `--config` are never offered.
 - Daemon IPC (ADR 0012, WI-5): while `taskboard daemon` runs it serves
   a per-database local socket, and every core verb (`tasks`/`stacks`/
   `labels`, `boards select/create/rename/publish`, `sync`) is

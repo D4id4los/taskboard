@@ -114,6 +114,22 @@ async loop consumes events. Backpressure is the channel bound: the
 editor never runs ahead of execution. Tests inject their own channel,
 so the terminal never appears in hermetic suites.
 
+** Tab completion (amendment, WI-G)
+
+Tab completion runs entirely on the editor thread: a rustyline
+=Helper= whose candidate engine (=src/completion.rs=) is pure and
+unit-tested without a TTY. Its only state access is one lock-free
+=ArcSwap<AppState>::load_full()= per Tab — strictly read-only, the
+same UI-side rule the state views follow; no channel, no await, no
+mutation. Candidates parity the selector semantics: a title is offered
+iff the corresponding =resolve_=* could select it (stacks =!deleted=,
+tasks =is_live=, labels =!deleted=; canonical orderings; duplicate
+titles deduped), and replacements re-quote via =shell-words= so the
+completed line re-parses. The session-refused surface is never
+offered: =daemon=, =login=, =logout=, =config= and per-line
+=--config= would only manufacture a guaranteed refusal. Unclassifiable
+tokens complete nothing — wrong candidates are worse than none.
+
 ** Exit and signal semantics
 
 =exit=/=quit=/Ctrl-D (EOF) shut the core down gracefully and exit 0.

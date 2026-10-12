@@ -1568,6 +1568,12 @@ load/save around `spawn_line_reader`'s editor construction.
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi4-repl-interactive-frontend-plan.md` §7
 - **Target Area**: `crates/taskboard-app` (`repl.rs`)
+- **Status**: ✅ DONE (implemented 2026-10-12 via
+  `.artifacts/plans/2026-10-12-app-repl-completion-plan.md`: a
+  rustyline `Helper` over the clap shape + a lock-free
+  `ArcSwap<AppState>` read on the editor thread; **hints/ghost text
+  explicitly deferred** — the `Helper` seam makes them a contained
+  follow-up)
 
 #### Context & Description
 No completion over verbs, selectors, or board/stack/task titles yet.
@@ -1578,6 +1584,37 @@ target doubles the churn).
 rustyline `Helper` trait: verb/flag completion from the static CLI
 shape; board/stack/title completion from the live `ArcSwap<AppState>`
 (read lock-free on the editor thread).
+
+### [2026-10-12] REPL completion: uuid candidates for selectors
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-app-repl-completion-plan.md` §7
+- **Target Area**: `crates/taskboard-app` (`src/completion.rs`)
+
+#### Context & Description
+When two live tasks share a title, title completion yields one
+deduplicated menu entry and the command answers with the honest
+`Ambiguous*` error. Uuid candidates (display `title (uuid)`, replace
+the uuid) would disambiguate directly.
+
+#### Proposed Approach
+A new `Kind` variant on the existing engine: extend the live-title
+generator to emit uuid-disambiguated candidates for hard-colliding
+titles only; the menu stays quiet otherwise.
+
+### [2026-10-12] REPL completion: remote board ids for `boards select`
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-app-repl-completion-plan.md` §7
+- **Target Area**: `crates/taskboard-app` (`src/completion.rs`)
+
+#### Context & Description
+`boards select <id>` takes a remote Deck board id that only exists in
+`boards list` output — no local source to complete from today.
+
+#### Proposed Approach
+Needs a small cache design (the last `boards list` response, e.g. in
+the session state); revisit once a remote-value cache exists.
 
 ### [2026-10-11] Graceful Ctrl-C line-cancellation in the REPL
 
