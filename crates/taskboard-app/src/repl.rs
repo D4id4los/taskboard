@@ -394,6 +394,58 @@ pub async fn run_session_with_lines(
     0
 }
 
+/// The terminal line discipline as it was when the session started,
+/// restored on drop. The session's shutdown can race a *fresh*
+/// `readline()` on the editor thread (`exit` hands the line over and
+/// the thread loops straight back into raw mode); if
+/// `std::process::exit` then wins, the process dies mid-`readline` and
+/// rustyline's per-call restore never runs. The leftover raw mode
+/// (IEXTEN off among others) leaves the pane's shell unable to echo
+/// typed input until `stty sane`. Restoring the exact pre-session
+/// state makes the hand-back correct regardless of which thread wins
+/// the race. Non-terminal stdin is a no-op: `tcgetattr` fails there.
+///
+/// A signal kill mid-`readline` still cannot restore (no destructors
+/// run) — accepted, tracked in the improvement backlog.
+#[cfg(unix)]
+struct TtyStateGuard {
+    saved: Option<nix::sys::termios::Termios>,
+}
+
+#[cfg(unix)]
+impl TtyStateGuard {
+    fn take() -> Self {
+        Self {
+            saved: nix::sys::termios::tcgetattr(std::io::stdin()).ok(),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TtyStateGuard {
+    fn drop(&mut self) {
+        if let Some(saved) = &self.saved {
+            let _ = nix::sys::termios::tcsetattr(
+                std::io::stdin(),
+                nix::sys::termios::SetArg::TCSADRAIN,
+                saved,
+            );
+        }
+    }
+}
+
+/// Non-unix line editing does not run through a termios line
+/// discipline; nothing to save or restore.
+#[cfg(not(unix))]
+struct TtyStateGuard;
+
+#[cfg(not(unix))]
+impl TtyStateGuard {
+    fn take() -> Self {
+        Self
+    }
+}
+
 /// The production session: real terminal (editor thread) and std
 /// streams.
 pub async fn run_session(config: AppConfig, json_default: bool) -> u8 {
@@ -404,6 +456,10 @@ pub async fn run_session(config: AppConfig, json_default: bool) -> u8 {
         err: &mut err,
         json: json_default,
     };
+    // Held for the whole session, before the editor thread exists:
+    // dropping at scope end (before main's `process::exit`) hands the
+    // terminal back exactly as found.
+    let _tty = TtyStateGuard::take();
     let lines = spawn_line_reader();
     run_session_with_lines(config, json_default, lines, &mut io).await
 }

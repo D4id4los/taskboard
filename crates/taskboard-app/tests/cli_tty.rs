@@ -293,6 +293,108 @@ fn tty_bare_invocation_opens_a_repl_session_and_persists() {
     );
 }
 
+/// Regression (the tmux no-echo breakage): a session left via `exit`
+/// hands the terminal line discipline back exactly as it found it. The
+/// editor thread loops straight back into `readline()` (raw mode) after
+/// handing a line over; a shutdown that exits the process mid-readline
+/// skips the editor's own restore, and the leftover raw mode (IEXTEN
+/// off among others) leaves the pane's shell reading input without
+/// displaying it. The guard in `run_session` must make the hand-back
+/// byte-exact: after the session, the pty is canonical again (echo,
+/// isig, iexten on) — the state the shell's own line editor expects.
+///
+/// Observed through an inner `sh` (a non-interactive shell does not
+/// touch the termios), so `stty -a` right after the session reports the
+/// exact state the session handed back.
+#[test]
+fn tty_repl_exit_hands_the_line_discipline_back_intact() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    // Standalone shape: the session needs no connector (ADR 0010).
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    // The non-interactive `sh` between `script` and the binary leaves
+    // the termios alone, so this snapshot is the session's hand-back.
+    let stty_after = dir.path().join("line-discipline-after.txt");
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let inner = format!(
+        "{} --config {}; stty -a > {}",
+        binary,
+        config.display(),
+        stty_after.display()
+    );
+    let mut child = std::process::Command::new("timeout")
+        .arg("30")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn script(1) pty wrapper");
+
+    // Gate the `exit` line on the first prompt: bytes parked in the
+    // input queue while rustyline enters raw mode are flushed (the
+    // pty hazard documented on `feed_session_lines`).
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut out_pipe = child.stdout.take().expect("stdout piped");
+    let mut seen = Vec::new();
+    loop {
+        if seen
+            .windows(SESSION_PROMPT.len())
+            .any(|w| w == SESSION_PROMPT.as_bytes())
+        {
+            break;
+        }
+        let mut chunk = [0u8; 256];
+        match std::io::Read::read(&mut out_pipe, &mut chunk) {
+            Ok(0) => panic!("the session's pty closed before the first prompt"),
+            Ok(n) => seen.extend_from_slice(&chunk[..n]),
+            Err(err) => panic!("reading the session's pty failed: {err}"),
+        }
+    }
+    stdin.write_all(b"exit\r").expect("write the exit line");
+    drop(stdin);
+
+    let output = child.wait_with_output().expect("pty run completes");
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "the REPL session hung (exit never completed)"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "REPL session failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The hand-back: every line-discipline mode the shell's line editor
+    // relies on is enabled again (the pty's pre-session defaults).
+    let stty = std::fs::read_to_string(&stty_after).expect("stty snapshot written");
+    let tokens: Vec<&str> = stty.split_whitespace().collect();
+    for flag in ["echo", "icanon", "isig", "iexten"] {
+        assert!(
+            tokens.contains(&flag),
+            "line discipline handed back with {flag} disabled: {stty}"
+        );
+    }
+}
+
 /// The instance-lock mutex runs both ways (ADR 0011): with the daemon
 /// holding the database, the pty REPL boot fails typed and exits 1;
 /// after the daemon stops, the database is servable again.
