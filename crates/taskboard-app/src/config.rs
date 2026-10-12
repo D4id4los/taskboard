@@ -246,10 +246,11 @@ pub enum ConfigError {
 }
 
 impl ConfigError {
-    /// The stable per-variant discriminant for `config print`'s payload
-    /// (`invalid_kind`; typed variant names, never message text). The
-    /// other commands' `CommandError::Config` kind stays the flat
-    /// `"config"` — this accessor is `config print`-scoped.
+    /// The stable per-variant discriminant — the single vocabulary for
+    /// both surfaces that report config errors by kind: `config print`'s
+    /// `invalid_kind` payload field and the `--json` error envelope's
+    /// `CommandError::Config` kind (typed variant names, never message
+    /// text).
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {

@@ -321,7 +321,7 @@ fn c10_config_print_reports_validity_in_the_payload() {
     assert_eq!(view.invalid_kind.as_deref(), Some("invalid-server-url"));
 
     let err = config::print(Some(dir.path().join("garbage.toml"))).expect_err("garbage exits 1");
-    assert_eq!(err.error_kind(), "config");
+    assert_eq!(err.error_kind(), "decode");
 }
 
 /// C11: `config print` reflects the env overlay (the effective

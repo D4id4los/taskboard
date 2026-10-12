@@ -188,7 +188,7 @@ fn o2_sync_status_view_phase_table() {
 fn o3_error_kinds_cover_every_variant() {
     fn expected(err: &CommandError) -> &'static str {
         match err {
-            CommandError::Config(_) => "config",
+            CommandError::Config(c) => c.kind(),
             CommandError::Bootstrap(b) if matches!(**b, BootstrapError::InstanceLocked { .. }) => {
                 "instance-locked"
             }

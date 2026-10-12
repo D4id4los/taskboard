@@ -14,8 +14,8 @@ use crate::config::{AppConfig, ConfigError, SyncBackend};
 ///
 /// # Errors
 ///
-/// [`CommandError`] — the flat `config` kind for provider failures
-/// (decode); never a validation failure (that travels in the payload).
+/// [`CommandError`] — the `decode` kind for provider failures; never
+/// a validation failure (that travels in the payload).
 pub fn print(config_path: Option<std::path::PathBuf>) -> Result<ConfigView, CommandError> {
     let config_path = AppConfig::config_path(config_path);
     // Decode + db-path fill, no validation gate (the `login` precedent).

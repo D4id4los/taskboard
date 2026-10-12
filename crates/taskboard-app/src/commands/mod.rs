@@ -222,7 +222,7 @@ impl CommandError {
     #[must_use]
     pub fn error_kind(&self) -> &'static str {
         match self {
-            Self::Config(_) => "config",
+            Self::Config(err) => err.kind(),
             Self::Bootstrap(err) => match **err {
                 BootstrapError::InstanceLocked { .. } => "instance-locked",
                 _ => "bootstrap",
