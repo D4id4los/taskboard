@@ -494,7 +494,7 @@ async fn status_routes_client_side_without_booting() {
     let code = dispatch(Command::Status, ctx(bad.path(), &mut out, &mut err)).await;
     assert_eq!(code, 1);
     let envelope: serde_json::Value = serde_json::from_slice(&err).expect("envelope");
-    assert_eq!(envelope["error"]["kind"], "config");
+    assert_eq!(envelope["error"]["kind"], "decode");
 }
 
 /// D-success: the one-shot arms' success paths route end to end — a
