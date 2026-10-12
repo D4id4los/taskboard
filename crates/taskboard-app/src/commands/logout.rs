@@ -8,8 +8,10 @@
 //! Pre-core: no actor graph, no database, no lock.
 
 use crate::commands::CommandError;
+use crate::commands::output::DaemonConnectorState;
 use crate::commands::output::LogoutReceipt;
 use crate::config::AppConfig;
+use crate::ipc::protocol::DetachWireOutcome;
 use crate::secrets::{CredentialError, CredentialStore};
 use std::io::ErrorKind as IoErrorKind;
 use std::path::Path;
@@ -64,13 +66,14 @@ pub fn run(
         server_url: server,
         username,
         config_cleared,
+        daemon_connector: None,
     })
 }
 
 /// The human-readable receipt.
 #[must_use]
 pub fn render_text(receipt: &LogoutReceipt) -> String {
-    if receipt.config_cleared {
+    let base = if receipt.config_cleared {
         format!(
             "logged out of {} as {} (config cleared — back to stand-alone)",
             receipt.server_url, receipt.username
@@ -80,6 +83,87 @@ pub fn render_text(receipt: &LogoutReceipt) -> String {
             "logged out of {} as {} (config keys kept: explicit backend)",
             receipt.server_url, receipt.username
         )
+    };
+    if receipt.daemon_connector == Some(DaemonConnectorState::Dropped) {
+        return format!("{base} — daemon connector dropped");
+    }
+    base
+}
+
+/// The hermetic input of the degradation mapping (WI-H tier 8): the
+/// post-logout daemon nudge's outcome, socket-free.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NudgeOutcome {
+    /// No daemon serves this database — nothing holds the revoked
+    /// credential; not a degradation (D5: no warning).
+    NoDaemon,
+    /// The daemon answered the detach request.
+    Answered(DetachWireOutcome),
+    /// Transport failure — a dead connection, a pre-`detach-connector`
+    /// daemon (it cannot decode the variant and drops the link), or the
+    /// client read budget expired (the daemon still completes its
+    /// detach in that case).
+    Transport,
+    /// The daemon speaks a different wire-protocol version.
+    Version,
+}
+
+/// Maps the nudge outcome onto the receipt's `daemon_connector` field
+/// (pure; unit-pinned over every arm).
+#[must_use]
+pub fn map_nudge(nudge: &NudgeOutcome) -> DaemonConnectorState {
+    match nudge {
+        // No daemon, or a daemon that holds no connector (standalone,
+        // already detached): nothing holds the revoked credential.
+        NudgeOutcome::NoDaemon | NudgeOutcome::Answered(DetachWireOutcome::NoConnector) => {
+            DaemonConnectorState::None
+        }
+        NudgeOutcome::Answered(DetachWireOutcome::Detached) => DaemonConnectorState::Dropped,
+        NudgeOutcome::Answered(DetachWireOutcome::IdentityMismatch) => {
+            DaemonConnectorState::Mismatch
+        }
+        // The client cannot know what the operator will find when the
+        // daemon aborts at its own join budget or answers in a foreign
+        // version: the honest bucket is the warning. A transport
+        // failure stays the sharper "unreachable" (it covers the
+        // pre-detach-connector daemon, which drops the link).
+        NudgeOutcome::Answered(DetachWireOutcome::TimedOut) | NudgeOutcome::Version => {
+            DaemonConnectorState::Unknown
+        }
+        NudgeOutcome::Transport => DaemonConnectorState::Unreachable,
+    }
+}
+
+/// The stderr warning for the degraded outcomes (D5): the local logout
+/// *is* done; this tells the operator what a daemon may still hold.
+/// `None` for the clean arms.
+#[must_use]
+pub fn nudge_warning(state: DaemonConnectorState) -> Option<&'static str> {
+    match state {
+        DaemonConnectorState::Mismatch => Some(
+            "warning: a daemon serving this database logged in as a different identity; \
+             restart it or run `taskboard daemon stop`",
+        ),
+        DaemonConnectorState::Unreachable | DaemonConnectorState::Unknown => Some(
+            "warning: the daemon could not drop its connector; \
+             restart it or run `taskboard daemon stop`",
+        ),
+        DaemonConnectorState::Dropped | DaemonConnectorState::None => None,
+    }
+}
+
+/// The best-effort daemon nudge (WI-H): after the local logout
+/// succeeded, ask the daemon serving the same database to drop its
+/// connector. Never fails the logout; every outcome degrades through
+/// [`map_nudge`]/[`nudge_warning`].
+pub(crate) async fn nudge_daemon(db_path: &Path, server: &str, username: &str) -> NudgeOutcome {
+    let Some(conn) = crate::ipc::client::try_connect(db_path).await else {
+        return NudgeOutcome::NoDaemon;
+    };
+    match conn.detach(server, username).await {
+        Ok(outcome) => NudgeOutcome::Answered(outcome),
+        Err(CommandError::IpcVersion { .. }) => NudgeOutcome::Version,
+        Err(_) => NudgeOutcome::Transport,
     }
 }
 
@@ -131,4 +215,65 @@ fn strip_config_keys(path: &Path, server: &str, username: &str) -> Result<bool, 
     }
     std::fs::rename(&tmp, path)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod detach_tests {
+    use super::{DaemonConnectorState, NudgeOutcome, map_nudge, nudge_warning};
+    use crate::ipc::protocol::DetachWireOutcome;
+
+    /// WI-H tier 8: the pure nudge → receipt-field/warning mapping
+    /// covers every arm — no socket involved.
+    #[test]
+    fn the_nudge_mapping_covers_every_arm() {
+        use DetachWireOutcome as W;
+        use NudgeOutcome::*;
+
+        assert_eq!(map_nudge(&NoDaemon), DaemonConnectorState::None);
+        assert_eq!(
+            map_nudge(&Answered(W::Detached)),
+            DaemonConnectorState::Dropped
+        );
+        assert_eq!(
+            map_nudge(&Answered(W::NoConnector)),
+            DaemonConnectorState::None
+        );
+        assert_eq!(
+            map_nudge(&Answered(W::IdentityMismatch)),
+            DaemonConnectorState::Mismatch
+        );
+        assert_eq!(
+            map_nudge(&Answered(W::TimedOut)),
+            DaemonConnectorState::Unknown
+        );
+        assert_eq!(map_nudge(&Transport), DaemonConnectorState::Unreachable);
+        assert_eq!(map_nudge(&Version), DaemonConnectorState::Unknown);
+
+        // Only the degraded arms warn (D5: no daemon is not degraded).
+        assert!(nudge_warning(DaemonConnectorState::Dropped).is_none());
+        assert!(nudge_warning(DaemonConnectorState::None).is_none());
+        assert!(nudge_warning(DaemonConnectorState::Mismatch).is_some());
+        assert!(nudge_warning(DaemonConnectorState::Unreachable).is_some());
+        assert!(nudge_warning(DaemonConnectorState::Unknown).is_some());
+    }
+
+    /// The receipt field serializes kebab-case and is absent when not
+    /// consulted (the pure-local shape stays stable).
+    #[test]
+    fn the_receipt_field_serializes_kebab_case_or_is_absent() {
+        use crate::commands::output::LogoutReceipt;
+        let base = |state| LogoutReceipt {
+            server_url: "https://c.example.com".to_owned(),
+            username: "alice".to_owned(),
+            config_cleared: true,
+            daemon_connector: state,
+        };
+        let json =
+            serde_json::to_value(base(Some(DaemonConnectorState::Dropped))).expect("serialize");
+        assert_eq!(json["daemon_connector"], "dropped");
+        let json = serde_json::to_value(base(Some(DaemonConnectorState::None))).expect("serialize");
+        assert_eq!(json["daemon_connector"], "none");
+        let json = serde_json::to_value(base(None)).expect("serialize");
+        assert!(json.get("daemon_connector").is_none());
+    }
 }

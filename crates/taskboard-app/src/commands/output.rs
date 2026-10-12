@@ -143,6 +143,26 @@ pub struct MutationReceipt {
     pub labels: Vec<String>,
 }
 
+/// What the post-logout daemon nudge did (WI-H, decision D5): kebab-case
+/// in the `--json` receipt; the degradation is best-effort and never
+/// changes the exit code.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DaemonConnectorState {
+    /// The daemon acknowledged and detached; the credential is gone.
+    Dropped,
+    /// No daemon serves the db, or the serving daemon holds no connector.
+    None,
+    /// The daemon serves a different identity; its connector keeps that
+    /// identity until restart.
+    Mismatch,
+    /// The daemon could not be reached (no answer / pre-detach daemon).
+    Unreachable,
+    /// The daemon answers but the outcome is unknowable (version
+    /// mismatch, client budget expiry).
+    Unknown,
+}
+
 /// The `logout` receipt. No secret ever appears in any projection.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LogoutReceipt {
@@ -153,6 +173,10 @@ pub struct LogoutReceipt {
     /// Whether the config file's server/user keys were stripped (the
     /// auto backend only; an explicit backend is never rewritten).
     pub config_cleared: bool,
+    /// The post-logout daemon nudge's outcome (WI-H), when a daemon was
+    /// consulted; absent for the pure-local shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_connector: Option<DaemonConnectorState>,
 }
 
 /// One row of `labels list`.

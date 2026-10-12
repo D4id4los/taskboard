@@ -12,6 +12,8 @@ mod common;
 
 use common::{binary_command, tempdir, write_test_config};
 
+use interprocess::local_socket::traits::tokio::Stream as _;
+
 /// Polls `pred` with a real-time deadline (process synchronization —
 /// the hermetic suites' tokio-clock rules do not reach subprocesses).
 async fn wait_until(mut pred: impl FnMut() -> bool, what: &str) {
@@ -363,5 +365,131 @@ async fn e6_a_relative_config_spelling_binds_the_relay() {
         .output()
         .expect("daemon stop runs");
     assert_eq!(out.status.code(), Some(0), "{}", read_to_string(out.stderr));
+    drop(daemon);
+}
+
+// ---------------------------------------------------------------------
+// WI-H: the detach-connector verb against a real daemon process
+// ---------------------------------------------------------------------
+
+/// E7: the daemon side of the logout nudge, at the process tier. A real
+/// nextcloud-backend daemon (env store + wiremock) boots and serves; the
+/// test speaks one hand-rolled `DetachConnector` frame over the real
+/// socket (the full binary `logout` → nudge path needs a deletable
+/// store = keyring, and stays pinned at the IP tier); the real
+/// `status --json` client process then reports
+/// `connector_attached: false` and the real `sync` client process
+/// refuses `sync-unavailable`. The full logout journey's tier split
+/// matches this file's process-level-facts contract.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one journey, sequential rows
+async fn e7_detach_connector_flips_a_real_daemons_status() {
+    let server = wiremock::MockServer::start().await;
+    let dir = tempdir();
+    let install_config = dir.path().join("taskboard.toml");
+    common::write_test_config(&install_config, Some(server.uri().as_str()), Some("alice"))
+        .expect("write config");
+
+    // The daemon boots its connector from the env password (set per
+    // child — `binary_command` strips every TASKBOARD_* inheritance).
+    let daemon = Child(
+        binary_command()
+            .args([
+                "--config",
+                install_config.to_string_lossy().as_ref(),
+                "daemon",
+            ])
+            .env("TASKBOARD_APP_PASSWORD", "pw")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn daemon"),
+    );
+    wait_until(
+        || {
+            let output = binary_command()
+                .args([
+                    "--config",
+                    install_config.to_string_lossy().as_ref(),
+                    "--json",
+                    "status",
+                ])
+                .output()
+                .expect("status runs");
+            read_to_string(output.stdout).contains("\"daemon\":true")
+        },
+        "daemon serves status",
+    )
+    .await;
+    // Boardless: the boot cycle skips silently; the connector is attached.
+    let db = dir.path().join("taskboard.db");
+
+    // One hand-rolled detach frame over the daemon's real socket.
+    let request = taskboard_app::ipc::protocol::Request::DetachConnector {
+        v: taskboard_app::ipc::protocol::PROTOCOL_VERSION,
+        server_url: server.uri(),
+        username: "alice".to_owned(),
+    };
+    let bytes = serde_json::to_vec(&request).expect("serialize request");
+    let name = taskboard_app::ipc::socket_name(&db).expect("socket name");
+    let mut stream = interprocess::local_socket::tokio::Stream::connect(name)
+        .await
+        .expect("connect to the daemon socket");
+    taskboard_app::ipc::codec::write_frame(
+        &mut stream,
+        &bytes,
+        taskboard_app::ipc::codec::MAX_REQUEST_BYTES,
+    )
+    .await
+    .expect("write frame");
+    let answer = taskboard_app::ipc::codec::read_frame(
+        &mut stream,
+        taskboard_app::ipc::codec::MAX_RESPONSE_BYTES,
+    )
+    .await
+    .expect("read frame");
+    let response: taskboard_app::ipc::protocol::Response =
+        serde_json::from_slice(&answer).expect("parse response");
+    assert_eq!(
+        response,
+        taskboard_app::ipc::protocol::Response::DetachConnector {
+            v: taskboard_app::ipc::protocol::PROTOCOL_VERSION,
+            outcome: taskboard_app::ipc::protocol::DetachWireOutcome::Detached,
+        }
+    );
+    drop(stream);
+
+    // The real client process sees the detached connector...
+    let output = binary_command()
+        .args([
+            "--config",
+            install_config.to_string_lossy().as_ref(),
+            "--json",
+            "status",
+        ])
+        .output()
+        .expect("status runs");
+    assert_eq!(output.status.code(), Some(0));
+    let view: serde_json::Value =
+        serde_json::from_str(read_to_string(output.stdout).trim()).expect("status json");
+    assert_eq!(
+        view["connector_attached"], false,
+        "the real daemon reports the detached connector: {view}"
+    );
+    assert_eq!(view["backend"], "nextcloud");
+
+    // ...and the real sync client process refuses typed.
+    let output = binary_command()
+        .args([
+            "--config",
+            install_config.to_string_lossy().as_ref(),
+            "--json",
+            "sync",
+        ])
+        .output()
+        .expect("sync runs");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(read_to_string(output.stderr).contains("\"sync-unavailable\""));
+
     drop(daemon);
 }
