@@ -648,16 +648,16 @@ where
 }
 
 /// One-shot `login`: resolves the config path (writing one if this is
-/// the first run), refuses an explicit `standalone` before any
-/// prompting, and persists the verified connection.
+/// the first run — with no config anywhere, the XDG config dir),
+/// refuses an explicit `standalone` before any prompting, and persists
+/// the verified connection.
 async fn login_command(
     io: &mut CommandIo<'_>,
     config_path: Option<PathBuf>,
     server: Option<String>,
     user: Option<String>,
 ) -> u8 {
-    let path = AppConfig::config_path(config_path)
-        .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
+    let path = AppConfig::write_path(config_path);
     match AppConfig::extract_raw(Some(&path)) {
         Ok(raw) => {
             // Explicit `standalone` refuses before any prompting
