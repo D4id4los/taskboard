@@ -40,6 +40,7 @@ clap.workspace = true
 dirs.workspace = true
 rpassword.workspace = true
 rustyline.workspace = true
+nix.workspace = true
 shell-words.workspace = true
 fd-lock.workspace = true
 toml_edit.workspace = true

@@ -58,6 +58,13 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- The interactive REPL no longer leaves the terminal in raw mode when
+  the session ends via `exit`/`quit`: the session saves stdin's line
+  discipline at boot and restores it on exit (previously, a shutdown
+  racing the editor thread's fresh `readline()` could exit the process
+  mid-raw-mode, and the pane's shell then read input without echoing
+  it — invisible typing until `stty sane`). A signal kill
+  mid-`readline` remains unrestoreable (no destructors run).
 - Label assignment on an *existing* card now actually lands: Deck 1.19
   rejects card-update PUTs carrying a non-empty `labels` field (HTTP
   400), so the push executor strips the label list from the field PUT
