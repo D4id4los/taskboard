@@ -373,6 +373,16 @@ Own plan covering: reminder rules as pure domain functions (proptest
 scheduling), a scheduler actor on the injected clock (no sleeps),
 notification output as a Port, and the kiosk overdue-banner path.
 
+> **Status note (2026-10-12, WI-I design round)**: the design round
+> landed as `.artifacts/plans/2026-10-12-reminders-design-plan.md`
+> (draft ADR 0013 inside — due-anchored rules, engine-tick
+> evaluation, occurrence-keyed deliveries with snooze, ported
+> notification delivery, scheduler-free kiosk banner, implicit 5 m
+> default reminder). Direction **approved** 2026-10-12; decisions
+> D1–D5 resolved in §13 there. Implementation follows as plans 1–4
+> listed there (§14), then plan 5 (desktop toasts) when wanted. This
+> entry stays open until those land.
+
 ## [2026-10-08] Multi-board support
 
 - **Category**: `Architecture`
@@ -1785,3 +1795,96 @@ handler (or tokio's ctrl_c/SIGTERM listeners, which the process already
 arms for the daemon) performs one `tcsetattr(TCSADRAIN, saved)` before
 exiting. SIGKILL stays unrestoreable by definition; document
 `reset`/`stty sane` as the user recovery for that case.
+
+## [2026-10-12] Age-based pruning of reminder deliveries
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-reminders-design-plan.md` §4.4 D-c (WI-I design round)
+- **Target Area**: `taskboard-domain/`, `taskboard-storage-sqlite/`
+
+### Context & Description
+The reminders design keys at-most-once suppression on
+`(rule_id, occurrence)` delivery rows. Task deletion cascades its
+rules and their deliveries away, but a long-lived live task on a kiosk
+with a moving due date accumulates one row per re-arm forever. Rows
+are tiny, so this is housekeeping, not a leak emergency — deliberately
+out of scope for the first implementation plans.
+
+### Proposed Approach
+A pruning rule in the delivery interpreter path (e.g. drop deliveries
+whose occurrence is older than N days at record time), defined in the
+domain's shared `apply_actions` so fakes and sqlite stay in lockstep;
+pick N when a real deployment's table sizes justify the churn.
+
+## [2026-10-12] Sync of reminder rules and delivery proofs
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-reminders-design-plan.md` §4.4 D-a (WI-I design round; user direction)
+- **Target Area**: `crates/taskboard-domain/`, `crates/taskboard-sync-nextcloud/`
+
+### Context & Description
+Syncing reminder rules and delivery proofs across devices is a
+**desired property**, deliberately deferred from the first
+implementation plans. V1 ships local-only because the Deck connector
+has no native reminder model — but that is a fact about one backend,
+not the design: future connectors may support server-side reminders
+natively, and even Deck could carry taskboard-private data through
+custom card attachments. The v1 model is built sync-ready so this
+entry is a protocol design round, not a refactor.
+
+### Proposed Approach
+Own design round when picked up. The sync-readiness commitments to
+preserve (the plan's §15 review checklist): portable UUID rule ids;
+deliveries/snoozes as occurrence-keyed additive rows whose
+cross-device merge is set-union (conflict-free by construction);
+per-field write clocks on rules added in the `TaskClocks` pattern; a
+connector capability seam for native server-side reminders; the Deck
+custom-attachment transport candidate (touches the outbox, merge
+policy R1–R9, and the Deck attachments API). Decide whether snoozes
+and mutes roam (they are per-device UX facts in v1).
+
+## [2026-10-12] Reminder insistence levels (notification vs alarm)
+
+- **Category**: `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-reminders-design-plan.md` §6.1 (WI-I design round; user direction)
+- **Target Area**: `crates/taskboard-domain/`, `crates/taskboard-app/`, `crates/taskboard-ui-slint/`
+
+### Context & Description
+Reminders should eventually carry an "insistence" flavor. **Normal**
+(the default): OS notification popup + taskbar-icon blink + an
+in-app notification window the user can dismiss or snooze. **Alarm**:
+wake-up-alarm behavior — demand attention, play a pleasant but
+insistent sound that gets louder the longer it is ignored, steal
+focus to open the alarm window on top of everything, until the user
+interacts (dismiss or snooze). Out of scope for v1; the architecture
+was checked to keep it additive (plan §6.1).
+
+### Proposed Approach
+Additive `urgency` field on `ReminderRule` and the `Notification`
+payload — the evaluator stays urgency-agnostic (it decides *when*,
+never *how loud*); the sink port signature is unchanged. Escalation
+(louder while ignored) is a UI/notifier rendering loop driven by the
+un-dismissed notification's presence in state; dismiss/snooze ride
+the existing `StateCommand` path regardless of urgency.
+
+## [2026-10-12] Multi-reminder UX surfaces (N rules per task)
+
+- **Category**: `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-reminders-design-plan.md` §4.1 (WI-I design round; user direction)
+- **Target Area**: `crates/taskboard-ui-slint/`, `crates/taskboard-app/`
+
+### Context & Description
+Setting **multiple** reminders on the same task (e.g. "2 days before"
+and "at due") is an eventual product want. The v1 domain model
+already supports it (`BTreeMap<ReminderRuleId, ReminderRule>`, N
+rules per task; cascade, evaluator, and notification correlation are
+all N-capable by construction), but no v1 surface needs to expose it
+and other parts of the system should *know* the count is unbounded:
+UI must render rule lists (not "the" rule), CLI `remind --list`
+returns a collection, and `--clear` removes N.
+
+### Proposed Approach
+When picked up: management surfaces over the existing shapes — an
+"add another reminder" affordance in the task editor, per-rule
+snooze/dismiss correlation via `ReminderRef`, no domain changes
+expected beyond UI work.
