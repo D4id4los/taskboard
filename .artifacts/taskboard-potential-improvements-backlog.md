@@ -1414,6 +1414,25 @@ no silent backend flips without an explicit command — and reuse the
 L-series ceremony + test harness. Related open question already
 tracked for WI-3: `logout`'s interaction with `backend`.
 
+> **Status note (2026-10-12, WI-J design round)**: the design round
+> landed as `.artifacts/plans/2026-10-12-connect-flow-design-plan.md`
+> (draft ADR 0014 inside — a bare `taskboard connect` verb; `login`
+> becomes its deprecated alias). Fact-check correction recorded there
+> (§1.1): under the **auto** rule `login` already works on a fresh
+> stand-alone install (it prompts for the server); the one-shot gap
+> is explicit-`standalone` installs plus naming. Direction
+> **approved** 2026-10-12 (round 2): D1 `connect` + deprecated
+> `login` alias; D2 `--switch-backend` for scripts **and** a y/N
+> confirm on a TTY; D3 re-point interactive by default with `--force`
+> for scripts (old secret deleted after the new verify). Round 3
+> (same day, post WI-H merge PR #48): D5 resolved by events — the
+> detach half of connector liveness is on `main`
+> (`SyncCommand::Detach`, `App::detach_connector`, the
+> `DetachConnector` IPC verb with the additive-no-bump policy), so a
+> future daemon-side attach verb rides that pattern with no envelope
+> decision left to make. Entries stay open until the implementation
+> items (§12 there) land.
+
 ## [2026-10-11] Undo/redo functionality
 
 - **Category**: `Architecture`, `DX`
@@ -1616,6 +1635,64 @@ needs that to become settable, or a dedicated re-wiring of the sync
 channel halves). Interacts with the "CLI commands to add a Nextcloud
 connection" entry above (the persistence half is shared) and with
 rustyline's terminal for the masked-secret prompt.
+
+> **Status note (2026-10-12, WI-J design round)**: designed in
+> `.artifacts/plans/2026-10-12-connect-flow-design-plan.md` (draft
+> ADR 0014 inside), direction **approved** 2026-10-12 (round 2);
+> round 3 folds in WI-H's merge (PR #48). Attach resolves to an
+> **additive engine rewire over a fan-out/fan-in topology**
+> (command side: `Vec` of connector senders +
+> `EngineCommand::AttachConnector` push + lazy pruning over *both*
+> dead-entry paths — standalone boots and detached actors; report
+> side: one permanent fan-in inbox, every actor clones the sender;
+> `App::attach_connector(&self)` mirrors the merged
+> `detach_connector(&self)` and spawns the actor, which self-targets
+> from the persisted binding): parked command halves were rejected
+> because a live-but-undrained receiver flips standalone nudge
+> semantics into a perpetual `Syncing` transient
+> (`forward_sync_now` treats `Ok` *and* `Full` as forwarded), and
+> in-process re-bootstrap was rejected (lock-epoch hole). The masked
+> prompt resolves to an editor-thread disposition handshake
+> (`Line`/`Masked`/`Confirm`; never into history). The topology is
+> deliberately multi-connector-ready (see the entry below). Per WI-H
+> plan D7's handoff, this round also owns the **in-session
+> `logout`** ceremony (local teardown + `detach_connector` + config
+> refresh — plan §4.6), so both ADR 0011 session refusals die.
+> Daemon-side attach over IPC remains future work riding WI-H's
+> merged additive-verb pattern (no secret on the wire — the daemon
+> re-reads its config and credential store). Entry stays open until
+> the implementation items (§12 there) land.
+
+### [2026-10-12] Multiple active sync connectors
+
+- **Category**: `Architecture`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-connect-flow-design-plan.md` §4.5 (user mandate at WI-J plan review, round 2)
+- **Target Area**: `crates/taskboard-app/` (bootstrap, config), `taskboard-domain/` (messages/projections), `taskboard-state/` (projection only)
+
+#### Context & Description
+
+ADR 0010 named future `taskboard-sync-<name>` connector crates (one
+at a time); the user wants the *option of several simultaneously
+active connectors* (e.g. two Nextcloud instances, or Nextcloud + a
+future backend) kept as a product direction. The WI-J design round
+(2026-10-12) was amended so v1 builds count-agnostic seams now — the
+engine's additive fan-out registry, the permanent fan-in reports
+inbox, `App.connectors: Vec` — while enforcing "at most one active
+connector" purely at the app/config layer (`attach_connector`'s
+`AlreadyAttached` guard + the scalar `[sync] backend` word).
+
+#### Proposed Approach
+
+The multi-connector round lifts the app-layer guard and owns the
+deferred list in the WI-J plan §4.5: per-connector `SyncCommand`
+routing keys, per-connector status projections (the `AppState.sync`
+singleton becomes a map), per-connector board-ownership tags on
+bindings, config `[[sync.connectors]]` array-of-tables with a
+resolution rule against the legacy scalar, merged network authority
+for `NetworkLost/Restored`, `connect <name>` / `connect list/remove`
+verb growth, and possibly the connector trait promotion ADR 0010
+deferred. Every item is additive; none re-opens the channel topology
+the WI-J round fixed — that is the round's acceptance test.
 
 ### [2026-10-11] REPL history persistence (file-backed)
 
