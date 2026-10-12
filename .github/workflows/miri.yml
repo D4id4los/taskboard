@@ -2,7 +2,7 @@ name: Miri
 
 # Weekly out-of-band memory-safety sweep over the pure crates. Miri
 # interprets MIR (10-100x slower than native), so it never runs per-PR.
-# Scope rationale: docs/testing_strategy.org §9.
+# Scope rationale and budget policy: docs/testing_strategy.org §10.
 
 on:
   schedule:
@@ -18,24 +18,100 @@ env:
   # Miri requires the nightly interpreter; make sure every cargo invocation
   # in this job uses it regardless of rust-toolchain.toml.
   RUSTUP_TOOLCHAIN: nightly
+  # Interpreter-only speed gates (testing_strategy §10). Under Miri's
+  # default isolation the interpreted process sees no host environment,
+  # so the two variables below must be forwarded explicitly; isolation
+  # itself stays on.
+  #
+  # - PROPTEST_DISABLE_FAILURE_PERSISTENCE=1: proptest's failure
+  #   persistence opens/canonicalizes the regressions file at every
+  #   property start, which is unsupported under isolation. Only the raw
+  #   `Config::with_cases` proptest blocks need this — the rest go
+  #   through `test_support::proptest_config`, which disables
+  #   persistence under `cfg!(miri)` in code. Native runs keep
+  #   persistence, including the checked-in seed replay.
+  # - PROPTEST_CASES: per-job property cap so the sweep fits the
+  #   120-minute timeout. The native suite keeps its 256-case default
+  #   everywhere outside these jobs; the caps are a budget statement,
+  #   never a coverage statement.
+  MIRIFLAGS: >-
+    -Zmiri-env-forward=PROPTEST_DISABLE_FAILURE_PERSISTENCE
+    -Zmiri-env-forward=PROPTEST_CASES
+  PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
 
 jobs:
-  miri:
-    name: cargo miri (domain & state)
+  miri-domain-core:
+    name: cargo miri (domain — core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: "16"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on taskboard-domain (core, capped)
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- --skip pipeline:: --skip remote:: --skip state::
+
+  miri-domain-pipeline:
+    name: cargo miri (domain — pipeline)
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
-
       - name: Install system deps (keyring sync-secret-service links libdbus-1)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-
-      - name: Run Miri on Pure Crates
+      - name: Run Miri on taskboard-domain (pipeline tests)
+        env:
+          PROPTEST_CASES: "1"
         run: |
           cargo +nightly miri setup
-          cargo +nightly miri test -p taskboard-domain -p taskboard-state
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- pipeline::
+
+  miri-domain-props:
+    name: cargo miri (domain — remote/state properties)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: "16"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on taskboard-domain (remote/state properties, capped)
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- remote:: state::
+
+  miri-state:
+    name: cargo miri (state)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: "16"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on taskboard-state
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-state --lib --tests
