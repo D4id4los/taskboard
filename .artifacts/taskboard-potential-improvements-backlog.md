@@ -1377,6 +1377,10 @@ yet, so those fields remain adoption-governed.
 - **Category**: `DX`
 - **Originating Plan/Report**: WI-3 (reads shipped first, deliberately)
 - **Target Area**: `crates/taskboard-app/src/commands/login.rs`
+- **Status**: ✅ DONE (implemented 2026-10-12, WI-D: `AppConfig::write_path`
+  truth table — first run with no config anywhere persists to the XDG
+  candidate; an existing CWD config keeps its file via the existence
+  guard)
 
 ### Context & Description
 `login` on a machine with *no* config anywhere still creates
@@ -1422,6 +1426,9 @@ in `ingest_sync_report`. Do it when Phase 7 actually needs it.
 - **Category**: `DX`
 - **Originating Plan/Report**: WI-3 (deferred to WI-5's wire-format pass)
 - **Target Area**: `crates/taskboard-app/src/commands/mod.rs`
+- **Status**: ✅ DONE (implemented 2026-10-12, WI-D: `error_kind` delegates
+  to `ConfigError::kind()` — the envelope carries the specific stable
+  discriminants instead of the flat `"config"`)
 
 ### Context & Description
 Other commands could surface `ConfigError::kind()` instead of the flat
