@@ -212,6 +212,12 @@ pub enum SyncCommand {
     SetBoard(RemoteBoardId),
     /// Nudge: run a sync cycle ASAP (after local edits and for `sync`).
     SyncNow,
+    /// Connector-only detach (WI-H): the actor finishes any in-flight
+    /// cycle, then returns — dropping its client (the in-memory
+    /// credential) and its reports sender. Never the `Shutdown`
+    /// broadcast, which drains the whole engine; this stops the
+    /// connector only (ADR 0012 amendment).
+    Detach,
 }
 
 /// Sync actor → engine report (mpsc payload).
@@ -289,9 +295,19 @@ mod tests {
         let commands = [
             SyncCommand::SyncNow,
             SyncCommand::SetBoard(RemoteBoardId(1)),
+            SyncCommand::Detach,
         ];
         for _command in commands {}
         let signals = [EngineSignal::StateUpdated; 2];
         assert_eq!(signals[0], signals[1]);
+    }
+
+    /// The detach variant travels the wire like its siblings (lossless
+    /// serde round trip).
+    #[test]
+    fn sync_command_detach_round_trips_through_serde() {
+        let json = serde_json::to_string(&SyncCommand::Detach).expect("serialize");
+        let back: SyncCommand = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, SyncCommand::Detach);
     }
 }
