@@ -198,6 +198,13 @@ async fn run(
                     cycle(&client, &state, &reports, &system, &mut st, &cfg, true).await;
                     deadline = reschedule(&st, &cfg);
                 }
+                Some(SyncCommand::Detach) => {
+                    // Connector-only detach (WI-H): the credential dies
+                    // with this task; the engine sees the reports sender
+                    // drop and continues without sync.
+                    tracing::info!("sync actor stopping: connector detached");
+                    return;
+                }
                 None => {
                     tracing::info!("sync actor stopping: command inbox closed");
                     return;
@@ -243,6 +250,12 @@ async fn run(
                     st.rerun_requested = true;
                 }
                 SyncCommand::SetBoard(_) => {}
+                SyncCommand::Detach => {
+                    // Queued while a cycle ran: still a detach — processed
+                    // right after the cycle, never absorbed.
+                    tracing::info!("sync actor stopping: connector detached");
+                    return;
+                }
             }
         }
         if st.rerun_requested {
