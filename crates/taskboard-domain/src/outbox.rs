@@ -89,6 +89,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // realtime clock (Uuid::now_v7, Utc::now) — environment gate
     fn pending_op_roundtrips_through_serde() {
         let op = PendingOp {
             op_id: OpId(Uuid::now_v7()),

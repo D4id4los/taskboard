@@ -57,6 +57,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore)] // production generator reads the realtime clock (Uuid::now_v7) — environment gate
     fn v7_generator_returns_distinct_correctly_typed_ids() {
         let generator = UuidV7Generator;
         let a = generator.new_task_id();
