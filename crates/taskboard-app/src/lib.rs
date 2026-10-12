@@ -32,6 +32,7 @@
 pub mod bootstrap;
 pub mod cli;
 pub mod commands;
+mod completion;
 pub mod config;
 pub mod ipc;
 pub mod lockfile;
