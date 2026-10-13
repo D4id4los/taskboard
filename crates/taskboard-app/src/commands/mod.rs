@@ -296,6 +296,8 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::UnknownLabel(_) | D::LabelDeleted(_) => "unknown-label",
         D::BoardExists => "board-exists",
         D::BoardAlreadyBound(_) => "board-already-bound",
+        D::UnknownReminderRule(_) => "unknown-reminder-rule",
+        D::InvalidSnoozePostpone => "invalid-snooze-postpone",
     }
 }
 
