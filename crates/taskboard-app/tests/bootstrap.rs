@@ -638,3 +638,140 @@ async fn b13_standalone_shutdown_drops_the_parked_reports_sender_before_the_engi
         .expect("shutdown completes well inside the engine-join budget");
     assert!(!outcome.actor_aborted);
 }
+
+/// A `DeckClient` against `server_uri` — un-mocked servers make every
+/// cycle fail typed (`NoBoard` for a boardless db, before any request).
+fn client_for(server_uri: &str) -> taskboard_sync_nextcloud::DeckClient {
+    taskboard_sync_nextcloud::DeckClient::new(server_uri, USERNAME, PASSWORD)
+        .expect("client builds")
+}
+
+/// B10: standalone boot is fail-closed; attach makes it live. The
+/// spawned actor reports through its clone of the permanently parked
+/// sender and the engine ingests the report (the fan-in journey), the
+/// nudge forwards through the engine registry, and shutdown is clean.
+#[tokio::test]
+async fn b10_standalone_attach_makes_the_engine_live_and_the_report_is_ingested() {
+    let dir = tempdir();
+    let server = MockServer::start().await;
+    let mut config = common::valid_config("https://unused.example.com");
+    config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
+    config.nextcloud.server_url = None;
+    config.nextcloud.username = None;
+    config.storage.db_path = Some(dir.path().join("taskboard.db"));
+
+    // The empty fake would answer `NotFound` if consulted.
+    let app = bootstrap(config, Arc::new(common::FakeCredentialStore::default()))
+        .await
+        .expect("standalone boot needs no credentials");
+
+    // Before: the byte-identical standalone pin in the parked-sender
+    // world — no connector, the nudge fails closed, the phase never lies.
+    assert!(!app.connector_attached());
+    let outcome = app
+        .engine
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, taskboard_domain::CommandOutcome::NoOp);
+    assert_eq!(
+        app.engine.shared_state().load_full().sync.phase,
+        SyncPhase::Idle
+    );
+
+    app.attach_connector(client_for(&server.uri()))
+        .await
+        .expect("attach succeeds on an empty registry");
+    assert!(app.connector_attached());
+
+    // The nudge forwards through the engine registry to the new actor.
+    let outcome = app
+        .engine
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, taskboard_domain::CommandOutcome::SyncRequested);
+
+    // The actor's commanded cycle reports `Failed { NoBoard }` (no HTTP:
+    // the report precedes any request) through its clone of the parked
+    // sender, and the engine ingests it.
+    eventually(&app, |state| {
+        state.sync.phase
+            == SyncPhase::Failed {
+                last_error: taskboard_domain::SyncErrorKind::NoBoard,
+            }
+    })
+    .await;
+
+    let outcome = app.shutdown().await;
+    assert!(!outcome.actor_aborted);
+}
+
+/// B11: a double attach is refused typed — the at-most-one v1 invariant
+/// is the app layer's — and the booted connector is untouched by the
+/// refusal.
+#[tokio::test]
+async fn b11_double_attach_is_refused_typed() {
+    let dir = tempdir();
+    let server = MockServer::start().await;
+    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
+    assert!(app.connector_attached(), "a nextcloud boot has a connector");
+
+    let err = app
+        .attach_connector(client_for(&server.uri()))
+        .await
+        .expect_err("the second attach is refused");
+    assert!(matches!(
+        err,
+        taskboard_app::bootstrap::AttachError::AlreadyAttached
+    ));
+
+    assert!(
+        app.connector_attached(),
+        "the refusal left the boot actor in"
+    );
+    let outcome = app
+        .engine
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, taskboard_domain::CommandOutcome::SyncRequested);
+
+    app.shutdown().await;
+}
+
+/// B12: detach → re-attach — the connect→logout→connect lifecycle. The
+/// fresh actor reports through a fresh clone of the parked sender (the
+/// stale dead registry entry sits beside the live one until the next
+/// fan-out prunes it), and shutdown stays clean.
+#[tokio::test]
+async fn b12_detach_then_re_attach_round_trips() {
+    let dir = tempdir();
+    let server = MockServer::start().await;
+    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
+
+    assert_eq!(app.detach_connector().await, DetachOutcome::Detached);
+    assert!(!app.connector_attached());
+
+    app.attach_connector(client_for(&server.uri()))
+        .await
+        .expect("re-attach after detach is permitted");
+    assert!(app.connector_attached());
+
+    let outcome = app
+        .engine
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, taskboard_domain::CommandOutcome::SyncRequested);
+    eventually(&app, |state| {
+        state.sync.phase
+            == SyncPhase::Failed {
+                last_error: taskboard_domain::SyncErrorKind::NoBoard,
+            }
+    })
+    .await;
+
+    let outcome = app.shutdown().await;
+    assert!(!outcome.actor_aborted);
+}

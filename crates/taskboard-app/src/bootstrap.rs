@@ -63,7 +63,7 @@ use tokio::task::JoinHandle;
 use taskboard_domain::{
     SyncCommand, SyncPhase, SyncReport, SyncStateReader, SystemEvent, TaskRepository,
 };
-use taskboard_state::{EngineHandle, spawn_state_engine};
+use taskboard_state::{AttachReceipt, EngineHandle, spawn_state_engine};
 use taskboard_storage_sqlite::{StorageHandle, spawn_storage_actor};
 use taskboard_sync_nextcloud::{DeckClient, spawn_sync_actor};
 
@@ -238,6 +238,79 @@ impl App {
         }
     }
 
+    /// Attaches a fresh sync connector to the running core (WI-J, the
+    /// mirror of [`App::detach_connector`]): guards the at-most-one
+    /// invariant, rewires the engine's nudge registry (push + FIFO ack),
+    /// spawns the actor over a fresh command pair and a clone of the
+    /// permanently parked reports sender, and registers it. The actor
+    /// self-targets from the persisted board binding and fires its first
+    /// cycle immediately; awaiting settling (bounded, offline-first) is
+    /// the caller's job, not the primitive's.
+    ///
+    /// # Errors
+    ///
+    /// [`AttachError::AlreadyAttached`] when a connector is attached
+    /// (detach first — re-attach after detach is permitted);
+    /// [`AttachError::Engine`] when the engine could not take the push;
+    /// [`AttachError::Draining`] when it declined one (a raced shutdown).
+    ///
+    /// # Panics
+    ///
+    /// Only if the connector-lifecycle mutex is poisoned by a panic
+    /// while held (unreachable: the critical sections never panic).
+    pub async fn attach_connector(&self, client: DeckClient) -> Result<(), AttachError> {
+        // 1. Guard: the v1 count-≤-1 invariant (lock released at the
+        //    statement's end — never across the awaits below).
+        if let Err(err) = ensure_vacant(&self.connectors) {
+            tracing::info!("attach: refused, a connector is already attached");
+            return Err(err);
+        }
+
+        // 2. Fresh command pair for the new actor (the boot pair belongs
+        //    to the boot actor; a detached one is dead).
+        let (commands, commands_rx) = mpsc::channel(SYNC_COMMAND_CAPACITY);
+
+        // 3. Engine rewire: push + ack (FIFO — nudges fan out to this
+        //    sender from the ack onward).
+        let receipt = match self.engine.attach_connector(commands.clone()).await {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                tracing::warn!("attach: the state engine is unavailable");
+                return Err(AttachError::Engine(err));
+            }
+        };
+        match receipt {
+            AttachReceipt::Attached => {}
+            AttachReceipt::Draining => {
+                tracing::info!("attach: declined, the engine is draining");
+                return Err(AttachError::Draining);
+            }
+        }
+
+        // 4. Spawn over the fan-in clone (the actor is self-configuring).
+        let join = spawn_sync_actor(
+            client,
+            Arc::new(self.engine.clone()) as Arc<dyn SyncStateReader>,
+            commands_rx,
+            self.reports.clone(),
+            self.system.clone(),
+            self.config.sync_actor_config(),
+        );
+
+        // 5. Register — the vacancy may have been lost to a concurrent
+        //    attach while the engine ack was in flight; the refused
+        //    actor is unwound outside the lock (the engine's now-dead
+        //    entry self-prunes on the next fan-out).
+        let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
+        if let Some(unwound) = try_register(&self.connectors, SyncActor { commands, join }) {
+            tracing::info!("attach: vacancy lost to a concurrent attach; unwinding");
+            stop_actor(unwound, timeout).await;
+            return Err(AttachError::AlreadyAttached);
+        }
+        tracing::info!("attach: connector attached");
+        Ok(())
+    }
+
     /// The graceful shutdown sequence (ADR 0008 §5): engine flush →
     /// `Shutdown` broadcast → bounded sync-actor join (abort at the
     /// timeout) → bounded engine join (abort as last resort) → drop the
@@ -324,6 +397,51 @@ pub enum DetachOutcome {
     /// The actor missed the join budget and was aborted; the credential
     /// died with the task either way.
     TimedOut,
+}
+
+/// Typed attach refusals (the app layer's count-≤-1 policy lives here,
+/// not in the engine).
+#[derive(Debug, thiserror::Error)]
+pub enum AttachError {
+    /// A connector is already attached (v1: at most one; detach first —
+    /// re-attach after detach is permitted).
+    #[error("a connector is already attached")]
+    AlreadyAttached,
+    /// The state engine could not take the push (stopped).
+    #[error("state engine unavailable")]
+    Engine(#[from] taskboard_state::AttachError),
+    /// The state engine declined the push (draining — a raced shutdown).
+    #[error("state engine is shutting down")]
+    Draining,
+}
+
+/// The vacancy half of the at-most-one guard, checked before anything
+/// spawns (the registration re-check in [`App::attach_connector`]
+/// closes the concurrent-caller race).
+fn ensure_vacant(connectors: &std::sync::Mutex<Vec<SyncActor>>) -> Result<(), AttachError> {
+    if connectors.lock().expect("connector lock").is_empty() {
+        Ok(())
+    } else {
+        Err(AttachError::AlreadyAttached)
+    }
+}
+
+/// Atomically registers `actor` if the registry is still vacant — the
+/// re-check and the push share one lock acquisition, closing the
+/// concurrent-caller race the pre-spawn [`ensure_vacant`] leaves open.
+/// Returns the actor back when the vacancy was lost; the caller owns
+/// stopping it.
+fn try_register(
+    connectors: &std::sync::Mutex<Vec<SyncActor>>,
+    actor: SyncActor,
+) -> Option<SyncActor> {
+    let mut registry = connectors.lock().expect("connector lock");
+    if registry.is_empty() {
+        registry.push(actor);
+        None
+    } else {
+        Some(actor)
+    }
 }
 
 /// Stops one connector actor: sends it `SyncCommand::Detach` (graceful
