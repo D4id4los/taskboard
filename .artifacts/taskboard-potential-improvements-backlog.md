@@ -58,6 +58,40 @@ runner / invocation), symptom, evidence for the flake verdict
 - **Mitigation applied**: none (re-run). If it recurs, capture the
   failing test name and the `--nocapture` output before re-running.
 
+### [2026-10-13] CI `Code Coverage` job: corrupt profraw on merge (×3, all tests green)
+
+- **Test**: the whole-workspace instrumented run inside the CI
+  `Code Coverage` job — **no test fails**; the job dies merging
+  profiles after a fully green test suite.
+- **Where**: three GitHub Actions runs of `ci.yml`: `main`
+  @ run `38275173071` (2026-10-12 16:09Z), PR #47
+  (`docs/reminders-design`) @ run `38275544869` first attempt
+  (2026-10-12 16:12Z), `docs/connect-flow-design` @ run
+  `38399239683` (2026-10-13 12:44Z).
+- **Symptom**: identical in all three — exactly one profraw is bad,
+  then the merge aborts:
+  `taskboard-<pid>-<run>_N.profraw: invalid instrumentation profile
+  data (file header is corrupt)` → `error: no profile can be merged`
+  → `llvm-profdata merge -sparse -f …` exits 1. Test summaries:
+  612/612 and 624/624 passed, 25 skipped.
+- **Flake evidence**: all three runs passed on re-run/re-attempt
+  (PR #47: rerun of the failed job green in 2m16s). The corrupt file
+  differs per run (`_0`, `_1`, `_2` suffixes, PID-stamped names);
+  never the same file twice; never more than one per run.
+- **Suspicion**: a per-process profile-file collision — the
+  PID-stamped profraw naming suggests spawned child processes
+  (taskboard-app's pty REPL tests, IPC daemon/CLI subprocess tests)
+  inherit the parent's `LLVM_PROFILE_FILE` and write the same file,
+  interleaving/truncating it. Unverified. First CI occurrence
+  (2026-10-12 16:09Z on `main`) postdates the pty-completion test
+  landing (c1db45e) by ~2h; the 2026-10-11 local occurrence predates
+  it — the two symptom families (test-fail vs merge-fail) may or may
+  not share a root cause.
+- **Mitigation applied**: none (re-run). Escalated per the watchlist
+  policy: dedicated dispatch plan
+  `.artifacts/plans/2026-10-13-coverage-ci-flake-fix-plan.md`
+  (investigation + fix, three-stage).
+
 ## [2026-10-07] Add the `slint` dependency to taskboard-ui-slint
 
 - **Category**: `UI` / `DX`
