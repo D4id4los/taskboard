@@ -268,10 +268,12 @@ pub fn compact_snooze_chains(reminders: &mut ReminderState) {
 }
 
 /// The instant an explicit rule fires at, given the task's current
-/// due date. `None` ⇔ no due date. Pure in `(offset, duedate)`.
+/// due date. `None` ⇔ no due date, or a fire instant outside the
+/// representable range (the evaluator is total on arbitrary input).
+/// Pure in `(offset, duedate)`.
 #[must_use]
 pub fn occurrence_of(rule: &ReminderRule, duedate: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
-    duedate.map(|d| d + rule.offset.as_duration())
+    duedate.and_then(|d| d.checked_add_signed(rule.offset.as_duration()))
 }
 
 /// Effective occurrence of any reminder (explicit or default): the base
@@ -316,7 +318,7 @@ fn base_occurrence(
         }
         ReminderRef::Default(task) => {
             let duedate = tasks.get(&task)?.duedate?;
-            Some(duedate + defaults.default_before.as_duration())
+            duedate.checked_add_signed(defaults.default_before.as_duration())
         }
     }
 }
@@ -382,15 +384,20 @@ pub fn overdue_tasks(tasks: &BTreeMap<TaskId, Task>, now: DateTime<Utc>) -> Vec<
 }
 
 /// Desktop "due soon" strip: same eligibility, due date in
-/// `(now, now + horizon]`.
+/// `(now, now + horizon]`. A horizon beyond the representable range is
+/// saturated to it (the strip degrades to "everything ahead", never a
+/// panic — chunk 3 feeds this from user config).
 #[must_use]
 pub fn due_soon(
     tasks: &BTreeMap<TaskId, Task>,
     now: DateTime<Utc>,
     horizon: chrono::TimeDelta,
 ) -> Vec<&Task> {
+    let limit = now
+        .checked_add_signed(horizon)
+        .unwrap_or(DateTime::<Utc>::MAX_UTC);
     filter_sorted(tasks, |t| {
-        t.is_live() && t.is_open() && t.duedate.is_some_and(|d| d > now && d <= now + horizon)
+        t.is_live() && t.is_open() && t.duedate.is_some_and(|d| d > now && d <= limit)
     })
 }
 
@@ -730,6 +737,31 @@ mod tests {
         let tasks: BTreeMap<TaskId, Task> = BTreeMap::from([(closed.id, closed), (tomb.id, tomb)]);
         assert_eq!(due_soon(&tasks, now, horizon), Vec::<&Task>::new());
         assert_eq!(overdue_tasks(&tasks, now), Vec::<&Task>::new());
+    }
+
+    #[test]
+    fn occurrence_arithmetic_stays_total_at_the_representable_edge() {
+        let rule = ReminderRule {
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(1)),
+            task: TaskId::from(uuid::Uuid::from_u128(2)),
+            offset: ReminderOffset::before(chrono::TimeDelta::try_days(-30).unwrap()).unwrap(),
+            created_at: ts(100),
+        };
+        // A fire instant below chrono's representable floor suppresses
+        // the reminder instead of panicking the evaluator.
+        assert_eq!(occurrence_of(&rule, Some(DateTime::<Utc>::MIN_UTC)), None);
+    }
+
+    #[test]
+    fn due_soon_saturates_an_unrepresentable_horizon() {
+        let now = ts(10_000);
+        let task = live_task(1, Some(now + chrono::TimeDelta::try_seconds(1).unwrap()), 0);
+        let tasks = BTreeMap::from([(task.id, task)]);
+        let soon: Vec<TaskId> = due_soon(&tasks, now, chrono::TimeDelta::MAX)
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(soon, vec![TaskId::from(uuid::Uuid::from_u128(1))]);
     }
 
     #[test]
