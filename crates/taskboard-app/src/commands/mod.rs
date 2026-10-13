@@ -344,6 +344,25 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
     let json = ctx.io.json;
     tracing::info!(?command, config = ?ctx.config_path, json, "running command");
     match command {
+        Command::Connect {
+            server,
+            user,
+            switch_backend,
+            force,
+        } => {
+            connect_command(
+                &mut ctx.io,
+                ctx.config_path,
+                connect::ConnectArgs {
+                    server,
+                    user,
+                    switch_backend,
+                    force,
+                    confirmable: true,
+                },
+            )
+            .await
+        }
         Command::Login { server, user } => {
             login_command(&mut ctx.io, ctx.config_path, server, user).await
         }
@@ -871,12 +890,13 @@ pub async fn dispatch_line(
 ) -> u8 {
     tracing::info!(?command, json = io.json, "session line");
     match command {
-        Command::Login { .. }
+        Command::Connect { .. }
+        | Command::Login { .. }
         | Command::Logout
         | Command::Config { .. }
         | Command::Daemon { .. } => {
             unreachable!(
-                "the session loop intercepts daemon, login, logout, and config before routing"
+                "the session loop intercepts connect, daemon, login, logout, and config before routing"
             )
         }
         Command::Status => {
@@ -1149,7 +1169,8 @@ pub enum IpcRoute {
 #[must_use]
 pub fn route_for_ipc(command: &Command) -> IpcRoute {
     match command {
-        Command::Login { .. }
+        Command::Connect { .. }
+        | Command::Login { .. }
         | Command::Logout
         | Command::Config { .. }
         | Command::Boards {
@@ -1262,6 +1283,12 @@ mod ipc_routing_tests {
     #[test]
     fn the_routing_table_picks_lanes_per_command() {
         let local = [
+            Command::Connect {
+                server: None,
+                user: None,
+                switch_backend: false,
+                force: false,
+            },
             Command::Login {
                 server: None,
                 user: None,

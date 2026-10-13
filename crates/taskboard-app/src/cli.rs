@@ -27,7 +27,32 @@ pub struct Cli {
 /// The subcommand catalogue.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Verify and store Nextcloud credentials (first-run command).
+    /// Connect this installation to a Nextcloud server: verify the
+    /// credentials against the server, then persist the connection (the
+    /// non-secrets to the config, the secret to the credential store).
+    Connect {
+        /// Server URL (prompted when omitted).
+        #[arg(long)]
+        server: Option<String>,
+        /// Login name (prompted when omitted).
+        #[arg(long)]
+        user: Option<String>,
+        /// Rewrite an explicit `sync.backend = "standalone"` to
+        /// `nextcloud` — the scripted loud flip. Without it a terminal
+        /// asks (y/N); a non-interactive run refuses typed.
+        #[arg(long)]
+        switch_backend: bool,
+        /// Re-point an already-configured connection to a different
+        /// server/user without the interactive confirm (the old
+        /// identity's secret is deleted after the new one verifies).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Deprecated alias of `connect` (removal revisited at v0.1.0):
+    /// the same ceremony under the old name, without the
+    /// `--switch-backend`/`--force` escapes — an explicit `standalone`
+    /// backend or a configured different identity refuses typed,
+    /// naming `connect`.
     Login {
         /// Server URL (prompted when omitted).
         #[arg(long)]
