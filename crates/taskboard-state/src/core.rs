@@ -80,6 +80,24 @@ impl EngineCore {
         &self.state.validators
     }
 
+    /// The reminders due at `now` — a zero-clone borrow delegated to the
+    /// domain evaluator (the brain stays in the domain; the core stays a
+    /// state capsule).
+    #[must_use]
+    pub fn due_reminder_firings(
+        &self,
+        defaults: &taskboard_domain::ReminderDefaults,
+        now: DateTime<Utc>,
+    ) -> Vec<taskboard_domain::ReminderFiring> {
+        taskboard_domain::due_firings(&self.state.tasks, &self.state.reminders, defaults, now)
+    }
+
+    /// The task map (the notification title lookup).
+    #[must_use]
+    pub fn tasks(&self) -> &BTreeMap<taskboard_domain::TaskId, taskboard_domain::Task> {
+        &self.state.tasks
+    }
+
     /// Test/assertion view mirroring the persisted shape. One divergence
     /// from what a repository could return: the memory-only `Syncing`
     /// transient set by [`Self::mark_syncing`] appears here even though

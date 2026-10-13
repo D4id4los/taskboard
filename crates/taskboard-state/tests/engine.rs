@@ -19,11 +19,11 @@ use taskboard_domain::persistence::{
 };
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, RemoteBoard, RemoteBoardId,
-    RemoteBoardSnapshot, Stack, StackClocks, StackId, StateCommand, SyncCommand, SyncErrorKind,
-    SyncPhase, SyncReport, SystemEvent,
+    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, Notification, RemoteBoard,
+    RemoteBoardId, RemoteBoardSnapshot, Stack, StackClocks, StackId, StateCommand, SyncCommand,
+    SyncErrorKind, SyncPhase, SyncReport, SystemEvent,
 };
-use taskboard_state::{EngineStartupError, ExecuteError, spawn_state_engine};
+use taskboard_state::{EngineStartupError, ExecuteError, ReminderEngineConfig, spawn_state_engine};
 
 mod common;
 
@@ -93,11 +93,14 @@ impl TaskRepository for DeadRepository {
     }
 }
 
-/// The engine's dependencies, with every seam exposed.
+/// The engine's dependencies, with every seam exposed. Reminders are
+/// disabled by default (the auto-advance policy); reminder tests opt in
+/// via the `reminders` field.
 struct Spawner {
     repo: Arc<dyn TaskRepository>,
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
+    reminders: ReminderEngineConfig,
 }
 
 impl Default for Spawner {
@@ -108,6 +111,7 @@ impl Default for Spawner {
             repo: Arc::new(InMemoryRepository::with_state(seed_board_state("board"))),
             ids: Arc::new(CountingIds::new()),
             clock: FixedClock::new(T0),
+            reminders: ReminderEngineConfig::disabled(),
         }
     }
 }
@@ -125,6 +129,10 @@ async fn spawn(spawner: Spawner) -> Harness {
     let (sync_out, sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
     let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+    // The receiver is dropped immediately: no engine.rs test consumes
+    // notifications (the reminder suite owns that; the disabled config
+    // never sends anyway).
+    let (notifier, _notifications) = tokio::sync::mpsc::channel::<Notification>(64);
     let (handle, join) = spawn_state_engine(
         spawner.repo,
         spawner.ids,
@@ -133,6 +141,8 @@ async fn spawn(spawner: Spawner) -> Harness {
         report_rx,
         system_tx.clone(),
         system_rx,
+        notifier,
+        spawner.reminders,
     )
     .await
     .expect("engine boots");
@@ -634,6 +644,7 @@ async fn a12_boot_failure_surfaces_load_error() {
     let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
     let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+    let (notifier, _notifications) = tokio::sync::mpsc::channel::<Notification>(64);
     let result = spawn_state_engine(
         Arc::new(DeadRepository),
         Arc::new(CountingIds::new()),
@@ -642,6 +653,8 @@ async fn a12_boot_failure_surfaces_load_error() {
         report_rx,
         system_tx,
         system_rx,
+        notifier,
+        ReminderEngineConfig::disabled(),
     )
     .await;
     assert!(matches!(

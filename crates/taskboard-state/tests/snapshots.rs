@@ -19,10 +19,11 @@ use std::sync::Arc;
 
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    Color, CommandOutcome, LocalOp, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot,
-    StateCommand, SyncCommand, SyncErrorKind, SyncPhase, SyncReport, SystemEvent,
+    Color, CommandOutcome, LocalOp, Notification, PushOutcome, PushResult, RemoteBoard,
+    RemoteBoardSnapshot, StateCommand, SyncCommand, SyncErrorKind, SyncPhase, SyncReport,
+    SystemEvent,
 };
-use taskboard_state::spawn_state_engine;
+use taskboard_state::{ReminderEngineConfig, spawn_state_engine};
 
 use insta::assert_yaml_snapshot;
 
@@ -56,6 +57,7 @@ impl Scenario {
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
         let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+        let (notifier, _notifications) = tokio::sync::mpsc::channel::<Notification>(64);
         let (handle, _join) = spawn_state_engine(
             repo.clone(),
             Arc::new(CountingIds::new()),
@@ -64,6 +66,8 @@ impl Scenario {
             report_rx,
             system_tx.clone(),
             system_rx,
+            notifier,
+            ReminderEngineConfig::disabled(),
         )
         .await
         .expect("engine boots");

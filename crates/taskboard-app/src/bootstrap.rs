@@ -558,6 +558,10 @@ pub async fn bootstrap(
     let (system, system_rx_engine) = broadcast::channel::<SystemEvent>(SYSTEM_BROADCAST_CAPACITY);
     let (sync_commands, sync_rx) = mpsc::channel::<SyncCommand>(SYNC_COMMAND_CAPACITY);
     let (reports, report_rx) = mpsc::channel::<SyncReport>(SYNC_REPORT_CAPACITY);
+    // Interim reminder wiring: the notifier receiver is dropped until
+    // chunk 3 replaces it with the LogSink consumer — a closed channel is
+    // the engine's sanctioned `debug!` no-op.
+    let (notifier, _notifications) = mpsc::channel::<taskboard_domain::Notification>(64);
 
     // The engine reaches the database only through the storage actor
     // (single-writer discipline): the handle *is* the port adapter.
@@ -570,6 +574,8 @@ pub async fn bootstrap(
         report_rx,
         system.clone(),
         system_rx_engine,
+        notifier,
+        taskboard_state::ReminderEngineConfig::disabled(),
     )
     .await;
 

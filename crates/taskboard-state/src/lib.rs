@@ -35,6 +35,9 @@
 //! let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
 //! let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
 //! let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+//! // The notifier channel: bootstrap owns the halves; a closed channel
+//! // (receiver dropped) is the sanctioned no-op.
+//! let (notifier, _notifications) = tokio::sync::mpsc::channel::<taskboard_domain::Notification>(64);
 //!
 //! let (engine, join) = spawn_state_engine(
 //!     Arc::new(InMemoryRepository::new()),
@@ -44,6 +47,8 @@
 //!     report_rx,
 //!     system_tx.clone(),
 //!     system_rx,
+//!     notifier,
+//!     taskboard_state::ReminderEngineConfig::disabled(),
 //! )
 //! .await?;
 //!
@@ -69,9 +74,11 @@
 #![forbid(unsafe_code)]
 
 pub(crate) mod actor;
+pub mod config;
 pub(crate) mod core;
 pub mod error;
 
 pub use actor::{AttachError, AttachReceipt, EngineCommand, EngineHandle, spawn_state_engine};
+pub use config::ReminderEngineConfig;
 pub use core::EngineCore;
 pub use error::{EngineStartupError, ExecuteError};

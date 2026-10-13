@@ -25,11 +25,10 @@ use taskboard_domain::test_support::{
 };
 use taskboard_domain::{
     AppState, Board, BoardClocks, BoardId, Clock, Color, CommandOutcome, Label, LabelClocks,
-    LocalOp, OpId, PendingOp, PersistedState, PersistenceAction, Stack, StackClocks, StackId,
-    SyncPhase, SyncStatus, Task, TaskClocks, TaskId, apply_sync_report,
+    LocalOp, Notification, OpId, PendingOp, PersistedState, PersistenceAction, Stack, StackClocks,
+    StackId, SyncPhase, SyncStatus, Task, TaskClocks, TaskId, apply_sync_report,
 };
-use taskboard_state::EngineCore;
-use taskboard_state::spawn_state_engine;
+use taskboard_state::{EngineCore, ReminderEngineConfig, spawn_state_engine};
 
 mod common;
 
@@ -442,6 +441,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
         let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<taskboard_domain::SyncReport>(8);
         let (system_tx, system_rx) =
             tokio::sync::broadcast::channel::<taskboard_domain::SystemEvent>(8);
+        let (notifier, _notifications) = tokio::sync::mpsc::channel::<Notification>(64);
         let (handle, _join) = spawn_state_engine(
             repo.clone(),
             Arc::new(CountingIds::new()),
@@ -450,6 +450,8 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
             report_rx,
             system_tx,
             system_rx,
+            notifier,
+            ReminderEngineConfig::disabled(),
         )
         .await
         .expect("engine boots");
