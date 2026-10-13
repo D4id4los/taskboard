@@ -168,11 +168,25 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.9.1,nextest@0.9.148
 
+      - name: Run Coverage Test Phase
+        # --no-report: run the instrumented test suite (tests + spawned
+        # binary children write their profraw files) but do not merge yet.
+        # The merge is split out so corrupt profiles can be quarantined
+        # first — see the next two steps.
+        run: cargo llvm-cov nextest --all-features --workspace --no-tests=warn --no-report
+
+      - name: Quarantine Corrupt Profile Files
+        # A SIGKILL landing inside an instrumented process's profile write
+        # (tests legitimately kill spawned daemons/clients) leaves a file
+        # with a torn header; llvm-profdata aborts the whole merge on one
+        # invalid input, which was the intermittent Code Coverage failure.
+        # The quarantine logs every dropped file — a quarantined file holds
+        # only the torn tail of a killed process's counters, no usable
+        # coverage. Still-failing merges (anything else) fail the job.
+        run: scripts/coverage-quarantine-profraw.sh target/llvm-cov-target
+
       - name: Generate Coverage Report
-        # llvm-cov 0.9+: nextest is a subcommand (the --nextest flag was
-        # removed); --no-tests=warn keeps the job green while the workspace
-        # has no tests yet.
-        run: cargo llvm-cov nextest --all-features --workspace --no-tests=warn --lcov --output-path lcov.info
+        run: cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v7
