@@ -248,3 +248,110 @@ async fn l12_login_overlays_an_existing_xdg_config() {
         "no CWD config appeared"
     );
 }
+
+/// L9b: `Command::Connect` (flags, no `--switch-backend`) through
+/// `dispatch` under explicit standalone: exit 1, the same typed kind —
+/// the verb's non-TTY refusal at the dispatch tier (the guard refuses,
+/// never blocks on the confirm).
+#[tokio::test]
+async fn l9b_connect_under_explicit_standalone_refuses_at_the_dispatch_tier() {
+    use taskboard_app::cli::Command;
+    use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
+
+    let dir = tempdir();
+    let config_path = dir.path().join("taskboard.toml");
+    std::fs::write(&config_path, "[sync]\nbackend = 'standalone'\n").expect("write toml");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+    let mut err = Vec::new();
+
+    // `server: None` would prompt on real stdin if the guard failed —
+    // the timely exit-1 is the proof.
+    let code = dispatch(
+        Command::Connect {
+            server: None,
+            user: None,
+            switch_backend: false,
+            force: false,
+        },
+        CommandCtx {
+            config_path: Some(config_path.clone()),
+            io: CommandIo {
+                out: &mut Vec::new(),
+                err: &mut err,
+                json: true,
+            },
+        },
+    )
+    .await;
+    assert_eq!(code, 1);
+    let last = std::str::from_utf8(&err)
+        .expect("utf8 stderr")
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .expect("a non-empty stderr");
+    let envelope: serde_json::Value = serde_json::from_str(last).expect("one JSON error envelope");
+    assert_eq!(envelope["error"]["kind"], "backend-explicit-standalone");
+    assert!(matches!(
+        store.load("https://unused.example.com", "alice"),
+        Err(CredentialError::NotFound)
+    ));
+}
+
+/// L13: the deprecation notice, structurally — the alias happy path
+/// writes non-empty stderr; the identical `Command::Connect` happy path
+/// keeps stderr empty. No content assertions (the wording is UX).
+#[tokio::test]
+async fn l13_alias_happy_path_writes_stderr_connect_keeps_it_empty() {
+    use taskboard_app::cli::Command;
+    use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
+
+    let server = mount_boards_ok().await;
+    let alias_dir = tempdir();
+    let connect_dir = tempdir();
+
+    let _guard = common::env_lock();
+    let _store_var = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__CREDENTIAL_STORE", "env");
+    common::remove_env("TASKBOARD_CONFIG");
+
+    let mut alias_err = Vec::new();
+    let alias_code = dispatch(
+        Command::Login {
+            server: Some(server.uri()),
+            user: Some("alice".to_owned()),
+        },
+        CommandCtx {
+            config_path: Some(alias_dir.path().join("taskboard.toml")),
+            io: CommandIo {
+                out: &mut Vec::new(),
+                err: &mut alias_err,
+                json: true,
+            },
+        },
+    )
+    .await;
+
+    let mut connect_err = Vec::new();
+    let connect_code = dispatch(
+        Command::Connect {
+            server: Some(server.uri()),
+            user: Some("alice".to_owned()),
+            switch_backend: false,
+            force: false,
+        },
+        CommandCtx {
+            config_path: Some(connect_dir.path().join("taskboard.toml")),
+            io: CommandIo {
+                out: &mut Vec::new(),
+                err: &mut connect_err,
+                json: true,
+            },
+        },
+    )
+    .await;
+
+    assert_eq!(alias_code, 0);
+    assert_eq!(connect_code, 0);
+    assert!(!alias_err.is_empty(), "the alias writes a notice on stderr");
+    assert!(connect_err.is_empty(), "connect keeps stderr clean");
+}

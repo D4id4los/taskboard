@@ -721,3 +721,73 @@ async fn sync_routes_the_timeout_and_failure_outcomes() {
     let envelope: serde_json::Value = serde_json::from_slice(&err).expect("one error envelope");
     assert_eq!(envelope["error"]["kind"], "sync-failed");
 }
+
+/// Piped stdin (nextest) feeds an empty app password; the verification
+/// call then hits the refused server and connect reports exit 1.
+#[tokio::test]
+async fn connect_with_unverifiable_credentials_routes_to_exit_one() {
+    let (_guard, dir) = failing_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(
+        Command::Connect {
+            server: Some("http://127.0.0.1:1".to_owned()),
+            user: Some("alice".to_owned()),
+            switch_backend: false,
+            force: false,
+        },
+        ctx(dir.path(), &mut out, &mut err),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+/// An explicit `standalone` backend without `--switch-backend` refuses
+/// typed at the ceremony's D2 guard — exit 1 through `dispatch`.
+#[tokio::test]
+async fn connect_under_explicit_standalone_routes_to_exit_one() {
+    let dir = tempdir();
+    std::fs::write(
+        dir.path().join("taskboard.toml"),
+        "[sync]\nbackend = 'standalone'\n",
+    )
+    .expect("write toml");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(
+        Command::Connect {
+            server: Some("http://127.0.0.1:1".to_owned()),
+            user: Some("alice".to_owned()),
+            switch_backend: false,
+            force: false,
+        },
+        ctx(dir.path(), &mut out, &mut err),
+    )
+    .await;
+    assert_eq!(code, 1);
+}
+
+/// A configured different identity without `--force` refuses typed at
+/// the ceremony's D3 guard — exit 1 through `dispatch`.
+#[tokio::test]
+async fn connect_over_a_configured_identity_without_force_routes_to_exit_one() {
+    let dir = tempdir();
+    std::fs::write(
+        dir.path().join("taskboard.toml"),
+        "[nextcloud]\nserver_url = 'https://old.example.com'\nusername = 'alice'\n",
+    )
+    .expect("write toml");
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(
+        Command::Connect {
+            server: Some("http://127.0.0.1:1".to_owned()),
+            user: Some("alice".to_owned()),
+            switch_backend: false,
+            force: false,
+        },
+        ctx(dir.path(), &mut out, &mut err),
+    )
+    .await;
+    assert_eq!(code, 1);
+}

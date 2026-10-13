@@ -227,7 +227,7 @@ pub(crate) struct CompletionSpec {
 /// Verbs whose lines `repl::resolve_words` refuses in-session; nothing
 /// about them is offered, and any line starting with one completes
 /// nothing.
-const REFUSED_VERBS: [&str; 4] = ["daemon", "login", "logout", "config"];
+const REFUSED_VERBS: [&str; 5] = ["daemon", "connect", "login", "logout", "config"];
 
 /// Flags never offered as candidates: a per-line `--config` is refused
 /// in-session (`LineRefusal::ConfigFlag`). The spec keeps the flag in
@@ -1001,7 +1001,7 @@ mod tests {
                 "{verb} must be offered"
             );
         }
-        for refused in ["daemon", "login", "logout", "config"] {
+        for refused in ["daemon", "connect", "login", "logout", "config"] {
             assert!(
                 !spec.offered_verbs.iter().any(|v| v == refused),
                 "{refused} must not be offered"

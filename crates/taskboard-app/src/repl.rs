@@ -191,6 +191,11 @@ pub(crate) enum LineRefusal {
     /// Mid-session login cannot activate a connector in the running
     /// session (credential + client wiring happens at boot).
     Login,
+    /// Mid-session `connect` is chunk 3's in-session ceremony; until
+    /// it lands, the honest interim is the parse-level refusal (the
+    /// one-shot verb owns the ceremony). Temporary dead surface: the
+    /// in-session ceremony replaces this variant.
+    Connect,
     /// The credential store and connector are fixed for the session's
     /// lock epoch, exactly like `login`.
     Logout,
@@ -210,6 +215,9 @@ impl std::fmt::Display for LineRefusal {
             Self::Daemon => f.write_str("the daemon cannot run inside the session; exit first"),
             Self::Login => f.write_str(
                 "login is not available mid-session; exit, run `taskboard login`, re-enter",
+            ),
+            Self::Connect => f.write_str(
+                "connect is not available mid-session; exit, run `taskboard connect`, re-enter",
             ),
             Self::Logout => f.write_str(
                 "logout is not available mid-session; exit, run `taskboard logout`, re-enter",
@@ -284,6 +292,7 @@ pub(crate) fn resolve_words(words: &[String], json_default: bool) -> LineAction 
         // A bare global-flag line (`--json`) has nothing to execute.
         None => LineAction::Reprompt,
         Some(Command::Daemon { .. }) => LineAction::Refuse(LineRefusal::Daemon),
+        Some(Command::Connect { .. }) => LineAction::Refuse(LineRefusal::Connect),
         Some(Command::Login { .. }) => LineAction::Refuse(LineRefusal::Login),
         Some(Command::Logout) => LineAction::Refuse(LineRefusal::Logout),
         Some(Command::Config { .. }) => LineAction::Refuse(LineRefusal::ConfigCommand),
@@ -552,6 +561,8 @@ mod tests {
             other => panic!("expected Refuse, got {other:?}"),
         };
         assert_eq!(refuse("daemon"), LineRefusal::Daemon);
+        assert_eq!(refuse("connect"), LineRefusal::Connect);
+        assert_eq!(refuse("connect --server http://x"), LineRefusal::Connect);
         assert_eq!(refuse("login --server http://x"), LineRefusal::Login);
         assert_eq!(refuse("logout"), LineRefusal::Logout);
         assert_eq!(refuse("config print"), LineRefusal::ConfigCommand);
@@ -626,6 +637,11 @@ mod argv_tests {
         assert_eq!(
             refuse(&["daemon", "stop"]),
             crate::repl::LineRefusal::Daemon
+        );
+        assert_eq!(refuse(&["connect"]), crate::repl::LineRefusal::Connect);
+        assert_eq!(
+            refuse(&["connect", "--server", "http://x"]),
+            crate::repl::LineRefusal::Connect
         );
         assert_eq!(refuse(&["login"]), crate::repl::LineRefusal::Login);
         assert_eq!(refuse(&["logout"]), crate::repl::LineRefusal::Logout);
