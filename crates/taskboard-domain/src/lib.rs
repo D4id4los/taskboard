@@ -79,9 +79,9 @@ pub use push::{
     CardShape, EntityTables, MaterializedOp, NewCardShape, PushGroup, PushTarget, plan_pushes,
 };
 pub use reminders::{
-    InvalidReminderOffset, ReminderDefaults, ReminderDelivery, ReminderFiring, ReminderOffset,
-    ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState, due_firings,
-    due_soon, effective_occurrence, occurrence_of, overdue_tasks,
+    InvalidReminderOffset, Notification, ReminderDefaults, ReminderDelivery, ReminderFiring,
+    ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState,
+    due_firings, due_soon, effective_occurrence, notifications_for, occurrence_of, overdue_tasks,
 };
 pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
