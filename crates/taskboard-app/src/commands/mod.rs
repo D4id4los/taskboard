@@ -732,13 +732,25 @@ async fn connect_command(
     let path = AppConfig::write_path(config_path);
     match AppConfig::extract_raw(Some(&path)) {
         Ok(raw) => {
+            let db_path = raw.db_path().to_path_buf();
             let store = production_store(raw.nextcloud.credential_store);
             let mut prompts = connect::StdinPrompts;
-            emit_result(
-                io,
-                connect::run(&path, raw, args, &mut prompts, &store).await,
-                connect::render_text,
-            )
+            match connect::run(&path, raw, args, &mut prompts, &store).await {
+                Ok(receipt) => {
+                    // The §6/D11 heads-up: best-effort, success-path
+                    // only, never exit-code-relevant. The alias warns
+                    // too — the liveness gap is the operation's, not
+                    // the verb spelling's.
+                    if let Some(warning) =
+                        connect::daemon_warning(connect::daemon_serves(&db_path).await)
+                    {
+                        let _ = writeln!(io.err, "{warning}");
+                    }
+                    emit_to(io, &receipt, &connect::render_text(&receipt));
+                    0
+                }
+                Err(err) => report_to(io, &err),
+            }
         }
         // A not-yet-valid config must not block connect (first-run
         // bootstrap command); undecodable ones still fail.
