@@ -263,8 +263,10 @@ fn task_rows() -> impl Strategy<Value = Vec<TaskRow>> {
 /// A full `AppState` with referentially consistent rows: one board, stacks
 /// and labels bound to it, tasks bound to the stacks, task label sets
 /// drawn from the board's labels.
+/// The reminder-free base of [`app_state_strategy`] (kept separate so
+/// the reminder fold-in reads as one composition step).
 #[allow(clippy::too_many_lines)] // row structs keep it readable; length is inherent
-pub fn app_state_strategy() -> impl Strategy<Value = AppState> {
+fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
     (board_row(), stack_rows(), label_rows(), task_rows()).prop_map(
         |(board, stack_rows, label_rows, task_rows)| {
             let mut boards = BTreeMap::new();
@@ -368,11 +370,26 @@ pub fn app_state_strategy() -> impl Strategy<Value = AppState> {
                 stacks,
                 tasks,
                 labels,
+                reminders: crate::reminders::ReminderState::default(),
                 sync: SyncStatus::default(),
                 last_updated: None,
             }
         },
     )
+}
+
+/// A full `AppState` with a referentially-consistent, compaction-
+/// normalized reminder section over its tasks (D14: one shared strategy
+/// family, no parallel reminder universe).
+pub fn app_state_strategy() -> impl Strategy<Value = AppState> {
+    (
+        raw_app_state_strategy(),
+        super::reminders::reminder_rows_strategy(),
+    )
+        .prop_map(|(state, rows)| AppState {
+            reminders: super::reminders::build_reminders(&state.tasks, rows),
+            ..state
+        })
 }
 
 /// One row of [`persisted_state_strategy`]'s outbox.
@@ -406,7 +423,7 @@ fn outbox_rows() -> impl Strategy<Value = Vec<OutboxRow>> {
 /// [`app_state_strategy`], plus outbox and validators).
 pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
     (
-        super::reminders::app_state_with_reminders_strategy(),
+        app_state_strategy(),
         outbox_rows(),
         prop::option::of(remote_number().prop_map(RemoteBoardId)),
         prop::option::of(string_strategy()),
@@ -417,7 +434,7 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
     )
         .prop_map(
             |(
-                (state, reminders),
+                state,
                 op_rows,
                 validator_board,
                 etag,
@@ -441,7 +458,7 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
                     outbox,
                     validators,
                     sync,
-                    reminders,
+                    reminders: state.reminders,
                 }
             },
         )

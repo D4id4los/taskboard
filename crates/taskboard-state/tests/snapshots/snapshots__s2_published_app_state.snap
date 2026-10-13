@@ -95,6 +95,11 @@ tasks:
       deleted: "1970-01-01T10:04:00Z"
     remote_seen: ~
 labels: {}
+reminders:
+  rules: {}
+  deliveries: []
+  snoozes: {}
+  muted: []
 sync:
   phase: Idle
   last_success: ~

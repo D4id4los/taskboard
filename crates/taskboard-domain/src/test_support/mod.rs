@@ -29,9 +29,9 @@ pub use entities::{
 };
 pub use messages::{label_changes_strategy, state_command_strategy, task_changes_strategy};
 pub use reminders::{
-    app_state_with_reminders_strategy, build_reminders, reminder_delivery_strategy,
-    reminder_offset_strategy, reminder_ref_strategy, reminder_rows_strategy,
-    reminder_rule_id_strategy, reminder_rule_strategy, reminder_snooze_strategy, task_map_strategy,
+    build_reminders, reminder_delivery_strategy, reminder_offset_strategy, reminder_ref_strategy,
+    reminder_rows_strategy, reminder_rule_id_strategy, reminder_rule_strategy,
+    reminder_snooze_strategy, task_map_strategy,
 };
 pub use remote::{push_outcome_strategy, remote_task_strategy, snapshot_strategy};
 pub use state::{app_state_strategy, persisted_state_strategy};

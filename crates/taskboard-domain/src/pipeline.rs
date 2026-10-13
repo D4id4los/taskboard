@@ -699,6 +699,9 @@ pub fn apply_sync_report(
         stacks,
         tasks,
         labels,
+        // v1: no reminder data enters the sync path — carried through
+        // untouched.
+        reminders: current.reminders.clone(),
         sync,
         // Sync ingestion is an engine mutation from a foreign source:
         // stamp it like a local command would be.
@@ -856,6 +859,9 @@ pub fn apply_push_report(
         stacks,
         tasks,
         labels,
+        // v1: no reminder data enters the push path — carried through
+        // untouched.
+        reminders: current.reminders.clone(),
         sync,
         last_updated: Some(now),
     };

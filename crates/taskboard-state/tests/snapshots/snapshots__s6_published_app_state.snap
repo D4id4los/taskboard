@@ -29,6 +29,11 @@ stacks:
     remote_seen: ~
 tasks: {}
 labels: {}
+reminders:
+  rules: {}
+  deliveries: []
+  snoozes: {}
+  muted: []
 sync:
   phase:
     Failed:

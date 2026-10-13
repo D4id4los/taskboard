@@ -108,6 +108,7 @@ impl From<PersistedState> for AppState {
             stacks: persisted.stacks,
             tasks: persisted.tasks,
             labels: persisted.labels,
+            reminders: persisted.reminders,
             sync: persisted.sync,
             last_updated: None,
         }
@@ -729,14 +730,15 @@ mod tests {
 
         #[test]
         fn p5_settlement_roundtrip_through_apply_actions(
-            (app, reminders) in test_support::app_state_with_reminders_strategy(),
+            (app, reminders) in test_support::app_state_strategy()
+                .prop_map(|app| (app.tasks.clone(), app.reminders.clone())),
             offset in test_support::reminder_offset_strategy(),
             now in test_support::timestamp_strategy(),
             snooze_mask in any::<u64>(),
             mute_mask in any::<u64>(),
         ) {
             let defaults = crate::reminders::ReminderDefaults { default_before: offset };
-            let f1 = crate::reminders::due_firings(&app.tasks, &reminders, &defaults, now);
+            let f1 = crate::reminders::due_firings(&app, &reminders, &defaults, now);
             let mut actions = Vec::new();
             for (i, f) in f1.iter().enumerate() {
                 actions.push(PersistenceAction::RecordReminderDelivery(
@@ -759,7 +761,7 @@ mod tests {
                     ));
                 }
             }
-            for (i, task_id) in app.tasks.keys().enumerate() {
+            for (i, task_id) in app.keys().enumerate() {
                 if (mute_mask >> (i % 64)) & 1 == 1 {
                     actions.push(PersistenceAction::SetTaskRemindersMuted(*task_id, true));
                 }
@@ -772,7 +774,7 @@ mod tests {
             let settled = &state.reminders;
 
             // (a) nothing fires again at `now`...
-            let f2 = crate::reminders::due_firings(&app.tasks, settled, &defaults, now);
+            let f2 = crate::reminders::due_firings(&app, settled, &defaults, now);
             prop_assert!(f2.is_empty(), "settled occurrences must not refire");
             // (b) snoozed reminders stay quiet at any sampled instant
             // before their target (now + 10 m).
@@ -782,14 +784,14 @@ mod tests {
                 .keys()
                 .map(|key| key.reminder)
                 .collect();
-            let at_probe = crate::reminders::due_firings(&app.tasks, settled, &defaults, probe);
+            let at_probe = crate::reminders::due_firings(&app, settled, &defaults, probe);
             prop_assert!(
                 at_probe.iter().all(|f| !snoozed_refs.contains(&f.reminder)),
                 "a snoozed reminder must not fire before its target"
             );
             // (c) muted tasks contribute zero firings.
             let fired_tasks: std::collections::BTreeSet<_> =
-                crate::reminders::due_firings(&app.tasks, settled, &defaults, now + chrono::TimeDelta::try_minutes(20).unwrap())
+                crate::reminders::due_firings(&app, settled, &defaults, now + chrono::TimeDelta::try_minutes(20).unwrap())
                     .into_iter()
                     .map(|f| f.task)
                     .collect();
@@ -809,7 +811,8 @@ mod tests {
 
         #[test]
         fn compaction_is_unobservable_in_due_firings(
-            (app, reminders) in test_support::app_state_with_reminders_strategy(),
+            (app, reminders) in test_support::app_state_strategy()
+                .prop_map(|app| (app.tasks.clone(), app.reminders.clone())),
             offset in test_support::reminder_offset_strategy(),
             now in test_support::timestamp_strategy(),
         ) {
@@ -819,15 +822,16 @@ mod tests {
                 ..PersistedState::default()
             };
             apply_actions(&mut normalized, &[]);
-            let got_plain = crate::reminders::due_firings(&app.tasks, &reminders, &defaults, now);
+            let got_plain = crate::reminders::due_firings(&app, &reminders, &defaults, now);
             let got_compacted =
-                crate::reminders::due_firings(&app.tasks, &normalized.reminders, &defaults, now);
+                crate::reminders::due_firings(&app, &normalized.reminders, &defaults, now);
             prop_assert_eq!(got_plain, got_compacted);
         }
 
         #[test]
         fn compaction_is_unobservable_on_hand_uncompacted_states(
-            (app, reminders) in test_support::app_state_with_reminders_strategy(),
+            (app, reminders) in test_support::app_state_strategy()
+                .prop_map(|app| (app.tasks.clone(), app.reminders.clone())),
             offset in test_support::reminder_offset_strategy(),
             now in test_support::timestamp_strategy(),
         ) {
@@ -850,8 +854,8 @@ mod tests {
             };
             apply_actions(&mut normalized, &[]);
             prop_assert_eq!(
-                crate::reminders::due_firings(&app.tasks, &dirty, &defaults, now),
-                crate::reminders::due_firings(&app.tasks, &normalized.reminders, &defaults, now)
+                crate::reminders::due_firings(&app, &dirty, &defaults, now),
+                crate::reminders::due_firings(&app, &normalized.reminders, &defaults, now)
             );
         }
     }
