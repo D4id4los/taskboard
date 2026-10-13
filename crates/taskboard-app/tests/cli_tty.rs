@@ -816,3 +816,104 @@ fn feed_line(
         .write_all(format!("{line}\r").as_bytes())
         .expect("write scripted session line");
 }
+
+/// `script` wraps the binary in a pty for the connect confirm (the one
+/// thing hermetic fakes cannot cover: the real `is_terminal` y/N read).
+/// A standalone-seeded config, no flags: the D2 guard must confirm on
+/// the terminal; the scripted `y` after the confirm prompt arrives
+/// flips the backend (plan §7.5 pty leg).
+#[test]
+fn tty_connect_confirms_the_backend_switch_and_persists() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        // Skip, never fail: util-linux `script` unavailable here.
+        return;
+    }
+
+    let server = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .and(wiremock::matchers::path(BOARDS_PATH))
+                .respond_with(
+                    wiremock::ResponseTemplate::new(200).set_body_string(common::boards_json()),
+                )
+                .mount(&server)
+                .await;
+            server
+        });
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    write_test_config(&config, None, None).expect("write config");
+    // Seed the explicit standalone backend the guard fires on (the
+    // config only needs to decode; the env store keeps CI keyring-free).
+    let seeded = std::fs::read_to_string(&config).expect("read");
+    std::fs::write(
+        &config,
+        seeded.replacen("[sync]", "[sync]\nbackend = 'standalone'", 1),
+    )
+    .expect("seed standalone backend");
+
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let inner = format!(
+        "{} --config {} connect --server {} --user alice",
+        binary,
+        config.display(),
+        server.uri()
+    );
+    let mut child = std::process::Command::new("timeout")
+        .arg("30")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn script(1) pty wrapper");
+    // The flags supply server/user, and the D2 guard runs before the
+    // identity gather (D5): the tty reads are exactly the y/N confirm
+    // and then the masked secret prompt. The confirm's wording is
+    // never asserted — the flip persisting is the proof the consent
+    // was read on the real terminal.
+    child
+        .stdin
+        .take()
+        .expect("stdin piped")
+        .write_all(b"y\ns3cret-tty-pw\n")
+        .expect("write scripted input");
+    let output = child.wait_with_output().expect("pty run completes");
+
+    // The hang guard: `timeout 30` exits 124 when the confirm wedges.
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "the interactive connect hung (confirm never completed)"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "interactive connect failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The flipped word persisted (parsed structurally — toml_edit
+    // quotes it its own way); the secret did not.
+    let written = std::fs::read_to_string(&config).expect("config written");
+    let doc = written.parse::<toml_edit::DocumentMut>().expect("parses");
+    assert_eq!(
+        doc["sync"]["backend"].as_str(),
+        Some("nextcloud"),
+        "the flipped word persisted: {written}"
+    );
+    assert!(written.contains(&server.uri()));
+    assert!(!written.contains("s3cret-tty-pw"));
+}

@@ -399,3 +399,110 @@ fn j3_login_rejects_bad_token(cfg: &LiveCfg) {
         "no instance lock sidecar: nothing booted"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_cli_connect_journey() {
+    let Some(cfg) = common::live_docker_config() else {
+        return; // skip, never fail: tier not configured
+    };
+    j4_connect_pipe_journey(&cfg);
+}
+
+/// J4 — the connect journeys through the real binary with the password
+/// piped on stdin and the env store (mirrors J1's login leg, connect
+/// chunk plan §7.5): fresh install → connect → re-point with `--force`
+/// → the standalone flip with `--switch-backend`.
+#[allow(clippy::too_many_lines)] // the journey reads as one narrative
+fn j4_connect_pipe_journey(cfg: &LiveCfg) {
+    let dir = tempdir();
+
+    // Leg 1 — fresh config: connect with the token piped.
+    let config = dir.path().join("taskboard.toml");
+    write_test_config(&config, None, None).expect("write config");
+    let output = run_cli(
+        &config,
+        [
+            "connect", "--server", &cfg.url, "--user", &cfg.user, "--json",
+        ]
+        .as_slice(),
+        Some(&cfg.token),
+        Some(&cfg.token),
+    );
+    expect_exit(&output, 0, "connect (fresh install)");
+    let receipt = stdout_json(&output);
+    assert_eq!(receipt["verified"], true);
+    assert_eq!(receipt["backend_switched"], false);
+    assert_eq!(receipt["repointed"], false);
+    let written = std::fs::read_to_string(&config).expect("config written");
+    assert!(written.contains(&cfg.url), "server persisted");
+    assert!(written.contains(&cfg.user), "username persisted");
+    assert!(!written.contains(&cfg.token), "no secret in the file");
+
+    // Leg 2 — re-point: the config carries a stale identity (it needs
+    // no server truth — only the *new* identity verifies); `--force`
+    // replaces it without a confirm.
+    let stale_server = "https://stale.example.com";
+    write_test_config(&config, Some(stale_server), Some(cfg.user.as_str()))
+        .expect("reseed stale identity");
+    let output = run_cli(
+        &config,
+        [
+            "connect", "--server", &cfg.url, "--user", &cfg.user, "--force", "--json",
+        ]
+        .as_slice(),
+        Some(&cfg.token),
+        Some(&cfg.token),
+    );
+    expect_exit(&output, 0, "connect --force (re-point)");
+    let receipt = stdout_json(&output);
+    assert_eq!(receipt["repointed"], true);
+    let written = std::fs::read_to_string(&config).expect("config written");
+    assert!(
+        written.contains(&cfg.url) && !written.contains(stale_server),
+        "config names the new identity"
+    );
+
+    // Leg 3 — the standalone flip: fresh config seeded with an explicit
+    // standalone backend; after the flip, the install syncs.
+    let flip_config = dir.path().join("flip.toml");
+    write_test_config(&flip_config, None, None).expect("write config");
+    let seeded = std::fs::read_to_string(&flip_config).expect("read");
+    std::fs::write(
+        &flip_config,
+        seeded.replacen("[sync]", "[sync]\nbackend = 'standalone'", 1),
+    )
+    .expect("seed standalone backend");
+    let output = run_cli(
+        &flip_config,
+        [
+            "connect",
+            "--server",
+            &cfg.url,
+            "--user",
+            &cfg.user,
+            "--switch-backend",
+            "--json",
+        ]
+        .as_slice(),
+        Some(&cfg.token),
+        Some(&cfg.token),
+    );
+    expect_exit(&output, 0, "connect --switch-backend (flip)");
+    let receipt = stdout_json(&output);
+    assert_eq!(receipt["backend_switched"], true);
+    let written = std::fs::read_to_string(&flip_config).expect("config written");
+    let doc = written.parse::<toml_edit::DocumentMut>().expect("parses");
+    assert_eq!(
+        doc["sync"]["backend"].as_str(),
+        Some("nextcloud"),
+        "the flipped word persisted: {written}"
+    );
+    let output = run_cli(
+        &flip_config,
+        ["boards", "list", "--json"].as_slice(),
+        None,
+        Some(&cfg.token),
+    );
+    expect_exit(&output, 0, "boards list after the flip");
+}
