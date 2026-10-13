@@ -20,11 +20,13 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use taskboard_domain::{
-    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, PersistedState, PersistenceAction,
-    RepositoryError, StateCommand, SyncCommand, SyncPhase, SyncStateReader, SyncStatus,
-    SystemEvent, TaskRepository, ValidatorKey, apply_push_report, apply_sync_report, plan_command,
+    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, Notification, PersistedState,
+    PersistenceAction, ReminderFiring, RepositoryError, StateCommand, SyncCommand, SyncPhase,
+    SyncStateReader, SyncStatus, SystemEvent, TaskRepository, ValidatorKey, apply_push_report,
+    apply_sync_report, notifications_for, plan_command,
 };
 
+use crate::config::ReminderEngineConfig;
 use crate::core::EngineCore;
 use crate::error::{EngineStartupError, ExecuteError};
 
@@ -237,6 +239,8 @@ pub async fn spawn_state_engine(
     sync_reports: mpsc::Receiver<taskboard_domain::SyncReport>,
     system_out: broadcast::Sender<SystemEvent>,
     system: broadcast::Receiver<SystemEvent>,
+    notifier: mpsc::Sender<Notification>,
+    reminder_cfg: ReminderEngineConfig,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
     // Log the counts straight off the hydrated data — never clone the
@@ -267,6 +271,8 @@ pub async fn spawn_state_engine(
             clock,
             sync_out,
             system_out,
+            notifier,
+            reminders: reminder_cfg,
         },
         shared,
         signals,
@@ -285,6 +291,8 @@ struct EngineParts {
     clock: Arc<dyn Clock>,
     sync_out: mpsc::Sender<SyncCommand>,
     system_out: broadcast::Sender<SystemEvent>,
+    notifier: mpsc::Sender<Notification>,
+    reminders: ReminderEngineConfig,
 }
 
 #[allow(
@@ -306,6 +314,8 @@ async fn run_loop(
         clock,
         sync_out,
         system_out,
+        notifier,
+        reminders: reminder_cfg,
     } = parts;
     // Edge-trigger state for `StorageFailed`: the event fires on the
     // ok->fail transition (a dying disk fires once per failure epoch,
@@ -324,6 +334,14 @@ async fn run_loop(
     // reports channel closes — the sync actor owns the sender, so its
     // exit is exactly when the last cycle's evidence has landed.
     let mut draining = false;
+    // The reminder tick arm (design §5.2): the first tick is immediate —
+    // an undelivered reminder from before a reboot fires on the next
+    // boot's first tick — and every wake re-arms at the fixed cadence.
+    // With `enabled == false` the select! precondition keeps the sleep
+    // future from ever being constructed, so a disabled engine performs
+    // zero timer work (the paused-time suites stay auto-advance-free).
+    let mut next_tick = tokio::time::Instant::now();
+    let mut timer_armed = reminder_cfg.enabled;
 
     loop {
         if draining && !reports_open {
@@ -415,6 +433,11 @@ async fn run_loop(
                     } else {
                         tracing::info!("state engine entering shutdown drain");
                         draining = true;
+                        // Drain disarms the timer outright: timer wakes
+                        // are not ignored, they never happen. An
+                        // undelivered reminder survives to the next
+                        // boot's first tick.
+                        timer_armed = false;
                     }
                 }
                 Ok(SystemEvent::NetworkLost) if !draining => {
@@ -436,6 +459,19 @@ async fn run_loop(
                     tracing::warn!(missed, "system event backlog overflowed");
                 }
             },
+
+            () = tokio::time::sleep_until(next_tick), if timer_armed => {
+                reminder_tick(
+                    &mut core,
+                    &shared,
+                    &signals,
+                    (&repo, clock.as_ref(), &system_out, &notifier),
+                    &reminder_cfg,
+                    &mut storage_failing,
+                )
+                .await;
+                next_tick = tokio::time::Instant::now() + reminder_cfg.tick;
+            }
         }
     }
     tracing::info!("state engine stopped: all inbox sources closed");
@@ -512,10 +548,7 @@ async fn execute_command(
         // Memory never advanced (interpret runs only after a
         // successful apply) — no rollback needed.
         tracing::error!(?err, "persisted batch lost; state unchanged");
-        if !*storage_failing {
-            let _ = system_out.send(SystemEvent::StorageFailed); // no receivers: fine
-        }
-        *storage_failing = true;
+        note_storage_failure(storage_failing, system_out);
         if let Some(reply) = reply {
             let _ = reply.send(Err(ExecuteError::Storage(err)));
         }
@@ -715,6 +748,89 @@ async fn go_offline(
             if core.interpret(&actions, now) {
                 publish(core, shared, signals);
             }
+        }
+    }
+}
+
+/// The shared `StorageFailed` edge trigger (one epoch semantics): the
+/// event fires on the ok->fail transition only, and any successful
+/// persistence resets the edge. Both write paths — commands and reminder
+/// ticks — surface a dying disk as the same banner signal.
+fn note_storage_failure(storage_failing: &mut bool, system_out: &broadcast::Sender<SystemEvent>) {
+    if !*storage_failing {
+        let _ = system_out.send(SystemEvent::StorageFailed); // no receivers: fine
+    }
+    *storage_failing = true;
+}
+
+/// The tick-path seams tuple: `(repo, clock, system_out, notifier)`.
+type TickSeams<'a> = (
+    &'a Arc<dyn TaskRepository>,
+    &'a dyn Clock,
+    &'a broadcast::Sender<SystemEvent>,
+    &'a mpsc::Sender<Notification>,
+);
+
+/// One reminder tick, shaped like [`ingest_sync_report`]: read the clock
+/// once, evaluate the pure firings, persist the delivery markers, and
+/// only then notify — the marker is the notification permit, so nothing
+/// fires on a failed batch (durable-then-notify, design §6). A quiet
+/// tick is a no-op: nothing persisted, published, or signaled.
+async fn reminder_tick(
+    core: &mut EngineCore,
+    shared: &Arc<ArcSwap<AppState>>,
+    signals: &broadcast::Sender<EngineSignal>,
+    (repo, clock, system_out, notifier): TickSeams<'_>,
+    cfg: &ReminderEngineConfig,
+    storage_failing: &mut bool,
+) {
+    let now = clock.now();
+    let firings = core.due_reminder_firings(&cfg.defaults, now);
+    if firings.is_empty() {
+        return;
+    }
+    let actions = delivery_batch(&firings, now);
+    if let Err(err) = repo.apply(actions.clone()).await {
+        // Nothing fires: the delivery marker was never durably recorded,
+        // and memory never advanced either.
+        tracing::error!(?err, "reminder delivery batch lost; nothing fires");
+        note_storage_failure(storage_failing, system_out);
+        return;
+    }
+    *storage_failing = false;
+    let payloads = notifications_for(&firings, core.tasks());
+    if core.interpret(&actions, now) {
+        publish(core, shared, signals);
+    }
+    send_notifications(notifier, payloads).await;
+}
+
+/// Maps the firings onto the batch that settles them: one
+/// `RecordReminderDelivery` per firing, stamped at the tick's clock read.
+fn delivery_batch(
+    firings: &[ReminderFiring],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<PersistenceAction> {
+    firings
+        .iter()
+        .map(|firing| {
+            PersistenceAction::RecordReminderDelivery(taskboard_domain::ReminderDelivery {
+                reminder: firing.reminder,
+                occurrence: firing.occurrence,
+                delivered_at: now,
+            })
+        })
+        .collect()
+}
+
+/// Outbound delivery, after the markers are durable. `send`, not
+/// `try_send`: a full channel backpressures the tick (at-most-once by
+/// construction; drop-on-full would be a lost toast by choice). A closed
+/// channel is a `debug!` no-op — headless configs are legal.
+async fn send_notifications(notifier: &mpsc::Sender<Notification>, payloads: Vec<Notification>) {
+    for payload in payloads {
+        if notifier.send(payload).await.is_err() {
+            tracing::debug!("notification dropped: no notifier consumer");
         }
     }
 }
