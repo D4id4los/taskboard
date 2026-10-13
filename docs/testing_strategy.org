@@ -283,9 +283,13 @@ are outside these jobs), and no assertion is weakened or skipped.
   replaying them, including the checked-in seed file.
 
 - *Per-job case caps* (=PROPTEST_CASES=): domain core 16, domain
-  =pipeline::= 1 (that family carries no properties today — the cap is
-  a guard for future additions), domain remote/state properties 16,
-  state 16. Measured wall times at these caps (2026-10-12 green run):
+  =pipeline::= 1, domain remote/state properties 16, state 16. The
+  =pipeline::= family does carry properties —
+  =apply_push_report_equals_the_pipeline_push_phase= (the family's
+  cost dominator, ≈ 15 min per interpreted case by subtraction from
+  the measured walls) and =equal_replicas_converge= — so its cap of 1
+  is a measured budget statement for those two, not an empty-family
+  guard. Measured wall times at these caps (2026-10-12 green run):
   core ≈ 57 min, pipeline ≈ 21 min, properties ≈ 13 min, state
   ≈ 10 min — all inside the ≈ 90-minute headroom bar (25% margin under
   the timeout). Caps exist to fit the budget; they are never a coverage
