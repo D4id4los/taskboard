@@ -245,9 +245,10 @@ pub struct ConfigView {
     pub config: crate::config::AppConfig,
 }
 
-/// The `login` receipt. No secret ever appears in any projection.
+/// The `connect` (and deprecated `login` alias) receipt. No secret ever
+/// appears in any projection.
 #[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct LoginReceipt {
+pub struct ConnectReceipt {
     /// The verified server URL.
     pub server_url: String,
     /// The login name.
@@ -257,6 +258,12 @@ pub struct LoginReceipt {
     /// Where the secret went: `"keyring"` or `"env"` (read-only store —
     /// export `TASKBOARD_APP_PASSWORD` yourself).
     pub stored: String,
+    /// An explicit `standalone` backend was loudly switched to
+    /// `nextcloud` (flag or confirmed).
+    pub backend_switched: bool,
+    /// A configured different identity was replaced (confirmed or
+    /// forced); its secret was deleted after the new one verified.
+    pub repointed: bool,
 }
 
 /// The `boards select` receipt: the adopted board summary plus the sync

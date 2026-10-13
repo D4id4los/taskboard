@@ -20,12 +20,15 @@ pub fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
 
-/// A scripted [`taskboard_app::commands::login::PromptReader`] (fakes
+/// A scripted [`taskboard_app::commands::connect::PromptReader`] (fakes
 /// over mocks): answers are consumed strictly in order, so a test
-/// proves the prompt order by exhausting the queue.
+/// proves the prompt order by exhausting the queue. The line/secret
+/// queue and the confirm queue are independent, so "no confirm was
+/// asked" is an exhaustion assertion.
 #[derive(Debug, Default)]
 pub struct FakePrompts {
     answers: Mutex<std::collections::VecDeque<String>>,
+    confirms: Mutex<std::collections::VecDeque<bool>>,
 }
 
 impl FakePrompts {
@@ -33,11 +36,33 @@ impl FakePrompts {
     pub fn new(answers: &[&str]) -> Self {
         Self {
             answers: Mutex::new(answers.iter().map(|s| (*s).to_owned()).collect()),
+            confirms: Mutex::new(std::collections::VecDeque::new()),
         }
+    }
+
+    /// Scripted y/N decisions, consumed in order by `read_confirm`.
+    #[must_use]
+    pub fn with_confirms(answers: &[&str], confirms: &[bool]) -> Self {
+        Self {
+            answers: Mutex::new(answers.iter().map(|s| (*s).to_owned()).collect()),
+            confirms: Mutex::new(confirms.iter().copied().collect()),
+        }
+    }
+
+    /// The confirmations left unconsumed (a non-empty queue after a run
+    /// proves no confirm was asked).
+    #[must_use]
+    pub fn remaining_confirms(&self) -> Vec<bool> {
+        self.confirms
+            .lock()
+            .expect("fake prompts lock")
+            .iter()
+            .copied()
+            .collect()
     }
 }
 
-impl taskboard_app::commands::login::PromptReader for FakePrompts {
+impl taskboard_app::commands::connect::PromptReader for FakePrompts {
     fn read_line(&mut self, _prompt: &str) -> Result<String, std::io::Error> {
         self.answers
             .lock()
@@ -48,6 +73,14 @@ impl taskboard_app::commands::login::PromptReader for FakePrompts {
 
     fn read_secret(&mut self, prompt: &str) -> Result<String, std::io::Error> {
         self.read_line(prompt)
+    }
+
+    fn read_confirm(&mut self, _prompt: &str) -> Result<bool, std::io::Error> {
+        self.confirms
+            .lock()
+            .expect("fake prompts lock")
+            .pop_front()
+            .ok_or_else(|| std::io::Error::other("no scripted confirm"))
     }
 }
 

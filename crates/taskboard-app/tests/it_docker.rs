@@ -274,7 +274,7 @@ async fn eventually(app: &taskboard_app::App, pred: impl Fn(&taskboard_domain::A
 #[allow(clippy::items_after_statements)] // the journey reads as one narrative
 async fn it_nextcloud_docker_cli_standalone_publish() {
     use taskboard_app::commands::boards;
-    use taskboard_app::commands::login;
+    use taskboard_app::commands::connect;
     use taskboard_app::commands::stacks;
     use taskboard_app::commands::tasks;
     use taskboard_app::config::{AppConfig, StorageSection};
@@ -329,16 +329,19 @@ async fn it_nextcloud_docker_cli_standalone_publish() {
         let store: Arc<dyn taskboard_app::secrets::CredentialStore> =
             Arc::new(taskboard_app::secrets::EnvCredentialStore);
         let mut prompts = common::FakePrompts::new(&[&cfg.token]);
-        let receipt = login::run(
+        let receipt = connect::run(
             &config_path,
             raw,
-            Some(cfg.url.clone()),
-            Some(cfg.user.clone()),
+            taskboard_app::commands::connect::ConnectArgs {
+                server: Some(cfg.url.clone()),
+                user: Some(cfg.user.clone()),
+                ..Default::default()
+            },
             &mut prompts,
             &store,
         )
         .await
-        .expect("login verifies");
+        .expect("connect verifies");
         assert!(receipt.verified);
 
         let attached = common::live_config(cfg, &db_path);
@@ -402,7 +405,7 @@ async fn it_nextcloud_docker_cli_editing_push() {
 }
 
 async fn editing_push_journey(cfg: &common::LiveCfg) {
-    use taskboard_app::commands::{boards, labels, login, stacks, sync, tasks};
+    use taskboard_app::commands::{boards, connect, labels, stacks, sync, tasks};
     use taskboard_app::config::{AppConfig, StorageSection};
     use taskboard_domain::TaskChanges;
 
@@ -441,16 +444,19 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     let store: Arc<dyn taskboard_app::secrets::CredentialStore> =
         Arc::new(taskboard_app::secrets::EnvCredentialStore);
     let mut prompts = common::FakePrompts::new(&[&cfg.token]);
-    login::run(
+    connect::run(
         &config_path,
         raw,
-        Some(cfg.url.clone()),
-        Some(cfg.user.clone()),
+        taskboard_app::commands::connect::ConnectArgs {
+            server: Some(cfg.url.clone()),
+            user: Some(cfg.user.clone()),
+            ..Default::default()
+        },
         &mut prompts,
         &store,
     )
     .await
-    .expect("login verifies");
+    .expect("connect verifies");
     let attached = common::live_config(cfg, &db_path);
     let publish = boards::publish(
         attached.clone(),
