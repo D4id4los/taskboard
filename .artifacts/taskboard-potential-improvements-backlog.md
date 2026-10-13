@@ -57,6 +57,11 @@ runner / invocation), symptom, evidence for the flake verdict
   no diagnosis attempted — the gate was re-run instead.
 - **Mitigation applied**: none (re-run). If it recurs, capture the
   failing test name and the `--nocapture` output before re-running.
+- **Cross-reference (2026-10-13)**: investigated as part of the
+  coverage-flake dispatch; the confirmed CI root cause (corrupt profraw
+  aborting the profile merge) is a different symptom family — it fails
+  *after* a green suite, never a test exit 101 — so this occurrence is
+  **separate, unexplained**, and stays on the watchlist.
 
 ### [2026-10-13] CI `Code Coverage` job: corrupt profraw on merge (×3, all tests green)
 
@@ -91,6 +96,33 @@ runner / invocation), symptom, evidence for the flake verdict
   policy: dedicated dispatch plan
   `.artifacts/plans/2026-10-13-coverage-ci-flake-fix-plan.md`
   (investigation + fix, three-stage).
+- **✅ Verdict (2026-10-13, stage-2 investigation)**: root cause
+  confirmed empirically. The coverage build instruments every spawned
+  binary child (daemons, CLI clients, REPLs); the tests legitimately
+  kill such children mid-flight, and a SIGKILL landing inside a
+  process's profile-write window leaves a partially written profraw
+  whose header is invalid — reproduced deliberately at ~1 in 60 kills
+  of the instrumented binary in its first 12 ms, byte-identical error
+  string. `llvm-profdata merge -sparse -f` aborts the entire merge on
+  one invalid input, so a fully green suite still failed the job.
+  Eliminated along the way: cross-process `%m` file sharing (files are
+  pid-unique; slot = pid mod core count), stale/cached profraws
+  (cargo-llvm-cov scrubs the dir pre-run — junk-file probe), tool
+  version drift (CI floated 0.9.1 / nextest 0.9.148 = local), and the
+  "drop `%m`" naming fix (counterfactual: exit-write kills tear files
+  the same way — the write window is unfixable at our layer). **Fix**:
+  the coverage job is split into test phase (`--no-report`) →
+  corrupt-profraw quarantine (`scripts/coverage-quarantine-profraw.sh`,
+  every dropped file logged; a torn file holds no usable coverage) →
+  report (`cargo llvm-cov report`); plus `workflow_dispatch` on
+  `ci.yml` and pinned `cargo-llvm-cov@0.9.1,nextest@0.9.148`. No test
+  changed, no gate downgraded. Evidence: first run on the fix caught
+  and quarantined a real corrupt file that would have failed the job
+  (`taskboard-4749-…_1.profraw`, run 38407784220); **five consecutive
+  green `Code Coverage` runs** on the final config: 38407784220,
+  38408165262, 38408595714, 38408947750, 38409304159. Full evidence:
+  `.artifacts/reports/2026-10-13-coverage-flake-investigation-report.md`.
+  Escalation resolved.
 
 ## [2026-10-07] Add the `slint` dependency to taskboard-ui-slint
 
