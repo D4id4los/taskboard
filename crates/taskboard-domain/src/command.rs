@@ -759,6 +759,7 @@ mod tests {
             labels: [(label(LABEL, true).id, label(LABEL, true))]
                 .into_iter()
                 .collect(),
+            reminders: crate::reminders::ReminderState::default(),
             sync: SyncStatus::default(),
             last_updated: None,
         };
@@ -1755,6 +1756,7 @@ mod tests {
             stacks: std::collections::BTreeMap::new(),
             tasks: std::collections::BTreeMap::new(),
             labels: std::collections::BTreeMap::new(),
+            reminders: crate::reminders::ReminderState::default(),
             sync: SyncStatus::default(),
             last_updated: None,
         };
@@ -1941,6 +1943,7 @@ mod proptests {
                 stacks: persisted.stacks.clone(),
                 tasks: persisted.tasks.clone(),
                 labels: persisted.labels.clone(),
+                reminders: persisted.reminders.clone(),
                 sync: persisted.sync,
                 last_updated: None,
             };

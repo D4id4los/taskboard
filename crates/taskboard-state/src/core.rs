@@ -53,6 +53,7 @@ impl EngineCore {
             stacks: self.state.stacks.clone(),
             tasks: self.state.tasks.clone(),
             labels: self.state.labels.clone(),
+            reminders: self.state.reminders.clone(),
             sync: self.state.sync.clone(),
             last_updated: self.last_updated,
         }

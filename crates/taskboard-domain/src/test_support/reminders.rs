@@ -13,14 +13,13 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, TimeDelta, Utc};
 use proptest::prelude::*;
 
-use super::{app_state_strategy, task_id_strategy, task_strategy, timestamp_strategy};
+use super::{task_id_strategy, task_strategy, timestamp_strategy};
 use crate::entities::Task;
 use crate::ids::{ReminderRuleId, TaskId};
 use crate::reminders::{
     ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey,
     ReminderState,
 };
-use crate::state::AppState;
 
 /// A non-positive offset in `≤ −30 d … 0`: exercises the sign domain
 /// without chrono extremes.
@@ -95,17 +94,6 @@ pub fn reminder_snooze_strategy() -> impl Strategy<Value = ReminderSnooze> {
 pub fn task_map_strategy() -> impl Strategy<Value = BTreeMap<TaskId, Task>> {
     prop::collection::vec(task_strategy(), 1..8)
         .prop_map(|tasks| tasks.into_iter().map(|task| (task.id, task)).collect())
-}
-
-/// An `AppState` paired with a referentially-consistent reminder section
-/// over its tasks — the evaluation-proptest input while the section
-/// travels beside the state (the `AppState` commit folds it into
-/// `app_state_strategy`).
-pub fn app_state_with_reminders_strategy() -> impl Strategy<Value = (AppState, ReminderState)> {
-    (app_state_strategy(), reminder_rows_strategy()).prop_map(|(state, rows)| {
-        let reminders = build_reminders(&state.tasks, rows);
-        (state, reminders)
-    })
 }
 
 /// One raw reminder row; resolved against a generated task map by

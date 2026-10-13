@@ -464,11 +464,12 @@ mod tests {
         ),
     > {
         (
-            test_support::app_state_with_reminders_strategy(),
+            test_support::app_state_strategy(),
             test_support::reminder_offset_strategy(),
             test_support::timestamp_strategy(),
         )
-            .prop_map(|((app, reminders), offset, now)| {
+            .prop_map(|(app, offset, now)| {
+                let reminders = app.reminders.clone();
                 (
                     app.tasks.clone(),
                     reminders,

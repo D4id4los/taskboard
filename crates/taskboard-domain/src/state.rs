@@ -31,6 +31,10 @@ pub struct AppState {
     pub tasks: BTreeMap<TaskId, Task>,
     /// Labels across all boards.
     pub labels: BTreeMap<LabelId, Label>,
+    /// Persisted reminder facts (rules, delivery proofs, snooze links,
+    /// muted tasks); delivered-ness and snoozed-ness are plain
+    /// set-membership checks.
+    pub reminders: crate::reminders::ReminderState,
     /// Current sync status.
     pub sync: SyncStatus,
     /// Time of the last engine mutation from ANY source (local command or
