@@ -131,14 +131,21 @@ pub struct App {
     pub engine: EngineHandle,
     /// The system broadcast (the engine and the sync actor's events).
     pub system: broadcast::Sender<SystemEvent>,
-    /// The sync connector; `None` under the resolved `standalone`
-    /// backend (ADR 0010) — the engine sees the closed-channel world it
-    /// already handles, and every send fails closed. Interior
-    /// mutability for [`App::detach_connector`] (WI-H): the IPC
-    /// dispatcher holds only `&App`. Lifecycle bookkeeping only — the
-    /// mutex is never held across `.await`, and actor messaging stays
-    /// the typed `mpsc` `SyncCommand` channel (AGENTS §3).
-    sync: std::sync::Mutex<Option<SyncActor>>,
+    /// The attached sync connectors (WI-J widened WI-H's
+    /// `Option<SyncActor>` slot). The v1 invariant is length ≤ 1,
+    /// enforced by [`App::attach_connector`]'s guard and by bootstrap
+    /// (zero or one at boot). Lifecycle bookkeeping only — the mutex is
+    /// never held across `.await`, and actor messaging stays the typed
+    /// `mpsc` `SyncCommand` channel (AGENTS §3).
+    connectors: std::sync::Mutex<Vec<SyncActor>>,
+    /// The twin of the engine's permanent reports receiver (design
+    /// §4.2.3): every attached actor spawns with a `clone()`, N actors
+    /// sharing one fan-in inbox, so the engine's select loop needs no
+    /// `reports_open` juggling. Parking a *sender* is semantically inert
+    /// (an empty open channel never fires `recv()`) — but it is the last
+    /// thing holding the linger-drain open, so [`App::shutdown`] drops
+    /// it before the engine join or the drain deadlocks.
+    reports: mpsc::Sender<SyncReport>,
     storage: StorageHandle,
     storage_join: JoinHandle<()>,
     engine_join: JoinHandle<()>,
@@ -163,11 +170,13 @@ impl App {
     ///
     /// # Panics
     ///
-    /// Only if the sync-lifecycle mutex is poisoned by a panic while
+    /// Only if the connector-lifecycle mutex is poisoned by a panic while
     /// held (unreachable: the critical sections never panic).
     #[must_use]
     pub fn sync_commands(&self) -> mpsc::Sender<SyncCommand> {
-        if let Some(actor) = self.sync.lock().expect("sync lock").as_ref() {
+        // v1: at most one connector, so `first()` *is* "the" connector;
+        // N-shape command routing is the multi-connector round's.
+        if let Some(actor) = self.connectors.lock().expect("connector lock").first() {
             actor.commands.clone()
         } else {
             let (tx, rx) = mpsc::channel::<SyncCommand>(1);
@@ -183,11 +192,11 @@ impl App {
     ///
     /// # Panics
     ///
-    /// Only if the sync-lifecycle mutex is poisoned by a panic while
+    /// Only if the connector-lifecycle mutex is poisoned by a panic while
     /// held (unreachable: the critical sections never panic).
     #[must_use]
     pub fn connector_attached(&self) -> bool {
-        self.sync.lock().expect("sync lock").is_some()
+        !self.connectors.lock().expect("connector lock").is_empty()
     }
 
     /// Connector-only detach (WI-H option b): takes the sync actor out,
@@ -196,27 +205,32 @@ impl App {
     /// configured `shutdown_timeout_secs` (abort at the budget — the
     /// credential dies with the task either way). Idempotent: a
     /// `standalone` core or an already-detached one answers
-    /// [`DetachOutcome::NoConnector`]. Post-detach, the engine's own
-    /// nudge sender feeds a closed receiver, so `RequestSync` answers
-    /// `NoOp` and the engine keeps serving local edits.
+    /// [`DetachOutcome::NoConnector`]. Post-detach, the engine's registry
+    /// entry feeds a closed receiver, so its next fan-out prunes it and
+    /// `RequestSync` answers `NoOp`; the engine keeps serving local
+    /// edits.
     ///
     /// # Panics
     ///
-    /// Only if the sync-lifecycle mutex is poisoned by a panic while
-    /// held (unreachable: the critical sections never panic).
+    /// Only if the connector-lifecycle mutex is poisoned by a panic
+    /// while held (unreachable: the critical sections never panic).
     pub async fn detach_connector(&self) -> DetachOutcome {
-        let actor = self.sync.lock().expect("sync lock").take();
-        let Some(actor) = actor else {
+        let actors: Vec<SyncActor> = self
+            .connectors
+            .lock()
+            .expect("connector lock")
+            .drain(..)
+            .collect();
+        if actors.is_empty() {
             tracing::info!("detach: no connector attached");
             return DetachOutcome::NoConnector;
-        };
-        if actor.commands.send(SyncCommand::Detach).await.is_err() {
-            // The actor already exited on its own (e.g. a Shutdown
-            // broadcast): the connector is gone all the same.
-            tracing::info!("detach: sync actor already gone");
         }
         let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
-        if join_bounded(actor.join, timeout, "sync actor").await {
+        let mut aborted = false;
+        for actor in actors {
+            aborted |= stop_actor(actor, timeout).await;
+        }
+        if aborted {
             DetachOutcome::TimedOut
         } else {
             tracing::info!("detach: connector dropped");
@@ -236,28 +250,54 @@ impl App {
     ///
     /// # Panics
     ///
-    /// Only if the sync-lifecycle mutex is poisoned by a panic while
+    /// Only if the connector-lifecycle mutex is poisoned by a panic while
     /// held (unreachable: the critical sections never panic).
     pub async fn shutdown(self) -> ShutdownOutcome {
-        let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
+        // Destructure up front: the parked reports sender's drop below
+        // is structural, not something a field-access cleanup can
+        // reorder by accident.
+        let App {
+            config,
+            engine,
+            system,
+            connectors,
+            reports,
+            storage,
+            storage_join,
+            engine_join,
+            _lock,
+        } = self;
+        let timeout = Duration::from_secs(config.app.shutdown_timeout_secs);
         tracing::info!("shutdown: flushing the engine");
-        self.engine.flush().await;
+        engine.flush().await;
         tracing::info!("shutdown: broadcasting Shutdown");
         // No live receivers is fine (engine-only setups in tests).
-        let _ = self.system.send(SystemEvent::Shutdown);
+        let _ = system.send(SystemEvent::Shutdown);
 
-        // Bound the lock to the take: the guard must never span the
+        // Bound the lock to the drain: the guard must never span a
         // join's `.await`.
-        let actor = self.sync.lock().expect("sync lock").take();
-        let actor_aborted = match actor {
-            Some(actor) => join_bounded(actor.join, timeout, "sync actor").await,
-            None => false,
-        };
-        join_bounded(self.engine_join, timeout, "state engine").await;
+        let actors: Vec<SyncActor> = connectors
+            .lock()
+            .expect("connector lock")
+            .drain(..)
+            .collect();
+        let mut actor_aborted = false;
+        for actor in actors {
+            actor_aborted |= stop_actor(actor, timeout).await;
+        }
+
+        // THE ordering contract: App is the last holder of the reports
+        // inbox's parked sender — every actor's clone died with its join
+        // above — so this drop is what closes the reports channel and
+        // lets the engine's linger-drain finish. Keeping the sender past
+        // this point would hang the engine join to its bounded abort.
+        drop(reports);
+
+        join_bounded(engine_join, timeout, "state engine").await;
 
         tracing::info!("shutdown: stopping the storage actor");
-        drop(self.storage);
-        if let Err(join_err) = self.storage_join.await {
+        drop(storage);
+        if let Err(join_err) = storage_join.await {
             tracing::warn!(?join_err, "storage actor join failed");
         }
         tracing::info!(actor_aborted, "shutdown complete");
@@ -284,6 +324,18 @@ pub enum DetachOutcome {
     /// The actor missed the join budget and was aborted; the credential
     /// died with the task either way.
     TimedOut,
+}
+
+/// Stops one connector actor: sends it `SyncCommand::Detach` (graceful
+/// — an in-flight cycle completes first), then joins it bounded (abort
+/// at the budget). Returns whether the join had to abort.
+async fn stop_actor(actor: SyncActor, timeout: Duration) -> bool {
+    if actor.commands.send(SyncCommand::Detach).await.is_err() {
+        // The actor already exited on its own (e.g. a Shutdown
+        // broadcast): the connector is gone all the same.
+        tracing::info!("sync actor already gone");
+    }
+    join_bounded(actor.join, timeout, "sync actor").await
 }
 
 /// Awaits a join handle with a deadline; on timeout aborts and reaps.
@@ -415,26 +467,30 @@ pub async fn bootstrap(
         }
     };
 
-    let sync = if let Some(client) = client {
+    let connectors = if let Some(client) = client {
         let join = spawn_sync_actor(
             client,
             Arc::new(engine.clone()) as Arc<dyn SyncStateReader>,
             sync_rx,
-            reports,
+            // The actor reports through a clone of the permanently
+            // parked sender (N actors, one fan-in inbox).
+            reports.clone(),
             system.clone(),
             config.sync_actor_config(),
         );
-        Some(SyncActor {
+        vec![SyncActor {
             commands: sync_commands.clone(),
             join,
-        })
+        }]
     } else {
-        // Standalone: the receiver and the report sender are dropped
-        // immediately — the engine sees the closed-channel world its
-        // loop already handles, and its nudges fail closed.
+        // Standalone: the command receiver is dropped immediately — the
+        // engine sees the closed-channel world its loop already
+        // handles, and its nudges fail closed (the boot registry entry
+        // prunes on the first fan-out). The reports sender is *not*
+        // dropped: it parks in `App` (below) as the fan-in inbox's twin
+        // for a later attach.
         drop(sync_rx);
-        drop(reports);
-        None
+        Vec::new()
     };
     tracing::info!("actor graph spawned: storage, state engine");
 
@@ -442,7 +498,8 @@ pub async fn bootstrap(
         config,
         engine,
         system,
-        sync: std::sync::Mutex::new(sync),
+        connectors: std::sync::Mutex::new(connectors),
+        reports,
         storage,
         storage_join,
         engine_join,

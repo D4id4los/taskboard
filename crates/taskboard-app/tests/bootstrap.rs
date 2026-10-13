@@ -605,3 +605,36 @@ async fn b9_detach_connector_is_graceful_idempotent_and_fails_closed() {
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted, "the actor was already joined");
 }
+
+// ---------------------------------------------------------------------
+// WI-J: the connector attach
+// ---------------------------------------------------------------------
+
+/// B13: the shutdown drop-ordering contract (standalone boot). `App` is
+/// the last holder of the permanently parked reports sender; if a
+/// regression keeps it alive past the actor joins, the engine's
+/// linger-drain blocks for the whole `shutdown_timeout_secs` budget and
+/// then aborts the engine — an abort `ShutdownOutcome.actor_aborted`
+/// never reports (it only tracks the sync actor), so the deadline guard
+/// below is the pin: it turns the silent hang back into a failure.
+#[tokio::test]
+async fn b13_standalone_shutdown_drops_the_parked_reports_sender_before_the_engine_join() {
+    let dir = tempdir();
+    let mut config = common::valid_config("https://unused.example.com");
+    config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
+    config.nextcloud.server_url = None;
+    config.nextcloud.username = None;
+    config.storage.db_path = Some(dir.path().join("taskboard.db"));
+    // A generous engine-join budget: the guarded deadline below is far
+    // inside it, so only the ordering violation can trip the timeout.
+    config.app.shutdown_timeout_secs = 30;
+
+    let app = bootstrap(config, Arc::new(common::FakeCredentialStore::default()))
+        .await
+        .expect("standalone boot needs no credentials");
+
+    let outcome = tokio::time::timeout(Duration::from_secs(10), app.shutdown())
+        .await
+        .expect("shutdown completes well inside the engine-join budget");
+    assert!(!outcome.actor_aborted);
+}
