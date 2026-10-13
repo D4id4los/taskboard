@@ -406,7 +406,7 @@ fn outbox_rows() -> impl Strategy<Value = Vec<OutboxRow>> {
 /// [`app_state_strategy`], plus outbox and validators).
 pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
     (
-        app_state_strategy(),
+        super::reminders::app_state_with_reminders_strategy(),
         outbox_rows(),
         prop::option::of(remote_number().prop_map(RemoteBoardId)),
         prop::option::of(string_strategy()),
@@ -417,7 +417,7 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
     )
         .prop_map(
             |(
-                state,
+                (state, reminders),
                 op_rows,
                 validator_board,
                 etag,
@@ -441,6 +441,7 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
                     outbox,
                     validators,
                     sync,
+                    reminders,
                 }
             },
         )

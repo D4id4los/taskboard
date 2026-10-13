@@ -41,3 +41,8 @@ sync:
       last_error: Network
   last_success: ~
   pending_ops: 1
+reminders:
+  rules: {}
+  deliveries: []
+  snoozes: {}
+  muted: []

@@ -125,3 +125,8 @@ sync:
   phase: Idle
   last_success: ~
   pending_ops: 6
+reminders:
+  rules: {}
+  deliveries: []
+  snoozes: {}
+  muted: []

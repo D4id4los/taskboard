@@ -245,6 +245,28 @@ impl ReminderState {
     }
 }
 
+/// Prunes snooze links whose source AND target occurrences are both
+/// delivered: such a link can never influence evaluation again — both
+/// endpoints suppress on their own. The compaction primitive shared by
+/// [`apply_actions`](crate::persistence::apply_actions)' post-batch pass
+/// and the test-support state normalizer; one definition site.
+///
+/// Target-only pruning would be observable: a snoozed-but-undelivered
+/// source would re-arm the moment its target settles. Both-endpoints
+/// pruning is unconditionally unobservable (property-pinned).
+pub fn compact_snooze_chains(reminders: &mut ReminderState) {
+    let keep: Vec<ReminderSnoozeKey> = reminders
+        .snoozes
+        .iter()
+        .filter(|(key, target)| {
+            !(reminders.is_delivered(&key.reminder, &key.occurrence)
+                && reminders.is_delivered(&key.reminder, target))
+        })
+        .map(|(key, _)| *key)
+        .collect();
+    reminders.snoozes.retain(|key, _| keep.contains(key));
+}
+
 /// The instant an explicit rule fires at, given the task's current
 /// due date. `None` ⇔ no due date. Pure in `(offset, duedate)`.
 #[must_use]

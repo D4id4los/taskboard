@@ -501,6 +501,11 @@ impl SqliteTaskRepository {
                 last_success: status_row.last_success,
                 pending_ops,
             },
+            // Read-side parity (chunk 1 ships no reminder tables): with
+            // none yet, an empty section is exactly what the future empty
+            // tables will hydrate — boot behavior identical now and after
+            // the storage chunk.
+            reminders: taskboard_domain::reminders::ReminderState::default(),
         };
         // Read-only transaction: dropping without commit releases the
         // snapshot.
