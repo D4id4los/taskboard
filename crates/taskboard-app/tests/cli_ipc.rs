@@ -493,3 +493,46 @@ async fn e7_detach_connector_flips_a_real_daemons_status() {
 
     drop(daemon);
 }
+
+/// The connect-while-daemon heads-up (connect chunk, D11): a connect
+/// against a db a daemon is serving succeeds (the verb is Local-lane:
+/// no lock, no core) and warns on stderr — structurally: exit 0, the
+/// receipt unchanged, stderr non-empty (the wording is UX). Nothing
+/// listens after `daemon stop`, so the same verb's warning arm is the
+/// silent `None` (the hermetic suites pin that end to end).
+#[tokio::test]
+async fn e8_connect_while_a_daemon_serves_warns_but_succeeds() {
+    let install = Install::new("e8");
+    let daemon = install.spawn_daemon();
+    install.wait_ready().await;
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(
+            "/index.php/apps/deck/api/v1.0/boards",
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(common::boards_json()))
+        .mount(&server)
+        .await;
+
+    // Piped (non-tty) stdin feeds the empty app password, which the
+    // mock accepts; the install is auto-backend so no guard fires.
+    let (code, out, err) = install.run(&[
+        "--json",
+        "connect",
+        "--server",
+        &server.uri(),
+        "--user",
+        "alice",
+    ]);
+    assert_eq!(code, Some(0), "connect succeeded: {err}");
+    let receipt: serde_json::Value = serde_json::from_str(out.trim()).expect("receipt json");
+    assert_eq!(receipt["verified"], true);
+    assert_eq!(receipt["backend_switched"], false);
+    assert!(!err.trim().is_empty(), "the daemon heads-up was written");
+
+    // Stop the daemon; the CLI is unaffected either way.
+    let (stop_code, _, _) = install.run(&["daemon", "stop"]);
+    assert_eq!(stop_code, Some(0));
+    let _ = daemon; // killed on drop if stop raced
+}

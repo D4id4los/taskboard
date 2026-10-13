@@ -429,6 +429,28 @@ fn write_config_overlay(
     std::fs::rename(&tmp, path)
 }
 
+/// The connect-while-daemon heads-up (design §6/D11): whether a daemon
+/// serves this database — a best-effort per-database IPC probe; a
+/// transport failure answers `false` (a dead socket sidecar means
+/// nothing serves — silent, not degraded; the same reading as
+/// `NudgeOutcome::NoDaemon`).
+pub(crate) async fn daemon_serves(db_path: &Path) -> bool {
+    crate::ipc::client::try_connect(db_path).await.is_some()
+}
+
+/// The stderr warning for a served database (D11): the connect *is*
+/// done; this tells the operator the daemon keeps running
+/// connector-less until restarted. `None` when nothing serves —
+/// `--json` runs included (stdout stays one payload; warnings are the
+/// established stderr channel).
+#[must_use]
+pub fn daemon_warning(present: bool) -> Option<&'static str> {
+    present.then_some(
+        "warning: a daemon is serving this database; it keeps running without \
+         the new connection until restarted (or `taskboard daemon stop`)",
+    )
+}
+
 /// The bare variant name of a `DeckError` (log-only; never the secret,
 /// never a wire payload).
 fn deck_variant(err: &DeckError) -> &'static str {
@@ -473,5 +495,14 @@ mod tests {
     fn stdin_prompts_read_confirm_declines_on_non_terminal_stdin() {
         let mut prompts = StdinPrompts;
         assert!(!prompts.read_confirm("probe: ").expect("non-tty decline"));
+    }
+
+    /// D11: the daemon heads-up warns only when a daemon actually
+    /// serves the database (structural both-arms pin; the text is UX,
+    /// never asserted).
+    #[test]
+    fn daemon_warning_covers_both_arms() {
+        assert!(super::daemon_warning(true).is_some());
+        assert!(super::daemon_warning(false).is_none());
     }
 }
