@@ -736,6 +736,17 @@ insta, timestamps only from strategies/fixtures (existing convention).
   muted` (declaration order = snapshot order), placed after `labels` and
   before `sync`. Reason: entity sections before status; matches
   `ReminderState`'s own field order.
+- **D16 (review record, 2026-10-13)** The `snoozes` map key is a named
+  `ReminderSnoozeKey` (`reminder` + `occurrence`) with a stringified
+  serde form (`"rule:<uuid>|<rfc3339>"` — the `ValidatorKey`
+  precedent), not the `(ReminderRef, DateTime<Utc>)` tuple written in
+  §4; `ReminderRef::text_form()` provides the `"rule:<uuid>"` /
+  `"default:<task>"` forms. Reason: JSON map keys must be strings, so
+  the tuple shape cannot roundtrip `ReminderState` through serde_json
+  (P6) or render in the published `AppState` snapshots at all;
+  `text_form` is additionally the storage-codec text form chunk 2's
+  `codec.rs` will reuse (design §9), landed now because the snooze-key
+  encoding needs it. Recorded by stage 3 against the shipped diff.
 
 ## 11. Implementation & commit order (each commit standalone: builds, gates green, one subject)
 
