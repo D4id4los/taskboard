@@ -6,7 +6,7 @@
 //!
 //! Two command classes:
 //!
-//! - **Pre-core** (`login`, `boards list`): config + a [`DeckClient`]
+//! - **Pre-core** (`connect`/`login`, `boards list`): config + a [`DeckClient`]
 //!   only — no actor graph, no database, no instance lock.
 //! - **Core-booting** (`boards select`, `tasks *`, `sync`): one full
 //!   [`bootstrap`](crate::bootstrap) per invocation — boot, work,
@@ -14,8 +14,8 @@
 
 pub mod boards;
 pub mod config;
+pub mod connect;
 pub mod labels;
-pub mod login;
 pub mod logout;
 pub mod output;
 pub mod stacks;
@@ -183,6 +183,16 @@ pub enum CommandError {
     /// No daemon serves this database (`daemon stop` without a daemon).
     #[error("no daemon is serving this database")]
     NoDaemon,
+    /// The config pins `sync.backend = "standalone"` and the flip was
+    /// neither flagged (`connect --switch-backend`) nor confirmed on a
+    /// terminal.
+    #[error("backend is explicitly stand-alone — pass --switch-backend to switch it")]
+    BackendExplicitStandalone,
+    /// A different connection is already configured and the re-point
+    /// was neither forced (`connect --force`) nor confirmed on a
+    /// terminal.
+    #[error("a different connection is already configured — pass --force to re-point it")]
+    ConnectionExists,
     /// The IPC transport failed mid-request (connection death, frame
     /// garbage) — the daemon holds the instance lock, so in-process
     /// fallback would only report `instance-locked`; the typed failure
@@ -259,6 +269,8 @@ impl CommandError {
             Self::LocalBoardExists => "local-board-exists",
             Self::NotConfigured => "not-configured",
             Self::NoDaemon => "no-daemon",
+            Self::BackendExplicitStandalone => "backend-explicit-standalone",
+            Self::ConnectionExists => "connection-exists",
             Self::IpcTransport => "ipc-transport",
             Self::IpcVersion { .. } => "ipc-version",
         }
@@ -655,35 +667,61 @@ where
     }
 }
 
-/// One-shot `login`: resolves the config path (writing one if this is
-/// the first run — with no config anywhere, the XDG config dir),
-/// refuses an explicit `standalone` before any prompting, and persists
-/// the verified connection.
+/// One-shot `login` — the deprecated alias of `connect` (design D1):
+/// one stderr notice, then the *same* ceremony body with the alias's
+/// strictly narrower flag surface (no `--switch-backend`/`--force`, no
+/// interactive confirm — the guards refuse typed, naming `connect`).
+/// Resolves the config path (writing one if this is the first run —
+/// with no config anywhere, the XDG config dir).
 async fn login_command(
     io: &mut CommandIo<'_>,
     config_path: Option<PathBuf>,
     server: Option<String>,
     user: Option<String>,
 ) -> u8 {
+    // First on stderr so the `--json` "last stderr line is the error
+    // envelope" convention survives; the text is UX, never asserted.
+    let _ = writeln!(
+        io.err,
+        "warning: `login` is a deprecated alias of `connect`"
+    );
+    connect_command(
+        io,
+        config_path,
+        connect::ConnectArgs {
+            server,
+            user,
+            switch_backend: false,
+            force: false,
+            confirmable: false,
+        },
+    )
+    .await
+}
+
+/// One-shot `connect`: resolves the config path (writing one if this is
+/// the first run — with no config anywhere, the XDG config dir) and
+/// runs the ceremony with the production prompt reader and store. The
+/// D2/D3 guards live inside the ceremony, where the confirm seam
+/// exists. On success the §6 daemon heads-up probes the per-database
+/// socket — best-effort, never exit-code-relevant.
+async fn connect_command(
+    io: &mut CommandIo<'_>,
+    config_path: Option<PathBuf>,
+    args: connect::ConnectArgs,
+) -> u8 {
     let path = AppConfig::write_path(config_path);
     match AppConfig::extract_raw(Some(&path)) {
         Ok(raw) => {
-            // Explicit `standalone` refuses before any prompting
-            // or store touch; auto behaves as today (and after
-            // login writes `server_url`, auto resolves
-            // `nextcloud`).
-            if raw.sync.backend == Some(SyncBackend::Standalone) {
-                return report_to(io, &CommandError::SyncDisabled);
-            }
             let store = production_store(raw.nextcloud.credential_store);
-            let mut prompts = login::StdinPrompts;
+            let mut prompts = connect::StdinPrompts;
             emit_result(
                 io,
-                login::run(&path, raw, server, user, &mut prompts, &store).await,
-                login::render_text,
+                connect::run(&path, raw, args, &mut prompts, &store).await,
+                connect::render_text,
             )
         }
-        // A not-yet-valid config must not block login (first-run
+        // A not-yet-valid config must not block connect (first-run
         // bootstrap command); undecodable ones still fail.
         Err(err) => report_to(io, &CommandError::from(err)),
     }

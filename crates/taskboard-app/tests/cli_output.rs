@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use taskboard_app::bootstrap::BootstrapError;
 use taskboard_app::commands::CommandError;
 use taskboard_app::commands::output::{
-    BoardsListEntry, ErrorEnvelope, LoginReceipt, MutationReceipt, SelectReceipt, SyncStatusView,
+    BoardsListEntry, ConnectReceipt, ErrorEnvelope, MutationReceipt, SelectReceipt, SyncStatusView,
     TaskList, TaskRow,
 };
 use taskboard_app::config::ConfigError;
@@ -111,20 +111,24 @@ fn o1b_receipt_payloads_expose_documented_fields() {
         assert!(v.get(key).is_some(), "mutation receipt has {key}");
     }
 
-    let login = LoginReceipt {
+    let connect = ConnectReceipt {
         server_url: "https://cloud.example.com".to_owned(),
         username: "alice".to_owned(),
         verified: true,
         stored: "keyring".to_owned(),
+        backend_switched: false,
+        repointed: false,
     };
-    let v = serde_json::to_value(&login).unwrap();
+    let v = serde_json::to_value(&connect).unwrap();
     assert_eq!(
         v,
         json!({
             "server_url": "https://cloud.example.com",
             "username": "alice",
             "verified": true,
-            "stored": "keyring"
+            "stored": "keyring",
+            "backend_switched": false,
+            "repointed": false
         })
     );
 
@@ -232,6 +236,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::LocalBoardExists => "local-board-exists",
             CommandError::NotConfigured => "not-configured",
             CommandError::NoDaemon => "no-daemon",
+            CommandError::BackendExplicitStandalone => "backend-explicit-standalone",
+            CommandError::ConnectionExists => "connection-exists",
             CommandError::IpcTransport => "ipc-transport",
             CommandError::IpcVersion { .. } => "ipc-version",
         }
@@ -274,6 +280,8 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::from(DeckError::BadRequest),
         CommandError::NotConfigured,
         CommandError::NoDaemon,
+        CommandError::BackendExplicitStandalone,
+        CommandError::ConnectionExists,
         CommandError::IpcTransport,
         CommandError::IpcVersion { server_v: 2 },
     ];
@@ -318,11 +326,13 @@ fn o4_login_projection_never_carries_the_secret() {
     // The receipt is built from verified, non-secret values only; the
     // type has no secret field, so the floor holds by construction —
     // format everything a caller could see and assert absence.
-    let receipt = LoginReceipt {
+    let receipt = ConnectReceipt {
         server_url: "https://cloud.example.com".to_owned(),
         username: "alice".to_owned(),
         verified: true,
         stored: "keyring".to_owned(),
+        backend_switched: false,
+        repointed: false,
     };
     let json = serde_json::to_string(&receipt).unwrap();
     assert!(!json.contains(SECRET));
