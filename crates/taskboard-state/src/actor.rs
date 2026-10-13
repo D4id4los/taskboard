@@ -64,6 +64,38 @@ pub enum EngineCommand {
         /// The full persisted shape (outbox, bindings, validators).
         reply: oneshot::Sender<Result<PersistedState, RepositoryError>>,
     },
+    /// Registers a connector's command sender with the nudge registry:
+    /// push, never replace (the engine is connector-count-agnostic; the
+    /// app layer owns the at-most-one guard). The reply settles after the
+    /// push — FIFO over the sequential loop makes the ack the proof that
+    /// every later nudge fans out to this sender (the `Flush` durability
+    /// story).
+    AttachConnector {
+        /// The connector's `SyncCommand` inbox sender.
+        sync_out: mpsc::Sender<SyncCommand>,
+        /// Ack; see [`AttachReceipt`].
+        reply: oneshot::Sender<AttachReceipt>,
+    },
+}
+
+/// The engine's answer to a connector attach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachReceipt {
+    /// The sender is on the nudge registry.
+    Attached,
+    /// Declined: the engine is draining (post-`Shutdown`); the sender
+    /// was not registered.
+    Draining,
+}
+
+/// Typed attach-transport failures: the same event class
+/// [`ExecuteError::EngineGone`] models for `execute`, kept separate
+/// because attach is not a `StateCommand`.
+#[derive(Debug, thiserror::Error)]
+pub enum AttachError {
+    /// The engine loop is stopped (or died before the ack).
+    #[error("state engine unavailable")]
+    EngineGone,
 }
 
 /// Cloneable handle to a running State Engine. Readers never need this
@@ -131,6 +163,26 @@ impl EngineHandle {
             return; // engine gone; nothing left to wait for
         }
         let _ = rx.await;
+    }
+
+    /// Registers a connector's command sender with the engine's nudge
+    /// registry (push, never replace). The receipt settles after the push
+    /// (FIFO): once it arrives, every later nudge fans out to this sender.
+    ///
+    /// # Errors
+    ///
+    /// [`AttachError::EngineGone`] when the engine loop is stopped (or
+    /// died before the ack).
+    pub async fn attach_connector(
+        &self,
+        sync_out: mpsc::Sender<SyncCommand>,
+    ) -> Result<AttachReceipt, AttachError> {
+        let (reply, rx) = oneshot::channel();
+        self.commands
+            .send(EngineCommand::AttachConnector { sync_out, reply })
+            .await
+            .map_err(|_| AttachError::EngineGone)?;
+        rx.await.map_err(|_| AttachError::EngineGone)
     }
 
     /// Subscribes to state-change signals (broadcast).
@@ -259,6 +311,11 @@ async fn run_loop(
     // ok->fail transition (a dying disk fires once per failure epoch,
     // not once per command) and any successful persistence resets it.
     let mut storage_failing = false;
+    // The nudge registry: one entry per registered connector. The boot
+    // entry is the constructor's sender — under `standalone` its
+    // receiver is dropped at boot, so the entry is dead by construction
+    // and the first fan-out prunes it (nudges fail closed either way).
+    let mut sync_outs = vec![sync_out];
     let mut commands_open = true;
     let mut reports_open = true;
     let mut system_open = true;
@@ -294,7 +351,7 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (&repo, ids.as_ref(), clock.as_ref(), &sync_out, &system_out),
+                        (&repo, ids.as_ref(), clock.as_ref(), &mut sync_outs, &system_out),
                         command,
                         reply,
                         &mut storage_failing,
@@ -310,6 +367,17 @@ async fn run_loop(
                 }
                 Some(EngineCommand::ReadState { reply }) => {
                     let _ = reply.send(Ok(core.persisted_view()));
+                }
+                Some(EngineCommand::AttachConnector { sync_out, reply }) => {
+                    if draining {
+                        // Mirrors Execute's decline: no new work — and no
+                        // new connectors — after Shutdown.
+                        tracing::debug!("connector attach declined: engine draining");
+                        let _ = reply.send(AttachReceipt::Draining);
+                    } else {
+                        sync_outs.push(sync_out);
+                        let _ = reply.send(AttachReceipt::Attached);
+                    }
                 }
                 None => commands_open = false,
             },
@@ -355,7 +423,7 @@ async fn run_loop(
                 Ok(SystemEvent::NetworkRestored) if !draining => {
                     // No phase change: the next report is the evidence; a
                     // self-declared "idle" would be a guess.
-                    forward_sync_now(&sync_out);
+                    forward_sync_now(&mut sync_outs);
                 }
                 Ok(SystemEvent::NetworkLost | SystemEvent::NetworkRestored) => {
                     tracing::debug!("network event ignored: engine draining");
@@ -384,12 +452,12 @@ fn publish(
     let _ = signals.send(EngineSignal::StateUpdated);
 }
 
-/// The seams tuple: `(repo, ids, clock, sync_out, system_out)`.
+/// The seams tuple: `(repo, ids, clock, sync_outs, system_out)`.
 type Seams<'a> = (
     &'a Arc<dyn TaskRepository>,
     &'a dyn IdGenerator,
     &'a dyn Clock,
-    &'a mpsc::Sender<SyncCommand>,
+    &'a mut Vec<mpsc::Sender<SyncCommand>>,
     &'a broadcast::Sender<SystemEvent>,
 );
 
@@ -397,7 +465,7 @@ async fn execute_command(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock, sync_out, system_out): Seams<'_>,
+    (repo, ids, clock, sync_outs, system_out): Seams<'_>,
     command: StateCommand,
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
     storage_failing: &mut bool,
@@ -406,7 +474,7 @@ async fn execute_command(
     let now = clock.now();
 
     if let StateCommand::RequestSync = command {
-        let forwarded = forward_sync_now(sync_out);
+        let forwarded = forward_sync_now(sync_outs);
         let outcome = if forwarded {
             if core.mark_syncing() {
                 publish(core, shared, signals);
@@ -465,7 +533,7 @@ async fn execute_command(
         .actions
         .iter()
         .any(|action| matches!(action, PersistenceAction::EnqueueOp(_)));
-    let marked_syncing = enqueued_ops && forward_sync_now(sync_out) && core.mark_syncing();
+    let marked_syncing = enqueued_ops && forward_sync_now(sync_outs) && core.mark_syncing();
     if changed || marked_syncing {
         publish(core, shared, signals);
     }
@@ -474,25 +542,32 @@ async fn execute_command(
     }
 }
 
-/// Fire-and-forget nudge. A dead sync actor is a `debug!` event — no sync
-/// actor exists in engine-only tests, and the Phase 4 actor owns dedupe.
-fn forward_sync_now(sync_out: &mpsc::Sender<SyncCommand>) -> bool {
-    match sync_out.try_send(SyncCommand::SyncNow) {
+/// Fire-and-forget nudge, fanned out to every registered connector.
+/// Forwarded iff any send lands (`Ok`, or `Full` — a full inbox means a
+/// cycle is already pending); `Closed` entries are pruned right here,
+/// one mechanism covering both dead paths: a standalone boot's dropped
+/// receiver and a detached actor's. A dead connector is a `debug!`
+/// event — no connector exists in engine-only tests, and the sync actor
+/// owns dedupe.
+fn forward_sync_now(sync_outs: &mut Vec<mpsc::Sender<SyncCommand>>) -> bool {
+    let mut forwarded = false;
+    sync_outs.retain(|out| match out.try_send(SyncCommand::SyncNow) {
         Ok(()) => {
             tracing::debug!("sync nudge forwarded");
+            forwarded = true;
             true
         }
         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-            // The Phase 4 actor dedupes while a cycle runs; a full inbox
-            // means a cycle is already pending — the nudge did its job.
             tracing::debug!("sync nudge coalesced: channel full");
+            forwarded = true;
             true
         }
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
             tracing::debug!("sync nudge dropped: no sync actor");
             false
         }
-    }
+    });
+    forwarded
 }
 
 async fn ingest_sync_report(

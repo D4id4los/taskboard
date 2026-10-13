@@ -72,6 +72,6 @@ pub(crate) mod actor;
 pub(crate) mod core;
 pub mod error;
 
-pub use actor::{EngineCommand, EngineHandle, spawn_state_engine};
+pub use actor::{AttachError, AttachReceipt, EngineCommand, EngineHandle, spawn_state_engine};
 pub use core::EngineCore;
 pub use error::{EngineStartupError, ExecuteError};
