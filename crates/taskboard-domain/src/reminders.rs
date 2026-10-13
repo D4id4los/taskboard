@@ -86,6 +86,22 @@ impl ReminderRef {
             Self::Default(task) => format!("default:{}", task.as_uuid()),
         }
     }
+
+    /// Parses [`text_form`](ReminderRef::text_form) back. One definition
+    /// site for the text encoding: the snooze-map key serde and the
+    /// storage codec both delegate here.
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        if let Some(id) = raw.strip_prefix("rule:") {
+            return Some(Self::Rule(ReminderRuleId::from(
+                uuid::Uuid::parse_str(id).ok()?,
+            )));
+        }
+        let task = raw.strip_prefix("default:")?;
+        Some(Self::Default(TaskId::from(
+            uuid::Uuid::parse_str(task).ok()?,
+        )))
+    }
 }
 
 /// A reminder rule anchored on a task's due date. N rules per task.
@@ -156,7 +172,7 @@ impl<'de> Deserialize<'de> for ReminderSnoozeKey {
         let (reminder, occurrence) = raw
             .split_once('|')
             .ok_or_else(|| serde::de::Error::custom("invalid snooze key"))?;
-        let reminder = Self::parse_ref(reminder)
+        let reminder = ReminderRef::parse_text_form(reminder)
             .ok_or_else(|| serde::de::Error::custom("invalid snooze key reminder form"))?;
         let occurrence = DateTime::parse_from_rfc3339(occurrence)
             .map_err(|_| serde::de::Error::custom("invalid snooze key occurrence"))?
@@ -165,20 +181,6 @@ impl<'de> Deserialize<'de> for ReminderSnoozeKey {
             reminder,
             occurrence,
         })
-    }
-}
-
-impl ReminderSnoozeKey {
-    fn parse_ref(raw: &str) -> Option<ReminderRef> {
-        if let Some(id) = raw.strip_prefix("rule:") {
-            return Some(ReminderRef::Rule(ReminderRuleId::from_uuid(
-                uuid::Uuid::parse_str(id).ok()?,
-            )));
-        }
-        let task = raw.strip_prefix("default:")?;
-        Some(ReminderRef::Default(TaskId::from_uuid(
-            uuid::Uuid::parse_str(task).ok()?,
-        )))
     }
 }
 
@@ -243,6 +245,44 @@ impl ReminderState {
     ) -> Option<DateTime<Utc>> {
         effective_occurrence(reminder, self, tasks, defaults)
     }
+}
+
+/// Outbound reminder notification: the payload a sink delivers. Title is
+/// a snapshot at fire time (the task may be edited later). Pure data —
+/// the engine's notifier *channel* lives in the actor crates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notification {
+    /// Which reminder fired — correlates a later dismiss/snooze reply
+    /// with this payload (both carry the ref + occurrence).
+    pub reminder: ReminderRef,
+    /// The task it belongs to.
+    pub task: TaskId,
+    /// Title snapshot at fire time.
+    pub title: String,
+    /// The effective occurrence that fired.
+    pub occurrence: DateTime<Utc>,
+}
+
+/// Pure payload assembly: one [`Notification`] per firing, with the
+/// title snapshot from the task map. A firing whose task is missing is
+/// skipped (total on arbitrary input; unreachable through the engine's
+/// sequential tick, which evaluates and assembles in one message).
+#[must_use]
+pub fn notifications_for(
+    firings: &[ReminderFiring],
+    tasks: &BTreeMap<TaskId, Task>,
+) -> Vec<Notification> {
+    firings
+        .iter()
+        .filter_map(|firing| {
+            tasks.get(&firing.task).map(|task| Notification {
+                reminder: firing.reminder,
+                task: firing.task,
+                title: task.title.clone(),
+                occurrence: firing.occurrence,
+            })
+        })
+        .collect()
 }
 
 /// Prunes snooze links whose source AND target occurrences are both
@@ -859,6 +899,80 @@ mod tests {
         assert!(serde_json::from_str::<ReminderSnoozeKey>("\"garbage\"").is_err());
     }
 
+    // ---- Notification payload + text-form parsing (chunk 2) ------------
+
+    #[test]
+    fn reminder_ref_text_form_roundtrips_and_rejects_garbage() {
+        let rule = ref_of(11);
+        let default = ReminderRef::Default(TaskId::from(uuid::Uuid::from_u128(12)));
+        for reminder in [rule, default] {
+            assert_eq!(
+                ReminderRef::parse_text_form(&reminder.text_form()),
+                Some(reminder),
+                "parse is the inverse of text_form"
+            );
+        }
+        for garbage in [
+            "",
+            "garbage",
+            "rule:",
+            "default:",
+            "rule:not-a-uuid",
+            "default:not-a-uuid",
+            "rule:1|default:2",
+        ] {
+            assert_eq!(
+                ReminderRef::parse_text_form(garbage),
+                None,
+                "{garbage:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn notification_roundtrips_through_serde() {
+        let notification = Notification {
+            reminder: ref_of(3),
+            task: TaskId::from(uuid::Uuid::from_u128(4)),
+            title: "ship it".into(),
+            occurrence: ts(1_000),
+        };
+        let back: Notification =
+            serde_json::from_str(&serde_json::to_string(&notification).unwrap()).unwrap();
+        assert_eq!(back, notification);
+    }
+
+    #[test]
+    fn notifications_for_snapshots_titles_and_skips_missing_tasks() {
+        let task = live_task(1, Some(ts(500)), 0);
+        let tasks = BTreeMap::from([(task.id, task.clone())]);
+        let stranger = TaskId::from(uuid::Uuid::from_u128(999));
+        let firings = vec![
+            ReminderFiring {
+                reminder: ref_of(10),
+                task: task.id,
+                occurrence: ts(400),
+            },
+            ReminderFiring {
+                reminder: ReminderRef::Default(stranger),
+                task: stranger,
+                occurrence: ts(401),
+            },
+        ];
+        let notes = notifications_for(&firings, &tasks);
+        assert_eq!(
+            notes,
+            vec![Notification {
+                reminder: ref_of(10),
+                task: task.id,
+                title: task.title.clone(),
+                occurrence: ts(400),
+            }],
+            "one payload per firing with a live task; the missing task is skipped"
+        );
+        assert_eq!(notifications_for(&[], &tasks), Vec::new());
+    }
+
     proptest! {
         #![proptest_config(test_support::proptest_config(256))]
 
@@ -914,6 +1028,40 @@ mod tests {
             let back: ReminderState =
                 serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
             prop_assert_eq!(back, state);
+        }
+
+        #[test]
+        fn notifications_for_matches_the_firings_and_the_task_map(
+            tasks in test_support::task_map_strategy(),
+            occurrences in prop::collection::vec(test_support::timestamp_strategy(), 1..8),
+            any_ref in test_support::reminder_ref_strategy(),
+            stranger in test_support::task_id_strategy(),
+        ) {
+            // The first firing references a task absent from the map (its
+            // payload must be skipped); the rest reference a present task
+            // and must mirror their firing triple + the map's title.
+            let anchor = *tasks.keys().next().unwrap();
+            let mut firings = Vec::new();
+            firings.push(ReminderFiring {
+                reminder: any_ref,
+                task: stranger,
+                occurrence: occurrences[0],
+            });
+            for occurrence in &occurrences[1..] {
+                firings.push(ReminderFiring {
+                    reminder: any_ref,
+                    task: anchor,
+                    occurrence: *occurrence,
+                });
+            }
+            let notes = notifications_for(&firings, &tasks);
+            prop_assert_eq!(notes.len() + 1, firings.len());
+            for (note, firing) in notes.iter().zip(&firings[1..]) {
+                prop_assert_eq!(note.reminder, firing.reminder);
+                prop_assert_eq!(note.task, firing.task);
+                prop_assert_eq!(note.occurrence, firing.occurrence);
+                prop_assert_eq!(&note.title, &tasks[&firing.task].title);
+            }
         }
     }
 }
