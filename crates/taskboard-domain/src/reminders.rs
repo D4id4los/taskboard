@@ -15,6 +15,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::entities::Task;
 use crate::ids::{ReminderRuleId, TaskId};
 
 /// A due-anchored offset that can only be "at or before" the due date:
@@ -230,6 +231,160 @@ impl ReminderState {
             .iter()
             .any(|d| &d.reminder == reminder && &d.occurrence == occurrence)
     }
+
+    /// Effective occurrence of this reminder: the base occurrence, or
+    /// wherever the snooze chain has moved it (see [`effective_occurrence`]).
+    #[must_use]
+    pub fn effective_occurrence(
+        &self,
+        reminder: &ReminderRef,
+        tasks: &BTreeMap<TaskId, Task>,
+        defaults: &ReminderDefaults,
+    ) -> Option<DateTime<Utc>> {
+        effective_occurrence(reminder, self, tasks, defaults)
+    }
+}
+
+/// The instant an explicit rule fires at, given the task's current
+/// due date. `None` ⇔ no due date. Pure in `(offset, duedate)`.
+#[must_use]
+pub fn occurrence_of(rule: &ReminderRule, duedate: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    duedate.map(|d| d + rule.offset.as_duration())
+}
+
+/// Effective occurrence of any reminder (explicit or default): the base
+/// occurrence, or wherever the snooze chain has moved it. The chain walk
+/// is cycle-bounded (a `visited` set): on a cyclic link chain —
+/// unsanctionable data that no sanctioned write can produce — the walk
+/// stops at the last node before the repeat, keeping the evaluator total
+/// on arbitrary input.
+#[must_use]
+pub fn effective_occurrence(
+    reminder: &ReminderRef,
+    reminders: &ReminderState,
+    tasks: &BTreeMap<TaskId, Task>,
+    defaults: &ReminderDefaults,
+) -> Option<DateTime<Utc>> {
+    let base = base_occurrence(reminder, reminders, tasks, defaults)?;
+    let mut effective = base;
+    let mut visited = BTreeSet::new();
+    visited.insert(base);
+    while let Some(&target) = reminders.snoozes.get(&ReminderSnoozeKey {
+        reminder: *reminder,
+        occurrence: effective,
+    }) {
+        if !visited.insert(target) {
+            break;
+        }
+        effective = target;
+    }
+    Some(effective)
+}
+
+fn base_occurrence(
+    reminder: &ReminderRef,
+    reminders: &ReminderState,
+    tasks: &BTreeMap<TaskId, Task>,
+    defaults: &ReminderDefaults,
+) -> Option<DateTime<Utc>> {
+    match *reminder {
+        ReminderRef::Rule(id) => {
+            let rule = reminders.rules.get(&id)?;
+            occurrence_of(rule, tasks.get(&rule.task)?.duedate)
+        }
+        ReminderRef::Default(task) => {
+            let duedate = tasks.get(&task)?.duedate?;
+            Some(duedate + defaults.default_before.as_duration())
+        }
+    }
+}
+
+/// Everything that must fire at `now`: explicit rules plus implicit
+/// defaults, occurrence-keyed, snooze- and mute-aware. Sorted by
+/// `(occurrence, reminder)` — a total order, so output is fully
+/// deterministic.
+///
+/// Eligibility: the task must be live and open with a due date and not
+/// muted; a task's explicit rules (in rule-id order) replace its
+/// implicit default. A reminder fires iff its effective occurrence is ≤
+/// `now` and undelivered.
+#[must_use]
+pub fn due_firings(
+    tasks: &BTreeMap<TaskId, Task>,
+    reminders: &ReminderState,
+    defaults: &ReminderDefaults,
+    now: DateTime<Utc>,
+) -> Vec<ReminderFiring> {
+    let mut firings = Vec::new();
+    for task in tasks.values() {
+        if !is_remindable(task) || reminders.muted.contains(&task.id) {
+            continue;
+        }
+        let rules: Vec<&ReminderRule> = reminders
+            .rules
+            .values()
+            .filter(|rule| rule.task == task.id)
+            .collect();
+        let candidates: Vec<ReminderRef> = if rules.is_empty() {
+            // Explicit rules replace the default — derived, nothing stored.
+            vec![ReminderRef::Default(task.id)]
+        } else {
+            rules.iter().map(|r| ReminderRef::Rule(r.id)).collect()
+        };
+        for reminder in candidates {
+            if let Some(effective) = reminders.effective_occurrence(&reminder, tasks, defaults)
+                && effective <= now
+                && !reminders.is_delivered(&reminder, &effective)
+            {
+                firings.push(ReminderFiring {
+                    reminder,
+                    task: task.id,
+                    occurrence: effective,
+                });
+            }
+        }
+    }
+    firings.sort_by_key(|f| (f.occurrence, f.reminder));
+    firings
+}
+
+/// Kiosk banner: live, open tasks with due date < `now`, in canonical
+/// order (`(order, id)` — the `AppState::live_tasks` comparator).
+/// Ignores rules, deliveries, snoozes, and mute — board truth, not
+/// nagging policy.
+#[must_use]
+pub fn overdue_tasks(tasks: &BTreeMap<TaskId, Task>, now: DateTime<Utc>) -> Vec<&Task> {
+    filter_sorted(tasks, |t| {
+        t.is_live() && t.is_open() && t.duedate.is_some_and(|d| d < now)
+    })
+}
+
+/// Desktop "due soon" strip: same eligibility, due date in
+/// `(now, now + horizon]`.
+#[must_use]
+pub fn due_soon(
+    tasks: &BTreeMap<TaskId, Task>,
+    now: DateTime<Utc>,
+    horizon: chrono::TimeDelta,
+) -> Vec<&Task> {
+    filter_sorted(tasks, |t| {
+        t.is_live() && t.is_open() && t.duedate.is_some_and(|d| d > now && d <= now + horizon)
+    })
+}
+
+/// The firing/banner eligibility filter: not tombstoned, not completed,
+/// has a due date. Mute is a firings-only concern and lives in
+/// [`due_firings`].
+fn is_remindable(task: &Task) -> bool {
+    task.is_live() && task.is_open() && task.duedate.is_some()
+}
+
+/// Shared banner/strip filter + the canonical `(order, id)` sort. Pinned
+/// by property to `AppState::live_tasks`' comparator.
+fn filter_sorted(tasks: &BTreeMap<TaskId, Task>, keep: impl Fn(&Task) -> bool) -> Vec<&Task> {
+    let mut picked: Vec<&Task> = tasks.values().filter(|t| keep(t)).collect();
+    picked.sort_by_key(|t| (t.order, t.id));
+    picked
 }
 
 #[cfg(test)]
@@ -245,6 +400,347 @@ mod tests {
 
     fn ref_of(raw: u128) -> ReminderRef {
         ReminderRef::Rule(ReminderRuleId::from(uuid::Uuid::from_u128(raw)))
+    }
+
+    // ---- Evaluation (P1-P4, P7, P8) -----------------------------------
+
+    fn live_task(raw: u128, duedate: Option<DateTime<Utc>>, order: i64) -> Task {
+        Task {
+            id: TaskId::from(uuid::Uuid::from_u128(raw)),
+            remote: None,
+            title: format!("task {raw}"),
+            description: String::new(),
+            duedate,
+            done: None,
+            stack: crate::ids::StackId::from(uuid::Uuid::from_u128(1)),
+            order,
+            labels: BTreeSet::default(),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::TaskClocks {
+                title: ts(100),
+                description: ts(100),
+                duedate: ts(100),
+                done: ts(100),
+                position: ts(100),
+                labels: ts(100),
+                archived: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        }
+    }
+
+    /// The evaluation-proptest input: referentially-consistent
+    /// `(tasks, reminders)` plus injected defaults and `now`.
+    fn eval_input() -> impl proptest::strategy::Strategy<
+        Value = (
+            std::collections::BTreeMap<TaskId, Task>,
+            ReminderState,
+            ReminderDefaults,
+            DateTime<Utc>,
+        ),
+    > {
+        (
+            test_support::app_state_with_reminders_strategy(),
+            test_support::reminder_offset_strategy(),
+            test_support::timestamp_strategy(),
+        )
+            .prop_map(|((app, reminders), offset, now)| {
+                (
+                    app.tasks.clone(),
+                    reminders,
+                    ReminderDefaults {
+                        default_before: offset,
+                    },
+                    now,
+                )
+            })
+    }
+
+    /// Independent re-derivation of the eligible set: does not call
+    /// `effective_occurrence` or `due_firings` — walks base occurrence
+    /// and the snooze chain by hand.
+    fn expected_firings(
+        tasks: &std::collections::BTreeMap<TaskId, Task>,
+        reminders: &ReminderState,
+        defaults: &ReminderDefaults,
+        now: DateTime<Utc>,
+    ) -> Vec<(DateTime<Utc>, ReminderRef)> {
+        let mut expected = Vec::new();
+        for task in tasks.values() {
+            if !(task.is_live() && task.is_open() && task.duedate.is_some()) {
+                continue;
+            }
+            if reminders.muted.contains(&task.id) {
+                continue;
+            }
+            let mut rule_refs: Vec<ReminderRef> = reminders
+                .rules
+                .values()
+                .filter(|r| r.task == task.id)
+                .map(|r| ReminderRef::Rule(r.id))
+                .collect();
+            if rule_refs.is_empty() {
+                rule_refs.push(ReminderRef::Default(task.id));
+            }
+            for reminder in rule_refs {
+                let base = match reminder {
+                    ReminderRef::Rule(id) => {
+                        let Some(rule) = reminders.rules.get(&id) else {
+                            continue;
+                        };
+                        let Some(duedate) = tasks.get(&rule.task).and_then(|t| t.duedate) else {
+                            continue;
+                        };
+                        duedate + rule.offset.as_duration()
+                    }
+                    ReminderRef::Default(task_id) => {
+                        let Some(duedate) = tasks.get(&task_id).and_then(|t| t.duedate) else {
+                            continue;
+                        };
+                        duedate + defaults.default_before.as_duration()
+                    }
+                };
+                // Hand-rolled snooze walk (stops at first repeat).
+                let mut effective = base;
+                let mut seen = BTreeSet::from([base]);
+                while let Some(&target) = reminders.snoozes.get(&ReminderSnoozeKey {
+                    reminder,
+                    occurrence: effective,
+                }) {
+                    if !seen.insert(target) {
+                        break;
+                    }
+                    effective = target;
+                }
+                if effective <= now && !reminders.is_delivered(&reminder, &effective) {
+                    expected.push((effective, reminder));
+                }
+            }
+        }
+        expected.sort();
+        expected
+    }
+
+    proptest! {
+        #![proptest_config(test_support::proptest_config(256))]
+
+        #[test]
+        fn p1_settled_firings_never_refire(
+            (tasks, reminders, defaults, now) in eval_input(),
+        ) {
+            let f1 = due_firings(&tasks, &reminders, &defaults, now);
+            for f in &f1 {
+                prop_assert!(!reminders.is_delivered(&f.reminder, &f.occurrence));
+            }
+            let mut settled = reminders.clone();
+            for f in &f1 {
+                settled.deliveries.insert(ReminderDelivery {
+                    reminder: f.reminder,
+                    occurrence: f.occurrence,
+                    delivered_at: now,
+                });
+            }
+            let f2 = due_firings(&tasks, &settled, &defaults, now);
+            prop_assert!(f2.is_empty(), "settled firings must not re-fire at the same now");
+        }
+
+        #[test]
+        fn p2_due_firings_equal_the_independently_derived_set(
+            (tasks, reminders, defaults, now) in eval_input(),
+        ) {
+            let got: Vec<(DateTime<Utc>, ReminderRef)> = due_firings(&tasks, &reminders, &defaults, now)
+                .into_iter()
+                .map(|f| (f.occurrence, f.reminder))
+                .collect();
+            prop_assert_eq!(expected_firings(&tasks, &reminders, &defaults, now), got);
+        }
+
+        #[test]
+        fn p3_occurrence_is_monotone_in_the_duedate(
+            rule in test_support::reminder_rule_strategy(),
+            d1 in test_support::timestamp_strategy(),
+            d2 in test_support::timestamp_strategy(),
+        ) {
+            let (early, late) = if d1 <= d2 { (d1, d2) } else { (d2, d1) };
+            prop_assert!(occurrence_of(&rule, Some(early)) <= occurrence_of(&rule, Some(late)));
+            prop_assert_eq!(
+                occurrence_of(&rule, Some(early)),
+                Some(early + rule.offset.as_duration())
+            );
+            prop_assert_eq!(occurrence_of(&rule, None), None);
+        }
+
+        #[test]
+        fn p4_overdue_equals_the_canonically_sorted_eligible_set(
+            (tasks, reminders, defaults, now) in eval_input(),
+        ) {
+            let _ = reminders;
+            let _ = defaults;
+            let mut expected: Vec<TaskId> = tasks
+                .values()
+                .filter(|t| t.is_live() && t.is_open() && t.duedate.is_some_and(|d| d < now))
+                .map(|t| t.id)
+                .collect();
+            expected.sort_by_key(|id| (tasks[id].order, *id));
+            let got = overdue_tasks(&tasks, now);
+            prop_assert_eq!(got.iter().map(|t| t.id).collect::<Vec<_>>(), expected);
+        }
+
+        #[test]
+        fn p7_snoozed_occurrence_is_suppressed_until_its_target(
+            offset in test_support::reminder_offset_strategy(),
+            now in test_support::timestamp_strategy(),
+            postpone_secs in 1_i64..=3_600,
+            probe_secs in 0_i64..3_600,
+            use_rule in any::<bool>(),
+        ) {
+            let postpone = chrono::TimeDelta::try_seconds(postpone_secs).unwrap();
+            let task = live_task(1, Some(now), 0);
+            let tasks = BTreeMap::from([(task.id, task.clone())]);
+            let defaults = ReminderDefaults { default_before: offset };
+            let mut reminders = ReminderState::default();
+            let reminder = if use_rule {
+                let rule = ReminderRule {
+                    id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+                    task: task.id,
+                    offset,
+                    created_at: now,
+                };
+                let r = ReminderRef::Rule(rule.id);
+                reminders.rules.insert(rule.id, rule);
+                r
+            } else {
+                ReminderRef::Default(task.id)
+            };
+            let base = reminders.effective_occurrence(&reminder, &tasks, &defaults).unwrap();
+            prop_assert!(base <= now);
+            reminders
+                .snoozes
+                .insert(ReminderSnoozeKey { reminder, occurrence: base }, now + postpone);
+
+            // Any instant before the target: suppressed.
+            let probe = now + chrono::TimeDelta::try_seconds(probe_secs).unwrap().min(postpone - chrono::TimeDelta::try_seconds(1).unwrap());
+            let during = due_firings(&tasks, &reminders, &defaults, probe);
+            prop_assert!(during.is_empty(), "snoozed reminder must not fire before its target");
+
+            // At the target: fires (undelivered), then settles forever.
+            let at_target = due_firings(&tasks, &reminders, &defaults, now + postpone);
+            prop_assert_eq!(
+                at_target.iter().map(|f| f.reminder).collect::<Vec<_>>(),
+                vec![reminder]
+            );
+            reminders.deliveries.insert(ReminderDelivery {
+                reminder,
+                occurrence: now + postpone,
+                delivered_at: now + postpone,
+            });
+            prop_assert!(due_firings(&tasks, &reminders, &defaults, now + postpone).is_empty());
+            prop_assert!(
+                due_firings(&tasks, &reminders, &defaults, now + postpone * 2).is_empty()
+            );
+        }
+
+        #[test]
+        fn p8_muted_tasks_never_fire_but_stay_in_the_banner(
+            (tasks, mut reminders, defaults, now) in eval_input(),
+        ) {
+            let overdue: Vec<TaskId> = tasks
+                .values()
+                .filter(|t| t.is_live() && t.is_open() && t.duedate.is_some_and(|d| d < now))
+                .map(|t| t.id)
+                .collect();
+            reminders.muted = overdue.iter().copied().collect();
+            let fired: Vec<TaskId> = due_firings(&tasks, &reminders, &defaults, now)
+                .into_iter()
+                .map(|f| f.task)
+                .collect();
+            prop_assert!(fired.iter().all(|t| !reminders.muted.contains(t)));
+            // Banner truth ignores mute entirely.
+            let banner: BTreeSet<TaskId> =
+                overdue_tasks(&tasks, now).into_iter().map(|t| t.id).collect();
+            prop_assert_eq!(banner, overdue.into_iter().collect::<BTreeSet<_>>());
+        }
+    }
+
+    #[test]
+    fn due_soon_window_is_half_open_at_both_edges() {
+        let now = ts(10_000);
+        let horizon = chrono::TimeDelta::try_minutes(5).unwrap();
+        let task =
+            |raw: u128, duedate: Option<DateTime<Utc>>, order: i64| live_task(raw, duedate, order);
+        let tasks = BTreeMap::from([
+            (uuid::Uuid::from_u128(1), task(1, Some(now), 0)), // at now: below window
+            (
+                uuid::Uuid::from_u128(2),
+                task(2, Some(now + horizon), 1), // at horizon: inside
+            ),
+            (
+                uuid::Uuid::from_u128(3),
+                task(
+                    3,
+                    Some(now + horizon + chrono::TimeDelta::try_seconds(1).unwrap()),
+                    2,
+                ), // past horizon
+            ),
+            (
+                uuid::Uuid::from_u128(4),
+                task(4, Some(now + chrono::TimeDelta::try_seconds(1).unwrap()), 3), // just above now: inside
+            ),
+        ]);
+        let tasks: BTreeMap<TaskId, Task> = tasks.into_values().map(|t| (t.id, t)).collect();
+        let soon: Vec<TaskId> = due_soon(&tasks, now, horizon)
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        let in_window: Vec<TaskId> = vec![
+            TaskId::from(uuid::Uuid::from_u128(2)),
+            TaskId::from(uuid::Uuid::from_u128(4)),
+        ];
+        assert_eq!(soon, in_window);
+        // Completed and tombstoned tasks never appear.
+        let mut closed = live_task(9, Some(now + chrono::TimeDelta::try_minutes(1).unwrap()), 4);
+        closed.done = Some(now);
+        let mut tomb = live_task(8, Some(now + chrono::TimeDelta::try_minutes(1).unwrap()), 5);
+        tomb.deleted = true;
+        let tasks: BTreeMap<TaskId, Task> = BTreeMap::from([(closed.id, closed), (tomb.id, tomb)]);
+        assert_eq!(due_soon(&tasks, now, horizon), Vec::<&Task>::new());
+        assert_eq!(overdue_tasks(&tasks, now), Vec::<&Task>::new());
+    }
+
+    #[test]
+    fn due_firings_are_sorted_by_occurrence_then_reminder() {
+        let now = ts(20_000);
+        let task_a = live_task(1, Some(ts(1_000)), 5);
+        let task_b = live_task(2, Some(ts(2_000)), 1);
+        let tasks = BTreeMap::from([(task_a.id, task_a.clone()), (task_b.id, task_b.clone())]);
+        let mut reminders = ReminderState::default();
+        // task_a (later order) fires earlier: output must not follow task order.
+        let rule_a = ReminderRule {
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+            task: task_a.id,
+            offset: ReminderOffset::at_due(),
+            created_at: ts(100),
+        };
+        let rule_b = ReminderRule {
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(11)),
+            task: task_b.id,
+            offset: ReminderOffset::at_due(),
+            created_at: ts(100),
+        };
+        reminders.rules.insert(rule_a.id, rule_a);
+        reminders.rules.insert(rule_b.id, rule_b);
+        let firings = due_firings(&tasks, &reminders, &ReminderDefaults::default(), now);
+        let occurrences: Vec<DateTime<Utc>> = firings.iter().map(|f| f.occurrence).collect();
+        assert_eq!(
+            occurrences,
+            vec![ts(1_000), ts(2_000)],
+            "sorted by occurrence, not task or rule order"
+        );
+        for pair in firings.windows(2) {
+            assert!(pair[0] < pair[1], "total (occurrence, reminder) order");
+        }
     }
 
     #[test]
