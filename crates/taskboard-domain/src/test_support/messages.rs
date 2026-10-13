@@ -91,7 +91,28 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
         }),
         string_strategy().prop_map(|title| StateCommand::RenameBoard { title }),
         super::remote_board_id_strategy().prop_map(|remote| StateCommand::BindBoard { remote }),
+        // 2: reminder commands
+        (
+            super::reminders::reminder_ref_strategy(),
+            super::timestamp_strategy(),
+            snooze_postpone_strategy(),
+        )
+            .prop_map(
+                |(reminder, occurrence, postpone)| StateCommand::SnoozeReminder {
+                    reminder,
+                    occurrence,
+                    postpone,
+                }
+            ),
+        (super::task_id_strategy(), any::<bool>())
+            .prop_map(|(task, muted)| StateCommand::SetTaskRemindersMuted { task, muted }),
         // 1: sync request
         Just(StateCommand::RequestSync),
     ]
+}
+
+/// A bounded positive postpone (1 s … 24 h): the planner rejects
+/// non-positive ones, so the strategy feeds only the accepted sign domain.
+fn snooze_postpone_strategy() -> impl Strategy<Value = chrono::TimeDelta> {
+    (1_i64..=86_400).prop_map(|secs| chrono::TimeDelta::try_seconds(secs).unwrap())
 }

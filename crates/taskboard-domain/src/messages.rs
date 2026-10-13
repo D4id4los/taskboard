@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::entities::Color;
 use crate::ids::{LabelId, RemoteBoardId, StackId, TaskId};
+use crate::reminders::ReminderRef;
 use crate::remote::{PushOutcome, RemoteBoardSnapshot};
 use crate::state::SyncErrorKind;
 
@@ -135,6 +136,26 @@ pub enum StateCommand {
     RenameBoard {
         /// New title.
         title: String,
+    },
+    /// Snooze a fired reminder occurrence: reschedule it to
+    /// `now + postpone` (engine-stamped via the injected clock). The
+    /// occurrence is opaque link data — a stale link is inert by map
+    /// semantics, so no effective-occurrence check is made.
+    SnoozeReminder {
+        /// Which reminder was snoozed.
+        reminder: ReminderRef,
+        /// The occurrence being snoozed.
+        occurrence: chrono::DateTime<chrono::Utc>,
+        /// How far to push the occurrence out (must be positive).
+        postpone: chrono::TimeDelta,
+    },
+    /// Mute (`true`) or unmute (`false`) all firings of a task. The
+    /// overdue banner is unaffected (board truth, not nagging policy).
+    SetTaskRemindersMuted {
+        /// The task whose firings are muted or unmuted.
+        task: TaskId,
+        /// `true` = mute, `false` = unmute.
+        muted: bool,
     },
     /// User-visible refresh request; the engine forwards it to the sync
     /// actor.

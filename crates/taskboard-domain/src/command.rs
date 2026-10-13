@@ -32,10 +32,11 @@ use chrono::{DateTime, Utc};
 
 use crate::entities::{Label, Stack, Task, TaskClocks};
 use crate::idgen::IdGenerator;
-use crate::ids::{BoardId, LabelId, RemoteBoardId, StackId, TaskId};
+use crate::ids::{BoardId, LabelId, ReminderRuleId, RemoteBoardId, StackId, TaskId};
 use crate::messages::{LabelChanges, StateCommand, TaskChanges};
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
+use crate::reminders::{ReminderRef, ReminderSnooze};
 use crate::state::AppState;
 
 /// A planned command: the persistence batch and the user-facing receipt.
@@ -81,6 +82,13 @@ pub enum CommandError {
     /// the bind target).
     #[error("the board is already bound to a remote board")]
     BoardAlreadyBound(RemoteBoardId),
+    /// No reminder rule with this id exists.
+    #[error("unknown reminder rule")]
+    UnknownReminderRule(ReminderRuleId),
+    /// A snooze postpone must be positive ("snooze" that does not move
+    /// the occurrence forward is not a snooze).
+    #[error("snooze postpone must be positive")]
+    InvalidSnoozePostpone,
 }
 
 /// Typed receipt of an accepted command.
@@ -178,6 +186,18 @@ fn label_ops(outbox: &[PendingOp], label: LabelId) -> Vec<OpId> {
         .filter(|pending| op_targets_label(&pending.op, label))
         .map(|pending| pending.op_id)
         .collect()
+}
+
+/// The D-c delete cascade: every rule watching `task` is tombstoned with
+/// it (rule ids are known — no id-generator involvement). Deliveries,
+/// snooze links, and the task's mute entry stay: inert while the task is
+/// dead (the evaluator requires live + open).
+fn task_rule_deletes(app: &AppState, task: TaskId) -> impl Iterator<Item = PersistenceAction> {
+    app.reminders
+        .rules
+        .values()
+        .filter(move |rule| rule.task == task)
+        .map(|rule| PersistenceAction::DeleteReminderRule(rule.id))
 }
 
 /// Plans one local command against the current view.
@@ -304,6 +324,8 @@ pub fn plan_command(
             // The binding survives until the push confirms (R9c).
             updated.clocks.deleted = now;
             let mut actions = vec![PersistenceAction::UpsertTask(updated)];
+            // D-c: the task's reminder rules cannot outlive it.
+            actions.extend(task_rule_deletes(app, *id));
             if task.remote.is_some() {
                 actions.push(enqueue(LocalOp::DeleteTask(*id), ids, now));
             } else {
@@ -403,6 +425,8 @@ pub fn plan_command(
                 tombstoned.deleted = true;
                 tombstoned.clocks.deleted = now;
                 actions.push(PersistenceAction::UpsertTask(tombstoned));
+                // D-c: the cascade tombstones the task's reminder rules too.
+                actions.extend(task_rule_deletes(app, task.id));
                 if task.remote.is_some() {
                     actions.push(enqueue(LocalOp::DeleteTask(task.id), ids, now));
                 } else {
@@ -581,6 +605,54 @@ pub fn plan_command(
             updated.remote = Some(*remote);
             Ok(CommandPlan {
                 actions: vec![PersistenceAction::UpsertBoard(updated)],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::SnoozeReminder {
+            reminder,
+            occurrence,
+            postpone,
+        } => {
+            // Edit-style intent: snoozing a dead task's reminder is a
+            // rejection, not a meaningless-redundant repeat.
+            let task = match *reminder {
+                ReminderRef::Rule(rule_id) => {
+                    let rule = app
+                        .reminders
+                        .rules
+                        .get(&rule_id)
+                        .ok_or(CommandError::UnknownReminderRule(rule_id))?;
+                    rule.task
+                }
+                ReminderRef::Default(task) => task,
+            };
+            live_task(app, task)?;
+            if *postpone <= chrono::TimeDelta::zero() {
+                return Err(CommandError::InvalidSnoozePostpone);
+            }
+            // Total arithmetic: an unrepresentable target saturates at
+            // chrono's ceiling instead of panicking the planner.
+            let rescheduled_to = now
+                .checked_add_signed(*postpone)
+                .unwrap_or(DateTime::<Utc>::MAX_UTC);
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::RecordReminderSnooze(ReminderSnooze {
+                    reminder: *reminder,
+                    occurrence: *occurrence,
+                    rescheduled_to,
+                })],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::SetTaskRemindersMuted { task, muted } => {
+            // Existence before the membership guard, like every other
+            // command.
+            live_task(app, *task)?;
+            if app.reminders.muted.contains(task) == *muted {
+                return Ok(no_op());
+            }
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::SetTaskRemindersMuted(*task, *muted)],
                 outcome: CommandOutcome::Applied,
             })
         }
@@ -1890,6 +1962,289 @@ mod tests {
         let plan = run(&app, &outbox, &StateCommand::RequestSync).unwrap();
         assert_eq!(plan.outcome, CommandOutcome::SyncRequested);
         assert!(plan.actions.is_empty(), "no-op must carry zero actions");
+    }
+
+    // ---- SnoozeReminder / SetTaskRemindersMuted ------------------------
+
+    fn reminder_rule(raw: u64, task: TaskId) -> crate::reminders::ReminderRule {
+        crate::reminders::ReminderRule {
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(u128::from(raw))),
+            task,
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: now(),
+        }
+    }
+
+    fn with_rules(app: &mut AppState, rules: &[crate::reminders::ReminderRule]) {
+        for rule in rules {
+            app.reminders.rules.insert(rule.id, rule.clone());
+        }
+    }
+
+    fn rule_id(raw: u64) -> crate::ids::ReminderRuleId {
+        crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(u128::from(raw)))
+    }
+
+    #[test]
+    fn snooze_plans_the_engine_stamped_link() {
+        let (mut app, outbox) = base();
+        with_rules(&mut app, &[reminder_rule(60, task_id())]);
+        let rule = rule_id(60);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SnoozeReminder {
+                reminder: crate::reminders::ReminderRef::Rule(rule),
+                occurrence: ts(T0 - 60),
+                postpone: chrono::TimeDelta::try_minutes(10).unwrap(),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            plan.actions,
+            vec![PersistenceAction::RecordReminderSnooze(
+                crate::reminders::ReminderSnooze {
+                    reminder: crate::reminders::ReminderRef::Rule(rule),
+                    occurrence: ts(T0 - 60),
+                    rescheduled_to: ts(T0 + 600),
+                }
+            )],
+            "exactly one engine-stamped snooze link"
+        );
+    }
+
+    #[test]
+    fn snooze_rejections_are_typed() {
+        let (mut app, outbox) = base();
+        with_rules(&mut app, &[reminder_rule(60, task_id())]);
+        let unknown_rule = rule_id(4242);
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::SnoozeReminder {
+                    reminder: crate::reminders::ReminderRef::Rule(unknown_rule),
+                    occurrence: ts(T0),
+                    postpone: chrono::TimeDelta::try_minutes(1).unwrap(),
+                }
+            ),
+            Err(CommandError::UnknownReminderRule(unknown_rule))
+        );
+
+        let stranger = TaskId::from(uuid::Uuid::from_u128(4243));
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::SnoozeReminder {
+                    reminder: crate::reminders::ReminderRef::Default(stranger),
+                    occurrence: ts(T0),
+                    postpone: chrono::TimeDelta::try_minutes(1).unwrap(),
+                }
+            ),
+            Err(CommandError::UnknownTask(stranger))
+        );
+
+        let mut dead_state = app.clone();
+        let mut dead = task(2, stack_id(), true);
+        dead.deleted = true;
+        let dead_id = dead.id;
+        dead_state.tasks.insert(dead_id, dead);
+        assert_eq!(
+            run(
+                &dead_state,
+                &outbox,
+                &StateCommand::SnoozeReminder {
+                    reminder: crate::reminders::ReminderRef::Default(dead_id),
+                    occurrence: ts(T0),
+                    postpone: chrono::TimeDelta::try_minutes(1).unwrap(),
+                }
+            ),
+            Err(CommandError::TaskDeleted(dead_id))
+        );
+
+        for secs in [0_i64, -30] {
+            let result = run(
+                &app,
+                &outbox,
+                &StateCommand::SnoozeReminder {
+                    reminder: crate::reminders::ReminderRef::Default(task_id()),
+                    occurrence: ts(T0),
+                    postpone: chrono::TimeDelta::try_seconds(secs).unwrap(),
+                },
+            );
+            assert!(
+                matches!(result, Err(CommandError::InvalidSnoozePostpone)),
+                "postpone {secs} s must be rejected as non-positive"
+            );
+        }
+    }
+
+    #[test]
+    fn snooze_saturates_an_unrepresentable_target() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SnoozeReminder {
+                reminder: crate::reminders::ReminderRef::Default(task_id()),
+                occurrence: ts(T0),
+                postpone: chrono::TimeDelta::MAX,
+            },
+        )
+        .unwrap();
+        let PersistenceAction::RecordReminderSnooze(link) = &plan.actions[0] else {
+            panic!("the action must be the snooze link");
+        };
+        assert_eq!(link.rescheduled_to, DateTime::<Utc>::MAX_UTC);
+    }
+
+    #[test]
+    fn mute_toggles_and_repeats_are_no_ops() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetTaskRemindersMuted {
+                task: task_id(),
+                muted: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            plan.actions,
+            vec![PersistenceAction::SetTaskRemindersMuted(task_id(), true)]
+        );
+
+        // Repeat on a muted task: accepted no-op.
+        let mut muted_state = app.clone();
+        muted_state.reminders.muted.insert(task_id());
+        assert_eq!(
+            run(
+                &muted_state,
+                &outbox,
+                &StateCommand::SetTaskRemindersMuted {
+                    task: task_id(),
+                    muted: true,
+                }
+            ),
+            Ok(no_op())
+        );
+        // Unset mutes off again.
+        let plan = run(
+            &muted_state,
+            &outbox,
+            &StateCommand::SetTaskRemindersMuted {
+                task: task_id(),
+                muted: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            plan.actions,
+            vec![PersistenceAction::SetTaskRemindersMuted(task_id(), false)]
+        );
+
+        let stranger = TaskId::from(uuid::Uuid::from_u128(4244));
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::SetTaskRemindersMuted {
+                    task: stranger,
+                    muted: true,
+                }
+            ),
+            Err(CommandError::UnknownTask(stranger))
+        );
+    }
+
+    #[test]
+    fn delete_task_prunes_its_reminder_rules() {
+        let (mut app, outbox) = base();
+        let own_rule = reminder_rule(61, task_id());
+        let second_own_rule = reminder_rule(62, task_id());
+        let stranger_task = TaskId::from(uuid::Uuid::from_u128(4245));
+        let stranger_rule = reminder_rule(63, stranger_task);
+        with_rules(
+            &mut app,
+            &[own_rule.clone(), second_own_rule.clone(), stranger_rule],
+        );
+        // The stranger must exist as a live task so it is unaffected
+        // context, not an error path.
+        app.tasks.insert(stranger_task, {
+            let mut t = task(9, stack_id(), false);
+            t.id = stranger_task;
+            t
+        });
+
+        let plan = run(&app, &outbox, &StateCommand::DeleteTask { id: task_id() }).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let rule_deletes: Vec<&crate::ids::ReminderRuleId> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::DeleteReminderRule(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rule_deletes,
+            vec![&own_rule.id, &second_own_rule.id],
+            "exactly the deleted task's rules are pruned, in rule-id order"
+        );
+
+        // A delete repeat stays a zero-action no-op (the rules are already
+        // gone with the tombstone short-circuit).
+        let mut deleted_state = app;
+        let mut dead = task(TASK, stack_id(), true);
+        dead.deleted = true;
+        deleted_state.tasks.insert(dead.id, dead);
+        assert_eq!(
+            run(
+                &deleted_state,
+                &outbox,
+                &StateCommand::DeleteTask { id: task_id() }
+            ),
+            Ok(no_op())
+        );
+    }
+
+    #[test]
+    fn delete_stack_cascades_reminder_rules_of_its_tasks_only() {
+        let (mut app, outbox) = base();
+        let cascaded_rule = reminder_rule(64, task_id());
+        with_rules(&mut app, std::slice::from_ref(&cascaded_rule));
+
+        // A second stack holds the untouched control task + rule.
+        let other_stack = stack(905, true);
+        let other_stack_id = other_stack.id;
+        app.stacks.insert(other_stack_id, other_stack);
+        let control = task(8, other_stack_id, false);
+        let control_id = control.id;
+        app.tasks.insert(control_id, control);
+        let control_rule = reminder_rule(65, control_id);
+        app.reminders
+            .rules
+            .insert(control_rule.id, control_rule.clone());
+
+        let plan = run(&app, &outbox, &StateCommand::DeleteStack { id: stack_id() }).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let rule_deletes: Vec<crate::ids::ReminderRuleId> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::DeleteReminderRule(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rule_deletes,
+            vec![cascaded_rule.id],
+            "the cascaded task's rule is pruned; the other stack's rule is untouched"
+        );
     }
 }
 
