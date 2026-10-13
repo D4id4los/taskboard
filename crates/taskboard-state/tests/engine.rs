@@ -1259,3 +1259,157 @@ async fn h1_engine_continues_without_sync_after_the_reports_channel_closes() {
         "a dead connector must not mark the engine Syncing"
     );
 }
+
+// ---------------------------------------------------------------------
+// WI-J: the connector registry and attach
+// ---------------------------------------------------------------------
+
+/// Poll/receive deadline shared by the j-series (paused-time guarded).
+const RECV_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Timeout-guarded receive of one nudged `SyncCommand` — the reply *is*
+/// the completion signal, never a sleep.
+async fn expect_nudge(rx: &mut tokio::sync::mpsc::Receiver<SyncCommand>) -> SyncCommand {
+    tokio::time::timeout(RECV_DEADLINE, rx.recv())
+        .await
+        .expect("nudge arrives within the deadline")
+        .expect("the nudged sender is live")
+}
+
+/// j1: attach registers the sender; every nudge issued *after* the ack
+/// fans out through it (the ack's FIFO proof).
+#[tokio::test]
+async fn j1_attach_registers_the_sender_and_later_nudges_fan_out() {
+    let h = harness().await;
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+
+    let receipt = h.handle.attach_connector(tx).await.expect("attach ack");
+    assert_eq!(receipt, taskboard_state::AttachReceipt::Attached);
+
+    let outcome = h
+        .handle
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::SyncRequested);
+    assert_eq!(expect_nudge(&mut rx).await, SyncCommand::SyncNow);
+}
+
+/// j2: the standalone dead entry (receiver dropped at boot, reports
+/// channel still open — the parked-sender world) prunes on the first
+/// fan-out, and the registry keeps accepting entries afterwards.
+#[tokio::test]
+async fn j2_standalone_dead_entry_prunes_and_the_registry_keeps_working() {
+    let h = harness().await;
+    drop(h.sync_in);
+
+    // Fail closed: NoOp, and no `Syncing` transient despite the open
+    // reports channel (fact 4's trap, now with a parked sender).
+    let outcome = h
+        .handle
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::NoOp);
+    assert_eq!(
+        h.handle.shared_state().load_full().sync.phase,
+        SyncPhase::Idle
+    );
+
+    // The prune emptied the registry; it still accepts entries.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+    let receipt = h.handle.attach_connector(tx).await.expect("attach ack");
+    assert_eq!(receipt, taskboard_state::AttachReceipt::Attached);
+
+    let outcome = h
+        .handle
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::SyncRequested);
+    assert_eq!(expect_nudge(&mut rx).await, SyncCommand::SyncNow);
+}
+
+/// j3: fan-out forwards iff any send lands; `Closed` entries prune
+/// lazily over both dead paths — a sender dead *after* attach (the
+/// detached-actor path) and, per j2, the one dead at boot.
+#[tokio::test]
+async fn j3_fan_out_forwards_iff_any_send_lands_and_prunes_dead_entries() {
+    let h = harness().await;
+    // The boot entry is dead by construction here (j2's standalone
+    // origin) and prunes on the first fan-out pass.
+    drop(h.sync_in);
+    let (tx_a, rx_a) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+    let (tx_b, mut rx_b) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+    h.handle.attach_connector(tx_a).await.expect("attach ack");
+    h.handle.attach_connector(tx_b).await.expect("attach ack");
+
+    // A's receiver dies after attach (the detached-actor dead path):
+    // the nudge still forwards through B, and A's dead entry is pruned
+    // in the same pass.
+    drop(rx_a);
+    let outcome = h
+        .handle
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::SyncRequested);
+    assert_eq!(expect_nudge(&mut rx_b).await, SyncCommand::SyncNow);
+
+    // All dead: the registry is empty and the nudge fails closed.
+    drop(rx_b);
+    let outcome = h
+        .handle
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::NoOp);
+}
+
+/// j4: a full connector inbox still counts as forwarded (`Full` is a
+/// coalesce, not a failure) — pinned through the new fan-out, with the
+/// boot entry dropped so only the full inbox can carry the outcome.
+#[tokio::test]
+async fn j4_full_connector_inbox_still_counts_as_forwarded() {
+    let h = harness().await;
+    drop(h.sync_in);
+    // Capacity 1, never drained: the first nudge lands (`Ok`), the
+    // second coalesces (`Full`).
+    let (tx, _rx_kept) = tokio::sync::mpsc::channel::<SyncCommand>(1);
+    h.handle.attach_connector(tx).await.expect("attach ack");
+
+    let outcome = h
+        .handle
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::SyncRequested);
+    let outcome = h
+        .handle
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::SyncRequested);
+}
+
+/// j5: attach during drain is declined typed — and the decline leaves
+/// the loop's exit conditions untouched (the engine still finishes its
+/// drain once the reports channel closes).
+#[tokio::test]
+async fn j5_attach_during_drain_is_declined_typed() {
+    let h = harness().await;
+    h.system_tx
+        .send(SystemEvent::Shutdown)
+        .expect("system live");
+    wait_draining(&h.handle).await;
+
+    let (tx, _rx) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+    let receipt = h.handle.attach_connector(tx).await.expect("attach ack");
+    assert_eq!(receipt, taskboard_state::AttachReceipt::Draining);
+
+    drop(h.report_tx);
+    tokio::time::timeout(RECV_DEADLINE, h.join)
+        .await
+        .expect("the engine drains and stops within the deadline")
+        .expect("the loop exits cleanly");
+}
