@@ -7,8 +7,9 @@
 //! crates (which cannot share dev-dependencies) can depend on it in tests.
 //!
 //! Layout mirrors the crate: entity strategies live in [`entities`],
-//! remote-view/snapshot strategies in [`remote`], state-level strategies
-//! in [`state`], and changeset strategies in [`messages`]. The composite
+//! remote-view/snapshot strategies in [`remote`], reminder strategies in
+//! [`reminders`], state-level strategies in [`state`], and changeset
+//! strategies in [`messages`]. The composite
 //! strategies assemble from named row structs (not flat tuples) so the
 //! referential-consistency logic stays readable; all public functions are
 //! re-exported here flat, so consumers import
@@ -19,6 +20,7 @@ pub use memory::InMemoryRepository;
 pub mod entities;
 pub mod memory;
 pub mod messages;
+pub mod reminders;
 pub mod remote;
 pub mod state;
 
@@ -26,6 +28,11 @@ pub use entities::{
     label_clocks_strategy, stack_clocks_strategy, task_clocks_strategy, task_strategy,
 };
 pub use messages::{label_changes_strategy, state_command_strategy, task_changes_strategy};
+pub use reminders::{
+    build_reminders, reminder_delivery_strategy, reminder_offset_strategy, reminder_ref_strategy,
+    reminder_rows_strategy, reminder_rule_id_strategy, reminder_rule_strategy,
+    reminder_snooze_strategy, task_map_strategy,
+};
 pub use remote::{push_outcome_strategy, remote_task_strategy, snapshot_strategy};
 pub use state::{app_state_strategy, persisted_state_strategy};
 
