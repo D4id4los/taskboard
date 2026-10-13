@@ -738,8 +738,10 @@ mod tests {
             mute_mask in any::<u64>(),
         ) {
             let defaults = crate::reminders::ReminderDefaults { default_before: offset };
+            let target = now + chrono::TimeDelta::try_minutes(10).unwrap();
             let f1 = crate::reminders::due_firings(&app, &reminders, &defaults, now);
             let mut actions = Vec::new();
+            let mut batch_snoozed = std::collections::BTreeSet::new();
             for (i, f) in f1.iter().enumerate() {
                 actions.push(PersistenceAction::RecordReminderDelivery(
                     crate::reminders::ReminderDelivery {
@@ -752,11 +754,12 @@ mod tests {
                 // delivery settles the original occurrence, the link
                 // moves the next one.
                 if (snooze_mask >> i) & 1 == 1 {
+                    batch_snoozed.insert(f.reminder);
                     actions.push(PersistenceAction::RecordReminderSnooze(
                         crate::reminders::ReminderSnooze {
                             reminder: f.reminder,
                             occurrence: f.occurrence,
-                            rescheduled_to: now + chrono::TimeDelta::try_minutes(10).unwrap(),
+                            rescheduled_to: target,
                         },
                     ));
                 }
@@ -776,18 +779,19 @@ mod tests {
             // (a) nothing fires again at `now`...
             let f2 = crate::reminders::due_firings(&app, settled, &defaults, now);
             prop_assert!(f2.is_empty(), "settled occurrences must not refire");
-            // (b) snoozed reminders stay quiet at any sampled instant
-            // before their target (now + 10 m).
+            // (b) reminders THIS batch snoozed stay quiet below their
+            // (now + 10 m) target. Only the batch's own links qualify as
+            // the suppressed set: a generated link's target may land
+            // inside the probe window, and firing exactly at a link's
+            // target is legal (P7) — a reminder-identity proxy over all
+            // links would forbid that legal fire.
             let probe = now + chrono::TimeDelta::try_minutes(9).unwrap();
-            let snoozed_refs: std::collections::BTreeSet<_> = settled
-                .snoozes
-                .keys()
-                .map(|key| key.reminder)
-                .collect();
             let at_probe = crate::reminders::due_firings(&app, settled, &defaults, probe);
             prop_assert!(
-                at_probe.iter().all(|f| !snoozed_refs.contains(&f.reminder)),
-                "a snoozed reminder must not fire before its target"
+                at_probe
+                    .iter()
+                    .all(|f| !batch_snoozed.contains(&f.reminder) || f.occurrence >= target),
+                "a batch-snoozed reminder must not fire below its target"
             );
             // (c) muted tasks contribute zero firings.
             let fired_tasks: std::collections::BTreeSet<_> =
