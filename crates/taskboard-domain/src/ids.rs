@@ -54,6 +54,10 @@ local_id!(
     /// Local identity of a label (`UUIDv7`, generated client-side).
     LabelId
 );
+local_id!(
+    /// Local identity of a reminder rule (`UUIDv7`, generated client-side).
+    ReminderRuleId
+);
 
 macro_rules! remote_id {
     ($(#[$doc:meta])* $name:ident) => {
@@ -142,6 +146,9 @@ mod tests {
             let label = LabelId::from_uuid(raw);
             prop_assert_eq!(label.as_uuid(), raw);
             prop_assert_eq!(label, LabelId::from(raw));
+            let rule = ReminderRuleId::from_uuid(raw);
+            prop_assert_eq!(rule.as_uuid(), raw);
+            prop_assert_eq!(rule, ReminderRuleId::from(raw));
         }
 
         #[test]

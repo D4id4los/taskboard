@@ -23,7 +23,7 @@
 //! ([`persistence`]) with the shared batch semantics ([`apply_actions`]),
 //! messages ([`messages`]), local command semantics ([`command`]),
 //! conflict-policy algebra ([`merge`]) and its fixed-order composition
-//! ([`pipeline`]).
+//! ([`pipeline`]), reminders ([`reminders`]).
 
 #![forbid(unsafe_code)]
 
@@ -38,6 +38,7 @@ pub mod outbox;
 pub mod persistence;
 pub mod pipeline;
 pub mod push;
+pub mod reminders;
 pub mod remote;
 pub mod state;
 
@@ -56,8 +57,8 @@ pub use entities::{
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
-    BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
-    RemoteStackId, RemoteStackRef, StackId, TaskId,
+    BoardId, LabelId, ReminderRuleId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId,
+    RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 pub use merge::{
     adopt_board_if_newer, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
@@ -76,6 +77,10 @@ pub use persistence::{
 pub use pipeline::{apply_push_report, apply_sync_report};
 pub use push::{
     CardShape, EntityTables, MaterializedOp, NewCardShape, PushGroup, PushTarget, plan_pushes,
+};
+pub use reminders::{
+    InvalidReminderOffset, ReminderDefaults, ReminderDelivery, ReminderFiring, ReminderOffset,
+    ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState,
 };
 pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
