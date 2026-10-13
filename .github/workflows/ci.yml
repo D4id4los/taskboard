@@ -161,8 +161,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - uses: taiki-e/install-action@v2
+        # Pinned (not @latest): a silent tool float would both invalidate
+        # the coverage-flake investigation's evidence (which tool versions
+        # it holds for) and change job behavior underneath us. Bump the
+        # pins deliberately, with the watchlist verdict in mind.
         with:
-          tool: cargo-llvm-cov,nextest
+          tool: cargo-llvm-cov@0.9.1,nextest@0.9.148
 
       - name: Generate Coverage Report
         # llvm-cov 0.9+: nextest is a subcommand (the --nextest flag was
