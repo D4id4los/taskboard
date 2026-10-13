@@ -124,7 +124,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 3, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 4, "each shipped migration recorded exactly once");
     }
 
     /// A pre-0002 database (no `ck_title`) upgrades cleanly: the epoch
@@ -282,6 +282,78 @@ mod tests {
         assert_eq!(task_id.as_deref(), Some(task_uuid.to_string().as_str()));
         assert_eq!(board_id, None);
         raw.close().await;
+    }
+
+    /// A pre-0004 database (no reminder tables) upgrades cleanly: the four
+    /// tables re-apply on a seeded 0003-era board/stack/task, and `load()`
+    /// returns the intact entities with a default-shaped `reminders`
+    /// section (an empty reminder dataset is exactly the hydrated shape).
+    #[tokio::test]
+    async fn migration_0004_upgrades_a_pre_0004_database() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
+            .await
+            .expect("raw connect");
+        // Simulate a 0003-era database: run the shipped migrations, then
+        // strip the 0004 artifacts and their bookkeeping row.
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        // Literal drops (sqlx 0.9 rejects dynamic SQL strings).
+        sqlx::query("DROP TABLE reminder_rules")
+            .execute(&raw)
+            .await
+            .expect("strip reminder_rules");
+        sqlx::query("DROP TABLE reminder_deliveries")
+            .execute(&raw)
+            .await
+            .expect("strip reminder_deliveries");
+        sqlx::query("DROP TABLE reminder_snoozes")
+            .execute(&raw)
+            .await
+            .expect("strip reminder_snoozes");
+        sqlx::query("DROP TABLE reminder_muted")
+            .execute(&raw)
+            .await
+            .expect("strip reminder_muted");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 4")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        // Seed the pre-existing entities the upgrade must not disturb
+        // (FK order: board → stack → task; clocks are the NOT NULL texts).
+        sqlx::query(
+            "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen) \
+             VALUES ('00000000-0000-0000-0000-00000000000b', NULL, 'board', '00ff00', 0, 0, '2026-01-01T00:00:00+00:00', NULL)",
+        )
+        .execute(&raw)
+        .await
+        .expect("seed board");
+        sqlx::query(
+            "INSERT INTO stacks (id, board, remote_board_id, remote_stack_id, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted, remote_seen) \
+             VALUES ('00000000-0000-0000-0000-00000000000c', '00000000-0000-0000-0000-00000000000b', NULL, NULL, 'stack', 0, 0, 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', NULL)",
+        )
+        .execute(&raw)
+        .await
+        .expect("seed stack");
+        sqlx::query(
+            "INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, done, sort_order, archived, deleted, ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, ck_archived, ck_deleted, remote_seen) \
+             VALUES ('00000000-0000-0000-0000-00000000000d', '00000000-0000-0000-0000-00000000000c', NULL, NULL, NULL, 'task', '', NULL, NULL, 0, 0, 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', NULL)",
+        )
+        .execute(&raw)
+        .await
+        .expect("seed task");
+        raw.close().await;
+
+        let repo = open(file.path()).await.expect("migrating open");
+        let state = repo.load().await.expect("load");
+        assert_eq!(state.tasks.len(), 1, "the seeded task survives");
+        assert_eq!(
+            state.reminders,
+            taskboard_domain::reminders::ReminderState::default(),
+            "a pre-0004 dataset hydrates as the empty reminder section"
+        );
     }
 
     /// The durability pragmas are actually in force: `journal_mode` is WAL.

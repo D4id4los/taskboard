@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT rule_id, task_id, offset_seconds,\n                      created_at as \"created_at: DateTime<Utc>\"\n               FROM reminder_rules ORDER BY rule_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "rule_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reminder_rules",
+            "name": "rule_id"
+          }
+        }
+      },
+      {
+        "name": "task_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reminder_rules",
+            "name": "task_id"
+          }
+        }
+      },
+      {
+        "name": "offset_seconds",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "reminder_rules",
+            "name": "offset_seconds"
+          }
+        }
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reminder_rules",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4b11756df607a55734e314e00426646cb38971304e864763358f1d0417de9c65"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO reminder_deliveries (reminder, occurrence, delivered_at)\n                   VALUES (?, ?, ?)\n                   ON CONFLICT(reminder, occurrence) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "6081828f0e5df0e740f7618f3ba92e2d5aca7ad7f05ddbd616f73adb15e9a588"
+}

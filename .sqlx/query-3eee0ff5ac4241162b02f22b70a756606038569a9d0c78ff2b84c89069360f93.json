@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO reminder_muted (task_id) VALUES (?)\n                       ON CONFLICT(task_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "3eee0ff5ac4241162b02f22b70a756606038569a9d0c78ff2b84c89069360f93"
+}

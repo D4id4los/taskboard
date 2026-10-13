@@ -247,6 +247,140 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         after.outbox.len(),
         "re-enqueue must not duplicate queue depth"
     );
+
+    // ---- Reminders: batch/load parity for the chunk-2 actions ---------
+    //
+    // The sqlite adapter does not execute `apply_actions`; its semantics
+    // are pinned here, against the same clauses the in-memory fake
+    // inherits. Fixed stamps: every decode round-trip must return the
+    // exact rows written.
+    let rule = crate::reminders::ReminderRule {
+        id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(20)),
+        task: task.id,
+        offset: crate::reminders::ReminderOffset::before(
+            chrono::TimeDelta::try_minutes(-5).unwrap(),
+        )
+        .unwrap(),
+        created_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+    };
+    repo.apply(vec![PersistenceAction::UpsertReminderRule(rule.clone())])
+        .await
+        .expect("rule upsert");
+    let rule_ref = crate::reminders::ReminderRef::Rule(rule.id);
+    let default_ref = crate::reminders::ReminderRef::Default(task.id);
+    let occurrence = Utc.timestamp_opt(1_700_000_100, 0).unwrap();
+    let first_delivery = crate::reminders::ReminderDelivery {
+        reminder: rule_ref,
+        occurrence,
+        delivered_at: Utc.timestamp_opt(1_700_000_200, 0).unwrap(),
+    };
+    let other_delivery = crate::reminders::ReminderDelivery {
+        reminder: default_ref,
+        occurrence,
+        delivered_at: Utc.timestamp_opt(1_700_000_201, 0).unwrap(),
+    };
+    repo.apply(vec![
+        PersistenceAction::RecordReminderDelivery(first_delivery),
+        PersistenceAction::RecordReminderDelivery(other_delivery),
+    ])
+    .await
+    .expect("deliveries");
+
+    // A replayed delivery is a no-op: the reload shows the FIRST
+    // delivered_at (the at-most-once guard's storage parity).
+    let replay = crate::reminders::ReminderDelivery {
+        reminder: rule_ref,
+        occurrence,
+        delivered_at: Utc.timestamp_opt(1_700_009_999, 0).unwrap(),
+    };
+    repo.apply(vec![PersistenceAction::RecordReminderDelivery(replay)])
+        .await
+        .expect("delivery replay");
+    let after = repo.load().await.expect("reload");
+    assert!(
+        after.reminders.deliveries.contains(&first_delivery),
+        "the first delivery proof must survive a replay"
+    );
+    assert_eq!(
+        after.reminders.deliveries.len(),
+        2,
+        "the replay must not add a row"
+    );
+
+    // A snooze link replaces the prior link for the same key.
+    let snooze_key = crate::reminders::ReminderSnoozeKey {
+        reminder: rule_ref,
+        occurrence,
+    };
+    let replaced = crate::reminders::ReminderSnooze {
+        reminder: rule_ref,
+        occurrence,
+        rescheduled_to: Utc.timestamp_opt(1_700_000_400, 0).unwrap(),
+    };
+    repo.apply(vec![
+        PersistenceAction::RecordReminderSnooze(crate::reminders::ReminderSnooze {
+            reminder: rule_ref,
+            occurrence,
+            rescheduled_to: Utc.timestamp_opt(1_700_000_300, 0).unwrap(),
+        }),
+        PersistenceAction::RecordReminderSnooze(replaced),
+    ])
+    .await
+    .expect("snooze links");
+    let after = repo.load().await.expect("reload");
+    assert_eq!(
+        after.reminders.snoozes.get(&snooze_key),
+        Some(&replaced.rescheduled_to),
+        "the last link for a key wins"
+    );
+
+    // Mute toggles membership.
+    repo.apply(vec![
+        PersistenceAction::SetTaskRemindersMuted(task.id, true),
+        PersistenceAction::SetTaskRemindersMuted(task.id, true),
+    ])
+    .await
+    .expect("mute");
+    let after = repo.load().await.expect("reload");
+    assert!(
+        after.reminders.muted.contains(&task.id),
+        "mute must persist"
+    );
+    repo.apply(vec![PersistenceAction::SetTaskRemindersMuted(
+        task.id, false,
+    )])
+    .await
+    .expect("unmute");
+    let after = repo.load().await.expect("reload");
+    assert!(
+        !after.reminders.muted.contains(&task.id),
+        "unmute must persist"
+    );
+
+    // A rule delete prunes the rule's deliveries and snooze links but
+    // leaves other reminders' rows untouched.
+    repo.apply(vec![PersistenceAction::DeleteReminderRule(rule.id)])
+        .await
+        .expect("rule delete");
+    let after = repo.load().await.expect("reload");
+    assert!(
+        !after.reminders.rules.contains_key(&rule.id),
+        "the rule row is gone"
+    );
+    assert_eq!(
+        after
+            .reminders
+            .deliveries
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![other_delivery],
+        "only the deleted rule's delivery is pruned"
+    );
+    assert!(
+        !after.reminders.snoozes.contains_key(&snooze_key),
+        "the deleted rule's snooze link is pruned"
+    );
 }
 
 /// Runs the full contract against `repo`, awaiting futures synchronously.

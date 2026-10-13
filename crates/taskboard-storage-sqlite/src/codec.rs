@@ -11,6 +11,7 @@
 use taskboard_domain::ids::{BoardId, LabelId, RemoteBoardId, StackId, TaskId};
 use taskboard_domain::outbox::LocalOp;
 use taskboard_domain::persistence::ValidatorKey;
+use taskboard_domain::reminders::ReminderRef;
 use taskboard_domain::state::{SyncErrorKind, SyncPhase};
 use uuid::Uuid;
 
@@ -244,6 +245,22 @@ pub fn validator_key_from_text(raw: &str) -> Result<ValidatorKey, CodecError> {
         .ok_or(CodecError)
 }
 
+/// The stored `reminder_deliveries.reminder` / `reminder_snoozes.reminder`
+/// form (identical to [`ReminderRef::text_form`]).
+#[must_use]
+pub fn reminder_ref_to_text(reminder: ReminderRef) -> String {
+    reminder.text_form()
+}
+
+/// Parses a stored reminder reference.
+///
+/// # Errors
+///
+/// [`CodecError`] on any text outside the two text forms.
+pub fn reminder_ref_from_text(raw: &str) -> Result<ReminderRef, CodecError> {
+    ReminderRef::parse_text_form(raw).ok_or(CodecError)
+}
+
 /// Encodes a remote stack binding into its (`remote_board_id`,
 /// `remote_stack_id`) columns.
 #[must_use]
@@ -475,6 +492,21 @@ mod tests {
             ),
             Ok(phase)
         );
+    }
+
+    #[test]
+    fn reminder_ref_text_roundtrips_and_rejects_garbage() {
+        let rule = ReminderRef::Rule(taskboard_domain::ids::ReminderRuleId::from(id(7)));
+        let default = ReminderRef::Default(TaskId::from(id(8)));
+        for reminder in [rule, default] {
+            assert_eq!(
+                reminder_ref_from_text(&reminder_ref_to_text(reminder)),
+                Ok(reminder)
+            );
+        }
+        assert_eq!(reminder_ref_from_text("garbage"), Err(CodecError));
+        assert_eq!(reminder_ref_from_text("rule:not-a-uuid"), Err(CodecError));
+        assert_eq!(reminder_ref_from_text(""), Err(CodecError));
     }
 
     #[test]

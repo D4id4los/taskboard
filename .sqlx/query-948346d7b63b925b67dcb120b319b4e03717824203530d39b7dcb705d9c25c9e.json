@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reminder_muted WHERE task_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "948346d7b63b925b67dcb120b319b4e03717824203530d39b7dcb705d9c25c9e"
+}

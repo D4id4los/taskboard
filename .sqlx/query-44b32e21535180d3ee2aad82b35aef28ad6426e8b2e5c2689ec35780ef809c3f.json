@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reminder_snoozes WHERE reminder = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "44b32e21535180d3ee2aad82b35aef28ad6426e8b2e5c2689ec35780ef809c3f"
+}
