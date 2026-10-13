@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reminder_rules WHERE rule_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "82d5518c81cd0d930828d57adb2adc701c2b1b9f3d488af9322301d269180bab"
+}

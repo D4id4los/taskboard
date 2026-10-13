@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT task_id FROM reminder_muted ORDER BY task_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "task_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reminder_muted",
+            "name": "task_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7f9d537610786ba40921d01f4ee0471a943680d9888685cd8c7222dc250d9d10"
+}

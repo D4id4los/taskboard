@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO reminder_snoozes (reminder, occurrence, rescheduled_to)\n                   VALUES (?, ?, ?)\n                   ON CONFLICT(reminder, occurrence) DO UPDATE SET\n                       rescheduled_to = excluded.rescheduled_to",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "e4e6d993dc16b82d6ef5b9b234a4e351a30c1fb5ab4e34482173dbe4c9525f41"
+}

@@ -10,12 +10,15 @@ use taskboard_domain::entities::{
     Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
 };
 use taskboard_domain::ids::{
-    BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
-    RemoteStackId, RemoteStackRef, StackId, TaskId,
+    BoardId, LabelId, ReminderRuleId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId,
+    RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 use taskboard_domain::outbox::{OpId, PendingOp};
 use taskboard_domain::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
+};
+use taskboard_domain::reminders::{
+    ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderSnoozeKey, ReminderState,
 };
 use taskboard_domain::state::{SyncPhase, SyncStatus};
 use uuid::Uuid;
@@ -125,6 +128,28 @@ struct SyncStatusRow {
     phase: String,
     last_error: Option<String>,
     last_success: Option<DateTime<Utc>>,
+}
+
+/// Raw `reminder_rules` row.
+struct ReminderRuleRow {
+    rule_id: String,
+    task_id: String,
+    offset_seconds: i64,
+    created_at: DateTime<Utc>,
+}
+
+/// Raw `reminder_deliveries` row.
+struct ReminderDeliveryRow {
+    reminder: String,
+    occurrence: DateTime<Utc>,
+    delivered_at: DateTime<Utc>,
+}
+
+/// Raw `reminder_snoozes` row.
+struct ReminderSnoozeRow {
+    reminder: String,
+    occurrence: DateTime<Utc>,
+    rescheduled_to: DateTime<Utc>,
 }
 
 /// Decode helpers shared by the row mappers; every failure becomes
@@ -321,6 +346,51 @@ fn decode_outbox_row(row: &OutboxRow) -> Result<PendingOp, RepositoryError> {
     })
 }
 
+/// Decodes a stored reminder reference (`"rule:<uuid>"`/`"default:<uuid>"`).
+fn decode_reminder_ref(raw: &str) -> Result<ReminderRef, RepositoryError> {
+    codec::reminder_ref_from_text(raw).map_err(|_| RepositoryError::Corrupted)
+}
+
+fn decode_reminder_rule(
+    row: &ReminderRuleRow,
+) -> Result<(ReminderRuleId, ReminderRule), RepositoryError> {
+    // The domain constructor is the integrity check: an unrepresentable
+    // or positive stored offset is corruption, not a clamped value.
+    let duration =
+        chrono::TimeDelta::try_seconds(row.offset_seconds).ok_or(RepositoryError::Corrupted)?;
+    let offset = ReminderOffset::before(duration).map_err(|_| RepositoryError::Corrupted)?;
+    let id = ReminderRuleId::from(decode::uuid(&row.rule_id)?);
+    Ok((
+        id,
+        ReminderRule {
+            id,
+            task: TaskId::from(decode::uuid(&row.task_id)?),
+            offset,
+            created_at: row.created_at,
+        },
+    ))
+}
+
+fn decode_reminder_delivery(
+    row: &ReminderDeliveryRow,
+) -> Result<ReminderDelivery, RepositoryError> {
+    Ok(ReminderDelivery {
+        reminder: decode_reminder_ref(&row.reminder)?,
+        occurrence: row.occurrence,
+        delivered_at: row.delivered_at,
+    })
+}
+
+fn decode_reminder_snooze(
+    row: &ReminderSnoozeRow,
+) -> Result<(ReminderSnoozeKey, DateTime<Utc>), RepositoryError> {
+    let key = ReminderSnoozeKey {
+        reminder: decode_reminder_ref(&row.reminder)?,
+        occurrence: row.occurrence,
+    };
+    Ok((key, row.rescheduled_to))
+}
+
 impl TaskRepository for SqliteTaskRepository {
     fn load(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>> {
         Box::pin(self.load_inner())
@@ -430,6 +500,44 @@ impl SqliteTaskRepository {
         .map_err(|e| stmt_error(&e))?
         .ok_or(RepositoryError::Corrupted)?;
 
+        let reminder_rule_rows = sqlx::query_as!(
+            ReminderRuleRow,
+            r#"SELECT rule_id, task_id, offset_seconds,
+                      created_at as "created_at: DateTime<Utc>"
+               FROM reminder_rules ORDER BY rule_id"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
+        let reminder_delivery_rows = sqlx::query_as!(
+            ReminderDeliveryRow,
+            r#"SELECT reminder,
+                      occurrence as "occurrence: DateTime<Utc>",
+                      delivered_at as "delivered_at: DateTime<Utc>"
+               FROM reminder_deliveries ORDER BY reminder, occurrence"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
+        let reminder_snooze_rows = sqlx::query_as!(
+            ReminderSnoozeRow,
+            r#"SELECT reminder,
+                      occurrence as "occurrence: DateTime<Utc>",
+                      rescheduled_to as "rescheduled_to: DateTime<Utc>"
+               FROM reminder_snoozes ORDER BY reminder, occurrence"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
+        let reminder_muted_rows =
+            sqlx::query!(r#"SELECT task_id FROM reminder_muted ORDER BY task_id"#)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|e| stmt_error(&e))?;
+
         let mut boards = BTreeMap::new();
         for row in board_rows {
             let board = decode_board(row)?;
@@ -484,6 +592,31 @@ impl SqliteTaskRepository {
             codec::sync_phase_from_columns(&status_row.phase, status_row.last_error.as_deref())
                 .map_err(|_| RepositoryError::Corrupted)?;
 
+        let mut rules = BTreeMap::new();
+        for row in reminder_rule_rows {
+            let (id, rule) = decode_reminder_rule(&row)?;
+            rules.insert(id, rule);
+        }
+        let mut deliveries = BTreeSet::new();
+        for row in reminder_delivery_rows {
+            deliveries.insert(decode_reminder_delivery(&row)?);
+        }
+        let mut snoozes = BTreeMap::new();
+        for row in reminder_snooze_rows {
+            let (key, rescheduled_to) = decode_reminder_snooze(&row)?;
+            snoozes.insert(key, rescheduled_to);
+        }
+        let mut muted = BTreeSet::new();
+        for row in reminder_muted_rows {
+            muted.insert(TaskId::from(decode::uuid(&row.task_id)?));
+        }
+        let reminders = ReminderState {
+            rules,
+            deliveries,
+            snoozes,
+            muted,
+        };
+
         // `pending_ops` is derived, never stored (plan decision 9): the
         // outbox rows just hydrated are the single source of truth for
         // queue depth — no second query that could drift from them.
@@ -501,11 +634,7 @@ impl SqliteTaskRepository {
                 last_success: status_row.last_success,
                 pending_ops,
             },
-            // Read-side parity (chunk 1 ships no reminder tables): with
-            // none yet, an empty section is exactly what the future empty
-            // tables will hydrate — boot behavior identical now and after
-            // the storage chunk.
-            reminders: taskboard_domain::reminders::ReminderState::default(),
+            reminders,
         };
         // Read-only transaction: dropping without commit releases the
         // snapshot.
@@ -837,6 +966,125 @@ async fn execute_batch(
                 phase = codec::sync_phase_to_text(status.phase),
                 "sync status upserted"
             );
+        }
+    }
+
+    // Reminder partitions (tasks precede rules — the only FK). Within
+    // each partition batch order is preserved, mirroring `apply_actions`:
+    // rule upserts replace by id; a rule delete prunes its deliveries and
+    // snooze links with it; a delivery insert is set-union on the
+    // `(reminder, occurrence)` key (first write wins); a snooze link
+    // replaces the prior link for the same key; mute toggles membership.
+    for action in actions {
+        if let PersistenceAction::UpsertReminderRule(rule) = action {
+            // Whole-second column granularity: sub-second offsets
+            // truncate toward zero (due-date reminders are minute-scale;
+            // config durations are seconds-granularity).
+            sqlx::query!(
+                r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(rule_id) DO UPDATE SET
+                       task_id = excluded.task_id,
+                       offset_seconds = excluded.offset_seconds,
+                       created_at = excluded.created_at"#,
+                codec::uuid_to_text(rule.id.as_uuid()),
+                codec::uuid_to_text(rule.task.as_uuid()),
+                rule.offset.as_duration().num_seconds(),
+                rule.created_at.to_rfc3339(),
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+            tracing::trace!(rule = ?rule.id, task = ?rule.task, "reminder rule upserted");
+        }
+    }
+
+    for action in actions {
+        if let PersistenceAction::DeleteReminderRule(rule_id) = action {
+            let reminder = codec::reminder_ref_to_text(ReminderRef::Rule(*rule_id));
+            sqlx::query!(
+                r#"DELETE FROM reminder_deliveries WHERE reminder = ?"#,
+                reminder
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+            sqlx::query!(
+                r#"DELETE FROM reminder_snoozes WHERE reminder = ?"#,
+                reminder
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+            sqlx::query!(
+                r#"DELETE FROM reminder_rules WHERE rule_id = ?"#,
+                codec::uuid_to_text(rule_id.as_uuid())
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+            tracing::trace!(rule = ?rule_id, "reminder rule pruned with its dependents");
+        }
+    }
+
+    for action in actions {
+        if let PersistenceAction::RecordReminderDelivery(delivery) = action {
+            // First write wins: a replayed delivery is a no-op in SQL too,
+            // so the crash-between-apply-and-notify replay stays benign.
+            sqlx::query!(
+                r#"INSERT INTO reminder_deliveries (reminder, occurrence, delivered_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(reminder, occurrence) DO NOTHING"#,
+                codec::reminder_ref_to_text(delivery.reminder),
+                delivery.occurrence.to_rfc3339(),
+                delivery.delivered_at.to_rfc3339(),
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+            tracing::trace!(reminder = %codec::reminder_ref_to_text(delivery.reminder), "reminder delivery recorded");
+        }
+    }
+
+    for action in actions {
+        if let PersistenceAction::RecordReminderSnooze(snooze) = action {
+            sqlx::query!(
+                r#"INSERT INTO reminder_snoozes (reminder, occurrence, rescheduled_to)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(reminder, occurrence) DO UPDATE SET
+                       rescheduled_to = excluded.rescheduled_to"#,
+                codec::reminder_ref_to_text(snooze.reminder),
+                snooze.occurrence.to_rfc3339(),
+                snooze.rescheduled_to.to_rfc3339(),
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+            tracing::trace!(reminder = %codec::reminder_ref_to_text(snooze.reminder), "reminder snooze recorded");
+        }
+    }
+
+    for action in actions {
+        if let PersistenceAction::SetTaskRemindersMuted(task, muted) = action {
+            if *muted {
+                sqlx::query!(
+                    r#"INSERT INTO reminder_muted (task_id) VALUES (?)
+                       ON CONFLICT(task_id) DO NOTHING"#,
+                    codec::uuid_to_text(task.as_uuid()),
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| stmt_error(&e))?;
+            } else {
+                sqlx::query!(
+                    r#"DELETE FROM reminder_muted WHERE task_id = ?"#,
+                    codec::uuid_to_text(task.as_uuid())
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| stmt_error(&e))?;
+            }
+            tracing::trace!(task = ?task, muted, "task reminders muted toggled");
         }
     }
 
