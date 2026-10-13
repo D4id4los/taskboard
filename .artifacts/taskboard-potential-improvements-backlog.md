@@ -2033,3 +2033,65 @@ When picked up: management surfaces over the existing shapes — an
 "add another reminder" affordance in the task editor, per-rule
 snooze/dismiss correlation via `ReminderRef`, no domain changes
 expected beyond UI work.
+
+## [2026-10-12] Raise the Miri pipeline/state case caps on a measured probe
+
+- **Category**: `Testing` / `CI`
+- **Originating Plan/Report**: WI-C review analysis of green run
+  38312493624 (chat context; plan
+  `.artifacts/plans/2026-10-12-ci-miri-tuning-plan.md`)
+- **Target Area**: `.github/workflows/miri.yml`
+
+### Context & Description
+The tuned weekly Miri job uses the interpreter's budget very unevenly:
+the state job finishes in ≈ 8 min and the properties job in ≈ 21 min
+against the ≈ 90-minute headroom bar, while the pipeline job runs its
+two properties at `PROPTEST_CASES=1`. Notably, the state crate's p2/p3
+equivalence pins turned out cheap under the interpreter — 32
+interpreted cases fit inside an ≈ 8-minute job — so the plan-time fear
+of a ">9 min per case" state property described the gated live-engine
+family, not these. More interpreted coverage is available for free;
+the caps were sized from priors, not from the runner's actual curve.
+
+### Proposed Approach
+One probe dispatch per candidate: raise the state cap severalfold
+(e.g. 32→64) and the pipeline cap to 2 (its cost dominator is ≈ 15 min
+per interpreted case, so cap 2 projects ≈ 35–50 min), keep whatever
+measures ≤ 90 min, record the justification in the moving PR per
+`docs/testing_strategy.org` §10's cap policy. Diminishing returns —
+worth bundling with other CI work rather than as its own item.
+
+## [2026-10-12] Deterministic stamps for clock-gated fixture builders
+
+- **Category**: `Testing`
+- **Originating Plan/Report**: WI-C review analysis of green run
+  38312493624 (chat context)
+- **Target Area**: `crates/taskboard-domain/src/` (tests)
+
+### Context & Description
+Three of the four realtime-clock Miri gates added in WI-C are
+avoidable: they skip tests whose *fixture construction* reads the
+clock, not the logic under test. `test_support/contract.rs` stamps
+five `SystemClock.now()` outbox entries (the only nondeterminism in an
+otherwise fully fixed harness — it already has `clock_at(secs)`
+helpers), `outbox.rs`'s serde roundtrip stamps `Uuid::now_v7()` ×3 +
+`Utc::now()`, and `test_support/memory.rs`'s read-port test stamps one
+`Utc::now()`. Under Miri's default isolation (no
+`clock_gettime(REALTIME)`) each aborts, so the PendingOp serde
+roundtrip, the read-port routing contract, and the whole repository
+contract harness currently get zero interpreted coverage. The
+remaining two gates (`clock.rs` SystemClock, `idgen.rs`
+UuidV7Generator) are inherent — production code itself reads the
+clock.
+
+### Proposed Approach
+Replace fixture stamps with fixed, distinct, strictly increasing
+timestamps (distinct and ordered so any timestamp-ordering semantics
+stay exercised): `contract.rs` routes its five stamps through a
+`clock_at`-style helper — the `Clock` trait seam already exists in
+`clock.rs`, and the state crate's test-common already ships a concrete
+`FixedClock`); `outbox.rs`/`memory.rs` use fixed `Utc.timestamp_opt`
+values and `Uuid::from_u128` ids. Delete the three gates; keep the
+two inherent ones. All affected tests live in the cheap core job, so
+there is no budget impact. Re-verify with one `workflow_dispatch` of
+`miri.yml`.
