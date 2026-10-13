@@ -8,7 +8,7 @@
 //! and the snooze-chain compaction of the persistence post-pass — so
 //! every strategy-fed property sees only invariant-satisfying states.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use proptest::prelude::*;
@@ -257,20 +257,10 @@ fn pick_ref(rule_ids: &[ReminderRuleId], task_ids: &[TaskId], pick: usize) -> Op
     }
 }
 
-/// Mirrors the persistence post-pass: prunes links whose source and
-/// target occurrences are both delivered (the invariant the strategy
-/// world guarantees; the action world derives).
+/// The strategy world normalizes through the same primitive the action
+/// world derives with — one compaction definition site.
 fn compact(state: &mut ReminderState) {
-    let keep: BTreeSet<ReminderSnoozeKey> = state
-        .snoozes
-        .iter()
-        .filter(|(key, target)| {
-            state.is_delivered(&key.reminder, &key.occurrence)
-                && state.is_delivered(&key.reminder, target)
-        })
-        .map(|(key, _)| *key)
-        .collect();
-    state.snoozes.retain(|key, _| keep.contains(key));
+    crate::reminders::compact_snooze_chains(state);
 }
 
 #[cfg(test)]

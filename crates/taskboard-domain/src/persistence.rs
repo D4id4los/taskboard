@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::entities::{Board, Label, Stack};
+use crate::ids::ReminderRuleId;
 use crate::outbox::{OpId, PendingOp};
+use crate::reminders::{ReminderDelivery, ReminderRef, ReminderSnooze, ReminderState};
 use crate::state::{AppState, SyncStatus};
 
 /// Hand-rolled boxed future alias: the domain may not depend on
@@ -93,6 +95,10 @@ pub struct PersistedState {
     pub validators: BTreeMap<ValidatorKey, SyncValidators>,
     /// Last-known sync status.
     pub sync: SyncStatus,
+    /// Persisted reminder facts (rules, delivery proofs, snooze links,
+    /// muted tasks); delivered-ness and snoozed-ness are plain
+    /// set-membership checks.
+    pub reminders: ReminderState,
 }
 
 impl From<PersistedState> for AppState {
@@ -188,6 +194,23 @@ pub enum PersistenceAction {
     /// stored: implementations derive it at load time from the outbox depth,
     /// so a stored counter can never drift from the queue it summarizes.
     UpsertSyncStatus(SyncStatus),
+    /// Insert or replace a reminder rule.
+    UpsertReminderRule(crate::reminders::ReminderRule),
+    /// Remove a rule **and prune its deliveries and snooze links**:
+    /// bounded growth without a background GC.
+    DeleteReminderRule(ReminderRuleId),
+    /// Record a delivery proof. Set-union on the `(reminder, occurrence)`
+    /// key: a replayed delivery is a no-op — first write wins (the SQL
+    /// primary-key parity; the crash-between-apply-and-notify moment
+    /// stays benign).
+    RecordReminderDelivery(ReminderDelivery),
+    /// Record a snooze link. Replaces any prior link for the same
+    /// `(reminder, occurrence)`.
+    RecordReminderSnooze(ReminderSnooze),
+    /// Mute (`true`) or unmute (`false`) all firings of a task. The
+    /// overdue banner is unaffected by construction (it never reads the
+    /// muted set).
+    SetTaskRemindersMuted(crate::ids::TaskId, bool),
 }
 
 /// Applies a batch of [`PersistenceAction`]s to a [`PersistedState`] —
@@ -200,9 +223,14 @@ pub enum PersistenceAction {
 /// sqlite upsert on `op_id` — contract-pinned); `CompleteOp`/`FailOp`
 /// remove by op id; `UpsertValidators` replaces the key;
 /// `UpsertSyncStatus` sets phase + last success only (`pending_ops` is
-/// never stored). A final derivation re-computes `sync.pending_ops` from
-/// the outbox depth, so the counter can never drift from the queue it
-/// summarizes (both this function and `load()` derive it).
+/// never stored). Reminder actions: rule upserts replace by id; a rule
+/// delete prunes the rule's deliveries and snooze links with it; a
+/// delivery insert is set-union on the `(reminder, occurrence)` key
+/// (first write wins); a snooze link replaces any prior link for the
+/// same key; mute toggles membership. A final derivation re-computes
+/// `sync.pending_ops` from the outbox depth, and fully-delivered snooze
+/// links are compacted — both derivations run unconditionally after
+/// every batch (both this function and `load()` derive them).
 pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) {
     for action in actions {
         match action {
@@ -237,8 +265,51 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 state.sync.phase = status.phase;
                 state.sync.last_success = status.last_success;
             }
+            PersistenceAction::UpsertReminderRule(rule) => {
+                state.reminders.rules.insert(rule.id, rule.clone());
+            }
+            PersistenceAction::DeleteReminderRule(id) => {
+                state.reminders.rules.remove(id);
+                state
+                    .reminders
+                    .deliveries
+                    .retain(|d| d.reminder != ReminderRef::Rule(*id));
+                state
+                    .reminders
+                    .snoozes
+                    .retain(|key, _| key.reminder != ReminderRef::Rule(*id));
+            }
+            PersistenceAction::RecordReminderDelivery(delivery) => {
+                if !state
+                    .reminders
+                    .is_delivered(&delivery.reminder, &delivery.occurrence)
+                {
+                    state.reminders.deliveries.insert(*delivery);
+                }
+            }
+            PersistenceAction::RecordReminderSnooze(snooze) => {
+                state.reminders.snoozes.insert(
+                    crate::reminders::ReminderSnoozeKey {
+                        reminder: snooze.reminder,
+                        occurrence: snooze.occurrence,
+                    },
+                    snooze.rescheduled_to,
+                );
+            }
+            PersistenceAction::SetTaskRemindersMuted(task, muted) => {
+                if *muted {
+                    state.reminders.muted.insert(*task);
+                } else {
+                    state.reminders.muted.remove(task);
+                }
+            }
         }
     }
+    // A snooze link whose source and target occurrences are both
+    // delivered can never influence evaluation again — both endpoints
+    // suppress on their own. Pruning it bounds chain growth with zero
+    // behavioral change (the compaction-unobservability property).
+    crate::reminders::compact_snooze_chains(&mut state.reminders);
     // Derived, never tracked: after every batch the pending count is
     // re-derived from the outbox it summarizes.
     state.sync.pending_ops = u32::try_from(state.outbox.len()).unwrap_or(u32::MAX);
@@ -434,6 +505,354 @@ mod tests {
             let mut got = state;
             apply_actions(&mut got, &[]);
             prop_assert_eq!(got, expected);
+        }
+    }
+
+    // ---- Reminder actions (chunk-1 semantics, defined once here) ------
+
+    fn reminder_rule(raw: u128) -> crate::reminders::ReminderRule {
+        crate::reminders::ReminderRule {
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(raw)),
+            task: crate::ids::TaskId::from(uuid::Uuid::from_u128(raw + 1)),
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: ts(100),
+        }
+    }
+
+    #[test]
+    fn reminder_rule_upsert_replaces_by_id_and_delete_prunes_dependents() {
+        let mut state = PersistedState::default();
+        let rule = reminder_rule(1);
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::UpsertReminderRule(rule.clone())],
+        );
+        let mut renamed = rule.clone();
+        renamed.offset =
+            crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
+                .unwrap();
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::UpsertReminderRule(renamed)],
+        );
+        assert_eq!(state.reminders.rules.len(), 1, "replace, not append");
+
+        let r = crate::reminders::ReminderRef::Rule(rule.id);
+        let task_ref = crate::reminders::ReminderRef::Default(rule.task);
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: r,
+                    occurrence: ts(1_000),
+                    delivered_at: ts(1_001),
+                }),
+                PersistenceAction::RecordReminderSnooze(crate::reminders::ReminderSnooze {
+                    reminder: r,
+                    occurrence: ts(2_000),
+                    rescheduled_to: ts(3_000),
+                }),
+                // A default-reminder row must survive the rule delete.
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: task_ref,
+                    occurrence: ts(1_000),
+                    delivered_at: ts(1_001),
+                }),
+            ],
+        );
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::DeleteReminderRule(rule.id)],
+        );
+        assert!(state.reminders.rules.is_empty());
+        assert_eq!(
+            state.reminders.deliveries.len(),
+            1,
+            "only the default-reminder delivery survives"
+        );
+        assert!(state.reminders.snoozes.is_empty());
+    }
+
+    #[test]
+    fn reminder_delivery_replay_is_a_no_op_first_write_wins() {
+        let mut state = PersistedState::default();
+        let r = crate::reminders::ReminderRef::Default(crate::ids::TaskId::from(
+            uuid::Uuid::from_u128(5),
+        ));
+        let first = crate::reminders::ReminderDelivery {
+            reminder: r,
+            occurrence: ts(1_000),
+            delivered_at: ts(1_001),
+        };
+        let replay = crate::reminders::ReminderDelivery {
+            reminder: r,
+            occurrence: ts(1_000),
+            delivered_at: ts(9_999),
+        };
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordReminderDelivery(first),
+                PersistenceAction::RecordReminderDelivery(replay),
+            ],
+        );
+        assert_eq!(
+            state
+                .reminders
+                .deliveries
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![first],
+            "the replay must not replace the first proof"
+        );
+    }
+
+    #[test]
+    fn reminder_snooze_replaces_the_prior_link_for_the_same_key() {
+        let mut state = PersistedState::default();
+        let r = crate::reminders::ReminderRef::Default(crate::ids::TaskId::from(
+            uuid::Uuid::from_u128(5),
+        ));
+        let first = crate::reminders::ReminderSnooze {
+            reminder: r,
+            occurrence: ts(1_000),
+            rescheduled_to: ts(2_000),
+        };
+        let second = crate::reminders::ReminderSnooze {
+            reminder: r,
+            occurrence: ts(1_000),
+            rescheduled_to: ts(3_000),
+        };
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordReminderSnooze(first),
+                PersistenceAction::RecordReminderSnooze(second),
+            ],
+        );
+        assert_eq!(
+            state
+                .reminders
+                .snoozes
+                .get(&crate::reminders::ReminderSnoozeKey {
+                    reminder: r,
+                    occurrence: ts(1_000),
+                }),
+            Some(&ts(3_000))
+        );
+        assert_eq!(state.reminders.snoozes.len(), 1);
+    }
+
+    #[test]
+    fn task_mute_toggles_membership_without_touching_the_banner_inputs() {
+        let mut state = PersistedState::default();
+        let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(5));
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::SetTaskRemindersMuted(task, true),
+                PersistenceAction::SetTaskRemindersMuted(task, true),
+            ],
+        );
+        assert_eq!(state.reminders.muted.len(), 1, "set is idempotent");
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::SetTaskRemindersMuted(task, false)],
+        );
+        assert!(state.reminders.muted.is_empty());
+    }
+
+    #[test]
+    fn snooze_compaction_prunes_only_fully_delivered_links() {
+        let mut state = PersistedState::default();
+        let r = crate::reminders::ReminderRef::Default(crate::ids::TaskId::from(
+            uuid::Uuid::from_u128(5),
+        ));
+        // Pruned: source and target both delivered.
+        let settled = crate::reminders::ReminderSnooze {
+            reminder: r,
+            occurrence: ts(1_000),
+            rescheduled_to: ts(2_000),
+        };
+        // Kept: only the target delivered — the source can still settle
+        // (it would re-arm under target-only pruning; the divergence case).
+        let source_live = crate::reminders::ReminderSnooze {
+            reminder: r,
+            occurrence: ts(3_000),
+            rescheduled_to: ts(4_000),
+        };
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordReminderSnooze(settled),
+                PersistenceAction::RecordReminderSnooze(source_live),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: r,
+                    occurrence: ts(1_000),
+                    delivered_at: ts(1_001),
+                }),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: r,
+                    occurrence: ts(2_000),
+                    delivered_at: ts(2_001),
+                }),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: r,
+                    occurrence: ts(4_000),
+                    delivered_at: ts(4_001),
+                }),
+            ],
+        );
+        assert!(
+            !state
+                .reminders
+                .snoozes
+                .contains_key(&crate::reminders::ReminderSnoozeKey {
+                    reminder: r,
+                    occurrence: ts(1_000),
+                })
+        );
+        assert!(
+            state
+                .reminders
+                .snoozes
+                .contains_key(&crate::reminders::ReminderSnoozeKey {
+                    reminder: r,
+                    occurrence: ts(3_000),
+                })
+        );
+    }
+
+    proptest! {
+        #![proptest_config(test_support::proptest_config(256))]
+
+        #[test]
+        fn p5_settlement_roundtrip_through_apply_actions(
+            (app, reminders) in test_support::app_state_with_reminders_strategy(),
+            offset in test_support::reminder_offset_strategy(),
+            now in test_support::timestamp_strategy(),
+            snooze_mask in any::<u64>(),
+            mute_mask in any::<u64>(),
+        ) {
+            let defaults = crate::reminders::ReminderDefaults { default_before: offset };
+            let f1 = crate::reminders::due_firings(&app.tasks, &reminders, &defaults, now);
+            let mut actions = Vec::new();
+            for (i, f) in f1.iter().enumerate() {
+                actions.push(PersistenceAction::RecordReminderDelivery(
+                    crate::reminders::ReminderDelivery {
+                        reminder: f.reminder,
+                        occurrence: f.occurrence,
+                        delivered_at: now,
+                    },
+                ));
+                // Snooze a subset with a strictly future target: the
+                // delivery settles the original occurrence, the link
+                // moves the next one.
+                if (snooze_mask >> i) & 1 == 1 {
+                    actions.push(PersistenceAction::RecordReminderSnooze(
+                        crate::reminders::ReminderSnooze {
+                            reminder: f.reminder,
+                            occurrence: f.occurrence,
+                            rescheduled_to: now + chrono::TimeDelta::try_minutes(10).unwrap(),
+                        },
+                    ));
+                }
+            }
+            for (i, task_id) in app.tasks.keys().enumerate() {
+                if (mute_mask >> (i % 64)) & 1 == 1 {
+                    actions.push(PersistenceAction::SetTaskRemindersMuted(*task_id, true));
+                }
+            }
+            let mut state = PersistedState {
+                reminders,
+                ..PersistedState::default()
+            };
+            apply_actions(&mut state, &actions);
+            let settled = &state.reminders;
+
+            // (a) nothing fires again at `now`...
+            let f2 = crate::reminders::due_firings(&app.tasks, settled, &defaults, now);
+            prop_assert!(f2.is_empty(), "settled occurrences must not refire");
+            // (b) snoozed reminders stay quiet at any sampled instant
+            // before their target (now + 10 m).
+            let probe = now + chrono::TimeDelta::try_minutes(9).unwrap();
+            let snoozed_refs: std::collections::BTreeSet<_> = settled
+                .snoozes
+                .keys()
+                .map(|key| key.reminder)
+                .collect();
+            let at_probe = crate::reminders::due_firings(&app.tasks, settled, &defaults, probe);
+            prop_assert!(
+                at_probe.iter().all(|f| !snoozed_refs.contains(&f.reminder)),
+                "a snoozed reminder must not fire before its target"
+            );
+            // (c) muted tasks contribute zero firings.
+            let fired_tasks: std::collections::BTreeSet<_> =
+                crate::reminders::due_firings(&app.tasks, settled, &defaults, now + chrono::TimeDelta::try_minutes(20).unwrap())
+                    .into_iter()
+                    .map(|f| f.task)
+                    .collect();
+            prop_assert!(fired_tasks.iter().all(|t| !settled.muted.contains(t)));
+            // (d) persisted invariants: <= 1 delivery per key; compacted.
+            let keys: std::collections::BTreeSet<_> = settled
+                .deliveries
+                .iter()
+                .map(|d| (d.reminder, d.occurrence))
+                .collect();
+            prop_assert_eq!(keys.len(), settled.deliveries.len());
+            for key in settled.snoozes.keys() {
+                prop_assert!(!settled.is_delivered(&key.reminder, &key.occurrence)
+                    || !settled.is_delivered(&key.reminder, &settled.snoozes[key]));
+            }
+        }
+
+        #[test]
+        fn compaction_is_unobservable_in_due_firings(
+            (app, reminders) in test_support::app_state_with_reminders_strategy(),
+            offset in test_support::reminder_offset_strategy(),
+            now in test_support::timestamp_strategy(),
+        ) {
+            let defaults = crate::reminders::ReminderDefaults { default_before: offset };
+            let mut normalized = PersistedState {
+                reminders: reminders.clone(),
+                ..PersistedState::default()
+            };
+            apply_actions(&mut normalized, &[]);
+            let got_plain = crate::reminders::due_firings(&app.tasks, &reminders, &defaults, now);
+            let got_compacted =
+                crate::reminders::due_firings(&app.tasks, &normalized.reminders, &defaults, now);
+            prop_assert_eq!(got_plain, got_compacted);
+        }
+
+        #[test]
+        fn compaction_is_unobservable_on_hand_uncompacted_states(
+            (app, reminders) in test_support::app_state_with_reminders_strategy(),
+            offset in test_support::reminder_offset_strategy(),
+            now in test_support::timestamp_strategy(),
+        ) {
+            let defaults = crate::reminders::ReminderDefaults { default_before: offset };
+            // Un-compact: deliver both endpoints of an existing link, the
+            // representable-but-unsanctioned shape normalization prunes.
+            let mut dirty = reminders.clone();
+            if let Some((&key, &target)) = reminders.snoozes.iter().next() {
+                for occurrence in [key.occurrence, target] {
+                    dirty.deliveries.insert(crate::reminders::ReminderDelivery {
+                        reminder: key.reminder,
+                        occurrence,
+                        delivered_at: now,
+                    });
+                }
+            }
+            let mut normalized = PersistedState {
+                reminders: dirty.clone(),
+                ..PersistedState::default()
+            };
+            apply_actions(&mut normalized, &[]);
+            prop_assert_eq!(
+                crate::reminders::due_firings(&app.tasks, &dirty, &defaults, now),
+                crate::reminders::due_firings(&app.tasks, &normalized.reminders, &defaults, now)
+            );
         }
     }
 
