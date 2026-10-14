@@ -1460,8 +1460,33 @@ tracked for WI-3: `logout`'s interaction with `backend`.
 > (`SyncCommand::Detach`, `App::detach_connector`, the
 > `DetachConnector` IPC verb with the additive-no-bump policy), so a
 > future daemon-side attach verb rides that pattern with no envelope
-> decision left to make. Entries stay open until the implementation
-> items (§12 there) land.
+> decision left to make.
+>
+> **Status**: ✅ DONE (implemented 2026-10-13/14, chunks 1–3 of the
+> WI-J dispatch: `feat/connect-engine-attach` — the attach primitive,
+> `feat/app-connect-verb` — the one-shot ceremony + deprecated alias,
+> ADR 0014; the session half is the sibling entry below).
+
+### [2026-10-14] In-session `status` should surface `connector_attached`
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-connect-flow-design-plan.md` §4.6 (rider named at design round 3; recorded per AGENTS §7 during WI-J chunk 3)
+- **Target Area**: `crates/taskboard-app/src/commands/status.rs`
+
+#### Context & Description
+ADR 0014 made the session's connector attach/detach dynamic (a
+`connect`/`logout` line reshapes the running core), but the in-session
+`status` view (`StatusView::in_session()`) still answers
+`connector_attached: None` — it predates dynamic attachment. Today the
+honesty rides `sync`'s typed refusals (`sync-disabled` after a logout,
+`sync-unavailable` after a detach), which the journeys pin; a `status`
+line just does not name the fact.
+
+#### Proposed Approach
+`dispatch_line`'s `Command::Status` arm reads `app.connector_attached()`
+and threads it into the view (a one-line honesty improvement; needs a
+session-status constructor that takes the flag). The JSON-shape
+addition is pre-v0.1.0-sanctioned.
 
 ### [2026-10-14] Scoped SIGINT handler so Ctrl-C cancels an in-session prompt line instead of ending the process
 
@@ -1472,12 +1497,14 @@ tracked for WI-3: `logout`'s interaction with `backend`.
 #### Context & Description
 ADR 0011 gives Ctrl-C at the session prompt line-level semantics
 (rustyline maps it to `Interrupted`; the session survives). Mid-ceremony
-the picture differs: cooked prompt reads keep SIGINT's default
-disposition, and `rpassword`'s masked read (ISIG off) re-raises SIGINT
-itself on the ^C byte — both end the process mid-line. Verified and
-accepted for the connect-flow round (nothing is persisted mid-prompt,
-so death is safe), but the UX is asymmetric: Ctrl-C one keystroke
-earlier or later means "clear the line" vs "quit the app".
+the outcome follows the environment's SIGINT disposition (ADR 0014's
+recorded verification): with the default disposition, cooked prompt
+reads and `rpassword`'s masked read (ISIG off, ^C re-raised) both end
+the process mid-line; where SIGINT is ignored, the typed cancellation
+path already survives. Accepted for the connect-flow round (nothing is
+persisted mid-prompt, so death is safe), but the UX is asymmetric:
+Ctrl-C one keystroke earlier or later means "clear the line" vs "quit
+the app".
 
 #### Proposed Approach
 Around a ceremony's prompted reads on the editor thread, install a
@@ -1714,8 +1741,14 @@ rustyline's terminal for the masked-secret prompt.
 > refresh — plan §4.6), so both ADR 0011 session refusals die.
 > Daemon-side attach over IPC remains future work riding WI-H's
 > merged additive-verb pattern (no secret on the wire — the daemon
-> re-reads its config and credential store). Entry stays open until
-> the implementation items (§12 there) land.
+> re-reads its config and credential store).
+>
+> **Status**: ✅ DONE (implemented 2026-10-14, chunk 3
+> `feat/app-connect-session`: the in-session connect/logout ceremonies
+> over the editor-thread disposition handshake — config refresh +
+> `attach_connector`/`detach_connector`, ADR 0014. The REPL half; the
+> GUI/daemon halves remain future work riding the same
+> frontend-agnostic ceremony functions).
 
 ### [2026-10-12] Multiple active sync connectors
 
