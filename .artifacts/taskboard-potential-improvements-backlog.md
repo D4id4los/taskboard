@@ -2451,3 +2451,102 @@ end-of-day review default prompts) and treat user-built presets as an
 opt-in progression, mirroring R5's preset strategy. Pair with the R7
 "interaction-count-per-core-verb" usability check as the audit that
 keeps defaults honest.
+
+---
+
+## [2026-10-14] Task-description templates for structured capture
+
+- **Category**: `UI`
+- **Originating Report**: `.artifacts/reports/2026-10-14-adhd-support-research-report.md` (principles P3, P11; user follow-up to the report)
+- **Target Area**: `taskboard-ui-slint` capture/editing surfaces over plain task descriptions
+
+### Context & Description
+The ADHD research spike leaves the task description doing scaffold duty
+until subtasks land (Wave 3): P3's build direction lets "the
+description's first checklist/next-action line" carry the next-step
+structure, and P11's implementation-intention evidence (d = 0.65) wants
+when/where anchors on tasks. Nothing today gives users a path of least
+resistance to that structure — descriptions start blank and structure
+must be re-invented per task. The closest prior art to taskboard's
+interaction model already validates the mechanism: the org-mode ADHD
+thread cited by the report [84] credits capture *templates* ("I've got
+like 10 capture templates — homework, personal, email followups") as a
+core workflow anchor. This is P7's constrain-by-default logic applied
+to content instead of configuration. Out of scope for the report (a
+product feature, not a principle); parked here per the dispatch's scope
+rule.
+
+### Proposed Approach
+Ship a small set of curated description templates (next-action +
+when/where anchor + checklist skeleton; P7 says curated presets, not a
+template editor first) insertable at capture and at edit time, riding
+the Wave-1 quick-capture surface. Design against the wave analysis §3.6
+markup story so templates are org/markdown snippets the active parser
+understands, not a competing format. Purely GUI-side text insertion at
+first — no domain change — keeping the door open for structured
+extraction later.
+
+---
+
+## [2026-10-14] Default next-task fill (agenda-aware suggestion as a state, not a view)
+
+- **Category**: `UI`
+- **Originating Report**: `.artifacts/reports/2026-10-14-adhd-support-research-report.md` (principles P3, P5, P11; user follow-up to the report)
+- **Target Area**: `taskboard-ui-slint` today-view surface + a core ranking function over `taskboard-domain` (reuse of the §3.4 decision-support scorer)
+
+### Context & Description
+The planned decision support (wave analysis §3.4) is a *query view*:
+the user asks "what next?" and gets an answer. P3's build direction
+already says it should present one suggestion, not a ranked wall. The
+extension parked here is a more assertive mechanism: a persistent,
+always-filled "next" slot that pre-populates by default and stays live
+until the user changes it — drawn first from a clear follow-up task in
+the same work-kind, else from the day's agenda (scheduled/imminent work
+per P2/P4/P5). Research grounds the agenda leg (externalised time,
+honest urgency, cue-anchored work); the similarity-chaining leg has *no*
+research basis in the report — it is a product bet and must be recorded
+as such, not laundered as evidence-backed. Open design questions (its
+own design round before building): when it fills (on completion? on
+opening the today view?), how it stays inside P12 (inform, never nag)
+and X9 (local-only data), and the Wave-1 blockers — no work-kind
+taxonomy exists in the domain (§3.1 has only the time-tracker
+`TaskKind`), and the scheduled/effort fields + today view are
+prerequisites.
+
+### Proposed Approach
+Design round when Wave-1 fields and the today view land; the scoring
+core is the decision-support function (pure, proptest-able) plus a
+"current default" projection the today view renders as a fillable slot.
+Prefer agenda-derived fills as the default mode; treat work-kind
+chaining as an opt-in experiment. Never auto-jumps or auto-switches —
+the fill is a suggestion the user accepts or replaces (P12).
+
+---
+
+## [2026-10-14] Weekly and monthly review/planning sessions
+
+- **Category**: `UI`
+- **Originating Report**: `.artifacts/reports/2026-10-14-adhd-support-research-report.md` (principle P13; user follow-up to the report)
+- **Target Area**: `taskboard-ui-slint` review views + `taskboard-state` review command flow (extension of the §3.4 W2 end-of-day review)
+
+### Context & Description
+The roadmap's review machinery is entirely day-scoped: end-of-day
+review and plan-for-next-day (both W2); the only coarser cadence is the
+Goals/Values review, parked behind the Wave-3/4 hierarchy epic. But the
+report's own evidence base is cadence-generic: the fresh-start effect
+[25] explicitly covers week and month boundaries, GTD's Weekly Review
+[63] is the canonical cadence anchor, and bullet-journal Migration
+[65] operates at weekly/monthly granularity. P13 gestures at weekly/
+monthly anchors but only as statistics hooks, not interactive sessions.
+Out of scope for the report (a product feature); parked here with one
+time-critical note below.
+
+### Proposed Approach
+**Design the Wave-2 end-of-day review boundary-generic from the start**
+(day/week/month as a parameter of the same review flow — templates,
+triage-and-forgive walk, journal entries, planning output), not as
+three separate features; that constraint is cheapest to impose now and
+expensive to retrofit after W2 ships a day-only flow. Interactive
+weekly/monthly sessions then land as thin parameterisations after W2.
+Weekly review should roll up: inbox triage (P1), miss rescheduling
+(P9), next week's boxes (P4), estimate-vs-actual drift (P14).
