@@ -36,10 +36,11 @@
   proposal (normative sections) or an agenda row with a proposed default
   (§11); (c) hands chunk 4 a chunk decomposition it can turn into
   dispatch prompts verbatim.
-- **Status**: DRAFT — for the user design session. The session iterates
-  on this plan in PR review rounds (connect-flow precedent), flips this
-  header to `ACCEPTED`, and fills §16. No agent merges the branch before
-  that.
+- **Status**: ACCEPTED 2026-10-14 — design session round 1 resolved
+  all 23 agenda rows (§16 filled; the redirected rows Q3/Q15/Q17 had
+  their normative sections amended in the same commit). PR review
+  rounds remain the merge gate; further amendments are fresh
+  stage-2-style invocations against this branch.
 
 ---
 
@@ -131,11 +132,12 @@ feature-surface item (views, overlays, palettes) enters v0.1.0.
 - The component library skeleton under the layering rules (§4)
   and exactly **three views**: board (kanban columns), stack detail,
   task detail — plus the sync-status/offline indicator (reads
-  `SystemEvent` broadcast) and the persistent overdue banner if the
-  session confirms Q23 (rides the already-designed reminders signal
+  `SystemEvent` broadcast) and the persistent overdue banner (Q23
+  accepted in round 1; rides the already-designed reminders signal
   path).
 - The action-dispatch keybinding layer with the `standard`, `emacs`,
-  and `vi` presets at core-verb coverage (§5).
+  and `vi` presets at core-verb coverage, plus its one R8
+  projection: the generated `app.menu` (§5.9).
 - `[ui] scale` as a live user setting via the root-multiplier model
   (§6); breakpoints for the board view (§6.3).
 - The logical automation harness (journeys through
@@ -173,7 +175,7 @@ column matches the analysis report §6.
 | Pomodoro focus overlay | W2 | "one window, few exits" is expressible: focus scopes + action contexts disable global binds per view (§5.2 contexts); early sketch validated cheaply by this seam existing |
 | EOD review/journal/statistics | W2 | form-view composition; chart story verified when the wave opens |
 | Undo tree view | W3 (design round D4 earlier) | `app.undo`/`app.redo` global reserved actions (§5.8); undo is global-not-per-view by construction |
-| Reminder surfaces: overdue banner, toasts w/ snooze/mute, insistent alarm | banner: v0.1.0 candidate (Q23); toasts: reminders plan 5; alarm: later | banner rides designed signal path (§1.4); toast snooze/mute = UI-originated `StateCommand`s (agenda Q3); alarm = overlay over the pomodoro-grade focus seam |
+| Reminder surfaces (overdue banner, toasts w/ snooze/mute, insistent alarm) + the generic toast surface | banner: v0.1.0 (Q23 accepted); toasts: reminders plan 5 + error surfacing; alarm: later | toasts are a **generic** transient-message composition — *reminders are toasts*, not the reverse: warnings and recoverable errors are sources too (§16 Q3); reminder toast actions (snooze/mute) = UI-originated `StateCommand`s; `NotificationSink` stays outbound-only; banner rides the designed signal path (§1.4); alarm = overlay over the pomodoro-grade focus seam |
 | Org/markup rendering in fields | per org-mode report phasing | editor widgets stay swappable behind the orgedit adapter plan; `StyledText` render + source toggle is the MVP shape (stress §3.7 confirms 1.18.1 unchanged) |
 | Markup help page (R10) | with markup feature | help content as data next to the parser crate (brief R10; not a UI-crate concern until then) |
 | Keymap visualiser (R8) | POST-1.0 | pure projection of keymap data + action registry (§5.9) |
@@ -183,8 +185,9 @@ column matches the analysis report §6.
 
 - The **exit criterion text is untouched**; a foundation seam is
   allowed to be *visible* in v0.1.0 only as: the scale setting, the
-  keymap presets, and (if Q23 confirms) the overdue banner. Anything
-  else user-visible from §2.3 would be scope creep.
+  keymap presets, the generated `app.menu` (§5.9, the one R8
+  projection), and the overdue banner (Q23 accepted). Anything else
+  user-visible from §2.3 would be scope creep.
 - If an implementation chunk discovers it needs a §2.3 surface to make
   a seam real (e.g. "we need the search palette to test the action
   contexts"), that is a design failure to bring back to the session,
@@ -417,11 +420,20 @@ consume, so typing never fights the keymap.
   user customisations**, and new actions in an upgrade simply appear
   (unbound unless the preset binds them) — the brief's merge-on-
   upgrade question resolved structurally.
-- Validation at load (app-side, where figment lives): unknown action
-  id, malformed stroke, binding to a masked context, **and
-  intra-context conflicts** are typed config errors listing all
-  offenders (agenda Q15: fail-fast default). The UI crate receives
-  an already-valid `Keymap` value — keeping the crate IO-free.
+- Validation at load (app-side, where figment lives) produces typed
+  findings — unknown action id, malformed stroke, binding to a
+  masked context, **intra-context conflicts** — listing all
+  offenders, and then **drops the offending entries and starts
+  anyway**: the effective keymap falls back to the preset binding
+  for every dropped override. A keyboard config never blocks the UI
+  from starting (§16 Q15; fail-fast was rejected as hostile
+  usability). v0.1.0 surfaces the findings via `tracing` warnings
+  plus a startup-warning state; the recorded **end-goal journey** —
+  UI starts, shows a warning with a button into the keyboard
+  settings page, which opens pre-filtered on the conflicting
+  bindings — lands with the settings view (POST-1.0). The UI crate
+  receives the validated `Keymap` value (valid subset + findings) —
+  keeping the crate IO-free.
 - The stroke parsing/merging/validation functions are pure Rust and
   fully unit-testable without Slint — this is *why* the layer is
   Rust-side.
@@ -446,9 +458,11 @@ crate buys testability we already have (pure modules in the UI crate
 test without rendering) at the cost of a new public surface to keep
 stable. The module boundary stays clean (no Slint types in
 `keymap`'s public API — key events enter via a small adapter), so
-extraction remains a cheap future refactor if a second frontend ever
-wants the layer. The alternative (tiny crate beside the UI crate) is
-recorded for the session but not recommended for v0.1.0.
+extraction remains a cheap future refactor — per session round 1
+(§16 Q2), moving the module out into its own crate **when a second
+project/crate wants it** is the intended trigger, and the boundary
+is kept exactly for that move. The alternative (tiny crate beside
+the UI crate now) was considered and declined for v0.1.0.
 
 ### 5.6 Slint integration
 
@@ -473,9 +487,12 @@ recorded for the session but not recommended for v0.1.0.
 Three layers, all cheap because the keymap is data: (a) unit tests
 assert shipped presets are conflict-free (the compiler-side duplicate
 detection `KeyBinding` offers for free does not apply to data-driven
-maps — ours replaces it); (b) config-load validation rejects user
-conflicts with a typed error listing both actions (Q15); (c) an
-in-app conflict *UI* is POST-1.0 (R8-adjacent polish). Sequences
+maps — ours replaces it); (b) config-load validation *detects* user
+conflicts and drops the offending overrides with a typed warning —
+it never blocks UI start (§16 Q15; end-goal: the settings-page
+journey described in §5.3); (c) the in-app conflict-resolution *UI*
+(the warning + settings deep-link + conflict filter) is POST-1.0
+(R8-adjacent polish, recorded as the design target). Sequences
 make "conflict" subtle (a prefix of another binding): the resolver
 treats "user pressed a prefix and then a non-matching key" as
 prefix-abort (beep/flash via a status signal), and validation flags
@@ -690,28 +707,37 @@ same journeys produce the keystroke-count metrics for check #2
 
 ## 9. First two usability checks (R7) — normative
 
-1. **Colour-contrast over theme token pairs** — a pure Rust unit
-   test (day one, CI): the theme module declares its legible pairs
-   (each text role × the surface tokens it appears on, plus
-   `Semantic` state colours × their surfaces) as data; the check
-   computes WCAG 2.x contrast ratios and enforces the recorded
-   minimums (≥ 4.5:1 body, ≥ 3:1 large/display, per role class).
-   This is possible *because* R2 is real (brief R7's own note). New
-   token pairs without a contrast assertion fail a completeness
-   check — the pair list cannot silently lag the theme.
-2. **Keyboard-journey keystroke budget per core verb** — the journey
-   suite (§7.3) records keystrokes per verb; each core verb carries
-   a **designed budget** (proposed: complete ≤ 2, move ≤ 4, create ≤
-   3, edit ≤ 3, menu-invoke ≤ 3; session tunes) and the check fails
-   when a verb exceeds its budget. **AGENTS §5 interplay, stated
-   openly** (agenda Q17): the "no quality ceilings" rule targets
-   caps on things that should ideally succeed arbitrarily; a
-   keystroke budget is a *regression ceiling on degradation* — a
-   strictly better UI (fewer keystrokes) still passes; the test
-   fails exactly when usability erodes past the designed contract.
-   The budgets live in this plan (session-approved), not in test
-   code, so they are design artefacts, not incidental pins. The
-   session blesses this reading explicitly.
+### 9.1 Colour-contrast over theme token pairs
+
+A pure Rust unit test (day one, CI): the theme module declares its
+legible pairs (each text role × the surface tokens it appears on,
+plus `Semantic` state colours × their surfaces) as data; the check
+computes WCAG 2.x contrast ratios and enforces the recorded
+minimums (≥ 4.5:1 body, ≥ 3:1 large/display, per role class). This
+is possible *because* R2 is real (brief R7's own note). New token
+pairs without a contrast assertion fail a completeness check — the
+pair list cannot silently lag the theme.
+
+### 9.2 Maximum keypresses per common action
+
+(Renamed from the draft's "keystroke budgets" after session round 1
+found the phrasing confusing — §16 Q17.) Plain statement of what
+this is: for each core verb, the journey suite (§7.3) counts the
+physical key presses a keyboard-only user needs to perform it (a
+chord such as `Ctrl+x Ctrl+c` counts as two presses), and CI fails
+if a change pushes a verb above its recorded ceiling (proposed:
+complete ≤ 2, move ≤ 4, create ≤ 3, edit ≤ 3, menu-invoke ≤ 3;
+session tunes). **What it protects against**: quiet usability
+regressions — a refactor that adds a focus hop or an extra
+confirmation step, or drops a context binding, so "complete the
+task" silently goes from one key to tab-tab-tab-enter. A strictly
+better UI (fewer presses) still passes; the check fires exactly
+when a common action gets harder. **AGENTS §5 interplay, stated
+openly** (agenda Q17): the "no quality ceilings" rule targets caps
+on things that should ideally succeed arbitrarily; this is a
+*regression ceiling on degradation*. The ceilings live in this plan
+(session-approved design contracts), not in test code, so they are
+design artefacts, not incidental pins.
 
 Deferred audits (POST-1.0, per brief R7): colour-blindness
 simulation over token pairs (cheap once the pair list exists —
@@ -752,15 +778,19 @@ Notes binding the strategy to house rules:
 
 Every row: proposed default, alternatives, consequences. Rows 1–6
 are the brief's §6 questions verbatim; 7–12 are the stress-test
-surprises; 13–23 are this design's own load-bearing choices. The
-session may accept a default in one line or diverge — diverging
-edits the corresponding normative section.
+surprises; 13–23 are this design's own load-bearing choices.
+
+> **Session round 1 (2026-10-14) resolved all 23 rows** — the
+> resolutions in §16 are authoritative. The table below preserves
+> the proposals as drafted; the three redirected rows (Q3, Q15,
+> Q17) carry a marker and had their normative sections amended in
+> the same commit.
 
 | # | Question | Proposed default | Alternatives | Consequences of the default |
 |---|---|---|---|---|
 | Q1 | Action namespace & keymap storage (brief §6-1) | `scope.verb` ids (§5.2); TOML in `[ui]` config: `preset` + per-action `overrides` (§5.3) | separate `keymap.toml` file; full-copy user keymap | merge-on-upgrade is structural (deltas never clobbered); figment hierarchy applies for free; alternative file = one more config surface + a merge story to invent |
 | Q2 | Action/keymap layer location (brief §6-2) | Rust module inside `taskboard-ui-slint` (§5.5) | tiny framework-agnostic crate beside it | no new public surface; testability already achieved via purity; extraction stays cheap later (no Slint types in the module API) |
-| Q3 | Notification-with-actions routing (brief §6-3) | toasts are reminders plan-5; when built, snooze/mute from a toast = **UI-originated `StateCommand`s** over the existing mpsc; `NotificationSink` stays outbound-only | reply channel inside `NotificationSink` port | no port widening; toast actions reuse the exact command vocabulary the banner/CLI already use; alternative couples the port to UI interaction semantics |
+| Q3 | Notification-with-actions routing (brief §6-3) | toasts are reminders plan-5; when built, snooze/mute from a toast = **UI-originated `StateCommand`s** over the existing mpsc; `NotificationSink` stays outbound-only | reply channel inside `NotificationSink` port | no port widening; toast actions reuse the exact command vocabulary the banner/CLI already use; alternative couples the port to UI interaction semantics **→ redirected round 1 (§16): toasts are a generic surface; reminders are one source.** |
 | Q4 | Kiosk vs desktop view architecture (brief §6-4) | **one view tree**; kiosk = display-mode state machine (hides chrome, rotates views) over shared components (§6.4) | two view sets | R1 layering pays off twice; risk: mode state touches every composition — mitigated by chrome ownership living in the window shell only |
 | Q5 | First two usability checks (brief §6-4/R7) | contrast-over-tokens + keystroke budgets (§9) | token-pair size floors; label semantic distance | both are day-one CI-cheap and mechanically tied to R2/R5; the research-flavoured options stay deferred |
 | Q6 | R6 visual harness split (brief §6-6) | seam now (scriptability rules + dev-gated MCP smoke), driver tooling POST-1.0 (§8.2) | full MCP driver tooling in Phase 7 | Phase 7 keeps 1–2 dev-days only; the LLM-debugging lane is proven by the smoke test without building tooling |
@@ -772,9 +802,9 @@ edits the corresponding normative section.
 | Q12 | Pin shape (stress §5) | `slint = "1.18.1"` (caret) + `i-slint-backend-testing = "=1.18.1"`; Cargo.lock guards drift; bumps move both together | exact-pin both | patch fixes arrive via caret within lockfile discipline; the internal-crate contract is the constraint actually needing exactness |
 | Q13 | Theme direction | one compile-time **dark** theme first; light/high-contrast + runtime switching POST-1.0 (§3.5) | light-first; ship both | kiosk-distance and nighttime bias; the runtime-switch follow-up is already proven expressible |
 | Q14 | Preset shipping scope | all three presets (standard/emacs/vi) ship at core-verb coverage, enforced by test (§5.4) | standard only; vi/emacs as downloadable later | "from the get-go" (R5) read as capability+coverage, not three fully-polished maps; per-preset completeness beyond core verbs grows per wave |
-| Q15 | User keymap conflict handling | typed config error at load, fail-fast, listing conflicts; prefix-of-sequence = warning (§5.7) | warn + last-wins | explicit keymaps, no silent shadowing; cost: a hostile config blocks UI start (consistent with config-fail-fast elsewhere) |
+| Q15 | User keymap conflict handling | typed config error at load, fail-fast, listing conflicts; prefix-of-sequence = warning (§5.7) | warn + last-wins | explicit keymaps, no silent shadowing; cost: a hostile config blocks UI start (consistent with config-fail-fast elsewhere) **→ redirected round 1 (§16): never block start — drop-and-warn; settings journey is the end-goal.** |
 | Q16 | Breakpoint vocabulary & board degeneration | compact <720 / regular / expansive ≥1440, thresholds unscaled; compact board = one stack + switcher (§6.3–6.4) | 2 breakpoints; scaled thresholds | unscaled thresholds keep scale×responsive orthogonal; numbers are tunable later without architecture change |
-| Q17 | Keystroke budgets vs "no quality ceilings" | budgets as session-approved designed contracts living in this plan (§9.2) | metric-report only (no assertion) | regression protection; the AGENTS §5 reading is recorded openly (improvements still pass) |
+| Q17 | Keystroke budgets vs "no quality ceilings" | budgets as session-approved designed contracts living in this plan (§9.2) | metric-report only (no assertion) | regression protection; the AGENTS §5 reading is recorded openly (improvements still pass) **→ accepted in principle round 1 (§16); draft phrasing found confusing — renamed + rewritten in plain language (§9.2).** |
 | Q18 | Font bundling | bundle sans + mono in-crate (§3.6) | system fonts + snapshot tolerance | offline kiosk, release consistency, deterministic goldens; cost: repo size + a licence-record step |
 | Q19 | MCP wiring scope | dev feature + one CI screenshot smoke now; driver tooling POST-1.0 (§8.2) | full driver now; nothing now | smoke keeps the lane alive for ≤2 dev-days |
 | Q20 | Reserved global actions | `app.undo/redo`, `capture.quick`, `palette.search`, `app.settings/help/menu/exit` in registry day one, disabled where unimplemented (§5.8) | add with their waves | one-line cost now vs the brief's "retrofit cost is extreme"; dumped registry documents them as disabled |
@@ -799,8 +829,8 @@ stacked only where noted.
 |---|---|---|---|---|
 | 1 | `feat/ui-shell-theme` | slint dep + pins + features (§5.5/Q10/Q12), window shell + app wiring + `[ui]` config hand-off, UI-command forwarder (backlog [2026-10-09]), theme/token module + text roles + fonts (§3), token lint gate, contrast check (§9.1) | M | closes backlog [2026-10-07] (renderer question answered by stress §3.8); forwarder lands here so chunk 2 can dispatch real commands |
 | 2 | `feat/ui-action-keymap` | action registry + resolver + presets + keymap config merge (§5), root FocusScope integration, reserved actions, registry/keymap insta snapshots, `app.menu` generated menu | M–L | pure-module TDD first, Slint adapter last |
-| 3 | `feat/ui-views-board` | component library L1/L2 + layering rules (§4), board/stack/task views, sync-status indicator, overdue banner (Q23), focus architecture + a11y discipline (§7.1–7.2) | L | the v0.1.0 surface itself |
-| 4 | `feat/ui-harness-quality` | logical harness + full journey suite (§7.3, §8.1), keystroke budgets (§9.2), golden screenshots at scale extremes × breakpoints (§6, §10), MCP dev-feature smoke (§8.2) | M | the exit-criterion "Slint component tests" line lands here |
+| 3 | `feat/ui-views-board` | component library L1/L2 + layering rules (§4), board/stack/task views, sync-status indicator, overdue banner (Q23 accepted), focus architecture + a11y discipline (§7.1–7.2) | L | the v0.1.0 surface itself |
+| 4 | `feat/ui-harness-quality` | logical harness + full journey suite (§7.3, §8.1), keypress-count guard (§9.2), golden screenshots at scale extremes × breakpoints (§6, §10), MCP dev-feature smoke (§8.2) | M | the exit-criterion "Slint component tests" line lands here |
 | 5 | `docs/ui-adr-release` | ADR 0015 formalised (§13), architecture.org + testing_strategy.org amendments, backlog ✅ bookkeeping ([2026-10-07], [2026-10-09], Q21's 0013-debt note), v0.1.0 release via `bump_version.sh` + release pipeline (roadmap M2) | S | docs + release chore |
 
 Dependency graph: 1 → 2 → 3 → 4 → 5 strictly (each consumes the
@@ -948,12 +978,55 @@ server).
 | §5.3 scripted keyboard journey | §7.3 + §8.1 |
 | §5.4 contrast in CI | §9.1 |
 | §5.5 scale-extreme rendering (goldens) | §6.1 + §10 golden tier |
-| Stress §4 checklist 1–9 | §1.3 (adopted verdicts); renderer decision §6/Q10; capture survey §8.2 |
+| Stress §4 checklist 1–9 | §1.3 (adopted verdicts); renderer decision §2.1/Q10; capture survey §8.2 |
 | ADHD P1/P2/P7/P9/P12 | §1.5 → seams: `capture.quick` §5.8, scaling §6.1, presets/§5.4+theme §3.5, undo reservation §5.8, focus discipline §7.1 |
 
-## 16. Decisions — to be resolved by the user design session
+## 16. Decisions — resolved by user review 2026-10-14 (round 1)
 
-*(Unfilled by design: the session records each §11 row's resolution
-here — accepted default or divergence + the section edited — then
-flips the Status header to ACCEPTED. Nothing else in this plan
-changes without a recorded reason.)*
+All 23 agenda rows resolved in one review round. Rows not named
+below were **accepted as proposed** (Q1, Q4, Q5, Q7–Q14, Q16, Q18,
+Q19, Q20, Q21, Q22). The three redirected rows had their normative
+sections amended in the same commit; accepted rows with user notes
+record them here.
+
+- **Q2 — accepted, with an extraction trigger recorded**: moving the
+  action/keymap module out of `taskboard-ui-slint` into its own
+  crate is the *intended* move **when a second project/crate wants
+  it**; the Slint-free module boundary (§5.5) exists exactly so that
+  move stays a cheap refactor.
+- **Q3 — redirected: toasts are a generic surface; reminders are
+  one source.** Not all toasts are reminders — warnings and
+  recoverable errors are toast messages too. The accepted direction
+  is "reminders are toasts": the reminders desktop sink (plan 5)
+  targets the UI's generic transient-message composition rather
+  than owning a reminder-specific surface. Reminder actions from a
+  toast (snooze/mute) remain UI-originated `StateCommand`s over the
+  existing mpsc; `NotificationSink` stays outbound-only. §2.3's seam
+  row amended accordingly.
+- **Q6 — accepted, with a bookkeeping action**: the POST-1.0 MCP/LLM
+  driver tooling must not be forgotten — appended to the backlog as
+  "[2026-10-14] LLM/MCP UI-debugging driver tooling" (this plan
+  §8.2 is its origin) in the same session.
+- **Q15 — redirected: a keyboard config never blocks the UI from
+  starting.** Fail-fast was rejected as hostile usability ("bad
+  usability" — user review). v0.1.0 behaviour: invalid/conflicting
+  overrides are *dropped* (the preset binding wins for every dropped
+  action) with typed findings surfaced via `tracing` warnings and a
+  startup-warning state. The **end-goal journey** is recorded as the
+  design target and lands with the settings view (POST-1.0): the UI
+  starts, displays a warning with a button into the keyboard
+  settings page, which opens pre-filtered to show the two (or more)
+  conflicting bindings. End-goal state: no app breakage because of
+  keyboard configs. §5.3/§5.7 amended.
+- **Q17 — accepted in principle; the draft's phrasing was confusing
+  and is rewritten.** What the draft called a "keystroke budget" and
+  §9.2 now states plainly as **maximum keypresses per common
+  action**: for each core verb, count the key presses a
+  keyboard-only user needs (a chord like `Ctrl+x Ctrl+c` = 2
+  presses); CI fails if a change pushes a verb above its recorded
+  ceiling. It protects against quiet usability regressions — added
+  focus hops, extra confirmation steps, dropped context bindings
+  that turn "complete the task" from one keypress into
+  tab-tab-tab-enter. Improvements (fewer presses) always pass; the
+  AGENTS §5 "no quality ceilings" interplay note stands (§9.2).
+  Ceilings live in this plan, not in test code.
