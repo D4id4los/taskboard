@@ -77,6 +77,7 @@ async fn run_session(
     };
     let code = run_session_with_lines(
         standalone_config(db),
+        None,
         json_default,
         |_| EditorIo {
             lines: rx,
@@ -253,6 +254,7 @@ async fn r6_a_held_instance_lock_fails_the_session_boot_typed() {
     };
     let code = run_session_with_lines(
         standalone_config(&db),
+        None,
         true,
         |_| EditorIo {
             lines: rx,
@@ -284,11 +286,7 @@ async fn r7_dispatch_line_routes_every_verb_family() {
     )
     .await
     .expect("session core boots");
-    let session = ReplSession {
-        config: app.config.clone(),
-        store: forbidden_store(),
-        json_default: true,
-    };
+    let session = ReplSession::headless(app.config.clone(), forbidden_store(), true);
     let mut out = Vec::new();
     let mut err = Vec::new();
     {
@@ -476,6 +474,7 @@ async fn r10_a_connector_sync_failure_is_typed_and_survivable() {
     common::set_env("TASKBOARD_APP_PASSWORD", "r10-secret");
     let code = run_session_with_lines(
         config,
+        None,
         true,
         |_| EditorIo {
             lines: rx,
@@ -508,11 +507,7 @@ async fn r11_select_on_a_standalone_core_surfaces_the_typed_gate() {
     )
     .await
     .expect("session core boots");
-    let session = ReplSession {
-        config: app.config.clone(),
-        store: forbidden_store(),
-        json_default: true,
-    };
+    let session = ReplSession::headless(app.config.clone(), forbidden_store(), true);
     let mut err = Vec::new();
     let mut sink = Vec::new();
     let mut io = CommandIo {
@@ -560,11 +555,7 @@ async fn r12_repl_loop_shuts_the_core_down_before_returning() {
     )
     .await
     .expect("boot");
-    let session = ReplSession {
-        config: app.config.clone(),
-        store: forbidden_store(),
-        json_default: false,
-    };
+    let session = ReplSession::headless(app.config.clone(), forbidden_store(), false);
     let (tx, rx) = mpsc::channel(1);
     drop(tx);
     let (verdicts, _) = mpsc::channel(1);
@@ -617,6 +608,7 @@ async fn r13_a_kiosk_mode_session_boots_and_serves() {
     };
     let code = run_session_with_lines(
         config,
+        None,
         true,
         |_| EditorIo {
             lines: rx,
@@ -660,11 +652,7 @@ async fn r12_session_arms_route_success_end_to_end() {
     )
     .await
     .expect("session core boots");
-    let session = ReplSession {
-        config: app.config.clone(),
-        store: forbidden_store(),
-        json_default: true,
-    };
+    let session = ReplSession::headless(app.config.clone(), forbidden_store(), true);
     let mut out = Vec::new();
     let mut err = Vec::new();
 
@@ -984,4 +972,585 @@ async fn r12_session_arms_route_success_end_to_end() {
     );
 
     app.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// J-series: the in-session connector ceremonies (ADR 0014, chunk 3).
+// Hermetic: wiremock is the loopback server (the repo's established
+// hermetic-HTTP seam), the scripted disposition peer answers prompts
+// (no TTY), a `FakeCredentialStore` rides the injected session store.
+// No sleeps: the harness's own deadline bounds a wedged session, and
+// wiremock is request-verified.
+// ---------------------------------------------------------------------------
+
+use std::collections::VecDeque;
+use std::path::PathBuf;
+
+use base64::Engine as _;
+
+use taskboard_app::repl::{Disposition, PromptValue, run_session_with_parts};
+
+/// The deadline bounding one ceremony journey (a scripted peer that
+/// never answers would otherwise wedge the test binary).
+const JOURNEY_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Answers `Prompt` dispositions from the script in order; `Next`
+/// verdicts are ignored (the peer only owes prompt answers).
+async fn scripted_peer(
+    mut rx: mpsc::Receiver<Disposition>,
+    mut answers: VecDeque<Result<PromptValue, std::io::Error>>,
+) {
+    while let Some(disposition) = rx.recv().await {
+        if let Disposition::Prompt { reply, .. } = disposition {
+            let _ = reply.send(answers.pop_front().expect("script covers every prompt"));
+        }
+    }
+}
+
+/// Runs one ceremony journey: pre-sent line events, a scripted
+/// disposition peer, an injected store and config path — the terminal
+/// never appears. Bounded by [`JOURNEY_DEADLINE`].
+async fn run_with(
+    config: AppConfig,
+    config_path: Option<PathBuf>,
+    store: Arc<dyn CredentialStore>,
+    json_default: bool,
+    events: Vec<LineEvent>,
+    answers: Vec<Result<PromptValue, std::io::Error>>,
+) -> (u8, Vec<u8>, Vec<u8>) {
+    let (tx, rx) = mpsc::channel(events.len().max(1));
+    for event in events {
+        tx.send(event).await.expect("session channel alive");
+    }
+    drop(tx);
+    let (vtx, vrx) = mpsc::channel(1);
+    tokio::spawn(scripted_peer(vrx, VecDeque::from(answers)));
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut io = CommandIo {
+        out: &mut out,
+        err: &mut err,
+        json: json_default,
+    };
+    let body = run_session_with_parts(
+        config,
+        config_path,
+        store,
+        json_default,
+        |_| EditorIo {
+            lines: rx,
+            dispositions: vtx,
+        },
+        &mut io,
+    );
+    let code = tokio::time::timeout(JOURNEY_DEADLINE, body)
+        .await
+        .expect("journey must not wedge");
+    (code, out, err)
+}
+
+/// A tempdir config file over the given db (auto backend unless the
+/// body says otherwise), loaded through the same resolution the
+/// session boot uses.
+fn seeded_config_file(dir: &std::path::Path, db: &std::path::Path, body: &str) -> PathBuf {
+    let config_path = dir.join("taskboard.toml");
+    std::fs::write(
+        &config_path,
+        body.replace("%DB%", &db.display().to_string()),
+    )
+    .expect("seed config");
+    config_path
+}
+
+fn minimal_toml(extra: impl std::fmt::Display) -> String {
+    format!("[storage]\ndb_path = '%DB%'\n[app]\nshutdown_timeout_secs = 2\n{extra}")
+}
+
+/// J1: a standalone session's `connect` line runs the ceremony through
+/// the disposition handshake, refreshes the session config, attaches
+/// the connector (receipt `attached: true`), and a following `sync`
+/// line routes to the engine against the (loopback) server.
+#[tokio::test]
+async fn j1_connect_line_attaches_and_refreshes_the_session() {
+    let dir = tempdir();
+    let db = dir.path().join("j1.db");
+    let config_path = seeded_config_file(dir.path(), &db, &minimal_toml(""));
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+    let server = wiremock::MockServer::start().await;
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+    let url = server.uri();
+
+    let (code, out, err) = run_with(
+        config,
+        Some(config_path.clone()),
+        store.clone(),
+        true,
+        vec![
+            line(&format!("connect --server {url} --user alice --json")),
+            line("sync --json"),
+            line("exit"),
+        ],
+        vec![Ok(PromptValue::Text("j1-secret".to_owned()))],
+    )
+    .await;
+
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 2, "out: {}", String::from_utf8_lossy(&out));
+    assert_eq!(receipts[0]["server_url"], url);
+    assert_eq!(receipts[0]["attached"], true);
+    assert_eq!(receipts[0]["stored"], "keyring");
+    // The sync line's prelude passed on the refreshed config and the
+    // cycle *ran against the engine* — the empty db classifies the
+    // pull typed (`sync-failed`/`no-board` in the status view), not
+    // the prelude's `sync-disabled`.
+    assert_eq!(receipts[1]["phase"], "failed");
+    assert_eq!(receipts[1]["error_kind"], "no-board");
+    let errors = json_lines(&err);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["error"]["kind"], "sync-failed");
+    assert_eq!(errors[0]["error"]["detail"], "no-board");
+
+    // The config file was written at the session's config path (the
+    // refresh re-reads exactly it), secret-free.
+    let written = std::fs::read_to_string(&config_path).expect("config written");
+    assert!(written.contains(&url), "server persisted");
+    assert!(written.contains("username"), "username persisted");
+    assert!(!written.contains("j1-secret"), "no secret in the file");
+    // The store holds the secret the attach loaded.
+    store.load(&url, "alice").expect("secret stored");
+}
+
+/// J2: a failed verify is just a failed line — typed envelope, no
+/// config write, no secret, and the session (still standalone)
+/// survives; the following `sync` line refuses `sync-disabled` because
+/// nothing about the session changed.
+#[tokio::test]
+async fn j2_a_failed_ceremony_changes_nothing_and_the_session_survives() {
+    let dir = tempdir();
+    let db = dir.path().join("j2.db");
+    let config_path = seeded_config_file(dir.path(), &db, &minimal_toml(""));
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(
+            "/index.php/apps/deck/api/v1.0/boards",
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+
+    let (code, out, err) = run_with(
+        config,
+        Some(config_path.clone()),
+        store.clone(),
+        true,
+        vec![
+            line(&format!(
+                "connect --server {} --user alice --json",
+                server.uri()
+            )),
+            line("boards create \"Personal\" --json"),
+            line("sync --json"),
+            line("exit"),
+        ],
+        vec![Ok(PromptValue::Text("j2-secret".to_owned()))],
+    )
+    .await;
+
+    assert_eq!(code, 0, "the session survives the failed line");
+    let errors = json_lines(&err);
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0]["error"]["kind"], "invalid-credentials");
+    assert_eq!(errors[1]["error"]["kind"], "sync-disabled");
+    // The probe line after the failure still executed.
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["title"], "Personal");
+    // No config write, no secret stored.
+    let written = std::fs::read_to_string(&config_path).expect("config untouched");
+    assert!(!written.contains("server_url"), "nothing persisted");
+    assert!(!written.contains("alice"));
+    assert!(
+        store.load(&server.uri(), "alice").is_err(),
+        "the failed verify persisted no secret"
+    );
+}
+
+/// J3: the D2 guard's y/N confirm arrives as a `Confirm` disposition;
+/// a scripted decline refuses typed `backend-explicit-standalone`, a
+/// scripted consent proceeds (the guard matrix itself stays chunk 2's
+/// test home — this pins only the disposition mapping).
+#[tokio::test]
+async fn j3_the_backend_guard_asks_as_a_confirm_disposition() {
+    let dir = tempdir();
+    let db = dir.path().join("j3.db");
+    let config_path = seeded_config_file(
+        dir.path(),
+        &db,
+        &minimal_toml("[sync]\nbackend = 'standalone'\n"),
+    );
+    let server = wiremock::MockServer::start().await;
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+
+    // Decline: the confirm arrives, the refusal is typed, no prompts
+    // after it (the ceremony refuses before gathering).
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+    let (code, _out, err) = run_with(
+        config,
+        Some(config_path.clone()),
+        store,
+        true,
+        vec![
+            line(&format!(
+                "connect --server {} --user alice --json",
+                server.uri()
+            )),
+            line("exit"),
+        ],
+        vec![Ok(PromptValue::Flag(false))],
+    )
+    .await;
+    assert_eq!(code, 0);
+    let errors = json_lines(&err);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["error"]["kind"], "backend-explicit-standalone");
+
+    // Consent: the ceremony proceeds to gather and attach.
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+    let (code, out, err) = run_with(
+        config,
+        Some(config_path.clone()),
+        store,
+        true,
+        vec![
+            line(&format!(
+                "connect --server {} --user alice --json",
+                server.uri()
+            )),
+            line("exit"),
+        ],
+        vec![
+            Ok(PromptValue::Flag(true)),
+            Ok(PromptValue::Text("j3-secret".to_owned())),
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert_eq!(receipts[0]["attached"], true);
+    assert_eq!(receipts[0]["backend_switched"], true);
+}
+
+/// J4: a connect line over a *live* connector detaches first and re
+/// -attaches against the new identity — the second (auth-pinned) mock
+/// proves the actor serves the new secret (the Basic header), and the
+/// receipt reports the re-point with `attached: true`.
+#[tokio::test]
+async fn j4_a_repoint_swaps_the_live_connector_to_the_new_identity() {
+    let dir = tempdir();
+    let db = dir.path().join("j4.db");
+    let old = wiremock::MockServer::start().await;
+    common::mount_standard_pull(&old, serde_json::json!([])).await;
+    let config_path = seeded_config_file(
+        dir.path(),
+        &db,
+        &minimal_toml(format!(
+            "[nextcloud]\ncredential_store = 'keyring'\nserver_url = '{}'\nusername = 'alice'\n[sync]\npoll_interval_secs = 1\n",
+            old.uri()
+        )),
+    );
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::with(
+        &old.uri(),
+        "alice",
+        "j4-old-secret",
+    ));
+
+    let new = wiremock::MockServer::start().await;
+    let expected = format!("Basic {}", basic_auth_value("alice:j4-new-secret"));
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(
+            "/index.php/apps/deck/api/v1.0/boards",
+        ))
+        .and(wiremock::matchers::header(
+            "authorization",
+            expected.clone(),
+        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("ETag", "\"j4\"")
+                .set_body_string(common::boards_json()),
+        )
+        .expect(1)
+        .mount(&new)
+        .await;
+
+    let (code, out, err) = run_with(
+        config,
+        Some(config_path.clone()),
+        store.clone(),
+        true,
+        vec![
+            line(&format!(
+                "connect --server {} --user alice --json",
+                new.uri()
+            )),
+            line("sync --json"),
+            line("exit"),
+        ],
+        vec![
+            Ok(PromptValue::Text("j4-new-secret".to_owned())),
+            Ok(PromptValue::Flag(true)),
+        ],
+    )
+    .await;
+
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert_eq!(receipts[0]["attached"], true);
+    assert_eq!(receipts[0]["repointed"], true);
+    assert_eq!(receipts[0]["server_url"], new.uri());
+    // The sync line's cycle hit the new mock with the *new* secret's
+    // Basic header (the pinned matcher would 404 an old-secret actor);
+    // the empty db classifies the pull typed.
+    let errors = json_lines(&err);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["error"]["kind"], "sync-failed");
+    assert_eq!(errors[0]["error"]["detail"], "no-board");
+    new.verify().await;
+    // The replaced identity's secret is gone (no keyring orphans).
+    assert!(store.load(&old.uri(), "alice").is_err());
+    assert_eq!(
+        store
+            .load(&new.uri(), "alice")
+            .expect("new secret stored")
+            .expose(),
+        "j4-new-secret"
+    );
+}
+
+/// `base64(user:password)` for the auth-pinned matcher (the same Basic
+/// shape the `DeckClient` sends).
+fn basic_auth_value(user_pass: &str) -> String {
+    base64::engine::general_purpose::STANDARD.encode(user_pass)
+}
+
+/// J5: the `login` alias routes to the same ceremony with the narrower
+/// surface — under an explicit `standalone` backend it refuses typed
+/// (structural kind; the stderr notice is UX, never asserted).
+#[tokio::test]
+async fn j5_the_login_alias_refuses_typed_where_connect_would_confirm() {
+    let dir = tempdir();
+    let db = dir.path().join("j5.db");
+    let config_path = seeded_config_file(
+        dir.path(),
+        &db,
+        &minimal_toml("[sync]\nbackend = 'standalone'\n"),
+    );
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+    let (code, _out, err) = run_with(
+        config,
+        Some(config_path),
+        store,
+        true,
+        vec![
+            line("login --server http://127.0.0.1:1 --user alice --json"),
+            line("exit"),
+        ],
+        // No answers: the alias refuses before prompting anything.
+        vec![],
+    )
+    .await;
+    assert_eq!(code, 0);
+    let errors = json_lines(&err);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["error"]["kind"], "backend-explicit-standalone");
+}
+
+/// J6: the in-session `logout` under the auto backend — the receipt
+/// names the detach, the config file is stripped, the refreshed
+/// session resolves standalone (`sync` refuses `sync-disabled` again),
+/// and a subsequent `connect` line re-attaches (re-attach after detach
+/// is permitted).
+#[tokio::test]
+async fn j6_logout_detaches_strips_and_a_reconnect_reattaches() {
+    let dir = tempdir();
+    let db = dir.path().join("j6.db");
+    let server = wiremock::MockServer::start().await;
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+    let config_path = seeded_config_file(
+        dir.path(),
+        &db,
+        &minimal_toml(format!(
+            "[nextcloud]\ncredential_store = 'keyring'\nserver_url = '{}'\nusername = 'alice'\n[sync]\npoll_interval_secs = 1\n",
+            server.uri()
+        )),
+    );
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::with(
+        &server.uri(),
+        "alice",
+        "j6-secret",
+    ));
+
+    let (code, out, err) = run_with(
+        config,
+        Some(config_path.clone()),
+        store.clone(),
+        true,
+        vec![
+            line("logout --json"),
+            line("sync --json"),
+            line(&format!(
+                "connect --server {} --user alice --json",
+                server.uri()
+            )),
+            line("exit"),
+        ],
+        vec![Ok(PromptValue::Text("j6-secret".to_owned()))],
+    )
+    .await;
+
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 2, "out: {}", String::from_utf8_lossy(&out));
+    assert_eq!(receipts[0]["session_connector"], "detached");
+    assert_eq!(receipts[0]["config_cleared"], true);
+    // The refreshed session is honestly standalone again.
+    let errors = json_lines(&err);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["error"]["kind"], "sync-disabled");
+    // And a connect line re-attaches (the guard permits re-attach).
+    assert_eq!(receipts[1]["attached"], true);
+    // The config file was stripped and then re-written.
+    let written = std::fs::read_to_string(&config_path).expect("config rewritten");
+    assert!(written.contains(&server.uri()));
+}
+
+/// J7: the explicit-`nextcloud` mirror — the keys stay (`config_cleared`
+/// false), the refreshed session stays nextcloud, so the post-logout
+/// `sync` passes the prelude and refuses `sync-unavailable` (the WI-H
+/// rider, now in-session); a re-connect re-attaches.
+#[tokio::test]
+async fn j7_logout_keeps_an_explicit_backend_and_sync_refuses_unavailable() {
+    let dir = tempdir();
+    let db = dir.path().join("j7.db");
+    let server = wiremock::MockServer::start().await;
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+    let config_path = seeded_config_file(
+        dir.path(),
+        &db,
+        &minimal_toml(format!(
+            "[nextcloud]\ncredential_store = 'keyring'\nserver_url = '{}'\nusername = 'alice'\n[sync]\nbackend = 'nextcloud'\npoll_interval_secs = 1\n",
+            server.uri()
+        )),
+    );
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::with(
+        &server.uri(),
+        "alice",
+        "j7-secret",
+    ));
+
+    let (code, out, err) = run_with(
+        config,
+        Some(config_path.clone()),
+        store,
+        true,
+        vec![
+            line("logout --json"),
+            line("sync --json"),
+            line(&format!(
+                "connect --server {} --user alice --json",
+                server.uri()
+            )),
+            line("exit"),
+        ],
+        vec![Ok(PromptValue::Text("j7-secret".to_owned()))],
+    )
+    .await;
+
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 2, "out: {}", String::from_utf8_lossy(&out));
+    assert_eq!(receipts[0]["session_connector"], "detached");
+    assert_eq!(receipts[0]["config_cleared"], false);
+    let errors = json_lines(&err);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["error"]["kind"], "sync-unavailable");
+    assert_eq!(receipts[1]["attached"], true);
+    // The explicit backend word survives the logout (loud stays loud).
+    let written = std::fs::read_to_string(&config_path).expect("config");
+    assert!(written.contains("nextcloud"));
+}
+
+/// J8: `logout` on a standalone session refuses typed
+/// (`not-configured`) and the session continues.
+#[tokio::test]
+async fn j8_logout_on_a_standalone_session_refuses_typed_and_survives() {
+    let dir = tempdir();
+    let db = dir.path().join("j8.db");
+    let config_path = seeded_config_file(dir.path(), &db, &minimal_toml(""));
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+    let (code, out, err) = run_with(
+        config,
+        Some(config_path),
+        store,
+        true,
+        vec![
+            line("logout --json"),
+            line("boards create \"Personal\" --json"),
+            line("exit"),
+        ],
+        vec![],
+    )
+    .await;
+    assert_eq!(code, 0);
+    let errors = json_lines(&err);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["error"]["kind"], "not-configured");
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["title"], "Personal");
+}
+
+/// J9: an `Interrupted` event gets its `Next` verdict and the session
+/// continues — a following line works, and the session end drops the
+/// peer cleanly (the journey's own deadline guards the liveness).
+#[tokio::test]
+async fn j9_interrupted_gets_its_verdict_and_the_session_continues() {
+    let dir = tempdir();
+    let db = dir.path().join("j9.db");
+    let config_path = seeded_config_file(dir.path(), &db, &minimal_toml(""));
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+    let (code, out, err) = run_with(
+        config,
+        Some(config_path),
+        store,
+        true,
+        vec![
+            LineEvent::Interrupted,
+            line("boards create \"Personal\" --json"),
+            LineEvent::Eof,
+        ],
+        vec![],
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert!(
+        json_lines(&err).is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&err)
+    );
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["title"], "Personal");
 }

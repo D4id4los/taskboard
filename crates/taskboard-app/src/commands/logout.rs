@@ -9,7 +9,7 @@
 
 use crate::commands::CommandError;
 use crate::commands::output::DaemonConnectorState;
-use crate::commands::output::LogoutReceipt;
+use crate::commands::output::{LogoutReceipt, SessionConnectorState};
 use crate::config::AppConfig;
 use crate::ipc::protocol::DetachWireOutcome;
 use crate::secrets::{CredentialError, CredentialStore};
@@ -67,6 +67,7 @@ pub fn run(
         username,
         config_cleared,
         daemon_connector: None,
+        session_connector: None,
     })
 }
 
@@ -86,6 +87,9 @@ pub fn render_text(receipt: &LogoutReceipt) -> String {
     };
     if receipt.daemon_connector == Some(DaemonConnectorState::Dropped) {
         return format!("{base} — daemon connector dropped");
+    }
+    if receipt.session_connector == Some(SessionConnectorState::Detached) {
+        return format!("{base} — session connector detached");
     }
     base
 }
@@ -257,6 +261,31 @@ mod detach_tests {
         assert!(nudge_warning(DaemonConnectorState::Unknown).is_some());
     }
 
+    /// The in-session detach outcome serializes kebab-case (the WI-H
+    /// IPC vocabulary) and is absent for the one-shot shape.
+    #[test]
+    fn the_session_connector_field_serializes_kebab_case_or_is_absent() {
+        use crate::commands::output::{LogoutReceipt, SessionConnectorState};
+        let base = |session_connector| LogoutReceipt {
+            server_url: "https://c.example.com".to_owned(),
+            username: "alice".to_owned(),
+            config_cleared: true,
+            daemon_connector: None,
+            session_connector,
+        };
+        let json =
+            serde_json::to_value(base(Some(SessionConnectorState::Detached))).expect("serialize");
+        assert_eq!(json["session_connector"], "detached");
+        let json = serde_json::to_value(base(Some(SessionConnectorState::NoConnector)))
+            .expect("serialize");
+        assert_eq!(json["session_connector"], "no-connector");
+        let json =
+            serde_json::to_value(base(Some(SessionConnectorState::TimedOut))).expect("serialize");
+        assert_eq!(json["session_connector"], "timed-out");
+        let json = serde_json::to_value(base(None)).expect("serialize");
+        assert!(json.get("session_connector").is_none());
+    }
+
     /// The receipt field serializes kebab-case and is absent when not
     /// consulted (the pure-local shape stays stable).
     #[test]
@@ -267,6 +296,7 @@ mod detach_tests {
             username: "alice".to_owned(),
             config_cleared: true,
             daemon_connector: state,
+            session_connector: None,
         };
         let json =
             serde_json::to_value(base(Some(DaemonConnectorState::Dropped))).expect("serialize");

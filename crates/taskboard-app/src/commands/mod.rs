@@ -189,6 +189,12 @@ pub enum CommandError {
     /// terminal.
     #[error("backend is explicitly stand-alone — pass --switch-backend to switch it")]
     BackendExplicitStandalone,
+    /// The session ceremony could not attach the refreshed connector
+    /// to the running core (ADR 0014): already-attached (unreachable
+    /// after the ceremony's detach-first step), the engine gone, or
+    /// draining — recoverable with another `connect` line.
+    #[error("the connector could not be attached to the running session")]
+    Attach(#[from] crate::bootstrap::AttachError),
     /// A different connection is already configured and the re-point
     /// was neither forced (`connect --force`) nor confirmed on a
     /// terminal.
@@ -271,6 +277,7 @@ impl CommandError {
             Self::NotConfigured => "not-configured",
             Self::NoDaemon => "no-daemon",
             Self::BackendExplicitStandalone => "backend-explicit-standalone",
+            Self::Attach(_) => "attach-failed",
             Self::ConnectionExists => "connection-exists",
             Self::IpcTransport => "ipc-transport",
             Self::IpcVersion { .. } => "ipc-version",
@@ -916,8 +923,12 @@ pub async fn dispatch_line(
         | Command::Logout
         | Command::Config { .. }
         | Command::Daemon { .. } => {
+            // The session loop runs connect/login/logout as ceremonies
+            // and refuses daemon/config; the IPC server refuses all
+            // five before dispatch (ADR 0014). This arm only documents
+            // the routing invariant.
             unreachable!(
-                "the session loop intercepts connect, daemon, login, logout, and config before routing"
+                "the session loop intercepts connect/login/logout (ceremonies) and daemon/config (refusals); the IPC server refuses all five before dispatch"
             )
         }
         Command::Status => {

@@ -122,6 +122,7 @@ fn o1b_receipt_payloads_expose_documented_fields() {
         stored: "keyring".to_owned(),
         backend_switched: false,
         repointed: false,
+        attached: None,
     };
     let v = serde_json::to_value(&connect).unwrap();
     assert_eq!(
@@ -240,6 +241,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::LocalBoardExists => "local-board-exists",
             CommandError::NotConfigured => "not-configured",
             CommandError::NoDaemon => "no-daemon",
+            CommandError::Attach(_) => "attach-failed",
             CommandError::BackendExplicitStandalone => "backend-explicit-standalone",
             CommandError::ConnectionExists => "connection-exists",
             CommandError::IpcTransport => "ipc-transport",
@@ -284,6 +286,7 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::from(DeckError::BadRequest),
         CommandError::NotConfigured,
         CommandError::NoDaemon,
+        CommandError::Attach(taskboard_app::bootstrap::AttachError::AlreadyAttached),
         CommandError::BackendExplicitStandalone,
         CommandError::ConnectionExists,
         CommandError::IpcTransport,
@@ -337,6 +340,7 @@ fn o4_login_projection_never_carries_the_secret() {
         stored: "keyring".to_owned(),
         backend_switched: false,
         repointed: false,
+        attached: None,
     };
     let json = serde_json::to_string(&receipt).unwrap();
     assert!(!json.contains(SECRET));

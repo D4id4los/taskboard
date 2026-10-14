@@ -15,10 +15,12 @@
 //!   lock for its lifetime, exactly like the daemon — a running daemon
 //!   makes the session boot fail typed (`instance-locked`), and
 //!   vice versa.
-//! - **In-session refusals**: `daemon`, `login`, `logout`, `config`,
-//!   and per-line `--config` are refused at parse/route level — they
-//!   would need a second process, a credential ceremony on the busy
-//!   terminal, or a config different from the booted one.
+//! - **In-session refusals**: `daemon`, `config`, and per-line
+//!   `--config` are refused at parse/route level — they would need a
+//!   second process or a config different from the booted one.
+//!   `connect`/`login`/`logout` are session ceremonies instead (ADR
+//!   0014): the loop intercepts them and runs the connector attach /
+//!   detach choreography against the running core.
 //! - **Lines never abort the session**: failures report and return to
 //!   the prompt; the process exit code is the session's, not any
 //!   line's.
@@ -42,6 +44,7 @@ use crate::commands::{CommandError, CommandIo, CoreSession, connect, dispatch_li
 use crate::completion;
 use crate::config::{AppConfig, SyncBackend};
 use crate::secrets::CredentialStore;
+use crate::session_ceremonies::{connect_line, logout_line};
 
 /// The session prompt (a minimal constant; UI text, never asserted).
 const PROMPT: &str = "taskboard> ";
@@ -329,15 +332,46 @@ impl connect::PromptReader for ReplPrompts {
 /// credential store it selected, and the launch-time `--json` default.
 /// Per-line client-building verbs (`boards list/select/publish`)
 /// construct fresh `DeckClient`s from it — unchanged from one-shot
-/// behavior.
+/// behavior. The ceremonies (ADR 0014) additionally refresh `config`
+/// in place after a connect/logout and prompt through `prompts`.
 pub struct ReplSession {
-    /// The resolved, validated config the session booted with.
+    /// The resolved, validated config the session booted with —
+    /// refreshed after every session ceremony.
     pub config: AppConfig,
     /// The credential store picked from the config at boot.
     pub store: Arc<dyn CredentialStore>,
     /// The `--json` flag from the launch invocation; lines may override
     /// per line, not per session.
     pub json_default: bool,
+    /// The config file the session's config was resolved from (the
+    /// launch `--config`, resolved to the write target for the
+    /// ceremonies' persist/refresh steps). REPL bookkeeping only —
+    /// `CoreSession` stays path-free.
+    pub config_path: Option<std::path::PathBuf>,
+    /// The session-side prompt reader over the editor handshake.
+    pub(crate) prompts: ReplPrompts,
+}
+
+impl ReplSession {
+    /// A session view for direct-dispatch users (tests, future
+    /// frontends) that never run a ceremony: no config path, and the
+    /// prompt reader's peer absent — a ceremony run through it fails
+    /// typed (`BrokenPipe` → `prompt`) instead of hanging.
+    #[must_use]
+    pub fn headless(
+        config: AppConfig,
+        store: Arc<dyn CredentialStore>,
+        json_default: bool,
+    ) -> Self {
+        let (orphan, _) = mpsc::channel(1);
+        Self {
+            config,
+            store,
+            json_default,
+            config_path: None,
+            prompts: ReplPrompts::new(orphan),
+        }
+    }
 }
 
 impl CoreSession for ReplSession {
@@ -359,17 +393,6 @@ pub(crate) enum LineRefusal {
     ConfigFlag,
     /// A nested daemon inside the session makes no sense.
     Daemon,
-    /// Mid-session login cannot activate a connector in the running
-    /// session (credential + client wiring happens at boot).
-    Login,
-    /// Mid-session `connect` is chunk 3's in-session ceremony; until
-    /// it lands, the honest interim is the parse-level refusal (the
-    /// one-shot verb owns the ceremony). Temporary dead surface: the
-    /// in-session ceremony replaces this variant.
-    Connect,
-    /// The credential store and connector are fixed for the session's
-    /// lock epoch, exactly like `login`.
-    Logout,
     /// Config commands read and write the config file; the session's
     /// config is fixed at boot and `config print` is the one-shot
     /// diagnostic.
@@ -384,15 +407,6 @@ impl std::fmt::Display for LineRefusal {
                 f.write_str("--config is fixed for this session; exit and relaunch to change it")
             }
             Self::Daemon => f.write_str("the daemon cannot run inside the session; exit first"),
-            Self::Login => f.write_str(
-                "login is not available mid-session; exit, run `taskboard login`, re-enter",
-            ),
-            Self::Connect => f.write_str(
-                "connect is not available mid-session; exit, run `taskboard connect`, re-enter",
-            ),
-            Self::Logout => f.write_str(
-                "logout is not available mid-session; exit, run `taskboard logout`, re-enter",
-            ),
             Self::ConfigCommand => f.write_str(
                 "config commands act on the config file; run them one-shot outside the session",
             ),
@@ -463,10 +477,10 @@ pub(crate) fn resolve_words(words: &[String], json_default: bool) -> LineAction 
         // A bare global-flag line (`--json`) has nothing to execute.
         None => LineAction::Reprompt,
         Some(Command::Daemon { .. }) => LineAction::Refuse(LineRefusal::Daemon),
-        Some(Command::Connect { .. }) => LineAction::Refuse(LineRefusal::Connect),
-        Some(Command::Login { .. }) => LineAction::Refuse(LineRefusal::Login),
-        Some(Command::Logout) => LineAction::Refuse(LineRefusal::Logout),
         Some(Command::Config { .. }) => LineAction::Refuse(LineRefusal::ConfigCommand),
+        // `connect`/`login`/`logout` parse with their flags intact: the
+        // session loop runs them as ceremonies (ADR 0014); the daemon
+        // IPC server refuses them as terminal-bound before dispatch.
         Some(command) => LineAction::Execute(command, cli.json || json_default),
     }
 }
@@ -489,18 +503,15 @@ pub enum ReplExit {
 /// verdict needed).
 pub async fn repl_loop(
     app: crate::App,
-    session: ReplSession,
+    mut session: ReplSession,
     editor_io: EditorIo,
     io: &mut CommandIo<'_>,
 ) -> ReplExit {
     let EditorIo { mut lines, .. } = editor_io;
-    // The loop answers every consumed event with exactly one verdict
-    // through the same sender the session-side prompt reader uses.
-    let verdicts = ReplPrompts::new(editor_io.dispositions);
     while let Some(event) = lines.recv().await {
         let action = match event {
             LineEvent::Interrupted => {
-                verdicts.resume().await;
+                session.prompts.resume().await;
                 continue;
             }
             LineEvent::Eof => break,
@@ -529,20 +540,71 @@ pub async fn repl_loop(
                 let _ = writeln!(io.err, "{kind}");
             }
             LineAction::Execute(command, json) => {
+                // The one-shot alias's deprecation notice, on stderr UX
+                // only — never asserted. Emitted before the line's
+                // writers borrow the streams.
+                if matches!(command, Command::Login { .. }) {
+                    let _ = writeln!(
+                        io.err,
+                        "warning: `login` is a deprecated alias of `connect`"
+                    );
+                }
                 let mut line_io = CommandIo {
                     out: &mut *io.out,
                     err: &mut *io.err,
                     json,
                 };
                 // Informational only: a failed line never aborts the
-                // session nor shapes its exit code (ADR 0011).
-                let _ = dispatch_line(&session, &app, command, &mut line_io).await;
+                // session nor shapes its exit code (ADR 0011). The
+                // ceremony verbs are session-layer actions (ADR 0014):
+                // they mutate the session itself, so they are
+                // intercepted here, not routed through `dispatch_line`.
+                let outcome = match command {
+                    Command::Connect {
+                        server,
+                        user,
+                        switch_backend,
+                        force,
+                    } => {
+                        connect_line(
+                            &mut session,
+                            &app,
+                            connect::ConnectArgs {
+                                server,
+                                user,
+                                switch_backend,
+                                force,
+                                confirmable: true,
+                            },
+                            &mut line_io,
+                        )
+                        .await
+                    }
+                    Command::Login { server, user } => {
+                        connect_line(
+                            &mut session,
+                            &app,
+                            connect::ConnectArgs {
+                                server,
+                                user,
+                                switch_backend: false,
+                                force: false,
+                                confirmable: false,
+                            },
+                            &mut line_io,
+                        )
+                        .await
+                    }
+                    Command::Logout => logout_line(&mut session, &app, &mut line_io).await,
+                    other => dispatch_line(&session, &app, other, &mut line_io).await,
+                };
+                let _ = outcome;
             }
         }
         // The line's one verdict: editing resumes. A ceremony that
         // prompted mid-handler has already been answered through the
         // same channel; this closes its chain.
-        verdicts.resume().await;
+        session.prompts.resume().await;
     }
     let outcome = app.shutdown().await;
     if outcome.actor_aborted {
@@ -554,19 +616,38 @@ pub async fn repl_loop(
 /// Runs one session to completion against injected editor I/O and
 /// writers: boot (typed failures reported, exit 1) → one-time boot-pull
 /// wait under a connector backend → banner → loop → graceful shutdown →
-/// exit 0. The `editor_io` factory runs immediately after a successful
-/// `bootstrap` and receives the session's shared-state handle — the
-/// production factory spawns the editor thread with it, so completion
-/// always has a valid snapshot and tests inject their channels
-/// untouched.
+/// exit 0. Derives the production credential store from the config and
+/// delegates to [`run_session_with_parts`]; the `editor_io` factory
+/// runs immediately after a successful `bootstrap` and receives the
+/// session's shared-state handle — the production factory spawns the
+/// editor thread with it, so completion always has a valid snapshot and
+/// tests inject their channels untouched.
 pub async fn run_session_with_lines(
     config: AppConfig,
+    config_path: Option<std::path::PathBuf>,
     json_default: bool,
     editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> EditorIo,
     io: &mut CommandIo<'_>,
 ) -> u8 {
     let store: Arc<dyn CredentialStore> =
         crate::commands::production_store(config.nextcloud.credential_store);
+    run_session_with_parts(config, config_path, store, json_default, editor_io, io).await
+}
+
+/// The full seam of one session (ADR 0014's D5): config, config path,
+/// credential store, `--json` default, editor-I/O factory, and writers.
+/// Hermetic journeys inject a `FakeCredentialStore` (the ceremonies
+/// store into it, the attach loads from it) and a tempdir config file
+/// the ceremonies write to; the production path derives the store from
+/// the config and passes the launch `--config` through.
+pub async fn run_session_with_parts(
+    config: AppConfig,
+    config_path: Option<std::path::PathBuf>,
+    store: Arc<dyn CredentialStore>,
+    json_default: bool,
+    editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> EditorIo,
+    io: &mut CommandIo<'_>,
+) -> u8 {
     let backend = config.sync_backend();
     let app = match crate::bootstrap::bootstrap(
         config,
@@ -583,7 +664,10 @@ pub async fn run_session_with_lines(
         config: app.config.clone(),
         store,
         json_default,
-    }; // The one-shot prefix's boot-pull wait, once per session (a
+        config_path,
+        prompts: ReplPrompts::new(editor_io.dispositions.clone()),
+    };
+    // The one-shot prefix's boot-pull wait, once per session (a
     // connector-less core can never run a cycle; skip the wait).
     if backend != SyncBackend::Standalone {
         let timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs.max(1));
@@ -663,7 +747,11 @@ impl TtyStateGuard {
 
 /// The production session: real terminal (editor thread) and std
 /// streams.
-pub async fn run_session(config: AppConfig, json_default: bool) -> u8 {
+pub async fn run_session(
+    config: AppConfig,
+    config_path: Option<std::path::PathBuf>,
+    json_default: bool,
+) -> u8 {
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
     let mut io = CommandIo {
@@ -675,7 +763,14 @@ pub async fn run_session(config: AppConfig, json_default: bool) -> u8 {
     // dropping at scope end (before main's `process::exit`) hands the
     // terminal back exactly as found.
     let _tty = TtyStateGuard::take();
-    run_session_with_lines(config, json_default, spawn_line_reader, &mut io).await
+    run_session_with_lines(
+        config,
+        config_path,
+        json_default,
+        spawn_line_reader,
+        &mut io,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -900,10 +995,6 @@ mod tests {
             other => panic!("expected Refuse, got {other:?}"),
         };
         assert_eq!(refuse("daemon"), LineRefusal::Daemon);
-        assert_eq!(refuse("connect"), LineRefusal::Connect);
-        assert_eq!(refuse("connect --server http://x"), LineRefusal::Connect);
-        assert_eq!(refuse("login --server http://x"), LineRefusal::Login);
-        assert_eq!(refuse("logout"), LineRefusal::Logout);
         assert_eq!(refuse("config print"), LineRefusal::ConfigCommand);
         assert_eq!(
             refuse("tasks list --config other.toml"),
@@ -920,6 +1011,15 @@ mod tests {
             resolve_line("--json", false),
             LineAction::Reprompt
         ));
+
+        // The ceremony verbs parse with their flags intact (the session
+        // loop intercepts them; the refusal set is exactly the four).
+        let (command, _) = execute(resolve_line("connect --server http://x", false));
+        assert!(matches!(command, Command::Connect { .. }));
+        let (command, _) = execute(resolve_line("login --server http://x", false));
+        assert!(matches!(command, Command::Login { .. }));
+        let (command, _) = execute(resolve_line("logout", false));
+        assert!(matches!(command, Command::Logout));
 
         // Garbage is a clap print-and-continue, never an exit.
         assert!(matches!(
@@ -977,17 +1077,13 @@ mod argv_tests {
             refuse(&["daemon", "stop"]),
             crate::repl::LineRefusal::Daemon
         );
-        assert_eq!(refuse(&["connect"]), crate::repl::LineRefusal::Connect);
-        assert_eq!(
-            refuse(&["connect", "--server", "http://x"]),
-            crate::repl::LineRefusal::Connect
-        );
-        assert_eq!(refuse(&["login"]), crate::repl::LineRefusal::Login);
-        assert_eq!(refuse(&["logout"]), crate::repl::LineRefusal::Logout);
         assert_eq!(
             refuse(&["config", "print"]),
             crate::repl::LineRefusal::ConfigCommand
         );
+        // The ceremony verbs parse to Execute over the argv path too;
+        // the IPC server refuses them as terminal-bound (U5 pins the
+        // wire code there).
         assert_eq!(
             refuse(&["tasks", "list", "--config", "x"]),
             crate::repl::LineRefusal::ConfigFlag
