@@ -656,6 +656,48 @@ impl DeckClient {
         result
     }
 
+    /// Downloads an attachment's content as raw bytes.
+    ///
+    /// The route is the API-level `GET …/attachments/{id}`; the response is
+    /// returned byte-for-byte (no JSON envelope, no String detour). The
+    /// server serves no HTTP validators on this route, so there is no
+    /// conditional variant — detect changes via [`DeckClient::attachments`]
+    /// metadata (`last_modified`/`extended_data.size`) instead. GET is
+    /// idempotent, so the full retry policy (including `Retry-After`
+    /// handling) applies.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn download_attachment(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        attachment_id: u64,
+    ) -> Result<Vec<u8>, DeckError> {
+        tracing::debug!(
+            board_id,
+            stack_id,
+            card_id,
+            attachment_id,
+            "downloading deck attachment content"
+        );
+        let resource = format!(
+            "boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}"
+        );
+        let result = self.send_bytes(Method::GET, &resource).await;
+        match &result {
+            Ok(bytes) => tracing::info!(
+                attachment_id,
+                bytes = bytes.len(),
+                "deck attachment content downloaded"
+            ),
+            Err(err) => tracing::warn!(error = %err, "downloading deck attachment content failed"),
+        }
+        result
+    }
+
     /// Applies a full [`BoardChanges`] changeset to a board (PUT).
     ///
     /// # Errors
@@ -1098,6 +1140,28 @@ impl DeckClient {
         self.send_with_retries(call, |raw| {
             map_status(&raw)?;
             decode_envelope(&raw.body)
+        })
+        .await
+    }
+
+    /// Performs the request (with retries) and returns the raw response
+    /// body bytes, no envelope decode and no content-type gate: the
+    /// attachment content route answers `text/plain;charset=UTF-8`
+    /// regardless of the stored mimetype and serves no `ETag`/
+    /// `Last-Modified` (D1 spike §3.2), so conditional download does not
+    /// exist and no validator plumbing is offered — change detection goes
+    /// through the attachment metadata instead.
+    async fn send_bytes(&self, method: Method, resource: &str) -> Result<Vec<u8>, DeckError> {
+        let call = Call {
+            method,
+            resource: resource.to_owned(),
+            scope: Scope::OcsApi,
+            body: None,
+            validators: None,
+        };
+        self.send_with_retries(call, |raw| {
+            map_status(&raw)?;
+            Ok(raw.body)
         })
         .await
     }

@@ -1292,3 +1292,59 @@ async fn upload_attachment_rejects_invalid_payload_without_a_request() {
         );
     }
 }
+
+#[tokio::test]
+async fn download_attachment_returns_raw_bytes_verbatim() {
+    // Non-UTF-8 body served with the content type the real route sends
+    // (text/plain regardless of the stored mimetype): the client must
+    // return it byte-for-byte, with no JSON/String detour.
+    let server = MockServer::start().await;
+    let payload: Vec<u8> = vec![0x00, 0x7B, 0x80, 0xFF, 0x0A, 0x00, 0xC3, 0x28, 0x01];
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{BOARDS_PATH}/42/stacks/9/cards/5/attachments/1"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/plain;charset=UTF-8")
+                .set_body_bytes(payload.clone()),
+        )
+        .mount(&server)
+        .await;
+
+    let downloaded = client_for(&server)
+        .download_attachment(42, 9, 5, 1)
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(downloaded, payload);
+}
+
+#[tokio::test]
+async fn download_attachment_retries_through_the_shared_spine() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{BOARDS_PATH}/42/stacks/9/cards/5/attachments/1"
+        )))
+        .respond_with(SequenceResponder::new(vec![503, 503, 200]))
+        .mount(&server)
+        .await;
+
+    let sleeper = RecordingSleeper::default();
+    let downloaded = DeckClient::new(&server.uri(), "it-user", "it-token")
+        .unwrap()
+        .with_sleeper(std::sync::Arc::new(sleeper.clone()))
+        .download_attachment(42, 9, 5, 1)
+        .await
+        .unwrap();
+    assert_eq!(downloaded, fixture("boards_list.json").into_bytes());
+
+    // Exactly the policy's delay sequence: the new seam rides the shared
+    // retry plumbing (including the 503 classification) unchanged.
+    assert_eq!(
+        sleeper.0.lock().unwrap().as_slice(),
+        [Duration::from_millis(500), Duration::from_secs(1)]
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
