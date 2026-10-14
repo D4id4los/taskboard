@@ -2396,3 +2396,58 @@ children?), derived parent-state rules (pure functions, proptest'ed),
 split-command interaction with titles/descriptions/labels/duedate,
 and the Deck round-trip story (local-only vs D1 sidecar). UI tree
 rendering and the split interface follow implementation.
+
+---
+
+## [2026-10-14] Effort-estimate calibration feedback loop
+
+- **Category**: `UI`
+- **Originating Report**: `.artifacts/reports/2026-10-14-adhd-support-research-report.md` (principle P14; §11 bookkeeping)
+- **Target Area**: GUI statistics/review views over `taskboard-domain` fields (effort + time tracking)
+
+### Context & Description
+The ADHD research spike found the planning fallacy is robust even with
+task experience (Buehler et al. 1994: fewer than a third of students
+finished within their own "most accurate" prediction), and that the
+official Pomodoro method already prescribes recording and comparing
+estimates against actuals. The roadmap's effort field (Wave 1) and
+time tracking (Wave 2) store both sides of that comparison, but no
+roadmap item closes the loop: showing the user their own historical
+estimate-vs-actual gap and suggesting calibrated estimates at capture
+time. Out of scope for the research report (a product feature, not a
+design principle).
+
+### Proposed Approach
+After Wave 2 lands both fields: per-task and aggregate estimate-vs-
+actual surfaces in the review/statistics views first (pure projection
+over time entries — cheap); later, reference-class suggestion at
+capture/planning time ("similar tasks took ~45 min"), computed locally
+over the user's own history only. No third-party data, no telemetry.
+
+---
+
+## [2026-10-14] Curated workflow presets beyond keymaps
+
+- **Category**: `UI`
+- **Originating Report**: `.artifacts/reports/2026-10-14-adhd-support-research-report.md` (principle P7; §11 bookkeeping)
+- **Target Area**: `taskboard-ui-slint` configuration/preset layer riding GUI R5/R2
+
+### Context & Description
+The ADHD research spike found that unconstrained configurability is a
+documented failure mode for exactly the users taskboard serves:
+Todoist's own ADHD guide warns "endless projects and labels can
+overcomplicate things", Amazing Marvin/org-mode users report the
+system itself becoming the hyperfixation, and app-hopping is driven by
+novelty-seeking the tool cannot satisfy. The GUI brief ships keymap
+presets (standard/emacs/vi) as the one preset surface; the same
+curated-constraint idea generalizes to saved views, review templates,
+and focus-mode defaults. Out of scope for the research report (a
+product feature, not a principle).
+
+### Proposed Approach
+When saved/filter views (Wave 3) and review templates (Wave 2) land,
+ship each with a small curated preset set (Today, Due, Inbox;
+end-of-day review default prompts) and treat user-built presets as an
+opt-in progression, mirroring R5's preset strategy. Pair with the R7
+"interaction-count-per-core-verb" usability check as the audit that
+keeps defaults honest.
