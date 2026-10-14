@@ -12,3 +12,6 @@
 //! toolchain & quality gates).
 
 slint::include_modules!();
+
+#[cfg(test)]
+mod token_tests;
