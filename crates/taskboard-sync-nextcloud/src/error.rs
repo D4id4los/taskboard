@@ -12,6 +12,11 @@ pub enum DeckError {
     /// The configured server base URL is not a usable http(s) URL.
     #[error("invalid Nextcloud base URL")]
     InvalidBaseUrl,
+    /// An attachment upload payload failed local validation: the client
+    /// filename is empty or the MIME type is unparseable. Raised before any
+    /// request is sent.
+    #[error("invalid attachment upload")]
+    InvalidUpload,
     /// Network-level failure (connection refused, DNS, TLS, timeout).
     #[error("transport failure")]
     Transport(#[from] reqwest::Error),

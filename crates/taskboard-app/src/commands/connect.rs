@@ -527,6 +527,7 @@ pub fn daemon_warning(present: bool) -> Option<&'static str> {
 fn deck_variant(err: &DeckError) -> &'static str {
     match err {
         DeckError::InvalidBaseUrl => "InvalidBaseUrl",
+        DeckError::InvalidUpload => "InvalidUpload",
         DeckError::Transport(_) => "Transport",
         DeckError::Envelope(_) => "Envelope",
         DeckError::Unauthorized => "Unauthorized",
