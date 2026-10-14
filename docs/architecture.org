@@ -119,6 +119,8 @@ avoiding central runtime bottlenecks.
 | *System Notifications* | =tokio::sync::broadcast= | Broadcasts global status changes (=SystemEvent::NetworkLost=) to all interested actors. |
 | *CLI ⇄ Daemon (local socket)* | =interprocess= local sockets + length-framed JSON | Transport-only reuse of =dispatch_line= (ADR 0012): the daemon serves the per-database socket (<db>.sock sidecar); a CLI invocation relays raw argv and prints the daemon's rendered ={code, out, err}= verbatim — byte-identical to the in-process dispatch. Versioned envelopes (v1); one request per connection; serial execution on one dispatcher task. |
 | *Asynchronous Queries* | =tokio::sync::oneshot= | Embedded inside an =mpsc= message payload for direct, async request-response cycles. Payloads are pure domain types; the channel-bearing envelope is declared by the actor crate (payload/envelope split, ADR 0004). |
+| *REPL loop ⇄ editor thread (disposition)* | =tokio::sync::mpsc= + embedded =oneshot= (ADR 0014) | The per-line handshake: the editor thread delivers one =LineEvent=, then awaits the loop's =Disposition= (=Next=, or =Prompt{label, kind, reply}= for a follow-up read). Masked reads (=rpassword=) run on the reader thread; answers ride the oneshot and never enter history or completion. Capacity-1 channels keep the alternation strict — the race-free property. |
+| *Session ⇄ core (connector ceremonies)* | =App::attach_connector= / =App::detach_connector= + config refresh (ADR 0014) | An in-session =connect= line runs the shared ceremony through the session's prompt reader, refreshes the session config through the boot resolution, detaches any live connector, and attaches a fresh one from the refreshed config; =logout= is the mirror (local teardown → detach → refresh). Verb bodies are frontend-agnostic functions the Phase 7 GUI reuses. |
 
 All inter-actor channels — the system broadcast, both sync =mpsc=
 pipes, and the storage/engine command inboxes — are *bootstrap-created*
@@ -213,7 +215,8 @@ dependency hierarchies.
    0010) and returns the =App= handle shared by every frontend, =lockfile= (the per-database instance lock — an
    OS-released advisory lock on a =<db>.lock= sidecar acquired before
    the db open, ADR 0009), and =commands= (ADR 0009): the operator
-   CLI's typed handlers — =login=, =logout=, =boards= (list/select/
+   CLI's typed handlers — =connect= (introduces a connection; =login=
+   is its deprecated alias, ADR 0014), =logout=, =boards= (list/select/
    create/publish/rename), =stacks= (add/rename/delete/move), =tasks=
    (list/add/done/move/edit/delete/label/unlabel), =labels=
    (list/add/edit/delete), =sync=, =config print= — with the =--json=
@@ -231,8 +234,13 @@ dependency hierarchies.
    =exit=/Ctrl-D); each line is shell-word-split, parsed as one CLI
    invocation (=Cli::try_parse_from=), and routed by
    =dispatch_line= through the same =*_on(&App)= verb bodies the
-   one-shot wrappers call; the rustyline editor lives on a dedicated
-   thread streaming =LineEvent=s through a bounded channel, so no async
+   one-shot wrappers call; =connect=/=login=/=logout= are intercepted
+   by the session loop as ceremonies (ADR 0014: config refresh +
+   connector attach/detach against the running core), and the daemon
+   IPC server refuses them as terminal-bound before dispatch. The
+   rustyline editor lives on a dedicated thread streaming =LineEvent=s
+   through a bounded channel and answering the loop's per-line
+   =Disposition= handshake (masked reads included), so no async
    runtime worker ever blocks on stdin. =ipc= (ADR 0012): the daemon
    IPC frontend — the third frontend over the shared seam. The server
    binds the per-database socket (=<<db>.sock= sidecar, stale-artifact
@@ -258,7 +266,7 @@ dependency hierarchies.
 | *Networking* | =reqwest= | Async HTTP client for the Nextcloud Deck OCS REST API (rustls TLS). |
 | *Configuration* | =figment= | Hierarchical configuration management merging embedded defaults, TOML files, and environment variables. |
 | *Config Editing* | =toml_edit= | Comment/formatting-preserving read-modify-write of the config TOML (=taskboard login=). |
-| *CLI Prompts* | =rpassword= | Interactive password prompt (=taskboard login=); stdin-based, tty echo suppression. |
+| *CLI Prompts* | =rpassword= | Interactive password prompt (=taskboard connect=, the one-shot and the in-session ceremony's masked read on the editor thread, ADR 0014); stdin-based, tty echo suppression. |
 | *REPL Line Editing* | =rustyline= | The interactive session's line editor/history (ADR 0011); confined to one reader thread. |
 | *REPL Word Splitting* | =shell-words= | POSIX-ish word splitting for REPL lines (one line = one CLI invocation). |
 | *Instance Lock* | =fd-lock= | Cross-platform advisory file lock; the per-database instance lock sidecar. |

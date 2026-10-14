@@ -1,0 +1,173 @@
+#+title: ADR 0014: Connector Attach & Session-Level Login
+- *Date:* 2026-10-14
+- *Status:* Accepted (implemented across chunks 1–3: engine attach
+  primitive + one-shot =connect= verb + session ceremonies)
+- *Amends:* ADR 0010 (decision 9's refusal surface), ADR 0011 (the
+  in-session login/logout refusals)
+
+* Context
+
+ADR 0010 made the connector optional but fixed at boot; ADR 0011 made
+login honest by refusing it mid-session; the Phase 7 GUI cannot ask
+users to relaunch to connect. One design covers introducing a
+connection (CLI), activating it on a booted core (REPL/GUI/daemon),
+and eliciting the secret (REPL terminal). Designed in the WI-J round
+(2026-10-12, three approval rounds); implemented on
+=feat/connect-engine-attach=, =feat/app-connect-verb=, and
+=feat/app-connect-session=.
+
+* Decision
+
+1. *=taskboard connect= introduces a connection; =login= is its
+   deprecated alias.* One ceremony (guards → verify → persist →
+   store). Under explicit =standalone= the flip is loud twice over:
+   =--switch-backend= for scripts, a y/N confirm on a TTY. Re-pointing
+   a configured install likewise: y/N confirm by default, =--force=
+   for scripts; the confirmed/forced path deletes the replaced
+   identity's secret after the new verify (no keyring orphans).
+2. *Attach is an additive engine rewire over a fan-out/fan-in
+   topology, composing with WI-H's detach.* Commands: the engine
+   keeps a =Vec= of connector senders and fans nudges out (forwarded
+   iff any send lands; =Closed= entries pruned lazily — covering both
+   standalone boots and detached actors);
+   =EngineCommand::AttachConnector= (fresh command sender + oneshot
+   ack) *pushes*, never replaces. Reports: one permanent fan-in inbox
+   created at bootstrap; every attached actor clones its sender.
+   =App::attach_connector(&self)= mirrors the merged
+   =detach_connector(&self)= (WI-H) over the same lifecycle mutex;
+   detach machinery is reused verbatim, not replaced. Channel
+   liveness remains the sole presence signal; parked command halves
+   were rejected (they flip standalone nudge semantics = perpetual
+   =Syncing=); re-bootstrap was rejected (lock-epoch hole + handle
+   invalidation).
+3. *The engine and =App= are connector-count-agnostic; "at most one
+   active connector" is an app/config-layer invariant only*
+   (=App.connectors: Vec=, =attach_connector='s =AlreadyAttached=
+   guard, the scalar =[sync] backend= word). Several simultaneously
+   active connectors are a stated future direction: v1 builds none of
+   it, but every seam above is already N-wide, and the deferred list
+   (per-connector =SyncCommand= routing, status projections,
+   board-ownership tags, config array-of-tables, merged network
+   authority) is additive and does not re-open channel topology.
+   =App::shutdown= drops connector channel halves before the engine
+   join (the linger-drain gates on the reports channel closing).
+4. *Attach self-configures.* The actor resumes its pull target from
+   the persisted binding and fires immediately; the caller may await
+   settling via the boot-pull helper (=wait_for_boot_pull=, bounded,
+   offline-first) — the session ceremony does (the REPL's UX parity
+   with the boot path).
+5. *Session verbs that mutate the session live in the session layer.*
+   =connect= is intercepted by the REPL loop (like =exit=), not a
+   =dispatch_line= arm: it needs the session mutation (config refresh
+   + attach). Verb bodies stay frontend-agnostic functions. A =login=
+   line routes to the same ceremony under its deprecated name (stderr
+   notice, strictly narrower flag surface). *In-session =logout=* is
+   the mirror (WI-H plan D7's handoff): local teardown ceremony +
+   =detach_connector= + config refresh; both ADR 0011 session
+   refusals die. Shipped specifics:
+   - *Detach-first session rule:* an in-session =connect= detaches a
+     live connector before re-attaching — a same-identity re-connect
+     stores a *new* secret, and only detach + re-attach rebuilds the
+     client; a re-point needs the swap anyway. Uniform lifecycle, one
+     code path; =AlreadyAttached= stays the primitive's guard for
+     non-session callers (unreachable from the ceremony by
+     construction).
+   - *Terminal-bound IPC guard:* =connect=/=login=/=logout= are
+     refused by the daemon IPC server before dispatch (lane =Local=):
+     they elicit masked secrets on the caller's terminal, which the
+     socket is not. Usage-class refusal, wire code unchanged (2);
+     both =resolve_words= consumers stay total.
+   - *No daemon nudge on in-session logout:* the session *is* the
+     lock holder — no daemon can serve this database.
+6. *The REPL secret prompt is a disposition handshake.* The editor
+   thread, after delivering each =LineEvent=, unconditionally awaits
+   the session loop's =Disposition= before re-arming =readline=:
+
+   | editor-thread state | blocked on | woke by |
+   |---+---+---|
+   | editing | =readline()= | the user's Enter / Ctrl-C / Ctrl-D |
+   | awaiting verdict | =blocking_recv()= on the dispositions channel | =Next= (line done) or =Prompt{..} |
+   | answering prompt | the prompt's sync read (=StdinPrompts= =*_sync= cores; =Masked= = rpassword) | the user's input |
+
+   =Prompt{kind: Masked}= performs the masked read *on the editor
+   thread*; answers ride the embedded oneshot and bypass history and
+   completion by construction (secrets never enter either);
+   =Confirm= rides the same handshake. The strict alternation (lines
+   channel capacity 1, dispositions capacity 1, one outstanding
+   oneshot) is what makes the design race-free where a
+   poll-between-lines design is not: =readline= is never re-armed
+   while a prompt is outstanding, so the next submitted line can
+   never be consumed as a prompt answer. =Eof=/=Exit= end the loop;
+   the dropped senders are the editor's exit signal. The async loop
+   never touches stdin.
+7. *The GUI contract is the ceremony fn + =attach_connector=/
+   =detach_connector= + config refresh* — no REPL/CLI types involved;
+   "Sign out" is the §4.6 mirror of "Connect…". Daemon-side *attach*
+   over IPC remains future work that rides WI-H's merged pattern
+   (additive variants, no version bump, identity on the request) and
+   needs no secret on the wire — the daemon re-reads its config and
+   credential store itself.
+
+** Recorded deviation: the prompt seam is async
+
+The design round sketched =PromptReader= as a sync trait used as
+=&mut dyn=. Shipped as RPITIT async-signatured methods with the
+ceremony generic over the reader instead: the session's =ReplPrompts=
+impl is a channel round-trip to the editor thread — genuinely
+awaitable — and a sync impl would have to block a runtime worker for
+unbounded user-thinking time, the exact pattern ADR 0011 forbids
+(fatal on a 1-core kiosk, whose multi-thread runtime has a single
+worker). =block_in_place= was rejected as a runtime-flavor landmine
+(panics under =current_thread=). =StdinPrompts= keeps one behavior:
+its bodies live in =*_sync= associated functions shared with the
+editor thread's prompt answering (one terminal-impl grammar, one test
+home, two call shapes).
+
+** Recorded verification: Ctrl-C during a masked read (D7, pty tier)
+
+*The outcome of a Ctrl-C during a ceremony read is the environment's
+SIGINT disposition, and the app is correct in both worlds* — verified
+on the pty tier (=tty_ctrl_c_during_the_masked_read_never_persists_and_never_wedges=
+pins both branches):
+
+- *Default disposition* (every interactive shell): the run ends the
+  process mid-ceremony — a deviation from the design round's "the
+  session survives" sketch, accepted as today's documented "Ctrl-C
+  during a command" precedent. Cooked =Line=/=Confirm= reads inherit
+  the default disposition directly; the masked read reaches the same
+  outcome by another route (=rpassword= configures the tty with =ISIG=
+  off, observes the ^C byte as data, and re-raises =SIGINT= itself).
+  Death is always pre-persist: every prompt precedes verify → persist
+  → store, so nothing partial survives. Giving Ctrl-C the line-level
+  meaning here too would need a scoped SIGINT handler around the
+  masked read — out of scope, recorded in the improvements backlog.
+- *Ignored/inherited disposition* (CI runners, handler-installing
+  parents): the raise is a no-op and =rpassword='s error returns
+  through the oneshot — the typed cancellation path
+  (=CommandError::Prompt=: the line fails, the session survives,
+  ADR 0011's failed-line rule).
+
+The environment-independent contract, pinned in both branches: a ^C
+mid-ceremony never persists anything and never wedges the session
+behind an unanswered read.
+
+* Consequences
+
+- taskboard-state gained one command arm + the fan-out seam;
+  taskboard-app gained the connect verb + login alias, the two
+  session ceremonies (=session_ceremonies.rs=), the disposition
+  protocol, the =Mutex<Vec<SyncActor>>= connector state, and the
+  shutdown drop step; ADRs 0010/0011 carry amendment notes (0011's:
+  both in-session refusals are replaced by ceremonies).
+- Receipts grew additively pre-v0.1.0: =ConnectReceipt.attached=
+  (absent for the one-shot — the one-shot JSON shape is
+  byte-identical) and =LogoutReceipt.session_connector=
+  (=detached=/=no-connector=/=timed-out=, the honest sibling of the
+  one-shot's =daemon_connector=).
+- Completion offers the ceremony verbs (=REFUSED_VERBS= shrinks to
+  =daemon=/=config=); their flags walk in from the clap spec.
+- The detach half of connector liveness is WI-H's, merged and reused
+  as-is; this round added only its mirror.
+- The multi-connector round lifts the app-layer guard, extends the
+  deferred list in the WI-J design §4.5, and touches nothing designed
+  here (backlog entry stays open).

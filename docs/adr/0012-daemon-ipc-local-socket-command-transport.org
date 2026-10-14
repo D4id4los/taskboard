@@ -46,7 +46,15 @@ the socket from the database path, and tries the daemon first:
 
 | lane        | verbs                                             | behavior when a daemon serves | behavior when none does |
 |-------------+---------------------------------------------------+-------------------------------+-------------------------|
-| =Local=     | =login=, =logout=, =config print=, =boards list=   | in-process (unchanged)        | in-process (unchanged)  |
+| =Local=     | =connect= (and its deprecated =login= alias), =logout=, =config print=, =boards list= | in-process (unchanged)        | in-process (unchanged)  |
+
+#+begin_quote
+*Amendment (2026-10-14, ADR 0014):* =connect= joins the =Local= lane
+(chunk 2's bookkeeping omission). The three ceremony verbs are
+terminal-bound — they elicit masked secrets on the caller's terminal —
+so the daemon IPC server refuses them before dispatch (usage class,
+code 2, unchanged wire behavior).
+#+end_quote
 | =IpcOrLocal=| =tasks *=, =stacks *=, =labels *=, boards select/create/rename/publish, =sync= | served over IPC (no boot)     | in-process boot (today's path) |
 | =IpcOnly=   | =status=, =daemon stop=                            | answered over IPC             | typed =no-daemon= (stop, exit 1) / client-side answer (status, exit 0) |
 
