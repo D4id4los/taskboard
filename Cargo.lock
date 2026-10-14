@@ -6371,6 +6371,7 @@ dependencies = [
  "slint",
  "slint-build",
  "taskboard-domain",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
 ]
