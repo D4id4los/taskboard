@@ -33,12 +33,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use clap::Parser as _;
 
 use crate::cli::Command;
-use crate::commands::{CommandError, CommandIo, CoreSession, dispatch_line};
+use crate::commands::{CommandError, CommandIo, CoreSession, connect, dispatch_line};
 use crate::completion;
 use crate::config::{AppConfig, SyncBackend};
 use crate::secrets::CredentialStore;
@@ -85,6 +85,63 @@ pub enum LineEvent {
     Interrupted,
 }
 
+/// What one terminal input the running line handler needs (ADR 0014,
+/// design §5.2). The editor thread performs the read; the handler only
+/// ever sees the typed answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    /// One cooked line (server URL, username).
+    Line,
+    /// A masked read (`rpassword`, echo off) on the editor thread.
+    Masked,
+    /// A y/N decision reduced to a bool on the editor thread.
+    Confirm,
+}
+
+/// The answer the editor thread owes for a prompted read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptValue {
+    /// A read line (the `Line` and `Masked` kinds).
+    Text(String),
+    /// A confirmed y/N (the `Confirm` kind).
+    Flag(bool),
+}
+
+/// The session loop's per-line verdict to the editor thread. The
+/// handshake's load-bearing rule: after delivering a [`LineEvent`], the
+/// editor thread **always** waits for the next verdict before re-arming
+/// `readline` — so a mid-handler prompt can never race the user's next
+/// keystrokes, and the next submitted line can never be consumed as a
+/// prompt answer. One verdict per consumed event; `Prompt`s repeat
+/// until the handler is done, then one `Next` resumes editing.
+pub enum Disposition {
+    /// The line is fully handled (or cancelled); resume editing.
+    Next,
+    /// The running handler needs one more terminal input: perform the
+    /// read on the editor thread and answer through the oneshot.
+    Prompt {
+        /// The full prompt text, exactly as [`connect::PromptReader`]
+        /// got it from the ceremony.
+        label: String,
+        /// Which kind of read to perform.
+        kind: PromptKind,
+        /// The answer channel (AGENTS §3's oneshot-inside-mpsc idiom).
+        reply: oneshot::Sender<Result<PromptValue, std::io::Error>>,
+    },
+}
+
+/// What `spawn_line_reader` hands the session loop: the line stream it
+/// consumes and the disposition channel it answers on. Tests inject
+/// both halves (a scripted disposition peer mirrors the injected-lines
+/// pattern) — the terminal never appears in hermetic suites.
+pub struct EditorIo {
+    /// Submitted lines, Ctrl-C and Ctrl-D events (capacity 1).
+    pub lines: mpsc::Receiver<LineEvent>,
+    /// The loop's verdicts (capacity 1 — strict alternation with the
+    /// lines channel).
+    pub dispositions: mpsc::Sender<Disposition>,
+}
+
 /// Spawns the dedicated line-editor thread: rustyline owns stdin there
 /// (raw mode, history, Ctrl-C/D mapping), lines stream back through a
 /// bounded channel so the reader never runs ahead of execution. When
@@ -94,15 +151,21 @@ pub enum LineEvent {
 /// ([`completion::ReplHelper`]) lives and dies with it and reads the
 /// session state only through one lock-free `load_full()` per Tab.
 ///
+/// After each delivered event the thread unconditionally waits for the
+/// loop's [`Disposition`] before re-arming `readline` (ADR 0014): a
+/// `Prompt` verdict is answered *here* — [`connect::StdinPrompts`]' sync
+/// cores, the one terminal-impl body — and the answer bypasses history
+/// and completion by construction (secrets never enter either). The
+/// thread performs reads only; no handler logic ever runs on it.
+///
 /// # Panics
 ///
 /// Never in normal operation: the only `expect` guards the thread spawn
 /// itself (an OS-level thread-creation failure at session start).
 #[must_use]
-pub fn spawn_line_reader(
-    state: Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>,
-) -> mpsc::Receiver<LineEvent> {
+pub fn spawn_line_reader(state: Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> EditorIo {
     let (tx, rx) = mpsc::channel(1);
+    let (verdicts_tx, mut verdicts_rx) = mpsc::channel::<Disposition>(1);
     std::thread::Builder::new()
         .name("repl-line-reader".to_owned())
         .spawn(move || {
@@ -125,7 +188,9 @@ pub fn spawn_line_reader(
                 match editor.readline(PROMPT) {
                     Ok(line) => {
                         // Empty and whitespace-only lines are prompt
-                        // noise, not recallable entries.
+                        // noise, not recallable entries. History is
+                        // added here only — prompted answers ride the
+                        // oneshot below and never reach this arm.
                         if !line.trim().is_empty() {
                             let _ = editor.add_history_entry(line.as_str());
                         }
@@ -148,10 +213,116 @@ pub fn spawn_line_reader(
                         return;
                     }
                 }
+                // Unconditional: never re-arm `readline` while a
+                // verdict (or a prompt chain) is outstanding. A dropped
+                // verdict channel is the loop's exit signal.
+                loop {
+                    match verdicts_rx.blocking_recv() {
+                        None => return,
+                        Some(Disposition::Next) => break,
+                        Some(Disposition::Prompt { label, kind, reply }) => {
+                            let answer = match kind {
+                                PromptKind::Line => connect::StdinPrompts::read_line_sync(&label)
+                                    .map(PromptValue::Text),
+                                PromptKind::Masked => {
+                                    connect::StdinPrompts::read_secret_sync(&label)
+                                        .map(PromptValue::Text)
+                                }
+                                PromptKind::Confirm => {
+                                    connect::StdinPrompts::read_confirm_sync(&label)
+                                        .map(PromptValue::Flag)
+                                }
+                            };
+                            // A failed send means the loop is gone —
+                            // the session is ending; the outer recv
+                            // observes it next.
+                            let _ = reply.send(answer);
+                        }
+                    }
+                }
             }
         })
         .expect("spawn the REPL line-reader thread");
-    rx
+    EditorIo {
+        lines: rx,
+        dispositions: verdicts_tx,
+    }
+}
+
+/// The session-owned [`connect::PromptReader`]: each ceremony prompt is
+/// shipped to the editor thread as a [`Disposition::Prompt`] and awaited
+/// through the oneshot — genuinely async, so no runtime worker is ever
+/// parked on user input (ADR 0011). The dropped-peer failure maps to
+/// `BrokenPipe`, which the ceremony already maps to the typed
+/// `CommandError::Prompt` (a vanished editor ends the line, not the
+/// session logic).
+#[derive(Debug, Clone)]
+pub struct ReplPrompts {
+    dispositions: mpsc::Sender<Disposition>,
+}
+
+impl ReplPrompts {
+    /// Builds the session-side reader over the disposition sender.
+    #[must_use]
+    pub(crate) fn new(dispositions: mpsc::Sender<Disposition>) -> Self {
+        Self { dispositions }
+    }
+
+    /// The per-line verdict for a fully handled line: the editor thread
+    /// resumes editing.
+    pub(crate) async fn resume(&self) {
+        let _ = self.dispositions.send(Disposition::Next).await;
+    }
+
+    /// One prompt round-trip: request the read, await the answer.
+    async fn ask(&self, label: &str, kind: PromptKind) -> Result<PromptValue, std::io::Error> {
+        let (reply, answer) = oneshot::channel();
+        self.dispositions
+            .send(Disposition::Prompt {
+                label: label.to_owned(),
+                kind,
+                reply,
+            })
+            .await
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        answer
+            .await
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?
+    }
+
+    fn text(value: Result<PromptValue, std::io::Error>) -> Result<String, std::io::Error> {
+        match value? {
+            PromptValue::Text(text) => Ok(text),
+            // The editor thread answers `Flag` only to a `Confirm`
+            // request, and the session loop only ever sends `Next`.
+            PromptValue::Flag(_) => Err(std::io::Error::other("confirm answer to a line prompt")),
+        }
+    }
+
+    fn flag(value: Result<PromptValue, std::io::Error>) -> Result<bool, std::io::Error> {
+        match value? {
+            PromptValue::Flag(flag) => Ok(flag),
+            PromptValue::Text(_) => Err(std::io::Error::other("line answer to a confirm prompt")),
+        }
+    }
+}
+
+impl connect::PromptReader for ReplPrompts {
+    async fn read_line(&mut self, prompt: &str) -> Result<String, std::io::Error> {
+        Self::text(self.ask(prompt, PromptKind::Line).await)
+    }
+
+    async fn read_secret(&mut self, prompt: &str) -> Result<String, std::io::Error> {
+        Self::text(self.ask(prompt, PromptKind::Masked).await)
+    }
+
+    async fn read_confirm(&mut self, prompt: &str) -> Result<bool, std::io::Error> {
+        // Always prompts (no TTY short-circuit): the REPL's existence
+        // implies a terminal (entry rule), and hermetic tests are the
+        // answering peer. The never-blocks rule governs `StdinPrompts`
+        // only — the seam that can face a pipe.
+        Self::flag(self.ask(prompt, PromptKind::Confirm).await)
+    }
 }
 
 /// The cross-line session state: the resolved config, the production
@@ -311,16 +482,27 @@ pub enum ReplExit {
 }
 
 /// The session loop: consume line events, dispatch lines, honor exits,
-/// and shut the core down exactly once at the end.
+/// and shut the core down exactly once at the end. Every consumed event
+/// gets exactly one disposition — `Next` after a handled line or an
+/// `Interrupted`; `Eof` and `Exit` end the loop, and the dropped
+/// disposition sender is the editor thread's exit signal (D16: no final
+/// verdict needed).
 pub async fn repl_loop(
     app: crate::App,
     session: ReplSession,
-    mut lines: mpsc::Receiver<LineEvent>,
+    editor_io: EditorIo,
     io: &mut CommandIo<'_>,
 ) -> ReplExit {
+    let EditorIo { mut lines, .. } = editor_io;
+    // The loop answers every consumed event with exactly one verdict
+    // through the same sender the session-side prompt reader uses.
+    let verdicts = ReplPrompts::new(editor_io.dispositions);
     while let Some(event) = lines.recv().await {
         let action = match event {
-            LineEvent::Interrupted => continue,
+            LineEvent::Interrupted => {
+                verdicts.resume().await;
+                continue;
+            }
             LineEvent::Eof => break,
             LineEvent::Line(raw) => resolve_line(&raw, session.json_default),
         };
@@ -357,6 +539,10 @@ pub async fn repl_loop(
                 let _ = dispatch_line(&session, &app, command, &mut line_io).await;
             }
         }
+        // The line's one verdict: editing resumes. A ceremony that
+        // prompted mid-handler has already been answered through the
+        // same channel; this closes its chain.
+        verdicts.resume().await;
     }
     let outcome = app.shutdown().await;
     if outcome.actor_aborted {
@@ -365,17 +551,18 @@ pub async fn repl_loop(
     ReplExit::Graceful
 }
 
-/// Runs one session to completion against injected line events and
+/// Runs one session to completion against injected editor I/O and
 /// writers: boot (typed failures reported, exit 1) → one-time boot-pull
 /// wait under a connector backend → banner → loop → graceful shutdown →
-/// exit 0. The `lines` factory runs immediately after a successful
+/// exit 0. The `editor_io` factory runs immediately after a successful
 /// `bootstrap` and receives the session's shared-state handle — the
 /// production factory spawns the editor thread with it, so completion
-/// always has a valid snapshot and tests inject their channel untouched.
+/// always has a valid snapshot and tests inject their channels
+/// untouched.
 pub async fn run_session_with_lines(
     config: AppConfig,
     json_default: bool,
-    lines: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> mpsc::Receiver<LineEvent>,
+    editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> EditorIo,
     io: &mut CommandIo<'_>,
 ) -> u8 {
     let store: Arc<dyn CredentialStore> =
@@ -391,13 +578,12 @@ pub async fn run_session_with_lines(
         Ok(app) => app,
         Err(err) => return crate::commands::report_to(io, &CommandError::from(err)),
     };
-    let lines = lines(app.engine.shared_state());
+    let editor_io = editor_io(app.engine.shared_state());
     let session = ReplSession {
         config: app.config.clone(),
         store,
         json_default,
-    };
-    // The one-shot prefix's boot-pull wait, once per session (a
+    }; // The one-shot prefix's boot-pull wait, once per session (a
     // connector-less core can never run a cycle; skip the wait).
     if backend != SyncBackend::Standalone {
         let timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs.max(1));
@@ -419,7 +605,7 @@ pub async fn run_session_with_lines(
     } else {
         let _ = writeln!(io.out, "{banner}");
     }
-    let _exit = repl_loop(app, session, lines, io).await;
+    let _exit = repl_loop(app, session, editor_io, io).await;
     0
 }
 
@@ -490,6 +676,153 @@ pub async fn run_session(config: AppConfig, json_default: bool) -> u8 {
     // terminal back exactly as found.
     let _tty = TtyStateGuard::take();
     run_session_with_lines(config, json_default, spawn_line_reader, &mut io).await
+}
+
+#[cfg(test)]
+mod disposition_tests {
+    use std::collections::VecDeque;
+
+    use tokio::sync::mpsc;
+
+    use super::{Disposition, PromptKind, PromptValue, ReplPrompts};
+    use crate::commands::connect::PromptReader as _;
+
+    /// Spawns a scripted answering peer: consumes dispositions, ignores
+    /// `Next`, answers `Prompt`s from the script in order.
+    fn scripted_peer(
+        mut rx: mpsc::Receiver<Disposition>,
+        script: VecDeque<Result<PromptValue, std::io::Error>>,
+    ) -> tokio::task::JoinHandle<usize> {
+        tokio::spawn(async move {
+            let mut script = script;
+            let mut answered = 0;
+            while let Some(disposition) = rx.recv().await {
+                match disposition {
+                    Disposition::Next => {}
+                    Disposition::Prompt { reply, .. } => {
+                        let _ =
+                            reply.send(script.pop_front().expect("script must cover every prompt"));
+                        answered += 1;
+                    }
+                }
+            }
+            answered
+        })
+    }
+
+    fn channel() -> (ReplPrompts, tokio::task::JoinHandle<usize>) {
+        let (tx, rx) = mpsc::channel(1);
+        let script = VecDeque::from(vec![
+            Ok(PromptValue::Text("server".to_owned())),
+            Ok(PromptValue::Text("secret".to_owned())),
+            Ok(PromptValue::Flag(true)),
+            Err(std::io::Error::other("scripted failure")),
+        ]);
+        (ReplPrompts::new(tx), scripted_peer(rx, script))
+    }
+
+    /// U2: each `PromptReader` method emits its matching kind (the
+    /// `Line`/`Masked`/`Confirm` kinds carry the label through the
+    /// disposition) and returns the scripted value; a `Fail` script
+    /// maps to the io error. Exhaustion order pins the ceremony's
+    /// prompt sequence.
+    #[tokio::test]
+    async fn the_prompt_reader_round_trips_every_kind() {
+        let (mut prompts, peer) = channel();
+
+        assert_eq!(
+            prompts.read_line("Server URL: ").await.expect("line"),
+            "server"
+        );
+        assert_eq!(
+            prompts.read_secret("App password: ").await.expect("secret"),
+            "secret"
+        );
+        assert!(prompts.read_confirm("ok? [y/N] ").await.expect("confirm"));
+        assert!(matches!(
+            prompts.read_line("again: ").await,
+            Err(err) if err.kind() == std::io::ErrorKind::Other,
+        ));
+        // Drop the sender so the peer's recv loop can end.
+        drop(prompts);
+
+        let answered = peer.await.expect("peer joins");
+        assert_eq!(answered, 4);
+    }
+
+    /// U2: a dropped peer (the answering side gone) maps to
+    /// `BrokenPipe` — the ceremony's typed-cancellation path.
+    #[tokio::test]
+    async fn a_dropped_peer_maps_to_broken_pipe() {
+        let (tx, rx) = mpsc::channel::<Disposition>(1);
+        drop(rx);
+        let mut prompts = ReplPrompts::new(tx);
+        assert!(matches!(
+            prompts.read_line("probe: ").await,
+            Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe,
+        ));
+    }
+
+    /// U3 (the history-bypass pin, protocol level): during a scripted
+    /// prompt exchange the lines channel stays empty — answers ride the
+    /// oneshot and never enter the line stream, so they can never enter
+    /// history or completion by construction.
+    #[tokio::test]
+    async fn prompt_answers_bypass_the_lines_channel() {
+        let (verdict_tx, verdict_rx) = mpsc::channel(1);
+        let (lines_tx, mut lines_rx) = mpsc::channel::<super::LineEvent>(1);
+        let (prompts, peer) = {
+            let script = VecDeque::from(vec![Ok(PromptValue::Text("secret".to_owned()))]);
+            (
+                ReplPrompts::new(verdict_tx),
+                scripted_peer(verdict_rx, script),
+            )
+        };
+        drop(lines_tx);
+        let mut prompts = prompts;
+        assert_eq!(
+            prompts.read_secret("App password: ").await.expect("answer"),
+            "secret"
+        );
+        // Drop the sender so the peer's recv loop can end.
+        drop(prompts);
+        peer.await.expect("peer joins");
+        // The exchange touched only the disposition channel: the line
+        // stream closed untouched (its sender was dropped before the
+        // exchange) — an answer could not have ridden it.
+        assert!(lines_rx.recv().await.is_none());
+    }
+
+    /// U2: the `resume` verdict delivers exactly `Next` (the loop's
+    /// per-line contract with the editor thread).
+    #[tokio::test]
+    async fn resume_sends_next() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let prompts = ReplPrompts::new(tx);
+        prompts.resume().await;
+        assert!(matches!(rx.recv().await, Some(Disposition::Next)));
+    }
+
+    /// U2: the disposition carries the kind — the peer observes a
+    /// `Masked` request for `read_secret` (the pin that the secret
+    /// never rides a cooked path).
+    #[tokio::test]
+    async fn the_secret_prompt_travels_as_masked() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut prompts = ReplPrompts::new(tx);
+        let ask = tokio::spawn(async move {
+            let _ = prompts.read_secret("App password: ").await;
+        });
+        match rx.recv().await {
+            Some(Disposition::Prompt { label, kind, reply }) => {
+                assert_eq!(label, "App password: ");
+                assert_eq!(kind, PromptKind::Masked);
+                let _ = reply.send(Ok(PromptValue::Text("pw".to_owned())));
+            }
+            _other => panic!("expected a Prompt disposition"),
+        }
+        ask.await.expect("ask joins");
+    }
 }
 
 #[cfg(test)]
