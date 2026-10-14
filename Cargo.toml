@@ -69,7 +69,7 @@ toml_edit = "0.22"
 # unix-domain sockets on Linux/macOS, named pipes on Windows
 interprocess = { version = "2.2", features = ["tokio"] }
 # Platform data/config directories (taskboard-app db-path default)
-dirs = "6"
+dirs = "7"
 # OS keyring (taskboard-app secrets); platform stores are feature-gated
 # via target-specific deps in the app manifest.
 keyring = { version = "3", default-features = false }
