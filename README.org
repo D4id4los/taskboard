@@ -141,7 +141,24 @@ username = "<your-nextcloud-username>"
 [sync]
 backend = "nextcloud"   # optional; absent = auto: nextcloud iff server_url is set
 poll_interval_secs = 30
+
+[ui]
+scale = 1.0             # theme token multiplier; 0.5–3.0 enforced at load
 #+end_src
+
+** Display scaling
+
+The desktop UI scales on two orthogonal axes (they compose; both need a
+restart to apply):
+
+- =[ui] scale= (config): multiplies every theme dimension — spacing,
+  radii, text roles, the window's default size. Values outside the
+  =0.5=–=3.0= range are a typed configuration error, never silently
+  clamped.
+- =SLINT_SCALE_FACTOR= (environment): the window-manager-level DPI
+  override honoured by the Slint winit backend at window creation. Use
+  it when the OS reports the wrong DPI for your display; it is read
+  before the UI starts and never set by the app itself.
 
 ** Quickstart: stand-alone first
 
