@@ -60,7 +60,7 @@ rustyline = "18"
 shell-words = "1"
 # Line-discipline save/restore around the REPL session (taskboard-app):
 # the same termios API (and version) the line editor itself uses
-nix = { version = "0.30.1", default-features = false, features = ["term"] }
+nix = { version = "0.31.3", default-features = false, features = ["term"] }
 # Advisory per-database instance lock (`<db>.lock` sidecar, taskboard-app)
 fd-lock = "4"
 # Comment-preserving config read-modify-write (`login`, taskboard-app)
