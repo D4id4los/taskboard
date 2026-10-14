@@ -137,19 +137,33 @@ implementation specs into the root directory or source folders.
 ```
 .artifacts/
 ├── plans/     # Forward-looking implementation specs (YYYY-MM-DD-<topic>-plan.md)
-└── reports/   # Backward-looking analyses, benchmarks, audits (YYYY-MM-DD-<topic>-report.md)
+├── reports/   # Backward-looking analyses, benchmarks, audits (YYYY-MM-DD-<topic>-report.md)
+└── templates/ # Reusable artefact templates (copy out of here; never commit filled-in copies)
 ```
 
 - Generate a plan **before** multi-file refactors, complex feature
   additions, or architectural changes; follow its template.
 - Large plans split into phases use:
   `YYYY-MM-DD-<overall-name>-phase<N>-<phase-name>-plan.md`.
+- **Dispatch plans** — multi-chunk work executed by the three-stage
+  agent protocol (planning → implementation → review, one branch and
+  PR per chunk) — follow the template at
+  `.artifacts/templates/dispatch-plan.md` and are named
+  `YYYY-MM-DD-<topic>-dispatch-plan.md` in `plans/`. A dispatch plan
+  chunks an already-accepted design round or roadmap wave; it is
+  written after acceptance, never instead of it.
 - Improvement ideas that are out-of-scope must also be appended to
   `.artifacts/taskboard-potential-improvements-backlog.md` using the entry
   template in that file.
 
 ## 8. Git & Workflow Rules
 
+- **`main` is branch-protected on GitHub**: every change enters
+  `main` through a GitHub PR that must pass its required CI checks —
+  local merges into `main` are not available. Agents therefore hand
+  off at "PR open + `gh pr checks` green"; the user performs the
+  merge on GitHub. A failing required check is never bypassed or
+  force-past — it is diagnosed and fixed on the branch.
 - **Never push to a remote** without an explicit instruction from the user.
 - **Never merge a feature branch into `main`** (double-rebase style) without
   an explicit order from the user; the user reviews changes before they
