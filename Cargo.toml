@@ -64,7 +64,7 @@ nix = { version = "0.31.3", default-features = false, features = ["term"] }
 # Advisory per-database instance lock (`<db>.lock` sidecar, taskboard-app)
 fd-lock = "4"
 # Comment-preserving config read-modify-write (`login`, taskboard-app)
-toml_edit = "0.22"
+toml_edit = "0.25"
 # Cross-platform local sockets for the daemon IPC frontend (taskboard-app):
 # unix-domain sockets on Linux/macOS, named pipes on Windows
 interprocess = { version = "2.2", features = ["tokio"] }
