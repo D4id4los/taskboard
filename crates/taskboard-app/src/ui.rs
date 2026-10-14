@@ -8,6 +8,8 @@
 //! the UI's command channel into the state engine; the desktop entry
 //! lifecycle lands in this module too.
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -34,9 +36,6 @@ impl CommandSink for EngineHandle {
 /// Capacity of the UI → app command channel. The engine inbox is 256
 /// deep; UI emission is human-input-scale, so 64 queued intents are
 /// already an unresponsive-UI pathology rather than a throughput need.
-/// (Consumed by the desktop entry lifecycle, later in this chunk; the
-/// tests use it meanwhile.)
-#[allow(dead_code)]
 pub(crate) const UI_COMMAND_CAPACITY: usize = 64;
 
 /// Spawns the UI-command forwarder: drains `commands` into `sink` in
@@ -54,6 +53,112 @@ pub fn spawn_ui_command_forwarder<T: CommandSink>(
         }
         tracing::info!("ui command channel closed; forwarder exiting");
     })
+}
+
+/// Where a bare `taskboard` invocation routes under a loaded config
+/// (chunk decision D4): `Desktop` boots the GUI *regardless of TTY* —
+/// `AppMode` is frontend selection (ADR 0008), and a terminal launch
+/// (`taskboard` from a shell) is the normal way to start a desktop app.
+/// The REPL stays the TTY front-end of `Daemon` mode (ADR 0011); an
+/// explicit `daemon` subcommand bypasses this routing entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BareRoute {
+    /// Boot the core and run the desktop UI lifecycle.
+    DesktopUi,
+    /// TTY + daemon mode: the REPL session (ADR 0011).
+    Repl,
+    /// Non-TTY daemon mode (or the TTY-less REPL refusal, resolved by
+    /// `repl::entry_point`): the daemon lifecycle.
+    DaemonLifecycle,
+}
+
+/// The pure D4 mode→route mapping, extracted so the behaviour change
+/// (bare+TTY `desktop` now GUIs instead of opening a REPL) is
+/// unit-testable without a display.
+#[must_use]
+pub fn bare_invocation_route(mode: crate::config::AppMode, tty: bool) -> BareRoute {
+    match mode {
+        crate::config::AppMode::Desktop => BareRoute::DesktopUi,
+        crate::config::AppMode::Daemon if tty => BareRoute::Repl,
+        crate::config::AppMode::Kiosk | crate::config::AppMode::Daemon => {
+            BareRoute::DaemonLifecycle
+        }
+    }
+}
+
+/// The OS-DPI escape hatch (§6.2, D13): reads `SLINT_SCALE_FACTOR`
+/// *before* any slint-touching call and logs its presence. The app
+/// never sets it programmatically — the user's env is the input;
+/// observability is the app's whole duty toward it. The winit backend
+/// honours the variable at window creation; it composes with
+/// `[ui] scale` (OS-DPI alignment × token multiplier).
+fn observe_scale_escape_hatch() {
+    match std::env::var("SLINT_SCALE_FACTOR") {
+        Ok(value) => tracing::info!(
+            value = %value,
+            "SLINT_SCALE_FACTOR set: the winit backend will apply it at window creation"
+        ),
+        Err(std::env::VarError::NotPresent) => {}
+        Err(std::env::VarError::NotUnicode(raw)) => {
+            tracing::warn!(?raw, "SLINT_SCALE_FACTOR is not valid unicode; ignoring");
+        }
+    }
+}
+
+/// The desktop UI lifecycle (D4/D5): boot the core exactly like the
+/// daemon path (same store selection, `LogSink` notifier), build the
+/// UI hand-over, spawn the command forwarder, mount the window, then
+/// run the slint event loop **on the process main thread** (we are
+/// inside `block_on`; the multi-thread runtime's workers keep driving
+/// every actor). Exit paths: window close ends the loop; `ctrl_c`/SIGTERM
+/// land via the exit watcher calling [`taskboard_ui_slint::quit`] —
+/// both reach the same graceful shutdown.
+///
+/// # Errors
+///
+/// Bootstrap, mount, and event-loop failures, as typed errors.
+pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result<()> {
+    // D13: the env var is read before anything slint-side.
+    observe_scale_escape_hatch();
+
+    let scale = config.ui.scale;
+    let store = crate::secrets::resolve_credential_store(config.nextcloud.credential_store);
+    let app =
+        crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
+
+    // The hand-over (D6): the app keeps the receiver half of the
+    // command channel and forwards; the UI never sees an EngineHandle.
+    let (commands_tx, commands_rx) = mpsc::channel(UI_COMMAND_CAPACITY);
+    let forwarder = spawn_ui_command_forwarder(commands_rx, app.engine.clone());
+
+    let handle = taskboard_ui_slint::mount(
+        app.engine.shared_state(),
+        app.engine.subscribe(),
+        app.system.subscribe(),
+        commands_tx,
+        taskboard_ui_slint::UiSettings { scale },
+    )?;
+
+    // D5b: the physical exit paths are wired so shutdown is always
+    // graceful (`app.exit` as an action is chunk 2). Thin main-glue
+    // class — deliberately untested; the forwarder and config carry
+    // the tests.
+    let exit_watcher = tokio::spawn(async {
+        crate::bootstrap::wait_for_signal().await;
+        tracing::info!("shutdown signal received");
+        taskboard_ui_slint::quit();
+    });
+
+    let run_result = taskboard_ui_slint::run(handle);
+
+    exit_watcher.abort();
+    forwarder.abort();
+    let outcome = app.shutdown().await;
+    if outcome.actor_aborted {
+        tracing::warn!("sync actor did not stop in time and was aborted");
+    }
+    run_result?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -111,6 +216,37 @@ mod tests {
         forwarder.await.expect("forwarder joins cleanly");
         let collected = sink.0.lock().expect("sink lock").clone();
         assert_eq!(collected, commands, "exact sequence, order preserved");
+    }
+
+    /// The pure D4 routing (test 17): `desktop` routes to the UI
+    /// lifecycle regardless of TTY — the recorded behaviour change;
+    /// `daemon` keeps the TTY-sensitive REPL rule.
+    #[test]
+    fn bare_invocation_routing_maps_modes_per_d4() {
+        use crate::config::AppMode;
+        assert_eq!(
+            bare_invocation_route(AppMode::Desktop, true),
+            BareRoute::DesktopUi,
+            "bare+TTY desktop GUIs (D4 behaviour change)"
+        );
+        assert_eq!(
+            bare_invocation_route(AppMode::Desktop, false),
+            BareRoute::DesktopUi
+        );
+        assert_eq!(
+            bare_invocation_route(AppMode::Daemon, true),
+            BareRoute::Repl
+        );
+        assert_eq!(
+            bare_invocation_route(AppMode::Daemon, false),
+            BareRoute::DaemonLifecycle
+        );
+        // Kiosk stays refused downstream (the daemon-lifecycle gate);
+        // it never routes to the UI in v0.1.0.
+        assert_eq!(
+            bare_invocation_route(AppMode::Kiosk, true),
+            BareRoute::DaemonLifecycle
+        );
     }
 
     #[tokio::test]

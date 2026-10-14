@@ -14,6 +14,7 @@
 //! `DeckClient::new`.
 
 use keyring::Entry;
+use std::sync::Arc;
 
 /// The keyring service name every taskboard entry lives under.
 pub const KEYRING_SERVICE: &str = "taskboard";
@@ -201,6 +202,19 @@ pub fn credential_key(server: &str, username: &str) -> String {
         host
     };
     format!("{username}@{host}")
+}
+
+/// Resolves the config-selected credential store — the one wiring point
+/// every booting lifecycle (daemon, desktop UI) shares, so the
+/// backend-selection policy has exactly one definition site.
+#[must_use]
+pub fn resolve_credential_store(
+    kind: crate::config::CredentialStoreKind,
+) -> Arc<dyn CredentialStore> {
+    match kind {
+        crate::config::CredentialStoreKind::Keyring => Arc::new(KeyringStore),
+        crate::config::CredentialStoreKind::Env => Arc::new(EnvCredentialStore),
+    }
 }
 
 #[cfg(test)]

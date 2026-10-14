@@ -25,9 +25,8 @@ use taskboard_app::cli::{Cli, Command, DaemonCmd};
 use taskboard_app::commands::{
     BasicSession, CommandCtx, CommandError, IpcRoute, dispatch, report, route_for_ipc,
 };
-use taskboard_app::config::{AppConfig, CredentialStoreKind};
+use taskboard_app::config::AppConfig;
 use taskboard_app::ipc::client;
-use taskboard_app::secrets::{CredentialStore, EnvCredentialStore, KeyringStore};
 
 fn init_tracing() {
     // The console subscriber is compile-time optional but runtime
@@ -139,11 +138,13 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         std::process::exit(i32::from(code));
     }
 
-    // Bare `taskboard` is TTY-sensitive (ADR 0011): an interactive
-    // terminal opens the REPL session over one booted core; without a
-    // TTY the `[app] mode` resolution keeps today's behavior (the
-    // systemd/SSH-piped deployments). An explicit `daemon` is `Some`
-    // here and skips straight to the daemon lifecycle.
+    // Bare `taskboard` routing (D4): `mode = "desktop"` boots the GUI
+    // *regardless of TTY* — `AppMode` is frontend selection (ADR 0008),
+    // and launching from a terminal is how desktop apps start. The
+    // REPL stays the TTY front-end of `daemon` mode (ADR 0011); a
+    // non-TTY daemon (and the refused `kiosk`) keeps the daemon
+    // lifecycle. An explicit `daemon` subcommand is `Some` above and
+    // skips this routing entirely.
     if bare_invocation {
         let config = match AppConfig::load(cli.config.clone()) {
             Ok(config) => config,
@@ -151,23 +152,23 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
             // the same envelope a one-shot uses (JSON under `--json`).
             Err(err) => std::process::exit(i32::from(report(cli.json, &CommandError::from(err)))),
         };
-        match taskboard_app::repl::entry_point(
-            false,
-            std::io::stdin().is_terminal(),
+        match taskboard_app::ui::bare_invocation_route(
             config.app.mode,
+            std::io::stdin().is_terminal(),
         ) {
-            taskboard_app::repl::Entry::Repl => {
+            taskboard_app::ui::BareRoute::DesktopUi => {
+                return taskboard_app::ui::run_desktop(config).await;
+            }
+            taskboard_app::ui::BareRoute::DaemonLifecycle => {
+                // `kiosk` is refused by the daemon lifecycle's own mode
+                // gate (no kiosk frontend until wave W1+).
+                return daemon_lifecycle(config, cli.config, cli.json).await;
+            }
+            taskboard_app::ui::BareRoute::Repl => {
                 let code = taskboard_app::repl::run_session(config, cli.config, cli.json).await;
                 std::process::exit(i32::from(code));
             }
-            // Fall through to the daemon lifecycle with the config the
-            // entry resolution already loaded (read once, not twice).
-            taskboard_app::repl::Entry::ModeResolution(_) => {}
-            taskboard_app::repl::Entry::Subcommand => {
-                unreachable!("entry resolution ran with no subcommand given")
-            }
         }
-        return daemon_lifecycle(config, cli.config, cli.json).await;
     }
 
     let config = match AppConfig::load(cli.config.clone()) {
@@ -259,10 +260,7 @@ async fn daemon_lifecycle(
     // IPC the daemon's purpose is "own the core, serve commands" — a
     // `standalone` daemon gives scripters the same no-boot-per-command
     // latency the connector profile gets, and idling is over.
-    let store: Arc<dyn CredentialStore> = match config.nextcloud.credential_store {
-        CredentialStoreKind::Keyring => Arc::new(KeyringStore),
-        CredentialStoreKind::Env => Arc::new(EnvCredentialStore),
-    };
+    let store = taskboard_app::secrets::resolve_credential_store(config.nextcloud.credential_store);
 
     let app = match bootstrap(
         config,
