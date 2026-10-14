@@ -337,6 +337,11 @@ functions in the sync crate (proptest-able), then build the actor over
 
 ## [2026-10-08] Deck attachment writes and content download
 
+- **Status**: ✅ DONE (implemented 2026-10-15: multipart upload/update/
+  restore/delete + raw-bytes download on `DeckClient`, per
+  `.artifacts/plans/2026-10-15-sync-nextcloud-attachment-content-plan.md`
+  and the D1 spike's evidenced wire facts — Wave 1's app-fields sidecar
+  consumes this surface)
 - **Category**: `Refactoring`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-08-sync-nextcloud-deck-client-surface-plan.md` §9
 - **Target Area**: `crates/taskboard-sync-nextcloud/`
