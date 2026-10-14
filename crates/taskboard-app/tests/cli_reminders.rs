@@ -355,3 +355,113 @@ async fn r10_session_lane_routes_remind() {
         .collect();
     assert_eq!(lines.len(), 2);
 }
+
+/// R9: the `tasks list` due-marker column — banner truth from the
+/// task's own due date (live + open + due), ignoring mute, rules, and
+/// completions.
+#[tokio::test]
+async fn r9_due_marker_column_follows_banner_truth() {
+    use chrono::Utc;
+    use taskboard_app::commands::output::DueMarker;
+    use taskboard_app::commands::tasks;
+
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "r9.db");
+    // Distinct stacks: the seed helper's one-shot adds resolve stacks
+    // by title, and duplicate titles would go ambiguous.
+    for (n, title) in [
+        "Overdue task",
+        "Due soon task",
+        "Far future task",
+        "Due-less task",
+        "Muted overdue task",
+        "Done overdue task",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        seed(&config, &format!("S{n}"), title).await;
+    }
+
+    let now = Utc::now();
+    let set_due = |title: &str, due: chrono::DateTime<chrono::Utc>| {
+        let config = config.clone();
+        let title = title.to_owned();
+        async move {
+            taskboard_app::commands::tasks::edit(
+                config,
+                forbidden_store(),
+                &title,
+                taskboard_domain::TaskChanges {
+                    duedate: Some(Some(due)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            )
+            .await
+            .expect("edit due");
+        }
+    };
+    set_due(
+        "Overdue task",
+        now - chrono::TimeDelta::try_hours(1).unwrap(),
+    )
+    .await;
+    set_due(
+        "Due soon task",
+        now + chrono::TimeDelta::try_hours(2).unwrap(),
+    )
+    .await;
+    set_due(
+        "Far future task",
+        now + chrono::TimeDelta::try_days(30).unwrap(),
+    )
+    .await;
+    set_due(
+        "Muted overdue task",
+        now - chrono::TimeDelta::try_hours(2).unwrap(),
+    )
+    .await;
+    set_due(
+        "Done overdue task",
+        now - chrono::TimeDelta::try_hours(2).unwrap(),
+    )
+    .await;
+    reminders::mute(
+        config.clone(),
+        forbidden_store(),
+        "Muted overdue task",
+        true,
+    )
+    .await
+    .expect("mute");
+    taskboard_app::commands::tasks::done(
+        config.clone(),
+        forbidden_store(),
+        "Done overdue task",
+        false,
+    )
+    .await
+    .expect("done");
+
+    let list = tasks::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list boots");
+    let marker_of = |title: &str| {
+        list.stacks
+            .iter()
+            .flat_map(|g| g.tasks.iter())
+            .find(|t| t.title == title)
+            .unwrap_or_else(|| panic!("{title} listed"))
+            .due_marker
+    };
+    assert_eq!(marker_of("Overdue task"), Some(DueMarker::Overdue));
+    assert_eq!(marker_of("Due soon task"), Some(DueMarker::DueSoon));
+    assert_eq!(marker_of("Far future task"), None);
+    assert_eq!(marker_of("Due-less task"), None);
+    assert_eq!(
+        marker_of("Muted overdue task"),
+        Some(DueMarker::Overdue),
+        "mute is nagging policy, not banner truth"
+    );
+    assert_eq!(marker_of("Done overdue task"), None, "done is not overdue");
+}

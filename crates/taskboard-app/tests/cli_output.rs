@@ -27,6 +27,7 @@ fn task_row(id: &str, title: &str, done: bool, order: i64, stack: &str) -> TaskR
         done,
         order,
         duedate: None,
+        due_marker: None,
         stack_id: stack.to_owned(),
         stack_title: "col".to_owned(),
         labels: vec![],
@@ -71,6 +72,9 @@ fn o1_task_list_payload_is_structurally_correct() {
     let due = task["duedate"].as_str().unwrap();
     let parsed = chrono::DateTime::parse_from_rfc3339(due).expect("ISO-8601 due date");
     assert_eq!(parsed.timestamp(), 1_700_000_000);
+    // The marker field is always present (null when neither overdue nor
+    // due soon) — `TaskRow` never skips fields.
+    assert!(task["due_marker"].is_null());
 }
 
 /// O1b: boards/mutation/login receipts serialize their documented

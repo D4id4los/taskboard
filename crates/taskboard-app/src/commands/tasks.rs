@@ -10,16 +10,25 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{TimeDelta, Utc};
 use taskboard_domain::{
     AppState, CommandOutcome, LabelId, Stack, StackId, StateCommand, TaskChanges, TaskId,
 };
 
 use crate::commands::CommandError;
 use crate::commands::output::{
-    MutationReceipt, StackGroup, SyncStatusView, TaskList, mutation_receipt, task_row,
+    DueContext, MutationReceipt, StackGroup, SyncStatusView, TaskList, mutation_receipt, task_row,
 };
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
+
+/// The `tasks list` due-soon horizon: a fixed named constant, not a
+/// config knob (the desktop strip owns its own value; a CLI constant is
+/// not worth a config surface).
+pub(crate) const DUE_SOON_HORIZON: TimeDelta = match TimeDelta::try_seconds(86_400) {
+    Some(d) => d,
+    None => panic!("24h is representable"),
+};
 
 /// Boots the core, gives the boot cycle's first pull a bounded chance to
 /// land, runs `body`, and always shuts the core down.
@@ -113,6 +122,8 @@ fn append_order(state: &AppState, stack: StackId) -> i64 {
 /// The stack groups of the task list, in board order; an optional
 /// selector restricts the listing to one stack.
 fn stack_groups(state: &AppState, selector: Option<&str>) -> Result<Vec<StackGroup>, CommandError> {
+    let now = Utc::now();
+    let due = DueContext::compute(state, now);
     let selected = match selector {
         None => None,
         Some(sel) => Some(resolve_stack(state, Some(sel))?),
@@ -132,7 +143,7 @@ fn stack_groups(state: &AppState, selector: Option<&str>) -> Result<Vec<StackGro
             tasks: state
                 .tasks_in_stack(s.id)
                 .iter()
-                .map(|t| task_row(state, t))
+                .map(|t| task_row(state, t, &due))
                 .collect(),
         })
         .collect())
@@ -550,6 +561,17 @@ pub fn render_text_list(list: &TaskList, standalone: bool) -> String {
             };
             if let Some(due) = task.duedate {
                 let _ = write!(line, "  (due {due})");
+                // Banner glyphs (documented in the verb help): `!`
+                // overdue, `~` due within DUE_SOON_HORIZON.
+                match task.due_marker {
+                    Some(crate::commands::output::DueMarker::Overdue) => {
+                        let _ = write!(line, " !");
+                    }
+                    Some(crate::commands::output::DueMarker::DueSoon) => {
+                        let _ = write!(line, " ~");
+                    }
+                    None => {}
+                }
             }
             lines.push(line);
         }
