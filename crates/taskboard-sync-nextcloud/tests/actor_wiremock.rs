@@ -849,3 +849,106 @@ async fn a5_a6_rejection_outcomes_travel_in_the_report() {
         "the 400 PUT is a typed BadRequest rejection: {pushes:?}"
     );
 }
+
+/// A14: a `Retry-After` advertisement on the exhausting 429 becomes a
+/// floor on the *autonomous* backoff deadline. The advertised 2 s sits
+/// strictly between the 100 ms initial backoff and the 30 s cap — the
+/// discriminating zone. The observable is the server-side request count
+/// over paused time: within the window before the advertised deadline
+/// the only limited requests are the first cycle's exhausted retries
+/// (3); a floor-ignoring implementation would fire the next cycle after
+/// the 100 ms curve and add more. Flipping healthy lets the cycle
+/// succeed; the floor is gone with the streak (success schedules
+/// `poll_interval`).
+#[tokio::test(start_paused = true)]
+async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
+    const CFG_RATE: SyncActorConfig = SyncActorConfig {
+        poll_interval: Duration::from_secs(3_600),
+        backoff_initial: Duration::from_millis(100),
+        backoff_max: Duration::from_secs(30),
+    };
+    let server = start_server().await;
+    let limited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let limited_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let responder_limited = limited.clone();
+    let responder_hits = limited_hits.clone();
+    let responder = move |req: &wiremock::Request| {
+        if responder_limited.load(std::sync::atomic::Ordering::SeqCst) {
+            responder_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return ResponseTemplate::new(429).insert_header("Retry-After", "2");
+        }
+        let p = req.url.path().to_string();
+        let body = if p.ends_with("/stacks") {
+            stacks_json(&serde_json::json!([]))
+        } else if p.ends_with("/stacks/archived") {
+            "[]".to_string()
+        } else if p.ends_with(&format!("/boards/{BOARD}")) {
+            board_json(false, &serde_json::json!([]))
+        } else {
+            boards_json(false, &serde_json::json!([]))
+        };
+        ResponseTemplate::new(200)
+            .insert_header("ETag", "\"gen-1\"")
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .respond_with(responder)
+        .mount(&server)
+        .await;
+
+    let mut actor = spawn_with_cfg(&server, repo_with(&[(2, STACK)], &[]), CFG_RATE);
+    let first = set_board_and_report(&mut actor).await;
+    assert!(matches!(first, SyncReport::Completed { .. }));
+
+    limited.store(true, std::sync::atomic::Ordering::SeqCst);
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let failed = next_report(&mut actor).await;
+    assert!(matches!(
+        failed,
+        SyncReport::Failed {
+            kind: SyncErrorKind::Network,
+            ..
+        }
+    ));
+    assert_eq!(
+        actor.system_rx.recv().await.expect("broadcast open"),
+        SystemEvent::NetworkLost
+    );
+    let first_failure_at = tokio::time::Instant::now();
+    let retries_exhausted = limited_hits.load(std::sync::atomic::Ordering::SeqCst);
+
+    // Walk the window before the advertised deadline in explicit 10 ms
+    // steps: each step keeps the runtime's earliest timer bounded, so the
+    // cycle's 2 s backoff deadline (past the window) can never fire
+    // mid-check. A floor-ignoring implementation fires the next cycle at
+    // the 100 ms curve and adds limited requests inside this window.
+    let window_end = first_failure_at + Duration::from_millis(1_900);
+    while tokio::time::Instant::now() < window_end {
+        tokio::time::advance(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        limited_hits.load(std::sync::atomic::Ordering::SeqCst),
+        retries_exhausted,
+        "no still-limited cycle before the advertised Retry-After elapsed"
+    );
+
+    // Still limited: the backoff cycle fires at/after the advertised
+    // deadline and exhausts the retry budget again.
+    let retried = next_report(&mut actor).await;
+    assert!(matches!(
+        retried,
+        SyncReport::Failed {
+            kind: SyncErrorKind::Network,
+            ..
+        }
+    ));
+    assert!(
+        limited_hits.load(std::sync::atomic::Ordering::SeqCst) > retries_exhausted,
+        "the still-limited cycle did hit the server"
+    );
+
+    // Healthy again: the next backoff cycle succeeds.
+    limited.store(false, std::sync::atomic::Ordering::SeqCst);
+    let ok = next_report(&mut actor).await;
+    assert!(matches!(ok, SyncReport::Completed { .. }));
+}

@@ -28,6 +28,7 @@ use taskboard_domain::{
 };
 
 use crate::client::{DeckClient, Fetch, Validators};
+use crate::error::DeckError;
 use crate::mapping;
 use crate::mapping::classify_read;
 use crate::model::StackFilter;
@@ -314,6 +315,7 @@ async fn cycle(
             // report — the engine re-nudges or the poll tick retries.
             tracing::error!(?err, "cycle aborted: engine state unreadable");
             st.failure_streak += 1;
+            st.retry_after_floor = Duration::ZERO;
             return;
         }
     };
@@ -382,7 +384,16 @@ async fn cycle(
                     // outcomes (e.g. a create whose post-create sub-call
                     // failed) travel as evidence so they are never re-POSTed.
                     pushes.extend(landed);
-                    fail_cycle(st, reports, system, SyncErrorKind::Network, pushes, read_at).await;
+                    fail_cycle(
+                        st,
+                        reports,
+                        system,
+                        SyncErrorKind::Network,
+                        Duration::ZERO,
+                        pushes,
+                        read_at,
+                    )
+                    .await;
                     return;
                 }
             }
@@ -416,7 +427,16 @@ async fn cycle(
         Ok(pulled) => pulled,
         Err(err) => {
             let kind = classify_read(&err);
-            fail_cycle(st, reports, system, kind, pushes, read_at).await;
+            fail_cycle(
+                st,
+                reports,
+                system,
+                kind,
+                advertised_floor(&err),
+                pushes,
+                read_at,
+            )
+            .await;
             return;
         }
     };
@@ -445,6 +465,19 @@ async fn cycle(
     tracing::info!("sync cycle completed");
 }
 
+/// The advertised `Retry-After` delay of a rate-limited failure, `ZERO`
+/// when the failure carries no usable hint. (A 429 during *push* never
+/// reaches here: `GroupOutcome::Aborted` swallows the `DeckError` — the
+/// next cycle's pull meets the same limiter and installs the floor then.)
+fn advertised_floor(err: &DeckError) -> Duration {
+    match err {
+        DeckError::RateLimited {
+            retry_after: Some(d),
+        } => *d,
+        _ => Duration::ZERO,
+    }
+}
+
 /// Transport-classified failures broadcast `NetworkLost` exactly once per
 /// offline episode and advance the backoff; other kinds only back off.
 async fn fail_cycle(
@@ -452,6 +485,7 @@ async fn fail_cycle(
     reports: &mpsc::Sender<SyncReport>,
     system: &broadcast::Sender<SystemEvent>,
     kind: SyncErrorKind,
+    floor: Duration,
     pushes: Vec<PushOutcome>,
     read_at: chrono::DateTime<chrono::Utc>,
 ) {
@@ -461,6 +495,10 @@ async fn fail_cycle(
         tracing::warn!("network lost");
     }
     st.failure_streak = st.failure_streak.saturating_add(1);
+    // Freshest hint wins: a stale advertisement never outlives the next
+    // failure observation; success ignores the field entirely (streak 0
+    // schedules `poll_interval`).
+    st.retry_after_floor = floor;
     tracing::warn!(?kind, streak = st.failure_streak, "sync cycle failed");
     send_report(
         reports,
