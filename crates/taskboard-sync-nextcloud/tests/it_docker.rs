@@ -18,8 +18,8 @@
 mod common;
 
 use common::suite::{
-    board_lifecycle, conditional_read_cycle, delete_missing_board_is_typed_error,
-    full_tree_lifecycle, lists_boards,
+    attachment_content_lifecycle, board_lifecycle, conditional_read_cycle,
+    delete_missing_board_is_typed_error, full_tree_lifecycle, lists_boards,
 };
 use common::{deck_client, live_docker_config, with_deadline};
 
@@ -610,4 +610,15 @@ async fn it_nextcloud_docker_sync_card_field_writes() {
     with_deadline(d::card_field_writes_round_trip(&cfg))
         .await
         .expect("test must finish within the outer deadline");
+}
+
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_attachment_content_lifecycle() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(attachment_content_lifecycle(&deck_client(&cfg)))
+        .await
+        .expect("test must finish within the live deadline");
 }
