@@ -48,13 +48,25 @@ pub struct ConnectArgs {
 /// stdin through the production impl). `prompt` is the label the
 /// production impl displays; the flag-supplied values skip prompting
 /// entirely.
+///
+/// The methods are async-signatured (RPITIT; impls use `async fn`):
+/// the session's [`crate::repl::ReplPrompts`] impl is a channel
+/// round-trip to the editor thread — genuinely awaitable — and a sync
+/// trait would force that impl to block a runtime worker for
+/// unbounded user-thinking time (ADR 0011's founding anti-pattern on
+/// a 1-core kiosk). Not dyn-compatible by design: the three call
+/// sites (one-shot connect, login alias, session ceremony) all know
+/// their concrete reader.
 pub trait PromptReader: Send + Sync {
     /// One trimmed line (server URL / username).
     ///
     /// # Errors
     ///
     /// [`std::io::Error`] when stdin cannot be read.
-    fn read_line(&mut self, prompt: &str) -> Result<String, std::io::Error>;
+    fn read_line(
+        &mut self,
+        prompt: &str,
+    ) -> impl std::future::Future<Output = Result<String, std::io::Error>> + Send;
 
     /// A secret: on a terminal via `rpassword` with `*` feedback per
     /// keystroke (common CLI practice); on piped stdin a plain line
@@ -63,7 +75,10 @@ pub trait PromptReader: Send + Sync {
     /// # Errors
     ///
     /// [`std::io::Error`] when the secret cannot be read.
-    fn read_secret(&mut self, prompt: &str) -> Result<String, std::io::Error>;
+    fn read_secret(
+        &mut self,
+        prompt: &str,
+    ) -> impl std::future::Future<Output = Result<String, std::io::Error>> + Send;
 
     /// A y/N decision (D2/D3 guards). On a terminal: the label on
     /// stderr, one line read, `y`/`yes` (case-insensitive, trimmed) is
@@ -78,11 +93,16 @@ pub trait PromptReader: Send + Sync {
     /// mapped by the ceremony to [`CommandError::Prompt`] exactly like
     /// a failed identity prompt (a cancelled prompt is not a declined
     /// one; the REPL's Ctrl-C disposition relies on the distinction).
-    fn read_confirm(&mut self, prompt: &str) -> Result<bool, std::io::Error>;
+    fn read_confirm(
+        &mut self,
+        prompt: &str,
+    ) -> impl std::future::Future<Output = Result<bool, std::io::Error>> + Send;
 }
 
 /// The production prompt reader. Prompts go to stderr, keeping stdout
-/// a clean output channel for payloads.
+/// a clean output channel for payloads. The `*_sync` cores are the
+/// one terminal-impl body, shared with the REPL editor thread's
+/// prompt answering (two call shapes, one grammar).
 #[derive(Debug, Default)]
 pub struct StdinPrompts;
 
@@ -93,8 +113,14 @@ fn masked_password_config() -> rpassword::Config {
         .build()
 }
 
-impl PromptReader for StdinPrompts {
-    fn read_line(&mut self, prompt: &str) -> Result<String, std::io::Error> {
+impl StdinPrompts {
+    /// The sync core of [`PromptReader::read_line`]: the label on
+    /// stderr, one cooked line read, trimmed.
+    ///
+    /// # Errors
+    ///
+    /// [`std::io::Error`] when stdin cannot be read.
+    pub(crate) fn read_line_sync(prompt: &str) -> Result<String, std::io::Error> {
         let mut stderr = std::io::stderr();
         write!(stderr, "{prompt}")?;
         stderr.flush()?;
@@ -103,7 +129,13 @@ impl PromptReader for StdinPrompts {
         Ok(line.trim().to_owned())
     }
 
-    fn read_secret(&mut self, prompt: &str) -> Result<String, std::io::Error> {
+    /// The sync core of [`PromptReader::read_secret`]: masked
+    /// (`rpassword`) on a terminal, a plain line on piped stdin.
+    ///
+    /// # Errors
+    ///
+    /// [`std::io::Error`] when the secret cannot be read.
+    pub(crate) fn read_secret_sync(prompt: &str) -> Result<String, std::io::Error> {
         if std::io::stdin().is_terminal() {
             // `prompt_password_with_config` prompts and reads on the
             // TTY with echo off and `*` per keystroke.
@@ -122,9 +154,14 @@ impl PromptReader for StdinPrompts {
         }
     }
 
-    fn read_confirm(&mut self, prompt: &str) -> Result<bool, std::io::Error> {
-        // The never-blocks rule keys on stdin TTY-ness alone (D4):
-        // a piped or cron run gets the typed refusal, never a read.
+    /// The sync core of [`PromptReader::read_confirm`]: the
+    /// never-blocks rule (D4) keys on stdin TTY-ness alone — a piped
+    /// or cron run gets `Ok(false)` immediately, never a read.
+    ///
+    /// # Errors
+    ///
+    /// [`std::io::Error`] when the confirm line cannot be read.
+    pub(crate) fn read_confirm_sync(prompt: &str) -> Result<bool, std::io::Error> {
         if !std::io::stdin().is_terminal() {
             return Ok(false);
         }
@@ -134,6 +171,29 @@ impl PromptReader for StdinPrompts {
         let mut line = String::new();
         std::io::stdin().read_line(&mut line)?;
         Ok(parse_confirm(&line))
+    }
+}
+
+impl PromptReader for StdinPrompts {
+    fn read_line(
+        &mut self,
+        prompt: &str,
+    ) -> impl std::future::Future<Output = Result<String, std::io::Error>> + Send {
+        std::future::ready(Self::read_line_sync(prompt))
+    }
+
+    fn read_secret(
+        &mut self,
+        prompt: &str,
+    ) -> impl std::future::Future<Output = Result<String, std::io::Error>> + Send {
+        std::future::ready(Self::read_secret_sync(prompt))
+    }
+
+    fn read_confirm(
+        &mut self,
+        prompt: &str,
+    ) -> impl std::future::Future<Output = Result<bool, std::io::Error>> + Send {
+        std::future::ready(Self::read_confirm_sync(prompt))
     }
 }
 
@@ -162,23 +222,23 @@ struct Identity {
 /// persisted (no config write, no store call) unless the server
 /// verified the credentials; a declined or unconfirmable guard refuses
 /// before any identity is gathered.
-pub async fn run(
+pub async fn run<P: PromptReader>(
     config_path: &Path,
     raw: AppConfig,
     args: ConnectArgs,
-    prompts: &mut dyn PromptReader,
+    prompts: &mut P,
     store: &Arc<dyn CredentialStore>,
 ) -> Result<ConnectReceipt, CommandError> {
     // 1. D2 guard (before gathering: a declined flip must not cost the
     //    user a typed password; a refusal before prompting is today's
     //    pinned behavior, L9).
-    let backend_switched = decide_backend_switch(&raw, &args, prompts)?;
+    let backend_switched = decide_backend_switch(&raw, &args, prompts).await?;
 
     // 2. Gather identity (flags | prompts).
-    let identity = gather_identity(&args, prompts)?;
+    let identity = gather_identity(&args, prompts).await?;
 
     // 3. D3 guard: needs the gathered identity to compare.
-    let repoint = decide_repoint(&raw, &identity, &args, prompts)?;
+    let repoint = decide_repoint(&raw, &identity, &args, prompts).await?;
 
     // 4. Verify before anything is persisted.
     verify(&identity).await?;
@@ -207,10 +267,10 @@ pub async fn run(
 /// auto) the guard is a no-op returning `false` — and `false` means
 /// the overlay writes **no** backend key at all (D6: the auto install
 /// stays auto, so the next `logout` can strip the identity keys).
-fn decide_backend_switch(
+async fn decide_backend_switch<P: PromptReader>(
     raw: &AppConfig,
     args: &ConnectArgs,
-    prompts: &mut dyn PromptReader,
+    prompts: &mut P,
 ) -> Result<bool, CommandError> {
     if raw.sync.backend != Some(SyncBackend::Standalone) {
         return Ok(false);
@@ -223,6 +283,7 @@ fn decide_backend_switch(
     }
     if prompts
         .read_confirm("Switch the backend from stand-alone to nextcloud? [y/N] ")
+        .await
         .map_err(CommandError::Prompt)?
     {
         Ok(true)
@@ -233,24 +294,27 @@ fn decide_backend_switch(
 
 /// Gathers the identity: the flags when present, else the three
 /// labeled prompts.
-fn gather_identity(
+async fn gather_identity<P: PromptReader>(
     args: &ConnectArgs,
-    prompts: &mut dyn PromptReader,
+    prompts: &mut P,
 ) -> Result<Identity, CommandError> {
     let server = match &args.server {
         Some(s) => s.clone(),
         None => prompts
             .read_line("Server URL (https://cloud.example.com): ")
+            .await
             .map_err(CommandError::Prompt)?,
     };
     let user = match &args.user {
         Some(u) => u.clone(),
         None => prompts
             .read_line("Username: ")
+            .await
             .map_err(CommandError::Prompt)?,
     };
     let password = prompts
         .read_secret("App password: ")
+        .await
         .map_err(CommandError::Prompt)?;
     Ok(Identity {
         server,
@@ -265,11 +329,11 @@ fn gather_identity(
 /// same-identity connect returns `None` and never prompts (the
 /// idempotent re-verify); a half-configured file is treated as
 /// unconfigured (D8).
-fn decide_repoint(
+async fn decide_repoint<P: PromptReader>(
     raw: &AppConfig,
     identity: &Identity,
     args: &ConnectArgs,
-    prompts: &mut dyn PromptReader,
+    prompts: &mut P,
 ) -> Result<Option<(String, String)>, CommandError> {
     let (Some(old_server), Some(old_user)) = (&raw.nextcloud.server_url, &raw.nextcloud.username)
     else {
@@ -286,6 +350,7 @@ fn decide_repoint(
     }
     if prompts
         .read_confirm("A different connection is configured; re-point it? [y/N] ")
+        .await
         .map_err(CommandError::Prompt)?
     {
         Ok(Some((old_server.clone(), old_user.clone())))
@@ -491,10 +556,15 @@ mod tests {
     /// immediately without reading — a blocking read would hang the
     /// test binary; the timely return is the proof. A piped `y` is
     /// never consumed and never waits.
-    #[test]
-    fn stdin_prompts_read_confirm_declines_on_non_terminal_stdin() {
+    #[tokio::test]
+    async fn stdin_prompts_read_confirm_declines_on_non_terminal_stdin() {
         let mut prompts = StdinPrompts;
-        assert!(!prompts.read_confirm("probe: ").expect("non-tty decline"));
+        assert!(
+            !prompts
+                .read_confirm("probe: ")
+                .await
+                .expect("non-tty decline")
+        );
     }
 
     /// D11: the daemon heads-up warns only when a daemon actually

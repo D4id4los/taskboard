@@ -63,28 +63,36 @@ impl FakePrompts {
 }
 
 impl taskboard_app::commands::connect::PromptReader for FakePrompts {
-    fn read_line(&mut self, _prompt: &str) -> Result<String, std::io::Error> {
-        self.answers
-            .lock()
-            .expect("fake prompts lock")
-            .pop_front()
-            .ok_or_else(|| std::io::Error::other("no scripted answer"))
+    fn read_line(
+        &mut self,
+        _prompt: &str,
+    ) -> impl std::future::Future<Output = Result<String, std::io::Error>> + Send {
+        std::future::ready(
+            self.answers
+                .lock()
+                .expect("fake prompts lock")
+                .pop_front()
+                .ok_or_else(|| std::io::Error::other("no scripted answer")),
+        )
     }
 
-    fn read_secret(&mut self, prompt: &str) -> Result<String, std::io::Error> {
-        self.read_line(prompt)
+    async fn read_secret(&mut self, prompt: &str) -> Result<String, std::io::Error> {
+        self.read_line(prompt).await
     }
 
-    fn read_confirm(&mut self, _prompt: &str) -> Result<bool, std::io::Error> {
+    fn read_confirm(
+        &mut self,
+        _prompt: &str,
+    ) -> impl std::future::Future<Output = Result<bool, std::io::Error>> + Send {
         // An empty confirm queue models the non-TTY decline: the guard
         // refuses typed without consuming anything (visible through
         // `remaining_confirms`).
-        Ok(self
+        std::future::ready(Ok(self
             .confirms
             .lock()
             .expect("fake prompts lock")
             .pop_front()
-            .unwrap_or(false))
+            .unwrap_or(false)))
     }
 }
 
