@@ -176,6 +176,258 @@ fn tty_login_prompts_all_three_values_and_persists() {
     assert!(!written.contains("s3cret-tty-pw"));
 }
 
+/// Blocks until the marker string has appeared on the pty output. The
+/// masked-secret prompt of the in-session ceremony (ADR 0014) gates the
+/// scripted input on the secret prompt's *arrival* — the read runs on
+/// the editor thread via `rpassword`, the only tier that exercises
+/// rpassword outside the one-shot path. Wording is a synchronization
+/// gate, never asserted.
+fn wait_for_marker(out_pipe: &mut std::process::ChildStdout, seen: &mut Vec<u8>, marker: &str) {
+    loop {
+        if seen.windows(marker.len()).any(|w| w == marker.as_bytes()) {
+            return;
+        }
+        let mut chunk = [0u8; 256];
+        match std::io::Read::read(out_pipe, &mut chunk) {
+            Ok(0) | Err(_) => panic!(
+                "the pty ended before {marker:?} appeared: {}",
+                String::from_utf8_lossy(seen)
+            ),
+            Ok(n) => seen.extend_from_slice(&chunk[..n]),
+        }
+    }
+}
+
+/// The in-session `connect` journey under a real pty (ADR 0014, D17):
+/// a bare invocation opens the session, a `connect` line runs the
+/// ceremony on the running session — server/user come from the line,
+/// the secret rides the masked prompt on the editor thread — and the
+/// config persists secret-free.
+#[test]
+fn tty_in_session_connect_prompts_masked_and_persists() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        // Skip, never fail: util-linux `script` unavailable here.
+        return;
+    }
+
+    let server = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .and(wiremock::matchers::path(BOARDS_PATH))
+                .respond_with(
+                    wiremock::ResponseTemplate::new(200).set_body_string(common::boards_json()),
+                )
+                .mount(&server)
+                .await;
+            server
+        });
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let inner = format!("{} --config {}", binary, config.display());
+    let mut child = std::process::Command::new("timeout")
+        .arg("60")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn script(1) pty wrapper");
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut out_pipe = child.stdout.take().expect("stdout piped");
+    let mut seen = Vec::new();
+    feed_session_lines(
+        &mut stdin,
+        &mut out_pipe,
+        &mut seen,
+        &[&format!("connect --server {} --user alice", server.uri())],
+    );
+    wait_for_marker(&mut out_pipe, &mut seen, "App password: ");
+    stdin
+        .write_all(b"tty-in-session-pw\r")
+        .expect("write the masked secret");
+    // The ceremony ends; the editor re-arms and the session can exit.
+    feed_session_lines(&mut stdin, &mut out_pipe, &mut seen, &["exit"]);
+    let mut err_pipe = child.stderr.take().expect("stderr piped");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut err_pipe, &mut buf);
+        buf
+    });
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut out_pipe, &mut tail).expect("drain session output");
+    seen.extend_from_slice(&tail);
+    drop(out_pipe);
+    let stderr = stderr_thread.join().expect("stderr drained");
+    let status = child.wait().expect("pty run completes");
+
+    assert_ne!(
+        status.code(),
+        Some(124),
+        "the in-session connect hung: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "in-session connect failed: {} / {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+
+    // Persisted non-secrets, secret-free by construction.
+    let written = std::fs::read_to_string(&config).expect("config written");
+    assert!(written.contains(&server.uri()));
+    assert!(written.contains("alice"));
+    assert!(!written.contains("tty-in-session-pw"));
+}
+
+/// D7's pty-tier verification (ADR 0014): Ctrl-C during the masked
+/// read. `rpassword` runs the tty with ISIG off, sees the ^C byte as
+/// data, and re-raises SIGINT itself; which of the two observed
+/// outcomes materializes is the *environment's* SIGINT disposition,
+/// and the app is correct in both:
+/// - default disposition (an interactive shell): the run dies
+///   mid-ceremony — the house "Ctrl-C exits" precedent;
+/// - ignored/inherited (CI runners): rpassword's error returns through
+///   the oneshot, the ceremony fails typed (`prompt`) and the session
+///   survives (ADR 0011's failed-line rule).
+///
+/// The invariant pinned in both branches: nothing persists (every
+/// prompt precedes verify → persist → store) and the run terminates —
+/// the ^C never wedges the session behind an unanswered read.
+#[test]
+fn tty_ctrl_c_during_the_masked_read_never_persists_and_never_wedges() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        // Skip, never fail: util-linux `script` unavailable here.
+        return;
+    }
+
+    // The 401 server makes any persisted identity impossible: the pin
+    // is that the file is untouched, whatever the read answered.
+    let server = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .and(wiremock::matchers::path(BOARDS_PATH))
+                .respond_with(wiremock::ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+            server
+        });
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let inner = format!("{} --config {}", binary, config.display());
+    let mut child = std::process::Command::new("timeout")
+        .arg("60")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn script(1) pty wrapper");
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut out_pipe = child.stdout.take().expect("stdout piped");
+    let mut seen = Vec::new();
+    feed_session_lines(
+        &mut stdin,
+        &mut out_pipe,
+        &mut seen,
+        &[&format!("connect --server {} --user alice", server.uri())],
+    );
+    wait_for_marker(&mut out_pipe, &mut seen, "App password: ");
+    // The ^C byte in raw mode: rpassword aborts the read.
+    stdin.write_all(b"\x03").expect("write the ^C byte");
+
+    // Which outcome: EOF (the process died) or the session prompt
+    // re-armed (the typed-cancellation path). Blocking reads only — no
+    // sleeps; a wedged middle state flows no data, so the outer
+    // `timeout` closes the pty and the status pins name it.
+    let prompt_count = |seen: &[u8]| -> usize {
+        seen.windows(SESSION_PROMPT.len())
+            .filter(|w| *w == SESSION_PROMPT.as_bytes())
+            .count()
+    };
+    let survived = loop {
+        let mut chunk = [0u8; 256];
+        match std::io::Read::read(&mut out_pipe, &mut chunk) {
+            Ok(0) | Err(_) => break false,
+            Ok(n) => {
+                seen.extend_from_slice(&chunk[..n]);
+                if prompt_count(&seen) >= 2 {
+                    break true;
+                }
+            }
+        }
+    };
+
+    if survived {
+        // The typed-cancellation environment: the failed line is over,
+        // the session continues (ADR 0011) — exit gracefully.
+        feed_session_lines(&mut stdin, &mut out_pipe, &mut seen, &["exit"]);
+    }
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut out_pipe, &mut tail).expect("drain pty output");
+    seen.extend_from_slice(&tail);
+    drop(out_pipe);
+    let status = child.wait().expect("pty run completes");
+
+    assert_ne!(
+        status.code(),
+        Some(124),
+        "the ^C byte wedged the session: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    if !survived {
+        assert_ne!(
+            status.code(),
+            Some(0),
+            "the ^C byte completed the ceremony gracefully: {}",
+            String::from_utf8_lossy(&seen)
+        );
+    }
+    // Death/cancellation is pre-persist by construction.
+    let written = std::fs::read_to_string(&config).expect("config untouched");
+    assert!(!written.contains(&server.uri()), "nothing persisted");
+    assert!(!written.contains("alice"));
+}
+
 /// `script` wraps the bare binary in a pty: stdin is a TTY, so the
 /// no-argument invocation opens the interactive REPL (ADR 0011). The
 /// scripted lines are one session: create the board, add a stack and a
