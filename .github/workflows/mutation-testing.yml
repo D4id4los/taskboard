@@ -59,7 +59,7 @@ jobs:
 
       - name: Upload Mutation Report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: mutation-testing-report-${{ github.run_id }}
           path: mutants-out/
