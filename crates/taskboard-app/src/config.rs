@@ -41,6 +41,11 @@ pub const DEFAULT_BACKOFF_MAX_SECS: u64 = 300;
 /// `[app] shutdown_timeout_secs`: graceful-shutdown budget per actor join.
 pub const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 
+/// `[reminders] tick_secs`: engine tick cadence.
+pub const DEFAULT_REMINDER_TICK_SECS: u64 = 30;
+/// `[reminders] default_before`: the implicit reminder's offset.
+pub const DEFAULT_REMINDER_BEFORE: &str = "5m";
+
 /// Fully-resolved, validated application configuration. Secret-free by
 /// construction; `Debug` is safe to log.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -57,6 +62,9 @@ pub struct AppConfig {
     /// Sync actor knobs.
     #[serde(default)]
     pub sync: SyncSection,
+    /// Reminder scheduler knobs.
+    #[serde(default)]
+    pub reminders: RemindersSection,
 }
 
 /// Which frontend the process runs.
@@ -185,6 +193,82 @@ fn default_backoff_initial() -> u64 {
 
 fn default_backoff_max() -> u64 {
     DEFAULT_BACKOFF_MAX_SECS
+}
+
+/// `[reminders]` table: seconds tick plus one string duration parsed in
+/// [`AppConfig::validate`] — a bad value must surface as the typed
+/// `invalid-duration` kind, not a generic decode failure, and the raw
+/// string stays stored so `config print` echoes the user's own form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemindersSection {
+    /// `false` disables the reminder engine's tick entirely.
+    #[serde(default = "default_reminders_enabled")]
+    pub enabled: bool,
+    /// Tick cadence in seconds.
+    #[serde(default = "default_reminder_tick")]
+    pub tick_secs: u64,
+    /// The implicit reminder's offset before due (`30s|5m|1h30m|2d`
+    /// grammar; see [`parse_before`]).
+    #[serde(default = "default_reminder_before")]
+    pub default_before: String,
+}
+
+impl Default for RemindersSection {
+    fn default() -> Self {
+        Self {
+            enabled: default_reminders_enabled(),
+            tick_secs: default_reminder_tick(),
+            default_before: default_reminder_before(),
+        }
+    }
+}
+
+fn default_reminders_enabled() -> bool {
+    true
+}
+
+fn default_reminder_tick() -> u64 {
+    DEFAULT_REMINDER_TICK_SECS
+}
+
+fn default_reminder_before() -> String {
+    DEFAULT_REMINDER_BEFORE.to_owned()
+}
+
+/// The `[reminders] default_before` grammar (one definition site, shared
+/// with the CLI `--before` flag): a non-empty sequence of
+/// `<unsigned-int><unit>` components, unit ∈ `s | m | h | d`, no sign, no
+/// spaces; the total must fit a `TimeDelta` (`"0s"`, `"30s"`, `"5m"`,
+/// `"1h30m"`, `"2d"`).
+#[must_use]
+pub fn parse_before(raw: &str) -> Option<chrono::TimeDelta> {
+    if raw.is_empty() {
+        return None;
+    }
+    let bytes = raw.as_bytes();
+    let mut total: i64 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let digits_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == digits_start {
+            return None; // a component without its number
+        }
+        let value = i64::try_from(raw[digits_start..i].parse::<u64>().ok()?).ok()?;
+        let unit_secs = match bytes.get(i)? {
+            b's' => 1,
+            b'm' => 60,
+            b'h' => 3_600,
+            b'd' => 86_400,
+            _ => return None,
+        };
+        i += 1;
+        total = total.checked_add(value.checked_mul(unit_secs)?)?;
+    }
+    chrono::TimeDelta::try_seconds(total)
 }
 
 /// The XDG read-path candidate, pure over an injected base dir:
@@ -410,6 +494,16 @@ impl AppConfig {
                 field: "sync.backoff_initial_secs",
             });
         }
+        if parse_before(&self.reminders.default_before).is_none() {
+            return Err(ConfigError::InvalidDuration {
+                field: "reminders.default_before",
+            });
+        }
+        if self.reminders.tick_secs == 0 {
+            return Err(ConfigError::InvalidDuration {
+                field: "reminders.tick_secs",
+            });
+        }
         if self
             .storage
             .db_path
@@ -443,6 +537,32 @@ impl AppConfig {
             poll_interval: Duration::from_secs(self.sync.poll_interval_secs),
             backoff_initial: Duration::from_secs(self.sync.backoff_initial_secs),
             backoff_max: Duration::from_secs(self.sync.backoff_max_secs),
+        }
+    }
+
+    /// The `[reminders]` table mapped onto the engine's scheduler knobs.
+    /// The config speaks "before"; the domain speaks "added to duedate" —
+    /// the negation is the whole mapping. Call after
+    /// [`AppConfig::load`]/[`AppConfig::validate`].
+    ///
+    /// # Panics
+    ///
+    /// Never on a validated config (an unparseable `default_before` is
+    /// rejected by [`AppConfig::validate`]).
+    #[must_use]
+    pub fn reminder_engine_config(&self) -> taskboard_state::ReminderEngineConfig {
+        let parsed =
+            parse_before(&self.reminders.default_before).expect("default_before validated");
+        let default_before = if parsed.is_zero() {
+            taskboard_domain::ReminderOffset::at_due()
+        } else {
+            taskboard_domain::ReminderOffset::before(-parsed)
+                .expect("a positive before-duration negates to the domain's sign domain")
+        };
+        taskboard_state::ReminderEngineConfig {
+            enabled: self.reminders.enabled,
+            tick: Duration::from_secs(self.reminders.tick_secs),
+            defaults: taskboard_domain::ReminderDefaults { default_before },
         }
     }
 
@@ -591,6 +711,93 @@ mod tests {
             round.nextcloud.credential_store,
             CredentialStoreKind::Keyring
         );
+        assert!(round.reminders.enabled);
+        assert_eq!(round.reminders.tick_secs, DEFAULT_REMINDER_TICK_SECS);
+        assert_eq!(round.reminders.default_before, DEFAULT_REMINDER_BEFORE);
+    }
+
+    #[test]
+    fn validate_rejects_bad_reminder_values() {
+        let mut c = valid();
+        c.reminders.default_before = "5min".into();
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidDuration {
+                field: "reminders.default_before"
+            })
+        ));
+        let mut c = valid();
+        c.reminders.tick_secs = 0;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidDuration {
+                field: "reminders.tick_secs"
+            })
+        ));
+    }
+
+    #[test]
+    fn reminder_engine_config_maps_the_table_with_the_sign_flip() {
+        let mut c = valid();
+        let engine = c.reminder_engine_config();
+        assert!(engine.enabled);
+        assert_eq!(engine.tick, Duration::from_secs(DEFAULT_REMINDER_TICK_SECS));
+        assert_eq!(
+            engine.defaults.default_before.as_duration().num_seconds(),
+            -300,
+            "the '5m' default speaks before (negative in domain terms)"
+        );
+
+        c.reminders.default_before = "0s".into();
+        assert_eq!(
+            c.reminder_engine_config().defaults.default_before,
+            taskboard_domain::ReminderOffset::at_due()
+        );
+
+        c.reminders.enabled = false;
+        c.reminders.tick_secs = 7;
+        let engine = c.reminder_engine_config();
+        assert!(!engine.enabled);
+        assert_eq!(engine.tick, Duration::from_secs(7));
+    }
+
+    #[test]
+    fn unknown_key_in_the_reminders_table_is_a_decode_error() {
+        let result: Result<AppConfig, _> =
+            Figment::from(Serialized::defaults(AppConfig::default()))
+                .merge(Toml::string("[reminders]\ntoken = 'x'"))
+                .extract();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_before_accepts_the_documented_grammar() {
+        for (raw, secs) in [
+            ("0s", 0),
+            ("30s", 30),
+            ("5m", 300),
+            ("1h30m", 5_400),
+            ("2d", 172_800),
+            ("1d2h3m4s", 93_784),
+            // Fits i64 seconds and a `TimeDelta`, so the grammar accepts
+            // it (the arithmetic saturates downstream, at chrono's edges).
+            ("999999999d", 86_399_999_913_600),
+        ] {
+            assert_eq!(
+                parse_before(raw).map(|d| d.num_seconds()),
+                Some(secs),
+                "{raw} must parse"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_before_rejects_garbage_and_overflow() {
+        for raw in ["", "-5m", "5min", "5 m", "m5", "1.5h", "5mX", "5", "m"] {
+            assert!(parse_before(raw).is_none(), "{raw} must be rejected");
+        }
+        // Genuine i64 overflow across components.
+        assert!(parse_before("9223372036854775807d9223372036854775807s").is_none());
     }
 
     #[test]

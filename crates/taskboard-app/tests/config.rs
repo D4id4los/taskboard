@@ -340,3 +340,89 @@ fn c11_config_print_includes_the_env_overlay() {
     );
     assert_eq!(view.backend, "nextcloud");
 }
+
+/// C12: the `[reminders]` table — an absent table keeps the figment
+/// defaults, a partial TOML override merges per-key, and the env
+/// provider overrides all three keys (bool/int/string coercion).
+#[test]
+fn c12_reminders_table_defaults_merge_and_env_override() {
+    let _env = env_lock();
+    let dir = tempdir();
+    let file = dir.path().join("reminders.toml");
+
+    // Absent table: defaults.
+    std::fs::write(&file, "").expect("write empty toml");
+    let config = AppConfig::load(Some(file.clone())).expect("loads");
+    assert!(config.reminders.enabled);
+    assert_eq!(
+        config.reminders.tick_secs,
+        taskboard_app::config::DEFAULT_REMINDER_TICK_SECS
+    );
+    assert_eq!(
+        config.reminders.default_before,
+        taskboard_app::config::DEFAULT_REMINDER_BEFORE
+    );
+
+    // Partial TOML override: an absent key keeps its default.
+    std::fs::write(&file, "[reminders]\ntick_secs = 90\n").expect("write toml");
+    let config = AppConfig::load(Some(file.clone())).expect("loads");
+    assert!(config.reminders.enabled, "absent key keeps the default");
+    assert_eq!(config.reminders.tick_secs, 90);
+
+    // Env overrides (figment coerces bool/int; the duration stays a
+    // string so file and env decode identically).
+    let _enabled = EnvOverride::set("TASKBOARD_REMINDERS__ENABLED", "false");
+    let _tick = EnvOverride::set("TASKBOARD_REMINDERS__TICK_SECS", "5");
+    let _before = EnvOverride::set("TASKBOARD_REMINDERS__DEFAULT_BEFORE", "1h30m");
+    let config = AppConfig::load(Some(file)).expect("loads");
+    assert!(!config.reminders.enabled);
+    assert_eq!(config.reminders.tick_secs, 5);
+    assert_eq!(config.reminders.default_before, "1h30m");
+}
+
+/// C13: the strict-table rule holds for `[reminders]`, and semantic
+/// violations surface as the typed `invalid-duration` kind through
+/// `load`.
+#[test]
+fn c13_reminders_strict_table_and_typed_durations() {
+    let _env = env_lock();
+    let dir = tempdir();
+    let file = dir.path().join("reminders.toml");
+
+    std::fs::write(&file, "[reminders]\ntoken = 'x'\n").expect("write toml");
+    let err = AppConfig::load(Some(file.clone())).expect_err("unknown key is a decode error");
+    assert_eq!(err.kind(), "decode");
+
+    std::fs::write(&file, "[reminders]\ndefault_before = '5min'\n").expect("write toml");
+    let err = AppConfig::load(Some(file.clone())).expect_err("bad duration");
+    assert_eq!(err.kind(), "invalid-duration");
+
+    std::fs::write(&file, "[reminders]\ntick_secs = 0\n").expect("write toml");
+    let err = AppConfig::load(Some(file)).expect_err("zero tick");
+    assert_eq!(err.kind(), "invalid-duration");
+}
+
+/// C14: the `[reminders]` → `ReminderEngineConfig` mapping through the
+/// real chain — enabled passthrough, tick seconds, and the sign flip
+/// (`"0s"` maps to the at-due offset).
+#[test]
+fn c14_reminders_engine_config_mapping() {
+    let mut config = AppConfig::default();
+    config.reminders.tick_secs = 12;
+    config.reminders.default_before = "2m".into();
+    config.storage.db_path = Some(PathBuf::from("/tmp/x.db"));
+    config.validate().expect("validates");
+    let engine = config.reminder_engine_config();
+    assert!(engine.enabled);
+    assert_eq!(engine.tick, std::time::Duration::from_secs(12));
+    assert_eq!(
+        engine.defaults.default_before.as_duration().num_seconds(),
+        -120
+    );
+
+    config.reminders.default_before = "0s".into();
+    assert_eq!(
+        config.reminder_engine_config().defaults.default_before,
+        taskboard_domain::ReminderOffset::at_due()
+    );
+}
