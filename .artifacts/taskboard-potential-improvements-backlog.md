@@ -2212,3 +2212,181 @@ values and `Uuid::from_u128` ids. Delete the three gates; keep the
 two inherent ones. All affected tests live in the cheap core job, so
 there is no budget impact. Re-verify with one `workflow_dispatch` of
 `miri.yml`.
+
+---
+
+## [2026-10-14] Deck round-trip strategy for app-only fields
+
+- **Category**: `Architecture`
+- **Originating Report**: `.artifacts/reports/2026-10-14-future-directions-analysis-report.md` (§4.1, decision D1 — the keystone)
+- **Target Area**: `taskboard-sync-nextcloud/` (spike), `taskboard-domain/` (mapping policy)
+
+### Context & Description
+A large family of planned fields — scheduled-start, effort estimate,
+importance/urgency, recurrence parameters, reminder rules — have no
+native Deck representation, so they would be local-only until a
+round-trip vehicle exists. The brainstorm proposes two candidates:
+Deck custom fields, or attachments as a sidecar store. The choice
+determines whether these fields can sync on the day they land, and a
+wrong late guess means a data migration. The spike is cheap (days)
+and unblocks the whole "daily driver" wave of the roadmap.
+
+### Proposed Approach
+Investigation spike against the dockerized Nextcloud tier: survey the
+Deck API surface for custom fields (availability, permissions, type
+system, sync semantics), prototype read+write of one scalar field on
+a card both ways, and evaluate the fallback sidecar (a structured
+JSON document per board stored as an attachment, merged
+set-union-style). Deliverable: a short report with a recommendation
+plus the merge-policy implications for `apply_sync_report`.
+
+---
+
+## [2026-10-14] Scheduled-start field split from deadline
+
+- **Category**: `Architecture`
+- **Originating Report**: `.artifacts/2026-10-14-future-directions-analysis-report.md` (§3.1; Wave 1)
+- **Target Area**: `crates/taskboard-domain/`, `crates/taskboard-storage-sqlite/`, `crates/taskboard-state/`, `crates/taskboard-app/`
+
+### Context & Description
+The brainstorm asks to split the concepts of a deadline and a
+scheduled start time/date. `Task` carries a single `duedate` today;
+today/organiser views, the planner, and habit-style workflows all
+want both dimensions. The org-mode analysis already notes org
+`SCHEDULED:` lines have no domain field to map onto — this split is
+the prerequisite.
+
+### Proposed Approach
+Mirror the existing `duedate` seams exactly: `scheduled:
+Option<DateTime<Utc>>` + its field clock, `TaskChanges` sparse entry
+(double-option like duedate), merge-policy arm, storage migration,
+CLI `tasks edit --scheduled`, and due/scheduled markers in list
+output. Deck round-trip per the D1 spike outcome (local-only is an
+acceptable v1 if D1 says so, but decide knowingly).
+
+---
+
+## [2026-10-14] Scheduling scalar fields: effort, importance, urgency
+
+- **Category**: `Architecture`
+- **Originating Report**: `.artifacts/2026-10-14-future-directions-analysis-report.md` (§3.1 + §4.1; Wave 1)
+- **Target Area**: `crates/taskboard-domain/`, `crates/taskboard-storage-sqlite/`, `crates/taskboard-app/`
+
+### Context & Description
+The brainstorm wants an effort-estimation field ("how long do I
+expect this to take") and an importance–urgency matrix (possibly
+tags, possibly fields — the report's recommendation: dedicated typed
+fields for semantics, labels only for free-form taxonomy). These
+fields feed task-list decorations, the matrix visualisation, and the
+future decision-support ranking. All are Deck-unrepresented, hence
+gated on the D1 spike answer.
+
+### Proposed Approach
+One field-family plan: `effort: Option<chrono::TimeDelta>`,
+importance/urgency as small enums (or 1–5 scores — decide in the
+plan), each with its own clock, changeset entries, migrations, and
+CLI flags; pure helper functions (matrix quadrant, derived priority
+candidate) proptest'ed in the domain. UI decorations and the matrix
+view follow in their own GUI work.
+
+---
+
+## [2026-10-14] Time tracking subsystem
+
+- **Category**: `Architecture`
+- **Originating Report**: `.artifacts/2026-10-14-future-directions-analysis-report.md` (§3.3; Wave 2 anchor)
+- **Target Area**: `crates/taskboard-domain/`, `crates/taskboard-storage-sqlite/`, `crates/taskboard-state/`, `crates/taskboard-app/`
+
+### Context & Description
+The brainstorm wants time tracking per task with good export, a
+never-"done" tracker task type ("Reading as Hobby", "Meditation"),
+per-user attribution for shared team decks, and respite marking that
+counts tracked time as break activity. None of this exists; it is
+the anchor feature of the roadmap's focus/reflection wave and the
+prerequisite of break reminders, pomodoro mode, and review
+statistics.
+
+### Proposed Approach
+New `TimeEntry { id, task, start, end, user?, kind flags }` entity
++ StartTracking/StopTracking/AdjustEntry commands + storage tables.
+The *running* timer stays app-runtime state (persisted only as an
+in-flight intent) so engine truth remains settled writes; a
+clock-driven app task stamps the end. Export as pure projections
+(JSON/CSV). Tracker-type tasks and respite flags are follow-on
+field/flag work once entries exist. Deck round-trip via D1.
+
+---
+
+## [2026-10-14] Standalone timers & alarms without tasks
+
+- **Category**: `Architecture`
+- **Originating Report**: `.artifacts/2026-10-14-future-directions-analysis-report.md` (§3.2; Wave 1)
+- **Target Area**: `crates/taskboard-domain/src/reminders.rs`, `crates/taskboard-state/`, `crates/taskboard-app/`
+
+### Context & Description
+The brainstorm: since reminder/notification/alarm machinery exists,
+why should the user need another app for a 3-minute tea timer, a
+meditation minimum, or a wake-up alarm? `ReminderRef` is task-anchored
+today (`Rule(id) | Default(task)`), so task-independent firing needs
+a new anchor kind — the rest of the occurrence/snooze/sink pipeline
+is reusable as-is.
+
+### Proposed Approach
+Extend `ReminderRef` with an `Adhoc(AdhocAlarmId)` arm; add a small
+`AdhocAlarm { id, label, fire_at | duration, insistence? }` entity
+with create/cancel commands and storage. CLI `timers set/list/cancel`
+style verbs first; GUI/overlay surfaces later. Sounds and escalation
+levels ride the reminder-flavours backlog entry.
+
+---
+
+## [2026-10-14] Recurring tasks & habits — domain design round
+
+- **Category**: `Architecture`
+- **Originating Report**: `.artifacts/2026-10-14-future-directions-analysis-report.md` (§3.1 + decision D3; Wave 3 gate)
+- **Target Area**: `crates/taskboard-domain/` (design), then all crates
+
+### Context & Description
+The brainstorm wants repeatable tasks/habits as first-class citizens:
+marked-done shows in history and today's schedule, future scheduled
+days show them active; plus consistent history per occurrence (time
+tracking, stack transitions, done timestamps), standalone-vs-repeating
+identification, and habit-formation assistance grounded in research.
+The analysis rates this the hardest pure-domain problem in the
+roadmap (recurrence rules, materialisation policy, history identity)
+and gates the habit features on a dedicated design round.
+
+### Proposed Approach
+A design-round plan (no implementation): choose materialisation
+policy — the report recommends biasing toward
+materialise-on-completion + re-arming rule (matches the reminders
+pipeline's occurrence philosophy and keeps history = real tasks);
+define occurrence identity and its interaction with reminders, time
+tracking, and sync (Deck round-trip via D1); proptest strategy for
+recurrence arithmetic. Habit streaks, pleasant reminders, and
+tips/motivation content build on the outcome.
+
+---
+
+## [2026-10-14] Subtask hierarchy & task split — design round
+
+- **Category**: `Architecture`
+- **Originating Report**: `.artifacts/reports/2026-10-14-future-directions-analysis-report.md` (§3.1; Wave 3 gate)
+- **Target Area**: `crates/taskboard-domain/` (design), then all crates
+
+### Context & Description
+The brainstorm wants tasks to have subtasks with arbitrary recursion
+depth, a user-facing split-into-subtasks function, and parent-state
+tracking derived from subtask state. Deck has no sub-card concept,
+so sync semantics need deciding alongside the tree semantics. The
+broader hierarchy question (Projects containing Boards, recursive
+Projects) is deliberately excluded — it is blocked on multi-board
+and belongs to that epic instead.
+
+### Proposed Approach
+A design-round plan: `parent: Option<TaskId>` model, acyclicity and
+depth policy, move/cascade semantics (does moving a parent move
+children?), derived parent-state rules (pure functions, proptest'ed),
+split-command interaction with titles/descriptions/labels/duedate,
+and the Deck round-trip story (local-only vs D1 sidecar). UI tree
+rendering and the split interface follow implementation.
