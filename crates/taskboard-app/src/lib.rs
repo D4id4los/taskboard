@@ -36,6 +36,7 @@ mod completion;
 pub mod config;
 pub mod ipc;
 pub mod lockfile;
+pub mod notifications;
 pub mod repl;
 pub mod secrets;
 

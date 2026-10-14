@@ -254,9 +254,13 @@ async fn r6_a_held_instance_lock_fails_the_session_boot_typed() {
 async fn r7_dispatch_line_routes_every_verb_family() {
     let dir = tempdir();
     let db = dir.path().join("r7.db");
-    let app = taskboard_app::bootstrap::bootstrap(standalone_config(&db), forbidden_store())
-        .await
-        .expect("session core boots");
+    let app = taskboard_app::bootstrap::bootstrap(
+        standalone_config(&db),
+        forbidden_store(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("session core boots");
     let session = ReplSession {
         config: app.config.clone(),
         store: forbidden_store(),
@@ -464,9 +468,13 @@ async fn r10_a_connector_sync_failure_is_typed_and_survivable() {
 async fn r11_select_on_a_standalone_core_surfaces_the_typed_gate() {
     let dir = tempdir();
     let db = dir.path().join("r11.db");
-    let app = taskboard_app::bootstrap::bootstrap(standalone_config(&db), forbidden_store())
-        .await
-        .expect("session core boots");
+    let app = taskboard_app::bootstrap::bootstrap(
+        standalone_config(&db),
+        forbidden_store(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("session core boots");
     let session = ReplSession {
         config: app.config.clone(),
         store: forbidden_store(),
@@ -512,9 +520,13 @@ async fn r11_select_on_a_standalone_core_surfaces_the_typed_gate() {
 async fn r12_repl_loop_shuts_the_core_down_before_returning() {
     let dir = tempdir();
     let db = dir.path().join("r12.db");
-    let app = taskboard_app::bootstrap::bootstrap(standalone_config(&db), forbidden_store())
-        .await
-        .expect("boot");
+    let app = taskboard_app::bootstrap::bootstrap(
+        standalone_config(&db),
+        forbidden_store(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("boot");
     let session = ReplSession {
         config: app.config.clone(),
         store: forbidden_store(),
@@ -588,9 +600,13 @@ async fn route_line(
 async fn r12_session_arms_route_success_end_to_end() {
     let dir = tempdir();
     let db = dir.path().join("r12.db");
-    let app = taskboard_app::bootstrap::bootstrap(standalone_config(&db), forbidden_store())
-        .await
-        .expect("session core boots");
+    let app = taskboard_app::bootstrap::bootstrap(
+        standalone_config(&db),
+        forbidden_store(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("session core boots");
     let session = ReplSession {
         config: app.config.clone(),
         store: forbidden_store(),

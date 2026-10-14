@@ -49,9 +49,13 @@ async fn serve_with_config(
     let db = dir.join(db_name);
     let store: Arc<dyn CredentialStore> = Arc::new(EnvCredentialStore);
     let app = Arc::new(
-        taskboard_app::bootstrap::bootstrap(config, store.clone())
-            .await
-            .expect("core boots"),
+        taskboard_app::bootstrap::bootstrap(
+            config,
+            store.clone(),
+            Arc::new(taskboard_app::notifications::LogSink),
+        )
+        .await
+        .expect("core boots"),
     );
     let session = Arc::new(BasicSession {
         config: app.config.clone(),
@@ -494,9 +498,13 @@ async fn served_nextcloud(
     let store: Arc<common::FakeCredentialStore> =
         Arc::new(common::FakeCredentialStore::with(server_url, "alice", "pw"));
     let app = Arc::new(
-        taskboard_app::bootstrap::bootstrap(config, store.clone())
-            .await
-            .expect("core boots"),
+        taskboard_app::bootstrap::bootstrap(
+            config,
+            store.clone(),
+            Arc::new(taskboard_app::notifications::LogSink),
+        )
+        .await
+        .expect("core boots"),
     );
     let session = Arc::new(BasicSession {
         config: app.config.clone(),

@@ -61,7 +61,8 @@ pub async fn run(
     timeout: Duration,
 ) -> Result<SyncOutcome, CommandError> {
     crate::commands::require_connector(&config)?;
-    let app = crate::bootstrap::bootstrap(config, store).await?;
+    let app =
+        crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
     let result = sync_on(&app, no_wait, timeout).await;
     let _ = app.shutdown().await;
     result
@@ -206,9 +207,10 @@ mod detach_tests {
         config.validate().expect("valid");
         let store: std::sync::Arc<dyn CredentialStore> =
             std::sync::Arc::new(FixedStore(AppPassword::new("pw")));
-        let app = crate::bootstrap::bootstrap(config, store)
-            .await
-            .expect("boots");
+        let app =
+            crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink))
+                .await
+                .expect("boots");
 
         assert_eq!(app.detach_connector().await, DetachOutcome::Detached);
 
