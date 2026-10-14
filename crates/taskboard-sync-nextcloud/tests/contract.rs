@@ -268,7 +268,7 @@ async fn rate_limiting_exhausts_policy_and_reports_rate_limited() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(BOARDS_PATH))
-        .respond_with(ResponseTemplate::new(429))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "30"))
         .expect(3) // initial attempt + 2 retries = policy budget
         .mount(&server)
         .await;
@@ -281,11 +281,32 @@ async fn rate_limiting_exhausts_policy_and_reports_rate_limited() {
         .await
         .unwrap_err();
     server.verify().await;
-    assert!(matches!(err, DeckError::RateLimited));
+    assert!(matches!(
+        err,
+        DeckError::RateLimited {
+            retry_after: Some(d)
+        } if d == Duration::from_secs(30)
+    ));
+    // The internal retry policy is untouched by the advertisement.
     assert_eq!(
         sleeper.0.lock().unwrap().as_slice(),
         [Duration::from_millis(500), Duration::from_secs(1)]
     );
+}
+
+#[tokio::test]
+async fn rate_limiting_without_the_header_reports_an_absent_hint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(BOARDS_PATH))
+        .respond_with(ResponseTemplate::new(429))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server).boards().await.unwrap_err();
+    server.verify().await;
+    assert!(matches!(err, DeckError::RateLimited { retry_after: None }));
 }
 
 #[tokio::test]

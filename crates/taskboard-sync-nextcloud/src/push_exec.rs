@@ -911,7 +911,7 @@ impl<'a> PushExecutor<'a> {
 pub(crate) fn is_transport(err: &DeckError) -> bool {
     matches!(
         err,
-        DeckError::Transport(_) | DeckError::RateLimited | DeckError::Unavailable
+        DeckError::Transport(_) | DeckError::RateLimited { .. } | DeckError::Unavailable
     )
 }
 

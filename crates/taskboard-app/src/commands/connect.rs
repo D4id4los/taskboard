@@ -535,7 +535,7 @@ fn deck_variant(err: &DeckError) -> &'static str {
         DeckError::BadRequest => "BadRequest",
         DeckError::Conflict => "Conflict",
         DeckError::PreconditionFailed => "PreconditionFailed",
-        DeckError::RateLimited => "RateLimited",
+        DeckError::RateLimited { .. } => "RateLimited",
         DeckError::Server(_) => "Server",
         DeckError::Unavailable => "Unavailable",
     }

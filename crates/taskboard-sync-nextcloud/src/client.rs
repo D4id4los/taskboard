@@ -168,6 +168,9 @@ struct Call {
 struct Raw {
     status: StatusCode,
     validators: Validators,
+    /// `Retry-After` response header, parsed when in the delay-seconds
+    /// form (status-agnostic extraction; only the 429 arm consumes it).
+    retry_after: Option<Duration>,
     body: Vec<u8>,
 }
 
@@ -196,17 +199,32 @@ pub struct Fetch<T> {
     pub validators: Validators,
 }
 
+/// Parses a `Retry-After` header in the delay-seconds form: strict ASCII
+/// digits only. `None` for anything else — whitespace, signs, decimals,
+/// and the RFC 9110 HTTP-date form (which would need "now" and is not
+/// emitted by Nextcloud's rate limiter in practice). A digit string that
+/// overflows `u64` also reads as absent. Huge in-range values stay
+/// representable; consumption clamps them.
+fn parse_retry_after(header: &str) -> Option<Duration> {
+    if header.is_empty() || !header.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    header.parse::<u64>().ok().map(Duration::from_secs)
+}
+
 /// Maps an HTTP status to a typed [`DeckError`]; `Ok(())` means "not an
 /// error case here" (including `304`, which conditional callers interpret).
-fn map_status(status: StatusCode) -> Result<(), DeckError> {
-    match status {
+fn map_status(raw: &Raw) -> Result<(), DeckError> {
+    match raw.status {
         StatusCode::UNAUTHORIZED => Err(DeckError::Unauthorized),
         StatusCode::FORBIDDEN => Err(DeckError::Forbidden),
         StatusCode::NOT_FOUND => Err(DeckError::NotFound),
         StatusCode::BAD_REQUEST => Err(DeckError::BadRequest),
         StatusCode::CONFLICT => Err(DeckError::Conflict),
         StatusCode::PRECONDITION_FAILED => Err(DeckError::PreconditionFailed),
-        StatusCode::TOO_MANY_REQUESTS => Err(DeckError::RateLimited),
+        StatusCode::TOO_MANY_REQUESTS => Err(DeckError::RateLimited {
+            retry_after: raw.retry_after,
+        }),
         StatusCode::SERVICE_UNAVAILABLE => Err(DeckError::Unavailable),
         s if s.is_server_error() => Err(DeckError::Server(s.as_u16())),
         _ => Ok(()),
@@ -946,7 +964,7 @@ impl DeckClient {
             validators: None,
         };
         self.send_with_retries(call, |raw| {
-            map_status(raw.status)?;
+            map_status(&raw)?;
             decode_envelope(&raw.body)
         })
         .await
@@ -976,7 +994,7 @@ impl DeckClient {
                     validators: raw.validators,
                 });
             }
-            map_status(raw.status)?;
+            map_status(&raw)?;
             Ok(Fetch {
                 data: Some(decode_envelope(&raw.body)?),
                 validators: raw.validators,
@@ -1001,7 +1019,7 @@ impl DeckClient {
             match outcome {
                 Ok(value) => return Ok(value),
                 Err(
-                    retryable @ (DeckError::RateLimited
+                    retryable @ (DeckError::RateLimited { .. }
                     | DeckError::Unavailable
                     | DeckError::Transport(_)),
                 ) => {
@@ -1062,9 +1080,14 @@ impl DeckClient {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned),
         };
+        let retry_after = headers
+            .get(header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after);
         Ok(Raw {
             status,
             validators,
+            retry_after,
             body: response.bytes().await?.to_vec(),
         })
     }
@@ -1103,6 +1126,34 @@ mod tests {
 
     fn err_of(base: &str) -> Result<DeckClient, DeckError> {
         DeckClient::new(base, "user", "token")
+    }
+
+    #[test]
+    fn parse_retry_after_reads_strict_delay_seconds() {
+        assert_eq!(parse_retry_after("30"), Some(Duration::from_secs(30)));
+        // "immediate": a no-op floor by construction.
+        assert_eq!(parse_retry_after("0"), Some(Duration::ZERO));
+        // Huge values stay representable; consumption clamps at the cap.
+        assert_eq!(
+            parse_retry_after("999999999999"),
+            Some(Duration::from_secs(999_999_999_999))
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_treats_everything_else_as_absent() {
+        for absent in [
+            "",
+            " 30",
+            "30 ",
+            "+30",
+            "-1",
+            "abc",
+            "3.5",
+            "Wed, 21 Oct 2015 07:28:00 GMT",
+        ] {
+            assert_eq!(parse_retry_after(absent), None, "{absent:?}");
+        }
     }
 
     #[test]
