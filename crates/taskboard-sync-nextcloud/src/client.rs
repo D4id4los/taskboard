@@ -169,18 +169,24 @@ struct Call {
     validators: Option<Validators>,
 }
 
-/// Route scope of a [`Call`]: the versioned Deck API prefix, or — once the
-/// attachment update route lands — the app's own route namespace.
+/// Route scope of a [`Call`]: under the versioned Deck API prefix or under
+/// the app's own route namespace.
 #[derive(Debug, Clone, Copy)]
 enum Scope {
     /// `index.php/apps/deck/api/v1.0` — the documented OCS API.
     OcsApi,
+    /// `index.php/apps/deck` — app-level routes. The attachment content
+    /// update lives here: the API-level multipart PUT returns `400` (PHP
+    /// does not parse multipart PUT bodies), while the frontend's own
+    /// app-level route works (D1 spike §3.2).
+    App,
 }
 
 impl Scope {
     fn path_prefix(self) -> &'static str {
         match self {
             Scope::OcsApi => DECK_API_PATH,
+            Scope::App => "index.php/apps/deck",
         }
     }
 }
@@ -230,14 +236,13 @@ fn multipart_form(
         .file_name(upload.file_name.clone())
         .mime_str(&upload.mime_type)
         .map_err(|_| DeckError::InvalidUpload)?;
-    let form = multipart::Form::new()
-        .text("type", ATTACHMENT_KIND)
-        .part("file", file);
-    Ok(if for_update {
+    let form = multipart::Form::new().text("type", ATTACHMENT_KIND);
+    let form = if for_update {
         form.text("data", upload.file_name.clone())
     } else {
         form
-    })
+    };
+    Ok(form.part("file", file))
 }
 
 /// One raw successful response: status, validators from the headers, and
@@ -694,6 +699,142 @@ impl DeckClient {
                 "deck attachment content downloaded"
             ),
             Err(err) => tracing::warn!(error = %err, "downloading deck attachment content failed"),
+        }
+        result
+    }
+
+    /// Replaces an attachment's content in place.
+    ///
+    /// This is the frontend's app-level route — POST
+    /// `index.php/apps/deck/cards/{card}/attachment/deck_file:{id}` with
+    /// the `boardId` query — because the API-level multipart PUT fails
+    /// with `400` (PHP does not parse multipart PUT bodies; D1 spike
+    /// §3.2). With the *same* [`AttachmentUpload::file_name`] this is a
+    /// true in-place replacement: `id` and `created_at` are preserved and
+    /// `last_modified`/size advance. A different filename fails on the
+    /// server (`500`) — there is no rename; upload a new attachment
+    /// instead. `stack_id` is not part of the route.
+    ///
+    /// As with every attachment write, the owning card's entity stamp
+    /// advances (D1 §3.3).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`]; [`DeckError::InvalidUpload`] for local input
+    /// validation before any request is sent.
+    pub async fn update_attachment_content(
+        &self,
+        board_id: u64,
+        card_id: u64,
+        attachment_id: u64,
+        upload: &AttachmentUpload,
+    ) -> Result<Attachment, DeckError> {
+        tracing::debug!(
+            board_id,
+            card_id,
+            attachment_id,
+            file_name = %upload.file_name,
+            bytes = upload.content.len(),
+            "updating deck attachment content"
+        );
+        let call = Call {
+            method: Method::POST,
+            resource: format!(
+                "cards/{card_id}/attachment/deck_file:{attachment_id}?boardId={board_id}"
+            ),
+            scope: Scope::App,
+            body: Some(CallBody::Multipart(upload.clone(), true)),
+            validators: None,
+        };
+        let result = self
+            .send_with_retries(call, |raw| {
+                map_status(&raw)?;
+                decode_envelope::<Attachment>(&raw.body)
+            })
+            .await;
+        match &result {
+            Ok(attachment) => tracing::info!(
+                attachment_id = attachment.id,
+                "deck attachment content updated"
+            ),
+            Err(err) => tracing::warn!(error = %err, "updating deck attachment content failed"),
+        }
+        result
+    }
+
+    /// Soft-deletes an attachment. The response carries a non-zero
+    /// [`Attachment::deleted_at`]; the entry stays visible in the
+    /// [`DeckClient::attachments`] listing (a tombstone, not a removal).
+    /// Restores via [`DeckClient::restore_attachment`]. The owning card's
+    /// entity stamp advances (D1 §3.3).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn delete_attachment(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        attachment_id: u64,
+    ) -> Result<Attachment, DeckError> {
+        tracing::debug!(
+            board_id,
+            stack_id,
+            card_id,
+            attachment_id,
+            "deleting deck attachment"
+        );
+        let resource = format!(
+            "boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}"
+        );
+        let result: Result<Attachment, DeckError> = self
+            .send_json(Method::DELETE, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(attachment) => tracing::info!(
+                attachment_id,
+                deleted_at = attachment.deleted_at,
+                "deck attachment deleted"
+            ),
+            Err(err) => tracing::warn!(error = %err, "deleting deck attachment failed"),
+        }
+        result
+    }
+
+    /// Restores a soft-deleted attachment (`deleted_at` back to `0`; the
+    /// content's own `lastModified` is preserved, D1 spike §3.2).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn restore_attachment(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        attachment_id: u64,
+    ) -> Result<Attachment, DeckError> {
+        tracing::debug!(
+            board_id,
+            stack_id,
+            card_id,
+            attachment_id,
+            "restoring deck attachment"
+        );
+        let resource = format!(
+            "boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}/restore"
+        );
+        let result: Result<Attachment, DeckError> = self
+            .send_json(Method::PUT, &resource, None::<serde_json::Value>)
+            .await;
+        match &result {
+            Ok(attachment) => tracing::info!(
+                attachment_id,
+                deleted_at = attachment.deleted_at,
+                "deck attachment restored"
+            ),
+            Err(err) => tracing::warn!(error = %err, "restoring deck attachment failed"),
         }
         result
     }

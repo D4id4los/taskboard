@@ -13,7 +13,7 @@ use taskboard_sync_nextcloud::{
     AttachmentUpload, BoardChanges, CloneOptions, DeckClient, DeckColor, DeckError, LabelChanges,
     NewCard, StackChanges, StackFilter,
 };
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const BOARDS_PATH: &str = "/index.php/apps/deck/api/v1.0/boards";
@@ -1347,4 +1347,91 @@ async fn download_attachment_retries_through_the_shared_spine() {
         [Duration::from_millis(500), Duration::from_secs(1)]
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn update_attachment_content_posts_the_app_level_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/index.php/apps/deck/cards/5/attachment/deck_file:9"))
+        .and(query_param("boardId", "42"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(fixture("attachment_create_response.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let attachment = client_for(&server)
+        .update_attachment_content(42, 5, 9, &attachment_upload())
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(attachment.id, 1);
+
+    let req = &server.received_requests().await.unwrap()[0];
+    let content_type = req
+        .headers
+        .get("content-type")
+        .expect("multipart content type")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let parts = parse_multipart(&content_type, &req.body);
+    let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+    // The update form carries the non-empty `data` slot the app route
+    // validates, on top of the create form's `type` + `file`.
+    assert_eq!(names, ["type", "data", "file"]);
+    assert_eq!(parts[1].body, b"sidecar_v1.json");
+    assert_eq!(parts[2].filename.as_deref(), Some("sidecar_v1.json"));
+    assert_eq!(parts[2].body, b"{\"fields\":{}}");
+}
+
+#[tokio::test]
+async fn delete_attachment_sends_delete_and_decodes_the_tombstone() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "{BOARDS_PATH}/42/stacks/9/cards/5/attachments/1"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(
+                    r#"{"id": 1, "deletedAt": 1791989914, "lastModified": 1791989914}"#,
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let attachment = client_for(&server)
+        .delete_attachment(42, 9, 5, 1)
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_ne!(attachment.deleted_at, 0, "soft delete must be stamped");
+}
+
+#[tokio::test]
+async fn restore_attachment_puts_the_restore_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(format!(
+            "{BOARDS_PATH}/42/stacks/9/cards/5/attachments/1/restore"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(r#"{"id": 1, "deletedAt": 0}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let attachment = client_for(&server)
+        .restore_attachment(42, 9, 5, 1)
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(attachment.deleted_at, 0);
 }
