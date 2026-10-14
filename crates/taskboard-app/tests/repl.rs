@@ -16,7 +16,7 @@ use taskboard_app::cli::{BoardsCmd, Command, StacksCmd, TasksCmd};
 use taskboard_app::commands::{CommandIo, boards, dispatch_line, tasks};
 use taskboard_app::config::{AppConfig, CredentialStoreKind};
 use taskboard_app::lockfile::InstanceLock;
-use taskboard_app::repl::{LineEvent, ReplSession, repl_loop, run_session_with_lines};
+use taskboard_app::repl::{EditorIo, LineEvent, ReplSession, repl_loop, run_session_with_lines};
 use taskboard_app::secrets::CredentialStore;
 
 mod common;
@@ -64,6 +64,10 @@ async fn run_session(
         tx.send(event).await.expect("session channel alive");
     }
     drop(tx);
+    // No prompts are asked on these journeys: the verdict channel's
+    // receiver is dropped immediately, and the loop's `Next` sends fail
+    // harmlessly (the editor is already gone).
+    let (verdicts, _) = mpsc::channel(1);
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut io = CommandIo {
@@ -71,7 +75,16 @@ async fn run_session(
         err: &mut err,
         json: json_default,
     };
-    let code = run_session_with_lines(standalone_config(db), json_default, |_| rx, &mut io).await;
+    let code = run_session_with_lines(
+        standalone_config(db),
+        json_default,
+        |_| EditorIo {
+            lines: rx,
+            dispositions: verdicts,
+        },
+        &mut io,
+    )
+    .await;
     (code, out, err)
 }
 
@@ -230,6 +243,7 @@ async fn r6_a_held_instance_lock_fails_the_session_boot_typed() {
     let lock = InstanceLock::acquire(&db).expect("hold the lock");
     let (tx, rx) = mpsc::channel(1);
     drop(tx);
+    let (verdicts, _) = mpsc::channel(1);
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut io = CommandIo {
@@ -237,7 +251,16 @@ async fn r6_a_held_instance_lock_fails_the_session_boot_typed() {
         err: &mut err,
         json: true,
     };
-    let code = run_session_with_lines(standalone_config(&db), true, |_| rx, &mut io).await;
+    let code = run_session_with_lines(
+        standalone_config(&db),
+        true,
+        |_| EditorIo {
+            lines: rx,
+            dispositions: verdicts,
+        },
+        &mut io,
+    )
+    .await;
     assert_eq!(code, 1);
     let errors = json_lines(&err);
     assert_eq!(errors.len(), 1);
@@ -439,6 +462,7 @@ async fn r10_a_connector_sync_failure_is_typed_and_survivable() {
     tx.send(line("sync")).await.expect("alive");
     tx.send(line("exit")).await.expect("alive");
     drop(tx);
+    let (verdicts, _) = mpsc::channel(1);
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut io = CommandIo {
@@ -450,7 +474,16 @@ async fn r10_a_connector_sync_failure_is_typed_and_survivable() {
     // so the session's sync cycle fails fresh — typed, survivable.
     let guard = common::env_lock();
     common::set_env("TASKBOARD_APP_PASSWORD", "r10-secret");
-    let code = run_session_with_lines(config, true, |_| rx, &mut io).await;
+    let code = run_session_with_lines(
+        config,
+        true,
+        |_| EditorIo {
+            lines: rx,
+            dispositions: verdicts,
+        },
+        &mut io,
+    )
+    .await;
     drop(guard);
     assert_eq!(code, 0, "the session exits 0 despite the failed line");
     let errors = json_lines(&err);
@@ -534,6 +567,7 @@ async fn r12_repl_loop_shuts_the_core_down_before_returning() {
     };
     let (tx, rx) = mpsc::channel(1);
     drop(tx);
+    let (verdicts, _) = mpsc::channel(1);
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut io = CommandIo {
@@ -541,7 +575,16 @@ async fn r12_repl_loop_shuts_the_core_down_before_returning() {
         err: &mut err,
         json: false,
     };
-    let exit = repl_loop(app, session, rx, &mut io).await;
+    let exit = repl_loop(
+        app,
+        session,
+        EditorIo {
+            lines: rx,
+            dispositions: verdicts,
+        },
+        &mut io,
+    )
+    .await;
     assert_eq!(exit, taskboard_app::repl::ReplExit::Graceful);
     // The lock is gone the moment the loop returned: shutdown completed.
     let _next = InstanceLock::acquire(&db).expect("lock released");
@@ -564,6 +607,7 @@ async fn r13_a_kiosk_mode_session_boots_and_serves() {
         .expect("alive");
     tx.send(LineEvent::Eof).await.expect("alive");
     drop(tx);
+    let (verdicts, _) = mpsc::channel(1);
     let mut out = Vec::new();
     let mut err = Vec::new();
     let mut io = CommandIo {
@@ -571,7 +615,16 @@ async fn r13_a_kiosk_mode_session_boots_and_serves() {
         err: &mut err,
         json: true,
     };
-    let code = run_session_with_lines(config, true, |_| rx, &mut io).await;
+    let code = run_session_with_lines(
+        config,
+        true,
+        |_| EditorIo {
+            lines: rx,
+            dispositions: verdicts,
+        },
+        &mut io,
+    )
+    .await;
     assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
     let receipts = json_lines(&out);
     assert_eq!(receipts.len(), 1);
