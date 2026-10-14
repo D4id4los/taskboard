@@ -162,9 +162,13 @@ async fn eventually(app: &App, pred: impl Fn(&taskboard_domain::AppState) -> boo
 /// lock live as long as the returned guard).
 async fn boot(config: AppConfig) -> (App, PasswordEnv) {
     let guard = env_password();
-    let app = bootstrap(config, Arc::new(taskboard_app::secrets::EnvCredentialStore))
-        .await
-        .expect("bootstrap");
+    let app = bootstrap(
+        config,
+        Arc::new(taskboard_app::secrets::EnvCredentialStore),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("bootstrap");
     (app, guard)
 }
 
@@ -350,16 +354,26 @@ async fn b5_bootstrap_failure_paths_are_typed() {
     // Bad URL: config validation rejects it before anything spawns.
     let mut config = common::valid_config("not a url");
     config.storage.db_path = Some(dir.path().join("x.db"));
-    let err = bootstrap(config, Arc::clone(&store))
-        .await
-        .expect_err("bad url");
+    let err = bootstrap(
+        config,
+        Arc::clone(&store),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect_err("bad url");
     assert!(matches!(err, BootstrapError::Config(_)));
 
     // Missing credential: `Credential(NotFound)`.
     let server = MockServer::start().await;
     let config = config_for(&server.uri(), &dir);
     let missing: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
-    let err = bootstrap(config, missing).await.expect_err("no credential");
+    let err = bootstrap(
+        config,
+        missing,
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect_err("no credential");
     assert!(matches!(
         err,
         BootstrapError::Credential(CredentialError::NotFound)
@@ -374,9 +388,13 @@ async fn b5_bootstrap_failure_paths_are_typed() {
     std::fs::write(&blocker, b"not a directory").expect("write blocker");
     let mut config = config_for(&server.uri(), &dir);
     config.storage.db_path = Some(blocker.join("nested").join("taskboard.db"));
-    let err = bootstrap(config, Arc::clone(&populated))
-        .await
-        .expect_err("db path unusable");
+    let err = bootstrap(
+        config,
+        Arc::clone(&populated),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect_err("db path unusable");
     assert!(matches!(
         err,
         BootstrapError::Storage(_) | BootstrapError::StorageDir(_)
@@ -388,7 +406,13 @@ async fn b5_bootstrap_failure_paths_are_typed() {
     std::fs::write(&corrupt, b"this is not a sqlite database at all").expect("write");
     let mut config = config_for(&server.uri(), &dir);
     config.storage.db_path = Some(corrupt);
-    let err = bootstrap(config, populated).await.expect_err("corrupt db");
+    let err = bootstrap(
+        config,
+        populated,
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect_err("corrupt db");
     assert!(matches!(err, BootstrapError::Storage(_)));
 }
 
@@ -406,9 +430,13 @@ async fn b6_desktop_mode_boots_the_core() {
     config.nextcloud.username = None;
     config.app.mode = taskboard_app::config::AppMode::Desktop;
     let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
-    let app = bootstrap(config, store)
-        .await
-        .expect("the core boots under any mode");
+    let app = bootstrap(
+        config,
+        store,
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("the core boots under any mode");
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted);
 }
@@ -532,9 +560,13 @@ async fn b8_standalone_boot_never_touches_credentials_and_serves_commands() {
     config.storage.db_path = Some(dir.path().join("taskboard.db"));
 
     // The empty fake would answer `NotFound` if consulted.
-    let app = bootstrap(config, Arc::new(common::FakeCredentialStore::default()))
-        .await
-        .expect("standalone boot needs no credentials");
+    let app = bootstrap(
+        config,
+        Arc::new(common::FakeCredentialStore::default()),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("standalone boot needs no credentials");
 
     let outcome = app
         .engine
@@ -629,9 +661,13 @@ async fn b13_standalone_shutdown_drops_the_parked_reports_sender_before_the_engi
     // inside it, so only the ordering violation can trip the timeout.
     config.app.shutdown_timeout_secs = 30;
 
-    let app = bootstrap(config, Arc::new(common::FakeCredentialStore::default()))
-        .await
-        .expect("standalone boot needs no credentials");
+    let app = bootstrap(
+        config,
+        Arc::new(common::FakeCredentialStore::default()),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("standalone boot needs no credentials");
 
     let outcome = tokio::time::timeout(Duration::from_secs(10), app.shutdown())
         .await
@@ -661,9 +697,13 @@ async fn b10_standalone_attach_makes_the_engine_live_and_the_report_is_ingested(
     config.storage.db_path = Some(dir.path().join("taskboard.db"));
 
     // The empty fake would answer `NotFound` if consulted.
-    let app = bootstrap(config, Arc::new(common::FakeCredentialStore::default()))
-        .await
-        .expect("standalone boot needs no credentials");
+    let app = bootstrap(
+        config,
+        Arc::new(common::FakeCredentialStore::default()),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("standalone boot needs no credentials");
 
     // Before: the byte-identical standalone pin in the parked-sender
     // world — no connector, the nudge fails closed, the phase never lies.

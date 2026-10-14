@@ -91,9 +91,13 @@ async fn daemon_journey(cfg: &common::LiveCfg) {
 
     // Bootstrap the daemon with the env credential store.
     let config = live_config(cfg, &db_path);
-    let app = bootstrap(config, Arc::new(taskboard_app::secrets::EnvCredentialStore))
-        .await
-        .expect("bootstrap");
+    let app = bootstrap(
+        config,
+        Arc::new(taskboard_app::secrets::EnvCredentialStore),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("bootstrap");
 
     // Pull: the server-created card appears in the published state.
     app.engine
@@ -187,9 +191,13 @@ async fn shutdown_mid_cycle(cfg: &common::LiveCfg) {
     // bounded-abort path.
     let mut config = live_config(cfg, &db_path);
     config.app.shutdown_timeout_secs = 0;
-    let app = bootstrap(config, Arc::new(taskboard_app::secrets::EnvCredentialStore))
-        .await
-        .expect("bootstrap");
+    let app = bootstrap(
+        config,
+        Arc::new(taskboard_app::secrets::EnvCredentialStore),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("bootstrap");
 
     // Queue a local op, then race the shutdown against the cycle.
     eventually(&app, |state| {

@@ -16,7 +16,7 @@
 //! use std::sync::Arc;
 //!
 //! use taskboard_app::config::AppConfig;
-//! use taskboard_app::{bootstrap, secrets};
+//! use taskboard_app::{bootstrap, notifications::LogSink, secrets};
 //!
 //! // Tests inject a fixed store; production picks KeyringStore or
 //! // EnvCredentialStore from `config.nextcloud.credential_store`.
@@ -44,7 +44,7 @@
 //!
 //! let store: Arc<dyn secrets::CredentialStore> =
 //!     Arc::new(FixedStore(secrets::AppPassword::new("app-password")));
-//! let app = bootstrap(config, store).await?;
+//! let app = bootstrap(config, store, Arc::new(LogSink)).await?;
 //!
 //! let _state = app.engine.shared_state(); // lock-free UI reads
 //! let outcome = app.shutdown().await;     // graceful, bounded
@@ -69,6 +69,7 @@ use taskboard_sync_nextcloud::{DeckClient, spawn_sync_actor};
 
 use crate::config::{AppConfig, ConfigError, SyncBackend};
 use crate::lockfile::{InstanceLock, LockError};
+use crate::notifications::{NOTIFIER_CAPACITY, NotificationSink};
 use crate::secrets::{CredentialError, CredentialStore};
 
 /// Channel capacity of the system broadcast (`NetworkLost`,
@@ -149,6 +150,7 @@ pub struct App {
     storage: StorageHandle,
     storage_join: JoinHandle<()>,
     engine_join: JoinHandle<()>,
+    notifier_join: JoinHandle<()>,
     /// The per-database instance lock, held for the process lifetime.
     _lock: InstanceLock,
 }
@@ -338,6 +340,7 @@ impl App {
             storage,
             storage_join,
             engine_join,
+            notifier_join,
             _lock,
         } = self;
         let timeout = Duration::from_secs(config.app.shutdown_timeout_secs);
@@ -367,6 +370,12 @@ impl App {
         drop(reports);
 
         join_bounded(engine_join, timeout, "state engine").await;
+
+        // The consumer exits on its own once the engine's exit closed
+        // the channel; the bounded join only bounds a wedged sink. A
+        // log-line flusher missing its budget is not
+        // process-outcome-relevant (`ShutdownOutcome` is unchanged).
+        join_bounded(notifier_join, timeout, "notifier").await;
 
         tracing::info!("shutdown: stopping the storage actor");
         drop(storage);
@@ -490,6 +499,7 @@ async fn join_bounded(join: JoinHandle<()>, timeout: Duration, what: &str) -> bo
 pub async fn bootstrap(
     config: AppConfig,
     credentials: Arc<dyn CredentialStore>,
+    notifier_sink: Arc<dyn NotificationSink>,
 ) -> Result<App, BootstrapError> {
     // No `[app] mode` gate here: the core is mode-agnostic, and the
     // REPL (ADR 0011) serves any mode's console. The daemon/UI entry
@@ -558,10 +568,13 @@ pub async fn bootstrap(
     let (system, system_rx_engine) = broadcast::channel::<SystemEvent>(SYSTEM_BROADCAST_CAPACITY);
     let (sync_commands, sync_rx) = mpsc::channel::<SyncCommand>(SYNC_COMMAND_CAPACITY);
     let (reports, report_rx) = mpsc::channel::<SyncReport>(SYNC_REPORT_CAPACITY);
-    // Interim reminder wiring: the notifier receiver is dropped until
-    // chunk 3 replaces it with the LogSink consumer — a closed channel is
-    // the engine's sanctioned `debug!` no-op.
-    let (notifier, _notifications) = mpsc::channel::<taskboard_domain::Notification>(64);
+    let (notifier, notifications) =
+        mpsc::channel::<taskboard_domain::Notification>(NOTIFIER_CAPACITY);
+    // Spawned before the engine: the immediate first tick can notify
+    // during hydration-heavy boots, and ordering the consumer first is
+    // free. The consumer exits when the engine's exit closes the
+    // channel.
+    let notifier_join = crate::notifications::spawn_notifier(notifications, notifier_sink);
 
     // The engine reaches the database only through the storage actor
     // (single-writer discipline): the handle *is* the port adapter.
@@ -575,7 +588,7 @@ pub async fn bootstrap(
         system.clone(),
         system_rx_engine,
         notifier,
-        taskboard_state::ReminderEngineConfig::disabled(),
+        config.reminder_engine_config(),
     )
     .await;
 
@@ -616,7 +629,7 @@ pub async fn bootstrap(
         drop(sync_rx);
         Vec::new()
     };
-    tracing::info!("actor graph spawned: storage, state engine");
+    tracing::info!("actor graph spawned: storage, state engine, notifier");
 
     Ok(App {
         config,
@@ -627,6 +640,7 @@ pub async fn bootstrap(
         storage,
         storage_join,
         engine_join,
+        notifier_join,
         _lock: lock,
     })
 }

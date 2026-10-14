@@ -264,7 +264,13 @@ async fn daemon_lifecycle(
         CredentialStoreKind::Env => Arc::new(EnvCredentialStore),
     };
 
-    let app = match bootstrap(config, store.clone()).await {
+    let app = match bootstrap(
+        config,
+        store.clone(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    {
         Ok(app) => Arc::new(app),
         // Boot failures are reported typed (the `--json` envelope on
         // stderr), exactly like every other command — `instance-locked`

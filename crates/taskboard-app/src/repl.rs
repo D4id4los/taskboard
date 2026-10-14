@@ -381,7 +381,13 @@ pub async fn run_session_with_lines(
     let store: Arc<dyn CredentialStore> =
         crate::commands::production_store(config.nextcloud.credential_store);
     let backend = config.sync_backend();
-    let app = match crate::bootstrap::bootstrap(config, store.clone()).await {
+    let app = match crate::bootstrap::bootstrap(
+        config,
+        store.clone(),
+        Arc::new(crate::notifications::LogSink),
+    )
+    .await
+    {
         Ok(app) => app,
         Err(err) => return crate::commands::report_to(io, &CommandError::from(err)),
     };
