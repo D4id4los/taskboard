@@ -18,6 +18,7 @@ pub mod connect;
 pub mod labels;
 pub mod logout;
 pub mod output;
+pub mod reminders;
 pub mod stacks;
 pub mod status;
 pub mod sync;
@@ -611,6 +612,14 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             .await
         }
         Command::Tasks {
+            cmd: remind @ TasksCmd::Remind { .. },
+        } => match reminders::collapse(remind) {
+            Some(invocation) => {
+                reminders::remind_command(&mut ctx.io, ctx.config_path.clone(), invocation).await
+            }
+            None => unreachable!("the outer match selected the Remind arm"),
+        },
+        Command::Tasks {
             cmd: TasksCmd::Label { task, label },
         } => run_mutation(
             &mut ctx.io,
@@ -1111,6 +1120,10 @@ async fn tasks_line(
                 format!("deleted \"{}\" ({})", receipt.title, receipt.id)
             },
         ),
+        remind @ TasksCmd::Remind { .. } => match reminders::collapse(remind) {
+            Some(invocation) => reminders::remind_line(app, io, invocation).await,
+            None => unreachable!("the outer match selected the Remind arm"),
+        },
         TasksCmd::Label { task, label } => emit_result(
             io,
             tasks::label_on(app, &task, &label, |t, l| StateCommand::AssignLabel {
