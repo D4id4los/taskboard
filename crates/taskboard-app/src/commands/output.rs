@@ -11,8 +11,9 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
-use taskboard_domain::{AppState, SyncErrorKind, SyncPhase, SyncStatus, Task};
+use taskboard_domain::{AppState, SyncErrorKind, SyncPhase, SyncStatus, Task, TaskId};
 
 /// One row of `boards list` (remote Deck ids — what `boards select`
 /// consumes).
@@ -26,6 +27,59 @@ pub struct BoardsListEntry {
     pub archived: bool,
     /// Soft-deleted on the server.
     pub deleted: bool,
+}
+
+/// The list-render due banner: `null` / `"overdue"` / `"due-soon"` in
+/// the `--json` payload. Banner truth only — derived from the task's
+/// own due date, ignoring rules, deliveries, snoozes, and mute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DueMarker {
+    /// Live, open, due date in the past.
+    Overdue,
+    /// Live, open, due within the horizon.
+    DueSoon,
+}
+
+/// The due-marker context of one list render: the domain-computed
+/// overdue/due-soon id sets, computed once per render (O(n)), looked up
+/// per row.
+#[derive(Debug, Clone, Default)]
+pub struct DueContext {
+    overdue: HashSet<TaskId>,
+    due_soon: HashSet<TaskId>,
+}
+
+impl DueContext {
+    /// Computes the sets for one render instant (one `now` per render —
+    /// presentation, real clock).
+    #[must_use]
+    pub fn compute(state: &AppState, now: DateTime<Utc>) -> Self {
+        Self {
+            overdue: task_ids(taskboard_domain::overdue_tasks(&state.tasks, now)),
+            due_soon: task_ids(taskboard_domain::due_soon(
+                &state.tasks,
+                now,
+                crate::commands::tasks::DUE_SOON_HORIZON,
+            )),
+        }
+    }
+
+    /// The row's marker, by set membership.
+    #[must_use]
+    pub fn marker_of(&self, task: &Task) -> Option<DueMarker> {
+        if self.overdue.contains(&task.id) {
+            Some(DueMarker::Overdue)
+        } else if self.due_soon.contains(&task.id) {
+            Some(DueMarker::DueSoon)
+        } else {
+            None
+        }
+    }
+}
+
+fn task_ids<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> HashSet<TaskId> {
+    tasks.into_iter().map(|t| t.id).collect()
 }
 
 /// One task projection. `id`/`stack_id` are the local uuid strings
@@ -43,6 +97,9 @@ pub struct TaskRow {
     pub order: i64,
     /// Due date (ISO-8601) or `None`.
     pub duedate: Option<DateTime<Utc>>,
+    /// The due banner marker (`null` when neither overdue nor due
+    /// soon).
+    pub due_marker: Option<DueMarker>,
     /// Owning stack's local uuid.
     pub stack_id: String,
     /// Owning stack's title.
@@ -394,9 +451,10 @@ pub struct ErrorBody {
     pub detail: Option<String>,
 }
 
-/// Builds a task row from a task and its surrounding state.
+/// Builds a task row from a task, its surrounding state, and the
+/// render's due-marker context.
 #[must_use]
-pub fn task_row(state: &AppState, task: &Task) -> TaskRow {
+pub fn task_row(state: &AppState, task: &Task, due: &DueContext) -> TaskRow {
     let stack_title = state
         .stacks
         .get(&task.stack)
@@ -407,6 +465,7 @@ pub fn task_row(state: &AppState, task: &Task) -> TaskRow {
         done: task.done.is_some(),
         order: task.order,
         duedate: task.duedate,
+        due_marker: due.marker_of(task),
         stack_id: task.stack.as_uuid().to_string(),
         stack_title,
         labels: task
@@ -418,10 +477,12 @@ pub fn task_row(state: &AppState, task: &Task) -> TaskRow {
     }
 }
 
-/// Builds a mutation receipt for a task in the published state.
+/// Builds a mutation receipt for a task in the published state (the
+/// receipt's marker context is computed for this render instant).
 #[must_use]
 pub fn mutation_receipt(state: &AppState, task: &Task) -> MutationReceipt {
-    let row = task_row(state, task);
+    let due = DueContext::compute(state, Utc::now());
+    let row = task_row(state, task, &due);
     MutationReceipt {
         id: row.id,
         title: row.title,
