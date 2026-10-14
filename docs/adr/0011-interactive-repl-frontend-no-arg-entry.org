@@ -88,12 +88,22 @@ compose per line:
 - a line's =--json= overrides the session default *for that line only*;
 - a line carrying =--config= is refused (the session's config is fixed
   at boot);
-- =daemon=, =login=, =logout=, and =config= are refused at parse
-  level: a nested daemon is meaningless; mid-session login/logout
-  cannot reshape the running session's connector (credential +
-  =DeckClient= wiring happens in =bootstrap=) — the honest UX is
-  "exit, run the ceremony one-shot, re-enter"; and config commands act
-  on the config file the session already resolved.
+- =daemon=, =config=, and per-line =--config= are refused at parse
+  level: a nested daemon is meaningless and config commands act on the
+  config file the session already resolved.
+
+  #+begin_quote
+  *Amendment (2026-10-14, ADR 0014):* the =login= and =logout=
+  refusals (and the interim =connect= one) are *replaced by session
+  ceremonies*: =connect=/=login=/=logout= parse to =Execute= with
+  their flags intact and the session loop intercepts them — verbs
+  that mutate the session itself live in the session layer. Their
+  failures are typed handler envelopes (the parse-level-vs-handler
+  routing rule is restated for them: no JSON envelope is what a
+  *refusal* means, and a ceremony failure is not a refusal). The
+  daemon IPC server refuses the three verbs as terminal-bound before
+  dispatch, keeping the usage-class wire behavior.
+  #+end_quote
 - clap failures print via =clap_err.print()= (help/version to stdout,
   usage errors to stderr) and the loop continues; *the process never
   exits 2 from a REPL line*.

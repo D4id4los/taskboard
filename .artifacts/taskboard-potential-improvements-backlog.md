@@ -1463,6 +1463,30 @@ tracked for WI-3: `logout`'s interaction with `backend`.
 > decision left to make. Entries stay open until the implementation
 > items (§12 there) land.
 
+### [2026-10-14] Scoped SIGINT handler so Ctrl-C cancels an in-session prompt line instead of ending the process
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-14-app-connect-session-plan.md` (D7's pty-tier verification, outcome recorded in ADR 0014)
+- **Target Area**: `crates/taskboard-app/src/repl.rs` (editor thread)
+
+#### Context & Description
+ADR 0011 gives Ctrl-C at the session prompt line-level semantics
+(rustyline maps it to `Interrupted`; the session survives). Mid-ceremony
+the picture differs: cooked prompt reads keep SIGINT's default
+disposition, and `rpassword`'s masked read (ISIG off) re-raises SIGINT
+itself on the ^C byte — both end the process mid-line. Verified and
+accepted for the connect-flow round (nothing is persisted mid-prompt,
+so death is safe), but the UX is asymmetric: Ctrl-C one keystroke
+earlier or later means "clear the line" vs "quit the app".
+
+#### Proposed Approach
+Around a ceremony's prompted reads on the editor thread, install a
+scoped SIGINT handler that aborts the active read and delivers a
+cancellation through the disposition oneshot (the typed
+`CommandError::Prompt` path already exists); rustyline's own Ctrl-C
+mapping must not fight it. Signal-handler machinery on the reader
+thread — its own focused round.
+
 ## [2026-10-11] Undo/redo functionality
 
 - **Category**: `Architecture`, `DX`
