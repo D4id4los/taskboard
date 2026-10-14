@@ -31,6 +31,14 @@ taskboard-sync-nextcloud = { path = "crates/taskboard-sync-nextcloud" }
 taskboard-storage-sqlite = { path = "crates/taskboard-storage-sqlite" }
 taskboard-ui-slint = { path = "crates/taskboard-ui-slint" }
 
+# GUI framework (Phase 7; Q10: default features = winit backend,
+# femtovg + software renderers with runtime fallback, accessibility).
+# Pin discipline: the exact version is committed via Cargo.lock (Q12);
+# slint and slint-build move together on every bump.
+slint = "1.18.1"
+# Companion build-time crate for slint::include_modules!() codegen.
+slint-build = "1.18.1"
+
 # Async runtime & channels
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs"] }
 arc-swap = "1"

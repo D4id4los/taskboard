@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The theme module: the *only* place colours, font attributes, and
+// base-dimension arithmetic live (design §3.1). Everything is defined
+// against `base-scale`, the root multiplier pushed from `[ui] scale` at
+// window construction. Dark-first (Q13): one compile-time dark theme,
+// no switching machinery (POST-1.0).
+//
+// Naming (§3.3): function names (`text-secondary`, `surface-raised`),
+// never hue names; two layers only — palette (Theme) → semantic
+// (Semantic). Views reference semantic/role tokens only.
+
+// A text role (§3.2): size/weight/family triple, sizes × base-scale.
+export struct TextRole {
+    size: length,
+    weight: int,
+    family: string,
+}
+
+export global Theme {
+    // §6.1: the root dimension multiplier (`[ui] scale`, 0.5–3.0).
+    // Applied by the window shell at construction (the generated
+    // `Theme` global trait's setter); every dimension below is
+    // `base-px * base-scale`.
+    in-out property <float> base-scale: 1.0;
+
+    // ---- Palette (raw values; the semantic layer maps state onto
+    //      them, views never name them) --------------------------------
+    // Contrast-checked pair list lives in the Rust token tests
+    // (src/token_tests.rs §9.1); tuning palette values re-runs it.
+    out property <color> background: #14161c;
+    out property <color> surface: #1d2028;
+    out property <color> surface-raised: #262a35;
+    out property <color> text-primary: #e8eaf0;
+    out property <color> text-secondary: #a6abbd;
+    out property <color> border: #3b4050;
+    out property <color> focus-ring: #7aa2f7;
+
+    // ---- Spacing scale (4/8/12/16/24/32/48/64 px × base-scale) ------
+    out property <length> space-1: 4px * base-scale;
+    out property <length> space-2: 8px * base-scale;
+    out property <length> space-3: 12px * base-scale;
+    out property <length> space-4: 16px * base-scale;
+    out property <length> space-5: 24px * base-scale;
+    out property <length> space-6: 32px * base-scale;
+    out property <length> space-7: 48px * base-scale;
+    out property <length> space-8: 64px * base-scale;
+
+    // ---- Radii & focus ------------------------------------------------
+    out property <length> radius-small: 4px * base-scale;
+    out property <length> radius-medium: 8px * base-scale;
+    out property <length> focus-ring-width: 2px * base-scale;
+
+    // ---- Window default dimensions (a spacing-class dimension, so it
+    //      lives here — keeps the token lint's rule 3 total) -----------
+    out property <length> window-default-width: 1024px * base-scale;
+    out property <length> window-default-height: 640px * base-scale;
+}
+
+// The closed text-role table (§3.2): adding a role is a theme-level
+// decision (table + ADR-0015 amendment note) — the lint makes per-view
+// invention impossible. Sizes ride `base-scale`; families reference the
+// bundled fonts (Inter statics + JetBrains Mono, OFL-1.1). Slint font
+// weight is numeric (400 regular / 600 semibold / 700 bold); the static
+// font instances are registered at startup under these family names.
+export global Typography {
+    out property <string> family-sans: "Inter";
+    out property <string> family-mono: "JetBrains Mono";
+
+    out property <TextRole> display: { size: 30px * Theme.base-scale, weight: 700, family: family-sans };
+    out property <TextRole> title: { size: 20px * Theme.base-scale, weight: 700, family: family-sans };
+    out property <TextRole> heading: { size: 16px * Theme.base-scale, weight: 600, family: family-sans };
+    out property <TextRole> body: { size: 14px * Theme.base-scale, weight: 400, family: family-sans };
+    out property <TextRole> body-emphasized: { size: 14px * Theme.base-scale, weight: 600, family: family-sans };
+    out property <TextRole> caption: { size: 12px * Theme.base-scale, weight: 400, family: family-sans };
+    out property <TextRole> badge: { size: 11px * Theme.base-scale, weight: 600, family: family-sans };
+    out property <TextRole> mono: { size: 12.5px * Theme.base-scale, weight: 400, family: family-mono };
+}
+
+// State colours mapped onto palette entries (§3.1): nothing outside the
+// theme names palette colours. `offline` maps to text-secondary.
+export global Semantic {
+    out property <color> success: #6fd98b;
+    out property <color> warning: #e8c268;
+    out property <color> danger: #e8756f;
+    out property <color> overdue: #ff9e64;
+    out property <color> sync-active: #7aa2f7;
+    out property <color> offline: Theme.text-secondary;
+    out property <color> focus-ring: Theme.focus-ring;
+}

@@ -10,3 +10,5 @@
 //! Slint's generated rendering code requires `unsafe`. This is the only
 //! workspace crate with that exception (see `AGENTS.md` and the ADR on
 //! toolchain & quality gates).
+
+slint::include_modules!();
