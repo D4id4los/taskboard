@@ -170,7 +170,7 @@ pub fn classify_push(err: &DeckError, ctx: PushCtx) -> Option<PushResult> {
         }
         // 2xx body that failed to decode: the write succeeded.
         DeckError::Envelope(_) => Some(PushResult::Applied { echo: None }),
-        DeckError::RateLimited | DeckError::Unavailable | DeckError::Transport(_) => None,
+        DeckError::RateLimited { .. } | DeckError::Unavailable | DeckError::Transport(_) => None,
         // The client is constructed once at boot; an invalid base URL can
         // never surface mid-cycle. Classified conservatively as a server
         // rejection (retryable, stays queued).
@@ -186,7 +186,7 @@ pub fn classify_push(err: &DeckError, ctx: PushCtx) -> Option<PushResult> {
 #[must_use]
 pub fn classify_read(err: &DeckError) -> SyncErrorKind {
     match err {
-        DeckError::Transport(_) | DeckError::RateLimited | DeckError::Unavailable => {
+        DeckError::Transport(_) | DeckError::RateLimited { .. } | DeckError::Unavailable => {
             SyncErrorKind::Network
         }
         DeckError::Unauthorized => SyncErrorKind::Auth,
@@ -399,7 +399,7 @@ mod tests {
         // Transport class: abort (None), never an outcome.
         for err in [
             DeckError::Transport(reqwest::get("http://127.0.0.1:1/").await.unwrap_err()),
-            DeckError::RateLimited,
+            DeckError::RateLimited { retry_after: None },
             DeckError::Unavailable,
         ] {
             assert!(classify_push(&err, existing).is_none(), "{err:?}");
@@ -463,7 +463,7 @@ mod tests {
             SyncErrorKind::Network
         );
         assert_eq!(
-            classify_read(&DeckError::RateLimited),
+            classify_read(&DeckError::RateLimited { retry_after: None }),
             SyncErrorKind::Network
         );
         assert_eq!(classify_read(&DeckError::Unauthorized), SyncErrorKind::Auth);

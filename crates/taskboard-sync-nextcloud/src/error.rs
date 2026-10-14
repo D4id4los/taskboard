@@ -37,9 +37,14 @@ pub enum DeckError {
     /// A precondition on the request failed (HTTP 412).
     #[error("precondition failed")]
     PreconditionFailed,
-    /// Rate limited (HTTP 429); retries exhausted.
+    /// Rate limited (HTTP 429); retries exhausted. Carries the server's
+    /// `Retry-After` delay-seconds hint when present and parseable —
+    /// `None` when absent, malformed, or in the HTTP-date form.
     #[error("rate limited")]
-    RateLimited,
+    RateLimited {
+        /// Advertised wait before the next attempt, if the server sent one.
+        retry_after: Option<std::time::Duration>,
+    },
     /// A non-retryable 5xx server error carrying the status code.
     #[error("server error (status {0})")]
     Server(u16),
