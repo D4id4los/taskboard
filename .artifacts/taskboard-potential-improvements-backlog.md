@@ -1514,6 +1514,36 @@ cancellation through the disposition oneshot (the typed
 mapping must not fight it. Signal-handler machinery on the reader
 thread — its own focused round.
 
+### [2026-10-14] Daemon-side attach verb: connect a running daemon without restarting it
+
+- **Category**: `Architecture`, `DX`
+- **Originating Plan/Report**: `docs/adr/0014-connector-attach-session-login.org` decision 7; `.artifacts/plans/2026-10-12-connect-flow-design-plan.md` §6
+- **Target Area**: `crates/taskboard-app/src/ipc/` (protocol + server), `crates/taskboard-app/src/commands/` (client-side relay)
+
+#### Context & Description
+ADR 0014 gave the REPL (and future GUI) in-session attach/detach, but a
+daemon's core stays connector-less until restart: a one-shot `connect`
+run while a daemon serves persists the config and secret, yet the
+running daemon never attaches (its boot already happened). The three
+ceremony verbs are terminal-bound and refused over the socket (ADR
+0014's IPC guard) — correctly so, since a socket cannot answer a masked
+prompt. What the daemon needs is not the ceremony but its last step:
+attach from already-persisted state.
+
+#### Proposed Approach
+An additive `Request::AttachConnector`-shape verb (no version bump,
+WI-H's `DetachConnector` pattern verbatim): the client sends only the
+identity (server URL, username — **never the secret**); the daemon
+re-reads its config and loads the credential store itself, then calls
+the merged `App::attach_connector` (with the same `wait_for_boot_pull`
+settle the REPL uses). Typed outcomes mirror the detach vocabulary
+(`attached`/`already-attached`/`engine`/`draining`). No envelope
+decision outstanding — the pattern is established and the primitives
+are merged. Note the env-store caveat: `TASKBOARD_APP_PASSWORD` is
+process-local, so attach works for the keyring store; for the env store
+the daemon's own environment governs (restart-with-env stays that
+store's operating model).
+
 ## [2026-10-11] Undo/redo functionality
 
 - **Category**: `Architecture`, `DX`
