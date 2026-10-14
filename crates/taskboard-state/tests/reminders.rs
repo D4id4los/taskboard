@@ -597,7 +597,13 @@ async fn r9_muted_task_never_fires() {
         })
         .await
         .expect("accepted");
-    assert_eq!(outcome, CommandOutcome::Applied);
+    assert_eq!(
+        outcome,
+        CommandOutcome::ReminderMuted {
+            task: task_id,
+            muted: true
+        }
+    );
     let app = h.handle.shared_state().load_full();
     assert!(app.reminders.muted.contains(&task_id));
     drop(app);
