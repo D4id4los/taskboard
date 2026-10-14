@@ -144,7 +144,7 @@ pub fn quit() {
 #[cfg(test)]
 mod mount_tests {
     use super::*;
-    use crate::test_platform::ensure_null_platform;
+    use crate::test_platform::on_slint_thread;
 
     fn handover() -> (
         Arc<ArcSwap<AppState>>,
@@ -169,21 +169,23 @@ mod mount_tests {
     /// `Theme.base-scale` via the generated `Global` setter.
     #[test]
     fn mount_pushes_the_configured_scale_into_the_theme() {
-        ensure_null_platform();
-        let (state, signals, system, commands) = handover();
-        let handle = mount(state, signals, system, commands, UiSettings { scale: 2.0 })
-            .expect("mount succeeds on the null platform");
-        let base_scale = handle.window.global::<Theme>().get_base_scale();
-        assert_eq!(base_scale, 2.0);
+        on_slint_thread(|| {
+            let (state, signals, system, commands) = handover();
+            let handle = mount(state, signals, system, commands, UiSettings { scale: 2.0 })
+                .expect("mount succeeds on the null platform");
+            let base_scale = handle.window.global::<Theme>().get_base_scale();
+            assert_eq!(base_scale, 2.0);
+        });
     }
 
     #[test]
     fn mount_defaults_the_theme_scale_to_one() {
-        ensure_null_platform();
-        let (state, signals, system, commands) = handover();
-        let handle = mount(state, signals, system, commands, UiSettings::default())
-            .expect("mount succeeds on the null platform");
-        assert_eq!(handle.window.global::<Theme>().get_base_scale(), 1.0);
+        on_slint_thread(|| {
+            let (state, signals, system, commands) = handover();
+            let handle = mount(state, signals, system, commands, UiSettings::default())
+                .expect("mount succeeds on the null platform");
+            assert_eq!(handle.window.global::<Theme>().get_base_scale(), 1.0);
+        });
     }
 
     /// Theme init is a window-construction step (§3.1): mount produces
@@ -191,11 +193,12 @@ mod mount_tests {
     /// (the event loop never ran).
     #[test]
     fn mount_produces_a_hidden_window_instance() {
-        ensure_null_platform();
-        let (state, signals, system, commands) = handover();
-        let handle = mount(state, signals, system, commands, UiSettings::default())
-            .expect("mount succeeds on the null platform");
-        assert!(!handle.window.window().is_visible());
+        on_slint_thread(|| {
+            let (state, signals, system, commands) = handover();
+            let handle = mount(state, signals, system, commands, UiSettings::default())
+                .expect("mount succeeds on the null platform");
+            assert!(!handle.window.window().is_visible());
+        });
     }
 }
 
@@ -204,7 +207,7 @@ mod font_smoke_tests {
     use slint::ComponentHandle as _;
 
     use crate::fonts::register_bundled_fonts;
-    use crate::test_platform::ensure_null_platform;
+    use crate::test_platform::on_slint_thread;
 
     /// D11/D14 smoke: with the null platform registered, the bundled
     /// fonts register, a window component instantiates (its font
@@ -212,15 +215,16 @@ mod font_smoke_tests {
     /// the instance drops cleanly — no panic anywhere in the cycle.
     #[test]
     fn registration_and_instantiation_smoke() {
-        ensure_null_platform();
-        register_bundled_fonts(); // idempotent; a second call is a no-op
-        register_bundled_fonts();
+        on_slint_thread(|| {
+            register_bundled_fonts(); // idempotent; a second call is a no-op
+            register_bundled_fonts();
 
-        let window = crate::AppWindow::new().expect("window instantiates on the null platform");
-        // The theme's Typography globals resolve their family names;
-        // reading them exercises the generated global accessors.
-        let _ = window.global::<crate::Typography>().get_family_sans();
-        let _ = window.global::<crate::Typography>().get_family_mono();
-        drop(window);
+            let window = crate::AppWindow::new().expect("window instantiates on the null platform");
+            // The theme's Typography globals resolve their family names;
+            // reading them exercises the generated global accessors.
+            let _ = window.global::<crate::Typography>().get_family_sans();
+            let _ = window.global::<crate::Typography>().get_family_mono();
+            drop(window);
+        });
     }
 }
