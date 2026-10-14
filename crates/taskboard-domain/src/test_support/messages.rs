@@ -106,6 +106,9 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             ),
         (super::task_id_strategy(), any::<bool>())
             .prop_map(|(task, muted)| StateCommand::SetTaskRemindersMuted { task, muted }),
+        (super::task_id_strategy(), reminder_offset_strategy())
+            .prop_map(|(task, offset)| StateCommand::SetReminderRule { task, offset }),
+        super::task_id_strategy().prop_map(|task| StateCommand::ClearReminderRules { task }),
         // 1: sync request
         Just(StateCommand::RequestSync),
     ]
@@ -115,4 +118,14 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
 /// non-positive ones, so the strategy feeds only the accepted sign domain.
 fn snooze_postpone_strategy() -> impl Strategy<Value = chrono::TimeDelta> {
     (1_i64..=86_400).prop_map(|secs| chrono::TimeDelta::try_seconds(secs).unwrap())
+}
+
+/// A due-anchored reminder offset (−24 h … 0): `ReminderOffset` admits
+/// only non-positive durations, so the strategy feeds only its sign
+/// domain.
+fn reminder_offset_strategy() -> impl Strategy<Value = crate::reminders::ReminderOffset> {
+    (-86_400_i64..=0).prop_map(|secs| {
+        crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_seconds(secs).unwrap())
+            .unwrap()
+    })
 }
