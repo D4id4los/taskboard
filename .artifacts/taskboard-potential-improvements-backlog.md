@@ -2221,6 +2221,12 @@ there is no budget impact. Re-verify with one `workflow_dispatch` of
 - **Originating Report**: `.artifacts/reports/2026-10-14-future-directions-analysis-report.md` (§4.1, decision D1 — the keystone)
 - **Target Area**: `taskboard-sync-nextcloud/` (spike), `taskboard-domain/` (mapping policy)
 
+> Update 2026-10-14: report landed at
+> `.artifacts/reports/2026-10-14-deck-roundtrip-strategy-report.md`
+> (verdict: board-anchored attachment sidecar; custom fields
+> established absent on Deck 1.19.0). Entry stays open — Wave 1
+> implements it.
+
 ### Context & Description
 A large family of planned fields — scheduled-start, effort estimate,
 importance/urgency, recurrence parameters, reminder rules — have no
