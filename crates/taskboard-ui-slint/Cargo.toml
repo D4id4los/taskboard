@@ -11,10 +11,15 @@ description = "Swappable Slint presentation layer for taskboard"
 [dependencies]
 taskboard-domain.workspace = true
 arc-swap.workspace = true
-slint.workspace = true
+# slint.workspace plus the additive runtime-font-registration feature
+# (the 1.18-documented path; see src/fonts.rs). Renderer/backend
+# selection stays Q10's default features.
+slint = { workspace = true, features = ["unstable-fontique-011"] }
 # Sync types only (`mpsc`/`broadcast` channel halves in the mount API):
 # tokio is the mandated channel fabric (AGENTS §3), not an IO dependency.
 tokio.workspace = true
+# Observability (AGENTS-approved stack; the lib only emits spans).
+tracing.workspace = true
 
 [build-dependencies]
 slint-build.workspace = true
