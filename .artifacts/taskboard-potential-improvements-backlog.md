@@ -439,15 +439,13 @@ Own plan covering: reminder rules as pure domain functions (proptest
 scheduling), a scheduler actor on the injected clock (no sleeps),
 notification output as a Port, and the kiosk overdue-banner path.
 
-> **Status note (2026-10-12, WI-I design round)**: the design round
-> landed as `.artifacts/plans/2026-10-12-reminders-design-plan.md`
-> (draft ADR 0013 inside — due-anchored rules, engine-tick
-> evaluation, occurrence-keyed deliveries with snooze, ported
-> notification delivery, scheduler-free kiosk banner, implicit 5 m
-> default reminder). Direction **approved** 2026-10-12; decisions
-> D1–D5 resolved in §13 there. Implementation follows as plans 1–4
-> listed there (§14), then plan 5 (desktop toasts) when wanted. This
-> entry stays open until those land.
+> **Status**: ✅ DONE (implemented 2026-10-14..2026-10-15, WI-I plans
+> 1–4: `reminders.rs` domain model with proptests, engine tick arm +
+> snooze/mute commands, sqlite migration 0004 + repo, app wiring with
+> `[reminders]` config, `LogSink`, `tasks remind` verbs, and the
+> overdue/due-soon marker — design
+> `.artifacts/plans/2026-10-12-reminders-design-plan.md`, ADR 0013).
+> Plan 5 (desktop toasts + interactive snooze) remains future work.
 
 ## [2026-10-08] Multi-board support
 
