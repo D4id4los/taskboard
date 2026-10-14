@@ -6,8 +6,6 @@
 //! `set_platform` registration safe; `cargo test --doc` never
 //! instantiates components.
 
-#![cfg(test)]
-
 use std::rc::{Rc, Weak};
 
 use slint::platform::software_renderer::SoftwareRenderer;
@@ -58,17 +56,48 @@ impl Platform for NullPlatform {
     }
 }
 
-/// Registers the null platform as Slint's process-global platform.
+/// Registers the null platform as Slint's process-global platform and
+/// runs `f` on the dedicated slint test thread, returning its result.
+///
+/// Slint's platform (and font context) is process-global *and
+/// thread-affine*: it must be registered and used from one thread for
+/// the whole process lifetime. A single long-lived worker thread owns
+/// it — it registers the null platform before its first job — so
+/// component tests are correct under both nextest's process-per-test
+/// model and `cargo test`'s threaded runner (llvm-cov).
 ///
 /// # Panics
 ///
-/// Panics if a platform is already registered — under nextest every
-/// test binary registers exactly once (the helper is call-idempotent
-/// per process via `Once`).
-pub(crate) fn ensure_null_platform() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        slint::platform::set_platform(Box::new(NullPlatform))
-            .expect("null platform registers exactly once per test process");
+/// Panics if the platform is already registered on the worker (never:
+/// the worker registers exactly once) or if the worker died.
+pub(crate) fn on_slint_thread<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
+    use std::sync::mpsc;
+    type Job = Box<dyn FnOnce() + Send>;
+
+    static SENDER: std::sync::OnceLock<mpsc::Sender<Job>> = std::sync::OnceLock::new();
+    let sender = SENDER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("slint-tests".into())
+            .spawn(move || {
+                slint::platform::set_platform(Box::new(NullPlatform))
+                    .expect("null platform registers exactly once per test process");
+                for job in rx {
+                    job();
+                }
+            })
+            .expect("the slint test worker spawns");
+        tx
     });
+
+    let (reply_tx, reply_rx) = mpsc::channel();
+    sender
+        .send(Box::new(move || {
+            let result = f();
+            let _ = reply_tx.send(result);
+        }))
+        .expect("the slint test worker is alive");
+    reply_rx
+        .recv()
+        .expect("the slint test worker returned a result")
 }
