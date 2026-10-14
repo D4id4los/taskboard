@@ -88,7 +88,7 @@ proptest = "1"
 tempfile = "3"
 wiremock = "0.6"
 dotenvy = "0.15"
-base64 = "0.22"
+base64 = "0.23"
 insta = { version = "1", features = ["yaml"] }
 
 [profile.release]
