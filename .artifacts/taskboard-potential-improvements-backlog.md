@@ -1016,6 +1016,11 @@ only when an observed duplicate exists.
 - **Category**: `Performance` / `Reliability`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase4-sync-actor-plan.md` §8 (client plan §9 leftover)
 - **Target Area**: `crates/taskboard-sync-nextcloud/src/poll.rs`, `src/client.rs`
+- **Status**: ✅ DONE (implemented 2026-10-15 via
+  `.artifacts/plans/2026-10-14-sync-nextcloud-retry-after-plan.md` —
+  `DeckError::RateLimited { retry_after }` carries the parsed
+  delay-seconds hint; `poll_backoff` floors the doubling curve at it,
+  clamped at `backoff_max`)
 
 ### Context & Description
 The client's retry policy ignores `Retry-After` on 429s and the poll
@@ -2579,3 +2584,52 @@ tool. Assert a real renderer is compiled in at build time (the MCP
 screenshot path silently falls back otherwise — stress-test report
 §3.5). External compositor capture (grim/wlroots, X11 `xwd`) stays
 per-dev-machine tooling, never a shipped dependency.
+
+## [2026-10-14] Honor `Retry-After` inside the client's retry waits
+
+- **Category**: `Performance`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-14-sync-nextcloud-retry-after-plan.md` §7
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/client.rs`
+
+### Context & Description
+The client's internal 3-attempt retry loop sleeps exactly
+`BackoffPolicy`'s sequence and ignores the advertised hint. Bounded
+today (≤ 2 sleeps ≤ 8 s); the durable win — the poll floor — is already
+implemented.
+
+### Proposed Approach
+Sleep `max(policy_delay, advertised)` between attempts, threading the
+parsed hint through `send_with_retries`.
+
+## [2026-10-14] HTTP-date `Retry-After` form and `Retry-After` on 503
+
+- **Category**: `Reliability`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-14-sync-nextcloud-retry-after-plan.md` §7
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/client.rs`
+
+### Context & Description
+`parse_retry_after` accepts only delay-seconds; the RFC 9110 HTTP-date
+form reads as absent, and `Unavailable` (503) carries no hint. Neither
+form is emitted by Nextcloud's rate limiter in practice. Both are
+additive on the exact implemented shape (`RateLimited { retry_after }`,
+`Raw.retry_after`).
+
+### Proposed Approach
+Small additive follow-ups if a live tier ever observes them; the
+HTTP-date form needs a clock seam in the wire parse or at the consumer.
+
+## [2026-10-14] Push-abort `Retry-After` floor
+
+- **Category**: `Reliability`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-14-sync-nextcloud-retry-after-plan.md` §7
+- **Target Area**: `crates/taskboard-sync-nextcloud/src/push_exec.rs`
+
+### Context & Description
+`GroupOutcome::Aborted` swallows the `DeckError`, so a 429 during push
+installs no poll floor. A dispatch non-goal (push-path change); it
+self-corrects — the next cycle's unconditional pull meets the same rate
+limiter and installs the floor then.
+
+### Proposed Approach
+Widen `GroupOutcome::Aborted` to carry the aborting `DeckError` (or at
+least its `retry_after`) up to `fail_cycle`.
