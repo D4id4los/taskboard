@@ -11,11 +11,13 @@ description = "Swappable Slint presentation layer for taskboard"
 [dependencies]
 taskboard-domain.workspace = true
 arc-swap.workspace = true
+slint.workspace = true
+# Sync types only (`mpsc`/`broadcast` channel halves in the mount API):
+# tokio is the mandated channel fabric (AGENTS §3), not an IO dependency.
+tokio.workspace = true
 
-# NOTE: the `slint` crate is deliberately not added yet. The UI work has not
-# started; keeping this crate dependency-free avoids pulling the GUI/OpenGL
-# system-library stack into headless builds. Deferred items are tracked in
-# `.artifacts/taskboard-potential-improvements-backlog.md`.
+[build-dependencies]
+slint-build.workspace = true
 
 [lints]
 workspace = true

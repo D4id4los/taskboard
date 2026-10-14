@@ -85,7 +85,11 @@ jobs:
 
       - name: Install system deps (keyring sync-secret-service links libdbus-1)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libdbus-1-dev pkg-config \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libfontconfig1-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:

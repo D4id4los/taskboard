@@ -27,9 +27,64 @@ allow = [
     # `doctest-file` + `recvmsg` via interprocess (the daemon IPC
     # frontend, WI-5) — tiny permissive helpers of the local-socket crate
     "0BSD",
+    # Slint tri-license's two namespaced runtime ids (chunk decision D3
+    # fallback: not valid SPDX, so cargo-deny rejects them inside
+    # per-crate exceptions). Unambiguous — `LicenseRef-Slint-*` is
+    # namespaced to Slint; AGPLv3 §13-compatible with this project's
+    # posture (stress report §4.5, design Q11).
+    "LicenseRef-Slint-Royalty-free-2.0",
+    "LicenseRef-Slint-Software-3.0",
+    # BSD-2-Clause: arrayref/tiny-skia/usvg/resvg via the slint
+    # software renderer's SVG pipeline (permissive, same class as
+    # BSD-3-Clause).
+    "BSD-2-Clause",
+    # Unlicense: a fontdb/ttf-parser-family helper in the slint text
+    # stack (public-domain-equivalent).
+    "Unlicense",
 ]
 # Some crates ship their license text in unusual formats; resolve rather than deny.
 confidence-threshold = 0.93
+
+# Slint runtime family: GPL-3.0-only accepted **per crate only** — never
+# a global GPL allow, so the dual-tier library crates (MIT OR Apache-2.0)
+# cannot silently grow a GPL-3.0-only dependency (chunk decision D3).
+# The two LicenseRef-Slint-* ids live in the global allow above (SPDX
+# parse constraint); GPL-3.0-only is matched through these exceptions.
+# Seed list mechanically completed from `cargo deny check licenses`
+# output (the software renderer family included).
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "slint"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "slint-macros"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "slint-build"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "i-slint-common"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "i-slint-compiler"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "i-slint-core"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "i-slint-backend-selector"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "i-slint-backend-winit"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "i-slint-renderer-femtovg"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "i-slint-renderer-skia"
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only"]
+crate = "i-slint-renderer-software"
 
 [bans]
 multiple-versions = "warn"
@@ -41,6 +96,11 @@ deny = []
 [advisories]
 version = 2
 yanked = "warn"
+# RUSTSEC-2026-0192: `ttf-parser` is unmaintained (no vulnerability
+# known) — pulled in transitively by the slint text stack (via
+# fontdb). No fixed version exists; revisit when slint moves off it.
+# Recorded as part of the chunk-1 dependency landing (D1/D3).
+ignore = ["RUSTSEC-2026-0192"]
 
 [sources]
 unknown-registry = "deny"

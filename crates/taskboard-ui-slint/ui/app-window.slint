@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The window shell (chunk 1): theme + scale only — no content, no
+// focus scopes, no text (views are chunk 3). Theme init is a window-
+// construction step: `mount()` applies `base-scale` (and future theme
+// state) to this freshly created instance; a future second window
+// re-runs it — no global-once init exists.
+
+import { Theme } from "theme.slint";
+
+export component AppWindow inherits Window {
+    background: Theme.background;
+    title: "taskboard";
+    preferred-width: Theme.window-default-width;
+    preferred-height: Theme.window-default-height;
+}
