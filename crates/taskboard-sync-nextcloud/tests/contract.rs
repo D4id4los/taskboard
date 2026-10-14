@@ -10,8 +10,8 @@ use base64::Engine as _;
 use taskboard_sync_nextcloud::Validators;
 use taskboard_sync_nextcloud::model::Card;
 use taskboard_sync_nextcloud::{
-    BoardChanges, CloneOptions, DeckClient, DeckColor, DeckError, LabelChanges, NewCard,
-    StackChanges, StackFilter,
+    AttachmentUpload, BoardChanges, CloneOptions, DeckClient, DeckColor, DeckError, LabelChanges,
+    NewCard, StackChanges, StackFilter,
 };
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1092,4 +1092,203 @@ async fn conditional_card_fetch_returns_304_as_data() {
 
     assert!(fetched.data.is_none(), "304 must surface as cached data");
     assert_eq!(fetched.validators.etag.as_deref(), Some("\"card-1\""));
+}
+
+/// One parsed part of a `multipart/form-data` request body.
+#[derive(Debug)]
+struct MultipartPart {
+    name: String,
+    filename: Option<String>,
+    content_type: Option<String>,
+    body: Vec<u8>,
+}
+
+/// First occurrence of `needle` in `haystack`.
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Splits a haystack once at the first occurrence of `needle`.
+fn split_once<'a>(haystack: &'a [u8], needle: &[u8]) -> (&'a [u8], &'a [u8]) {
+    match find(haystack, needle) {
+        Some(i) => (&haystack[..i], &haystack[i + needle.len()..]),
+        None => (haystack, &[]),
+    }
+}
+
+/// Splits a haystack at every occurrence of `needle` (which is itself never
+/// a part of the returned segments).
+fn split_all<'a>(haystack: &'a [u8], needle: &[u8]) -> Vec<&'a [u8]> {
+    let mut segments = Vec::new();
+    let mut rest = haystack;
+    while let Some(i) = find(rest, needle) {
+        segments.push(&rest[..i]);
+        rest = &rest[i + needle.len()..];
+    }
+    segments.push(rest);
+    segments
+}
+
+/// Hand-rolled multipart parser for the wiremock-recorded request bodies:
+/// reads the boundary off the request's `Content-Type`, splits the parts,
+/// and parses each part's `Content-Disposition` name/filename and
+/// `Content-Type`. Consumer-local (no new dev-dependencies); it is
+/// validated against reqwest's own wire output by the tests using it.
+fn parse_multipart(content_type: &str, body: &[u8]) -> Vec<MultipartPart> {
+    let boundary = content_type
+        .split("boundary=")
+        .nth(1)
+        .expect("multipart content type must carry the boundary")
+        .trim_matches('"');
+    let delimiter = format!("--{boundary}");
+    let mut parts = Vec::new();
+    for segment in split_all(body, delimiter.as_bytes()) {
+        // Segments between delimiters start with the CRLF that terminated
+        // the previous one and end with the CRLF before the next; the
+        // preamble (before the first delimiter) and the closing `--`
+        // marker after the last do not have that shape and are skipped.
+        let Some(segment) = segment.strip_prefix(b"\r\n") else {
+            continue;
+        };
+        let segment = segment.strip_suffix(b"\r\n").unwrap_or(segment);
+        let (header_block, content) = split_once(segment, b"\r\n\r\n");
+        let headers = String::from_utf8_lossy(header_block);
+        let mut name = None;
+        let mut filename = None;
+        let mut content_type = None;
+        for line in headers.split('\n') {
+            let line = line.trim_end_matches('\r');
+            if let Some(value) = line.strip_prefix("Content-Disposition:") {
+                for param in value.split(';').skip(1) {
+                    let param = param.trim();
+                    if let Some(n) = param.strip_prefix("name=") {
+                        name = Some(n.trim_matches('"').to_owned());
+                    } else if let Some(f) = param.strip_prefix("filename=") {
+                        filename = Some(f.trim_matches('"').to_owned());
+                    }
+                }
+            } else if let Some(value) = line.strip_prefix("Content-Type:") {
+                content_type = Some(value.trim().to_owned());
+            }
+        }
+        parts.push(MultipartPart {
+            name: name.expect("part must carry a form name"),
+            filename,
+            content_type,
+            body: content.to_vec(),
+        });
+    }
+    parts
+}
+
+fn attachment_upload() -> AttachmentUpload {
+    AttachmentUpload {
+        file_name: "sidecar_v1.json".into(),
+        mime_type: "application/json".into(),
+        content: b"{\"fields\":{}}".to_vec(),
+    }
+}
+
+#[tokio::test]
+async fn upload_attachment_posts_multipart_with_type_and_file_parts() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "{BOARDS_PATH}/42/stacks/9/cards/5/attachments"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_string(fixture("attachment_create_response.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let attachment = client_for(&server)
+        .upload_attachment(42, 9, 5, &attachment_upload())
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(attachment.id, 1);
+    assert_eq!(
+        attachment.data.as_ref().unwrap().file_name,
+        "sidecar_v1.json"
+    );
+
+    let req = &server.received_requests().await.unwrap()[0];
+    let content_type = req
+        .headers
+        .get("content-type")
+        .expect("multipart content type")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(content_type.starts_with("multipart/form-data; boundary="));
+
+    let parts = parse_multipart(&content_type, &req.body);
+    let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["type", "file"]);
+    let kind = &parts[0];
+    assert_eq!(kind.body, b"deck_file");
+    assert!(
+        kind.filename.is_none(),
+        "the kind part is a plain text field"
+    );
+    let file = &parts[1];
+    assert_eq!(file.filename.as_deref(), Some("sidecar_v1.json"));
+    assert_eq!(file.content_type.as_deref(), Some("application/json"));
+    assert_eq!(file.body, b"{\"fields\":{}}");
+}
+
+#[tokio::test]
+async fn upload_attachment_duplicate_maps_conflict() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "{BOARDS_PATH}/42/stacks/9/cards/5/attachments"
+        )))
+        .respond_with(ResponseTemplate::new(409))
+        .mount(&server)
+        .await;
+
+    let err = client_for(&server)
+        .upload_attachment(42, 9, 5, &attachment_upload())
+        .await
+        .unwrap_err();
+    server.verify().await;
+    assert!(matches!(err, DeckError::Conflict));
+}
+
+#[tokio::test]
+async fn upload_attachment_rejects_invalid_payload_without_a_request() {
+    for bad in [
+        AttachmentUpload {
+            file_name: String::new(),
+            mime_type: "application/json".into(),
+            content: vec![1],
+        },
+        AttachmentUpload {
+            file_name: "f.json".into(),
+            mime_type: "bogus".into(),
+            content: vec![1],
+        },
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let err = client_for(&server)
+            .upload_attachment(42, 9, 5, &bad)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DeckError::InvalidUpload),
+            "empty filename and unparseable mime must surface typedly: {err:?}"
+        );
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "validation must happen before any request is sent"
+        );
+    }
 }

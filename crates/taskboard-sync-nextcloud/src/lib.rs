@@ -25,8 +25,8 @@ pub mod push_exec;
 pub use actor::{SyncActorConfig, spawn_sync_actor};
 pub use backoff::BackoffPolicy;
 pub use client::{
-    BoardChanges, CloneOptions, DeckClient, Fetch, LabelChanges, NewCard, RetrySleep, StackChanges,
-    TokioSleep, Validators,
+    AttachmentUpload, BoardChanges, CloneOptions, DeckClient, Fetch, LabelChanges, NewCard,
+    RetrySleep, StackChanges, TokioSleep, Validators,
 };
 pub use color::{DeckColor, ParseColorError};
 pub use error::DeckError;

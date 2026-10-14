@@ -175,6 +175,9 @@ pub fn classify_push(err: &DeckError, ctx: PushCtx) -> Option<PushResult> {
         // never surface mid-cycle. Classified conservatively as a server
         // rejection (retryable, stays queued).
         DeckError::InvalidBaseUrl => rejected(SyncErrorKind::Server),
+        // An attachment payload failing local validation is our data, not
+        // the server's: retrying can never succeed.
+        DeckError::InvalidUpload => rejected(SyncErrorKind::LocalData),
     }
 }
 
@@ -197,6 +200,9 @@ pub fn classify_read(err: &DeckError) -> SyncErrorKind {
         DeckError::Conflict
         | DeckError::PreconditionFailed
         | DeckError::Server(_)
+        // Read routes never validate a local upload payload; the variant
+        // simply has to be classified for exhaustiveness.
+        | DeckError::InvalidUpload
         | DeckError::InvalidBaseUrl => SyncErrorKind::Server,
     }
 }

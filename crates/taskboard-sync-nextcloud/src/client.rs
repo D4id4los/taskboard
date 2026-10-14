@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use reqwest::{
     Client, Method, StatusCode, Url,
     header::{self, ACCEPT},
+    multipart,
 };
 use serde::Serialize;
 
@@ -22,6 +23,10 @@ use crate::model::{Attachment, Board, Card, Label, Stack, StackFilter};
 use crate::ocs::OcsEnvelope;
 
 const DECK_API_PATH: &str = "index.php/apps/deck/api/v1.0";
+
+/// Multipart attachment-kind value; the only evidenced kind is `deck_file`
+/// (D1 spike §3.2).
+const ATTACHMENT_KIND: &str = "deck_file";
 
 /// Seam for retry backoff waiting.
 ///
@@ -159,8 +164,80 @@ struct LabelIdBody {
 struct Call {
     method: Method,
     resource: String,
-    body: Option<serde_json::Value>,
+    scope: Scope,
+    body: Option<CallBody>,
     validators: Option<Validators>,
+}
+
+/// Route scope of a [`Call`]: the versioned Deck API prefix, or — once the
+/// attachment update route lands — the app's own route namespace.
+#[derive(Debug, Clone, Copy)]
+enum Scope {
+    /// `index.php/apps/deck/api/v1.0` — the documented OCS API.
+    OcsApi,
+}
+
+impl Scope {
+    fn path_prefix(self) -> &'static str {
+        match self {
+            Scope::OcsApi => DECK_API_PATH,
+        }
+    }
+}
+
+/// Request body of a [`Call`]: the JSON payloads every OCS endpoint takes,
+/// or an attachment multipart upload. The multipart payload is stored as
+/// the cloneable [`AttachmentUpload`] and rebuilt per attempt —
+/// `reqwest::multipart::Form` is not `Clone`, and retries must re-send it.
+#[derive(Clone)]
+enum CallBody {
+    Json(serde_json::Value),
+    Multipart(AttachmentUpload, bool),
+}
+
+/// Payload for uploading a card attachment, or for replacing an existing
+/// attachment's content in place.
+///
+/// `file_name` is the *client filename* of the multipart `file` part — and
+/// thereby the server-stored filename (the server's lookup uses it, D1
+/// spike §3.2). Deck refuses a second attachment with the same
+/// (card, filename) pair on create (`Conflict`), and an in-place update
+/// must keep the name identical: there is no rename.
+#[derive(Debug, Clone)]
+pub struct AttachmentUpload {
+    pub file_name: String,
+    pub mime_type: String,
+    pub content: Vec<u8>,
+}
+
+/// Builds the Deck attachment multipart form from an [`AttachmentUpload`].
+///
+/// Field names are fixed by the D1 spike §3.2 wire evidence: `type`
+/// (hardcoded `deck_file`) and `file` (the content, with `file_name` as the
+/// client filename and `mime_type` as the part's content type). The update
+/// form additionally carries `data` — the app-level route validates it
+/// non-empty, while the *stored* filename stays the file part's client
+/// filename. Local input validation happens here, before any HTTP: an empty
+/// `file_name` or unparseable `mime_type` yields [`DeckError::InvalidUpload`].
+fn multipart_form(
+    upload: &AttachmentUpload,
+    for_update: bool,
+) -> Result<multipart::Form, DeckError> {
+    if upload.file_name.is_empty() {
+        return Err(DeckError::InvalidUpload);
+    }
+    let file = multipart::Part::bytes(upload.content.clone())
+        .file_name(upload.file_name.clone())
+        .mime_str(&upload.mime_type)
+        .map_err(|_| DeckError::InvalidUpload)?;
+    let form = multipart::Form::new()
+        .text("type", ATTACHMENT_KIND)
+        .part("file", file);
+    Ok(if for_update {
+        form.text("data", upload.file_name.clone())
+    } else {
+        form
+    })
 }
 
 /// One raw successful response: status, validators from the headers, and
@@ -502,8 +579,10 @@ impl DeckClient {
         result
     }
 
-    /// Lists a card's attachment metadata (content download is out of
-    /// scope).
+    /// Lists a card's attachment metadata.
+    ///
+    /// Content download is [`DeckClient::download_attachment`]; the write
+    /// surface is [`DeckClient::upload_attachment`] and friends.
     ///
     /// # Errors
     ///
@@ -522,6 +601,57 @@ impl DeckClient {
         match &result {
             Ok(attachments) => tracing::info!(count = attachments.len(), "deck attachments listed"),
             Err(err) => tracing::warn!(error = %err, "listing deck attachments failed"),
+        }
+        result
+    }
+
+    /// Uploads a file attachment to a card via `multipart/form-data`.
+    ///
+    /// The stored filename comes from [`AttachmentUpload::file_name`] (the
+    /// file part's client filename): Deck refuses a second attachment with
+    /// the same (card, filename) pair with a typed [`DeckError::Conflict`].
+    /// Every attachment write also advances the owning card's entity stamp
+    /// (D1 spike §3.3) — conditional-read validators for the card
+    /// invalidate.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`]; [`DeckError::InvalidUpload`] for local input
+    /// validation (empty filename, unparseable MIME type) before any
+    /// request is sent.
+    pub async fn upload_attachment(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        upload: &AttachmentUpload,
+    ) -> Result<Attachment, DeckError> {
+        tracing::debug!(
+            board_id,
+            stack_id,
+            card_id,
+            file_name = %upload.file_name,
+            bytes = upload.content.len(),
+            "uploading deck attachment"
+        );
+        let call = Call {
+            method: Method::POST,
+            resource: format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments"),
+            scope: Scope::OcsApi,
+            body: Some(CallBody::Multipart(upload.clone(), false)),
+            validators: None,
+        };
+        let result = self
+            .send_with_retries(call, |raw| {
+                map_status(&raw)?;
+                decode_envelope::<Attachment>(&raw.body)
+            })
+            .await;
+        match &result {
+            Ok(attachment) => {
+                tracing::info!(attachment_id = attachment.id, "deck attachment uploaded");
+            }
+            Err(err) => tracing::warn!(error = %err, "uploading deck attachment failed"),
         }
         result
     }
@@ -957,10 +1087,12 @@ impl DeckClient {
         let call = Call {
             method,
             resource: resource.to_owned(),
+            scope: Scope::OcsApi,
             body: body
                 .map(serde_json::to_value)
                 .transpose()
-                .map_err(DeckError::from)?,
+                .map_err(DeckError::from)?
+                .map(CallBody::Json),
             validators: None,
         };
         self.send_with_retries(call, |raw| {
@@ -983,6 +1115,7 @@ impl DeckClient {
         let call = Call {
             method: Method::GET,
             resource: resource.to_owned(),
+            scope: Scope::OcsApi,
             body: None,
             validators: Some(validators.clone()),
         };
@@ -1046,7 +1179,7 @@ impl DeckClient {
     async fn attempt(&self, call: &Call) -> Result<Raw, DeckError> {
         let url = self
             .base_url
-            .join(&format!("{DECK_API_PATH}/{}", call.resource))
+            .join(&format!("{}/{}", call.scope.path_prefix(), call.resource))
             .map_err(|_| DeckError::InvalidBaseUrl)?;
 
         let mut request = self
@@ -1055,8 +1188,13 @@ impl DeckClient {
             .header("OCS-APIRequest", "true")
             .header(ACCEPT, "application/json")
             .basic_auth(self.credentials_user(), Some(self.credentials_token()));
-        if let Some(body) = &call.body {
-            request = request.json(body);
+        match &call.body {
+            Some(CallBody::Json(value)) => request = request.json(value),
+            Some(CallBody::Multipart(upload, for_update)) => {
+                let form = multipart_form(upload, *for_update)?;
+                request = request.multipart(form);
+            }
+            None => {}
         }
         if let Some(validators) = &call.validators {
             if let Some(etag) = &validators.etag {
@@ -1221,5 +1359,28 @@ mod tests {
             decode_envelope(br#"[{"id": 3, "title": "t", "color": "5c2751"}]"#).unwrap();
         assert_eq!(decoded.len(), 1);
         assert_eq!(decoded[0].id, 3);
+    }
+
+    fn upload(file_name: &str, mime_type: &str) -> AttachmentUpload {
+        AttachmentUpload {
+            file_name: file_name.into(),
+            mime_type: mime_type.into(),
+            content: b"payload".to_vec(),
+        }
+    }
+
+    /// The part inventory on the wire (part names, filename, MIME, bytes)
+    /// is pinned by the tier-1 contract tests against real request bytes;
+    /// here only the typed local-validation outcomes are asserted.
+    #[test]
+    fn upload_form_rejects_empty_filename_and_bad_mime_before_any_http() {
+        assert!(matches!(
+            multipart_form(&upload("", "application/json"), false),
+            Err(DeckError::InvalidUpload)
+        ));
+        assert!(matches!(
+            multipart_form(&upload("f.json", "bogus"), false),
+            Err(DeckError::InvalidUpload)
+        ));
     }
 }
