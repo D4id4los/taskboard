@@ -5,7 +5,12 @@
 // state) to this freshly created instance; a future second window
 // re-runs it — no global-once init exists.
 
-import { Theme } from "theme.slint";
+import { Theme, Typography, Semantic } from "theme.slint";
+
+// Re-export the theme globals so the generated Rust module exposes
+// them (mount reads/writes `Theme.base-scale` through the generated
+// global accessors).
+export { Theme, Typography, Semantic }
 
 export component AppWindow inherits Window {
     background: Theme.background;

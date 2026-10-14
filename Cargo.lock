@@ -6372,6 +6372,7 @@ dependencies = [
  "slint-build",
  "taskboard-domain",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
