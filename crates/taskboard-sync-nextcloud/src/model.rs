@@ -311,7 +311,12 @@ pub struct BoardPermissions {
     pub manage: bool,
 }
 
-/// Attachment *metadata* (uploads and content download are out of scope).
+/// Attachment metadata as returned by the attachment endpoints.
+///
+/// Every attachment write (upload, in-place update, soft delete, restore)
+/// also advances the owning card's `lastModified` — the new card stamp
+/// equals the attachment's stamp (measured; conditional-read consumers must
+/// expect their validators to invalidate).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
@@ -327,20 +332,50 @@ pub struct Attachment {
     pub created_by: String,
     #[serde(default)]
     pub deleted_at: i64,
-    #[serde(default)]
+    /// Unix timestamp of the last content modification.
+    #[serde(default, deserialize_with = "null_to_zero")]
+    pub last_modified: i64,
+    /// The stored file. The two wire shapes are both real-server evidence:
+    /// mutation responses carry `"data": "<filename>"` (a plain string —
+    /// the stored filename), while listings and card details carry the
+    /// full object; both decode into [`ExtendedData`]. Serialization emits
+    /// the object form (the server manages this field on writes).
+    #[serde(default, deserialize_with = "data_from_object_or_string")]
     pub data: Option<ExtendedData>,
     #[serde(default)]
     pub extended_data: Option<ExtendedData>,
 }
 
+/// Decodes `Attachment::data` in both evidenced shapes: the object form as
+/// [`ExtendedData`], the string form as `ExtendedData` carrying only the
+/// stored filename (the string *is* the filename — the same fact the
+/// object's `fileName` field holds). Absent or `null` decodes as `None`.
+fn data_from_object_or_string<'de, D>(deserializer: D) -> Result<Option<ExtendedData>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(serde_json::Value::String(file_name)) => Ok(Some(ExtendedData {
+            file_name,
+            ..ExtendedData::default()
+        })),
+        Some(value) => serde_json::from_value(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
 /// Embedded file information of an attachment; every field optional because
 /// the two payloads (`data`, `extendedData`) carry different subsets.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtendedData {
     #[serde(default)]
     pub file_name: String,
-    #[serde(default)]
+    /// Wire field `size`; the attachment tier additionally sends
+    /// `extendedData.filesize` (same fact, older name).
+    #[serde(default, alias = "filesize")]
     pub size: i64,
     #[serde(default, alias = "mime")]
     pub mimetype: String,
@@ -519,6 +554,60 @@ mod tests {
             attachments[0].extended_data.as_ref().unwrap().mimetype,
             "text/x-org"
         );
+    }
+
+    #[test]
+    fn attachment_create_fixture_decodes_the_mutation_shapes() {
+        // Recorded shape of a real-server create response (D1 spike §3.2):
+        // `data` is the stored filename as a plain string, the size rides
+        // `extendedData.filesize`, and `lastModified` is stamped.
+        let attachment: Attachment =
+            crate::client::decode_envelope(&fixture("attachment_create_response.json")).unwrap();
+        assert_eq!(attachment.id, 1);
+        assert_eq!(attachment.kind, "deck_file");
+        assert_eq!(
+            attachment.data.as_ref().unwrap().file_name,
+            "sidecar_v1.json"
+        );
+        assert_eq!(attachment.extended_data.as_ref().unwrap().size, 141);
+        assert_eq!(
+            attachment.extended_data.as_ref().unwrap().mimetype,
+            "application/json"
+        );
+        assert_eq!(attachment.last_modified, 1_791_989_503);
+        assert_eq!(attachment.created_at, 1_791_989_503);
+        assert_eq!(attachment.deleted_at, 0);
+    }
+
+    #[test]
+    fn attachment_string_data_decodes_as_the_stored_filename() {
+        let attachment: Attachment =
+            serde_json::from_str(r#"{"id": 1, "data": "sidecar_v1.json"}"#).unwrap();
+        let data = attachment.data.expect("string data must decode as Some");
+        assert_eq!(data.file_name, "sidecar_v1.json");
+        assert_eq!(data.size, 0, "the string form carries no size");
+        assert_eq!(data.mimetype, "");
+    }
+
+    #[test]
+    fn attachment_filesize_alias_decodes_into_size() {
+        // The attachment tier sends `extendedData.filesize`; the card-level
+        // payloads send `size`. Both are the same fact.
+        let attachment: Attachment = serde_json::from_str(
+            r#"{"id": 1, "extendedData": {"filesize": 141, "mimetype": "application/json"}}"#,
+        )
+        .unwrap();
+        assert_eq!(attachment.extended_data.unwrap().size, 141);
+    }
+
+    #[test]
+    fn attachment_absent_and_null_data_decode_as_none() {
+        let absent: Attachment = serde_json::from_str(r#"{"id": 1}"#).unwrap();
+        assert!(absent.data.is_none());
+        let null: Attachment =
+            serde_json::from_str(r#"{"id": 1, "data": null, "lastModified": null}"#).unwrap();
+        assert!(null.data.is_none());
+        assert_eq!(null.last_modified, 0);
     }
 
     #[test]

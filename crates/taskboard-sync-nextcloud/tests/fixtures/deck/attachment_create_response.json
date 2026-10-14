@@ -1,0 +1,16 @@
+{
+  "id": 1,
+  "cardId": 6,
+  "type": "deck_file",
+  "data": "sidecar_v1.json",
+  "lastModified": 1791989503,
+  "createdAt": 1791989503,
+  "createdBy": "taskboard-it",
+  "deletedAt": 0,
+  "extendedData": {
+    "filesize": 141,
+    "mimetype": "application/json",
+    "info": {},
+    "attachmentCreator": {}
+  }
+}
