@@ -25,11 +25,14 @@
 //!   `!deleted`; canonical ordering per resolver; duplicate titles
 //!   deduped to one entry (the command's `Ambiguous*` error already
 //!   lists the candidates honestly).
-//! - **Session-refused surface is not offered**: `daemon`, `login`,
-//!   `logout`, `config` and `--config` never appear as candidates —
-//!   completing them would manufacture a guaranteed in-session refusal
-//!   (`repl::LineRefusal`). The same honesty rule removes root-local
-//!   flags (`--version`) from off-root menus: clap rejects them there,
+//! - **Session-refused surface is not offered**: `daemon`, `config`
+//!   and `--config` never appear as candidates — completing them would
+//!   manufacture a guaranteed in-session refusal
+//!   (`repl::LineRefusal`). The ceremony verbs are offered instead
+//!   (ADR 0014): they are session ceremonies now, and their flags walk
+//!   in from the clap spec like every other verb's. The same honesty
+//!   rule removes root-local flags (`--version`) from off-root menus:
+//!   clap rejects them there,
 //!   so completing them would only manufacture a usage error.
 //! - **Conservative routing**: an unclassifiable token (unknown verb,
 //!   unknown flag mid-line, unattributable value position) yields *no*
@@ -226,8 +229,9 @@ pub(crate) struct CompletionSpec {
 
 /// Verbs whose lines `repl::resolve_words` refuses in-session; nothing
 /// about them is offered, and any line starting with one completes
-/// nothing.
-const REFUSED_VERBS: [&str; 5] = ["daemon", "connect", "login", "logout", "config"];
+/// nothing. The ceremony verbs (connect/login/logout, ADR 0014) are
+/// offered like any other verb since chunk 3.
+const REFUSED_VERBS: [&str; 2] = ["daemon", "config"];
 
 /// Flags never offered as candidates: a per-line `--config` is refused
 /// in-session (`LineRefusal::ConfigFlag`). The spec keeps the flag in
@@ -989,6 +993,7 @@ mod tests {
     // -- spec walk -------------------------------------------------------------
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one pin per CLI family, kept flat
     fn the_spec_walk_matches_the_cli_catalogue() {
         let spec = CompletionSpec::from_cli();
 
@@ -1001,13 +1006,45 @@ mod tests {
                 "{verb} must be offered"
             );
         }
-        for refused in ["daemon", "connect", "login", "logout", "config"] {
+        for refused in ["daemon", "config"] {
             assert!(
                 !spec.offered_verbs.iter().any(|v| v == refused),
                 "{refused} must not be offered"
             );
             assert!(CompletionSpec::is_refused(refused));
         }
+        // The ceremony verbs are offered; their flag menus walk in.
+        for offered in ["connect", "login", "logout"] {
+            assert!(
+                spec.offered_verbs.iter().any(|v| v == offered),
+                "{offered} must be offered"
+            );
+            assert!(!CompletionSpec::is_refused(offered));
+        }
+        // `connect`'s flag menu (the flat verb has no subcommands —
+        // the routing yields `Kind::None` for a filled flat verb).
+        let connect_flags = spec
+            .flags
+            .get(&vec!["connect".to_owned()])
+            .expect("connect walked");
+        for long in ["server", "user", "switch-backend", "force"] {
+            assert!(
+                connect_flags.iter().any(|f| f.long == long),
+                "--{long} must be offered for connect"
+            );
+        }
+        let login_flags = spec
+            .flags
+            .get(&vec!["login".to_owned()])
+            .expect("login walked");
+        for long in ["server", "user"] {
+            assert!(login_flags.iter().any(|f| f.long == long));
+        }
+        assert_eq!(
+            routed(&spec, "connect ", 8),
+            Kind::None,
+            "a flat verb's filled slot completes nothing"
+        );
 
         // Group subverbs.
         for (group, subs) in [
@@ -1247,10 +1284,15 @@ mod tests {
         let all = replacements(&all_verbs);
         assert!(all.contains(&"exit "));
         assert!(all.contains(&"boards "));
-        assert!(all.iter().all(|r| !r.starts_with("daemon")
-            && !r.starts_with("login")
-            && !r.starts_with("logout")
-            && !r.starts_with("config")));
+        // The refused verbs are absent; the ceremony verbs are offered
+        // like any other (ADR 0014).
+        assert!(
+            all.iter()
+                .all(|r| !r.starts_with("daemon") && !r.starts_with("config"))
+        );
+        assert!(all.contains(&"connect "));
+        assert!(all.contains(&"login "));
+        assert!(all.contains(&"logout "));
 
         // Subverbs: `tasks l` → label, list.
         let prefix = tokenize_prefix("tasks l", 7);
