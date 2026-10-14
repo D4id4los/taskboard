@@ -321,6 +321,270 @@ pub(crate) mod suite {
         assert!(!deleted.is_live());
     }
 
+    /// Attachment write + content lifecycle on a run-id board (D1 spike
+    /// §3.2/§3.3 evidence, pinned against the real tier): upload, duplicate
+    /// refusal, byte-identical download, in-place update, card-stamp
+    /// advancement with validator invalidation, soft delete (tombstone
+    /// stays listed), restore, and content intact after the restore.
+    pub(crate) async fn attachment_content_lifecycle(client: &DeckClient) {
+        let run = run_id();
+        let color =
+            taskboard_sync_nextcloud::DeckColor::from_hex("00c2e0").expect("valid lifecycle color");
+
+        let board = client
+            .create_board(&run, &color)
+            .await
+            .expect("board creation must succeed");
+
+        let result = attachment_body(client, board.id, &run).await;
+
+        // Best-effort teardown regardless of body outcome; a failure here
+        // must not mask the body's error.
+        let deleted = client.delete_board(board.id).await;
+        match (result, deleted) {
+            (Ok(()), Ok(d)) => assert!(!d.is_live(), "DELETE payload must stamp deletedAt"),
+            (Err(body_err), _) => panic!("attachment lifecycle failed: {body_err:?}"),
+            (Ok(()), Err(teardown_err)) => panic!("board teardown failed: {teardown_err}"),
+        }
+    }
+
+    /// Creates the run-id stack + card and captures the card's pre-write
+    /// stamp plus the validators of that read (re-presented after the
+    /// writes, they must yield fresh data — the writes invalidate them).
+    #[allow(clippy::type_complexity)]
+    async fn setup_target(
+        client: &DeckClient,
+        board_id: u64,
+        run: &str,
+    ) -> Result<
+        (
+            taskboard_sync_nextcloud::Stack,
+            taskboard_sync_nextcloud::Card,
+            i64,
+            taskboard_sync_nextcloud::Validators,
+        ),
+        taskboard_sync_nextcloud::DeckError,
+    > {
+        use taskboard_sync_nextcloud::{NewCard, Validators};
+
+        let stack = super::retrying_server_errors(|| async {
+            client
+                .create_stack(board_id, &format!("{run}-stack"), 0)
+                .await
+        })
+        .await?;
+        let card = super::retrying_server_errors(|| async {
+            client
+                .create_card(
+                    board_id,
+                    stack.id,
+                    &NewCard {
+                        title: format!("{run}-card"),
+                        order: Some(0),
+                        description: None,
+                        duedate: None,
+                        kind: None,
+                    },
+                )
+                .await
+        })
+        .await?;
+        let stamp_before = client
+            .card(board_id, stack.id, card.id)
+            .await?
+            .last_modified;
+        let validators = client
+            .fetch_card(board_id, stack.id, card.id, &Validators::default())
+            .await?
+            .validators;
+        Ok((stack, card, stamp_before, validators))
+    }
+
+    async fn attachment_body(
+        client: &DeckClient,
+        board_id: u64,
+        run: &str,
+    ) -> Result<(), taskboard_sync_nextcloud::DeckError> {
+        use taskboard_sync_nextcloud::AttachmentUpload;
+
+        let upload_name = format!("{run}-sidecar.json");
+        let payload_v1 = format!(r#"{{"run":"{run}","seq":1}}"#).into_bytes();
+        let payload_v2 = format!(r#"{{"run":"{run}","seq":2}}"#).into_bytes();
+        let upload_v1 = || AttachmentUpload {
+            file_name: upload_name.clone(),
+            mime_type: "application/json".into(),
+            content: payload_v1.clone(),
+        };
+        let upload_v2 = AttachmentUpload {
+            content: payload_v2.clone(),
+            ..upload_v1()
+        };
+
+        let (stack, card, stamp_before, validators) = setup_target(client, board_id, run).await?;
+
+        // Upload: the stored filename comes from the part's client
+        // filename, and the decoded size matches the uploaded byte count.
+        let created = super::retrying_server_errors(|| async {
+            client
+                .upload_attachment(board_id, stack.id, card.id, &upload_v1())
+                .await
+        })
+        .await?;
+        assert_eq!(
+            created
+                .data
+                .as_ref()
+                .expect("create echoes the stored file")
+                .file_name,
+            upload_name
+        );
+        assert_eq!(
+            created
+                .extended_data
+                .as_ref()
+                .expect("create echoes the size")
+                .size,
+            i64::try_from(payload_v1.len()).expect("payload size fits i64")
+        );
+        assert_eq!(created.deleted_at, 0);
+
+        // Create refuses duplicates per (card, filename).
+        let duplicate = client
+            .upload_attachment(board_id, stack.id, card.id, &upload_v1())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(duplicate, taskboard_sync_nextcloud::DeckError::Conflict),
+            "duplicate filename must conflict: {duplicate:?}"
+        );
+
+        // Download: byte-identical round-trip (D1's sha256 evidence,
+        // asserted as Vec equality).
+        let downloaded = client
+            .download_attachment(board_id, stack.id, card.id, created.id)
+            .await?;
+        assert_eq!(downloaded, payload_v1);
+
+        // In-place update with the same filename: id and createdAt are
+        // preserved; second-granularity stamps only guarantee >=.
+        let updated = super::retrying_server_errors(|| async {
+            client
+                .update_attachment_content(board_id, card.id, created.id, &upload_v2)
+                .await
+        })
+        .await?;
+        assert_eq!(updated.id, created.id);
+        assert_eq!(updated.created_at, created.created_at);
+        assert!(
+            updated.last_modified >= created.last_modified,
+            "update must not move the content stamp backwards"
+        );
+        let redownloaded = client
+            .download_attachment(board_id, stack.id, card.id, created.id)
+            .await?;
+        assert_eq!(redownloaded, payload_v2);
+
+        assert_stamp_advancement(
+            client,
+            board_id,
+            stack.id,
+            card.id,
+            stamp_before,
+            updated.last_modified,
+            &validators,
+        )
+        .await?;
+
+        soft_delete_and_restore(client, board_id, stack.id, card.id, created.id, &payload_v2)
+            .await?;
+
+        Ok(())
+    }
+
+    /// D1 §3.3: the attachment write advances the card's entity stamp to
+    /// the attachment's own stamp. Poll under the tier deadline (Deck
+    /// cache lag), then assert the measured equality; re-presenting the
+    /// pre-write validators must yield fresh data, never a 304.
+    async fn assert_stamp_advancement(
+        client: &DeckClient,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        stamp_before: i64,
+        attachment_stamp: i64,
+        validators: &taskboard_sync_nextcloud::Validators,
+    ) -> Result<(), taskboard_sync_nextcloud::DeckError> {
+        let deadline = tokio::time::Instant::now() + super::LIVE_DEADLINE;
+        let mut stamped = client.card(board_id, stack_id, card_id).await?;
+        while stamped.last_modified < attachment_stamp {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "card stamp never advanced to the attachment's: card {:?} vs attachment {:?}",
+                stamped.last_modified,
+                attachment_stamp
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            stamped = client.card(board_id, stack_id, card_id).await?;
+        }
+        assert!(
+            stamped.last_modified > stamp_before,
+            "attachment writes must advance the card stamp"
+        );
+        assert_eq!(
+            stamped.last_modified, attachment_stamp,
+            "the new card stamp must equal the attachment's stamp"
+        );
+
+        let refetched = client
+            .fetch_card(board_id, stack_id, card_id, validators)
+            .await?;
+        let fresh = refetched
+            .data
+            .unwrap_or_else(|| panic!("stale validators must not yield 304 after a write"));
+        assert!(
+            fresh.last_modified >= stamp_before,
+            "refetched card must carry post-write data"
+        );
+        Ok(())
+    }
+
+    /// Soft delete (stamped; the tombstone stays in the listing) and
+    /// restore (revived; the content survives the round trip).
+    async fn soft_delete_and_restore(
+        client: &DeckClient,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        attachment_id: u64,
+        expected_content: &[u8],
+    ) -> Result<(), taskboard_sync_nextcloud::DeckError> {
+        let tombstone = super::retrying_server_errors(|| async {
+            client
+                .delete_attachment(board_id, stack_id, card_id, attachment_id)
+                .await
+        })
+        .await?;
+        assert_ne!(tombstone.deleted_at, 0, "delete must stamp deletedAt");
+        let listing = client.attachments(board_id, stack_id, card_id).await?;
+        assert!(
+            listing.iter().any(|a| a.id == attachment_id),
+            "soft-deleted attachment must stay listed (tombstone)"
+        );
+
+        let restored = super::retrying_server_errors(|| async {
+            client
+                .restore_attachment(board_id, stack_id, card_id, attachment_id)
+                .await
+        })
+        .await?;
+        assert_eq!(restored.deleted_at, 0);
+        let after_restore = client
+            .download_attachment(board_id, stack_id, card_id, attachment_id)
+            .await?;
+        assert_eq!(after_restore, expected_content);
+        Ok(())
+    }
+
     /// Deleting a missing board yields a typed error. Nextcloud 35 answers
     /// Forbidden (not `NotFound`) for boards that do not exist or are not
     /// ours; a plausible-but-absent id is used because huge ids overflow
