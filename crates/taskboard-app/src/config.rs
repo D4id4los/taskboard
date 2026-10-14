@@ -41,6 +41,16 @@ pub const DEFAULT_BACKOFF_MAX_SECS: u64 = 300;
 /// `[app] shutdown_timeout_secs`: graceful-shutdown budget per actor join.
 pub const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 
+/// `[ui] scale`: the default token multiplier (§6.1 of the GUI Phase 7
+/// design; 1.0 = the designed baseline dimensions).
+pub const DEFAULT_UI_SCALE: f64 = 1.0;
+
+/// `[ui] scale`'s enforced range bounds (inclusive), per the design's
+/// "clamped 0.5–3.0" — enforced, never silently clamped.
+pub const UI_SCALE_MIN: f64 = 0.5;
+/// See [`UI_SCALE_MIN`].
+pub const UI_SCALE_MAX: f64 = 3.0;
+
 /// `[reminders] tick_secs`: engine tick cadence.
 pub const DEFAULT_REMINDER_TICK_SECS: u64 = 30;
 /// `[reminders] default_before`: the implicit reminder's offset.
@@ -65,6 +75,9 @@ pub struct AppConfig {
     /// Reminder scheduler knobs.
     #[serde(default)]
     pub reminders: RemindersSection,
+    /// Presentation-layer knobs (handed to the UI as typed values).
+    #[serde(default)]
+    pub ui: UiSection,
 }
 
 /// Which frontend the process runs.
@@ -236,6 +249,31 @@ fn default_reminder_before() -> String {
     DEFAULT_REMINDER_BEFORE.to_owned()
 }
 
+/// `[ui]` table: presentation-layer settings. The UI crate reads no
+/// configuration itself (IO-free by design); `taskboard-app` validates
+/// here and hands the values over as typed data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiSection {
+    /// Token multiplier for the theme's dimensions (`0.5–3.0`,
+    /// validated — out-of-range is the typed [`ConfigError::InvalidScale`],
+    /// never a silent clamp).
+    #[serde(default = "default_ui_scale")]
+    pub scale: f64,
+}
+
+impl Default for UiSection {
+    fn default() -> Self {
+        Self {
+            scale: default_ui_scale(),
+        }
+    }
+}
+
+fn default_ui_scale() -> f64 {
+    DEFAULT_UI_SCALE
+}
+
 /// The `[reminders] default_before` grammar (one definition site, shared
 /// with the CLI `--before` flag): a non-empty sequence of
 /// `<unsigned-int><unit>` components, unit ∈ `s | m | h | d`, no sign, no
@@ -327,6 +365,13 @@ pub enum ConfigError {
     /// unavailable and no path was configured).
     #[error("storage path empty")]
     EmptyDbPath,
+    /// `[ui] scale` is NaN, infinite, or outside the enforced
+    /// `0.5–3.0` range.
+    #[error("ui scale invalid")]
+    InvalidScale {
+        /// The dotted config key that is invalid.
+        field: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -344,6 +389,7 @@ impl ConfigError {
             Self::EmptyUsername => "empty-username",
             Self::InvalidDuration { .. } => "invalid-duration",
             Self::EmptyDbPath => "empty-db-path",
+            Self::InvalidScale { .. } => "invalid-scale",
         }
     }
 }
@@ -511,6 +557,11 @@ impl AppConfig {
             .is_none_or(|p| p.as_os_str().is_empty())
         {
             return Err(ConfigError::EmptyDbPath);
+        }
+        // Finite first: NaN/±inf must fail closed, not slip through
+        // range comparisons (NaN compares false both ways).
+        if !self.ui.scale.is_finite() || !(UI_SCALE_MIN..=UI_SCALE_MAX).contains(&self.ui.scale) {
+            return Err(ConfigError::InvalidScale { field: "ui.scale" });
         }
         Ok(())
     }
@@ -689,6 +740,56 @@ mod tests {
         let mut c = valid();
         c.storage.db_path = Some(PathBuf::new());
         assert!(matches!(c.validate(), Err(ConfigError::EmptyDbPath)));
+    }
+
+    #[test]
+    fn ui_scale_defaults_to_one_and_round_trips() {
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .extract()
+            .expect("defaults extract");
+        assert!((round.ui.scale - DEFAULT_UI_SCALE).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ui_scale_accepts_the_range_boundaries() {
+        let mut c = valid();
+        c.ui.scale = UI_SCALE_MIN;
+        c.validate().expect("0.5 validates");
+        let mut c = valid();
+        c.ui.scale = UI_SCALE_MAX;
+        c.validate().expect("3.0 validates");
+    }
+
+    #[test]
+    fn ui_scale_rejects_out_of_range_and_non_finite() {
+        for scale in [0.49, 3.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut c = valid();
+            c.ui.scale = scale;
+            assert!(
+                matches!(
+                    c.validate(),
+                    Err(ConfigError::InvalidScale { field: "ui.scale" })
+                ),
+                "{scale} must be rejected as InvalidScale"
+            );
+        }
+    }
+
+    #[test]
+    fn ui_scale_error_kind_is_the_stable_discriminant() {
+        assert_eq!(
+            ConfigError::InvalidScale { field: "ui.scale" }.kind(),
+            "invalid-scale"
+        );
+    }
+
+    #[test]
+    fn unknown_key_in_the_ui_table_is_a_decode_error() {
+        let result: Result<AppConfig, _> =
+            Figment::from(Serialized::defaults(AppConfig::default()))
+                .merge(Toml::string("[ui]\ntokens = 'x'"))
+                .extract();
+        assert!(result.is_err());
     }
 
     #[test]

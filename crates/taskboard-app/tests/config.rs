@@ -426,3 +426,19 @@ fn c14_reminders_engine_config_mapping() {
         taskboard_domain::ReminderOffset::at_due()
     );
 }
+
+/// C15: the `[ui]` table through the real chain — env override works
+/// (`TASKBOARD_UI__SCALE`), defaults round-trip at 1.0.
+#[test]
+fn c15_ui_scale_env_override() {
+    let _env = env_lock();
+    let _scale = EnvOverride::set("TASKBOARD_UI__SCALE", "1.5");
+    let config = AppConfig::load(None).expect("loads with the override");
+    assert!(
+        (config.ui.scale - 1.5).abs() < f64::EPSILON,
+        "env override reaches ui.scale"
+    );
+    remove_env("TASKBOARD_UI__SCALE");
+    let defaults = AppConfig::default();
+    assert!((defaults.ui.scale - taskboard_app::config::DEFAULT_UI_SCALE).abs() < f64::EPSILON);
+}
