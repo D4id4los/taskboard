@@ -54,6 +54,15 @@ executable:
 - *Dependency Log Capture:* Always include the =log= compatibility feature
   flag in =tracing= so standard =log= emissions from third-party
   dependencies route into the structured =tracing-subscriber= output.
+- *Level contract:* =trace= carries entry identities (ids, timestamps,
+  user content); =debug= carries typed decision facts (ids, enums,
+  booleans — never prose); =info= carries lifecycle transitions
+  (spawn/shutdown/attach) and user-facing deliveries; =warn=/=error=
+  carry abnormal-but-survivable and lost-work events. User content
+  never appears above =trace=, except on a delivery/notification
+  surface, where the logged event is itself the user-facing artifact
+  (e.g. the reminder =LogSink= line). Messages are static, greppable
+  strings; facts ride as typed fields via the =?x=/=%x= sigils.
 - *Log enough to enable debugging:* All project crates should carry
   sufficient logging statements (at appropriate levels) that a user's
   default log output can localise a bug report, and a =debug= or =trace=
