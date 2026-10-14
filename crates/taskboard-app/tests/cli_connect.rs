@@ -54,10 +54,10 @@ fn seed_config(dir: &tempfile::TempDir, body: &str) -> std::path::PathBuf {
     config_path
 }
 
-async fn run_connect(
+async fn run_connect<P: PromptReader>(
     config_path: &Path,
     args: ConnectArgs,
-    prompts: &mut dyn PromptReader,
+    prompts: &mut P,
     store: &Arc<dyn CredentialStore>,
 ) -> Result<ConnectReceipt, CommandError> {
     let raw = AppConfig::extract_raw(Some(config_path)).expect("raw config decodes");
@@ -453,7 +453,7 @@ async fn c18_connect_prompts_in_order() {
     assert_eq!(receipt.username, "alice");
     // Exactly the three scripted answers were consumed.
     assert!(
-        prompts.read_line("probe: ").is_err(),
+        prompts.read_line("probe: ").await.is_err(),
         "no further prompts after url/user/secret"
     );
 }
@@ -569,7 +569,10 @@ async fn c3_declined_backend_confirm_refuses_before_gathering() {
     // The guard refused before gathering: the secret line was never
     // consumed.
     assert_eq!(
-        prompts.read_secret("probe: ").expect("untouched queue"),
+        prompts
+            .read_secret("probe: ")
+            .await
+            .expect("untouched queue"),
         "pw"
     );
     assert_eq!(
@@ -628,7 +631,10 @@ async fn c5_unconfirmable_backend_refusal_without_any_prompt() {
     .expect_err("no confirm available refuses");
     assert_eq!(err.error_kind(), "backend-explicit-standalone");
     assert_eq!(
-        prompts.read_secret("probe: ").expect("untouched queue"),
+        prompts
+            .read_secret("probe: ")
+            .await
+            .expect("untouched queue"),
         "pw"
     );
     assert_eq!(
