@@ -220,6 +220,25 @@ pub enum DaemonConnectorState {
     Unknown,
 }
 
+/// The in-session `logout`'s own connector outcome (ADR 0014): the
+/// session *is* the lock holder, so the detach it performed is the
+/// whole story. Kebab-case in the `--json` receipt — the same
+/// vocabulary as the WI-H IPC detach outcomes, honestly named for the
+/// session (`daemon_connector` stays the one-shot's field).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionConnectorState {
+    /// The session's connector was detached (acknowledged, joined in
+    /// budget); the credential is gone.
+    Detached,
+    /// No connector was attached (standalone boot, or already
+    /// detached) — idempotent.
+    NoConnector,
+    /// The actor missed the join budget and was aborted; the credential
+    /// died with the task either way.
+    TimedOut,
+}
+
 /// The `logout` receipt. No secret ever appears in any projection.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LogoutReceipt {
@@ -234,6 +253,10 @@ pub struct LogoutReceipt {
     /// consulted; absent for the pure-local shape.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daemon_connector: Option<DaemonConnectorState>,
+    /// The in-session detach outcome (ADR 0014); `None` for the
+    /// one-shot, which never detaches its own process's connector.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_connector: Option<SessionConnectorState>,
 }
 
 /// One row of `labels list`.
@@ -384,6 +407,11 @@ pub struct ConnectReceipt {
     /// A configured different identity was replaced (confirmed or
     /// forced); its secret was deleted after the new one verified.
     pub repointed: bool,
+    /// The session ceremony attached the connector to the running core
+    /// (ADR 0014); `None` for the one-shot, which never owns a core —
+    /// the one-shot JSON shape stays byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attached: Option<bool>,
 }
 
 /// The `boards select` receipt: the adopted board summary plus the sync

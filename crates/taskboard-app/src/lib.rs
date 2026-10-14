@@ -39,6 +39,7 @@ pub mod lockfile;
 pub mod notifications;
 pub mod repl;
 pub mod secrets;
+mod session_ceremonies;
 
 /// Application version, taken from the shared workspace version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

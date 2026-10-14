@@ -257,6 +257,7 @@ pub async fn run<P: PromptReader>(
         stored,
         backend_switched,
         repointed: repoint.is_some(),
+        attached: None,
     })
 }
 
@@ -446,8 +447,13 @@ pub fn render_text(receipt: &ConnectReceipt) -> String {
     } else {
         base
     };
-    if receipt.repointed {
+    let base = if receipt.repointed {
         format!("{base} — re-pointed")
+    } else {
+        base
+    };
+    if receipt.attached == Some(true) {
+        format!("{base} — connector attached to the running session")
     } else {
         base
     }
@@ -574,5 +580,25 @@ mod tests {
     fn daemon_warning_covers_both_arms() {
         assert!(super::daemon_warning(true).is_some());
         assert!(super::daemon_warning(false).is_none());
+    }
+
+    /// ADR 0014 §7: the one-shot receipt's JSON shape is byte-identical
+    /// to the pre-session era (`attached` absent); the session ceremony
+    /// adds `"attached":true`.
+    #[test]
+    fn the_attached_field_is_absent_for_the_one_shot_and_true_for_the_session() {
+        let base = |attached| crate::commands::output::ConnectReceipt {
+            server_url: "https://c.example.com".to_owned(),
+            username: "alice".to_owned(),
+            verified: true,
+            stored: "keyring".to_owned(),
+            backend_switched: false,
+            repointed: false,
+            attached,
+        };
+        let json = serde_json::to_value(base(None)).expect("serialize");
+        assert!(json.get("attached").is_none());
+        let json = serde_json::to_value(base(Some(true))).expect("serialize");
+        assert_eq!(json["attached"], true);
     }
 }

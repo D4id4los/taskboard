@@ -200,7 +200,9 @@ async fn ip4_refusals_are_usage_class_and_leave_the_session_healthy() {
         for refused in [
             "daemon",
             "daemon stop",
-            "login",
+            "connect",
+            "connect --server http://x --user alice",
+            "login --server http://x --user alice",
             "logout",
             "config print",
             "tasks list --config other.toml",

@@ -475,6 +475,26 @@ async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, St
     };
     match crate::repl::resolve_words(&argv, false) {
         crate::repl::LineAction::Execute(command, json) => {
+            // `connect`/`login`/`logout` are terminal-bound ceremonies
+            // (ADR 0014, lane `Local`): they elicit masked secrets on
+            // the caller's terminal, which the socket is not. The
+            // usage-class refusal keeps the wire behavior of the
+            // parse-refusal era (code 2); the guidance text is
+            // server-local UX, never asserted.
+            if matches!(
+                command,
+                crate::cli::Command::Connect { .. }
+                    | crate::cli::Command::Login { .. }
+                    | crate::cli::Command::Logout
+            ) {
+                return (
+                    2,
+                    String::new(),
+                    "connect, login, and logout are terminal-bound ceremonies; run them in the \
+                     CLI, not against the daemon socket\n"
+                        .to_owned(),
+                );
+            }
             let mut out = Vec::new();
             let mut err = Vec::new();
             let mut io = CommandIo {

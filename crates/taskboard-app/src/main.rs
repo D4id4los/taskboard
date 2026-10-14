@@ -157,7 +157,7 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
             config.app.mode,
         ) {
             taskboard_app::repl::Entry::Repl => {
-                let code = taskboard_app::repl::run_session(config, cli.json).await;
+                let code = taskboard_app::repl::run_session(config, cli.config, cli.json).await;
                 std::process::exit(i32::from(code));
             }
             // Fall through to the daemon lifecycle with the config the
