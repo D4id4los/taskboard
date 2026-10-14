@@ -2550,3 +2550,32 @@ expensive to retrofit after W2 ships a day-only flow. Interactive
 weekly/monthly sessions then land as thin parameterisations after W2.
 Weekly review should roll up: inbox triage (P1), miss rescheduling
 (P9), next week's boxes (P4), estimate-vs-actual drift (P14).
+
+---
+
+## [2026-10-14] LLM/MCP UI-debugging driver tooling
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-14-gui-phase7-design-plan.md` (§8.2; agenda Q6 resolution — user direction: keep the follow-up visible)
+- **Target Area**: dev tooling (dev-only runner script or small dev crate); `crates/taskboard-ui-slint` (dev-gated `slint/mcp` feature)
+
+### Context & Description
+The GUI design round wires only the *seam* for LLM-driven UI
+debugging: the dev-gated embedded MCP server (feature `slint/mcp` +
+`SLINT_EMIT_DEBUG_INFO=1` + `SLINT_MCP_PORT`) and one CI screenshot
+smoke (design plan §8.2). The polished driver — the thing a
+vision-enabled LLM agent actually drives: a wrapper exposing
+navigate / query-element-tree / inject-input / take-screenshot as a
+stable entry point, plus golden-screenshot regeneration management —
+is deliberately POST-1.0. Parked per the Q6 session resolution so
+the follow-up tooling round is not forgotten.
+
+### Proposed Approach
+A small dev-only runner (script or dev crate) that boots the app
+with the MCP feature enabled and hands an LLM agent session the
+element-tree query, action-registry dump, input injection, and
+screenshot capture lanes; doubles as the golden-image regeneration
+tool. Assert a real renderer is compiled in at build time (the MCP
+screenshot path silently falls back otherwise — stress-test report
+§3.5). External compositor capture (grim/wlroots, X11 `xwd`) stays
+per-dev-machine tooling, never a shipped dependency.
