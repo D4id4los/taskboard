@@ -152,6 +152,10 @@ struct LoopState {
     rerun_requested: bool,
     failure_streak: u32,
     offline: bool,
+    /// The freshest advertised `Retry-After` delay; a floor on the
+    /// autonomous poll backoff. Overwritten by every failure observation,
+    /// ignored on success (the streak resets, so `poll_interval` wins).
+    retry_after_floor: Duration,
 }
 
 #[allow(
@@ -175,6 +179,7 @@ async fn run(
         rerun_requested: false,
         failure_streak: 0,
         offline: false,
+        retry_after_floor: Duration::ZERO,
     };
     // First cycle fires immediately; without a bound target it is a
     // silent skip (no `NoBoard` report on poll ticks — decision 10).
@@ -271,7 +276,12 @@ fn reschedule(st: &LoopState, cfg: &SyncActorConfig) -> tokio::time::Instant {
     let delay = if st.failure_streak == 0 {
         cfg.poll_interval
     } else {
-        poll_backoff(st.failure_streak, cfg.backoff_initial, cfg.backoff_max)
+        poll_backoff(
+            st.failure_streak,
+            cfg.backoff_initial,
+            cfg.backoff_max,
+            st.retry_after_floor,
+        )
     };
     tokio::time::Instant::now() + delay
 }
