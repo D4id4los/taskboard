@@ -815,3 +815,139 @@ async fn b12_detach_then_re_attach_round_trips() {
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted);
 }
+
+// ---------------------------------------------------------------------
+// B-extra: the notifier consumer lifecycle (reminders chunk 3)
+// ---------------------------------------------------------------------
+
+/// The gate sink (fakes over mocks): the first delivery parks until the
+/// test releases it — so the notification is provably *in flight* when
+/// shutdown starts.
+#[derive(Debug, Default)]
+struct GateSink {
+    entered: std::sync::atomic::AtomicBool,
+    release: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+impl taskboard_app::notifications::NotificationSink for GateSink {
+    fn deliver<'a>(
+        &'a self,
+        _: &'a taskboard_domain::Notification,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), taskboard_app::notifications::NotifyError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let rx = self
+                .release
+                .lock()
+                .expect("gate lock")
+                .take()
+                .expect("only one delivery is gated");
+            self.entered
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = rx.await;
+            Ok(())
+        })
+    }
+}
+
+/// The consumer join ordering: a notification parked mid-delivery does
+/// not wedge the shutdown — the bounded notifier join aborts it at the
+/// budget and `shutdown` still returns (the storage-actor precedent).
+#[tokio::test]
+async fn notifier_join_is_bounded_with_a_delivery_in_flight() {
+    let dir = tempdir();
+    let mut config = AppConfig::default();
+    config.storage.db_path = Some(dir.path().join("notifier-join.db"));
+    config.reminders.tick_secs = 1;
+    config.app.shutdown_timeout_secs = 1;
+    let _env = env_password();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let sink = Arc::new(GateSink {
+        release: std::sync::Mutex::new(Some(release_rx)),
+        ..GateSink::default()
+    });
+    let app = bootstrap(
+        config.clone(),
+        Arc::new(FakeCredentialStore::default()),
+        sink.clone(),
+    )
+    .await
+    .expect("boots");
+
+    // Seed a live task (no duedate — the seeding cannot fire), then put
+    // the due date into the past inside the observed boot: the next tick
+    // fires the implicit default reminder into the parked sink.
+    app.engine
+        .execute(StateCommand::CreateTask {
+            title: "In-flight task".to_owned(),
+            stack: seed_a_stack(&app).await,
+            order: 0,
+        })
+        .await
+        .expect("task created");
+    let task_id = app
+        .engine
+        .shared_state()
+        .load_full()
+        .tasks
+        .values()
+        .find(|t| t.title == "In-flight task")
+        .expect("task")
+        .id;
+    app.engine
+        .execute(StateCommand::UpdateTask {
+            id: task_id,
+            changes: taskboard_domain::TaskChanges {
+                duedate: Some(Some(
+                    chrono::Utc::now() - chrono::TimeDelta::try_seconds(60).expect("60s"),
+                )),
+                ..taskboard_domain::TaskChanges::default()
+            },
+        })
+        .await
+        .expect("duedate set");
+
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !sink.entered.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the delivery entered the gate");
+
+    let outcome = app.shutdown().await;
+    assert!(
+        !outcome.actor_aborted,
+        "the sync actor is not the parked one"
+    );
+    drop(release_tx);
+}
+
+/// One live stack on the fresh db: a stack create requires a board, so
+/// the board is minted first (both through the engine).
+async fn seed_a_stack(app: &App) -> StackId {
+    app.engine
+        .execute(StateCommand::CreateBoard {
+            title: "board".to_owned(),
+            color: Color::new("3366cc"),
+        })
+        .await
+        .expect("board created");
+    let outcome = app
+        .engine
+        .execute(StateCommand::CreateStack {
+            title: "stack".to_owned(),
+            order: 0,
+        })
+        .await
+        .expect("stack created");
+    let taskboard_domain::CommandOutcome::CreatedStack(id) = outcome else {
+        panic!("expected CreatedStack");
+    };
+    id
+}

@@ -465,3 +465,300 @@ async fn r9_due_marker_column_follows_banner_truth() {
     );
     assert_eq!(marker_of("Done overdue task"), None, "done is not overdue");
 }
+
+// ---- E-series: rule → tick → delivery → notification (hermetic) ----
+
+/// The fake sink (fakes over mocks): records every delivered
+/// notification behind a mutex; assertions check the *set*.
+#[derive(Debug, Default)]
+struct RecordingSink {
+    notifications: std::sync::Mutex<Vec<taskboard_domain::Notification>>,
+}
+
+impl RecordingSink {
+    fn len(&self) -> usize {
+        self.notifications.lock().expect("sink lock").len()
+    }
+}
+
+impl taskboard_app::notifications::NotificationSink for RecordingSink {
+    fn deliver<'a>(
+        &'a self,
+        notification: &'a taskboard_domain::Notification,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), taskboard_app::notifications::NotifyError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.notifications
+                .lock()
+                .expect("sink lock")
+                .push(notification.clone());
+            Ok(())
+        })
+    }
+}
+
+/// A reminder-enabled config over a tempdir db with a fast logical tick.
+fn e2e_config(dir: &std::path::Path, db: &str, default_before: &str) -> AppConfig {
+    let mut config = standalone_config(dir, db);
+    config.reminders.tick_secs = 1;
+    config.reminders.default_before = default_before.to_string();
+    config
+}
+
+/// Boots the observed core with the recording sink.
+async fn e2e_boot(config: AppConfig) -> (taskboard_app::App, Arc<RecordingSink>) {
+    let sink = Arc::new(RecordingSink::default());
+    let app = taskboard_app::bootstrap::bootstrap(config, forbidden_store(), sink.clone())
+        .await
+        .expect("e2e boots");
+    (app, sink)
+}
+
+/// Polls a predicate with a deadline (the bounded escape; the poll is
+/// the mechanism — no fixed sleeps waiting for state).
+async fn wait_for(predicate: impl Fn() -> bool, what: &'static str) {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !predicate() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("deadline waiting for {what}"));
+}
+
+/// The bounded quiet window for a *negative* assertion: the poll runs
+/// for the whole window and must never see the predicate fire. The
+/// window spans several ticks at the E-series' 1 s cadence.
+///
+/// Deviation note: the plan's `start_paused` auto-advance instantly
+/// exhausts sqlx's default pool-acquire timeout (the real sqlite tempdir
+/// is DA12's other requirement), so the E-series runs on the real clock
+/// and pays this window.
+async fn await_quiet(violated: impl Fn() -> bool, what: &str, dump: impl Fn() -> String) {
+    // Elapsed = quiet; `Ok(())` = the violation predicate fired.
+    if tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !violated() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
+    {
+        panic!("the quiet window was violated: {what}; {}", dump());
+    }
+}
+
+/// The sink dump for a quiet-window failure.
+fn sink_dump(sink: &RecordingSink) -> String {
+    format!("sink: {:?}", sink.notifications.lock().expect("sink lock"))
+}
+
+/// Seeds board/stack/task (no duedate) plus an explicit rule through
+/// one-shot verbs; returns the rule id from the receipt. Nothing can
+/// fire during the seeding boots: no duedate, no occurrence.
+async fn e2e_seed_task_and_rule(config: &AppConfig, title: &str, before: TimeDelta) -> String {
+    seed(config, "Todo", title).await;
+    reminders::set(config.clone(), forbidden_store(), title, Some(before))
+        .await
+        .expect("rule set")
+        .rule_id
+}
+
+/// E1: rule → tick → delivery → notification. The rule is persisted by
+/// the seeding boots; the duedate lands *inside* the observed boot (the
+/// immediate first tick must not fire anything before it).
+#[tokio::test]
+async fn e1_rule_fires_and_delivers_end_to_end() {
+    let dir = tempdir();
+    let config = e2e_config(dir.path(), "e1.db", "5m");
+    let rule_id =
+        e2e_seed_task_and_rule(&config, "E1 task", TimeDelta::try_minutes(10).expect("10m")).await;
+    let rule_uuid = uuid::Uuid::parse_str(&rule_id).expect("rule id");
+
+    let (app, sink) = e2e_boot(config.clone()).await;
+    let now = chrono::Utc::now();
+    let due = now - chrono::TimeDelta::try_minutes(10).expect("-10m");
+    app.engine
+        .execute(taskboard_domain::StateCommand::UpdateTask {
+            id: task_id_by_title(&app, "E1 task"),
+            changes: taskboard_domain::TaskChanges {
+                duedate: Some(Some(due)),
+                ..taskboard_domain::TaskChanges::default()
+            },
+        })
+        .await
+        .expect("duedate set");
+
+    wait_for(|| sink.len() == 1, "the notification").await;
+
+    // Snapshot and drop the guard: no lock spans an await point.
+    let notifications = sink.notifications.lock().expect("sink lock").clone();
+    let notification = &notifications[0];
+    assert_eq!(
+        notification.reminder,
+        taskboard_domain::ReminderRef::Rule(taskboard_domain::ReminderRuleId::from(rule_uuid))
+    );
+    assert_eq!(notification.title, "E1 task");
+    // occurrence == duedate + offset: the 10 m-before rule fires at
+    // due − 10 m.
+    assert_eq!(
+        notification.occurrence,
+        due - chrono::TimeDelta::try_minutes(10).expect("10m")
+    );
+
+    // Terminal state: the delivery proof is persisted before the send.
+    let state = app.engine.shared_state().load_full();
+    let delivered = state
+        .reminders
+        .deliveries
+        .iter()
+        .any(|d| d.occurrence == notification.occurrence && matches!(d.reminder, taskboard_domain::ReminderRef::Rule(id) if id.as_uuid() == rule_uuid));
+    assert!(delivered, "the delivery row is in the terminal state");
+
+    app.shutdown().await;
+}
+
+fn task_id_by_title(app: &taskboard_app::App, title: &str) -> taskboard_domain::TaskId {
+    let state = app.engine.shared_state().load_full();
+    state
+        .tasks
+        .values()
+        .find(|t| t.title == title && t.is_live())
+        .expect("seeded task")
+        .id
+}
+
+/// E2: at-most-once — several ticks later the sink still holds exactly
+/// one delivery, and a *fresh* boot's immediate first tick adds nothing
+/// (the delivery proof persisted).
+#[tokio::test]
+async fn e2_delivery_is_at_most_once_across_restarts() {
+    let dir = tempdir();
+    let config = e2e_config(dir.path(), "e2.db", "5m");
+    let rule_id =
+        e2e_seed_task_and_rule(&config, "E2 task", TimeDelta::try_minutes(10).expect("10m")).await;
+    let rule_uuid = uuid::Uuid::parse_str(&rule_id).expect("rule id");
+
+    let (app, sink) = e2e_boot(config.clone()).await;
+    let due = chrono::Utc::now() - chrono::TimeDelta::try_minutes(10).expect("-10m");
+    app.engine
+        .execute(taskboard_domain::StateCommand::UpdateTask {
+            id: task_id_by_title(&app, "E2 task"),
+            changes: taskboard_domain::TaskChanges {
+                duedate: Some(Some(due)),
+                ..taskboard_domain::TaskChanges::default()
+            },
+        })
+        .await
+        .expect("duedate set");
+    wait_for(|| sink.len() == 1, "the first notification").await;
+
+    // Several more ticks: still exactly one.
+    await_quiet(
+        || sink.len() != 1,
+        "no repeat within the window",
+        || sink_dump(&sink),
+    )
+    .await;
+    app.shutdown().await;
+
+    // A fresh boot on the same db: the immediate first tick adds
+    // nothing.
+    let (app, sink) = e2e_boot(config.clone()).await;
+    await_quiet(
+        || sink.len() != 0,
+        "the refire stays suppressed",
+        || sink_dump(&sink),
+    )
+    .await;
+    assert_eq!(
+        sink.len(),
+        0,
+        "the persisted delivery suppresses the refire"
+    );
+    let state = app.engine.shared_state().load_full();
+    assert!(
+        state
+            .reminders
+            .deliveries
+            .iter()
+            .any(|d| matches!(d.reminder, taskboard_domain::ReminderRef::Rule(id) if id.as_uuid() == rule_uuid)),
+        "the delivery proof hydrated"
+    );
+    app.shutdown().await;
+}
+
+/// E3: `enabled = false` never arms the tick — the same setup stays
+/// silent and the shutdown is clean.
+#[tokio::test]
+async fn e3_disabled_config_stays_silent() {
+    let dir = tempdir();
+    let mut config = e2e_config(dir.path(), "e3.db", "5m");
+    config.reminders.enabled = false;
+    let rule_id =
+        e2e_seed_task_and_rule(&config, "E3 task", TimeDelta::try_minutes(10).expect("10m")).await;
+    let _ = uuid::Uuid::parse_str(&rule_id).expect("rule id");
+
+    let (app, sink) = e2e_boot(config.clone()).await;
+    let due = chrono::Utc::now() - chrono::TimeDelta::try_minutes(10).expect("-10m");
+    app.engine
+        .execute(taskboard_domain::StateCommand::UpdateTask {
+            id: task_id_by_title(&app, "E3 task"),
+            changes: taskboard_domain::TaskChanges {
+                duedate: Some(Some(due)),
+                ..taskboard_domain::TaskChanges::default()
+            },
+        })
+        .await
+        .expect("duedate set");
+
+    await_quiet(
+        || sink.len() != 0,
+        "a disabled engine never fires",
+        || sink_dump(&sink),
+    )
+    .await;
+    assert_eq!(sink.len(), 0, "a disabled engine never fires");
+    app.shutdown().await;
+}
+
+/// E4: the implicit default reminder (no explicit rule) fires at
+/// `duedate - default_before`; with `default_before = "0s"` the
+/// occurrence is exactly the duedate — the config→domain mapping end
+/// to end.
+#[tokio::test]
+async fn e4_default_reminder_fires_at_the_configured_offset() {
+    let dir = tempdir();
+    let config = e2e_config(dir.path(), "e4.db", "0s");
+    seed(&config, "Todo", "E4 task").await;
+
+    let (app, sink) = e2e_boot(config.clone()).await;
+    let due = chrono::Utc::now() - chrono::TimeDelta::try_minutes(5).expect("-5m");
+    app.engine
+        .execute(taskboard_domain::StateCommand::UpdateTask {
+            id: task_id_by_title(&app, "E4 task"),
+            changes: taskboard_domain::TaskChanges {
+                duedate: Some(Some(due)),
+                ..taskboard_domain::TaskChanges::default()
+            },
+        })
+        .await
+        .expect("duedate set");
+
+    wait_for(|| sink.len() == 1, "the default notification").await;
+    // Snapshot and drop the guard: no lock spans an await point.
+    let notifications = sink.notifications.lock().expect("sink lock").clone();
+    let notification = &notifications[0];
+    let task_id = task_id_by_title(&app, "E4 task");
+    assert_eq!(
+        notification.reminder,
+        taskboard_domain::ReminderRef::Default(task_id)
+    );
+    assert_eq!(notification.occurrence, due, "0s before due == at due");
+    app.shutdown().await;
+}
