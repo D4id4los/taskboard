@@ -1019,7 +1019,7 @@ mod tests {
             (
                 "tasks",
                 vec![
-                    "add", "delete", "done", "edit", "label", "list", "move", "unlabel",
+                    "add", "delete", "done", "edit", "label", "list", "move", "remind", "unlabel",
                 ],
             ),
             ("labels", vec!["add", "delete", "edit", "list"]),
@@ -1042,6 +1042,11 @@ mod tests {
             "stack selector, then free-text title"
         );
         assert_eq!(kinds(["tasks", "label"]), &[Kind::Tasks, Kind::Labels]);
+        assert_eq!(
+            kinds(["tasks", "remind"]),
+            &[Kind::Tasks],
+            "the remind selector, then flags only"
+        );
         assert_eq!(kinds(["tasks", "list"]), &[] as &[Kind]);
         assert_eq!(
             kinds(["tasks", "add"]),

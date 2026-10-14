@@ -257,6 +257,15 @@ fn parse_due(raw: &str) -> Result<DueSpec, String> {
         .map_err(|_| "expected RFC-3339 (2026-10-24T09:00:00Z), YYYY-MM-DD, or 'none'".to_owned())
 }
 
+/// The `tasks remind --before` flag: the same `[reminders]
+/// default_before` grammar ([`crate::config::parse_before`]). A
+/// malformed value is a clap usage error (exit 2), the `parse_due`
+/// precedent.
+fn parse_before_flag(raw: &str) -> Result<chrono::TimeDelta, String> {
+    crate::config::parse_before(raw)
+        .ok_or_else(|| "expected <int><unit> components (s|m|h|d), e.g. 10m or 1h30m".to_owned())
+}
+
 /// `config` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum ConfigCmd {
@@ -374,6 +383,33 @@ pub enum TasksCmd {
         /// The label (uuid | exact title).
         label: String,
     },
+    /// Manage a task's reminder rules: set/replace with `--before`,
+    /// enumerate with `--list`, remove with `--clear`, mute/unmute the
+    /// task's firings with `--off`/`--on`. Exactly one mode per line.
+    #[group(required = true, multiple = true)]
+    Remind {
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
+        task: Option<String>,
+        /// The new rule's offset before due (`30s|5m|1h30m|2d`); the
+        /// `[reminders] default_before` config default applies when
+        /// omitted. List rendering glyphs: `!` marks overdue and `~`
+        /// due-soon in `tasks list`.
+        #[arg(long, requires = "task", value_parser = parse_before_flag)]
+        before: Option<chrono::TimeDelta>,
+        /// List the board's reminder rules (pure read).
+        #[arg(long, conflicts_with_all = ["task", "clear", "off", "on"])]
+        list: bool,
+        /// Remove all of the task's reminder rules.
+        #[arg(long, requires = "task", conflicts_with_all = ["before", "off", "on", "list"])]
+        clear: bool,
+        /// Mute all firings of the task (the overdue banner is
+        /// unaffected).
+        #[arg(long, requires = "task", conflicts_with_all = ["before", "clear", "on", "list"])]
+        off: bool,
+        /// Unmute the task's firings (inverse of `--off`).
+        #[arg(long, requires = "task", conflicts_with_all = ["before", "clear", "off", "list"])]
+        on: bool,
+    },
 }
 
 #[cfg(test)]
@@ -403,5 +439,14 @@ mod tests {
         for raw in ["tomorrow", "2026-13-40", ""] {
             assert!(parse_due(raw).is_err(), "{raw} must be rejected");
         }
+    }
+
+    #[test]
+    fn parse_before_flag_reuses_the_config_grammar() {
+        assert_eq!(
+            parse_before_flag("10m"),
+            Ok(chrono::TimeDelta::try_minutes(10).expect("10m"))
+        );
+        assert!(parse_before_flag("5min").is_err());
     }
 }

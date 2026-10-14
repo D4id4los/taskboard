@@ -225,6 +225,69 @@ pub struct TaskDeleteReceipt {
     pub title: String,
 }
 
+/// One row of `tasks remind --list`. `before` is the canonical text
+/// form (`"10m"`, `"0s"`) — the *config* string stays raw, the
+/// projection is canonical.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReminderRow {
+    /// Local rule uuid.
+    pub id: String,
+    /// Owning task's local uuid.
+    pub task_id: String,
+    /// Owning task's title.
+    pub task_title: String,
+    /// The rule's offset before due, canonical text.
+    pub before: String,
+    /// When the rule was created (ISO-8601).
+    pub created_at: DateTime<Utc>,
+    /// The task's firings are muted (mutes are visible where rules
+    /// are).
+    pub task_muted: bool,
+}
+
+/// The `tasks remind --list` payload: rows in task canonical order,
+/// then rule id.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RemindersList {
+    /// The rule rows.
+    pub rules: Vec<ReminderRow>,
+}
+
+/// The `tasks remind --before` receipt.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReminderSetReceipt {
+    /// The fresh rule's local uuid.
+    pub rule_id: String,
+    /// The task's local uuid.
+    pub task_id: String,
+    /// The task's title.
+    pub task_title: String,
+    /// The rule's offset before due, canonical text.
+    pub before: String,
+}
+
+/// The `tasks remind --clear` receipt.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReminderClearReceipt {
+    /// The task's local uuid.
+    pub task_id: String,
+    /// The task's title.
+    pub task_title: String,
+    /// How many rules were removed (0 for an idempotent repeat).
+    pub removed: usize,
+}
+
+/// The `tasks remind --off/--on` receipt.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReminderMuteReceipt {
+    /// The task's local uuid.
+    pub task_id: String,
+    /// The task's title.
+    pub task_title: String,
+    /// The new mute state.
+    pub muted: bool,
+}
+
 /// The `config print` payload: the effective configuration plus the
 /// diagnosis (validity travels *in* the payload; exit 0 either way).
 ///
