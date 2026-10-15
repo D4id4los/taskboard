@@ -55,19 +55,19 @@ expression: rows
   contexts:
     - global
   category: navigation
-  enabled: false
+  enabled: true
 - id: nav.prev-view
   label: Previous view
   contexts:
     - global
   category: navigation
-  enabled: false
+  enabled: true
 - id: nav.focus-board
   label: Go to board
   contexts:
     - global
   category: navigation
-  enabled: false
+  enabled: true
 - id: nav.next-item
   label: Focus next item
   contexts:
@@ -75,7 +75,7 @@ expression: rows
     - stack-detail
     - task-detail
   category: navigation
-  enabled: false
+  enabled: true
 - id: nav.prev-item
   label: Focus previous item
   contexts:
@@ -83,21 +83,21 @@ expression: rows
     - stack-detail
     - task-detail
   category: navigation
-  enabled: false
+  enabled: true
 - id: task.create
   label: New task
   contexts:
     - board
     - stack-detail
   category: task
-  enabled: false
+  enabled: true
 - id: task.edit
   label: Edit task
   contexts:
     - board
     - task-detail
   category: task
-  enabled: false
+  enabled: true
 - id: task.complete
   label: Complete task
   contexts:
@@ -111,12 +111,24 @@ expression: rows
     - board
     - task-detail
   category: task
-  enabled: false
+  enabled: true
 - id: task.delete
   label: Delete task
   contexts:
     - board
     - task-detail
+  category: task
+  enabled: true
+- id: reminder.snooze
+  label: Snooze reminder
+  contexts:
+    - global
+  category: task
+  enabled: true
+- id: reminder.mute
+  label: Mute reminders
+  contexts:
+    - global
   category: task
   enabled: true
 - id: menu.next

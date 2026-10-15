@@ -95,6 +95,11 @@ expression: rows
         - sequence:
             - Down
           action: menu.next
+    - context: vi-insert
+      bindings:
+        - sequence:
+            - Escape
+          action: mode.normal
 - preset: emacs
   contexts:
     - context: global
@@ -201,6 +206,11 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: menu.previous
+    - context: vi-insert
+      bindings:
+        - sequence:
+            - Escape
+          action: mode.normal
 - preset: vi
   contexts:
     - context: menu
