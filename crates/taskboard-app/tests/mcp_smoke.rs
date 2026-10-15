@@ -18,6 +18,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::panic::AssertUnwindSafe;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -41,7 +42,7 @@ fn the_mcp_lane_boots_screenshots_and_exits_clean() {
         ),
     )
     .expect("writes config");
-    let stderr_path = std::path::PathBuf::from("/tmp/mcp-smoke-stderr.log");
+    let stderr_path = temp.path().join("mcp-smoke-stderr.log");
 
     let port = free_port();
     let mut child = Command::new(env!("CARGO_BIN_EXE_taskboard"))
@@ -226,7 +227,3 @@ fn free_port() -> u16 {
         .expect("addr")
         .port()
 }
-
-// The imports above must stay minimal; this file is a smoke, not a
-// driver (the backlog entry owns the POST-1.0 wrapper).
-use std::panic::AssertUnwindSafe;

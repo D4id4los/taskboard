@@ -26,10 +26,10 @@
 
 #![allow(clippy::missing_panics_doc)] // harness-internal invariants
 
+use i_slint_backend_testing::ElementHandle;
 use i_slint_backend_testing::testing_backend::{
     TestingBackend, TestingBackendOptions, mock_elapsed_time,
 };
-use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementRoot};
 use slint::platform::{Key, WindowEvent};
 use slint::{ComponentHandle as _, LogicalSize, SharedString, WindowSize};
 
@@ -51,8 +51,6 @@ pub struct DriverOptions {
 
 /// The harness's vocabulary over the testing backend (the whole
 /// trait is the seam). Implemented by [`SlintDriver`].
-// Some members gain their callers as the journey suite lands.
-#[allow(dead_code)]
 pub trait JourneyDriver {
     /// Binds the driver to a mounted UI: injection, sizing, capture,
     /// and queries address its window.
@@ -71,55 +69,20 @@ pub trait JourneyDriver {
     /// Finds the first element whose accessible label equals `label`
     /// (labels are element *addresses*, never assertion text).
     fn find_by_label(&self, label: &str) -> Option<Element>;
-    /// Finds every element carrying `role`.
-    fn find_by_role(&self, role: AccessibleRole) -> Vec<Element>;
 }
 
 /// One addressed element: an [`ElementHandle`] behind only the a11y
-/// reads the journeys assert through — never item-tree internals
+/// read the journeys assert through — never item-tree internals
 /// (design §14 journey-brittleness).
 pub struct Element {
     handle: ElementHandle,
 }
 
-// The readers below are the stable a11y seam the journey suite
-// exercises (design §14); unused ones until the journeys land.
-#[allow(dead_code)]
 impl Element {
     /// The accessible label (the address, for `assert!` diagnostics).
     #[must_use]
     pub fn label(&self) -> Option<String> {
         self.handle.accessible_label().map(Into::into)
-    }
-
-    /// The accessible value (e.g. a text input's content).
-    #[must_use]
-    pub fn value(&self) -> Option<String> {
-        self.handle.accessible_value().map(Into::into)
-    }
-
-    /// The checked state (checkable elements).
-    #[must_use]
-    pub fn checked(&self) -> Option<bool> {
-        self.handle.accessible_checked()
-    }
-
-    /// The selected state (list/tab items).
-    #[must_use]
-    pub fn selected(&self) -> Option<bool> {
-        self.handle.accessible_item_selected()
-    }
-
-    /// The enabled state.
-    #[must_use]
-    pub fn enabled(&self) -> Option<bool> {
-        self.handle.accessible_enabled()
-    }
-
-    /// The default action (the click affordance's action equivalent,
-    /// §7.1).
-    pub fn click(&self) {
-        self.handle.invoke_accessible_default_action();
     }
 }
 
@@ -139,9 +102,9 @@ impl SlintDriver {
     }
 }
 
-// The trait surface the journey suite exercises; some members only
-// gain callers as the journeys land (next commits).
-#[allow(dead_code)]
+// The trait surface the journey/golden binaries exercise; each binary
+// uses its subset (the module-level `dead_code` allow in `mod.rs`
+// covers the per-binary rest).
 impl JourneyDriver for SlintDriver {
     fn bind(&mut self, handle: &UiHandle) {
         self.window = Some(handle.window().as_weak());
@@ -183,8 +146,8 @@ impl JourneyDriver for SlintDriver {
         #[allow(clippy::cast_precision_loss)] // UI-scale px values
         let size = LogicalSize::new(width as f32, height as f32);
         self.window().window().set_size(WindowSize::from(size));
-        // The markup's  push is a property change
-        // handler; the mock clock's handler pass delivers it.
+        // The markup's width push is a property change handler; the
+        // mock clock's handler pass delivers it.
         mock_elapsed_time(0);
     }
 
@@ -203,21 +166,8 @@ impl JourneyDriver for SlintDriver {
             .next()
             .map(|handle| Element { handle })
     }
-
-    fn find_by_role(&self, role: AccessibleRole) -> Vec<Element> {
-        let window = self.window();
-        window
-            .root_element()
-            .query_descendants()
-            .match_accessible_role(role)
-            .find_all()
-            .into_iter()
-            .map(|handle| Element { handle })
-            .collect()
-    }
 }
 
-#[allow(dead_code)] // the journey suite's injection primitive (landing next)
 fn dispatch(window: &slint::Window, text: SharedString, pressed: bool) {
     let event = if pressed {
         WindowEvent::KeyPressed { text }

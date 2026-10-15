@@ -46,18 +46,13 @@ impl FakeEngine {
     }
 
     /// Drains every command that reached the boundary (typed capture),
-    /// appending to the received log.
+    /// appending to the received log. The drained prefix is the
+    /// journeys' assertion input: exact `StateCommand` variants — the
+    /// routing-only rule.
     pub fn drain(&mut self) -> Vec<StateCommand> {
         let drained: Vec<_> = std::iter::from_fn(|| self.commands.try_recv().ok()).collect();
         self.received.extend(drained.iter().cloned());
         drained
-    }
-
-    /// The commands that reached the boundary so far (assertion input:
-    /// exact `StateCommand` variants — the routing-only rule).
-    #[must_use]
-    pub fn received(&self) -> &[StateCommand] {
-        &self.received
     }
 
     /// Applies drained commands to the state snapshot for journey

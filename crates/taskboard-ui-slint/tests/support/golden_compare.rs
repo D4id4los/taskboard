@@ -115,7 +115,8 @@ pub fn matches(golden: &Rgba8Image, candidate: &Rgba8Image) -> Result<(), String
         Ok(())
     } else {
         Err(format!(
-            "luma cells differ by {diff} (> {MAX_CELL_DIFF}) — if intended,              regenerate the goldens (TASKBOARD_REGEN_GOLDENS=1) and review the PNG diff"
+            "luma cells differ by {diff} (> {MAX_CELL_DIFF}) — if intended, \
+             regenerate the goldens (TASKBOARD_REGEN_GOLDENS=1) and review the PNG diff"
         ))
     }
 }
