@@ -10,6 +10,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- REPL completion disambiguates hard title collisions: when two live
+  stacks, tasks, or labels share a title, the menu replaces the
+  (guaranteed-`Ambiguous*`) title row with one `title - uuid` row per
+  entity that inserts the full uuid; unambiguous titles keep the plain
+  row.
 - File-backed REPL history: submitted session lines persist in
   `<data-dir>/taskboard/history` (0600, following the db-path data-dir
   precedent) and are recalled in later sessions; persistence is

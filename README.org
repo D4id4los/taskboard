@@ -221,6 +221,10 @@ in-session-refused verbs and =--config= are never offered). Submitted
 lines persist across sessions in =<data-dir>/taskboard/history=
 (owner-only 0600, best-effort: a missing or corrupt file is warned
 about and rebuilt, never fatal; prompted secrets are never recorded).
+When two live entities share a title, the menu offers one
+uuid-disambiguated row per entity — displayed as =title - uuid=,
+inserting the full uuid (the one always-exact selector); unambiguous
+titles keep the plain row.
 The instance-lock mutex applies both ways — a running daemon
 makes bare =taskboard= (a *second* core boot) fail with
 =instance-locked=: stop the daemon first. Core *verbs* typed while a
