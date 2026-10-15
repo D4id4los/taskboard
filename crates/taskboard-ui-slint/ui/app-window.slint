@@ -6,12 +6,13 @@
 // action (Q9). The keymap is applied one-way at UI start (§5.6).
 
 import { Theme, Typography, Semantic } from "theme.slint";
+import { Responsive } from "responsive.slint";
 import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
 
 // Re-export the theme globals so the generated Rust module exposes
 // them (mount reads/writes `Theme.base-scale` through the generated
 // global accessors).
-export { Theme, Typography, Semantic }
+export { Theme, Typography, Semantic, Responsive }
 
 export enum KeyFeedback {
     none,
@@ -45,7 +46,12 @@ export component AppWindow inherits Window {
     // The single key path (§5.1): capture-phase tunneling hits this
     // scope before any focused element; accepting consumes the event.
     forward-focus: key-root;
-    init => key-root.focus();
+    init => {
+        key-root.focus();
+        // The initial Responsive push (D17): fires with the preferred
+        // size before real layout; `changed width` supersedes it.
+        root.window-width-changed(root.width / 1px);
+    }
     key-root := FocusScope {
         capture-key-pressed(event) => {
             root.intercept-key(event.text, event.modifiers) ? accept : reject
@@ -69,4 +75,9 @@ export component AppWindow inherits Window {
     // The `menu.invoke` projection: the adapter closes the menu and
     // re-dispatches the selected entry through the same router.
     pure callback menu-entry-invoked(int);
+
+    // The Responsive width push (D17): every width change lands in
+    // Rust's breakpoint mapping, which sets the `Responsive` global.
+    pure callback window-width-changed(float);
+    changed width => { root.window-width-changed(root.width / 1px); }
 }

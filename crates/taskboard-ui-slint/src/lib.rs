@@ -18,7 +18,9 @@ pub mod adapter;
 pub mod fonts;
 pub mod keymap;
 pub mod menu;
+pub mod models;
 pub mod resolver;
+pub mod responsive;
 pub mod router;
 pub mod shell;
 
@@ -217,6 +219,33 @@ mod mount_tests {
             let handle = mount(state, signals, system, commands, UiSettings::default())
                 .expect("mount succeeds on the null platform");
             assert_eq!(handle.window.global::<Theme>().get_base_scale(), 1.0);
+        });
+    }
+
+    /// The D17 width push round-trip: a width reported through the
+    /// window callback lands as the mapped breakpoint on the
+    /// `Responsive` global; the null platform's 0×0 keeps the default.
+    #[test]
+    fn width_push_maps_the_breakpoint() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands) = handover();
+            let handle = mount(state, signals, system, commands, UiSettings::default())
+                .expect("mount succeeds on the null platform");
+            let responsive = handle.window.global::<Responsive>();
+            assert_eq!(responsive.get_current_breakpoint(), Breakpoint::Regular);
+
+            handle.window.invoke_window_width_changed(600.0);
+            assert_eq!(responsive.get_current_breakpoint(), Breakpoint::Compact);
+            handle.window.invoke_window_width_changed(1000.0);
+            assert_eq!(responsive.get_current_breakpoint(), Breakpoint::Regular);
+            handle.window.invoke_window_width_changed(2000.0);
+            assert_eq!(responsive.get_current_breakpoint(), Breakpoint::Expansive);
+            handle.window.invoke_window_width_changed(0.0);
+            assert_eq!(
+                responsive.get_current_breakpoint(),
+                Breakpoint::Regular,
+                "no-measurement widths fall back to the default breakpoint"
+            );
         });
     }
 

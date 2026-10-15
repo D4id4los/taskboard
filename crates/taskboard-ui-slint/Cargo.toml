@@ -11,6 +11,9 @@ description = "Swappable Slint presentation layer for taskboard"
 [dependencies]
 taskboard-domain.workspace = true
 arc-swap.workspace = true
+# Display-domain date/time arithmetic in the presentation helpers
+# (chrono types already flow through the domain public API).
+chrono.workspace = true
 thiserror.workspace = true
 # slint.workspace plus the additive runtime-font-registration feature
 # (the 1.18-documented path; see src/fonts.rs). Renderer/backend

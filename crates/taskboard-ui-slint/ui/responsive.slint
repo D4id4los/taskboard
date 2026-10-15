@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The responsive global (D17): Rust owns the width→breakpoint mapping
+// (src/responsive.rs, Q16's unscaled thresholds); slint only reads the
+// pushed value. Compositions read `Responsive.current-breakpoint`,
+// never window px (§6.3).
+
+export enum Breakpoint {
+    compact,
+    regular,
+    expansive,
+}
+
+export global Responsive {
+    in-out property <Breakpoint> current-breakpoint: Breakpoint.regular;
+}
