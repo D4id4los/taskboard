@@ -153,4 +153,27 @@ mod tests {
             "chord hinted stroke-by-stroke"
         );
     }
+
+    /// The projection over the real chunk-2 session chain: the mode
+    /// context is always a chain member (D10/D11) and standard/emacs
+    /// leave it unbound — hints must still resolve from Global.
+    #[test]
+    fn entries_carry_hints_over_the_mode_context_session_chain() {
+        for preset in [Preset::Standard, Preset::Emacs] {
+            let keymap = build(&RawKeymap {
+                preset,
+                overrides: BTreeMap::new(),
+            })
+            .keymap;
+            let rows = entries(&keymap, &[ContextId::ViNormal, ContextId::Global]);
+            let exit = rows
+                .iter()
+                .find(|e| e.action == ActionId::AppExit)
+                .expect("app.exit is global-tagged");
+            assert!(
+                !exit.hint.is_empty(),
+                "{preset:?}: every resolvable global binding is hinted"
+            );
+        }
+    }
 }
