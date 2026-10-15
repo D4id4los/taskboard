@@ -92,6 +92,9 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuPrevious, ContextId::Menu, &["Up"]),
     (ActionId::MenuInvoke, ContextId::Menu, &["Return"]),
     (ActionId::MenuDismiss, ContextId::Menu, &["Escape"]),
+    // D5: insert-mode exit — the same single key vi has (the insert
+    // chain masks the view context; printables reach the field).
+    (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
@@ -140,6 +143,8 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuInvoke, ContextId::Menu, &["Return"]),
     (ActionId::MenuDismiss, ContextId::Menu, &["Ctrl+g"]),
     (ActionId::MenuDismiss, ContextId::Menu, &["Escape"]),
+    // D5: insert-mode exit (see standard's note).
+    (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest

@@ -151,6 +151,17 @@ impl ViewState {
         self.subject_task
     }
 
+    /// Direct view/focus injection (the chunk-2 test seam; real
+    /// sessions go through the view cycle and the card clicks).
+    pub fn set_view(&mut self, view: ViewId) {
+        self.view = view;
+    }
+
+    /// Direct focus injection (see [`Self::set_view`]).
+    pub fn set_focused(&mut self, task: Option<TaskId>) {
+        self.focused_task = task;
+    }
+
     /// The keymap context of the current view (the chunk-2 seam).
     #[must_use]
     pub const fn context(&self) -> ContextId {
@@ -361,6 +372,17 @@ impl ViewState {
         self.focused_task = Some(task);
         self.selected_stack = Some(stack);
         vec![FlowOutcome::RefreshNow]
+    }
+
+    /// vi's insert intent inside `TaskDetail` (D5): begin editing the
+    /// viewed task's title in place (the view does not switch).
+    pub fn edit_subject(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Some(task) = self.subject_task.and_then(|id| state.tasks.get(&id)) else {
+            return Vec::new();
+        };
+        self.flow = Flow::EditTitle { task: task.id };
+        self.buffer.clone_from(&task.title);
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
     /// The `Activate` intent with no flow (D9): open the focused
@@ -915,6 +937,33 @@ mod tests {
                 id: a,
                 changes: TaskChanges {
                     title: Some("renamed".to_owned()),
+                    ..TaskChanges::default()
+                },
+            })][..]
+        );
+    }
+
+    #[test]
+    fn insert_intent_in_task_detail_edits_the_subject_in_place() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(a, s0);
+        vs.activate_focused(&state);
+        vs.discard_edit();
+        // Still in TaskDetail (display mode): `i` edits the subject.
+        let outcomes = vs.edit_subject(&state);
+        assert_eq!(*vs.flow(), Flow::EditTitle { task: a });
+        assert_eq!(vs.buffer(), "task-0");
+        assert!(matches!(
+            outcomes.first(),
+            Some(FlowOutcome::SetMode(Mode::Insert))
+        ));
+        assert_eq!(
+            vs.commit_edit(&state)[..1],
+            [FlowOutcome::Command(StateCommand::UpdateTask {
+                id: a,
+                changes: TaskChanges {
+                    title: Some("task-0".to_owned()),
                     ..TaskChanges::default()
                 },
             })][..]

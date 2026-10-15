@@ -108,6 +108,8 @@ pub enum ActionId {
     TaskComplete,
     TaskMove,
     TaskDelete,
+    ReminderSnooze,
+    ReminderMute,
     MenuNext,
     MenuPrevious,
     MenuInvoke,
@@ -139,6 +141,8 @@ impl ActionId {
             Self::TaskComplete => "task.complete",
             Self::TaskMove => "task.move",
             Self::TaskDelete => "task.delete",
+            Self::ReminderSnooze => "reminder.snooze",
+            Self::ReminderMute => "reminder.mute",
             Self::MenuNext => "menu.next",
             Self::MenuPrevious => "menu.previous",
             Self::MenuInvoke => "menu.invoke",
@@ -259,49 +263,49 @@ pub const REGISTRY: &[ActionEntry] = &[
         label: "Next view",
         contexts: GLOBAL,
         category: Category::Navigation,
-        enabled: false,
+        enabled: true,
     },
     ActionEntry {
         id: ActionId::NavPrevView,
         label: "Previous view",
         contexts: GLOBAL,
         category: Category::Navigation,
-        enabled: false,
+        enabled: true,
     },
     ActionEntry {
         id: ActionId::NavFocusBoard,
         label: "Go to board",
         contexts: GLOBAL,
         category: Category::Navigation,
-        enabled: false,
+        enabled: true,
     },
     ActionEntry {
         id: ActionId::NavNextItem,
         label: "Focus next item",
         contexts: VIEW_NAV,
         category: Category::Navigation,
-        enabled: false,
+        enabled: true,
     },
     ActionEntry {
         id: ActionId::NavPrevItem,
         label: "Focus previous item",
         contexts: VIEW_NAV,
         category: Category::Navigation,
-        enabled: false,
+        enabled: true,
     },
     ActionEntry {
         id: ActionId::TaskCreate,
         label: "New task",
         contexts: &[ContextId::Board, ContextId::StackDetail],
         category: Category::Task,
-        enabled: false,
+        enabled: true,
     },
     ActionEntry {
         id: ActionId::TaskEdit,
         label: "Edit task",
         contexts: &[ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
-        enabled: false,
+        enabled: true,
     },
     ActionEntry {
         id: ActionId::TaskComplete,
@@ -315,12 +319,29 @@ pub const REGISTRY: &[ActionEntry] = &[
         label: "Move task",
         contexts: &[ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
-        enabled: false,
+        enabled: true,
     },
     ActionEntry {
         id: ActionId::TaskDelete,
         label: "Delete task",
         contexts: &[ContextId::Board, ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+    },
+    // Q23's banner verbs (chunk-3 D4): menu-reachable via `app.menu`;
+    // preset bindings are recorded backlog debt with the reminders-UI
+    // wave.
+    ActionEntry {
+        id: ActionId::ReminderSnooze,
+        label: "Snooze reminder",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+    },
+    ActionEntry {
+        id: ActionId::ReminderMute,
+        label: "Mute reminders",
+        contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
     },
@@ -413,6 +434,8 @@ mod tests {
             ActionId::TaskComplete,
             ActionId::TaskMove,
             ActionId::TaskDelete,
+            ActionId::ReminderSnooze,
+            ActionId::ReminderMute,
             ActionId::MenuNext,
             ActionId::MenuPrevious,
             ActionId::MenuInvoke,
@@ -474,21 +497,31 @@ mod tests {
         }
     }
 
-    /// The chunk-3 staged handlers (D5) are bound-but-disabled until
-    /// the views flip the bits.
+    /// Post-flip (chunk-3 D6): the *only* disabled rows are the
+    /// reserved set — every other action dispatches for real. The
+    /// reserved bits themselves are pinned by
+    /// `reserved_globals_are_present_and_disabled`.
     #[test]
-    fn chunk3_staged_actions_are_disabled() {
-        for id in [
-            ActionId::NavNextView,
-            ActionId::NavPrevView,
-            ActionId::NavFocusBoard,
-            ActionId::NavNextItem,
-            ActionId::NavPrevItem,
-            ActionId::TaskCreate,
-            ActionId::TaskEdit,
-            ActionId::TaskMove,
-        ] {
-            assert!(!entry(id).enabled);
+    fn only_reserved_actions_stay_disabled() {
+        for row in REGISTRY {
+            if reserved_globals_are_present_and_disabled_set().contains(&row.id) {
+                assert!(!row.enabled, "{} is reserved", row.id);
+            } else {
+                assert!(row.enabled, "{} must be enabled", row.id);
+            }
         }
+    }
+
+    /// The reserved set as data for the post-flip diff (the original
+    /// test's list, kept in one place).
+    fn reserved_globals_are_present_and_disabled_set() -> std::collections::BTreeSet<ActionId> {
+        std::collections::BTreeSet::from([
+            ActionId::AppUndo,
+            ActionId::AppRedo,
+            ActionId::AppSettings,
+            ActionId::AppHelp,
+            ActionId::CaptureQuick,
+            ActionId::PaletteSearch,
+        ])
     }
 }

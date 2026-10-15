@@ -102,7 +102,7 @@ pub struct UiHandle {
     /// the `set_view_context`/`set_focused_entities` seam (D16/D17).
     adapter: Rc<RefCell<adapter::Adapter>>,
     /// Lock-free state reads for the rendering thread (AGENTS §3).
-    _state: Arc<ArcSwap<AppState>>,
+    state: Arc<ArcSwap<AppState>>,
     /// Engine repaint triggers (design §1.2; chunk 3's consumers).
     _signals: broadcast::Receiver<EngineSignal>,
     /// System status events (chunk 3's status bar).
@@ -137,14 +137,30 @@ pub fn mount(
         .set_base_scale(settings.scale as f32);
     // The keymap is applied one-way at UI start (§5.6): install the
     // root-scope interception over the validated keymap.
-    let adapter = adapter::install(&window, settings.keymap, settings.startup, commands);
+    let adapter = adapter::install(
+        &window,
+        settings.keymap,
+        settings.startup,
+        commands,
+        Arc::clone(&state),
+    );
     Ok(UiHandle {
         window,
         adapter,
-        _state: state,
+        state,
         _signals: signals,
         _system: system,
     })
+}
+
+impl UiHandle {
+    /// The D1 refresh: a deterministic, timer-free full re-derive
+    /// pass over the current state snapshot. The repaint timer calls
+    /// this; tests may call it directly.
+    pub fn refresh(&self) {
+        let state = self.state.load();
+        self.adapter.borrow_mut().reconcile(&state);
+    }
 }
 
 /// Runs the slint event loop on the calling thread — the process main
@@ -460,17 +476,64 @@ mod keymap_adapter_tests {
         });
     }
 
-    /// Mode flips are ordinary effects (D10): `i` enters insert, and
-    /// Escape (its only binding) returns — the chain follows the mode
-    /// state.
+    /// D5: the vi insert intent opens the view's create row (no void
+    /// insert — without a create target `i` does nothing); Escape (the
+    /// only insert binding) ends the flow and returns to normal mode.
     #[test]
-    fn mode_flips_are_ordinary_state() {
+    fn insert_intent_opens_the_create_row_and_escape_returns() {
         on_slint_thread(|| {
-            let (handle, _commands) = handover_vi();
+            let (handle, mut commands) = handover_vi();
             let keyboard = handle.window.global::<KeyboardState>();
             assert!(!keyboard.get_vi_insert());
+            // No board yet: the insert intent is inert (no void mode).
             press(&handle, "i");
-            assert!(keyboard.get_vi_insert(), "mode.insert flipped the state");
+            assert!(!keyboard.get_vi_insert(), "no create target, no insert");
+
+            // With a board and stack, `i` opens the create row in
+            // insert mode; Escape (the only insert binding) ends it.
+            let board = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+            let stack = taskboard_domain::StackId::from_uuid(uuid::Uuid::now_v7());
+            let mut state = taskboard_domain::AppState::default();
+            state.boards.insert(
+                board,
+                taskboard_domain::Board {
+                    id: board,
+                    remote: None,
+                    title: "b".to_owned(),
+                    color: taskboard_domain::Color::new(""),
+                    archived: false,
+                    deleted: false,
+                    clocks: taskboard_domain::BoardClocks {
+                        title: taskboard_domain::BoardClocks::epoch(),
+                    },
+                    remote_seen: None,
+                },
+            );
+            state.stacks.insert(
+                stack,
+                taskboard_domain::Stack {
+                    id: stack,
+                    remote: None,
+                    board,
+                    title: "s".to_owned(),
+                    order: 0,
+                    archived: false,
+                    deleted: false,
+                    clocks: taskboard_domain::StackClocks {
+                        title: taskboard_domain::BoardClocks::epoch(),
+                        order: taskboard_domain::BoardClocks::epoch(),
+                        deleted: taskboard_domain::BoardClocks::epoch(),
+                    },
+                    remote_seen: None,
+                },
+            );
+            handle.state.store(state.into());
+            press(&handle, "i");
+            assert!(
+                keyboard.get_vi_insert(),
+                "the create row opened in insert mode"
+            );
+            assert!(commands.try_recv().is_err(), "opening dispatches nothing");
             press(&handle, "\u{1b}");
             assert!(!keyboard.get_vi_insert(), "mode.normal returned");
         });

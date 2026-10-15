@@ -35,21 +35,24 @@ pub struct KeymapShell {
 impl KeymapShell {
     /// The context chain for resolution under the current state
     /// (D11): menu open → `[Menu]` (the modal masks everything);
-    /// otherwise view context, the always-present mode context (an
-    /// empty member changes nothing, D10), then Global.
+    /// insert mode → `[ViInsert, Global]` (D5: while a text field
+    /// holds the flow, the view context is masked so printables reach
+    /// the field untouched — the D18 text-input contract); otherwise
+    /// view context, the always-present mode context (an empty member
+    /// changes nothing, D10), then Global.
     #[must_use]
     pub fn chain(&self) -> Vec<ContextId> {
         if self.menu.open {
             return vec![ContextId::Menu];
         }
+        if self.mode == Mode::Insert {
+            return vec![ContextId::ViInsert, ContextId::Global];
+        }
         let mut chain = Vec::with_capacity(3);
         if let Some(view) = self.view {
             chain.push(view);
         }
-        chain.push(match self.mode {
-            Mode::Normal => ContextId::ViNormal,
-            Mode::Insert => ContextId::ViInsert,
-        });
+        chain.push(ContextId::ViNormal);
         chain.push(ContextId::Global);
         chain
     }
@@ -60,6 +63,7 @@ impl KeymapShell {
         crate::router::DispatchCtx {
             focused_task: self.focused_task,
             focused_stack: self.focused_stack,
+            reminder_target: None,
         }
     }
 
@@ -95,6 +99,16 @@ impl KeymapShell {
                 self.menu = MenuState::default();
             }
             UiEffect::SetMode(mode) => self.mode = mode,
+            // The chunk-3 view intents (D6/D9) live in `view_state`;
+            // the shell records nothing for them.
+            UiEffect::FocusNext
+            | UiEffect::FocusPrev
+            | UiEffect::NextView
+            | UiEffect::PrevView
+            | UiEffect::FocusBoard
+            | UiEffect::BeginCreate
+            | UiEffect::Activate
+            | UiEffect::RequestMove => {}
         }
         true
     }
@@ -131,10 +145,12 @@ mod tests {
             vec![ContextId::Board, ContextId::ViNormal, ContextId::Global]
         );
 
+        // D5: insert masks the view context — typing flows to fields.
         shell.mode = Mode::Insert;
         assert_eq!(
             shell.chain(),
-            vec![ContextId::Board, ContextId::ViInsert, ContextId::Global]
+            vec![ContextId::ViInsert, ContextId::Global],
+            "insert mode masks the view context"
         );
 
         shell.menu.open = true;

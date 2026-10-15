@@ -5,9 +5,14 @@
 //! channels — the adapter sends [`DispatchOutcome::Command`] outcomes
 //! over the mpsc and applies [`UiEffect`]s to the shell state.
 
+use chrono::TimeDelta;
 use taskboard_domain::{StackId, StateCommand, TaskId};
 
 use crate::actions::{ActionId, entry as registry_entry};
+use crate::presentation::ReminderTarget;
+
+/// How far a banner snooze pushes an occurrence out (D4): one hour.
+pub const SNOOZE_POSTPONE: TimeDelta = TimeDelta::hours(1);
 
 /// The vi mode (D17): two plain shell states — ordinary state, not a
 /// subsystem (D10).
@@ -32,6 +37,26 @@ pub enum UiEffect {
     /// entry — bounded (the menu is closed first, no recursion).
     InvokeSelected,
     SetMode(Mode),
+    // --- chunk-3 view intents (D6/D9): names state the function; the
+    // adapter resolves them against the view-state model.
+    /// Advance board focus in reading order (also the move-flow's
+    /// target-cycle: the adapter's interpretation table decides).
+    FocusNext,
+    /// Retreat board focus in reading order.
+    FocusPrev,
+    /// Enter the next view in the one view cycle.
+    NextView,
+    /// Enter the previous view in the one view cycle.
+    PrevView,
+    /// Return to the board view and its scope.
+    FocusBoard,
+    /// Open the inline create row.
+    BeginCreate,
+    /// The primary-activation intent: open/commit whatever the focus
+    /// and the active flow mean by "activate".
+    Activate,
+    /// Ask for move mode (a second request cancels it).
+    RequestMove,
 }
 
 /// What dispatching an action produced (D16).
@@ -57,6 +82,10 @@ pub enum DispatchOutcome {
 pub struct DispatchCtx {
     pub focused_task: Option<TaskId>,
     pub focused_stack: Option<StackId>,
+    /// The banner row's concrete reminder target (D4): set by the
+    /// adapter when a banner row is activated; snooze/mute route from
+    /// it (`NoTarget` without one).
+    pub reminder_target: Option<ReminderTarget>,
 }
 
 /// The pure dispatch table. Every [`ActionId`] variant is matched —
@@ -94,21 +123,39 @@ impl ActionRouter {
                 Some(id) => DispatchOutcome::Command(StateCommand::DeleteTask { id }),
                 None => DispatchOutcome::NoTarget,
             },
-            // Reserved (§5.8) and chunk-3 staged (D5) — all disabled.
+            // The Q23 banner verbs (D4): concrete targets only.
+            ActionId::ReminderSnooze => match ctx.reminder_target {
+                Some(target) => DispatchOutcome::Command(StateCommand::SnoozeReminder {
+                    reminder: target.reminder,
+                    occurrence: target.occurrence,
+                    postpone: SNOOZE_POSTPONE,
+                }),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::ReminderMute => match ctx.reminder_target {
+                Some(target) => DispatchOutcome::Command(StateCommand::SetTaskRemindersMuted {
+                    task: target.task,
+                    muted: true,
+                }),
+                None => DispatchOutcome::NoTarget,
+            },
+            // The chunk-3 view intents (D6): the adapter resolves the
+            // effects against the view-state model.
+            ActionId::NavNextView => DispatchOutcome::UiEffect(UiEffect::NextView),
+            ActionId::NavPrevView => DispatchOutcome::UiEffect(UiEffect::PrevView),
+            ActionId::NavFocusBoard => DispatchOutcome::UiEffect(UiEffect::FocusBoard),
+            ActionId::NavNextItem => DispatchOutcome::UiEffect(UiEffect::FocusNext),
+            ActionId::NavPrevItem => DispatchOutcome::UiEffect(UiEffect::FocusPrev),
+            ActionId::TaskCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreate),
+            ActionId::TaskEdit => DispatchOutcome::UiEffect(UiEffect::Activate),
+            ActionId::TaskMove => DispatchOutcome::UiEffect(UiEffect::RequestMove),
+            // Reserved (§5.8) — the only disabled rows left (D6).
             ActionId::AppUndo
             | ActionId::AppRedo
             | ActionId::AppSettings
             | ActionId::AppHelp
             | ActionId::CaptureQuick
-            | ActionId::PaletteSearch
-            | ActionId::NavNextView
-            | ActionId::NavPrevView
-            | ActionId::NavFocusBoard
-            | ActionId::NavNextItem
-            | ActionId::NavPrevItem
-            | ActionId::TaskCreate
-            | ActionId::TaskEdit
-            | ActionId::TaskMove => DispatchOutcome::Disabled,
+            | ActionId::PaletteSearch => DispatchOutcome::Disabled,
         }
     }
 }
@@ -123,6 +170,15 @@ mod tests {
         DispatchCtx {
             focused_task: task.then(|| TaskId::from_uuid(Uuid::now_v7())),
             focused_stack: None,
+            reminder_target: None,
+        }
+    }
+
+    fn banner_target() -> crate::presentation::ReminderTarget {
+        crate::presentation::ReminderTarget {
+            task: TaskId::from_uuid(Uuid::now_v7()),
+            reminder: taskboard_domain::ReminderRef::Default(TaskId::from_uuid(Uuid::now_v7())),
+            occurrence: chrono::Utc::now(),
         }
     }
 
@@ -161,6 +217,58 @@ mod tests {
 
     /// T22 — the disabled bit wins before any target check (§5.8:
     /// reserved actions are honest no-ops even with focus set).
+    /// D4/D6 — the banner verbs route exact typed commands from the
+    /// reminder target, `NoTarget` without one.
+    #[test]
+    fn reminder_verbs_route_from_the_target() {
+        let mut ctx = ctx(false);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderSnooze, &ctx),
+            DispatchOutcome::NoTarget
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderMute, &ctx),
+            DispatchOutcome::NoTarget
+        );
+        let target = banner_target();
+        ctx.reminder_target = Some(target);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderSnooze, &ctx),
+            DispatchOutcome::Command(StateCommand::SnoozeReminder {
+                reminder: target.reminder,
+                occurrence: target.occurrence,
+                postpone: SNOOZE_POSTPONE,
+            })
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderMute, &ctx),
+            DispatchOutcome::Command(StateCommand::SetTaskRemindersMuted {
+                task: target.task,
+                muted: true,
+            })
+        );
+    }
+
+    /// D6 — the staged view intents route to their named effects.
+    #[test]
+    fn view_intents_route_to_effects() {
+        for (id, effect) in [
+            (ActionId::NavNextView, UiEffect::NextView),
+            (ActionId::NavPrevView, UiEffect::PrevView),
+            (ActionId::NavFocusBoard, UiEffect::FocusBoard),
+            (ActionId::NavNextItem, UiEffect::FocusNext),
+            (ActionId::NavPrevItem, UiEffect::FocusPrev),
+            (ActionId::TaskCreate, UiEffect::BeginCreate),
+            (ActionId::TaskEdit, UiEffect::Activate),
+            (ActionId::TaskMove, UiEffect::RequestMove),
+        ] {
+            assert_eq!(
+                ActionRouter::dispatch(id, &ctx(true)),
+                DispatchOutcome::UiEffect(effect)
+            );
+        }
+    }
+
     #[test]
     fn disabled_actions_are_absorbed_even_with_focus() {
         let ctx = ctx(true);
@@ -169,10 +277,6 @@ mod tests {
             ActionId::AppRedo,
             ActionId::CaptureQuick,
             ActionId::PaletteSearch,
-            ActionId::NavNextItem,
-            ActionId::TaskCreate,
-            ActionId::TaskEdit,
-            ActionId::TaskMove,
         ] {
             assert_eq!(ActionRouter::dispatch(id, &ctx), DispatchOutcome::Disabled);
         }
