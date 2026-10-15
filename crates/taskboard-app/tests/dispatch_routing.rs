@@ -470,6 +470,29 @@ async fn config_print_routes_an_undecodable_config_to_exit_one() {
     assert_eq!(code, 1);
 }
 
+/// D-new: `config path` never decodes — the same garbage file that
+/// fails `config print` with exit 1 gets its paths named with exit 0
+/// (the decode-vs-no-decode contrast between the two verbs).
+#[tokio::test]
+async fn config_path_is_infallible_even_for_a_garbage_config() {
+    let (_guard, dir) = garbage_setup();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(
+        Command::Config {
+            cmd: ConfigCmd::Path,
+        },
+        ctx(dir.path(), &mut out, &mut err),
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let view: serde_json::Value =
+        serde_json::from_slice(&out).expect("the payload is one json line");
+    let named = dir.path().join("taskboard.toml").display().to_string();
+    assert_eq!(view["config_path"], named);
+    assert_eq!(view["write_path"], named);
+}
+
 /// D-new: `status` routes client-side — never a core boot, exit 0, and
 /// (under `--json`) the `daemon: false` answer on stdout. A rejected
 /// config is the one typed failure (asserted via the garbage file).

@@ -271,6 +271,10 @@ fn parse_before_flag(raw: &str) -> Result<chrono::TimeDelta, String> {
 pub enum ConfigCmd {
     /// Print the effective config (secret-free by construction).
     Print,
+    /// Print the resolved config read path and the connect/login write
+    /// target — a side-effect-free resolution diagnostic: no decode,
+    /// no core boot.
+    Path,
 }
 
 /// `labels` subcommands.

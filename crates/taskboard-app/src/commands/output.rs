@@ -388,6 +388,19 @@ pub struct ConfigView {
     pub config: crate::config::AppConfig,
 }
 
+/// The `config path` payload: pure path facts — which file reads
+/// resolve, and where `connect`/`login` would write. No config
+/// content, no decode, no side effects.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ConfigPathView {
+    /// The file effective-config reads resolve (the `config print`
+    /// resolution rule); `None` — defaults only.
+    pub config_path: Option<String>,
+    /// The `connect`/`login` write target (the first-run arm's
+    /// candidate when resolution finds no file).
+    pub write_path: String,
+}
+
 /// The `connect` (and deprecated `login` alias) receipt. No secret ever
 /// appears in any projection.
 #[derive(Debug, Clone, Serialize, PartialEq)]

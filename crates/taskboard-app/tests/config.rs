@@ -442,3 +442,77 @@ fn c15_ui_scale_env_override() {
     let defaults = AppConfig::default();
     assert!((defaults.ui.scale - taskboard_app::config::DEFAULT_UI_SCALE).abs() < f64::EPSILON);
 }
+
+/// C16: the `config path` diagnosis is pure resolution — an explicit
+/// `--config` is reported for reads and writes alike, existence never
+/// checked (that is `config print`/`load`'s typed failure, not this
+/// verb's).
+#[test]
+fn c16_explicit_path_is_reported_for_reads_and_writes() {
+    let _env = env_lock();
+    remove_env("TASKBOARD_CONFIG");
+    let dir = tempdir();
+    let file = dir.path().join("does-not-exist.toml");
+    let view = config::path(Some(file.clone()));
+    assert_eq!(view.config_path.map(PathBuf::from), Some(file.clone()));
+    assert_eq!(PathBuf::from(&view.write_path), file);
+}
+
+/// C16: `TASKBOARD_CONFIG` names both answers — the read resolution
+/// and the write target follow the same env binding.
+#[test]
+fn c16_env_override_names_both_answers() {
+    let _env = env_lock();
+    let dir = tempdir();
+    let file = dir.path().join("env-named.toml");
+    set_env("TASKBOARD_CONFIG", file.to_str().expect("utf-8 path"));
+    let view = config::path(None);
+    remove_env("TASKBOARD_CONFIG");
+    assert_eq!(view.config_path.map(PathBuf::from), Some(file.clone()));
+    assert_eq!(PathBuf::from(&view.write_path), file);
+}
+
+/// C16: the fresh-machine divergence the verb exists to show — reads
+/// resolve to nothing, but `connect`/`login` would write the XDG
+/// candidate (whose directory the writer creates).
+#[test]
+fn c16_fresh_machine_diverges_read_none_write_xdg() {
+    let _env = env_lock();
+    remove_env("TASKBOARD_CONFIG");
+    let xdg = tempdir();
+    let cwd = tempdir();
+    let original = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(cwd.path()).expect("chdir");
+    let _xdg = EnvOverride::set("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf-8"));
+    let view = config::path(None);
+    std::env::set_current_dir(original).expect("restore cwd");
+    assert_eq!(view.config_path, None);
+    assert_eq!(
+        PathBuf::from(&view.write_path),
+        xdg.path().join("taskboard").join("taskboard.toml")
+    );
+}
+
+/// C16: an existing CWD install keeps its file as the write target —
+/// the write fallback's row (`config_path` stays `None`: the CWD file
+/// is not a read resolution).
+#[test]
+fn c16_existing_cwd_install_is_the_write_target() {
+    let _env = env_lock();
+    remove_env("TASKBOARD_CONFIG");
+    let xdg = tempdir();
+    let cwd = tempdir();
+    std::fs::write(cwd.path().join("taskboard.toml"), "").expect("cwd install");
+    let original = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(cwd.path()).expect("chdir");
+    let _xdg = EnvOverride::set("XDG_CONFIG_HOME", xdg.path().to_str().expect("utf-8"));
+    let view = config::path(None);
+    std::env::set_current_dir(original).expect("restore cwd");
+    assert_eq!(view.config_path, None);
+    // The CWD default's own spelling: an existing install keeps its
+    // file (`DEFAULT_CONFIG_PATH`, resolved against the process CWD).
+    assert_eq!(
+        PathBuf::from(&view.write_path),
+        PathBuf::from(taskboard_app::config::DEFAULT_CONFIG_PATH)
+    );
+}
