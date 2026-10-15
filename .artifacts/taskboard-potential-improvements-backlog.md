@@ -1834,6 +1834,10 @@ the WI-J round fixed — that is the round's acceptance test.
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-11-m1-exit-wi4-repl-interactive-frontend-plan.md` §2.7/§7
 - **Target Area**: `crates/taskboard-app` (`repl.rs`)
+- **Status**: ✅ DONE (implemented 2026-10-15 via dispatch chunk P6:
+  `<data-dir>/taskboard/history`, 0600, best-effort degrade +
+  self-heal; `with-file-history` turned out to already ship in the
+  pinned rustyline 18 defaults)
 
 #### Context & Description
 v1 REPL history is in-memory only (rustyline session history). File
@@ -1872,6 +1876,10 @@ shape; board/stack/title completion from the live `ArcSwap<AppState>`
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-12-app-repl-completion-plan.md` §7
 - **Target Area**: `crates/taskboard-app` (`src/completion.rs`)
+- **Status**: ✅ DONE (implemented 2026-10-15 via dispatch chunk P6:
+  no new `Kind` variant — the live-title generator now groups by title
+  and hard collisions emit `title - uuid` rows inserting the full
+  uuid; quiet menu for unique titles)
 
 #### Context & Description
 When two live tasks share a title, title completion yields one
@@ -2647,3 +2655,38 @@ limiter and installs the floor then.
 ### Proposed Approach
 Widen `GroupOutcome::Aborted` to carry the aborting `DeckError` (or at
 least its `retry_after`) up to `fail_cycle`.
+
+### [2026-10-15] Uuid-fragment stem completion in the REPL
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-15-app-repl-history-uuid-completion-plan.md` §7
+- **Target Area**: `crates/taskboard-app` (`src/completion.rs`)
+
+#### Context & Description
+Dispatch chunk P6 scoped uuid rows to hard title collisions only.
+Completing from a pasted/typed *uuid prefix* (Tab expands to the full
+uuid) would help for any live entity, but changes the menu for
+unambiguous titles too — a different feature.
+
+#### Proposed Approach
+A uuid-shaped stem in the live-entry generator: prefix-match against
+`as_uuid().to_string()`, emit the plain uuid row; needs a collision
+rule for prefix tiers (UUIDv7 prefixes collide within about a minute).
+
+### [2026-10-15] `Ambiguous*` payloads listing uuids
+
+- **Category**: `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-15-app-repl-history-uuid-completion-plan.md` §7
+- **Target Area**: `crates/taskboard-app` (`src/commands/`)
+
+#### Context & Description
+The typed `AmbiguousTask`/`AmbiguousStack`/`AmbiguousLabel` errors
+list titles only, which cannot disambiguate a hard collision — the
+completion menu now offers the escape, but the error a hand-typed
+title produces could too. Lives in `commands/`, outside P6's file
+scope.
+
+#### Proposed Approach
+Carry `(title, uuid)` pairs in the payload variants (a wire-shape
+change — protocol policy applies) and render `title - uuid` rows in
+the error output.
