@@ -13,6 +13,7 @@
 //! provider failures collapse into [`ConfigError::Decode`] whose source
 //! is logged, never pattern-matched.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -260,18 +261,69 @@ pub struct UiSection {
     /// never a silent clamp).
     #[serde(default = "default_ui_scale")]
     pub scale: f64,
+    /// Keyboard map (Q22): preset + user override deltas.
+    #[serde(default)]
+    pub keymap: KeymapSection,
 }
 
 impl Default for UiSection {
     fn default() -> Self {
         Self {
             scale: default_ui_scale(),
+            keymap: KeymapSection::default(),
         }
     }
 }
 
 fn default_ui_scale() -> f64 {
     DEFAULT_UI_SCALE
+}
+
+/// `[ui.keymap]`'s preset choice (Q22 keymap half). Unknown values
+/// are the config layer's fail-fast contract (D13's structure-vs-
+/// semantics line): an unknown preset has no meaningful "drop", so
+/// it decodes as the typed [`ConfigError::Decode`], unlike override
+/// *values*, which are drop-and-warn findings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeymapPreset {
+    #[default]
+    Standard,
+    Emacs,
+    Vi,
+}
+
+/// One override's sequences: a bare string is the single-stroke
+/// degenerate case (D7's sugar); the array form carries chords.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OverrideSpec {
+    Single(String),
+    Sequence(Vec<String>),
+}
+
+impl OverrideSpec {
+    /// Normalizes to the keymap layer's sequence form.
+    #[must_use]
+    pub fn to_sequences(&self) -> Vec<Vec<String>> {
+        match self {
+            Self::Single(stroke) => vec![vec![stroke.clone()]],
+            Self::Sequence(strokes) => vec![strokes.clone()],
+        }
+    }
+}
+
+/// `[ui.keymap]`: preset name + flat per-action override deltas
+/// (D14). Raw strings only — value-level validation (unknown action,
+/// malformed stroke, conflicts) happens in the keymap layer at UI
+/// start, drop-and-warn (Q15); the config layer owns only structure.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeymapSection {
+    #[serde(default)]
+    pub preset: KeymapPreset,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overrides: BTreeMap<String, OverrideSpec>,
 }
 
 /// The `[reminders] default_before` grammar (one definition site, shared
@@ -1023,5 +1075,78 @@ mod tests {
                 .merge(Toml::string("[nextcloud]\ntoken = 'leak'"))
                 .extract();
         assert!(result.is_err());
+    }
+
+    // ---- [ui.keymap] (D14, T28/T29) ---------------------------------
+
+    /// T28 — the keymap table decodes (defaults, bare-string sugar,
+    /// array chords) and old configs without the table stay valid.
+    #[test]
+    fn keymap_section_decodes_with_defaults_and_sugar() {
+        // Old config: no keymap table at all.
+        let old: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string("[ui]\nscale = 1.5"))
+            .extract()
+            .expect("old configs stay valid");
+        assert_eq!(old.ui.keymap.preset, KeymapPreset::Standard);
+        assert!(old.ui.keymap.overrides.is_empty());
+
+        // Full table: named preset, bare-string sugar, chord array.
+        let full: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string(
+                "[ui.keymap]\npreset = \"vi\"\n\n[ui.keymap.overrides]\n\"task.complete\" = [\"Ctrl+Space\"]\n\"app.exit\" = \"Ctrl+Q\"",
+            ))
+            .extract()
+            .expect("keymap table decodes");
+        assert_eq!(full.ui.keymap.preset, KeymapPreset::Vi);
+        assert_eq!(
+            full.ui
+                .keymap
+                .overrides
+                .get("task.complete")
+                .expect("chord"),
+            &OverrideSpec::Sequence(vec!["Ctrl+Space".into()])
+        );
+        assert_eq!(
+            full.ui.keymap.overrides.get("app.exit").expect("sugar"),
+            &OverrideSpec::Single("Ctrl+Q".into())
+        );
+        assert_eq!(
+            full.ui
+                .keymap
+                .overrides
+                .get("app.exit")
+                .expect("s")
+                .to_sequences(),
+            vec![vec!["Ctrl+Q".to_owned()]],
+            "sugar normalizes to one single-stroke sequence"
+        );
+    }
+
+    /// T29 — an unknown preset is the config layer's fail-fast
+    /// contract: a typed decode error (structure), not a finding
+    /// (D13's structure-vs-semantics line).
+    #[test]
+    fn unknown_preset_is_a_typed_decode_error() {
+        let err: figment::Error = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string("[ui.keymap]\npreset = \"bogus\""))
+            .extract::<AppConfig>()
+            .map(|_| unreachable!("unknown preset rejected"))
+            .unwrap_err();
+        // Through the load path this collapses into ConfigError::Decode
+        // (`extract_raw` maps it); the provider error itself is the
+        // structural decode failure.
+        assert_eq!(ConfigError::Decode(err).kind(), "decode");
+    }
+
+    /// Unknown keys inside the keymap table are decode errors too
+    /// (the table keeps the workspace's reject-unknown-keys rule).
+    #[test]
+    fn unknown_keymap_keys_are_decode_errors() {
+        let result: Result<AppConfig, figment::Error> =
+            Figment::from(Serialized::defaults(AppConfig::default()))
+                .merge(Toml::string("[ui.keymap]\ntokens = 1"))
+                .extract();
+        assert!(result.is_err(), "unknown keys are decode failures");
     }
 }
