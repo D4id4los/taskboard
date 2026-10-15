@@ -226,35 +226,45 @@ pub fn build(raw: &RawKeymap) -> BuiltKeymap {
 
 /// Applies the user override deltas onto `keymap` in place, returning
 /// the exhaustive findings. The separation keeps `build` a
-/// composition of two named operations (preset base, override pass).
+/// composition of named operations (preset base, validate-and-stage,
+/// apply, shadow pass).
 fn apply_overrides(
     keymap: &mut Keymap,
     overrides: &BTreeMap<String, Vec<Vec<String>>>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    // Cleanly-applied overrides, in config order; a conflict evicts
-    // an earlier one (both-drop, D13). Bindings are applied only
-    // after the whole pass, so eviction restores the preset
+    // Cleanly-validated overrides, in config order; a conflict evicts
+    // an earlier one (both-drop, D13). Nothing is applied until the
+    // whole pass is staged, so an eviction restores the preset
     // verbatim.
-    let mut applied: Vec<(ActionId, ContextId, Vec<Stroke>)> = Vec::new();
+    let mut staged: Vec<(ActionId, ContextId, Vec<Stroke>)> = Vec::new();
 
     for (id, sequences) in overrides {
-        // One call: reads the keymap and the pass-so-far (`staged`
-        // is the applied-prefix), appends findings and sequences.
-        place_override(keymap, &mut applied, id, sequences, &mut findings);
+        // One call: reads the keymap and the pass-so-far (`staged` is
+        // the applied-prefix), appends findings and sequences.
+        place_override(keymap, &mut staged, id, sequences, &mut findings);
     }
 
-    // Replace-and-insert (D9): in every context an override touched,
-    // the action's other bindings go; the applied sequences land.
-    let touched: BTreeSet<(ActionId, ContextId)> = applied
+    apply_staged(keymap, &staged);
+    collect_prefix_shadows(keymap, &mut findings);
+    findings
+}
+
+/// Lands the staged overrides (D9's replace-and-insert): every staged
+/// sequence is inserted, then in each touched (action, context) pair
+/// the action's other bindings are removed — an override *replaces*
+/// the preset's bindings of its action. Staging the whole pass first
+/// is what makes the replacement total and deterministic.
+fn apply_staged(keymap: &mut Keymap, staged: &[(ActionId, ContextId, Vec<Stroke>)]) {
+    let touched: BTreeSet<(ActionId, ContextId)> = staged
         .iter()
         .map(|(action, context, _)| (*action, *context))
         .collect();
-    for (action, context, seq) in &applied {
+    for (action, context, seq) in staged {
         keymap.insert(*action, *context, seq.clone());
     }
     for (action, context) in &touched {
-        let keep: Vec<Vec<Stroke>> = applied
+        let keep: Vec<Vec<Stroke>> = staged
             .iter()
             .filter(|(a, c, _)| a == action && c == context)
             .map(|(_, _, s)| s.clone())
@@ -270,9 +280,6 @@ fn apply_overrides(
             }
         }
     }
-
-    collect_prefix_shadows(keymap, &mut findings);
-    findings
 }
 
 /// Validates and stages one override entry (D9 placement, D13
