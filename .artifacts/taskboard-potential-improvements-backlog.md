@@ -717,6 +717,12 @@ benchmark CI job exists and currently no-ops. The kiosk perf goal
 Criterion benches at N ∈ {100, 1 000, 10 000} tasks. Kept out of Phase 2
 only to hold PR size.
 
+- **Status**: ✅ DONE (implemented 2026-10-15: `hot_path` bench target
+  in `taskboard-storage-sqlite` — six criterion benches
+  (`load`/`apply` × the three N tiers) on a file-backed db with
+  deterministic fixtures; criterion 0.8 workspace-pinned; the existing
+  `benchmark` CI job picks them up, Bencher tracks on `main`).
+
 ## [2026-10-09] Read pool / concurrent loads
 
 - **Category**: `PERF`
