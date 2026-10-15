@@ -1532,6 +1532,7 @@ mapping must not fight it. Signal-handler machinery on the reader
 thread — its own focused round.
 
 ### [2026-10-14] Daemon-side attach verb: connect a running daemon without restarting it
+- **Status**: ✅ DONE (implemented 2026-10-15 on `feat/app-ipc-attach-verb`: additive `Request::AttachConnector` on the WI-H pattern — identity only on the wire, the daemon re-reads config + store, swap-first + the REPL settle, one-shot `connect` nudges best-effort; env-store caveat typed as `credential-unavailable`)
 
 - **Category**: `Architecture`, `DX`
 - **Originating Plan/Report**: `docs/adr/0014-connector-attach-session-login.org` decision 7; `.artifacts/plans/2026-10-12-connect-flow-design-plan.md` §6
