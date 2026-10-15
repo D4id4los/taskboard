@@ -33,19 +33,6 @@ impl Preset {
         }
     }
 
-    /// Resolves a preset name; `None` for anything unshipped (the
-    /// config layer turns this into a typed decode error — D13's
-    /// structure-vs-semantics boundary).
-    #[must_use]
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "standard" => Some(Self::Standard),
-            "emacs" => Some(Self::Emacs),
-            "vi" => Some(Self::Vi),
-            _ => None,
-        }
-    }
-
     /// The binding table: `(action, binding context, stroke
     /// spellings)`. Two rows may share `(action, context)` — that is
     /// the alternates shape (D7, e.g. emacs `menu.dismiss`).

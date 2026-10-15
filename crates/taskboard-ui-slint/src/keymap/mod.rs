@@ -60,11 +60,6 @@ impl Keymap {
         self.bindings.keys().copied()
     }
 
-    /// The declared masking contexts.
-    pub fn masks(&self) -> impl Iterator<Item = ContextId> + '_ {
-        self.masks.iter().copied()
-    }
-
     /// The bindings of one context (raw access for snapshots).
     #[must_use]
     pub fn bindings_in(&self, context: ContextId) -> Option<&BTreeMap<Vec<Stroke>, ActionId>> {
