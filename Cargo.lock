@@ -6478,6 +6478,9 @@ name = "taskboard-ui-slint"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "insta",
+ "proptest",
+ "serde",
  "slint",
  "slint-build",
  "taskboard-domain",

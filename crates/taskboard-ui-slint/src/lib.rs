@@ -13,6 +13,7 @@
 
 slint::include_modules!();
 
+pub mod actions;
 pub mod fonts;
 
 use std::sync::Arc;

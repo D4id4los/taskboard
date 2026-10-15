@@ -1,0 +1,157 @@
+---
+source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
+expression: rows
+---
+- id: app.exit
+  label: Quit taskboard
+  contexts:
+    - global
+  category: application
+  enabled: true
+- id: app.menu
+  label: Command menu
+  contexts:
+    - global
+  category: application
+  enabled: true
+- id: app.undo
+  label: Undo
+  contexts:
+    - global
+  category: application
+  enabled: false
+- id: app.redo
+  label: Redo
+  contexts:
+    - global
+  category: application
+  enabled: false
+- id: app.settings
+  label: Open settings
+  contexts:
+    - global
+  category: application
+  enabled: false
+- id: app.help
+  label: Open help
+  contexts:
+    - global
+  category: application
+  enabled: false
+- id: capture.quick
+  label: Quick capture
+  contexts:
+    - global
+  category: capture
+  enabled: false
+- id: palette.search
+  label: Search
+  contexts:
+    - global
+  category: search
+  enabled: false
+- id: nav.next-view
+  label: Next view
+  contexts:
+    - global
+  category: navigation
+  enabled: false
+- id: nav.prev-view
+  label: Previous view
+  contexts:
+    - global
+  category: navigation
+  enabled: false
+- id: nav.focus-board
+  label: Go to board
+  contexts:
+    - global
+  category: navigation
+  enabled: false
+- id: nav.next-item
+  label: Focus next item
+  contexts:
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: false
+- id: nav.prev-item
+  label: Focus previous item
+  contexts:
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: false
+- id: task.create
+  label: New task
+  contexts:
+    - board
+    - stack-detail
+  category: task
+  enabled: false
+- id: task.edit
+  label: Edit task
+  contexts:
+    - board
+    - task-detail
+  category: task
+  enabled: false
+- id: task.complete
+  label: Complete task
+  contexts:
+    - board
+    - task-detail
+  category: task
+  enabled: true
+- id: task.move
+  label: Move task
+  contexts:
+    - board
+    - task-detail
+  category: task
+  enabled: false
+- id: task.delete
+  label: Delete task
+  contexts:
+    - board
+    - task-detail
+  category: task
+  enabled: true
+- id: menu.next
+  label: Next menu entry
+  contexts:
+    - menu
+  category: menu
+  enabled: true
+- id: menu.previous
+  label: Previous menu entry
+  contexts:
+    - menu
+  category: menu
+  enabled: true
+- id: menu.invoke
+  label: Invoke menu entry
+  contexts:
+    - menu
+  category: menu
+  enabled: true
+- id: menu.dismiss
+  label: Dismiss menu
+  contexts:
+    - menu
+  category: menu
+  enabled: true
+- id: mode.insert
+  label: Enter insert mode
+  contexts:
+    - global
+  category: mode
+  enabled: true
+- id: mode.normal
+  label: Return to normal mode
+  contexts:
+    - global
+  category: mode
+  enabled: true
