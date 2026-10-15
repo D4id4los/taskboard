@@ -157,6 +157,14 @@ export component AppWindow inherits Window {
     // re-dispatches the selected entry through the same router.
     pure callback menu-entry-invoked(int);
 
+    // The D15 focus hand-off (journey finding): an edit flow's field
+    // holds slint focus while mounted and unmounts when the flow ends;
+    // the active view scope takes focus back so the keyboard never
+    // dead-ends. Driven by the adapter when a flow ends.
+    public function refocus-view() {
+        key-root.focus();
+    }
+
     // The Responsive width push (D17): every width change lands in
     // Rust's breakpoint mapping, which sets the `Responsive` global.
     pure callback window-width-changed(float);

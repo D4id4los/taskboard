@@ -1068,6 +1068,54 @@ mod view_component_tests {
         });
     }
 
+    /// §6 test 3c — the commit seams' post-flow state (the §7.3
+    /// journey caught both): committing the create row through the
+    /// field's seam (a) pushes normal mode onto the window global
+    /// (`apply_outcomes` re-syncs the shell), and (b) hands keyboard
+    /// focus back so the next stroke reaches the root scope.
+    #[test]
+    fn committing_the_create_row_restores_mode_and_keyboard_delivery() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(fixture_state(), UiSettings::default().keymap);
+            press(&handle, "N"); // task.create: the row opens, insert mode
+            assert!(
+                handle.window.global::<KeyboardState>().get_vi_insert(),
+                "the flow holds insert mode"
+            );
+            handle.window.invoke_board_create_committed(0, "x".into());
+            assert!(
+                !handle.window.global::<KeyboardState>().get_vi_insert(),
+                "the commit seam pushes normal mode (apply_outcomes sync)"
+            );
+            assert_eq!(
+                commands.try_recv().expect("the create command arrived"),
+                StateCommand::CreateTask {
+                    title: "x".into(),
+                    stack: crate::view_state::ViewState::stack_ids(&handle.state.load())[0],
+                    order: 2,
+                }
+            );
+
+            // The field that held slint focus unmounted; the next
+            // stroke must still reach the resolver (the refocus
+            // hand-off): the walk seeds the first card's emphasis.
+            press(&handle, "\u{F701}"); // Down (nav.next-item)
+            let board = handle.window.get_board_model();
+            let emphasized = (0..board.stacks.row_count()).find_map(|column| {
+                let tasks = board.stacks.row_data(column).expect("column");
+                (0..tasks.tasks.row_count())
+                    .find(|row| tasks.tasks.row_data(*row).expect("card").emphasis)
+                    .map(|row| (column, row))
+            });
+            assert_eq!(
+                emphasized,
+                Some((0, 0)),
+                "the walk delivers after the flow's field unmounted"
+            );
+        });
+    }
+
     /// §6 test 7 — the Board chain's generated menu offers the enabled
     /// task verbs and the reminder actions (row-count + enabled bits;
     /// the snapshot covers the dump).
