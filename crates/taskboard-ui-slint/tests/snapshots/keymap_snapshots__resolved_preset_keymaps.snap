@@ -1,0 +1,294 @@
+---
+source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
+expression: rows
+---
+- preset: standard
+  contexts:
+    - context: global
+      bindings:
+        - sequence:
+            - "Ctrl+,"
+          action: app.settings
+        - sequence:
+            - Alt+1
+          action: nav.focus-board
+        - sequence:
+            - Ctrl+F
+          action: palette.search
+        - sequence:
+            - Ctrl+K
+          action: capture.quick
+        - sequence:
+            - Ctrl+Shift+M
+          action: app.menu
+        - sequence:
+            - Ctrl+Q
+          action: app.exit
+        - sequence:
+            - Ctrl+Z
+          action: app.undo
+        - sequence:
+            - Ctrl+Shift+Z
+          action: app.redo
+        - sequence:
+            - F1
+          action: app.help
+        - sequence:
+            - Ctrl+PageUp
+          action: nav.prev-view
+        - sequence:
+            - Ctrl+PageDown
+          action: nav.next-view
+    - context: board
+      bindings:
+        - sequence:
+            - Return
+          action: task.edit
+        - sequence:
+            - Space
+          action: task.complete
+        - sequence:
+            - M
+          action: task.move
+        - sequence:
+            - N
+          action: task.create
+        - sequence:
+            - Delete
+          action: task.delete
+        - sequence:
+            - Up
+          action: nav.prev-item
+        - sequence:
+            - Down
+          action: nav.next-item
+    - context: stack-detail
+      bindings:
+        - sequence:
+            - N
+          action: task.create
+        - sequence:
+            - Up
+          action: nav.prev-item
+        - sequence:
+            - Down
+          action: nav.next-item
+    - context: task-detail
+      bindings:
+        - sequence:
+            - Up
+          action: nav.prev-item
+        - sequence:
+            - Down
+          action: nav.next-item
+    - context: menu
+      bindings:
+        - sequence:
+            - Return
+          action: menu.invoke
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
+- preset: emacs
+  contexts:
+    - context: global
+      bindings:
+        - sequence:
+            - Ctrl+c
+            - c
+          action: capture.quick
+        - sequence:
+            - Ctrl+g
+            - Ctrl+/
+          action: app.redo
+        - sequence:
+            - Ctrl+h
+          action: app.help
+        - sequence:
+            - Ctrl+s
+          action: palette.search
+        - sequence:
+            - Alt+x
+          action: app.menu
+        - sequence:
+            - Ctrl+x
+            - "["
+          action: nav.prev-view
+        - sequence:
+            - Ctrl+x
+            - "]"
+          action: nav.next-view
+        - sequence:
+            - Ctrl+x
+            - Ctrl+b
+          action: nav.focus-board
+        - sequence:
+            - Ctrl+x
+            - c
+          action: app.settings
+        - sequence:
+            - Ctrl+x
+            - Ctrl+c
+          action: app.exit
+        - sequence:
+            - Ctrl+x
+            - u
+          action: app.undo
+    - context: board
+      bindings:
+        - sequence:
+            - Return
+          action: task.edit
+        - sequence:
+            - Ctrl+c
+            - Ctrl+t
+          action: task.complete
+        - sequence:
+            - Ctrl+c
+            - Ctrl+w
+          action: task.move
+        - sequence:
+            - Ctrl+d
+          action: task.delete
+        - sequence:
+            - Ctrl+n
+          action: nav.next-item
+        - sequence:
+            - Ctrl+o
+          action: task.create
+        - sequence:
+            - Ctrl+p
+          action: nav.prev-item
+    - context: stack-detail
+      bindings:
+        - sequence:
+            - Ctrl+n
+          action: nav.next-item
+        - sequence:
+            - Ctrl+o
+          action: task.create
+        - sequence:
+            - Ctrl+p
+          action: nav.prev-item
+    - context: task-detail
+      bindings:
+        - sequence:
+            - Ctrl+n
+          action: nav.next-item
+        - sequence:
+            - Ctrl+p
+          action: nav.prev-item
+    - context: menu
+      bindings:
+        - sequence:
+            - Return
+          action: menu.invoke
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - Ctrl+g
+          action: menu.dismiss
+        - sequence:
+            - Ctrl+n
+          action: menu.next
+        - sequence:
+            - Ctrl+p
+          action: menu.previous
+- preset: vi
+  contexts:
+    - context: menu
+      bindings:
+        - sequence:
+            - Return
+          action: menu.invoke
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - j
+          action: menu.next
+        - sequence:
+            - k
+          action: menu.previous
+    - context: vi-normal
+      bindings:
+        - sequence:
+            - Return
+          action: task.edit
+        - sequence:
+            - Space
+          action: task.complete
+        - sequence:
+            - /
+          action: palette.search
+        - sequence:
+            - ":"
+          action: app.menu
+        - sequence:
+            - Z
+            - Q
+          action: app.exit
+        - sequence:
+            - Z
+            - c
+          action: capture.quick
+        - sequence:
+            - Z
+            - s
+          action: app.settings
+        - sequence:
+            - a
+          action: mode.insert
+        - sequence:
+            - d
+            - d
+          action: task.delete
+        - sequence:
+            - g
+            - T
+          action: nav.prev-view
+        - sequence:
+            - g
+            - g
+          action: nav.focus-board
+        - sequence:
+            - g
+            - m
+          action: task.move
+        - sequence:
+            - g
+            - t
+          action: nav.next-view
+        - sequence:
+            - i
+          action: mode.insert
+        - sequence:
+            - j
+          action: nav.next-item
+        - sequence:
+            - k
+          action: nav.prev-item
+        - sequence:
+            - o
+          action: task.create
+        - sequence:
+            - Ctrl+r
+          action: app.redo
+        - sequence:
+            - u
+          action: app.undo
+        - sequence:
+            - F1
+          action: app.help
+    - context: vi-insert
+      bindings:
+        - sequence:
+            - Escape
+          action: mode.normal
