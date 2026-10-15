@@ -15,6 +15,7 @@ slint::include_modules!();
 
 pub mod actions;
 pub mod fonts;
+pub mod keymap;
 
 use std::sync::Arc;
 
