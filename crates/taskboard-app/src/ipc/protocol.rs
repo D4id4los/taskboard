@@ -301,9 +301,11 @@ mod tests {
         );
     }
 
-    /// The WI-H status field's presence rules: daemon-side under
-    /// `nextcloud` carries `connector_attached`, every other projection
-    /// omits it (absent, not `null`).
+    /// The WI-H status field's presence rules: every daemon-side answer
+    /// carries the live `connector_attached` (both backends — a
+    /// standalone-booted daemon can attach from persisted state);
+    /// client-side and in-session projections omit it unless the caller
+    /// gated the fact in (absent, not `null`).
     #[test]
     fn connector_attached_presence_is_pinned() {
         let attached = StatusView {
@@ -320,11 +322,21 @@ mod tests {
 
         let detached = StatusView {
             connector_attached: Some(false),
-            ..attached
+            ..attached.clone()
         };
         let json = serde_json::to_value(&detached).expect("serialize");
         assert_eq!(json["connector_attached"], false);
 
+        // Daemon-side standalone: booted connector-less pins `false`
+        // (post-attach is the `Some(true)` row above, backend aside).
+        let standalone_daemon = StatusView {
+            backend: Some("standalone".to_owned()),
+            ..detached.clone()
+        };
+        let json = serde_json::to_value(&standalone_daemon).expect("serialize");
+        assert_eq!(json["connector_attached"], false);
+
+        // Client-side / in-session without a fact: absent.
         let standalone = StatusView {
             connector_attached: None,
             ..detached

@@ -13,10 +13,13 @@ use std::path::Path;
 use crate::commands::output::SyncStatusView;
 use crate::config::SyncBackend;
 
-/// The connector-attached fact under the backend gate: present iff
-/// `nextcloud` — a `standalone` core has no connector concept, and
-/// `false` there would read as "detached (logged out)". Held once here
-/// so the daemon-side and in-session projections cannot drift.
+/// The connector-attached fact under the backend gate, for the
+/// in-session projection: present iff `nextcloud` — a session's
+/// `standalone` config has no connector concept, and `false` there
+/// would read as "detached (logged out)". The session refreshes its
+/// config view at every ceremony, so its gating tracks reality; the
+/// daemon-side projection carries the live flag unconditionally (it can
+/// attach from persisted state a standalone boot never named).
 #[must_use]
 pub(crate) fn connector_flag(backend: SyncBackend, attached: bool) -> Option<bool> {
     match backend {
@@ -48,11 +51,14 @@ pub struct StatusView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holder_pid: Option<u32>,
     /// Whether the sync connector is still attached (WI-H): present in
-    /// daemon-side and in-session answers under the `nextcloud`
-    /// backend — `true` live actor, `false` detached (e.g. a `logout`
-    /// nudged the core). A detached connector would otherwise answer
-    /// `backend: "nextcloud"` with phase `Idle`: structurally true,
-    /// operationally misleading.
+    /// every daemon-side answer and in in-session answers under the
+    /// `nextcloud` backend — `true` live actor, `false` detached (e.g.
+    /// a `logout` nudged the core). Daemon-side it is the *live* fact
+    /// regardless of the boot-shaped backend: a standalone-booted
+    /// daemon that attached from persisted state answers
+    /// `backend: "standalone"` with `connector_attached: true`. A
+    /// detached connector would otherwise answer `backend: "nextcloud"`
+    /// with phase `Idle`: structurally true, operationally misleading.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connector_attached: Option<bool>,
 }
@@ -66,8 +72,7 @@ impl StatusView {
             crate::config::SyncBackend::Standalone => "standalone",
             crate::config::SyncBackend::Nextcloud => "nextcloud",
         };
-        let connector_attached =
-            connector_flag(app.config.sync_backend(), app.connector_attached());
+        let connector_attached = Some(app.connector_attached());
         Self {
             daemon: true,
             version: Some(crate::VERSION.to_owned()),
