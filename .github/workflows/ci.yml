@@ -177,6 +177,16 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install system deps
+        # The headless backend needs no display, but the build links
+        # slint's default Linux stack (fontconfig via pkg-config), so
+        # the same dev packages as the other jobs are required to
+        # compile.
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libdbus-1-dev pkg-config \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libfontconfig1-dev
       - name: Run MCP Smoke
         # The §8.2/Q19 lane: boot the app headless-with-renderer and
         # speak the embedded MCP server — no display needed, which is
