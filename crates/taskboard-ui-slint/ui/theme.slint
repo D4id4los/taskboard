@@ -88,6 +88,39 @@ export global Semantic {
     out property <color> focus-ring: Theme.focus-ring;
 }
 
+// The D18 tone vocabulary: the theme-level closed state-colour
+// vocabulary (rule A's property surface). Primitives map `Tone` onto
+// `Semantic` internally via conditionals — views never name colours.
+// Adding a tone is a theme decision.
+export enum Tone {
+    neutral,
+    info,
+    success,
+    warning,
+    danger,
+    overdue,
+    sync-active,
+    offline,
+}
+
+// The due classification as the markup vocabulary (models maps the
+// presentation enum 1:1); tones are derived in markup conditionals.
+export enum DueKind {
+    none,
+    done,
+    later,
+    soon,
+    overdue,
+}
+
+// The sync phase as the badge vocabulary.
+export enum SyncPhaseUi {
+    idle,
+    syncing,
+    offline,
+    failed,
+}
+
 // The role-consuming text primitive (§3.2's consumption side): the
 // only component allowed to bind font attributes, because it lives in
 // the theme module. Widgets/compositions compose this instead of

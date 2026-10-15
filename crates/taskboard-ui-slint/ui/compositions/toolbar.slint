@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The toolbar composition (L2, D22): the top chrome row — the board
+// title and the generated-menu icon-button. Layout only (Rule E); the
+// menu click routes the `app.menu` action via the caller (§7.1: every
+// click affordance has an action equivalent).
+
+import { Theme, Typography, RoleText } from "../theme.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { KbdHint } from "../widgets/kbd-hint.slint";
+
+export component Toolbar inherits Rectangle {
+    in property <string> title;
+    // The `app.menu` binding as display strings (a keymap projection,
+    // never hand-written — D19).
+    in property <[string]> menu-hint;
+    callback menu-clicked();
+
+    background: Theme.surface;
+    height: Theme.space-8;
+
+    HorizontalLayout {
+        padding-left: Theme.space-4;
+        padding-right: Theme.space-4;
+        padding-top: Theme.space-2;
+        padding-bottom: Theme.space-2;
+        spacing: Theme.space-3;
+
+        title-text := RoleText {
+            role: Typography.title;
+            text: root.title;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        VerticalLayout {
+            KbdHint {
+                keys: root.menu-hint;
+            }
+        }
+
+        menu-button := IconButton {
+            icon: IconKind.menu;
+            label: "Command menu";
+            clicked => root.menu-clicked();
+        }
+    }
+}

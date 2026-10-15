@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The status-dot primitive (L1, §4.4): a tone-coloured status circle
+// (the sync indicator's dot). Token-only styling (Rule A).
+
+import { Theme, Semantic, Tone } from "../theme.slint";
+
+export component StatusDot inherits Rectangle {
+    in property <Tone> tone: Tone.neutral;
+    in property <string> label;
+
+    width: root.height;
+    border-radius: root.width / 2;
+    background: root.tone == Tone.neutral ? Theme.text-secondary
+        : root.tone == Tone.info ? Theme.text-primary
+        : root.tone == Tone.success ? Semantic.success
+        : root.tone == Tone.warning ? Semantic.warning
+        : root.tone == Tone.danger ? Semantic.danger
+        : root.tone == Tone.overdue ? Semantic.overdue
+        : root.tone == Tone.sync-active ? Semantic.sync-active
+        : Semantic.offline;
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.label;
+}

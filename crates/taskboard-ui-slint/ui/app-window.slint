@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The window shell (chunk 1) grown into the action-dispatch host
-// (chunk 2): the root FocusScope is the *only* key-event handler in
-// the tree (§5.1) — capture-phase interception via the Rust-installed
-// `intercept-key` callback; `KeyBinding` is unused for any rebindable
-// action (Q9). The keymap is applied one-way at UI start (§5.6).
+// The window shell (chunk 1, grown through chunks 2–3): the root
+// FocusScope is the *only* key-event handler in the tree (§5.1) —
+// capture-phase interception via the Rust-installed `intercept-key`
+// callback (Q9: `KeyBinding` unused for rebindable actions). The
+// chrome (toolbar / the conditionally-mounted view / status-bar) is
+// the Q4 "one view tree": view switching is a property, not windows.
+// All user-visible verbs route through the action layer — the
+// callbacks below are the dispatch seams, no key handlers (§5.1).
 
 import { Theme, Typography, Semantic } from "theme.slint";
 import { Responsive } from "responsive.slint";
 import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
+import { Toolbar } from "compositions/toolbar.slint";
+import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
+import { BoardView, BoardModel } from "views/board-view.slint";
+import { StackView, StackDetailModel } from "views/stack-view.slint";
+import { TaskView, TaskDetailModel } from "views/task-view.slint";
 
-// Re-export the theme globals so the generated Rust module exposes
-// them (mount reads/writes `Theme.base-scale` through the generated
-// global accessors).
+// Re-export the globals so the generated Rust module exposes them
+// (mount/adapter read/write them through the generated accessors).
 export { Theme, Typography, Semantic, Responsive }
 
 export enum KeyFeedback {
@@ -20,8 +27,16 @@ export enum KeyFeedback {
     prefix-abort,
 }
 
+// The one view tree's conditional-mount selector (D7; the Rust side
+// owns the ViewId cycle and mirrors it here).
+export enum View {
+    board,
+    stack-detail,
+    task-detail,
+}
+
 // The keymap layer's window-facing state (D18), pushed one-way from
-// the shell; chunk 3's status bar renders the feedback/warnings.
+// the shell.
 export global KeyboardState {
     // The vi insert mode (D10: ordinary shell state).
     in-out property <bool> vi-insert: false;
@@ -32,7 +47,7 @@ export global KeyboardState {
     in-out property <KeyFeedback> last-feedback: KeyFeedback.none;
 }
 
-// The Q15 startup-warning state the status bar will render (chunk 3).
+// The Q15 startup-warning state (rendered by the status bar).
 export global UiStatus {
     in-out property <int> startup-keymap-findings: 0;
 }
@@ -42,6 +57,20 @@ export component AppWindow inherits Window {
     title: "taskboard";
     preferred-width: Theme.window-default-width;
     preferred-height: Theme.window-default-height;
+
+    // ---- The one-way model push surface (D2: models in, indices
+    //      back — no ids cross the seam). ---------------------------
+    in-out property <string> toolbar-title;
+    in-out property <[string]> toolbar-menu-hint;
+    in-out property <View> current-view: View.board;
+    in-out property <BoardModel> board-model;
+    in-out property <StackDetailModel> stack-model;
+    in-out property <TaskDetailModel> task-model;
+    in-out property <SyncBadgeModel> sync-model;
+    in-out property <int> startup-findings;
+    in-out property <[BannerRowModel]> banner-model;
+    in-out property <int> banner-overflow;
+    in-out property <FlowHintModel> flow-hint-model;
 
     // The single key path (§5.1): capture-phase tunneling hits this
     // scope before any focused element; accepting consumes the event.
@@ -56,16 +85,65 @@ export component AppWindow inherits Window {
         capture-key-pressed(event) => {
             root.intercept-key(event.text, event.modifiers) ? accept : reject
         }
-    }
 
-    // The generated menu host (§5.9): keyed to the shell's menu
-    // state, no key handlers of its own.
-    if (KeyboardState.menu-open): ActionMenu {
-        x: Theme.space-8;
-        y: Theme.space-8;
-        entries: KeyboardState.menu-entries;
-        selected-index: KeyboardState.menu-selected-index;
-        invoke-entry(index) => root.menu-entry-invoked(index);
+        // The chrome and the views live INSIDE the key scope: capture
+        // tunneling only visits the focused item's ancestors (§5.1),
+        // so the single key path must wrap the whole tree.
+        VerticalLayout {
+            toolbar := Toolbar {
+                title: root.toolbar-title;
+                menu-hint: root.toolbar-menu-hint;
+                menu-clicked => root.toolbar-menu-clicked();
+            }
+
+            // The view-stack area (D20 [DEV]): conditional mounting of
+            // the three views — the substance of `view-stack`
+            // (navigation + focus hand-off) lives in the view-state
+            // machine plus this keyed mount; no L2 file can host L3
+            // children (rule C).
+            if (root.current-view == View.board): BoardView {
+                board: root.board-model;
+                task-activated(c, r) => root.board-task-activated(c, r);
+                task-clicked(c, r) => root.board-task-clicked(c, r);
+                header-activated(c) => root.board-header-activated(c);
+                switcher-activated(c) => root.board-switcher-activated(c);
+                create-committed(c, t) => root.board-create-committed(c, t);
+                create-edited(c, t) => root.board-create-edited(c, t);
+            }
+            if (root.current-view == View.stack-detail): StackView {
+                stack: root.stack-model;
+                task-activated(i) => root.stack-task-activated(i);
+                task-clicked(i) => root.stack-task-clicked(i);
+                create-committed(t) => root.stack-create-committed(t);
+                create-edited(t) => root.stack-create-edited(t);
+            }
+            if (root.current-view == View.task-detail): TaskView {
+                task: root.task-model;
+                title-committed(t) => root.task-title-committed(t);
+                title-edited(t) => root.task-title-edited(t);
+            }
+
+            status := StatusBar {
+                sync: root.sync-model;
+                startup-findings: root.startup-findings;
+                banner: root.banner-model;
+                banner-overflow: root.banner-overflow;
+                flow-hint: root.flow-hint-model;
+                snooze-clicked(i) => root.banner-snooze-clicked(i);
+                mute-clicked(i) => root.banner-mute-clicked(i);
+                row-activated(i) => root.banner-row-activated(i);
+            }
+        }
+
+        // The generated menu host (§5.9): keyed to the shell's menu
+        // state, no key handlers of its own.
+        if (KeyboardState.menu-open): ActionMenu {
+            x: Theme.space-8;
+            y: Theme.space-8;
+            entries: KeyboardState.menu-entries;
+            selected-index: KeyboardState.menu-selected-index;
+            invoke-entry(index) => root.menu-entry-invoked(index);
+        }
     }
 
     // The Rust-installed interception seam (D18): converts the event
@@ -80,4 +158,25 @@ export component AppWindow inherits Window {
     // Rust's breakpoint mapping, which sets the `Responsive` global.
     pure callback window-width-changed(float);
     changed width => { root.window-width-changed(root.width / 1px); }
+
+    // The view dispatch seams (D22): every user-visible verb arrives
+    // here and routes through the action layer / view-state machine
+    // in the adapter. Indices only — the adapter resolves them
+    // against the id tables it built when pushing the models (D2).
+    pure callback toolbar-menu-clicked();
+    pure callback board-task-activated(int, int);
+    pure callback board-task-clicked(int, int);
+    pure callback board-header-activated(int);
+    pure callback board-switcher-activated(int);
+    pure callback board-create-committed(int, string);
+    pure callback board-create-edited(int, string);
+    pure callback stack-task-activated(int);
+    pure callback stack-task-clicked(int);
+    pure callback stack-create-committed(string);
+    pure callback stack-create-edited(string);
+    pure callback task-title-committed(string);
+    pure callback task-title-edited(string);
+    pure callback banner-snooze-clicked(int);
+    pure callback banner-mute-clicked(int);
+    pure callback banner-row-activated(int);
 }

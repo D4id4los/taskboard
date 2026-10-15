@@ -1,0 +1,193 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The status-bar composition (L2, D11/D12): the bottom chrome — sync
+// badge, the Q15 startup-warning indicator, the move-flow hint, and
+// above them the persistent overdue-banner slot. Layout only; the
+// tone mapping happens in the primitives, the actions in the caller.
+
+import { Theme, Typography, Semantic, RoleText, Tone, SyncPhaseUi } from "../theme.slint";
+import { Badge } from "../widgets/badge.slint";
+import { StatusDot } from "../widgets/status-dot.slint";
+import { ListRow } from "../widgets/list-row.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { KbdHint } from "../widgets/kbd-hint.slint";
+
+// The sync badge model (D11): the phase enum plus the pending depth;
+// the recency caption rides along as display text.
+export struct SyncBadgeModel {
+    phase: SyncPhaseUi,
+    pending: int,
+    recency: string,
+}
+
+// One overdue-banner row (D12): the task truth plus its due phrase.
+// The snooze/mute targets are Rust-side (D2) — the row carries only
+// its index.
+export struct BannerRowModel {
+    title: string,
+    due-phrase: string,
+}
+
+// The move-flow hint (D11): the current preset's task.move binding
+// plus the flow state.
+export struct FlowHintModel {
+    keys: [string],
+    visible: bool,
+}
+
+export component StatusBar inherits Rectangle {
+    in property <SyncBadgeModel> sync;
+    in property <int> startup-findings;
+    // The banner rows, already capped model-side (D12's flood guard
+    // is presentation's layout decision, applied where the model is
+    // built); `banner-overflow` is the "and N more" count.
+    in property <[BannerRowModel]> banner;
+    in property <int> banner-overflow;
+    in property <FlowHintModel> flow-hint;
+    callback snooze-clicked(int);
+    callback mute-clicked(int);
+    callback row-activated(int);
+
+    background: Theme.surface;
+
+    pure function sync-tone() -> Tone {
+        root.sync.phase == SyncPhaseUi.idle ? Tone.neutral
+        : root.sync.phase == SyncPhaseUi.syncing ? Tone.sync-active
+        : root.sync.phase == SyncPhaseUi.offline ? Tone.offline
+        : Tone.danger
+    }
+
+    pure function sync-label() -> string {
+        root.sync.phase == SyncPhaseUi.idle ? "Idle"
+        : root.sync.phase == SyncPhaseUi.syncing ? "Syncing"
+        : root.sync.phase == SyncPhaseUi.offline ? "Offline"
+        : "Failed"
+    }
+
+    VerticalLayout {
+        // The overdue-banner slot (D12): board truth, mute-blind,
+        // capped rows plus an "and N more" badge.
+        if (root.banner.length > 0): Rectangle {
+            background: Theme.background;
+            accessible-role: AccessibleRole.region;
+            accessible-label: "Overdue tasks";
+
+            VerticalLayout {
+                padding-left: Theme.space-4;
+                padding-right: Theme.space-4;
+                padding-top: Theme.space-1;
+                padding-bottom: Theme.space-1;
+                spacing: Theme.space-1;
+
+                for row[row-index] in root.banner: HorizontalLayout {
+                    spacing: Theme.space-2;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        list := ListRow {
+                            text: row.title;
+                            meta: row.due-phrase;
+                            tone: Tone.overdue;
+                        }
+                        // Row activation: click sets focus/selection
+                        // state + the reminder target (D12) — the
+                        // caller routes it.
+                        TouchArea {
+                            clicked => root.row-activated(row-index);
+                        }
+                    }
+                    VerticalLayout {
+                        IconButton {
+                            icon: IconKind.snooze;
+                            tone: Tone.overdue;
+                            label: "Snooze reminder";
+                            clicked => root.snooze-clicked(row-index);
+                        }
+                    }
+                    VerticalLayout {
+                        IconButton {
+                            icon: IconKind.mute;
+                            tone: Tone.overdue;
+                            label: "Mute reminders";
+                            clicked => root.mute-clicked(row-index);
+                        }
+                    }
+                }
+
+                if (root.banner-overflow > 0): HorizontalLayout {
+                    Badge {
+                        text: "\{root.banner-overflow} more overdue";
+                        tone: Tone.overdue;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            padding-left: Theme.space-4;
+            padding-right: Theme.space-4;
+            padding-top: Theme.space-1;
+            padding-bottom: Theme.space-1;
+            spacing: Theme.space-3;
+
+            // The sync indicator: informational, not focusable (D11).
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                alignment: start;
+                StatusDot {
+                    tone: root.sync-tone();
+                    label: "Sync status";
+                }
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: root.sync-label();
+                    vertical-alignment: center;
+                    accessible-role: AccessibleRole.text;
+                    accessible-value: root.sync-label();
+                }
+                if (root.sync.pending > 0): Badge {
+                    text: "\{root.sync.pending} pending";
+                    tone: Tone.info;
+                }
+                if (root.sync.recency != ""): RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: root.sync.recency;
+                    vertical-alignment: center;
+                }
+            }
+
+            // The Q15 startup-warning indicator: warning-toned count,
+            // non-interactive (the settings deep-link is POST-1.0).
+            if (root.startup-findings > 0): HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Semantic.warning;
+                    text: "Keyboard configuration warnings";
+                    vertical-alignment: center;
+                }
+                Badge {
+                    text: "\{root.startup-findings}";
+                    tone: Tone.warning;
+                }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            // The move-flow hint (D11): the preset's task.move binding
+            // plus the flow state, only while moving.
+            if (root.flow-hint.visible): HorizontalLayout {
+                spacing: Theme.space-2;
+                KbdHint {
+                    keys: root.flow-hint.keys;
+                }
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "choose target · same key cancels · Return confirms";
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

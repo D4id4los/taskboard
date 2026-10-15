@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The task-card primitive (L1, §4.4): one task as a card. Rule B:
+// domain-meaningful display model in; Rule D: the decoration slots
+// are properties from day one (v0.1.0 passes `[]` everywhere — the
+// fence against component forks). Cards are NOT slint tab stops —
+// their keyboard navigation is the action layer's (D15); the
+// selection ring uses the focus tokens while never holding focus.
+
+import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
+
+// The rule-D decoration vocabulary (D21): future surfaces (W1
+// importance/urgency, habits, reminders) ride this slot.
+export enum DecorationKind {
+    importance,
+    urgency,
+    habit,
+    reminder,
+}
+
+export struct TaskDecoration {
+    kind: DecorationKind,
+    label: string,
+    tone: Tone,
+}
+
+// The display model (D22, rule B): titles, due phrase, due class,
+// flags — no colours, no strings-as-bags.
+export struct TaskCardModel {
+    title: string,
+    due-phrase: string,
+    due-kind: DueKind,
+    done: bool,
+    emphasis: bool,
+    decorations: [TaskDecoration],
+}
+
+export component TaskCard inherits Rectangle {
+    in property <TaskCardModel> model;
+    in property <bool> compact: false;
+    callback activated();
+    callback clicked();
+
+    background: root.model.done ? Theme.background : Theme.surface;
+    border-radius: Theme.radius-medium;
+    border-width: root.model.emphasis ? Theme.focus-ring-width : 0;
+    border-color: Semantic.focus-ring;
+
+    accessible-role: AccessibleRole.list-item;
+    accessible-label: root.model.title;
+
+    touch := TouchArea {
+        double-clicked => root.activated();
+        clicked => root.clicked();
+    }
+
+    pure function due-color() -> color {
+        root.model.due-kind == DueKind.overdue ? Semantic.overdue
+        : root.model.due-kind == DueKind.soon ? Semantic.warning
+        : root.model.due-kind == DueKind.done ? Semantic.success
+        : Theme.text-secondary
+    }
+
+    VerticalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+        padding-top: Theme.space-1;
+        padding-bottom: Theme.space-1;
+        spacing: Theme.space-1;
+
+        RoleText {
+            role: root.model.done ? Typography.caption : Typography.body;
+            text-color: root.model.done ? Theme.text-secondary : Theme.text-primary;
+            text: root.model.title;
+            overflow: elide;
+        }
+
+        // Secondary decoration: the due chip stays at every breakpoint
+        // (D8 — compact collapses only tertiary decorations).
+        if (root.model.due-kind != DueKind.none): HorizontalLayout {
+            RoleText {
+                role: Typography.mono;
+                text-color: root.due-color();
+                text: root.model.due-phrase;
+            }
+        }
+
+        // Tertiary decorations (rule-D slot): all v0.1.0 kinds are
+        // tertiary (D21) — compact collapses them; call sites pass []
+        // today.
+        if (!root.compact): HorizontalLayout {
+            spacing: Theme.space-1;
+            for decoration in root.model.decorations: Rectangle {
+                border-radius: Theme.radius-small;
+                background: decoration.tone == Tone.success ? Semantic.success.with-alpha(0.2)
+                    : decoration.tone == Tone.warning ? Semantic.warning.with-alpha(0.2)
+                    : decoration.tone == Tone.danger ? Semantic.danger.with-alpha(0.2)
+                    : decoration.tone == Tone.overdue ? Semantic.overdue.with-alpha(0.2)
+                    : Theme.surface-raised;
+                HorizontalLayout {
+                    padding-left: Theme.space-1;
+                    padding-right: Theme.space-1;
+                    RoleText {
+                        role: Typography.badge;
+                        text-color: Theme.text-secondary;
+                        text: decoration.label;
+                    }
+                }
+            }
+        }
+    }
+}

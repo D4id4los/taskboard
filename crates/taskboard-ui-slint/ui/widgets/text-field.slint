@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The text-field primitive (L1, §4.4): the single-line text input —
+// the §5.1 exception class, contained in this one primitive. Text is
+// received natively (the insert-mode chain binds nothing printable);
+// Return fires `accepted`, and cancellation rides the action layer
+// (mode.normal → discard_edit), not a key handler here.
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+
+export component TextField inherits Rectangle {
+    in property <string> placeholder;
+    // The a11y label (D16).
+    in property <string> label;
+    in property <string> initial-text;
+    in property <bool> selected-on-focus: false;
+    in-out property <string> text <=> input.text;
+    callback edited(string);
+    callback accepted(string);
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-small;
+    border-width: input.has-focus ? Theme.focus-ring-width : 0;
+    border-color: Semantic.focus-ring;
+    min-height: placeholder-text.preferred-height + 2 * Theme.space-2;
+
+    accessible-role: AccessibleRole.text-input;
+    accessible-label: root.label;
+
+    init => {
+        input.text = root.initial-text;
+        input.focus();
+        if (root.selected-on-focus) {
+            input.select-all();
+        }
+    }
+
+    placeholder-text := RoleText {
+        role: Typography.body;
+        text-color: Theme.text-secondary;
+        text: root.placeholder;
+        visible: input.text == "";
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+        input := TextInput {
+            // The font is TextInput's platform default: the token lint
+            // (rightly) forbids font attributes outside the theme, and
+            // the theme cannot reach into a primitive's input. The
+            // colour still flows from tokens.
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            edited() => root.edited(input.text);
+            accepted() => root.accepted(input.text);
+        }
+    }
+}

@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The board view (L3, D22): the board state slice plus the action
+// dispatchers — a thin owner of a BoardLayout. The scope focuses
+// itself on mount (D15's programmatic-focus seam; conditional
+// mounting creates the element, `init` grabs focus).
+
+import { Theme } from "../theme.slint";
+import { BoardLayout, StackColumnModel } from "../compositions/board-layout.slint";
+
+// The board model (D22): title, columns, and the focus/flow fields.
+export struct BoardModel {
+    title: string,
+    stacks: [StackColumnModel],
+    selected-stack: int,
+    move-target: int, // stack index, −1 = no move flow
+}
+
+export component BoardView inherits FocusScope {
+    in property <BoardModel> board;
+    callback task-activated(int, int);
+    callback task-clicked(int, int);
+    callback header-activated(int);
+    callback switcher-activated(int);
+    callback create-committed(int, string);
+    callback create-edited(int, string);
+    callback create-cancelled();
+
+    focus-on-tab-navigation: true;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Board";
+    init => self.focus();
+
+    VerticalLayout {
+        spacing: Theme.space-2;
+
+        BoardLayout {
+            stacks: root.board.stacks;
+            selected-stack: root.board.selected-stack;
+            move-target: root.board.move-target;
+            task-activated(c, r) => root.task-activated(c, r);
+            task-clicked(c, r) => root.task-clicked(c, r);
+            header-activated(c) => root.header-activated(c);
+            switcher-activated(c) => root.switcher-activated(c);
+            create-committed(c, t) => root.create-committed(c, t);
+            create-edited(c, t) => root.create-edited(c, t);
+        }
+    }
+}

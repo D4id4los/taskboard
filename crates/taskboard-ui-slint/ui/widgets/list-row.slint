@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The list-row primitive (L1, §4.4): one read-only row of `text` plus
+// trailing `meta` (the overdue-banner's row shape). Interaction lives
+// with the consumer (the banner overlays a TouchArea); this primitive
+// renders only (Rule E: one responsibility).
+
+import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
+
+export component ListRow inherits Rectangle {
+    in property <string> text;
+    in property <string> meta;
+    in property <Tone> tone: Tone.neutral;
+    in property <bool> emphasis: false;
+
+    background: root.emphasis ? Theme.surface : transparent;
+    border-radius: Theme.radius-small;
+    border-width: root.emphasis ? Theme.focus-ring-width : 0;
+    border-color: Semantic.focus-ring;
+
+    pure function tone-color() -> color {
+        root.tone == Tone.neutral ? Theme.text-primary
+        : root.tone == Tone.info ? Theme.text-primary
+        : root.tone == Tone.success ? Semantic.success
+        : root.tone == Tone.warning ? Semantic.warning
+        : root.tone == Tone.danger ? Semantic.danger
+        : root.tone == Tone.overdue ? Semantic.overdue
+        : root.tone == Tone.sync-active ? Semantic.sync-active
+        : Semantic.offline
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+        padding-top: Theme.space-1;
+        padding-bottom: Theme.space-1;
+        spacing: Theme.space-2;
+        RoleText {
+            role: Typography.body;
+            text-color: root.tone-color();
+            text: root.text;
+            vertical-alignment: center;
+            horizontal-stretch: 2;
+            overflow: elide;
+        }
+        RoleText {
+            role: Typography.mono;
+            text-color: root.tone-color();
+            text: root.meta;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+}
