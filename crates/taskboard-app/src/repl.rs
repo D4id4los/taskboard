@@ -43,6 +43,7 @@ use crate::cli::Command;
 use crate::commands::{CommandError, CommandIo, CoreSession, connect, dispatch_line};
 use crate::completion;
 use crate::config::{AppConfig, SyncBackend};
+use crate::repl_history;
 use crate::secrets::CredentialStore;
 use crate::session_ceremonies::{connect_line, logout_line};
 
@@ -161,6 +162,11 @@ pub struct EditorIo {
 /// and completion by construction (secrets never enter either). The
 /// thread performs reads only; no handler logic ever runs on it.
 ///
+/// Submitted lines persist across sessions in the data dir's history
+/// file (`<data-dir>/taskboard/history`, 0600), best-effort: a missing,
+/// corrupt, or unwritable file downgrades to in-memory recall, never to
+/// a session failure ([`crate::repl_history`]).
+///
 /// # Panics
 ///
 /// Never in normal operation: the only `expect` guards the thread spawn
@@ -187,16 +193,21 @@ pub fn spawn_line_reader(state: Arc<arc_swap::ArcSwap<taskboard_domain::AppState
                 }
             };
             editor.set_helper(Some(completion::ReplHelper::new(state)));
+            // File-backed recall: submitted lines persist in the data
+            // dir across sessions, best-effort — a missing, corrupt, or
+            // unwritable history file never ends the session (see
+            // [`repl_history`]). Prompted ceremony answers bypass this
+            // by construction (the oneshot arm below).
+            let history = repl_history::SessionHistory::open(dirs::data_dir().as_deref());
+            history.load(editor.history_mut());
             loop {
                 match editor.readline(PROMPT) {
                     Ok(line) => {
-                        // Empty and whitespace-only lines are prompt
-                        // noise, not recallable entries. History is
-                        // added here only — prompted answers ride the
-                        // oneshot below and never reach this arm.
-                        if !line.trim().is_empty() {
-                            let _ = editor.add_history_entry(line.as_str());
-                        }
+                        // Admission policy (blank lines are prompt
+                        // noise) and persistence live in the recorder;
+                        // prompted answers ride the oneshot below and
+                        // never reach this arm.
+                        history.record(editor.history_mut(), &line);
                         if tx.blocking_send(LineEvent::Line(line)).is_err() {
                             return;
                         }

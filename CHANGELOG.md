@@ -10,6 +10,13 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- File-backed REPL history: submitted session lines persist in
+  `<data-dir>/taskboard/history` (0600, following the db-path data-dir
+  precedent) and are recalled in later sessions; persistence is
+  best-effort — a missing, corrupt, or unwritable history file degrades
+  to in-memory recall with a warning and self-heals on the next
+  recorded line, and prompted ceremony answers (secrets, confirms)
+  never enter it.
 - `logout` detaches a running daemon's connector (WI-H, ADR 0012
   amendment): after the local logout succeeds, the client best-effort
   asks the daemon serving the same database to drop its sync actor —
