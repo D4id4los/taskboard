@@ -933,8 +933,14 @@ pub async fn dispatch_line(
         }
         Command::Status => {
             // The session *is* the core holder; the honest client-side
-            // answer names it. Never boots, never syncs.
-            let view = status::StatusView::in_session();
+            // answer names it — and under `nextcloud`, the live
+            // attach/detach fact read off the App (ADR 0014). Never
+            // boots, never syncs.
+            let flag = status::connector_flag(
+                session.session_config().sync_backend(),
+                app.connector_attached(),
+            );
+            let view = status::StatusView::in_session(flag);
             status::emit(io, &view);
             0
         }
