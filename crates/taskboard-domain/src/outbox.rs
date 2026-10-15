@@ -87,14 +87,20 @@ pub fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
-    #[cfg_attr(miri, ignore)] // realtime clock (Uuid::now_v7, Utc::now) — environment gate
     fn pending_op_roundtrips_through_serde() {
         let op = PendingOp {
-            op_id: OpId(Uuid::now_v7()),
-            op: LocalOp::AssignLabel(TaskId::from(Uuid::now_v7()), LabelId::from(Uuid::now_v7())),
-            queued_at: Utc::now(),
+            // Fixed from_u128 ids and stamp: the subject is serde symmetry
+            // (version-agnostic representation); real v7 generation stays
+            // covered by idgen's tests.
+            op_id: OpId(Uuid::from_u128(1)),
+            op: LocalOp::AssignLabel(
+                TaskId::from(Uuid::from_u128(2)),
+                LabelId::from(Uuid::from_u128(3)),
+            ),
+            queued_at: Utc.timestamp_opt(1_700_100_011, 0).unwrap(),
         };
         let json = serde_json::to_string(&op).unwrap();
         let back: PendingOp = serde_json::from_str(&json).unwrap();

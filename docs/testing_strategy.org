@@ -309,14 +309,18 @@ are outside these jobs), and no assertion is weakened or skipped.
   pipeline.
 
 - *Realtime-clock tests carry scoped =#[cfg_attr(miri, ignore)]=
-  gates* (isolation provides no =clock_gettime(REALTIME)=):
-  =clock.rs= (SystemClock), =outbox.rs= (PendingOp roundtrip),
-  =idgen.rs= (production =UuidV7Generator=),
-  =test_support/memory.rs= (read-port test), and
-  =test_support/contract.rs= (contract helper stamps enqueued ops with
-  =Utc::now=). Each runs natively unchanged; existing gates follow the
-  same pattern (insta S-series socketpair, =sqlite_smoke= tempdir+FFI,
-  P4/P5 live-engine properties).
+  gates* (isolation provides no =clock_gettime(REALTIME)=). Fixture
+  builders must not read the clock: they stamp fixed, distinct,
+  strictly increasing timestamps (the repository contract harness's
+  =ts()= block) so ordering semantics stay exercised while the tests
+  run interpreted — the former fixture gates (PendingOp roundtrip,
+  read-port contract, repository contract harness) moved to fixed
+  stamps on 2026-10-15 and now run interpreted. The remaining domain
+  gates are inherent — production code itself reads the clock:
+  =clock.rs= (SystemClock) and =idgen.rs= (production
+  =UuidV7Generator=). Each gated test runs natively unchanged;
+  existing gates follow the same pattern (insta S-series socketpair,
+  =sqlite_smoke= tempdir+FFI, P4/P5 live-engine properties).
 
 - *Why the job split exists*: interpreter cost is wildly
   non-uniform — the plain =pipeline::= tests dominate (the slowest,
