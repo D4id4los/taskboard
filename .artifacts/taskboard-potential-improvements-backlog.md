@@ -189,6 +189,13 @@ backend features: renderer-skia vs renderer-femtovg for low-power kiosk
 hardware), wire the crate into `taskboard-app`, and evaluate CI system
 package requirements on ubuntu-latest.
 
+*Update 2026-10-16*: for the now-established kiosk hardware class
+(gen3 Intel graphics — see the [2026-10-16] kiosk bring-up entry below)
+neither GPU renderer is viable: modern Mesa ships no gen3 hardware GL,
+so any GL path falls back to llvmpipe. The kiosk rendering path is
+`renderer-software` (optionally with `backend-fb` for a no-X kiosk
+image); skia/femtovg remain the desktop-GPU choices.
+
 ## [2026-10-07] Release pipeline for binary distributions
 
 - **Category**: `DX`
@@ -2882,3 +2889,70 @@ reading order is a wanted convenience (emacs `Alt+<` / `Alt+>`).
 in all three presets; `view_state` grows `jump_focus(Edge)` beside
 `advance_focus`/`retreat_focus`. Also a natural fit for the switcher
 (compact) and banner rows.
+
+## [2026-10-16] Kiosk hardware bring-up: software-renderer validation on gen3-class netbooks
+
+- **Category**: `UI` / `Performance`
+- **Originating Plan/Report**: Chat (kiosk hardware assessment 2026-10-16); feeds `.artifacts/plans/2026-10-16-v0.1.0-quality-audit-plan.md` axis J
+- **Target Area**: `crates/taskboard-ui-slint/`, `crates/taskboard-app` (config), kiosk deployment
+
+### Context & Description
+
+Kiosk target hardware is now concrete: a Samsung NP-NF310 (Atom N550,
+2c/4t in-order, GMA 3150, 1 GB DDR3, 1366×768) as the interactive
+kiosk, and an Acer Aspire One D250 (Atom N270, 1c/2t in-order, GMA 950,
+1 GB DDR2, 1024×600) as the pure wall display. Both CPUs implement
+Intel 64, so the first-class x86_64 Linux binaries apply unchanged
+(verify 64-bit BIOS boot during bring-up; an i686 build is the
+fallback). The gen3 GPUs have no hardware OpenGL on modern Mesa (the
+i915 modesetting driver still drives the panels; GL falls back to
+llvmpipe), so Slint's software renderer is the kiosk rendering path and
+UI budgets must be expressed in software-renderer terms. 1 GB RAM means
+a minimal install (no desktop environment, ideally `backend-fb` +
+libinput instead of X11), and the 15-year-old spinning disks argue for
+SSD/USB boot given SQLite's continuous writes (outbox, sync metadata).
+
+### Proposed Approach
+
+Post-M2 bring-up spike, NF310 first: minimal Linux, a
+`renderer-software` build (+ optional `backend-fb` feature), a kiosk
+config profile (fullscreen, animation-free views, no interactive
+prompts), and on-device measurements — app RSS (target ≤ ~200 MB),
+full-frame repaint time on the in-order core with partial-redraw
+expectations, daemon cold start, sync-cycle wall time. The numbers
+become the performance budgets of the v0.1.0 audit plan (axis J).
+Unattended kiosks lean on the encrypted-file credential store entry
+and the existing daemon-IPC remote management; neither needs new
+machinery.
+
+## [2026-10-16] Web kiosk dashboard served by the daemon (tablet path)
+
+- **Category**: `Architecture` / `UI`
+- **Originating Plan/Report**: Chat (kiosk hardware assessment 2026-10-16)
+- **Target Area**: `crates/taskboard-app` (daemon HTTP surface)
+
+### Context & Description
+
+A Lenovo Yoga Tablet 2 1050F (Atom Z3745, 2 GB, Android 5.0) is wanted
+as a dedicated desk display/management device. The hardware is ample
+for this app; the open question is the client stack. Options assessed:
+(a) a native Slint Android app — Slint has officially supported Android
+since 1.5 and matured through 2026, but it is a real porting project
+(NDK builds, touch UX, Android keystore instead of the keyring, and an
+Android 5.0 / API-21 minimum-level risk to verify before committing);
+(b) a browser dashboard served by the daemon — the smallest Rust-side
+lift, a read-mostly board view over plain HTTP on the LAN, but the
+Android 5.0 browser is 2014-era, so the page must stay deliberately
+boring CSS and needs a hands-on test; (c) native Linux on the tablet —
+Bay Trail 32-bit-UEFI/MIPI-DSI roulette, not plan-of-record. Decision:
+pursue (b) first; upgrade to (a) only if interactive management on the
+tablet becomes a real want.
+
+### Proposed Approach
+
+A small opt-in HTTP endpoint on the daemon (local/LAN-only bind by
+default; design an auth model before any wider bind) serving a
+server-rendered or static board view, reusing the already-tracked
+sync-actor/engine metrics as dashboard content. Keep the page
+intentionally conservative for old embedded browsers. The Slint
+Android port is a separate future entry if it earns itself.
