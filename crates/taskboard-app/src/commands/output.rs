@@ -239,6 +239,30 @@ pub enum SessionConnectorState {
     TimedOut,
 }
 
+/// The one-shot `connect`'s daemon-attach nudge outcome (the mirror of
+/// the logout nudge's [`DaemonConnectorState`]): did the running daemon
+/// pick up the connection just persisted? Kebab-case in the `--json`
+/// receipt.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DaemonAttachState {
+    /// The daemon attached and settled — the connection is live there.
+    Attached,
+    /// No daemon serves this database — nothing to nudge, not a
+    /// degradation.
+    None,
+    /// The daemon's persisted identity differs from the one just
+    /// connected — nothing changed there.
+    Mismatch,
+    /// The daemon could not be reached (a pre-`attach-connector` daemon
+    /// drops the link too).
+    Unreachable,
+    /// The daemon answered with a refusal the client cannot remedy from
+    /// here (not-configured, credential-unavailable, engine, draining)
+    /// or in a foreign protocol version.
+    Unknown,
+}
+
 /// The `logout` receipt. No secret ever appears in any projection.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LogoutReceipt {
@@ -425,6 +449,11 @@ pub struct ConnectReceipt {
     /// the one-shot JSON shape stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attached: Option<bool>,
+    /// The daemon-attach nudge's outcome (ADR 0014 decision 7): whether
+    /// a daemon serving this database picked up the connection — absent
+    /// when none was consulted (the pure-local shape).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_connector: Option<DaemonAttachState>,
 }
 
 /// The `boards select` receipt: the adopted board summary plus the sync

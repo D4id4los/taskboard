@@ -123,6 +123,7 @@ fn o1b_receipt_payloads_expose_documented_fields() {
         backend_switched: false,
         repointed: false,
         attached: None,
+        daemon_connector: None,
     };
     let v = serde_json::to_value(&connect).unwrap();
     assert_eq!(
@@ -341,6 +342,7 @@ fn o4_login_projection_never_carries_the_secret() {
         backend_switched: false,
         repointed: false,
         attached: None,
+        daemon_connector: None,
     };
     let json = serde_json::to_string(&receipt).unwrap();
     assert!(!json.contains(SECRET));

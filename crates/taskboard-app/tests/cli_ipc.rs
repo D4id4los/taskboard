@@ -69,13 +69,31 @@ impl Install {
     /// Spawns `taskboard daemon` (output swallowed; a full pipe would
     /// deadlock a chatty daemon).
     fn spawn_daemon(&self) -> Child {
-        let child = binary_command()
+        self.spawn_daemon_inner(None)
+    }
+
+    /// Spawns the daemon with `TASKBOARD_APP_PASSWORD` set on the child
+    /// (the env-store caveat's knob: the daemon's own environment
+    /// governs its store loads — children snapshot the env at spawn).
+    fn spawn_daemon_with_password(&self, password: &str) -> Child {
+        self.spawn_daemon_inner(Some(password))
+    }
+
+    /// The password variable is always scrubbed from the child first:
+    /// presence/absence is each test's explicit choice, never the
+    /// invoking shell's (an inherited export would flip e9's
+    /// credential-miss arm into a spurious attach).
+    fn spawn_daemon_inner(&self, password: Option<&str>) -> Child {
+        let mut command = binary_command();
+        command
             .args(["--config", &self.config(), "daemon"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn daemon");
-        Child(child)
+            .env_remove("TASKBOARD_APP_PASSWORD");
+        if let Some(password) = password {
+            command.env("TASKBOARD_APP_PASSWORD", password);
+        }
+        Child(command.spawn().expect("spawn daemon"))
     }
 
     /// Runs a one-shot; returns (exit code, stdout, stderr).
@@ -494,16 +512,20 @@ async fn e7_detach_connector_flips_a_real_daemons_status() {
     drop(daemon);
 }
 
-/// The connect-while-daemon heads-up (connect chunk, D11): a connect
-/// against a db a daemon is serving succeeds (the verb is Local-lane:
-/// no lock, no core) and warns on stderr — structurally: exit 0, the
-/// receipt unchanged, stderr non-empty (the wording is UX). Nothing
-/// listens after `daemon stop`, so the same verb's warning arm is the
-/// silent `None` (the hermetic suites pin that end to end).
+/// The daemon-attach nudge (ADR 0014 decision 7, the D11 contract
+/// flip): a connect against a db a daemon serves succeeds and the
+/// daemon attaches from persisted state — receipt
+/// `daemon_connector: "attached"`, no warning line on stderr (the old
+/// passive heads-up is gone), live `connector_attached: true` under the
+/// boot-shaped `standalone` backend, exit 0. The env-store caveat is
+/// the daemon's own environment: the daemon child inherits
+/// `TASKBOARD_APP_PASSWORD` (set on its spawn), so its store load
+/// succeeds.
 #[tokio::test]
-async fn e8_connect_while_a_daemon_serves_warns_but_succeeds() {
+#[allow(clippy::too_many_lines)] // one journey, sequential rows
+async fn e8_connect_while_a_daemon_serves_attaches_it() {
     let install = Install::new("e8");
-    let daemon = install.spawn_daemon();
+    let daemon = install.spawn_daemon_with_password("pw");
     install.wait_ready().await;
 
     let server = wiremock::MockServer::start().await;
@@ -529,10 +551,76 @@ async fn e8_connect_while_a_daemon_serves_warns_but_succeeds() {
     let receipt: serde_json::Value = serde_json::from_str(out.trim()).expect("receipt json");
     assert_eq!(receipt["verified"], true);
     assert_eq!(receipt["backend_switched"], false);
-    assert!(!err.trim().is_empty(), "the daemon heads-up was written");
+    assert_eq!(
+        receipt["daemon_connector"], "attached",
+        "the daemon picked up the connection: {receipt}"
+    );
+    assert!(
+        !err.lines().any(|line| line.starts_with("warning:")),
+        "success is silent on the warning channel: {err}"
+    );
+
+    // The daemon reports the live connector under its boot-shaped
+    // backend word.
+    let (_, out, _) = install.run(&["--json", "status"]);
+    let view: serde_json::Value = serde_json::from_str(out.trim()).expect("status json");
+    assert_eq!(view["daemon"], true);
+    assert_eq!(view["connector_attached"], true, "{view}");
+    assert_eq!(view["backend"], "standalone");
 
     // Stop the daemon; the CLI is unaffected either way.
     let (stop_code, _, _) = install.run(&["daemon", "stop"]);
     assert_eq!(stop_code, Some(0));
     let _ = daemon; // killed on drop if stop raced
+}
+
+/// The env-store caveat live (D6's degradation arm): the daemon spawned
+/// *without* `TASKBOARD_APP_PASSWORD` cannot load the secret, so the
+/// attach answers `credential-unavailable` — the client maps it to
+/// `unknown`, warns (structurally: a `warning:` line on stderr), and
+/// the connect itself still exits 0; the daemon keeps serving
+/// connector-less.
+#[tokio::test]
+async fn e9_connect_warns_when_the_daemon_cannot_load_the_secret() {
+    let install = Install::new("e9");
+    let daemon = install.spawn_daemon();
+    install.wait_ready().await;
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(
+            "/index.php/apps/deck/api/v1.0/boards",
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(common::boards_json()))
+        .mount(&server)
+        .await;
+
+    let (code, out, err) = install.run(&[
+        "--json",
+        "connect",
+        "--server",
+        &server.uri(),
+        "--user",
+        "alice",
+    ]);
+    assert_eq!(code, Some(0), "connect succeeded: {err}");
+    let receipt: serde_json::Value = serde_json::from_str(out.trim()).expect("receipt json");
+    assert_eq!(
+        receipt["daemon_connector"], "unknown",
+        "the credential miss is the daemon-side bucket: {receipt}"
+    );
+    assert!(
+        err.lines().any(|line| line.starts_with("warning:")),
+        "the degraded arm warns: {err}"
+    );
+
+    // The daemon keeps serving, connector-less.
+    let (_, out, _) = install.run(&["--json", "status"]);
+    let view: serde_json::Value = serde_json::from_str(out.trim()).expect("status json");
+    assert_eq!(view["daemon"], true);
+    assert_eq!(view["connector_attached"], false, "{view}");
+
+    let (stop_code, _, _) = install.run(&["daemon", "stop"]);
+    assert_eq!(stop_code, Some(0));
+    let _ = daemon;
 }
