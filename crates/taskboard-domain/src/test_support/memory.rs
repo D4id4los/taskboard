@@ -80,11 +80,11 @@ impl SyncStateReader for InMemoryRepository {
 mod read_port_tests {
     use super::*;
     use crate::test_support::contract::block_on;
+    use chrono::TimeZone;
 
     /// Routing contract (one per impl): `read_state` returns the post-apply
     /// persisted shape, identical to `load`.
     #[test]
-    #[cfg_attr(miri, ignore)] // builds a PendingOp stamped with Utc::now — environment gate
     fn in_memory_read_state_returns_the_post_apply_shape() {
         let repo = InMemoryRepository::new();
         let op = crate::outbox::PendingOp {
@@ -92,7 +92,7 @@ mod read_port_tests {
             op: crate::outbox::LocalOp::CreateStack(crate::ids::StackId::from(
                 uuid::Uuid::from_u128(2),
             )),
-            queued_at: chrono::Utc::now(),
+            queued_at: chrono::Utc.timestamp_opt(1_700_100_021, 0).unwrap(),
         };
         block_on(repo.apply(vec![crate::persistence::PersistenceAction::EnqueueOp(op)]))
             .expect("apply");

@@ -11,7 +11,6 @@ use std::task::{Context, Poll, Waker};
 
 use chrono::{TimeZone, Utc};
 
-use crate::clock::{Clock, SystemClock};
 use crate::entities::{Task, TaskClocks};
 use crate::ids::{StackId, TaskId};
 use crate::outbox::{LocalOp, OpId, PendingOp};
@@ -86,7 +85,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
     let op = PendingOp {
         op_id: OpId(uuid::Uuid::from_u128(3)),
         op: LocalOp::CreateTask(task.id),
-        queued_at: SystemClock.now(),
+        queued_at: ts(1_700_100_001),
     };
     let batch = vec![
         PersistenceAction::UpsertBoard(board.clone()),
@@ -174,7 +173,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
     let op2 = PendingOp {
         op_id: OpId(uuid::Uuid::from_u128(4)),
         op: LocalOp::UpdateTask(task.id),
-        queued_at: SystemClock.now(),
+        queued_at: ts(1_700_100_002),
     };
     repo.apply(vec![PersistenceAction::EnqueueOp(op2.clone())])
         .await
@@ -215,12 +214,12 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
     let first = PendingOp {
         op_id: OpId(uuid::Uuid::from_u128(5)),
         op: LocalOp::CreateStack(stack.id),
-        queued_at: SystemClock.now(),
+        queued_at: ts(1_700_100_003),
     };
     let second = PendingOp {
         op_id: OpId(uuid::Uuid::from_u128(6)),
         op: LocalOp::CreateLabel(label.id),
-        queued_at: SystemClock.now(),
+        queued_at: ts(1_700_100_004),
     };
     repo.apply(vec![
         PersistenceAction::EnqueueOp(first.clone()),
@@ -231,7 +230,9 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
     let replacement = PendingOp {
         op_id: first.op_id,
         op: LocalOp::RenameStack(stack.id),
-        queued_at: SystemClock.now(),
+        // Latest stamp in first's queue position: mirrors real-clock re-enqueue
+        // behavior and sharpens the position-vs-stamp distinction pinned below.
+        queued_at: ts(1_700_100_005),
     };
     repo.apply(vec![PersistenceAction::EnqueueOp(replacement.clone())])
         .await
@@ -416,6 +417,14 @@ fn label_clocks_at(secs: i64) -> crate::entities::LabelClocks {
     }
 }
 
+/// Fixed `queued_at` stamp for enqueued ops: whole seconds in the
+/// harness's fixed-stamp block, called with strictly increasing
+/// values so outbox ordering semantics stay exercised without a
+/// realtime clock (Miri-clean fixture, `testing_strategy` §10).
+fn ts(secs: i64) -> chrono::DateTime<Utc> {
+    Utc.timestamp_opt(secs, 0).unwrap()
+}
+
 fn clock_at(secs: i64) -> TaskClocks {
     let t = Utc.timestamp_opt(secs, 0).unwrap();
     TaskClocks {
@@ -449,7 +458,6 @@ mod tests {
     use crate::test_support::memory::InMemoryRepository;
 
     #[test]
-    #[cfg_attr(miri, ignore)] // contract helper stamps enqueued ops with Utc::now — environment gate
     fn in_memory_repository_satisfies_contract() {
         assert_task_repository_contract(&InMemoryRepository::new());
     }
