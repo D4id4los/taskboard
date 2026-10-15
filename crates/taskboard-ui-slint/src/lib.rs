@@ -14,6 +14,7 @@
 slint::include_modules!();
 
 pub mod actions;
+pub mod adapter;
 pub mod fonts;
 pub mod keymap;
 pub mod menu;
@@ -21,6 +22,8 @@ pub mod resolver;
 pub mod router;
 pub mod shell;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -37,16 +40,26 @@ mod token_tests;
 /// Validated configuration values handed over by `taskboard-app` (the
 /// UI crate reads no configuration itself — IO-free by design; design
 /// §1.2).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UiSettings {
     /// The `[ui] scale` value: `Theme.base-scale`'s initial value
     /// (§6.1), validated app-side to the 0.5–3.0 range.
     pub scale: f64,
+    /// The validated effective keymap (D14): preset ⊕ surviving
+    /// overrides, built app-side — the crate receives typed values.
+    pub keymap: keymap::Keymap,
+    /// The Q15 startup-warning state (count of dropped/lossy keymap
+    /// findings), rendered by chunk 3's status bar.
+    pub startup: adapter::StartupWarnings,
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
-        Self { scale: 1.0 }
+        Self {
+            scale: 1.0,
+            keymap: keymap::Keymap::from_preset(keymap::Preset::Standard),
+            startup: adapter::StartupWarnings::default(),
+        }
     }
 }
 
@@ -81,14 +94,15 @@ pub enum UiRunError {
 /// receivers merely go `Lagged`, which is inert.
 pub struct UiHandle {
     window: AppWindow,
+    /// The keymap adapter (chunk 2): interception, shell state, and
+    /// the `set_view_context`/`set_focused_entities` seam (D16/D17).
+    adapter: Rc<RefCell<adapter::Adapter>>,
     /// Lock-free state reads for the rendering thread (AGENTS §3).
     _state: Arc<ArcSwap<AppState>>,
     /// Engine repaint triggers (design §1.2; chunk 3's consumers).
     _signals: broadcast::Receiver<EngineSignal>,
     /// System status events (chunk 3's status bar).
     _system: broadcast::Receiver<SystemEvent>,
-    /// The UI → engine command sender (chunk 2's resolver).
-    _commands: mpsc::Sender<StateCommand>,
 }
 
 /// Creates the window and applies the theme state (theme init is a
@@ -117,12 +131,15 @@ pub fn mount(
     window
         .global::<Theme>()
         .set_base_scale(settings.scale as f32);
+    // The keymap is applied one-way at UI start (§5.6): install the
+    // root-scope interception over the validated keymap.
+    let adapter = adapter::install(&window, settings.keymap, settings.startup, commands);
     Ok(UiHandle {
         window,
+        adapter,
         _state: state,
         _signals: signals,
         _system: system,
-        _commands: commands,
     })
 }
 
@@ -177,8 +194,17 @@ mod mount_tests {
     fn mount_pushes_the_configured_scale_into_the_theme() {
         on_slint_thread(|| {
             let (state, signals, system, commands) = handover();
-            let handle = mount(state, signals, system, commands, UiSettings { scale: 2.0 })
-                .expect("mount succeeds on the null platform");
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                UiSettings {
+                    scale: 2.0,
+                    ..UiSettings::default()
+                },
+            )
+            .expect("mount succeeds on the null platform");
             let base_scale = handle.window.global::<Theme>().get_base_scale();
             assert_eq!(base_scale, 2.0);
         });
@@ -231,6 +257,191 @@ mod font_smoke_tests {
             let _ = window.global::<crate::Typography>().get_family_sans();
             let _ = window.global::<crate::Typography>().get_family_mono();
             drop(window);
+        });
+    }
+}
+
+#[cfg(test)]
+mod keymap_adapter_tests {
+    use super::*;
+    use crate::keymap::{Preset, RawKeymap, build};
+    use crate::test_platform::on_slint_thread;
+    use slint::Model as _;
+    use slint::platform::WindowEvent;
+    use std::collections::BTreeMap;
+
+    fn vi_keymap() -> keymap::Keymap {
+        build(&RawKeymap {
+            preset: Preset::Vi,
+            overrides: BTreeMap::new(),
+        })
+        .keymap
+    }
+
+    fn handover_vi() -> (UiHandle, mpsc::Receiver<StateCommand>) {
+        let (commands_tx, commands_rx) = mpsc::channel(8);
+        let (system_tx, system_rx) = broadcast::channel(4);
+        let (signals_tx, signals_rx) = broadcast::channel(4);
+        drop(system_tx);
+        drop(signals_tx);
+        let handle = mount(
+            Arc::new(ArcSwap::from_pointee(AppState::default())),
+            signals_rx,
+            system_rx,
+            commands_tx,
+            UiSettings {
+                keymap: vi_keymap(),
+                ..UiSettings::default()
+            },
+        )
+        .expect("mount succeeds on the null platform");
+        (handle, commands_rx)
+    }
+
+    /// Injects one key through the same public dispatch path real
+    /// backends use (the root `FocusScope`'s capture handler; focused
+    /// by the window's `init`).
+    fn press(handle: &UiHandle, text: &str) {
+        handle
+            .window
+            .window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
+    }
+
+    /// T25 — the generated menu journey: `app.menu` (vi `:`) opens
+    /// the menu, `menu.next` (`j`) moves the cursor, and invoking an
+    /// entry closes the menu and re-dispatches the entry's action.
+    #[test]
+    fn injected_keys_open_navigate_and_invoke_the_menu() {
+        on_slint_thread(|| {
+            let (handle, _commands) = handover_vi();
+            let keyboard = handle.window.global::<KeyboardState>();
+
+            press(&handle, ":");
+            assert!(
+                keyboard.get_menu_open(),
+                "app.menu opens the generated menu"
+            );
+            assert_eq!(keyboard.get_menu_selected_index(), 0);
+            assert!(
+                !keyboard
+                    .get_menu_entries()
+                    .row_data(0)
+                    .expect("rows")
+                    .label
+                    .is_empty()
+            );
+
+            press(&handle, "j");
+            assert_eq!(
+                keyboard.get_menu_selected_index(),
+                1,
+                "menu.next moves the cursor"
+            );
+            press(&handle, "k");
+            assert_eq!(
+                keyboard.get_menu_selected_index(),
+                0,
+                "menu.previous moves back"
+            );
+
+            // Invoke the selected entry (app.exit is the first
+            // application row): the menu closes; the re-dispatched
+            // action is the adapter's to route.
+            press(&handle, "\u{a}");
+            assert!(!keyboard.get_menu_open(), "invoke closes the menu");
+        });
+    }
+
+    /// T26 — the chunk-2 end-to-end path: a `task.complete` keystroke
+    /// with focused entities set sends the exact `StateCommand` to
+    /// the mpsc receiver (the forwarder boundary).
+    #[test]
+    fn complete_keystroke_sends_the_exact_command() {
+        on_slint_thread(|| {
+            let (commands_tx, mut commands_rx) = mpsc::channel(8);
+            let (system_tx, system_rx) = broadcast::channel(4);
+            let (signals_tx, signals_rx) = broadcast::channel(4);
+            drop(system_tx);
+            drop(signals_tx);
+            let handle = mount(
+                Arc::new(ArcSwap::from_pointee(AppState::default())),
+                signals_rx,
+                system_rx,
+                commands_tx,
+                UiSettings::default(), // standard preset
+            )
+            .expect("mount succeeds on the null platform");
+
+            // The chunk-3 focus seam, driven from the test side: a
+            // board view with a focused task.
+            let task = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+            handle.set_view_context(Some(actions::ContextId::Board));
+            handle.set_focused_entities(Some(task), None);
+
+            press(&handle, " "); // task.complete = Space in Board
+            let command = commands_rx
+                .try_recv()
+                .expect("the command reached the mpsc");
+            assert_eq!(
+                command,
+                StateCommand::SetTaskDone {
+                    id: task,
+                    done: true
+                }
+            );
+
+            press(&handle, "\u{7f}"); // task.delete = Delete in Board
+            let command = commands_rx.try_recv().expect("the delete command arrived");
+            assert_eq!(command, StateCommand::DeleteTask { id: task });
+
+            assert!(commands_rx.try_recv().is_err(), "nothing else dispatched");
+        });
+    }
+
+    /// T27 — the §5.7 status signal: a consumed prefix pushes
+    /// prefix-pending, a failed continuation pushes prefix-abort, and
+    /// an unbound key dispatches nothing (rejected event).
+    #[test]
+    fn prefix_feedback_and_unhandled_keys() {
+        on_slint_thread(|| {
+            let (handle, mut commands) = handover_vi();
+            let keyboard = handle.window.global::<KeyboardState>();
+
+            press(&handle, "d"); // prefix of `dd` (task.delete in ViNormal)
+            assert_eq!(keyboard.get_last_feedback(), KeyFeedback::PrefixPending);
+
+            press(&handle, "x"); // not the second `d`: prefix-abort
+            assert_eq!(keyboard.get_last_feedback(), KeyFeedback::PrefixAbort);
+            assert!(commands.try_recv().is_err(), "abort dispatches nothing");
+
+            press(&handle, "q"); // unbound everywhere in the vi chain
+            assert_eq!(keyboard.get_last_feedback(), KeyFeedback::None);
+            assert!(commands.try_recv().is_err());
+
+            // The abort left the resolver idle: `dd` completes after.
+            let task = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+            handle.set_focused_entities(Some(task), None);
+            press(&handle, "d");
+            press(&handle, "d");
+            let command = commands.try_recv().expect("the chord completed");
+            assert_eq!(command, StateCommand::DeleteTask { id: task });
+        });
+    }
+
+    /// Mode flips are ordinary effects (D10): `i` enters insert, and
+    /// Escape (its only binding) returns — the chain follows the mode
+    /// state.
+    #[test]
+    fn mode_flips_are_ordinary_state() {
+        on_slint_thread(|| {
+            let (handle, _commands) = handover_vi();
+            let keyboard = handle.window.global::<KeyboardState>();
+            assert!(!keyboard.get_vi_insert());
+            press(&handle, "i");
+            assert!(keyboard.get_vi_insert(), "mode.insert flipped the state");
+            press(&handle, "\u{1b}");
+            assert!(!keyboard.get_vi_insert(), "mode.normal returned");
         });
     }
 }
