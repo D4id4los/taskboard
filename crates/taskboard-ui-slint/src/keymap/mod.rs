@@ -116,6 +116,10 @@ impl Keymap {
     /// The first chain-visible binding of `action`, as canonical
     /// display spellings — the kbd-hint text source (D19; menus and
     /// hints are projections of keymap data, never hand-written).
+    ///
+    /// An unbound context is skipped, not terminal: the shell's chain
+    /// always carries the current mode context, which the standard and
+    /// emacs presets leave empty (D10/D11).
     #[must_use]
     pub fn first_binding_display(
         &self,
@@ -123,7 +127,9 @@ impl Keymap {
         chain: &[ContextId],
     ) -> Option<Vec<String>> {
         for context in self.visible_chain(chain) {
-            let bindings = self.bindings.get(&context)?;
+            let Some(bindings) = self.bindings.get(&context) else {
+                continue;
+            };
             if let Some(seq) = bindings
                 .iter()
                 .filter(|(_, bound)| **bound == action)
@@ -554,6 +560,26 @@ mod tests {
                 &[stroke::parse("Ctrl+Z").expect("ctrl z")]
             ),
             Some(ActionId::AppUndo)
+        );
+    }
+
+    /// The kbd-hint lookup walks the whole chain: a context the preset
+    /// leaves unbound (the always-present mode context, D10/D11) is
+    /// skipped, not terminal — the real chunk-2 session chain is
+    /// `[ViNormal, Global]` under the standard preset.
+    #[test]
+    fn first_binding_display_skips_unbound_chain_contexts() {
+        let keymap = Keymap::from_preset(Preset::Standard);
+        let session_chain = [ContextId::ViNormal, ContextId::Global];
+        let seq = keymap
+            .first_binding_display(ActionId::AppExit, &session_chain)
+            .expect("the Global binding is found past the empty mode context");
+        assert_eq!(seq, vec!["Ctrl+Q".to_owned()]);
+
+        // An action bound nowhere in the chain is still `None`.
+        assert_eq!(
+            keymap.first_binding_display(ActionId::MenuNext, &session_chain),
+            None
         );
     }
 }
