@@ -149,8 +149,13 @@ impl Adapter {
 
     /// Applies flow outcomes verbatim (D9): the adapter never
     /// re-decides. `RefreshNow` re-derives the models immediately —
-    /// the timer-driven refresh (D1) covers the passive side.
+    /// the timer-driven refresh (D1) covers the passive side. A mode
+    /// flip is pushed onto the window global here (the shell's one-way
+    /// sync, D18): the text-commit seams end in this method without a
+    /// `route()` around them, and the visible chain (the status bar's
+    /// mode read) must not go stale.
     fn apply_outcomes(&mut self, window: &AppWindow, outcomes: &[FlowOutcome]) {
+        let mut mode_changed = false;
         for outcome in outcomes {
             match outcome {
                 FlowOutcome::Command(command) => {
@@ -160,9 +165,19 @@ impl Adapter {
                 }
                 FlowOutcome::SetMode(mode) => {
                     self.shell.apply(&UiEffect::SetMode(*mode), 0);
+                    mode_changed = true;
                 }
                 FlowOutcome::RefreshNow => self.refresh(window),
             }
+        }
+        if mode_changed {
+            self.sync(window);
+        }
+        // The D15 focus hand-off: a flow's end unmounts the field that
+        // held slint focus; the active view scope takes it back (the
+        // §7.3 journey caught the keyboard dead-end).
+        if matches!(self.view_state.flow(), Flow::None) {
+            window.invoke_refocus_view();
         }
     }
 
