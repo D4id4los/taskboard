@@ -367,5 +367,93 @@ fn the_ten_step_keyboard_session() {
             View::Board,
             "the session stays on the board"
         );
+
+        // -- step 8: app.menu — open, cursor, invoke ------------------
+        //    The cursor lands on the second row (registry order puts
+        //    app.exit first, app.menu second), so the invoke
+        //    re-dispatches app.menu itself — the visible re-dispatch
+        //    path: the menu closes and immediately reopens fresh.
+        harness.guard.begin(Verb::MenuInvoke);
+        harness.press(ActionId::AppMenu);
+        assert!(
+            harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_open(),
+            "app.menu opens the menu"
+        );
+        assert_eq!(
+            harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_selected_index(),
+            0
+        );
+        harness.press(ActionId::MenuNext);
+        assert_eq!(
+            harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_selected_index(),
+            1
+        );
+        harness.press(ActionId::MenuInvoke);
+        harness.guard.end(Verb::MenuInvoke);
+        assert!(
+            harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_open(),
+            "the invoke closed the menu and the re-dispatched app.menu reopened it"
+        );
+        assert_eq!(
+            harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_selected_index(),
+            0,
+            "the reopened menu's cursor is fresh"
+        );
+        harness.stroke(parse("Escape").expect("Escape")); // menu.dismiss
+        assert!(
+            !harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_open(),
+            "dismiss closes the menu"
+        );
+        harness.assert_commands(&[]);
+
+        // -- step 9: read the sync status indicator -------------------
+        //    Typed model read (the badge's label text is data, never
+        //    an assertion target).
+        let sync = harness.handle.window().get_sync_model();
+        assert_eq!(sync.phase, taskboard_ui_slint::SyncPhaseUi::Offline);
+        assert_eq!(sync.pending, 2, "the fixture's pending ops render");
+
+        // -- step 10: app.exit — the typed quit outcome ---------------
+        harness.press(ActionId::AppExit);
+        assert_eq!(
+            harness.handle.quit_requests(),
+            1,
+            "the exit effect fired exactly once"
+        );
+        harness.assert_commands(&[]);
+
+        // -- T7: the §9.2 verdict over the session's counts -----------
+        for (verb, count) in harness.guard.recorded() {
+            tracing::info!(?verb, count, "keypress count");
+        }
+        assert_eq!(
+            support::guard::verdict(harness.guard.recorded()),
+            [],
+            "no §9.2 ceiling exceeded"
+        );
     });
 }
