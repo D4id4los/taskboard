@@ -51,6 +51,20 @@ pub enum Request {
         /// The username of the revoked identity.
         username: String,
     },
+    /// Connector-only attach from persisted state (ADR 0014 decision 7's
+    /// daemon-side follow-up): the daemon re-reads its own config and
+    /// loads its own credential store — the request carries the identity
+    /// only, **never the secret** (the key-set pin proves it). Additive
+    /// variant (ADR 0012 amendment: no version bump for additive
+    /// changes).
+    AttachConnector {
+        /// Protocol version.
+        v: u32,
+        /// The server URL of the identity to attach.
+        server_url: String,
+        /// The username of the identity to attach.
+        username: String,
+    },
 }
 
 /// The server's answer.
@@ -88,6 +102,14 @@ pub enum Response {
         /// What the daemon did (or refused) to do.
         outcome: DetachWireOutcome,
     },
+    /// Attach-connector answer (the daemon-side attach from persisted
+    /// state).
+    AttachConnector {
+        /// Protocol version.
+        v: u32,
+        /// What the daemon did (or refused) to do.
+        outcome: AttachWireOutcome,
+    },
     /// Any request whose `v` ≠ [`PROTOCOL_VERSION`] gets this, verbatim
     /// and parseable by any client that knows *any* version.
     VersionMismatch {
@@ -106,7 +128,8 @@ impl Response {
             Self::Exec { v, .. }
             | Self::Status { v, .. }
             | Self::Shutdown { v }
-            | Self::DetachConnector { v, .. } => Some(*v),
+            | Self::DetachConnector { v, .. }
+            | Self::AttachConnector { v, .. } => Some(*v),
             Self::VersionMismatch { .. } => None,
         }
     }
@@ -127,6 +150,39 @@ pub enum DetachWireOutcome {
     /// The actor missed the join budget and was aborted; the credential
     /// died with the task either way.
     TimedOut,
+}
+
+/// The attach-connector answer classes, kebab-case on the wire — the
+/// detach vocabulary mirrored plus the precondition arms the
+/// daemon-side construction requires (the secret never rides the wire;
+/// the daemon loads it from its own store).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AttachWireOutcome {
+    /// The daemon built the client from its own persisted state,
+    /// attached, and settled its boot pull.
+    Attached,
+    /// A connector is already attached (the primitive's guard; carried
+    /// so the wire reports every primitive refusal honestly).
+    AlreadyAttached,
+    /// The daemon's re-read config names a different identity than the
+    /// request's — nothing changed.
+    IdentityMismatch,
+    /// The daemon's persisted state could not yield a usable client:
+    /// standalone install, missing identity keys, an unreadable or
+    /// invalid config, or a URL `DeckClient` rejects. Every arm has the
+    /// same remedy — fix the daemon's own config; the daemon logs the
+    /// precise cause.
+    NotConfigured,
+    /// The daemon's credential store could not load the secret (an env
+    /// store without `TASKBOARD_APP_PASSWORD` in the daemon's own
+    /// environment, or a keyring miss) — the env-store caveat's typed
+    /// surface.
+    CredentialUnavailable,
+    /// The state engine could not take the attach push.
+    Engine,
+    /// The state engine declined the attach push (a raced shutdown).
+    Draining,
 }
 
 #[cfg(test)]
@@ -175,6 +231,17 @@ mod tests {
         assert_eq!(json["server_url"], "https://cloud.example.com");
         assert_eq!(json["username"], "alice");
 
+        let attach = Request::AttachConnector {
+            v: PROTOCOL_VERSION,
+            server_url: "https://cloud.example.com".to_owned(),
+            username: "alice".to_owned(),
+        };
+        let json = serde_json::to_value(&attach).expect("serialize");
+        assert_eq!(json["type"], "attach-connector");
+        assert_eq!(json["v"], 1);
+        assert_eq!(json["server_url"], "https://cloud.example.com");
+        assert_eq!(json["username"], "alice");
+
         let response = Response::Exec {
             v: 1,
             code: 0,
@@ -211,6 +278,50 @@ mod tests {
         let json = serde_json::to_value(&answer).expect("serialize");
         assert_eq!(json["type"], "detach-connector");
         assert_eq!(json["outcome"], "identity-mismatch");
+
+        let answer = Response::AttachConnector {
+            v: 1,
+            outcome: crate::ipc::protocol::AttachWireOutcome::CredentialUnavailable,
+        };
+        let json = serde_json::to_value(&answer).expect("serialize");
+        assert_eq!(json["type"], "attach-connector");
+        assert_eq!(json["outcome"], "credential-unavailable");
+    }
+
+    /// The refused-secret invariant, structural: the attach payload's
+    /// serialized key sets are exactly the identity vocabulary — there
+    /// is no field a secret could ride. Any future field addition fails
+    /// this pin and forces a conscious decision.
+    #[test]
+    fn the_attach_request_carries_identity_only() {
+        let request = Request::AttachConnector {
+            v: PROTOCOL_VERSION,
+            server_url: "https://cloud.example.com".to_owned(),
+            username: "alice".to_owned(),
+        };
+        let json = serde_json::to_value(&request).expect("serialize");
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .expect("request object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["server_url", "type", "username", "v"]);
+
+        let response = Response::AttachConnector {
+            v: PROTOCOL_VERSION,
+            outcome: crate::ipc::protocol::AttachWireOutcome::Attached,
+        };
+        let json = serde_json::to_value(&response).expect("serialize");
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .expect("response object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["outcome", "type", "v"]);
     }
 
     /// Round-trips through serde are lossless for every variant.
@@ -224,6 +335,11 @@ mod tests {
             Request::Status { v: 1 },
             Request::Shutdown { v: 1 },
             Request::DetachConnector {
+                v: 1,
+                server_url: "https://c.example.com".to_owned(),
+                username: "bob".to_owned(),
+            },
+            Request::AttachConnector {
                 v: 1,
                 server_url: "https://c.example.com".to_owned(),
                 username: "bob".to_owned(),
@@ -257,6 +373,10 @@ mod tests {
             Response::DetachConnector {
                 v: 1,
                 outcome: super::DetachWireOutcome::Detached,
+            },
+            Response::AttachConnector {
+                v: 1,
+                outcome: super::AttachWireOutcome::Attached,
             },
             Response::VersionMismatch { server_v: 9 },
         ];
@@ -295,6 +415,14 @@ mod tests {
             Response::DetachConnector {
                 v: 1,
                 outcome: super::DetachWireOutcome::NoConnector,
+            }
+            .version(),
+            Some(1)
+        );
+        assert_eq!(
+            Response::AttachConnector {
+                v: 1,
+                outcome: super::AttachWireOutcome::NotConfigured,
             }
             .version(),
             Some(1)
