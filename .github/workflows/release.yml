@@ -97,6 +97,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: MCP feature off in the release resolution
+        # The §8.2/Q19 assertion (chunk plan D9): the dev-gated mcp
+        # feature never ships.
+        run: '! cargo tree -e features -p taskboard-app | grep -q ''feature "mcp"'''
+
       - name: Package Release
         # `python` (not python3): Windows runners ship the Store-stub
         # python3.exe alias, while `python` is real Python 3 on all runners.

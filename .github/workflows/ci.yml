@@ -56,6 +56,15 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: MCP feature off in the default resolution
+        # The release-profile hygiene assertion (design §8.2/Q19, chunk
+        # plan D9): the dev-gated `slint/mcp` feature must never unify
+        # into the shipped feature set. Structural cargo output, not
+        # program messages. (--all-features coverage/MSRV builds do
+        # unify it in; those are test-only builds, not this default
+        # resolution.)
+        run: '! cargo tree -e features -p taskboard-app | grep -q ''feature "mcp"'''
+
       - name: sqlx-cli 0.9 (sqlite)
         # The CLI major/minor must match the sqlx crate (0.9) — the offline
         # data format changed across versions (ADR 0005).
@@ -158,6 +167,23 @@ jobs:
 
       - name: Run Doc Tests
         run: cargo test --doc --workspace
+
+  ui-mcp-smoke:
+    name: MCP Harness Smoke
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run MCP Smoke
+        # The §8.2/Q19 lane: boot the app headless-with-renderer and
+        # speak the embedded MCP server — no display needed, which is
+        # the point of the headless backend.
+        run: |
+          cargo test -p taskboard-app --features taskboard-ui-slint/mcp \
+            --test mcp_smoke -- --ignored --nocapture
 
   # The Nextcloud docker-tier integration tests moved to their own
   # workflow (nextcloud-integration.yml, dispatch + weekly): the
