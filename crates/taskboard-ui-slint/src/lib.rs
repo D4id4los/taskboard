@@ -17,6 +17,8 @@ pub mod actions;
 pub mod fonts;
 pub mod keymap;
 pub mod resolver;
+pub mod router;
+pub mod shell;
 
 use std::sync::Arc;
 
