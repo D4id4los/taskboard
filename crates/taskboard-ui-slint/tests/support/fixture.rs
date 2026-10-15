@@ -85,18 +85,15 @@ fn board(id: BoardId) -> Board {
     }
 }
 
-/// The fixture's ids, handed out so journeys can address entities at
-/// the typed seams (id tables, command payloads).
+/// The fixture's ids the journeys address at the typed seams (the
+/// command payloads' stacks, and the task `journey_state` makes
+/// overdue).
 #[derive(Debug, Clone, Copy)]
 pub struct Fixture {
-    pub board: BoardId,
     pub stack_a: StackId,
     pub stack_b: StackId,
-    /// Stack "a"'s tasks in display order; `overdue` aliases one.
-    pub task0: TaskId,
+    /// Stack "a"'s second task; `journey_state` marks it overdue.
     pub task1: TaskId,
-    /// Stack "b"'s single task.
-    pub task2: TaskId,
 }
 
 /// The journey fixture (§5.1): one board, two stacks ("a" with tasks
@@ -138,12 +135,9 @@ pub fn golden_state() -> (Fixture, AppState) {
     state.tasks.insert(task2, task(task2, stack_b, 0));
     (
         Fixture {
-            board: board_id,
             stack_a,
             stack_b,
-            task0,
             task1,
-            task2,
         },
         state,
     )

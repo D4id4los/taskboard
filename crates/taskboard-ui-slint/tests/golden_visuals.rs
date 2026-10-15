@@ -26,9 +26,10 @@
 //!
 //! # Comparison
 //!
-//! Exact dimensions, then dHash-64 with a Hamming distance ≤ 8
-//! (`support::golden_compare`, the tolerance budget is recorded
-//! there). Drift of 1–8 bits logs a warning; more fails.
+//! Exact dimensions, then the box-averaged luma-cell grid of
+//! `support::golden_compare` (32×24 cells, per-cell budget 8/255 —
+//! the calibration and tolerance budget are recorded there). Drift
+//! within tolerance logs a warning; beyond it fails.
 //!
 //! # Regeneration — an explicit, reviewed step
 //!
@@ -71,7 +72,6 @@ fn regen_requested() -> bool {
 #[test]
 fn the_board_goldens_hold_across_the_scale_breakpoint_matrix() {
     let regen = regen_requested();
-    let mut regenerated = false;
     for scale in SCALES {
         for width in BREAKPOINTS {
             support::driver::run(
@@ -79,7 +79,7 @@ fn the_board_goldens_hold_across_the_scale_breakpoint_matrix() {
                     headless_renderer: true,
                 },
                 move |driver: &mut SlintDriver| {
-                    capture_and_compare(driver, scale, width, regen, &mut regenerated);
+                    capture_and_compare(driver, scale, width, regen);
                 },
             );
         }
@@ -90,13 +90,7 @@ fn the_board_goldens_hold_across_the_scale_breakpoint_matrix() {
     );
 }
 
-fn capture_and_compare(
-    driver: &mut SlintDriver,
-    scale: f64,
-    width: u32,
-    regen: bool,
-    regenerated: &mut bool,
-) {
+fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) {
     let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
     let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
     let handle = taskboard_ui_slint::mount(
@@ -122,7 +116,8 @@ fn capture_and_compare(
     assert_eq!(
         (snapshot.width, snapshot.height),
         (width, HEIGHT),
-        "renderer-presence contract: the headless software renderer          must capture at the exact window size"
+        "renderer-presence contract: the headless software renderer \
+         must capture at the exact window size"
     );
 
     let path = golden_path(scale, width);
@@ -130,7 +125,6 @@ fn capture_and_compare(
         let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
         std::fs::write(&path, bytes).expect("writes");
-        *regenerated = true;
         return;
     }
     let bytes = std::fs::read(&path)
