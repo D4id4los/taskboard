@@ -1,0 +1,649 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The presentation helpers (design §4.3): pure display-domain
+//! mapping over domain types — no slint types, nothing generated, no
+//! IO, no mutation (the extraction seam: a second Rust consumer lifts
+//! this module into its own crate unchanged; a non-Rust UI reuses the
+//! *domain* over IPC and re-implements the mapping natively — the
+//! concepts port, the module does not).
+//!
+//! Domain truth is never reinvented: due classification is
+//! set-membership over the domain's own `overdue_tasks`/`due_soon`
+//! outputs, and stack display order reads the domain's persisted
+//! `Stack.order` field (the domain defines the concept and the write
+//! commands; only the reading helper lives here — D10).
+
+use std::collections::BTreeSet;
+
+use chrono::{DateTime, TimeDelta, Utc};
+use taskboard_domain::{
+    AppState, Board, BoardId, ReminderRef, Stack, SyncPhase, SyncStatus, Task, TaskId,
+};
+
+/// The due-soon window (design §4): a presentation constant, not
+/// config — Q22 fixes the v0.1.0 `[ui]` surface at scale + keymap
+/// (the tunable horizon is recorded backlog debt).
+pub const DUE_SOON_HORIZON: TimeDelta = TimeDelta::hours(24);
+
+/// The due classification vocabulary (slint-free; `models` maps it
+/// 1:1 onto the generated enum for markup conditionals).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DueKind {
+    None,
+    Done,
+    Later,
+    Soon,
+    Overdue,
+}
+
+/// The domain classification outputs, computed once per refresh and
+/// keyed for membership asks (no predicate duplication anywhere).
+#[derive(Debug, Clone, Default)]
+pub struct DueSets {
+    pub overdue: BTreeSet<TaskId>,
+    pub soon: BTreeSet<TaskId>,
+}
+
+/// Computes [`DueSets`] for `now` by calling the domain functions
+/// collection-side — the overdue/due-soon semantics exist only there.
+#[must_use]
+pub fn due_sets(state: &AppState, now: DateTime<Utc>) -> DueSets {
+    DueSets {
+        overdue: task_id_keys(taskboard_domain::overdue_tasks(&state.tasks, now)),
+        soon: task_id_keys(taskboard_domain::due_soon(
+            &state.tasks,
+            now,
+            DUE_SOON_HORIZON,
+        )),
+    }
+}
+
+fn task_id_keys<'a>(tasks: impl IntoIterator<Item = &'a Task>) -> BTreeSet<TaskId> {
+    tasks.into_iter().map(|t| t.id).collect()
+}
+
+/// Classifies one task against the sets: done → `Done`; no duedate →
+/// `None`; then set membership — no reimplementation of the domain
+/// predicates.
+#[must_use]
+pub fn due_kind(task: &Task, sets: &DueSets) -> DueKind {
+    if task.done.is_some() {
+        DueKind::Done
+    } else if task.duedate.is_none() {
+        DueKind::None
+    } else if sets.overdue.contains(&task.id) {
+        DueKind::Overdue
+    } else if sets.soon.contains(&task.id) {
+        DueKind::Soon
+    } else {
+        DueKind::Later
+    }
+}
+
+/// The typed numeric bucketing behind due phrases (string assembly is
+/// trivial glue over the bucket — tests assert buckets, not text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurationBucket {
+    Now,
+    Minutes(u32),
+    Hours(u32),
+    Days(u32),
+}
+
+/// Buckets a (non-negative) duration. Negative inputs clamp to
+/// [`DurationBucket::Now`]; extreme magnitudes saturate their unit's
+/// `u32` — total on arbitrary input.
+#[must_use]
+pub fn duration_bucket(delta: TimeDelta) -> DurationBucket {
+    let seconds = delta.num_seconds().max(0);
+    if seconds < 60 {
+        return DurationBucket::Now;
+    }
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return DurationBucket::Minutes(u32::try_from(minutes).unwrap_or(u32::MAX));
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        return DurationBucket::Hours(u32::try_from(hours).unwrap_or(u32::MAX));
+    }
+    DurationBucket::Days(u32::try_from(hours / 24).unwrap_or(u32::MAX))
+}
+
+/// The display phrase for a due classification (mono role), assembled
+/// from the bucket with the direction taken from the sign of
+/// `duedate - now`.
+#[must_use]
+pub fn due_phrase(kind: DueKind, duedate: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    let Some(duedate) = duedate else {
+        return String::new();
+    };
+    let delta = duedate - now;
+    let bucket = duration_bucket(delta.abs());
+    let quantity = match bucket {
+        DurationBucket::Now => return "now".to_owned(),
+        DurationBucket::Minutes(n) => format!("{n}m"),
+        DurationBucket::Hours(n) => format!("{n}h"),
+        DurationBucket::Days(n) => format!("{n}d"),
+    };
+    let word = match kind {
+        DueKind::Overdue | DueKind::Done => "overdue",
+        _ => "due",
+    };
+    if delta < TimeDelta::zero() {
+        format!("{quantity} {word}")
+    } else {
+        format!("in {quantity}")
+    }
+}
+
+/// The sync phase as the UI badge vocabulary (slint-free).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncPhaseUi {
+    Idle,
+    Syncing,
+    Offline,
+    Failed,
+}
+
+/// The sync badge model (D11): phase + pending depth; recency text is
+/// markup-side trivia over `last_success`, not part of the badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncBadge {
+    pub phase: SyncPhaseUi,
+    pub pending: u32,
+}
+
+/// Maps the domain sync status onto the badge (exhaustive, one
+/// direction).
+#[must_use]
+pub fn sync_badge(sync: &SyncStatus) -> SyncBadge {
+    let phase = match sync.phase {
+        SyncPhase::Idle => SyncPhaseUi::Idle,
+        SyncPhase::Syncing => SyncPhaseUi::Syncing,
+        SyncPhase::Offline => SyncPhaseUi::Offline,
+        SyncPhase::Failed { .. } => SyncPhaseUi::Failed,
+    };
+    SyncBadge {
+        phase,
+        pending: sync.pending_ops,
+    }
+}
+
+/// A banner snooze/mute target (D4/D12): the task plus the concrete
+/// `ReminderRef`/occurrence pair the commands carry. For a task with
+/// explicit rules this is the first rule's `occurrence_of` output;
+/// rule-less tasks use the implicit default with the duedate anchor
+/// (occurrence is opaque link data by engine contract — the *nag*
+/// effect of these links lands with the reminders toast plan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReminderTarget {
+    pub task: TaskId,
+    pub reminder: ReminderRef,
+    pub occurrence: DateTime<Utc>,
+}
+
+/// One overdue-banner row (D12): the task truth plus its snooze
+/// target. Visibility never consults mute/snooze/deliveries — board
+/// truth, not nagging policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BannerRow {
+    pub task: TaskId,
+    pub kind: DueKind,
+    pub target: ReminderTarget,
+}
+
+/// The banner rows for `now`: `overdue_tasks` order (canonical), one
+/// row per task, each with a well-formed target (D12).
+#[must_use]
+pub fn banner_rows(state: &AppState, now: DateTime<Utc>) -> Vec<BannerRow> {
+    taskboard_domain::overdue_tasks(&state.tasks, now)
+        .into_iter()
+        .map(|task| {
+            let (reminder, occurrence) = snooze_target(state, task);
+            BannerRow {
+                task: task.id,
+                kind: DueKind::Overdue,
+                target: ReminderTarget {
+                    task: task.id,
+                    reminder,
+                    occurrence,
+                },
+            }
+        })
+        .collect()
+}
+
+/// The snooze target for one overdue task (D12): first explicit rule
+/// (rule-id order, the map's canonical order) with `occurrence_of`;
+/// rule-less (or a rule whose occurrence arithmetic is degenerate) →
+/// `ReminderRef::Default(task)` with the duedate anchor.
+fn snooze_target(state: &AppState, task: &Task) -> (ReminderRef, DateTime<Utc>) {
+    let rule = state.reminders.rules.values().find(|r| r.task == task.id);
+    let occurrence = rule.and_then(|r| taskboard_domain::occurrence_of(r, task.duedate));
+    if let (Some(rule), Some(occurrence)) = (rule, occurrence) {
+        return (ReminderRef::Rule(rule.id), occurrence);
+    }
+    let anchor = task
+        .duedate
+        .unwrap_or_else(taskboard_domain::BoardClocks::epoch);
+    (ReminderRef::Default(task.id), anchor)
+}
+
+/// The board's live stacks in display order (D10): `(order, id)`
+/// ascending — presentation's own reading of the domain's persisted
+/// sort position (the domain owns the concept and the write side;
+/// this is the display-side reader).
+#[must_use]
+pub fn stacks_in_board(state: &AppState, board: BoardId) -> Vec<&Stack> {
+    let mut stacks: Vec<&Stack> = state
+        .stacks
+        .values()
+        .filter(|s| !s.deleted && s.board == board)
+        .collect();
+    stacks.sort_by_key(|s| (s.order, s.id));
+    stacks
+}
+
+/// The single live, non-archived board (MVP 0..1).
+#[must_use]
+pub fn live_board(state: &AppState) -> Option<&Board> {
+    state.boards.values().find(|b| !b.deleted && !b.archived)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use taskboard_domain::{BoardClocks, ReminderOffset, ReminderRule, StackId, TaskClocks};
+
+    /// Local fixture clocks (the domain's `test_support` is
+    /// feature-gated; these tests need only epoch stamps).
+    fn epoch() -> DateTime<Utc> {
+        taskboard_domain::BoardClocks::epoch()
+    }
+
+    fn task_clocks() -> TaskClocks {
+        TaskClocks {
+            title: epoch(),
+            description: epoch(),
+            duedate: epoch(),
+            done: epoch(),
+            position: epoch(),
+            labels: epoch(),
+            archived: epoch(),
+            deleted: epoch(),
+        }
+    }
+
+    fn task(id: TaskId, stack: StackId, order: i64) -> Task {
+        Task {
+            id,
+            remote: None,
+            title: format!("task-{order}"),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            stack,
+            order,
+            labels: BTreeSet::new(),
+            archived: false,
+            deleted: false,
+            clocks: task_clocks(),
+            remote_seen: None,
+        }
+    }
+
+    fn stack(id: StackId, board: BoardId, order: i64) -> Stack {
+        Stack {
+            id,
+            remote: None,
+            board,
+            title: format!("stack-{order}"),
+            order,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: epoch(),
+                order: epoch(),
+                deleted: epoch(),
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn board(id: BoardId) -> Board {
+        Board {
+            id,
+            remote: None,
+            title: "board".to_owned(),
+            color: taskboard_domain::Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks { title: epoch() },
+            remote_seen: None,
+        }
+    }
+
+    #[test]
+    fn due_kind_follows_the_sets() {
+        let now = Utc::now();
+        let state = AppState::default();
+        let sets = due_sets(&state, now);
+        let mut overdue = task(
+            TaskId::from_uuid(uuid::Uuid::now_v7()),
+            StackId::from_uuid(uuid::Uuid::now_v7()),
+            0,
+        );
+        overdue.duedate = Some(now - TimeDelta::hours(2));
+        let mut done = task(TaskId::from_uuid(uuid::Uuid::now_v7()), overdue.stack, 1);
+        done.done = Some(now);
+        done.duedate = Some(now - TimeDelta::hours(5));
+
+        let mut sets = sets;
+        sets.overdue.insert(overdue.id);
+        assert_eq!(due_kind(&overdue, &sets), DueKind::Overdue);
+        assert_eq!(due_kind(&done, &sets), DueKind::Done, "done wins over sets");
+        let undated = task(TaskId::from_uuid(uuid::Uuid::now_v7()), overdue.stack, 2);
+        assert_eq!(due_kind(&undated, &sets), DueKind::None);
+        let mut future = task(TaskId::from_uuid(uuid::Uuid::now_v7()), overdue.stack, 3);
+        future.duedate = Some(now + TimeDelta::hours(72));
+        assert_eq!(due_kind(&future, &sets), DueKind::Later);
+    }
+
+    #[test]
+    fn duration_bucket_edges() {
+        assert_eq!(duration_bucket(TimeDelta::seconds(59)), DurationBucket::Now);
+        assert_eq!(
+            duration_bucket(TimeDelta::seconds(60)),
+            DurationBucket::Minutes(1)
+        );
+        assert_eq!(
+            duration_bucket(TimeDelta::minutes(59)),
+            DurationBucket::Minutes(59)
+        );
+        assert_eq!(
+            duration_bucket(TimeDelta::minutes(60)),
+            DurationBucket::Hours(1)
+        );
+        assert_eq!(
+            duration_bucket(TimeDelta::hours(23)),
+            DurationBucket::Hours(23)
+        );
+        assert_eq!(
+            duration_bucket(TimeDelta::hours(24)),
+            DurationBucket::Days(1)
+        );
+        assert_eq!(
+            duration_bucket(-TimeDelta::hours(24)),
+            DurationBucket::Now,
+            "negative clamps"
+        );
+    }
+
+    #[test]
+    fn due_phrase_direction_follows_the_sign() {
+        let now = Utc::now();
+        let overdue_at = now - TimeDelta::hours(3);
+        let future_at = now + TimeDelta::hours(3);
+        let overdue = due_phrase(DueKind::Overdue, Some(overdue_at), now);
+        let soon = due_phrase(DueKind::Soon, Some(future_at), now);
+        assert!(overdue.contains("3h"), "magnitude bucketed: {overdue}");
+        assert!(soon.contains("3h"), "magnitude bucketed: {soon}");
+        assert_ne!(overdue, soon, "direction differs");
+        assert_eq!(due_phrase(DueKind::None, None, now), "");
+    }
+
+    #[test]
+    fn sync_badge_maps_every_phase() {
+        let base = SyncStatus::default();
+        assert_eq!(
+            sync_badge(&base),
+            SyncBadge {
+                phase: SyncPhaseUi::Idle,
+                pending: 0
+            }
+        );
+        for (phase, expected) in [
+            (SyncPhase::Syncing, SyncPhaseUi::Syncing),
+            (SyncPhase::Offline, SyncPhaseUi::Offline),
+            (
+                SyncPhase::Failed {
+                    last_error: taskboard_domain::SyncErrorKind::Network,
+                },
+                SyncPhaseUi::Failed,
+            ),
+        ] {
+            let status = SyncStatus {
+                phase,
+                pending_ops: 3,
+                ..SyncStatus::default()
+            };
+            assert_eq!(
+                sync_badge(&status),
+                SyncBadge {
+                    phase: expected,
+                    pending: 3
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn stacks_in_board_filters_and_orders() {
+        let b1 = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let b2 = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let s1 = StackId::from_uuid(uuid::Uuid::now_v7());
+        let s2 = StackId::from_uuid(uuid::Uuid::now_v7());
+        let s3 = StackId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        state.boards.insert(b1, board(b1));
+        // (order, id) order with a tie on order broken by id.
+        state.stacks.insert(s2, stack(s2, b1, 1));
+        state.stacks.insert(s1, stack(s1, b1, 1));
+        state.stacks.insert(s3, stack(s3, b2, 0));
+        let mut deleted = stack(s3, b1, 2);
+        deleted.deleted = true;
+        state.stacks.insert(s3, deleted);
+
+        let ordered: Vec<StackId> = stacks_in_board(&state, b1)
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        let mut expected = vec![s1, s2];
+        expected.sort();
+        assert_eq!(ordered, expected, "other boards and tombstones filtered");
+    }
+
+    #[test]
+    fn live_board_finds_the_single_live_board() {
+        let b1 = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let b2 = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        assert_eq!(live_board(&state), None);
+        state.boards.insert(b1, board(b1));
+        assert_eq!(live_board(&state).map(|b| b.id), Some(b1));
+        let mut dead = board(b1);
+        dead.deleted = true;
+        state.boards.insert(b1, dead);
+        state.boards.insert(b2, board(b2));
+        let mut archived = board(b2);
+        archived.archived = true;
+        state.boards.insert(b2, archived);
+        assert_eq!(live_board(&state), None, "deleted/archived boards skipped");
+    }
+
+    #[test]
+    fn banner_rows_cover_rule_and_ruleless_targets() {
+        let now = Utc::now();
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let ruled = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let ruleless = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+
+        let mut t1 = task(ruled, stack, 0);
+        t1.duedate = Some(now - TimeDelta::hours(1));
+        let rule = ReminderRule {
+            id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7()),
+            task: ruled,
+            offset: ReminderOffset::before(TimeDelta::minutes(-30)).expect("valid offset"),
+            created_at: now,
+        };
+        state.reminders.rules.insert(rule.id, rule);
+        let mut t2 = task(ruleless, stack, 1);
+        t2.duedate = Some(now - TimeDelta::hours(2));
+        state.tasks.insert(ruled, t1);
+        state.tasks.insert(ruleless, t2);
+
+        let rows = banner_rows(&state, now);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].task, ruled, "canonical (order, id) order");
+        assert_eq!(
+            rows[0].target.reminder,
+            ReminderRef::Rule(state.reminders.rules.values().next().expect("rule row").id)
+        );
+        assert_eq!(
+            rows[0].target.occurrence,
+            now - TimeDelta::hours(1) - TimeDelta::minutes(30)
+        );
+        assert_eq!(rows[1].target.reminder, ReminderRef::Default(ruleless));
+        assert_eq!(rows[1].target.occurrence, now - TimeDelta::hours(2));
+
+        // Banner truth ignores mute: a muted task still renders.
+        state.reminders.muted.insert(ruleless);
+        assert_eq!(banner_rows(&state, now).len(), 2);
+
+        // Done tasks drop out.
+        let mut t1 = state.tasks.get(&ruled).expect("task").clone();
+        t1.done = Some(now);
+        state.tasks.insert(ruled, t1);
+        let rows = banner_rows(&state, now);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].task, ruleless);
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        /// `due_sets` membership pinned against independently computed
+        /// predicates in the test (production keeps one implementation):
+        /// overdue ⇔ `duedate < now` (strict), soon ⇔ `(now, now+24h]`.
+        #[test]
+        fn due_sets_match_the_domain_predicates(
+            offset_secs in -172_800i64..=172_800,
+            done in prop::bool::ANY,
+        ) {
+            let now = Utc::now();
+            let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+            let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut t = task(id, stack, 0);
+            t.duedate = Some(now + TimeDelta::seconds(offset_secs));
+            if done {
+                t.done = Some(now);
+            }
+            let mut state = AppState::default();
+            state.tasks.insert(id, t.clone());
+
+            let sets = due_sets(&state, now);
+            let horizon = now + DUE_SOON_HORIZON;
+            let overdue = !done && t.duedate.is_some_and(|d| d < now);
+            let soon = !done && t.duedate.is_some_and(|d| d > now && d <= horizon);
+            prop_assert_eq!(sets.overdue.contains(&id), overdue);
+            prop_assert_eq!(sets.soon.contains(&id), soon);
+            prop_assert!(!(sets.overdue.contains(&id) && sets.soon.contains(&id)));
+        }
+
+        /// `duration_bucket` is monotone and saturates without panic.
+        #[test]
+        fn duration_bucket_is_monotone(a in -10_000_000i64..=10_000_000, b in -10_000_000i64..=10_000_000) {
+            let rank = |b: &DurationBucket| match *b {
+                DurationBucket::Now => 0,
+                DurationBucket::Minutes(n) => u64::from(n),
+                DurationBucket::Hours(n) => u64::from(n) * 60,
+                DurationBucket::Days(n) => u64::from(n) * 1440,
+            };
+            let (low, high) = if a <= b { (a, b) } else { (b, a) };
+            prop_assert!(rank(&duration_bucket(TimeDelta::seconds(low)))
+                <= rank(&duration_bucket(TimeDelta::seconds(high))));
+        }
+
+        /// `banner_rows` over generated states: live+open+overdue only,
+        /// canonical order, targets well-formed.
+        #[test]
+        fn banner_rows_are_canonical_and_well_formed(
+            offsets in prop::collection::vec(-48i64..48, 0..8),
+            rules in prop::collection::vec(prop::bool::ANY, 0..8),
+        ) {
+            let now = Utc::now();
+            let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+            let mut state = AppState::default();
+            let rule_this = rules.first().copied().unwrap_or(false);
+            for (i, offset) in offsets.iter().enumerate() {
+                let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+                let mut t = task(id, stack, i64::try_from(i).unwrap_or(i64::MAX));
+                t.duedate = Some(now + TimeDelta::hours(*offset));
+                if *offset >= 0 {
+                    t.done = Some(now); // only overdue tasks belong
+                }
+                state.tasks.insert(id, t);
+                if rule_this {
+                    let rule = ReminderRule {
+                        id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7()),
+                        task: id,
+                        offset: ReminderOffset::before(TimeDelta::minutes(-15))
+                            .expect("valid offset"),
+                        created_at: now,
+                    };
+                    state.reminders.rules.insert(rule.id, rule);
+                }
+            }
+            let rows = banner_rows(&state, now);
+            let expected: Vec<TaskId> = taskboard_domain::overdue_tasks(&state.tasks, now)
+                .into_iter()
+                .map(|t| t.id)
+                .collect();
+            let got: Vec<TaskId> = rows.iter().map(|r| r.task).collect();
+            prop_assert_eq!(got, expected);
+            for row in &rows {
+                prop_assert_eq!(row.kind, DueKind::Overdue);
+                prop_assert_eq!(row.target.task, row.task);
+                match row.target.reminder {
+                    ReminderRef::Rule(_) => {
+                        prop_assert!(state.reminders.rules.values().any(|r| r.task == row.task));
+                    }
+                    ReminderRef::Default(task) => prop_assert_eq!(task, row.task),
+                }
+            }
+        }
+
+        /// `stacks_in_board` equals the reference `(order, id)` sort of
+        /// the board's live stacks (test-side model recomputation).
+        #[test]
+        fn stacks_in_board_matches_reference_sort(
+            orders in prop::collection::vec(0i64..5, 1..6),
+        ) {
+            let b1 = BoardId::from_uuid(uuid::Uuid::now_v7());
+            let b2 = BoardId::from_uuid(uuid::Uuid::now_v7());
+            let mut state = AppState::default();
+            state.boards.insert(b1, board(b1));
+            let mut ids = Vec::new();
+            for (i, order) in orders.iter().enumerate() {
+                let id = StackId::from_uuid(uuid::Uuid::now_v7());
+                ids.push((id, *order));
+                state.stacks.insert(id, stack(id, b1, *order));
+                if i == 0 {
+                    let other = StackId::from_uuid(uuid::Uuid::now_v7());
+                    state.stacks.insert(other, stack(other, b2, 0));
+                }
+            }
+            let mut expected: Vec<(i64, StackId)> =
+                ids.into_iter().map(|(id, order)| (order, id)).collect();
+            expected.sort();
+            let got: Vec<(i64, StackId)> = stacks_in_board(&state, b1)
+                .into_iter()
+                .map(|s| (s.order, s.id))
+                .collect();
+            prop_assert_eq!(got, expected);
+        }
+    }
+}
