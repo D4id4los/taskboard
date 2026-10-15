@@ -229,6 +229,26 @@ impl UiHandle {
             self.adapter.borrow_mut().refresh(&window);
         }
     }
+
+    /// The exit-effect counter's read side (design §7.3 step 10 /
+    /// chunk decision D6): the keyboard-journey suite (an integration
+    /// binary) asserts the typed quit outcome without killing the
+    /// platform. Presentation state, not new behaviour.
+    #[must_use]
+    pub fn quit_requests(&self) -> usize {
+        self.adapter.borrow().quit_requests
+    }
+
+    /// The window component's read seam for the integration-test
+    /// harness (design §10 component tier): journeys assert through
+    /// the generated getters and the a11y tree exactly as the
+    /// in-crate component tests do. Read-only by convention — the
+    /// tests mutate state through the fake engine's `ArcSwap`, never
+    /// by pushing window properties.
+    #[must_use]
+    pub fn window(&self) -> &AppWindow {
+        &self.window
+    }
 }
 
 /// Runs the slint event loop on the calling thread — the process main
