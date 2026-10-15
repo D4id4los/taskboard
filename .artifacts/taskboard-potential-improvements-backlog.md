@@ -1485,6 +1485,7 @@ tracked for WI-3: `logout`'s interaction with `backend`.
 
 ### [2026-10-14] In-session `status` should surface `connector_attached`
 
+- **Status**: ✅ DONE (implemented 2026-10-15 on `feat/app-status-config-dx`: the in-session constructor takes the flag, gated on the backend by the `connector_flag` helper `server()` shares; `dispatch_line` reads it live off `app.connector_attached()`)
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-12-connect-flow-design-plan.md` §4.6 (rider named at design round 3; recorded per AGENTS §7 during WI-J chunk 3)
 - **Target Area**: `crates/taskboard-app/src/commands/status.rs`
@@ -2033,6 +2034,7 @@ speculatively.
 
 ## [2026-10-12] `taskboard config path` diagnostic verb
 
+- **Status**: ✅ DONE (implemented 2026-10-15 on `feat/app-status-config-dx`: `ConfigCmd::Path` beside `config print`, pure `config_path`/`write_path` reuse, JSON + text, infallible exit 0 — the same garbage config that fails `config print` still gets its paths named)
 - **Category**: `DX`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-12-app-config-dx-followups-plan.md` §8
 - **Target Area**: `crates/taskboard-app/src/commands/config.rs`
