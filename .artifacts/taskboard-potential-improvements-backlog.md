@@ -124,6 +124,54 @@ runner / invocation), symptom, evidence for the flake verdict
   `.artifacts/reports/2026-10-13-coverage-flake-investigation-report.md`.
   Escalation resolved.
 
+### [2026-10-15] `repl_history` tests fail with spurious `EACCES` under the libtest harness (host-level)
+
+- **Test**: `taskboard-app` lib tests `repl_history::tests::*` — chiefly
+  `the_history_file_is_owner_read_write_only` (most frequent),
+  `a_legacy_v1_history_file_loads_as_entries`,
+  `an_uncreatable_history_directory_degrades_to_in_memory_only`, and
+  `a_second_session_loads_exactly_the_recorded_lines_in_order`; 1–3 of
+  the 7 fail per affected run, varying.
+- **Where**: local in-process parallel harnesses only — `cargo test
+  --lib` and the default `cargo llvm-cov --workspace` (libtest runner)
+  — in the P6 review worktree, branch
+  `feat/app-repl-history-uuid-completion` @ `9fb26c3` (fails ~60% of
+  suite runs; this host, kernel `7.0.0-22-generic`). **Never** under
+  nextest (the repo's gate and CI runner): the identical subset passed
+  12/12 nextest runs, the full app suite passed under nextest
+  repeatedly, and serial `--test-threads=1` libtest is green.
+- **Symptom**: plain `std::fs` ops intermittently fail with
+  `Permission denied` — `fs::write` of a fresh file and
+  `fs::metadata`/`mkdir` inside tempdirs the *same process* had created
+  moments earlier — plus one run where the roundtrip test's in-memory
+  `DefaultHistory` was empty after three infallible `add`s (library
+  logic cannot produce that; `MemHistory::add` is infallible with
+  `Config::default()`'s `max_history_size = 100`).
+- **Flake evidence**: `strace -f` on the failing binary captured the
+  denials directly: `openat(<fresh tmpdir>/taskboard/history,
+  O_WRONLY|O_CREAT|O_TRUNC, 0666) = -1 EACCES` and
+  `mkdir(<fresh tmpdir>/taskboard, 0777) = -1 EACCES`, where both
+  parent directories had been created successfully by the same pid
+  earlier in the trace — impossible on vanilla Linux. A standalone
+  8-thread probe (tempdir + write + stat, and a second round
+  replicating rustyline's save: `File::create` + `flock` + `fchmod
+  0600` + write) ran 400 ops × several runs with **zero** EACCES, so
+  plain Rust threading is not the trigger; the interference requires
+  the test binary's broader activity. Agent-sandbox interference ruled
+  out: the flake persists with the sandbox disabled.
+- **Suspicion**: a host-level filesystem mediation/monitor layer on
+  this dev machine that intermittently denies (and possibly worse)
+  syscalls of thread-heavy single processes; not a code or test
+  defect — the tests assert exactly the behavior they claim to, and
+  the mandated gates (nextest, `llvm-cov nextest`) are unaffected.
+  CI (GitHub runners) never saw a failure.
+- **Mitigation applied**: none in-repo — weakening the tests is not
+  permitted (they are correct), and the gate commands CI runs are
+  stable. Local workaround until diagnosed: re-run, or use the
+  nextest-based invocations. If it recurs elsewhere, capture
+  `strace -f` output first; the deny window seems tied to
+  freshly-created directories.
+
 ## [2026-10-07] Add the `slint` dependency to taskboard-ui-slint
 
 - **Category**: `UI` / `DX`
