@@ -47,14 +47,6 @@ impl ContextId {
             Self::ViInsert => "vi-insert",
         }
     }
-
-    /// Whether walks that reach this context consult the contexts
-    /// below it. Masking is data the *keymap* declares per context
-    /// (design §5.2); this only names the maskable set.
-    #[must_use]
-    pub const fn can_mask(self) -> bool {
-        matches!(self, Self::Menu)
-    }
 }
 
 impl fmt::Display for ContextId {

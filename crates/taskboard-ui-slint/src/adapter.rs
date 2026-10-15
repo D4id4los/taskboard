@@ -240,16 +240,15 @@ pub(crate) fn install(
 
 /// The chunk-3 focus seam surface (D16/D17): sets the view context /
 /// focused entities and resets the pending accumulation (a context
-/// change invalidates it — D12 rule 1).
+/// change invalidates it — D12 rule 1). Chunk-3's views drive these
+/// for real; the component tests use them now.
 impl crate::UiHandle {
-    #[allow(dead_code)] // chunk-3's views drive this for real; tests use it now
     pub fn set_view_context(&self, view: Option<ContextId>) {
         let mut adapter = self.adapter.borrow_mut();
         adapter.shell.view = view;
         adapter.resolver.reset();
     }
 
-    #[allow(dead_code)] // ditto
     pub fn set_focused_entities(
         &self,
         focused_task: Option<TaskId>,
