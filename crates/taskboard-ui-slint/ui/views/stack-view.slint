@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The stack-detail view (L3, D22): one stack's task list plus its
+// inline create row. The scope focuses itself on mount (D15).
+
+import { Theme } from "../theme.slint";
+import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
+import { EmptyState } from "../widgets/empty-state.slint";
+import { TextField } from "../widgets/text-field.slint";
+import { RoleText, Typography } from "../theme.slint";
+
+// The stack-detail model (D22).
+export struct StackDetailModel {
+    title: string,
+    tasks: [TaskCardModel],
+    create-open: bool,
+}
+
+export component StackView inherits FocusScope {
+    in property <StackDetailModel> stack;
+    callback task-activated(int);
+    callback task-clicked(int);
+    callback create-committed(string);
+    callback create-edited(string);
+
+    focus-on-tab-navigation: true;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Stack: \{root.stack.title}";
+    init => self.focus();
+
+    VerticalLayout {
+        spacing: Theme.space-2;
+
+        RoleText {
+            role: Typography.heading;
+            text: root.stack.title;
+        }
+
+        if (root.stack.tasks.length == 0 && !root.stack.create-open): EmptyState {
+            text: "No tasks in this stack";
+            hint: "Create one to get started";
+        }
+
+        VerticalLayout {
+            alignment: start;
+            spacing: Theme.space-1;
+            for task[task-index] in root.stack.tasks: TaskCard {
+                model: task;
+                activated => root.task-activated(task-index);
+                clicked => root.task-clicked(task-index);
+            }
+
+            if (root.stack.create-open): TextField {
+                placeholder: "New task title";
+                label: "New task title";
+                accepted(text) => root.create-committed(text);
+                edited(text) => root.create-edited(text);
+            }
+        }
+    }
+}

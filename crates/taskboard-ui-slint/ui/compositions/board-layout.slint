@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The board-layout composition (L2, D8/D17): the responsive kanban.
+// Regular/expansive render one column per stack with horizontal
+// scroll; compact degenerates to a stack switcher plus the selected
+// stack's single column with collapsed tertiary decorations. The
+// panel demotion follows D17's declaration table (task columns
+// primary, headers secondary, per-card decorations tertiary).
+// Layout only — the display models are the inputs (Rule B/E); keys
+// are the action layer's business (§5.1).
+
+import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
+import { Responsive, Breakpoint } from "../responsive.slint";
+import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
+import { EmptyState } from "../widgets/empty-state.slint";
+import { TextField } from "../widgets/text-field.slint";
+import { Badge } from "../widgets/badge.slint";
+
+// One kanban column (rule B: a display model, not a bag of strings).
+export struct StackColumnModel {
+    title: string,
+    tasks: [TaskCardModel],
+    // The inline create row of this column (D8), open or closed.
+    create-open: bool,
+}
+
+export component BoardLayout inherits Rectangle {
+    in property <[StackColumnModel]> stacks;
+    // The compact switcher's selected stack (a stack index).
+    in property <int> selected-stack;
+    // The move flow's highlighted target stack (−1 = no flow).
+    in property <int> move-target;
+    callback task-activated(int, int);
+    callback task-clicked(int, int);
+    callback header-activated(int);
+    callback switcher-activated(int);
+    callback create-committed(int, string);
+    callback create-edited(int, string);
+
+    // The rendering fact for tests and reviews (§6 test 2): compact
+    // mode is active — switcher visible, single column, collapsed
+    // decorations.
+    out property <bool> compact-active: Responsive.current-breakpoint == Breakpoint.compact;
+
+    // The stack index the switcher renders for (compact).
+    pure function selected-column() -> StackColumnModel {
+        root.stacks[root.selected-stack]
+    }
+
+    if (root.stacks.length == 0): EmptyState {
+        text: "No stacks yet";
+        hint: "Create stacks with the CLI, then add tasks here";
+    }
+
+    if (root.stacks.length > 0 && !root.compact-active): HorizontalLayout {
+        spacing: Theme.space-3;
+        for column[column-index] in root.stacks: VerticalLayout {
+            spacing: Theme.space-1;
+            // Column header: display + activation (D13 — stack
+            // management is CLI-only in v0.1.0).
+            header := Rectangle {
+                header-hit := TouchArea {
+                    clicked => root.header-activated(column-index);
+                }
+                background: column-index == root.move-target ? Theme.surface-raised : transparent;
+                border-radius: Theme.radius-small;
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-2;
+                    RoleText {
+                        role: Typography.heading;
+                        text: column.title;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Badge {
+                        text: "\{column.tasks.length}";
+                        tone: column-index == root.move-target ? Tone.sync-active : Tone.neutral;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: start;
+                spacing: Theme.space-1;
+                for task[task-index] in column.tasks: TaskCard {
+                    model: task;
+                    activated => root.task-activated(column-index, task-index);
+                    clicked => root.task-clicked(column-index, task-index);
+                }
+
+                // The inline create row (D8): single-line field,
+                // auto-focused, insert mode.
+                if (column.create-open): TextField {
+                    placeholder: "New task title";
+                    label: "New task title";
+                    accepted(text) => root.create-committed(column-index, text);
+                    edited(text) => root.create-edited(column-index, text);
+                }
+            }
+        }
+    }
+
+    if (root.stacks.length > 0 && root.compact-active): VerticalLayout {
+        spacing: Theme.space-1;
+
+        // The stack switcher: the first focusable element of the
+        // compact board (D8/D15); a segmented row of stack titles.
+        switcher := HorizontalLayout {
+            spacing: Theme.space-1;
+            accessible-role: AccessibleRole.tab-list;
+            accessible-label: "Stacks";
+            for column[column-index] in root.stacks: segment := FocusScope {
+                // A real tab stop (D15); the keyboard path for switching
+                // is the action layer's selection-follows-focus (D8).
+                focus-on-tab-navigation: true;
+                accessible-role: AccessibleRole.tab;
+                accessible-label: column.title;
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    border-radius: Theme.radius-small;
+                    background: column-index == root.selected-stack ? Theme.surface-raised
+                        : column-index == root.move-target ? Theme.surface
+                        : transparent;
+                    border-width: segment.has-focus || column-index == root.move-target
+                        ? Theme.focus-ring-width : 0;
+                    border-color: Semantic.focus-ring;
+                    HorizontalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-2;
+                        RoleText {
+                            role: column-index == root.selected-stack
+                                ? Typography.body-emphasized
+                                : Typography.body;
+                            text-color: column-index == root.selected-stack
+                                ? Theme.text-primary
+                                : Theme.text-secondary;
+                            text: column.title;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                TouchArea {
+                    clicked => root.switcher-activated(column-index);
+                }
+            }
+        }
+
+        // The selected stack's single column, tertiary decorations
+        // collapsed via `compact: true` (D8).
+        for column[column-index] in [root.selected-column()]: VerticalLayout {
+            spacing: Theme.space-1;
+            VerticalLayout {
+                alignment: start;
+                spacing: Theme.space-1;
+                for task[task-index] in column.tasks: TaskCard {
+                    model: task;
+                    compact: true;
+                    activated => root.task-activated(root.selected-stack, task-index);
+                    clicked => root.task-clicked(root.selected-stack, task-index);
+                }
+
+                if (column.create-open): TextField {
+                    placeholder: "New task title";
+                    label: "New task title";
+                    accepted(text) => root.create-committed(column-index, text);
+                    edited(text) => root.create-edited(column-index, text);
+                }
+            }
+        }
+    }
+}

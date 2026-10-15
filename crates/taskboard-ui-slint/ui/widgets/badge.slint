@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The badge primitive (L1, §4.4): a small tinted count/label chip.
+// Styles flow from tokens only (Rule A); the Tone→Semantic mapping
+// lives here as conditionals (D18).
+
+import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
+
+export component Badge inherits Rectangle {
+    in property <string> text;
+    in property <Tone> tone: Tone.neutral;
+
+    border-radius: Theme.radius-small;
+    background: root.tone == Tone.neutral ? Theme.surface
+        : root.tone == Tone.info ? Theme.surface-raised
+        : root.tone == Tone.success ? Semantic.success.with-alpha(0.2)
+        : root.tone == Tone.warning ? Semantic.warning.with-alpha(0.2)
+        : root.tone == Tone.danger ? Semantic.danger.with-alpha(0.2)
+        : root.tone == Tone.overdue ? Semantic.overdue.with-alpha(0.2)
+        : root.tone == Tone.sync-active ? Semantic.sync-active.with-alpha(0.2)
+        : Semantic.offline.with-alpha(0.2);
+
+    pure function tone-color() -> color {
+        root.tone == Tone.neutral ? Theme.text-secondary
+        : root.tone == Tone.info ? Theme.text-primary
+        : root.tone == Tone.success ? Semantic.success
+        : root.tone == Tone.warning ? Semantic.warning
+        : root.tone == Tone.danger ? Semantic.danger
+        : root.tone == Tone.overdue ? Semantic.overdue
+        : root.tone == Tone.sync-active ? Semantic.sync-active
+        : Semantic.offline
+    }
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    HorizontalLayout {
+        padding-left: Theme.space-1;
+        padding-right: Theme.space-1;
+        RoleText {
+            role: Typography.badge;
+            text-color: root.tone-color();
+            text: root.text;
+            vertical-alignment: center;
+        }
+    }
+}

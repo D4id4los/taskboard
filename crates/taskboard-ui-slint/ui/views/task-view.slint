@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The task-detail view (L3, D14/D22): the title-editing surface plus
+// read-only metadata display. The scope focuses itself on mount; the
+// title field mounts when the edit flow opens and focuses/selects
+// itself (D14). Escape's discard rides the action layer (D5) — no key
+// handlers here.
+
+import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
+import { TextField } from "../widgets/text-field.slint";
+
+// The task-detail model (D22).
+export struct TaskDetailModel {
+    title: string,
+    stack-title: string,
+    due-phrase: string,
+    due-kind: DueKind,
+    done: bool,
+    description: string,
+    edit-open: bool,
+    initial-text: string,
+}
+
+export component TaskView inherits FocusScope {
+    in property <TaskDetailModel> task;
+    callback title-committed(string);
+    callback title-edited(string);
+
+    focus-on-tab-navigation: true;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Task: \{root.task.title}";
+    init => self.focus();
+
+    pure function due-color() -> color {
+        root.task.due-kind == DueKind.overdue ? Semantic.overdue
+        : root.task.due-kind == DueKind.soon ? Semantic.warning
+        : root.task.due-kind == DueKind.done ? Semantic.success
+        : Theme.text-secondary
+    }
+
+    VerticalLayout {
+        spacing: Theme.space-3;
+
+        // The title: the edit flow's field when open, the display
+        // title otherwise (cycle-entry shows the detail, D14).
+        if (root.task.edit-open): title-field := TextField {
+            placeholder: "Task title";
+            label: "Task title";
+            initial-text: root.task.initial-text;
+            selected-on-focus: true;
+            accepted(text) => root.title-committed(text);
+            edited(text) => root.title-edited(text);
+        }
+        if (!root.task.edit-open): RoleText {
+            role: Typography.title;
+            text: root.task.title;
+        }
+
+        // The metadata row (tertiary per D17's demotion table).
+        HorizontalLayout {
+            spacing: Theme.space-3;
+            VerticalLayout {
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Stack";
+                }
+                RoleText {
+                    role: Typography.body;
+                    text: root.task.stack-title;
+                }
+            }
+            VerticalLayout {
+                // The due-date region (D16): display-only — date
+                // editing is a recorded scope cut (D13).
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Due date";
+                }
+                RoleText {
+                    role: Typography.mono;
+                    text-color: root.due-color();
+                    text: root.task.due-phrase == "" ? "—" : root.task.due-phrase;
+                }
+            }
+            VerticalLayout {
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "State";
+                }
+                RoleText {
+                    role: Typography.body;
+                    text-color: root.task.done ? Semantic.success : Theme.text-primary;
+                    text: root.task.done ? "Completed" : "Open";
+                }
+            }
+        }
+
+        // The description (read-only body text — markup rendering is
+        // POST-1.0/R10; editing is a recorded scope cut, D13).
+        VerticalLayout {
+            RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: "Description";
+            }
+            RoleText {
+                role: Typography.body;
+                text: root.task.description == "" ? "—" : root.task.description;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+    }
+}

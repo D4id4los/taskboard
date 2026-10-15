@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The empty-state primitive (L1, §4.4): the "nothing here" region for
+// an empty board/stack. Token-only styling (Rule A).
+
+import { Theme, Typography, RoleText } from "../theme.slint";
+
+export component EmptyState inherits VerticalLayout {
+    in property <string> text;
+    in property <string> hint;
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    alignment: center;
+    spacing: Theme.space-2;
+    RoleText {
+        role: Typography.heading;
+        text-color: Theme.text-secondary;
+        text: root.text;
+        horizontal-alignment: center;
+    }
+    RoleText {
+        role: Typography.caption;
+        text-color: Theme.text-secondary;
+        text: root.hint;
+        horizontal-alignment: center;
+    }
+}
