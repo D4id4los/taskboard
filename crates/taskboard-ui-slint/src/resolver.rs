@@ -297,6 +297,10 @@ mod tests {
                 let mut pick = u64::from(seed);
                 let mut resolver = KeymapResolver::new();
                 let mut resolutions = Vec::new();
+                // Observable idle-return violations: any stroke whose
+                // resolution left the accumulator's state contradicting
+                // its answer (only `Pending` may keep it).
+                let mut non_idle_terminal = 0_usize;
                 for spelling in stream.iter().flatten() {
                     pick = pick
                         .wrapping_mul(6_364_136_223_846_793_005)
@@ -304,26 +308,21 @@ mod tests {
                     let chain = chains[usize::try_from(pick).expect("u64 fits usize on supported targets") % chains.len()];
                     let parsed =
                         crate::keymap::stroke::parse(spelling).expect("generated strokes parse");
-                    resolutions.push(resolver.feed(parsed, chain, &keymap));
+                    let resolution = resolver.feed(parsed, chain, &keymap);
+                    if resolver.has_pending() != matches!(resolution, Resolution::Pending) {
+                        non_idle_terminal += 1;
+                    }
+                    resolutions.push(resolution);
                 }
-                resolutions
+                (resolutions, non_idle_terminal)
             };
 
-            let first = run();
-            // Idle-return: after any terminal resolution the resolver
-            // holds no pending state (checked inside `feed` by the
-            // clearing rules; here we assert the observable half —
-            // the replay is identical and no resolution is ever
-            // missing).
-            for resolution in &first {
-                prop_assert!(matches!(
-                    resolution,
-                    Resolution::Action(_) | Resolution::Pending | Resolution::Aborted | Resolution::Unhandled
-                ));
-            }
-
+            let (first, non_idle_terminal) = run();
+            // Idle-return: every terminal resolution left the resolver
+            // idle; only `Pending` may hold state.
+            prop_assert_eq!(non_idle_terminal, 0);
             // Determinism: the same stream replays identically.
-            prop_assert_eq!(first, run());
+            prop_assert_eq!(first, run().0);
         }
 
         #[test]
