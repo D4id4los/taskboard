@@ -148,6 +148,247 @@ impl Keymap {
     }
 }
 
+/// The raw, pre-validation keymap input (the config layer stores
+/// strings only — structure there, semantics here): a preset plus the
+/// user's flat per-action override deltas (D9).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RawKeymap {
+    pub preset: Preset,
+    /// Action-id string → override sequences (each a list of stroke
+    /// spellings; the bare-string sugar is normalized to one
+    /// single-stroke sequence app-side, D7).
+    pub overrides: BTreeMap<String, Vec<Vec<String>>>,
+}
+
+/// Why a validation finding was raised. Typed enum values only —
+/// nothing downstream may match on rendered text (AGENTS §5, Q15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindingKind {
+    /// The override's action id is not in the registry.
+    UnknownAction,
+    /// A stroke spelling does not parse (D6).
+    MalformedStroke,
+    /// An add-new override would land where the action can never fire
+    /// (D9: preset-unbound, registry availability lacks `Global`).
+    MaskedContext,
+    /// The override's sequence collides intra-context with another
+    /// effective binding; the override drops (both sides when two
+    /// overrides collide — no last-wins).
+    Conflict,
+    /// A same-context binding is a strict prefix of another (§5.7):
+    /// warning only, nothing drops.
+    PrefixShadow,
+}
+
+/// One validation finding, fully typed (D13): what, where, and the
+/// offending stroke in canonical display form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    pub kind: FindingKind,
+    pub action: Option<ActionId>,
+    pub context: ContextId,
+    pub stroke: String,
+}
+
+/// The validated result (Q15): an always-usable keymap — offending
+/// overrides dropped, preset bindings surviving verbatim — plus the
+/// exhaustive findings for `tracing` surfacing and the startup-
+/// warning state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltKeymap {
+    pub keymap: Keymap,
+    pub findings: Vec<Finding>,
+}
+
+fn seq_display(seq: &[Stroke]) -> String {
+    seq.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Builds the effective keymap: preset ⊕ overrides with drop-and-warn
+/// validation (D9, D13). Pure and total — a hostile keymap can never
+/// block UI start (Q15); findings are the only output channel for
+/// what was dropped or is merely lossy.
+#[must_use]
+pub fn build(raw: &RawKeymap) -> BuiltKeymap {
+    let mut keymap = Keymap::from_preset(raw.preset);
+    let findings = apply_overrides(&mut keymap, &raw.overrides);
+    BuiltKeymap { keymap, findings }
+}
+
+/// Applies the user override deltas onto `keymap` in place, returning
+/// the exhaustive findings. The separation keeps `build` a
+/// composition of two named operations (preset base, override pass).
+fn apply_overrides(
+    keymap: &mut Keymap,
+    overrides: &BTreeMap<String, Vec<Vec<String>>>,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    // Cleanly-applied overrides, in config order; a conflict evicts
+    // an earlier one (both-drop, D13). Bindings are applied only
+    // after the whole pass, so eviction restores the preset
+    // verbatim.
+    let mut applied: Vec<(ActionId, ContextId, Vec<Stroke>)> = Vec::new();
+
+    for (id, sequences) in overrides {
+        // One call: reads the keymap and the pass-so-far (`staged`
+        // is the applied-prefix), appends findings and sequences.
+        place_override(keymap, &mut applied, id, sequences, &mut findings);
+    }
+
+    // Replace-and-insert (D9): in every context an override touched,
+    // the action's other bindings go; the applied sequences land.
+    let touched: BTreeSet<(ActionId, ContextId)> = applied
+        .iter()
+        .map(|(action, context, _)| (*action, *context))
+        .collect();
+    for (action, context, seq) in &applied {
+        keymap.insert(*action, *context, seq.clone());
+    }
+    for (action, context) in &touched {
+        let keep: Vec<Vec<Stroke>> = applied
+            .iter()
+            .filter(|(a, c, _)| a == action && c == context)
+            .map(|(_, _, s)| s.clone())
+            .collect();
+        if let Some(bindings) = keymap.bindings.get_mut(context) {
+            let stale: Vec<Vec<Stroke>> = bindings
+                .iter()
+                .filter(|(seq, bound)| **bound == *action && !keep.contains(seq))
+                .map(|(seq, _)| seq.clone())
+                .collect();
+            for seq in stale {
+                bindings.remove(&seq);
+            }
+        }
+    }
+
+    collect_prefix_shadows(keymap, &mut findings);
+    findings
+}
+
+/// Validates and stages one override entry (D9 placement, D13
+/// findings); staged sequences land in `applied`, which the caller
+/// applies after the whole pass.
+fn place_override(
+    keymap: &Keymap,
+    staged: &mut Vec<(ActionId, ContextId, Vec<Stroke>)>,
+    id: &str,
+    sequences: &[Vec<String>],
+    findings: &mut Vec<Finding>,
+) {
+    let Some(action) = ActionId::from_id(id) else {
+        findings.push(Finding {
+            kind: FindingKind::UnknownAction,
+            action: None,
+            context: ContextId::Global,
+            stroke: id.to_owned(),
+        });
+        return;
+    };
+    // Placement (D9): an override replaces the preset's bindings of
+    // the action, in the preset's own binding contexts; an action
+    // the map leaves unbound is *added* in `Global` — where
+    // `MaskedContext` drops it if it could never fire there.
+    let bound_contexts = keymap.bound_contexts(action);
+    let add_new = bound_contexts.is_empty();
+    let targets: Vec<ContextId> = if add_new {
+        vec![ContextId::Global]
+    } else {
+        bound_contexts.clone()
+    };
+    let mut parsed: Vec<Vec<Stroke>> = Vec::new();
+    for spellings in sequences {
+        match stroke::parse_sequence(spellings.iter().map(String::as_str)) {
+            Ok(seq) if !seq.is_empty() => parsed.push(seq),
+            _ => findings.push(Finding {
+                kind: FindingKind::MalformedStroke,
+                action: Some(action),
+                context: targets[0],
+                stroke: spellings.join(" "),
+            }),
+        }
+    }
+    for context in targets {
+        if add_new && !crate::actions::entry(action).contexts.contains(&context) {
+            findings.push(Finding {
+                kind: FindingKind::MaskedContext,
+                action: Some(action),
+                context,
+                stroke: parsed
+                    .first()
+                    .map(|seq| seq_display(seq))
+                    .unwrap_or_default(),
+            });
+            continue;
+        }
+        for seq in &parsed {
+            // The action's own current binding in this context is
+            // being replaced, never a conflict; anything else holding
+            // the sequence is.
+            let holder = keymap
+                .bindings_in(context)
+                .and_then(|bindings| bindings.get(seq))
+                .copied();
+            let staged_conflict = staged
+                .iter()
+                .position(|(_, c, s)| *c == context && s == seq);
+            match (holder, staged_conflict) {
+                // User-vs-preset (a *different* action holds the
+                // sequence): the override drops, the preset binding
+                // survives verbatim (D13).
+                (Some(holder), _) if holder != action => {
+                    findings.push(Finding {
+                        kind: FindingKind::Conflict,
+                        action: Some(action),
+                        context,
+                        stroke: seq_display(seq),
+                    });
+                }
+                // User-vs-user: both overrides drop, the preset wins
+                // for both — deterministic, no last-wins.
+                (_, Some(pos)) => {
+                    let (earlier, earlier_context, earlier_seq) = staged.remove(pos);
+                    findings.push(Finding {
+                        kind: FindingKind::Conflict,
+                        action: Some(earlier),
+                        context: earlier_context,
+                        stroke: seq_display(&earlier_seq),
+                    });
+                    findings.push(Finding {
+                        kind: FindingKind::Conflict,
+                        action: Some(action),
+                        context,
+                        stroke: seq_display(seq),
+                    });
+                }
+                _ => staged.push((action, context, seq.clone())),
+            }
+        }
+    }
+}
+
+/// The prefix-shadow pass (D13): computed on the *effective* map,
+/// warning only — a prefix binding is usable, just lossy (§5.7).
+fn collect_prefix_shadows(keymap: &Keymap, findings: &mut Vec<Finding>) {
+    for (context, bindings) in &keymap.bindings {
+        for (short, short_action) in bindings {
+            for long in bindings.keys() {
+                if long.len() > short.len() && long.starts_with(short) {
+                    findings.push(Finding {
+                        kind: FindingKind::PrefixShadow,
+                        action: Some(*short_action),
+                        context: *context,
+                        stroke: seq_display(short),
+                    });
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +555,217 @@ mod tests {
             ),
             Some(ActionId::AppUndo)
         );
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    use crate::actions::ContextId;
+    use FindingKind::*;
+
+    fn built(preset: Preset, overrides: &[(&str, &[&[&str]])]) -> BuiltKeymap {
+        build(&RawKeymap {
+            preset,
+            overrides: overrides
+                .iter()
+                .map(|(id, seqs)| {
+                    (
+                        (*id).to_owned(),
+                        seqs.iter()
+                            .map(|s| s.iter().map(|t| (*t).to_owned()).collect())
+                            .collect(),
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    fn one(result: &BuiltKeymap, kind: FindingKind) -> &Finding {
+        result
+            .findings
+            .iter()
+            .find(|f| f.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind:?} finding in {:?}", result.findings))
+    }
+
+    /// T9 — an override replaces *every* binding of the action (D9):
+    /// the old sequences stop resolving in all of the preset's
+    /// binding contexts, the new one resolves in each.
+    #[test]
+    fn override_replaces_all_bindings_of_the_action() {
+        let result = built(Preset::Standard, &[("task.complete", &[&["Ctrl+Space"]])]);
+        assert_eq!(result.findings, Vec::new());
+        let space = stroke::parse("Space").expect("space");
+        let ctrl_space = stroke::parse("Ctrl+Space").expect("ctrl space");
+        // The standard preset binds `task.complete` in the board
+        // context (D8 draft); that is the context the override
+        // replaces.
+        let chain = [ContextId::Board, ContextId::Global];
+        assert_eq!(
+            result.keymap.resolve(&chain, &[ctrl_space]),
+            Some(ActionId::TaskComplete)
+        );
+        assert_eq!(
+            result.keymap.resolve(&chain, &[space]),
+            None,
+            "old binding gone"
+        );
+    }
+
+    /// T10 — the add-new rule (D9): an action the current map leaves
+    /// unbound gains its binding in `Global` — unless its registry
+    /// availability excludes `Global`, in which case the entry can
+    /// never fire and drops as `MaskedContext`. Exercised on a
+    /// synthetic base (an empty map is the upgrade-model case: a
+    /// preset that binds nothing yet), since every *shipped* preset
+    /// covers the non-global actions by the coverage contract.
+    #[test]
+    fn add_new_binds_global_but_drops_masked_context() {
+        let override_entry =
+            |id: &str| BTreeMap::from([(id.to_owned(), vec![vec!["Ctrl+0".to_owned()]])]);
+        let seq = stroke::parse_sequence(["Ctrl+0"]).expect("parses");
+
+        // `mode.normal` is globally available: the add-new lands.
+        let mut keymap = Keymap::default();
+        let findings = apply_overrides(&mut keymap, &override_entry("mode.normal"));
+        assert!(findings.is_empty(), "{findings:?}");
+        assert_eq!(
+            keymap.resolve(&[ContextId::Global], &seq),
+            Some(ActionId::ModeNormal)
+        );
+
+        // `menu.next` is only available in the menu context — a
+        // Global-placed binding would be inert, so it drops typed.
+        let mut keymap = Keymap::default();
+        let findings = apply_overrides(&mut keymap, &override_entry("menu.next"));
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, MaskedContext);
+        assert_eq!(findings[0].action, Some(ActionId::MenuNext));
+        assert_eq!(keymap.resolve(&[ContextId::Global], &seq), None);
+    }
+
+    /// T11 — `UnknownAction` and `MalformedStroke` drop only the
+    /// offender; other overrides in the same config survive (T15's
+    /// exhaustiveness separately).
+    #[test]
+    fn unknown_and_malformed_drop_only_the_offender() {
+        let result = built(
+            Preset::Standard,
+            &[
+                ("no.such.action", &[&["X"]]),
+                ("task.complete", &[&["Ctrl+!!"]]),
+                ("app.exit", &[&["Ctrl+\\"]]),
+            ],
+        );
+        assert_eq!(one(&result, UnknownAction).stroke, "no.such.action");
+        assert_eq!(
+            one(&result, MalformedStroke).action,
+            Some(ActionId::TaskComplete)
+        );
+        let seq = stroke::parse_sequence(["Ctrl+\\"]).expect("parses");
+        assert_eq!(
+            result.keymap.resolve(&[ContextId::Global], &seq),
+            Some(ActionId::AppExit),
+            "the valid override survived"
+        );
+    }
+
+    /// T12 — the Q15 redirect, fallback asserted (not just the drop):
+    /// an override colliding with a preset binding drops and the
+    /// preset binding resolves verbatim.
+    #[test]
+    fn conflict_with_preset_drops_override_preset_survives() {
+        let result = built(Preset::Standard, &[("app.undo", &[&["Ctrl+Q"]])]);
+        let finding = one(&result, Conflict);
+        assert_eq!(finding.action, Some(ActionId::AppUndo));
+        assert_eq!(finding.context, ContextId::Global);
+        let undo = stroke::parse("Ctrl+Z").expect("undo");
+        let quit = stroke::parse("Ctrl+Q").expect("quit");
+        assert_eq!(
+            result.keymap.resolve(&[ContextId::Global], &[undo]),
+            Some(ActionId::AppUndo),
+            "preset fallback intact"
+        );
+        assert_eq!(
+            result.keymap.resolve(&[ContextId::Global], &[quit]),
+            Some(ActionId::AppExit),
+            "the colliding preset binding untouched"
+        );
+    }
+
+    /// T13 — user-vs-user conflict: both overrides drop, preset wins
+    /// for both (deterministic, no last-wins).
+    #[test]
+    fn conflict_between_overrides_drops_both() {
+        let result = built(
+            Preset::Standard,
+            &[("app.undo", &[&["Ctrl+\\"]]), ("app.redo", &[&["Ctrl+\\"]])],
+        );
+        let conflict_actions: Vec<_> = result
+            .findings
+            .iter()
+            .filter(|f| f.kind == Conflict)
+            .map(|f| f.action)
+            .collect();
+        assert!(conflict_actions.contains(&Some(ActionId::AppUndo)));
+        assert!(conflict_actions.contains(&Some(ActionId::AppRedo)));
+        let undo = stroke::parse("Ctrl+Z").expect("undo");
+        let redo = stroke::parse_sequence(["Ctrl+Shift+Z"]).expect("redo");
+        let seq = stroke::parse("Ctrl+\\").expect("x");
+        assert_eq!(
+            result.keymap.resolve(&[ContextId::Global], &[undo]),
+            Some(ActionId::AppUndo)
+        );
+        assert_eq!(
+            result.keymap.resolve(&[ContextId::Global], &redo),
+            Some(ActionId::AppRedo)
+        );
+        assert_eq!(result.keymap.resolve(&[ContextId::Global], &[seq]), None);
+    }
+
+    /// T14 — `PrefixShadow` is computed on the effective map and is a
+    /// warning only: nothing drops, the binding still resolves.
+    #[test]
+    fn prefix_shadow_warns_without_dropping() {
+        // `Ctrl+x` alone is not bound in emacs; binding it shadows
+        // the whole C-x family.
+        let result = built(Preset::Emacs, &[("app.help", &[&["Ctrl+x"]])]);
+        let shadow = one(&result, PrefixShadow);
+        assert_eq!(shadow.context, ContextId::Global);
+        let seq = stroke::parse("Ctrl+x").expect("x");
+        assert_eq!(
+            result.keymap.resolve(&[ContextId::Global], &[seq]),
+            Some(ActionId::AppHelp),
+            "shadowing binding still resolves"
+        );
+    }
+
+    /// T15 — findings are exhaustive: multiple offenders in one
+    /// config are all listed.
+    #[test]
+    fn findings_are_exhaustive() {
+        let result = built(
+            Preset::Standard,
+            &[
+                ("ghost.action", &[&["X"]]),
+                ("task.complete", &[&["Ctrl+!!"]]),
+                ("app.undo", &[&["Ctrl+Q"]]),
+            ],
+        );
+        // `MaskedContext` is covered by T10's synthetic base (the
+        // shipped presets cover the non-global actions by contract).
+        let kinds: Vec<_> = result.findings.iter().map(|f| f.kind).collect();
+        assert!(kinds.contains(&UnknownAction));
+        assert!(kinds.contains(&MalformedStroke));
+        assert!(kinds.contains(&Conflict));
+    }
+
+    /// T16 — empty overrides ≡ the preset map.
+    #[test]
+    fn empty_overrides_equal_the_preset_map() {
+        let result = built(Preset::Vi, &[]);
+        assert_eq!(result.keymap, Keymap::from_preset(Preset::Vi));
+        assert_eq!(result.findings, Vec::new());
     }
 }
