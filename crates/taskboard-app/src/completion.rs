@@ -22,9 +22,14 @@
 //! - **Parity with the selectors**: a title is offered iff the
 //!   corresponding `resolve_*` could select it — stacks `!deleted`,
 //!   tasks `Task::is_live` (done and archived stay selectable), labels
-//!   `!deleted`; canonical ordering per resolver; duplicate titles
-//!   deduped to one entry (the command's `Ambiguous*` error already
-//!   lists the candidates honestly).
+//!   `!deleted`; canonical ordering per resolver. A *hard* title
+//!   collision (two live entities sharing the title) replaces the title
+//!   row with one uuid-disambiguated row per entity — display
+//!   `"{title} - {uuid}"`, insert the uuid — because selecting a
+//!   colliding title manufactures a guaranteed `Ambiguous*` error; the
+//!   honest menu offers the escape instead. Titles are the identifier
+//!   humans parse: the uuid is the distinguisher column, never the
+//!   leading text. Unambiguous titles keep exactly the plain row.
 //! - **Session-refused surface is not offered**: `daemon`, `config`
 //!   and `--config` never appear as candidates — completing them would
 //!   manufacture a guaranteed in-session refusal
@@ -644,7 +649,10 @@ pub(crate) fn candidates(
                 .map(|s| (s.order, s.id, s.title.as_str()))
                 .collect();
             stacks.sort();
-            live_titles(stacks.iter().map(|(_, _, title)| *title), stem)
+            live_entries(
+                stacks.iter().map(|(_, id, title)| (id.as_uuid(), *title)),
+                stem,
+            )
         }
         Kind::Tasks => {
             let mut tasks: Vec<(ids::StackId, i64, ids::TaskId, &str)> = state
@@ -654,28 +662,59 @@ pub(crate) fn candidates(
                 .map(|t| (t.stack, t.order, t.id, t.title.as_str()))
                 .collect();
             tasks.sort();
-            live_titles(tasks.iter().map(|(_, _, _, title)| *title), stem)
+            live_entries(
+                tasks.iter().map(|(_, _, id, title)| (id.as_uuid(), *title)),
+                stem,
+            )
         }
-        Kind::Labels => live_titles(
+        Kind::Labels => live_entries(
             state
                 .labels
                 .values()
                 .filter(|l| !l.deleted)
-                .map(|l| l.title.as_str()),
+                .map(|l| (l.id.as_uuid(), l.title.as_str())),
             stem,
         ),
         Kind::None => Vec::new(),
     }
 }
 
-/// Prefix-matches (case-sensitive — selectors are exact-match), dedupes
-/// identical titles, and quotes each survivor.
-fn live_titles<'a>(titles: impl Iterator<Item = &'a str>, stem: &str) -> Vec<Candidate> {
-    let mut seen = BTreeSet::new();
+/// Builds the menu rows for one live kind: prefix-matches (case-
+/// sensitive — selectors are exact-match) the `(uuid, title)` pairs in
+/// their canonical order, then groups by title. A title with one
+/// entity keeps today's plain row; a hard collision emits one
+/// uuid-disambiguated row per entity — display `"{title} - {uuid}"`
+/// (title first: the identifier humans parse; the uuid is only the
+/// distinguisher), replacement the quoted uuid — and no plain title
+/// row (selecting a colliding title manufactures a guaranteed
+/// `Ambiguous*` error). Group order = first encounter in canonical
+/// order; within a group, canonical entity order.
+fn live_entries<'a>(
+    entries: impl Iterator<Item = (uuid::Uuid, &'a str)>,
+    stem: &str,
+) -> Vec<Candidate> {
+    let matched: Vec<(uuid::Uuid, &str)> = entries
+        .filter(|(_, title)| title.starts_with(stem))
+        .collect();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, title) in &matched {
+        *counts.entry(title).or_default() += 1;
+    }
+    let mut emitted_groups: BTreeSet<&str> = BTreeSet::new();
     let mut out = Vec::new();
-    for title in titles.filter(|t| t.starts_with(stem)) {
-        if seen.insert(title.to_owned()) {
+    for (_, title) in &matched {
+        if !emitted_groups.insert(title) {
+            continue;
+        }
+        if counts[title] == 1 {
             out.push(quoted(title));
+        } else {
+            for (member, member_title) in matched.iter().filter(|(_, t)| *t == *title) {
+                out.push(Candidate {
+                    display: format!("{member_title} - {member}"),
+                    replacement: format!("{} ", shell_words::quote(&member.to_string())),
+                });
+            }
         }
     }
     out
@@ -1247,13 +1286,13 @@ mod tests {
     }
 
     #[test]
-    fn candidate_prefixes_are_case_sensitive_and_duplicates_dedupe() {
+    fn candidate_prefixes_are_case_sensitive_and_collisions_offer_uuid_rows() {
         let spec = CompletionSpec::from_cli();
         let (mut state, board_id) = fresh_state();
         let todo = stack(&mut state, board_id, 0, "Todo", false);
         let other = stack(&mut state, board_id, 1, "Other", false);
-        task(&mut state, todo, 0, "Buy milk", false, false, false);
-        task(&mut state, other, 0, "Buy milk", false, false, false);
+        let first = task(&mut state, todo, 0, "Buy milk", false, false, false);
+        let second = task(&mut state, other, 0, "Buy milk", false, false, false);
         task(&mut state, other, 1, "buy milk later", false, false, false);
 
         // Case-sensitive: `buy` matches only the lowercase title, never
@@ -1261,10 +1300,115 @@ mod tests {
         let out = candidates(&spec, &state, &kind_plan(Kind::Tasks, "buy"));
         assert_eq!(titles_of(&out), ["buy milk later"]);
 
-        // `Buy` matches exactly one deduped entry despite two tasks.
+        // A hard collision replaces the deduped title row with one
+        // uuid row per entity: title first, the uuid the distinguisher.
         let out = candidates(&spec, &state, &kind_plan(Kind::Tasks, "Buy"));
-        assert_eq!(out.len(), 1, "duplicate titles dedupe to one menu entry");
-        assert_eq!(out[0].display, "Buy milk");
+        assert_eq!(out.len(), 2, "one uuid row per colliding entity");
+        let offered: std::collections::BTreeMap<String, String> = out
+            .iter()
+            .map(|c| (c.display.clone(), c.replacement.trim_end().to_owned()))
+            .collect();
+        for id in [first, second] {
+            let uuid = id.as_uuid().to_string();
+            let display = format!("Buy milk - {uuid}");
+            let selector = offered
+                .get(&display)
+                .unwrap_or_else(|| panic!("no row for {display}: {offered:?}"));
+            // The insertion resolves exactly — the full uuid is the
+            // always-exact tier of the cascading selector.
+            assert_eq!(
+                crate::commands::tasks::resolve_task(&state, selector).expect("resolves"),
+                id,
+                "row {display} inserts a selector that resolves exactly"
+            );
+            // The insertion is the uuid, re-parsing through the line
+            // grammar (quoting roundtrip).
+            assert_eq!(
+                shell_words::split(selector),
+                Ok(vec![uuid.clone()]),
+                "row {display} inserts the uuid alone"
+            );
+        }
+    }
+
+    #[test]
+    fn colliding_stack_and_label_titles_offer_uuid_rows_with_the_same_parity() {
+        let spec = CompletionSpec::from_cli();
+        let (mut state, board_id) = fresh_state();
+        let first = stack(&mut state, board_id, 0, "Sprint", false);
+        let second = stack(&mut state, board_id, 1, "Sprint", false);
+        let label_a = label(&mut state, board_id, "urgent", false);
+        let label_b = label(&mut state, board_id, "urgent", false);
+
+        // Stacks: two uuid rows, each resolving exactly; display is
+        // title-first. Canonical order is (order, id) — the fixture's
+        // orders (0, 1) decide, so the rows are deterministic.
+        let out = candidates(&spec, &state, &kind_plan(Kind::Stacks, "Spr"));
+        assert_eq!(out.len(), 2);
+        for (cand, id) in out.iter().zip([first, second]) {
+            let uuid = id.as_uuid().to_string();
+            assert_eq!(cand.display, format!("Sprint - {uuid}"));
+            assert_eq!(cand.replacement, format!("{} ", shell_words::quote(&uuid)));
+            assert_eq!(
+                crate::commands::tasks::resolve_stack(&state, Some(cand.replacement.trim_end()))
+                    .expect("resolves"),
+                id
+            );
+        }
+
+        // Labels: same rule (id canonical order — order-agnostic set
+        // assertion, the fixture ids are generated).
+        let out = candidates(&spec, &state, &kind_plan(Kind::Labels, "urg"));
+        assert_eq!(out.len(), 2);
+        let offered: Vec<(String, LabelId)> = out
+            .iter()
+            .map(|c| {
+                let selector = c.replacement.trim_end();
+                (
+                    c.display.clone(),
+                    crate::commands::labels::resolve_label(&state, selector)
+                        .expect("the insertion resolves exactly"),
+                )
+            })
+            .collect();
+        assert_eq!(
+            offered
+                .iter()
+                .map(|(_, id)| *id)
+                .collect::<std::collections::BTreeSet<_>>(),
+            [label_a, label_b].into_iter().collect()
+        );
+        for (display, id) in offered {
+            assert_eq!(display, format!("urgent - {}", id.as_uuid()));
+        }
+    }
+
+    #[test]
+    fn a_colliding_group_replaces_only_its_title_row_and_keeps_canonical_order() {
+        let spec = CompletionSpec::from_cli();
+        let (mut state, board_id) = fresh_state();
+        let todo = stack(&mut state, board_id, 0, "Todo", false);
+        // One stack, orders decide the canonical order: Dup, Solo, Dup.
+        let dup_low = task(&mut state, todo, 0, "Dup", false, false, false);
+        task(&mut state, todo, 1, "Solo", false, false, false);
+        let dup_high = task(&mut state, todo, 2, "Dup", false, false, false);
+
+        let out = candidates(&spec, &state, &kind_plan(Kind::Tasks, ""));
+        // Group order = first encounter: the Dup group (order 0) leads,
+        // the unique title follows; no plain `Dup` row anywhere.
+        assert_eq!(out.len(), 3);
+        assert_eq!(
+            out[0].display,
+            format!("Dup - {}", dup_low.as_uuid()),
+            "the colliding group leads at its first canonical position"
+        );
+        assert_eq!(
+            out[1].display,
+            format!("Dup - {}", dup_high.as_uuid()),
+            "within the group, canonical entity order"
+        );
+        assert_eq!(out[2].display, "Solo", "the unique title stays plain");
+        assert_eq!(out[2].replacement, "Solo ");
     }
 
     #[test]
