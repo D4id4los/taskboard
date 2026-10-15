@@ -87,3 +87,18 @@ export global Semantic {
     out property <color> offline: Theme.text-secondary;
     out property <color> focus-ring: Theme.focus-ring;
 }
+
+// The role-consuming text primitive (§3.2's consumption side): the
+// only component allowed to bind font attributes, because it lives in
+// the theme module. Widgets/compositions compose this instead of
+// naming fonts — the lint's rule 2 stays total.
+export component RoleText inherits Text {
+    in property <TextRole> role: Typography.body;
+    in property <color> text-color: Theme.text-primary;
+    in property <TextHorizontalAlignment> text-halign: left;
+    font-size: role.size;
+    font-weight: role.weight;
+    font-family: role.family;
+    color: text-color;
+    horizontal-alignment: text-halign;
+}

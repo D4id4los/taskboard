@@ -1,20 +1,71 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The window shell (chunk 1): theme + scale only — no content, no
-// focus scopes, no text (views are chunk 3). Theme init is a window-
-// construction step: `mount()` applies `base-scale` (and future theme
-// state) to this freshly created instance; a future second window
-// re-runs it — no global-once init exists.
+// The window shell (chunk 1) grown into the action-dispatch host
+// (chunk 2): the root FocusScope is the *only* key-event handler in
+// the tree (§5.1) — capture-phase interception via the Rust-installed
+// `intercept-key` callback; `KeyBinding` is unused for any rebindable
+// action (Q9). The keymap is applied one-way at UI start (§5.6).
 
 import { Theme, Typography, Semantic } from "theme.slint";
+import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
 
 // Re-export the theme globals so the generated Rust module exposes
 // them (mount reads/writes `Theme.base-scale` through the generated
 // global accessors).
 export { Theme, Typography, Semantic }
 
+export enum KeyFeedback {
+    none,
+    prefix-pending,
+    prefix-abort,
+}
+
+// The keymap layer's window-facing state (D18), pushed one-way from
+// the shell; chunk 3's status bar renders the feedback/warnings.
+export global KeyboardState {
+    // The vi insert mode (D10: ordinary shell state).
+    in-out property <bool> vi-insert: false;
+    in-out property <bool> menu-open: false;
+    in-out property <int> menu-selected-index: 0;
+    in-out property <[MenuEntryModel]> menu-entries: [];
+    // The §5.7 status signal: prefix-pending / prefix-abort feedback.
+    in-out property <KeyFeedback> last-feedback: KeyFeedback.none;
+}
+
+// The Q15 startup-warning state the status bar will render (chunk 3).
+export global UiStatus {
+    in-out property <int> startup-keymap-findings: 0;
+}
+
 export component AppWindow inherits Window {
     background: Theme.background;
     title: "taskboard";
     preferred-width: Theme.window-default-width;
     preferred-height: Theme.window-default-height;
+
+    // The single key path (§5.1): capture-phase tunneling hits this
+    // scope before any focused element; accepting consumes the event.
+    forward-focus: key-root;
+    key-root := FocusScope {
+        capture-key-pressed(event) => {
+            root.intercept-key(event.text, event.modifiers) ? accept : reject
+        }
+    }
+
+    // The generated menu host (§5.9): keyed to the shell's menu
+    // state, no key handlers of its own.
+    if (KeyboardState.menu-open): ActionMenu {
+        x: Theme.space-8;
+        y: Theme.space-8;
+        entries: KeyboardState.menu-entries;
+        selected-index: KeyboardState.menu-selected-index;
+        invoke-entry(index) => root.menu-entry-invoked(index);
+    }
+
+    // The Rust-installed interception seam (D18): converts the event
+    // to a Stroke, feeds the resolver, and answers accept (the
+    // resolver consumed the stroke) or reject (delivery continues).
+    pure callback intercept-key(string, KeyboardModifiers) -> bool;
+    // The `menu.invoke` projection: the adapter closes the menu and
+    // re-dispatches the selected entry through the same router.
+    pure callback menu-entry-invoked(int);
 }
