@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f50f8d3f6e1bc5965a1e931320801d0994fcf697aa4f511a0a0620535aa8e608 # shrinks to stream = [Some("j")], seed = 1536738800
