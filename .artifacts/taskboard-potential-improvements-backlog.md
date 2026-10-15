@@ -2110,7 +2110,6 @@ IPC lane): prints the resolved read path and the login write target,
 JSON and text; pure reuse of `config_path`/`write_path`, one dispatch
 arm plus a small view. Natural companion to any future
 connector-management verb round that touches the config verb family.
-||||||| parent of a66b9a5 (docs(backlog): signal-death line-discipline restore (guard can't cover it))
 ## [2026-10-12] Restore the line discipline on signal death mid-REPL
 
 - **Category**: `DX`
@@ -2738,3 +2737,144 @@ scope.
 Carry `(title, uuid)` pairs in the payload variants (a wire-shape
 change — protocol policy applies) and render `title - uuid` rows in
 the error output.
+
+## [2026-10-15] Pointer drag-to-move on the board
+
+- **Category**: `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-15-ui-views-board-plan.md` (§11 [DEV] 1; user-confirmed in review: "definitely a feature we want to support in the future")
+- **Target Area**: `crates/taskboard-ui-slint` (board-layout composition, task-card primitive)
+
+### Context & Description
+
+The chunk-3 board ships the `task.move` action flow (keyboard-first,
+works at every breakpoint) but no pointer drag-and-drop: Slint 1.18
+has no widget-level DnD primitive, and hand-rolling cross-column
+drag was disproportionate to the chunk. Drag remains a wanted
+end-user affordance.
+
+### Proposed Approach
+
+DIY drag on TouchArea press/move with a ghost card and column
+hit-testing; the drop must dispatch the same `MoveTask` command the
+move flow confirms (click/gesture ⇄ action equivalence, design
+§7.1). Re-check Slint's DnD surface at each version bump before
+hand-rolling.
+
+## [2026-10-15] Due-date editor widget for the task detail view
+
+- **Category**: `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-15-ui-views-board-plan.md` (D13 scope cut; review asked for the backlog coverage)
+- **Target Area**: `crates/taskboard-ui-slint` (task-view, a new L1 date-input primitive)
+
+### Context & Description
+
+v0.1.0's task detail displays the due date read-only (mono role +
+due phrase); setting/editing due dates is CLI-only. Date
+parsing/validation UX is its own surface and was deliberately cut.
+
+### Proposed Approach
+
+An L1 date input (typed entry or stepper; reuse the presentation
+module's bucketing for feedback) committing
+`UpdateTask { changes: TaskChanges { duedate: Some(..) } }`. Design
+with the W1 today/organiser views, which are the other date-heavy
+consumers.
+
+## [2026-10-15] Description editor widget for the task detail view
+
+- **Category**: `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-15-ui-views-board-plan.md` (D13 scope cut; review asked for the backlog coverage)
+- **Target Area**: `crates/taskboard-ui-slint` (task-view, multiline text-field use)
+
+### Context & Description
+
+v0.1.0's task detail shows the description read-only (plain body
+text); the keyboard-journey bar only needs title editing. The field
+is Markdown on the wire (Deck storage), so editing interacts with
+the org/markup rendering timeline.
+
+### Proposed Approach
+
+Multiline `text-field` committing
+`UpdateTask { changes: TaskChanges { description: Some(..) } }`,
+kept swappable behind the orgedit adapter plan; rendered-view +
+source-toggle is the MVP shape per the org-mode viability reports.
+
+## [2026-10-15] Task reopen action in the UI
+
+- **Category**: `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-15-ui-views-board-plan.md` (D14 review answer)
+- **Target Area**: `crates/taskboard-ui-slint` (action registry, presets, task-view)
+
+### Context & Description
+
+Completing tasks works from v0.1.0 (`task.complete` →
+`SetTaskDone { done: true }`), but reopening (`done: false`) has no
+registry action — reopen is CLI-only until this lands.
+
+### Proposed Approach
+
+A `task.reopen` registry row (enabled on the task-bearing contexts)
+routing `SetTaskDone { id, done: false }`, with bindings in all
+three presets (coverage test extended). Consider folding into a
+single toggle action if the completed-task surfaces grow a
+checkbox affordance first.
+
+## [2026-10-15] Configurable due-soon horizon
+
+- **Category**: `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-15-ui-views-board-plan.md` (§11 [DEV] 4; accepted conditional on this entry)
+- **Target Area**: `crates/taskboard-app` (config), `crates/taskboard-ui-slint` (presentation const)
+
+### Context & Description
+
+The "due soon" classification uses a fixed presentation const
+(`DUE_SOON_HORIZON = 24 h`) because Q22 fixes the v0.1.0 `[ui]`
+config surface at `scale` + keymap. The domain's `due_soon` helper
+already saturates out-of-range horizons safely.
+
+### Proposed Approach
+
+A `[ui] due-soon-horizon` (or `[reminders]`) config key, validated
+app-side and handed over as a typed value with the other
+`UiSettings` — the UI crate stays config-free; presentation takes
+the horizon as a parameter.
+
+## [2026-10-15] Preset bindings for `reminder.snooze` / `reminder.mute`
+
+- **Category**: `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-15-ui-views-board-plan.md` (D4 review note: "I do want the end product to have keyboard mappings for snooze & mute")
+- **Target Area**: `crates/taskboard-ui-slint` (keymap presets)
+
+### Context & Description
+
+The v0.1.0 overdue banner's snooze/mute actions exist in the
+registry but carry no preset bindings — keyboard-reachable only via
+the generated `app.menu`. Real bindings are wanted once the
+reminders UI stabilises.
+
+### Proposed Approach
+
+Bind both actions in `standard`/`emacs`/`vi` (e.g. emacs
+`Alt+S`/`Alt+M`-class chords; vi `r`-family in `ViNormal`), update
+the preset conflict-freeness/coverage tests and the resolved-keymap
+snapshot in the same change.
+
+## [2026-10-15] First/last-item focus navigation
+
+- **Category**: `UI`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-15-ui-views-board-plan.md` (D7 review note)
+- **Target Area**: `crates/taskboard-ui-slint` (action registry, presets, view_state)
+
+### Context & Description
+
+Board navigation walks items one step at a time (`nav.next-item`/
+`nav.prev-item`, no wrap). Jumping to the first/last item of the
+reading order is a wanted convenience (emacs `Alt+<` / `Alt+>`).
+
+### Proposed Approach
+
+`nav.first-item` / `nav.last-item` registry rows + preset bindings
+in all three presets; `view_state` grows `jump_focus(Edge)` beside
+`advance_focus`/`retreat_focus`. Also a natural fit for the switcher
+(compact) and banner rows.
