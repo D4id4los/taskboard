@@ -2254,6 +2254,10 @@ worth bundling with other CI work rather than as its own item.
 
 ## [2026-10-12] Deterministic stamps for clock-gated fixture builders
 
+- **Status**: ✅ DONE (implemented 2026-10-15 on
+  `test/domain-deterministic-stamps`: fixed strictly-increasing `ts()`
+  stamps + `from_u128` ids, three gates deleted, tests verified under
+  local Miri; the two inherent gates stay.)
 - **Category**: `Testing`
 - **Originating Plan/Report**: WI-C review analysis of green run
   38312493624 (chat context)
