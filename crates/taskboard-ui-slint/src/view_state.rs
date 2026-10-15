@@ -1,0 +1,1071 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The view-state machine (D3/D7/D9): the one view cycle, board
+//! focus, compact stack selection, and the edit/move flows as pure
+//! state over `AppState` slices. No slint types, no IO, no time
+//! (methods take the state snapshot they reason about; the adapter
+//! calls them from the interpretation table and applies the returned
+//! outcomes verbatim — it never re-decides).
+//!
+//! Focus discipline (D15): slint element focus is mount-driven (each
+//! view scope/field focuses itself when it is created); this module
+//! owns *selection* — which task/stack the actions address.
+
+use taskboard_domain::{AppState, StackId, StateCommand, TaskChanges, TaskId};
+
+use crate::actions::ContextId;
+use crate::presentation::{live_board, stacks_in_board};
+use crate::router::Mode;
+
+/// The three v0.1.0 views (D7): one tree, one cycle
+/// Board → `StackDetail` → `TaskDetail` → Board.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewId {
+    #[default]
+    Board,
+    StackDetail,
+    TaskDetail,
+}
+
+/// The active flow (D9): at most one — edit (create row or title) XOR
+/// move. `refresh` never touches text properties while a flow holds
+/// the buffers (D9 rule 4).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Flow {
+    #[default]
+    None,
+    /// The inline create row, appending to `stack`.
+    Create { stack: StackId },
+    /// The task-detail title editor.
+    EditTitle { task: TaskId },
+    /// The move flow: moving `task` toward `target`.
+    Move { task: TaskId, target: StackId },
+}
+
+/// What a view-state transition asks the adapter to do (D9):
+/// dispatch a command, flip the vi mode, or repaint now. The adapter
+/// applies outcomes; focus is mount-driven (module docs).
+#[derive(Debug, Clone, PartialEq)]
+pub enum FlowOutcome {
+    Command(StateCommand),
+    SetMode(Mode),
+    RefreshNow,
+}
+
+/// The pure view state (D7).
+#[derive(Debug, Clone, Default)]
+pub struct ViewState {
+    view: ViewId,
+    /// The `StackDetail` subject, snapshotted at entry (D7).
+    subject_stack: Option<StackId>,
+    /// The `TaskDetail` subject, snapshotted at entry (D7).
+    subject_task: Option<TaskId>,
+    /// The board's focused card (selection, not slint focus).
+    focused_task: Option<TaskId>,
+    /// The compact switcher's selected stack.
+    selected_stack: Option<StackId>,
+    flow: Flow,
+    /// The Rust mirror of the active text buffer (D9 rule 1): the
+    /// adapter updates it on every keystroke callback; commit reads
+    /// it — no slint-state dependency.
+    buffer: String,
+}
+
+/// The canonical append position in `stack`: max canonical order + 1.
+#[must_use]
+pub fn append_order(state: &AppState, stack: StackId) -> i64 {
+    state
+        .tasks_in_stack(stack)
+        .last()
+        .map_or(0, |t| t.order + 1)
+}
+
+/// The index `current` moved by `direction` (±1), wrapping over
+/// `len` — the ring-walk primitive for cycles and switchers.
+fn wrapped_index(current: usize, direction: i32, len: usize) -> usize {
+    let len = i64::try_from(len).unwrap_or(1).max(1);
+    let next = i64::try_from(current).unwrap_or(0) + i64::from(direction);
+    usize::try_from(next.rem_euclid(len)).unwrap_or(0)
+}
+
+impl ViewState {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            view: ViewId::Board,
+            subject_stack: None,
+            subject_task: None,
+            focused_task: None,
+            selected_stack: None,
+            flow: Flow::None,
+            buffer: String::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn view(&self) -> ViewId {
+        self.view
+    }
+
+    #[must_use]
+    pub const fn flow(&self) -> &Flow {
+        &self.flow
+    }
+
+    #[must_use]
+    pub fn buffer(&self) -> &str {
+        &self.buffer
+    }
+
+    /// The adapter's keystroke-mirror update (D9 rule 1).
+    pub fn set_buffer(&mut self, text: String) {
+        self.buffer = text;
+    }
+
+    #[must_use]
+    pub const fn focused_task(&self) -> Option<TaskId> {
+        self.focused_task
+    }
+
+    /// The focused stack, always derived (D7): the focused task's
+    /// stack; `None` without focus.
+    #[must_use]
+    pub fn focused_stack(&self, state: &AppState) -> Option<StackId> {
+        self.focused_task
+            .and_then(|id| state.tasks.get(&id))
+            .map(|t| t.stack)
+    }
+
+    #[must_use]
+    pub const fn selected_stack(&self) -> Option<StackId> {
+        self.selected_stack
+    }
+
+    #[must_use]
+    pub const fn subject_stack(&self) -> Option<StackId> {
+        self.subject_stack
+    }
+
+    #[must_use]
+    pub const fn subject_task(&self) -> Option<TaskId> {
+        self.subject_task
+    }
+
+    /// The keymap context of the current view (the chunk-2 seam).
+    #[must_use]
+    pub const fn context(&self) -> ContextId {
+        match self.view {
+            ViewId::Board => ContextId::Board,
+            ViewId::StackDetail => ContextId::StackDetail,
+            ViewId::TaskDetail => ContextId::TaskDetail,
+        }
+    }
+
+    /// The board's stack ids in display order (D10).
+    #[must_use]
+    pub fn stack_ids(state: &AppState) -> Vec<StackId> {
+        live_board(state)
+            .map(|board| stacks_in_board(state, board.id))
+            .map(|stacks| stacks.into_iter().map(|s| s.id).collect())
+            .unwrap_or_default()
+    }
+
+    /// The board's task ids in reading order (D7): columns in stack
+    /// order, tasks in canonical order.
+    #[must_use]
+    pub fn reading_order(state: &AppState) -> Vec<TaskId> {
+        Self::stack_ids(state)
+            .into_iter()
+            .flat_map(|stack| state.tasks_in_stack(stack))
+            .map(|t| t.id)
+            .collect()
+    }
+
+    fn first_task_of(state: &AppState, stack: StackId) -> Option<TaskId> {
+        state.tasks_in_stack(stack).first().map(|t| t.id)
+    }
+
+    // -- navigation (D7) ------------------------------------------------
+
+    /// `nav.next-view`: the one cycle with subject validation — a
+    /// view without a subject is skipped (an empty board stays put).
+    pub fn next_view(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.step_view(state, 1)
+    }
+
+    /// `nav.prev-view`: the cycle backwards.
+    pub fn prev_view(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.step_view(state, -1)
+    }
+
+    fn step_view(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
+        let order = [ViewId::Board, ViewId::StackDetail, ViewId::TaskDetail];
+        let current = order.iter().position(|v| *v == self.view).unwrap_or(0);
+        let next = if direction > 0 {
+            order[(current + 1) % order.len()]
+        } else {
+            order[(current + order.len() - 1) % order.len()]
+        };
+        if self.enter(state, next) {
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Enters `view` if it has a subject; snapshots it (D7). Returns
+    /// whether the switch happened.
+    fn enter(&mut self, state: &AppState, view: ViewId) -> bool {
+        match view {
+            ViewId::Board => {
+                self.view = ViewId::Board;
+                true
+            }
+            ViewId::StackDetail => {
+                let stack = self
+                    .focused_stack(state)
+                    .or(self.selected_stack)
+                    .or_else(|| Self::stack_ids(state).first().copied());
+                match stack {
+                    Some(stack) => {
+                        self.view = ViewId::StackDetail;
+                        self.subject_stack = Some(stack);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            ViewId::TaskDetail => {
+                let task = self.focused_task.or_else(|| {
+                    self.subject_stack
+                        .and_then(|s| Self::first_task_of(state, s))
+                });
+                match task {
+                    Some(task) => {
+                        self.view = ViewId::TaskDetail;
+                        self.subject_task = Some(task);
+                        true
+                    }
+                    None => false,
+                }
+            }
+        }
+    }
+
+    /// `nav.focus-board`: back to the board view (D7).
+    pub fn focus_board(&mut self) -> Vec<FlowOutcome> {
+        self.view = ViewId::Board;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    // -- board focus walk (D7/D8) ----------------------------------------
+
+    /// `nav.next-item` without a move flow: in compact, selection
+    /// follows focus at the switcher level first (wrap — segmented
+    /// control convention); the task walk itself never wraps (D7).
+    pub fn advance_focus(&mut self, state: &AppState, compact: bool) -> Vec<FlowOutcome> {
+        self.step_focus(state, 1, compact)
+    }
+
+    /// `nav.prev-item` without a move flow; retreating before the
+    /// first card in compact returns to the switcher level.
+    pub fn retreat_focus(&mut self, state: &AppState, compact: bool) -> Vec<FlowOutcome> {
+        self.step_focus(state, -1, compact)
+    }
+
+    fn step_focus(&mut self, state: &AppState, direction: i32, compact: bool) -> Vec<FlowOutcome> {
+        // Switcher level in compact (no card focused): advance/retreat
+        // move the stack selection (wrap) and land on the new stack's
+        // first task — one keypress per switch (D8).
+        if compact && self.focused_task.is_none() {
+            let stacks = Self::stack_ids(state);
+            if stacks.is_empty() {
+                return Vec::new();
+            }
+            let next = match self.selected_stack {
+                None => {
+                    if direction > 0 {
+                        stacks[0]
+                    } else {
+                        stacks[stacks.len() - 1]
+                    }
+                }
+                Some(selected) => {
+                    let current = stacks.iter().position(|s| *s == selected).unwrap_or(0);
+                    stacks[wrapped_index(current, direction, stacks.len())]
+                }
+            };
+            self.selected_stack = Some(next);
+            self.focused_task = Self::first_task_of(state, next);
+            return vec![FlowOutcome::RefreshNow];
+        }
+        let domain: Vec<TaskId> = if compact {
+            match self
+                .selected_stack
+                .or_else(|| Self::stack_ids(state).first().copied())
+            {
+                Some(stack) => state
+                    .tasks_in_stack(stack)
+                    .into_iter()
+                    .map(|t| t.id)
+                    .collect(),
+                None => Vec::new(),
+            }
+        } else {
+            Self::reading_order(state)
+        };
+        let Some(current) = self
+            .focused_task
+            .and_then(|id| domain.iter().position(|t| *t == id))
+        else {
+            // No focus yet: entering the walk lands on the first card.
+            return match domain.first() {
+                Some(first) => {
+                    self.focused_task = Some(*first);
+                    vec![FlowOutcome::RefreshNow]
+                }
+                None => Vec::new(),
+            };
+        };
+        let next = i64::from(direction) + i64::try_from(current).unwrap_or(0);
+        if next < 0 {
+            if compact {
+                // Retreat past the first card hands focus back to the
+                // switcher level (selection-follows-focus, D8).
+                self.focused_task = None;
+                return vec![FlowOutcome::RefreshNow];
+            }
+            return Vec::new(); // no wrap (D7)
+        }
+        match domain.get(usize::try_from(next).unwrap_or(usize::MAX)) {
+            Some(id) => {
+                self.focused_task = Some(*id);
+                vec![FlowOutcome::RefreshNow]
+            }
+            None => Vec::new(), // no wrap (D7): the ends hold
+        }
+    }
+
+    /// The compact switcher's selection move (keys while the switcher
+    /// leads, or a segment click — one mechanism, D8). Board focus
+    /// resets to the new stack's first task.
+    pub fn select_stack(&mut self, state: &AppState, stack: StackId) -> Vec<FlowOutcome> {
+        self.selected_stack = Some(stack);
+        self.focused_task = Self::first_task_of(state, stack);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// A card click: sets focus/selection state only (§7.1 mouse
+    /// discipline); the action layer does the rest.
+    pub fn activate_card(&mut self, task: TaskId, stack: StackId) -> Vec<FlowOutcome> {
+        self.focused_task = Some(task);
+        self.selected_stack = Some(stack);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The `Activate` intent with no flow (D9): open the focused
+    /// task's detail as a title-edit flow (D14).
+    pub fn activate_focused(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Some(task) = self.focused_task.and_then(|id| state.tasks.get(&id)) else {
+            return Vec::new();
+        };
+        self.view = ViewId::TaskDetail;
+        self.subject_task = Some(task.id);
+        self.flow = Flow::EditTitle { task: task.id };
+        self.buffer.clone_from(&task.title);
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    // -- create flow (D8) --------------------------------------------------
+
+    /// The stack a create row opens in: the focused stack (Board) or
+    /// the selected/subject stack; `None` on an empty board.
+    #[must_use]
+    pub fn create_target_stack(&self, state: &AppState) -> Option<StackId> {
+        match self.view {
+            ViewId::Board => self
+                .focused_stack(state)
+                .or(self.selected_stack)
+                .or_else(|| Self::stack_ids(state).first().copied()),
+            ViewId::StackDetail => self.subject_stack,
+            ViewId::TaskDetail => self
+                .subject_task
+                .and_then(|t| state.tasks.get(&t))
+                .map(|t| t.stack),
+        }
+    }
+
+    /// `BeginCreate`: opens the row in insert mode (D5).
+    pub fn begin_create(&mut self, stack: StackId) -> Vec<FlowOutcome> {
+        self.flow = Flow::Create { stack };
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// Text commit (D9): the create row appends a task; the title
+    /// editor updates it. An empty buffer commits nothing (the flow
+    /// simply ends — the CLI owns title validation, the UI dispatches
+    /// only well-formed commands). The flow always ends and normal
+    /// mode returns.
+    pub fn commit_edit(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let title = self.buffer.trim().to_owned();
+        let flow = std::mem::take(&mut self.flow);
+        self.buffer.clear();
+        let mut outcomes = vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow];
+        match flow {
+            Flow::Create { stack } if !title.is_empty() => {
+                outcomes.insert(
+                    0,
+                    FlowOutcome::Command(StateCommand::CreateTask {
+                        title,
+                        stack,
+                        order: append_order(state, stack),
+                    }),
+                );
+            }
+            Flow::EditTitle { task } if !title.is_empty() => {
+                outcomes.insert(
+                    0,
+                    FlowOutcome::Command(StateCommand::UpdateTask {
+                        id: task,
+                        changes: TaskChanges {
+                            title: Some(title),
+                            ..TaskChanges::default()
+                        },
+                    }),
+                );
+            }
+            _ => {}
+        }
+        outcomes
+    }
+
+    /// The only non-committing exit (D9): discard the buffer.
+    pub fn discard_edit(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::None;
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
+    // -- move flow (D8) ----------------------------------------------------
+
+    /// `RequestMove` with no flow: the focused task starts moving
+    /// toward its own stack. Re-request is the cancel (toggle, zero
+    /// new bindings) — the adapter's table routes that to
+    /// [`Self::cancel_move`].
+    pub fn start_move(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Some(task) = self.focused_task else {
+            return Vec::new();
+        };
+        let Some(target) = self
+            .focused_stack(state)
+            .or_else(|| Self::stack_ids(state).first().copied())
+        else {
+            return Vec::new();
+        };
+        self.flow = Flow::Move { task, target };
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Focus next/prev during a move flow: cycle the target stack
+    /// (wrap — in compact this is exactly the switcher highlighting).
+    pub fn cycle_move_target(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
+        let Flow::Move { target, .. } = self.flow else {
+            return Vec::new();
+        };
+        let stacks = Self::stack_ids(state);
+        if stacks.is_empty() {
+            return Vec::new();
+        }
+        let current = stacks
+            .iter()
+            .position(|s| *s == target)
+            .map_or(0, |i| wrapped_index(i, direction, stacks.len()));
+        if let Flow::Move { target, .. } = &mut self.flow {
+            *target = stacks[current];
+        }
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// `Activate` during a move flow: confirm — `MoveTask` append to
+    /// the target (D8).
+    pub fn confirm_move(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Flow::Move { task, target } = self.flow else {
+            return Vec::new();
+        };
+        let order = append_order(state, target);
+        self.flow = Flow::None;
+        vec![
+            FlowOutcome::Command(StateCommand::MoveTask {
+                id: task,
+                stack: target,
+                order,
+            }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
+    /// `RequestMove` during a move flow: cancel, nothing dispatched.
+    pub fn cancel_move(&mut self) -> Vec<FlowOutcome> {
+        if self.flow == Flow::None {
+            return Vec::new();
+        }
+        self.flow = Flow::None;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    // -- refresh-time reconciliation (D7) ---------------------------------
+
+    /// Re-validates subjects and focus against a fresh snapshot: a
+    /// deleted task pops `TaskDetail` → Board, a deleted stack pops
+    /// `StackDetail` → Board and re-falls-back the compact selection;
+    /// flows on vanished entities end without commands.
+    pub fn reconcile(&mut self, state: &AppState) {
+        let is_live = |id: TaskId| {
+            state
+                .tasks
+                .get(&id)
+                .is_some_and(taskboard_domain::Task::is_live)
+        };
+        if self.focused_task.is_some_and(|t| !is_live(t)) {
+            self.focused_task = None;
+        }
+        let stacks = Self::stack_ids(state);
+        if self.selected_stack.is_some_and(|s| !stacks.contains(&s)) {
+            self.selected_stack = stacks.first().copied();
+        }
+        if let Some(stack) = self.subject_stack
+            && !stacks.contains(&stack)
+        {
+            self.subject_stack = None;
+            if self.view == ViewId::StackDetail {
+                self.view = ViewId::Board;
+            }
+        }
+        if let Some(task) = self.subject_task
+            && !is_live(task)
+        {
+            self.subject_task = None;
+            if self.view == ViewId::TaskDetail {
+                self.view = ViewId::Board;
+            }
+            if matches!(self.flow, Flow::EditTitle { task: t } if t == task) {
+                self.flow = Flow::None;
+                self.buffer.clear();
+            }
+        }
+        match self.flow {
+            Flow::Create { stack } if !stacks.contains(&stack) => self.flow = Flow::None,
+            Flow::Move { task, .. } if !is_live(task) => self.flow = Flow::None,
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::collections::BTreeSet;
+    use taskboard_domain::{Board, BoardClocks, BoardId, Stack, StackClocks, Task, TaskClocks};
+
+    fn epoch() -> chrono::DateTime<Utc> {
+        taskboard_domain::BoardClocks::epoch()
+    }
+
+    fn clocks() -> TaskClocks {
+        TaskClocks {
+            title: epoch(),
+            description: epoch(),
+            duedate: epoch(),
+            done: epoch(),
+            position: epoch(),
+            labels: epoch(),
+            archived: epoch(),
+            deleted: epoch(),
+        }
+    }
+
+    fn task(id: TaskId, stack: StackId, order: i64) -> Task {
+        Task {
+            id,
+            remote: None,
+            title: format!("task-{order}"),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            stack,
+            order,
+            labels: BTreeSet::new(),
+            archived: false,
+            deleted: false,
+            clocks: clocks(),
+            remote_seen: None,
+        }
+    }
+
+    fn stack(id: StackId, board: BoardId, order: i64) -> Stack {
+        Stack {
+            id,
+            remote: None,
+            board,
+            title: format!("stack-{order}"),
+            order,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: epoch(),
+                order: epoch(),
+                deleted: epoch(),
+            },
+            remote_seen: None,
+        }
+    }
+
+    /// A board with stacks s0, s1 (display order) and tasks a, b in s0
+    /// and c in s1 (canonical order a, b, c).
+    fn fixture() -> (AppState, BoardId, [StackId; 2], [TaskId; 3]) {
+        let board_id = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let s0 = StackId::from_uuid(uuid::Uuid::now_v7());
+        let s1 = StackId::from_uuid(uuid::Uuid::now_v7());
+        let a = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let b = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let c = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        state.boards.insert(
+            board_id,
+            Board {
+                id: board_id,
+                remote: None,
+                title: "board".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks { title: epoch() },
+                remote_seen: None,
+            },
+        );
+        state.stacks.insert(s0, stack(s0, board_id, 0));
+        state.stacks.insert(s1, stack(s1, board_id, 1));
+        state.tasks.insert(a, task(a, s0, 0));
+        state.tasks.insert(b, task(b, s0, 1));
+        state.tasks.insert(c, task(c, s1, 0));
+        (state, board_id, [s0, s1], [a, b, c])
+    }
+
+    // -- the view cycle (D7) --------------------------------------------
+
+    #[test]
+    fn view_cycle_walks_board_stack_task_and_back() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        assert_eq!(vs.view(), ViewId::Board);
+
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::StackDetail);
+        assert_eq!(
+            vs.subject_stack(),
+            Some(s0),
+            "first stack is the fallback subject"
+        );
+
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        assert_eq!(
+            vs.subject_task(),
+            Some(a),
+            "first card is the fallback subject"
+        );
+
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::Board, "cycle wraps");
+        vs.prev_view(&state);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        vs.focus_board();
+        assert_eq!(vs.view(), ViewId::Board);
+    }
+
+    #[test]
+    fn focus_moves_retarget_the_view_cycle_entry() {
+        let (state, _, [_, s1], [.., c]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(c, s1);
+        vs.next_view(&state);
+        assert_eq!(
+            vs.subject_stack(),
+            Some(s1),
+            "StackDetail opens on the focused stack"
+        );
+        vs.next_view(&state);
+        assert_eq!(
+            vs.subject_task(),
+            Some(c),
+            "TaskDetail opens on the focused task"
+        );
+    }
+
+    #[test]
+    fn entering_a_view_snapshots_its_subject() {
+        let (state, _, [s0, s1], [a, b, c]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(a, s0);
+        vs.next_view(&state);
+        assert_eq!(vs.subject_stack(), Some(s0));
+        // Focus moves in the background view must not retarget it.
+        vs.activate_card(c, s1);
+        assert_eq!(vs.subject_stack(), Some(s0));
+        // …and the TaskDetail subject likewise.
+        vs.next_view(&state);
+        assert_eq!(vs.subject_task(), Some(c));
+        vs.activate_card(b, s0);
+        assert_eq!(vs.subject_task(), Some(c));
+    }
+
+    #[test]
+    fn an_empty_board_keeps_the_cycle_on_board() {
+        let mut vs = ViewState::new();
+        let state = AppState::default();
+        assert_eq!(vs.next_view(&state), Vec::new());
+        assert_eq!(vs.view(), ViewId::Board);
+    }
+
+    #[test]
+    fn cycle_entry_into_task_detail_never_opens_an_edit_flow() {
+        // Navigation is not activation: cycling into TaskDetail shows
+        // the detail; only `Activate` begins the title edit (D14/D9).
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.next_view(&state);
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    // -- the focus walk (D7/D8) -------------------------------------------
+
+    #[test]
+    fn reading_order_walk_is_columns_then_cards_without_wrap() {
+        let (state, _, _, [a, b, c]) = fixture();
+        let mut vs = ViewState::new();
+        vs.advance_focus(&state, false);
+        assert_eq!(
+            vs.focused_task(),
+            Some(a),
+            "entering the walk takes the first card"
+        );
+        vs.advance_focus(&state, false);
+        vs.advance_focus(&state, false);
+        assert_eq!(vs.focused_task(), Some(c));
+        vs.advance_focus(&state, false);
+        assert_eq!(vs.focused_task(), Some(c), "no wrap at the end");
+        vs.retreat_focus(&state, false);
+        assert_eq!(vs.focused_task(), Some(b));
+        vs.retreat_focus(&state, false);
+        vs.retreat_focus(&state, false);
+        assert_eq!(vs.focused_task(), Some(a), "no wrap at the start");
+    }
+
+    #[test]
+    fn compact_walk_covers_the_selected_stack_and_returns_to_the_switcher() {
+        let (state, _, [s0, s1], [a, b, c]) = fixture();
+        let mut vs = ViewState::new();
+        // Entering the walk takes the first stack's first card
+        // (one keypress per switch, D8).
+        vs.advance_focus(&state, true);
+        assert_eq!(vs.selected_stack(), Some(s0));
+        assert_eq!(vs.focused_task(), Some(a));
+        vs.advance_focus(&state, true);
+        assert_eq!(vs.focused_task(), Some(b));
+        vs.advance_focus(&state, true);
+        assert_eq!(vs.focused_task(), Some(b), "selected stack's end holds");
+        vs.retreat_focus(&state, true);
+        vs.retreat_focus(&state, true);
+        assert_eq!(
+            vs.focused_task(),
+            None,
+            "retreat past the first card yields to the switcher"
+        );
+        // Switcher level: advance moves the selection and lands on the
+        // new stack's first card; selection wraps.
+        vs.advance_focus(&state, true);
+        assert_eq!(vs.selected_stack(), Some(s1));
+        assert_eq!(vs.focused_task(), Some(c));
+        vs.retreat_focus(&state, true);
+        vs.retreat_focus(&state, true);
+        assert_eq!(
+            vs.selected_stack(),
+            Some(s0),
+            "retreat moves the selection back"
+        );
+        assert_eq!(vs.focused_task(), Some(a));
+        vs.retreat_focus(&state, true);
+        vs.retreat_focus(&state, true);
+        assert_eq!(
+            vs.selected_stack(),
+            Some(s1),
+            "switcher selection wraps backwards"
+        );
+        assert_eq!(vs.focused_task(), Some(c));
+    }
+
+    #[test]
+    fn select_stack_resets_focus_to_the_new_stacks_first_task() {
+        let (state, _, [s0, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.select_stack(&state, s1);
+        vs.select_stack(&state, s0);
+        assert_eq!(vs.selected_stack(), Some(s0));
+        assert_eq!(vs.focused_task(), Some(a), "first task of the new stack");
+    }
+
+    #[test]
+    fn activate_card_sets_selection_state_only() {
+        let (_state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        let outcomes = vs.activate_card(a, s0);
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.focused_task(), Some(a));
+        assert_eq!(*vs.flow(), Flow::None, "a click never starts a flow");
+    }
+
+    // -- the create flow (D8/D9) -------------------------------------------
+
+    #[test]
+    fn create_flow_commits_an_appended_create_task() {
+        let (state, _, [s0, _], [_, b, _]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(b, s0);
+        let target = vs.create_target_stack(&state).expect("target");
+        assert_eq!(target, s0, "the focused stack is the create target");
+        vs.begin_create(target);
+        assert_eq!(*vs.flow(), Flow::Create { stack: s0 });
+        vs.set_buffer("new".to_owned());
+        assert_eq!(
+            vs.commit_edit(&state)[..1],
+            [FlowOutcome::Command(StateCommand::CreateTask {
+                title: "new".to_owned(),
+                stack: s0,
+                order: 2, // append after a(0), b(1)
+            })][..]
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn create_flow_in_stack_detail_targets_the_subject() {
+        let (state, _, [s0, s1], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.select_stack(&state, s1);
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::StackDetail);
+        assert_eq!(vs.create_target_stack(&state), Some(s1), "subject stack");
+        let _ = s0;
+    }
+
+    #[test]
+    fn an_empty_create_buffer_commits_nothing_but_ends_the_flow() {
+        let (state, _, [s0, _], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.begin_create(s0);
+        vs.set_buffer("   ".to_owned());
+        let outcomes = vs.commit_edit(&state);
+        assert!(
+            !outcomes
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::Command(_)))
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn discard_edit_is_the_only_non_committing_exit() {
+        let (_state, _, [s0, _], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.begin_create(s0);
+        vs.set_buffer("kept".to_owned());
+        let outcomes = vs.discard_edit();
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+        );
+        assert_eq!(vs.buffer(), "");
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    // -- the title edit flow (D14) ------------------------------------------
+
+    #[test]
+    fn activate_focused_opens_the_title_edit_with_the_mirror_seeded() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(a, s0);
+        vs.activate_focused(&state);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        assert_eq!(vs.subject_task(), Some(a));
+        assert_eq!(*vs.flow(), Flow::EditTitle { task: a });
+        assert_eq!(
+            vs.buffer(),
+            "task-0",
+            "the mirror starts at the current title"
+        );
+        vs.set_buffer("renamed".to_owned());
+        assert_eq!(
+            vs.commit_edit(&state)[..1],
+            [FlowOutcome::Command(StateCommand::UpdateTask {
+                id: a,
+                changes: TaskChanges {
+                    title: Some("renamed".to_owned()),
+                    ..TaskChanges::default()
+                },
+            })][..]
+        );
+    }
+
+    // -- the move flow (D8/D9) -----------------------------------------------
+
+    #[test]
+    fn move_flow_cycles_the_target_and_confirms_with_append() {
+        let (state, _, [s0, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s0
+            },
+            "the flow starts on the focused task's own stack"
+        );
+        vs.cycle_move_target(&state, 1);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s1
+            }
+        );
+        vs.cycle_move_target(&state, -1);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s0
+            }
+        );
+        vs.cycle_move_target(&state, -1);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s1
+            },
+            "cycle wraps backwards"
+        );
+
+        let outcomes = vs.confirm_move(&state);
+        assert_eq!(
+            outcomes[..1],
+            [FlowOutcome::Command(StateCommand::MoveTask {
+                id: a,
+                stack: s1,
+                order: 1, // append after c(0)
+            })][..]
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn re_requesting_move_cancels_without_dispatch() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        let outcomes = vs.cancel_move();
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn move_without_focus_is_inert() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        assert_eq!(vs.start_move(&state), Vec::new());
+        assert_eq!(vs.confirm_move(&state), Vec::new());
+    }
+
+    #[test]
+    fn flows_are_exclusive_starting_one_ends_the_other() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        // Beginning a create ends the move flow (one flow at a time).
+        vs.begin_create(s0);
+        assert!(matches!(vs.flow(), Flow::Create { .. }));
+        vs.activate_focused(&state);
+        assert!(
+            matches!(vs.flow(), Flow::EditTitle { .. }),
+            "activation replaces the flow"
+        );
+    }
+
+    // -- reconciliation (D7) ---------------------------------------------------
+
+    #[test]
+    fn reconcile_pops_task_detail_when_the_subject_is_deleted() {
+        let (mut state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(a, s0);
+        vs.activate_focused(&state);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        state.tasks.get_mut(&a).expect("task").deleted = true;
+        vs.reconcile(&state);
+        assert_eq!(vs.view(), ViewId::Board, "deleted subject pops to Board");
+        assert_eq!(vs.focused_task(), None);
+        assert_eq!(
+            *vs.flow(),
+            Flow::None,
+            "the orphaned edit flow ends silently"
+        );
+    }
+
+    #[test]
+    fn reconcile_refalls_back_the_compact_selection_and_pops_stack_detail() {
+        let (mut state, _, [s0, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(a, s0);
+        vs.select_stack(&state, s1);
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::StackDetail);
+        state.stacks.get_mut(&s1).expect("stack").deleted = true;
+        vs.reconcile(&state);
+        assert_eq!(vs.view(), ViewId::Board);
+        assert_eq!(vs.selected_stack(), Some(s0), "selection re-falls-back");
+    }
+
+    #[test]
+    fn reconcile_ends_flows_on_vanished_targets() {
+        let (mut state, _, [s0, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        state.tasks.get_mut(&a).expect("task").deleted = true;
+        vs.reconcile(&state);
+        assert_eq!(*vs.flow(), Flow::None);
+
+        vs.begin_create(s1);
+        state.stacks.get_mut(&s1).expect("stack").deleted = true;
+        vs.reconcile(&state);
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn append_order_continues_the_canonical_order() {
+        let (state, _, [s0, s1], _) = fixture();
+        assert_eq!(append_order(&state, s0), 2);
+        assert_eq!(append_order(&state, s1), 1);
+        let empty = StackId::from_uuid(uuid::Uuid::now_v7());
+        assert_eq!(append_order(&state, empty), 0);
+    }
+}
