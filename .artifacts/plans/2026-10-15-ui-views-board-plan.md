@@ -44,7 +44,15 @@
   routing through the chunk-2 action layer. Every open question is
   settled by a recorded decision (§3); deviations from the design
   plan are enumerated with reasons (§11, marked **[DEV]**).
-- **Status**: READY — stage 2 implements exactly this plan;
+- **Status**: READY (rev 1 after user review 2026-10-15: D9's
+  flow-effect vocabulary renamed to intent names — `Activate`
+  (was BeginEdit), `RequestMove` (was BeginMove) — with the
+  flow-conditional dispatch as one visible adapter table and
+  view_state methods named by function; review questions answered
+  and recorded in D3, D4, D7, D10, D13, D14; the [DEV] horizon
+  const accepted conditional on a backlog entry, which — with the
+  review's other follow-ups — landed in this branch's
+  `docs(backlog)` commit) — stage 2 implements exactly this plan;
   deviations from *this* plan need a fresh recorded reason.
 
 ---
@@ -242,6 +250,16 @@ accessible labels only where the screen-reader address benefits
   builds the window model values from presentation output + view
   state. Thin by construction; exercised through component tests.
 
+*Review note (rev 1, second-UI question)*: the extraction path here
+mirrors the keymap module's Q2 trigger — `presentation.rs` stays
+slint-free precisely so a **second Rust consumer** can lift it into
+its own crate unchanged. A non-Rust UI (e.g. Kotlin/Android) cannot
+import this code at all; it would reuse the *domain* (over the
+daemon IPC lane or a future FFI surface) and re-implement display
+mapping natively — the concepts (due classification, badge mapping,
+canonical ordering) port, the module does not. The seam is preserved
+either way; no action in this chunk.
+
 ### D4 — Registry grows `reminder.snooze` / `reminder.mute` (Q23's "via actions")
 
 Q23 (accepted) says the banner does "snooze/mute **via actions**",
@@ -259,7 +277,11 @@ cites Q23 as covered). Two rows are added:
 
 No preset binds them (menu-reachable via `app.menu`, which satisfies
 §7.1's keyboard-equivalence bar); the preset-coverage core-verb
-list is unchanged. `DispatchCtx` grows `reminder_target:
+list is unchanged. *Review note (rev 1)*: the end product **will**
+carry real keymap bindings for snooze/mute once the reminder UI
+stabilises — recorded as the backlog entry "[2026-10-15] Preset
+bindings for `reminder.snooze` / `reminder.mute`" (this branch's
+`docs(backlog)` commit), to be picked with the reminders-UI wave. `DispatchCtx` grows `reminder_target:
 Option<ReminderTarget>` (`{ task, reminder, occurrence }`) set by
 the adapter when a banner row is activated; `postpone` is the const
 `SNOOZE_POSTPONE = 1 h` in the router. Semantics recorded honestly
@@ -306,9 +328,10 @@ flipping mode into the void.
 
 `nav.next-view`, `nav.prev-view`, `nav.focus-board`,
 `nav.next-item`, `nav.prev-item`, `task.create`, `task.edit`,
-`task.move` flip to `enabled: true`. New `UiEffect` variants:
-`FocusNext`, `FocusPrev`, `NextView`, `PrevView`, `FocusBoard`,
-`BeginCreate`, `BeginEdit`, `BeginMove`. The router stays pure and
+`task.move` flip to `enabled: true`. New `UiEffect` variants
+(intent-named per D9 rev 1): `FocusNext`, `FocusPrev`, `NextView`,
+`PrevView`, `FocusBoard`, `BeginCreate`, `Activate`, `RequestMove`.
+The router stays pure and
 exhaustive: these actions map to the effects; `reminder.snooze`/
 `reminder.mute` map to `Command(...)` built from
 `ctx.reminder_target` (`NoTarget` without one). The **adapter**
@@ -339,6 +362,11 @@ task's stack; `None` when no focus). `nav.next-item`/`prev-item`
 walk cards in reading order — columns in stack order, tasks in
 canonical order — **without wrap** (stops at the ends; vim-faithful,
 recorded). Compact reading order is the selected stack's tasks only.
+*Review note (rev 1)*: `nav.first-item` / `nav.last-item` (emacs
+`Alt+<` / `Alt+>`) are wanted later — recorded as the backlog entry
+"[2026-10-15] First/last-item focus navigation"; new actions, so
+they are a registry+presets change in a later round, not a chunk-3
+reinterpretation of `FocusNext`/`FocusPrev`.
 
 ### D8 — Board degeneration: `BoardMode` + stack switcher + collapsed decorations
 
@@ -368,26 +396,54 @@ target: focused_stack }`; while active, `nav.next-item`/`prev-item`
 cycle the **target stack** (in compact that is exactly the switcher
 highlighting — one mechanism), and `task.move` pressed again cancels
 (toggle — zero new bindings). Confirm rides `Return`: it is bound to
-`task.edit` in Board (standard/vi), and a move flow interprets the
-`BeginEdit` effect as **confirm** (D9's flows-interpret-effects
-rule), dispatching `MoveTask { id, stack: target, order: append }`. The
+`task.edit` in Board (standard/vi); the router emits `Activate` for
+it, and the move flow's row in D9's interpretation table routes that
+to `confirm_move()`, dispatching
+`MoveTask { id, stack: target, order: append }`. The
 status bar shows the flow state with a `kbd-hint` projection of the
 `task.move` binding (D11). **Pointer drag is [DEV]-deferred** (D8 in
 §11): the move flow is the complete, keyboard-first path at every
 breakpoint; Slint 1.18 has no widget-level DnD, and hand-rolling it
 is disproportionate to the chunk (see §11 for the full reason).
 
-### D9 — Flows interpret effects; the adapter is the only interpreter
+### D9 — Intent-named effects; one visible flow-interpretation table (rev 1)
 
-`view_state` exposes `apply_effect(&mut self, effect) -> Vec<
-FlowOutcome>` where `FlowOutcome` is `{ Command(StateCommand),
-SetMode(Mode), Focus(Field), RefreshNow, None }`-shaped: edit and
-move flows reinterpret `FocusNext/FocusPrev/BeginEdit/BeginMove/
-SetMode` contextually (move flow: FocusNext cycles targets, BeginMove
-toggles cancel, BeginEdit confirms; edit flow: SetMode(Normal)
-discards, anything else commits-then-proceeds only for view-leaving
-effects — recorded rule: **leaving the edit field by effect first
-commits the buffer** except cancel). Rules that keep this safe:
+Review round 1 rejected the draft's naming: `BeginMove` toggling a
+cancel, `BeginEdit` confirming a move, and `SetMode(Normal)`
+discarding edits all surprised the reader. The redesign keeps the
+mechanics (same keystrokes, same actions, zero new bindings) and
+makes every name state its function:
+
+- **`UiEffect` names are intents**, not keypress echoes:
+  `Activate` (was `BeginEdit`) is the primary-activation intent —
+  open the focused task's detail, or commit the pending flow;
+  `RequestMove` (was `BeginMove`) asks for move-mode; `BeginCreate`,
+  `FocusNext`/`FocusPrev`, `NextView`/`PrevView`, `FocusBoard`
+  already read as intents and are unchanged.
+- **The flow-conditional dispatch is one visible table in the
+  adapter** — a single `match (active_flow, effect)` whose every
+  arm routes to a view_state method named by what it does:
+
+| active flow | effect | view_state call | outcome |
+|---|---|---|---|
+| none | `Activate` | `activate_focused()` | open TaskDetail / begin title edit in it |
+| none | `RequestMove` | `start_move(focused)` | move flow begins |
+| none | `BeginCreate` | `begin_create(stack)` | create row opens, insert mode |
+| move | `FocusNext`/`FocusPrev` | `cycle_move_target(±1)` | target stack advances |
+| move | `Activate` | `confirm_move()` | `MoveTask { .., order: append }` |
+| move | `RequestMove` | `cancel_move()` | flow ends, nothing dispatched |
+| edit | `SetMode(Normal)` | `discard_edit()` | buffer discarded, focus returns |
+| edit | (any view-leaving effect) | `commit_edit()` then proceed | recorded rule: **leaving the edit field by effect first commits the buffer**; `discard_edit` is the only non-committing exit |
+| — | `FocusNext`/`FocusPrev` (no flow) | `advance_focus()` / `retreat_focus()` | board reading-order walk (D7) |
+
+  Text commits arrive as `TextInput` `accepted`/`cancelled`
+  callbacks → `commit_edit()` / `discard_edit()` directly (D5), not
+  through the effect table. `view_state` methods return
+  `Vec<FlowOutcome>` where `FlowOutcome` is `{ Command(StateCommand),
+  SetMode(Mode), Focus(Field), RefreshNow }`-shaped — the adapter
+  applies outcomes, it never re-decides them.
+
+Rules that keep this safe:
 
 1. Text buffers live in the slint `TextInput`s and in a Rust mirror
    the adapter updates on every keystroke callback (`edited(string)`
@@ -410,6 +466,18 @@ the precedent convention). `live_board(state) -> Option<&Board>`:
 the single non-deleted, non-archived board (MVP 0..1). Due
 classification is **set-membership over the domain functions** (§4)
 — no predicate reimplementation anywhere.
+
+*Review answer (rev 1, "helper or concept?")*: the domain has the
+**concept, fully** — `Stack.order: i64` is a persisted, sync-merged
+field ("sort position within the board") with write commands
+(`CreateStack { order }`, `MoveStack { id, order }`) the CLI already
+drives. What is missing is only the **reading helper** (the tasks
+side has `live_tasks()`/`tasks_in_stack()`; the stacks side never
+grew one because the CLI listed ad hoc). So `stacks_in_board` is a
+display-side reader over a real domain ordering — not a concept the
+UI invented. If a second consumer wants the same ordering, the
+helper graduates into `AppState` (a one-move refactor, the same
+extraction trigger as D3's note).
 
 ### D11 — Status bar (L2): sync badge + startup warning + banner slot + flow hint
 
@@ -476,6 +544,17 @@ domain claim). The banner is chrome (visible in every view), part of
   arrive empty; label chips are a W1-era decoration — recorded so
   the omission is visibly deliberate).
 
+*Review answer (rev 1, "are the missing widgets backlogged?")*: yes
+— enumerated and appended in this branch's `docs(backlog)` commit:
+"[2026-10-15] Due-date editor widget for the task detail view",
+"[2026-10-15] Description editor widget for the task detail view",
+plus the review-conditioned entries (drag-and-drop, configurable
+horizon, snooze/mute bindings, first/last-item navigation) and
+"[2026-10-15] Task reopen action in the UI" (from D14's answer
+below). Stack management (D13 bullet 3) rides the existing
+registry-growth path rather than a backlog entry — it needs actions
+first, and the waves that want it will bring them.
+
 ### D14 — Task detail = title-editing surface + metadata display
 
 `task.edit` (or `Return` on a card, or card double-activation —
@@ -487,6 +566,16 @@ due phrase (mono, tone), description (body, read-only), completion
 state; `task.complete`/`task.delete` act on the viewed task from
 every context that offers them. `task.delete` from TaskDetail pops
 to Board after dispatch.
+
+*Review answer (rev 1, "is completion changeable now?")*: **yes,
+completing works from day one** — `task.complete` has been enabled
+since chunk 2 and routes `SetTaskDone { id, done: true }`; this
+chunk makes it act on the focused card (Board/StackDetail) and the
+viewed task (TaskDetail). **Reopening** (`done: false`) is the gap:
+the command exists but no registry action covers it, so v0.1.0
+reopen is CLI-side — recorded as the backlog entry
+"[2026-10-15] Task reopen action in the UI" (a registry+presets
+change in a later round).
 
 ### D15 — Focus architecture (§7.1): scope map, tab order, rings
 
@@ -781,7 +870,7 @@ that consumes them (chunk-2's proven ordering).
    due_phrase/sync_badge/stacks_in_board/live_board/banner_rows —
    full unit + proptest catalogue (§4) first, then impl.
 3. **Registry/router/shell/menu edits (D4–D6)**: reminder rows +
-   enabled flips + new effects + `reminder_target` ctx + chain
+   enabled flips + the D9 intent-named effects + `reminder_target` ctx + chain
    masking (`mode == Insert` → `[ViInsert, Global]`) + preset
    `Escape → mode.normal` (standard/emacs `ViInsert`); rewrite
    `chunk3_staged_actions_are_disabled` → `only_reserved_actions_
@@ -789,10 +878,11 @@ that consumes them (chunk-2's proven ordering).
    router/shell/menu unit tests extended.
 4. **`view_state.rs`**: ViewId cycle, board focus walk (reading
    order, no wrap), compact stack selection, reconciliation rules,
-   edit flows (open/commit/cancel/buffer mirror rules), move flow
-   (target cycle, toggle-cancel, confirm, append order); pure unit
-   tests with fixture `AppState`s (domain `test_support` strategies
-   where useful).
+   the D9-named methods (`activate_focused`, `advance_focus`/
+   `retreat_focus`, `begin_create`/`commit_edit`/`discard_edit`,
+   `start_move`/`cycle_move_target`/`confirm_move`/`cancel_move`)
+   with buffer-mirror rules; pure unit tests with fixture
+   `AppState`s (domain `test_support` strategies where useful).
 5. **L1 widgets**: `badge`, `status-dot`, `empty-state`,
    `icon-button` (+IconKind shapes), `text-field` (TextInput wrap,
    edited/accepted/cancelled), `list-row`, `task-card`
@@ -832,8 +922,9 @@ view_state: reading-order walk fixtures, cycle semantics,
 reconciliation (focused-task-deleted, stack-deleted fallback,
 empty-board), edit flow (commit produces `CreateTask`/
 `UpdateTask` with append order; cancel discards; buffer mirror),
-move flow (target cycle, toggle cancel, confirm produces `MoveTask`
-append, flow-exclusive rules); router: every flipped action →
+move flow (`cycle_move_target`, `cancel_move` on re-request,
+`confirm_move` produces `MoveTask` append, flow-exclusive rules);
+router: every flipped action →
 effect; snooze/mute → exact commands given target, `NoTarget`
 without; reserved set still disabled; shell chain: insert-mode
 masks view context (updated T23-class test); menu: board chain
@@ -989,7 +1080,9 @@ regenerated snapshots.
    mute via actions" + §7.1's equivalence rule override (D4).
 4. **[DEV] Due-soon horizon is a const, not config** — the domain
    comment anticipated config; Q22 fixes the v0.1.0 config surface
-   (§4).
+   (§4). *Accepted in review conditional on a backlog entry*: landed
+   as "[2026-10-15] Configurable due-soon horizon" (this branch's
+   `docs(backlog)` commit).
 5. **[DEV] Scope cuts recorded in D13** (due-date editing,
    description editing, stack management UI, label chips) — none
    are design-plan violations (the design names the views, not
@@ -1000,7 +1093,11 @@ regenerated snapshots.
    v0.1.0 consumer — landing it consumed avoids both dead code and
    a deferred-primitive hole.
 
-Stage 2 appends the two backlog entries ([DEV] 1 and 5's editing
-cuts) to
-`.artifacts/taskboard-potential-improvements-backlog.md` per the
-AGENTS §7 rule (this stage-1 commit stays plan-only).
+The review round's follow-ups are appended to
+`.artifacts/taskboard-potential-improvements-backlog.md` in this
+branch's `docs(backlog)` commit (seven entries: pointer
+drag-to-move [DEV 1, user-confirmed "definitely"], due-date editor
+widget, description editor widget, task reopen action,
+configurable due-soon horizon [DEV 4's condition], preset bindings
+for snooze/mute [D4 note], first/last-item navigation [D7 note]) —
+per the AGENTS §7 rule; stage 2 no longer owes backlog edits.
