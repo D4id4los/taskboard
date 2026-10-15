@@ -127,7 +127,7 @@ pub fn push(
     push_board(window, state, vs, &sets, &stack_ids, &mut tables, now);
     push_stack_detail(window, state, vs, &sets, &mut tables, now);
     push_task_detail(window, state, vs, &sets, now);
-    push_status_bar(window, state, vs, keymap, chain, now);
+    push_status_bar(window, state, vs, keymap, chain, now, &mut tables);
     tables
 }
 
@@ -280,6 +280,7 @@ fn push_status_bar(
     keymap: &Keymap,
     chain: &[ContextId],
     now: DateTime<Utc>,
+    tables: &mut IdTables,
 ) {
     let badge = presentation::sync_badge(&state.sync);
     window.set_sync_model(SyncBadgeModel {
@@ -294,6 +295,7 @@ fn push_status_bar(
     });
 
     let banner = presentation::banner_rows(state, now);
+    tables.banner.clone_from(&banner);
     let overflow = banner.len().saturating_sub(BANNER_ROW_CAP);
     let rows = VecModel::default();
     for row in banner.iter().take(BANNER_ROW_CAP) {
