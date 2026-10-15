@@ -108,6 +108,17 @@ and eliciting the secret (REPL terminal). Designed in the WI-J round
    needs no secret on the wire — the daemon re-reads its config and
    credential store itself.
 
+   *Completion note (2026-10-15, additive):* the daemon-side attach
+   shipped as =Request::AttachConnector= (branch
+   =feat/app-ipc-attach-verb=) on WI-H's additive pattern — identity
+   only on the wire (a key-set pin proves no field a secret could
+   ride), the daemon re-reads its config and loads its own credential
+   store, swap-first per the detach-first session rule, and the
+   one-shot =connect= nudges best-effort exactly as =logout= nudges
+   detach. The env-store caveat is the typed =credential-unavailable=
+   outcome: for the env store the daemon's own environment governs
+   (restart-with-env stays that store's operating model).
+
 ** Recorded deviation: the prompt seam is async
 
 The design round sketched =PromptReader= as a sync trait used as
