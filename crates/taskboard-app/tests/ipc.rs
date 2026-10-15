@@ -7,18 +7,19 @@
 //! asserted (AGENTS §5). The binary-level journeys (real daemon
 //! process, real locks, signals) are the `cli_ipc` suite's job.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+mod common;
+
+use common::tempdir;
 
 use interprocess::local_socket::traits::tokio::Stream as _;
 use taskboard_app::commands::BasicSession;
 use taskboard_app::config::AppConfig;
 use taskboard_app::ipc::{client, codec, protocol, server};
-use taskboard_app::secrets::{CredentialStore, EnvCredentialStore};
-
-mod common;
-
-use common::tempdir;
+use taskboard_app::secrets::{AppPassword, CredentialStore, EnvCredentialStore};
 
 /// A standalone-backend config over a per-test db (the default config
 /// resolves `standalone` — no server URL — and the credential store is
@@ -629,6 +630,270 @@ async fn ip15_a_standalone_daemon_answers_no_connector() {
             detach_once(&db, "https://cloud.example.com", "alice").await,
             protocol::DetachWireOutcome::NoConnector
         );
+
+        handle.join(DRAIN_BUDGET).await;
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------
+// P5: the daemon-side attach verb (attach from persisted state)
+// ---------------------------------------------------------------------
+
+use common::FakeCredentialStore;
+
+/// The config file the attach tests re-read: boot standalone over the
+/// test db; the tests rewrite the identity keys into it to simulate
+/// what a `connect` ceremony just persisted.
+fn config_file_body(db: &Path, server_url: Option<&str>, username: Option<&str>) -> String {
+    let mut toml = format!("[storage]\ndb_path = '{}'\n", db.display());
+    if let Some(server) = server_url {
+        let _ = writeln!(toml, "\n[nextcloud]\nserver_url = '{server}'");
+        if let Some(user) = username {
+            let _ = writeln!(toml, "username = '{user}'");
+        }
+    }
+    toml
+}
+
+/// Serves a daemon whose `BasicSession.config_path` is a real tempdir
+/// file (the attach verb re-reads it — `None` would resolve against the
+/// CWD/XDG and break hermeticity) and whose store is the shared fake.
+async fn served_with_config_file(
+    dir: &Path,
+    db_name: &str,
+) -> (
+    server::IpcServerHandle,
+    PathBuf,
+    PathBuf,
+    Arc<FakeCredentialStore>,
+) {
+    let db = dir.join(db_name);
+    let config_path = dir.join(format!("{db_name}.toml"));
+    // Boot standalone (no identity in the file — a standalone boot never
+    // consults the store); the tests write the identity keys in to
+    // simulate what a `connect` ceremony just persisted.
+    std::fs::write(&config_path, config_file_body(&db, None, None)).expect("write config file");
+    let config = AppConfig::load(Some(config_path.clone())).expect("config parses");
+    // The secret a `connect` ceremony would have stored: the boot needs
+    // it (the config names an identity), the attach re-reads it live.
+    let store: Arc<FakeCredentialStore> = Arc::new(FakeCredentialStore::with(
+        "https://cloud.example.com",
+        "alice",
+        "pw",
+    ));
+    let app = Arc::new(
+        taskboard_app::bootstrap::bootstrap(
+            config,
+            store.clone(),
+            Arc::new(taskboard_app::notifications::LogSink),
+        )
+        .await
+        .expect("core boots"),
+    );
+    let session = Arc::new(BasicSession {
+        config: app.config.clone(),
+        store: store.clone(),
+        config_path: Some(config_path.clone()),
+    });
+    let handle = server::spawn_server(app, session, &db)
+        .await
+        .expect("server binds");
+    (handle, db, config_path, store)
+}
+
+/// One attach request over a fresh connection.
+async fn attach_once(db: &Path, server_url: &str, username: &str) -> protocol::AttachWireOutcome {
+    let conn = client::try_connect(db).await.expect("daemon answers");
+    conn.attach(server_url, username).await.expect("attach")
+}
+
+/// The live status view over a fresh connection.
+async fn status_once(db: &Path) -> taskboard_app::commands::status::StatusView {
+    client::try_connect(db)
+        .await
+        .expect("daemon answers")
+        .status()
+        .await
+        .expect("status")
+}
+
+/// IP16: the headline — a standalone-booted daemon attaches from
+/// persisted state: `attached`, `status` reports the live flag under the
+/// boot-shaped `standalone` backend (D7), a relayed `sync` serves the
+/// attached connector (code 0 — not `sync-unavailable`), local edits
+/// still serve, and the terminal-bound ceremony argv still refuses code
+/// 2 over the Exec lane.
+#[tokio::test]
+async fn ip16_attach_from_persisted_state_attaches_and_serves() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, db, config_path, store) = served_with_config_file(dir.path(), "ip16.db").await;
+
+        // Before: standalone boot, connector-less, live flag present.
+        let view = status_once(&db).await;
+        assert_eq!(view.backend.as_deref(), Some("standalone"));
+        assert_eq!(view.connector_attached, Some(false));
+
+        // What a `connect` ceremony just persisted: identity into the
+        // file, secret into the store.
+        std::fs::write(
+            &config_path,
+            config_file_body(&db, Some("https://cloud.example.com"), Some("alice")),
+        )
+        .expect("persist identity");
+        store
+            .store(
+                "https://cloud.example.com",
+                "alice",
+                AppPassword::new("pw".to_owned()),
+            )
+            .expect("store secret");
+
+        assert_eq!(
+            attach_once(&db, "https://cloud.example.com", "alice").await,
+            protocol::AttachWireOutcome::Attached
+        );
+
+        // The live flag under the boot-shaped backend word.
+        let view = status_once(&db).await;
+        assert_eq!(view.backend.as_deref(), Some("standalone"));
+        assert_eq!(view.connector_attached, Some(true));
+
+        // The attached connector serves cycles: the verb gets past the
+        // connector gate (the boot-frozen backend word would refuse
+        // `sync-disabled`) and runs the real cycle — any *cycle*
+        // outcome is fine (boardless skip, its own failure, or a
+        // timeout under loaded runners); the refusal classes are the
+        // pinned absence.
+        let outcome = exec_once(&db, &argv("--json sync")).await;
+        if outcome.code != 0 {
+            let envelope = &json_lines(outcome.err.as_bytes())[0];
+            let kind = envelope["error"]["kind"].as_str().expect("error kind");
+            assert_ne!(
+                kind, "sync-disabled",
+                "the live connector must outrank the boot-frozen gate"
+            );
+            assert_ne!(
+                kind, "sync-unavailable",
+                "the attached connector must serve the cycle"
+            );
+        }
+
+        // Local editing still serves.
+        let outcome = exec_once(&db, &argv("boards create Personal")).await;
+        assert_eq!(outcome.code, 0, "{}", outcome.err);
+
+        // The ceremony verbs stay refused over the Exec lane.
+        let outcome = exec_once(&db, &argv("connect")).await;
+        assert_eq!(outcome.code, 2, "ceremony argv stays refused");
+
+        handle.join(DRAIN_BUDGET).await;
+    })
+    .await;
+}
+
+/// IP17: the swap-first rule — attaching again over a live connector
+/// detaches and re-attaches (a rotated store entry is what the rebuilt
+/// client loads), so secret rotation reaches the running daemon.
+#[tokio::test]
+async fn ip17_attach_swaps_a_live_connector() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, db, config_path, store) = served_with_config_file(dir.path(), "ip17.db").await;
+        std::fs::write(
+            &config_path,
+            config_file_body(&db, Some("https://cloud.example.com"), Some("alice")),
+        )
+        .expect("persist identity");
+        store
+            .store(
+                "https://cloud.example.com",
+                "alice",
+                AppPassword::new("pw-one".to_owned()),
+            )
+            .expect("store secret");
+
+        assert_eq!(
+            attach_once(&db, "https://cloud.example.com", "alice").await,
+            protocol::AttachWireOutcome::Attached
+        );
+
+        // Rotate the secret; the swap-first attach rebuilds the client
+        // off the store's current entry.
+        store
+            .store(
+                "https://cloud.example.com",
+                "alice",
+                AppPassword::new("pw-two".to_owned()),
+            )
+            .expect("rotate secret");
+        assert_eq!(
+            attach_once(&db, "https://cloud.example.com", "alice").await,
+            protocol::AttachWireOutcome::Attached
+        );
+        let view = status_once(&db).await;
+        assert_eq!(view.connector_attached, Some(true), "still attached");
+
+        handle.join(DRAIN_BUDGET).await;
+    })
+    .await;
+}
+
+/// IP18: the typed refusals leave the daemon untouched — a foreign
+/// identity answers `identity-mismatch`, a missing identity key
+/// `not-configured`, a missing store entry `credential-unavailable`;
+/// each leaves `connector_attached` unchanged.
+#[tokio::test]
+async fn ip18_attach_refusals_are_typed_and_leave_the_daemon_untouched() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, db, config_path, store) = served_with_config_file(dir.path(), "ip18.db").await;
+        std::fs::write(
+            &config_path,
+            config_file_body(&db, Some("https://cloud.example.com"), Some("alice")),
+        )
+        .expect("persist identity");
+        store
+            .store(
+                "https://cloud.example.com",
+                "alice",
+                AppPassword::new("pw".to_owned()),
+            )
+            .expect("store secret");
+
+        // Foreign identity: refused, nothing attached.
+        assert_eq!(
+            attach_once(&db, "https://other.example.com", "alice").await,
+            protocol::AttachWireOutcome::IdentityMismatch
+        );
+        let before = status_once(&db).await.connector_attached;
+
+        // Identity stripped from the file: the merged unconfigured
+        // bucket.
+        std::fs::write(&config_path, config_file_body(&db, None, None)).expect("strip identity");
+        assert_eq!(
+            attach_once(&db, "https://cloud.example.com", "alice").await,
+            protocol::AttachWireOutcome::NotConfigured
+        );
+
+        // Identity restored, store entry removed: the credential miss.
+        std::fs::write(
+            &config_path,
+            config_file_body(&db, Some("https://cloud.example.com"), Some("alice")),
+        )
+        .expect("persist identity");
+        store
+            .delete("https://cloud.example.com", "alice")
+            .expect("remove secret");
+        assert_eq!(
+            attach_once(&db, "https://cloud.example.com", "alice").await,
+            protocol::AttachWireOutcome::CredentialUnavailable
+        );
+
+        let after = status_once(&db).await.connector_attached;
+        assert_eq!(before, after, "the refusals changed nothing");
+        assert_eq!(after, Some(false));
 
         handle.join(DRAIN_BUDGET).await;
     })

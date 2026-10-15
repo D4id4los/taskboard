@@ -17,6 +17,7 @@
 //! the session *is* the lock holder, so no daemon can serve this
 //! database (D10).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use taskboard_sync_nextcloud::DeckClient;
@@ -185,21 +186,123 @@ fn refresh_session_config(
 /// Builds the `DeckClient` for the attach from the refreshed config and
 /// the session's credential store (the secret the ceremony just stored).
 fn build_client(session: &ReplSession) -> Result<DeckClient, CommandError> {
-    let server = session
-        .config
+    deck_client_from(&session.config, &session.store)
+}
+
+/// The frontend-agnostic client construction (identity off the config,
+/// secret off the credential store): the REPL builder's core, shared
+/// with the daemon-side attach — one behavior, one home.
+fn deck_client_from(
+    config: &AppConfig,
+    store: &Arc<dyn crate::secrets::CredentialStore>,
+) -> Result<DeckClient, CommandError> {
+    let server = config
         .nextcloud
         .server_url
         .clone()
         .ok_or(CommandError::NotConfigured)?;
-    let user = session
-        .config
+    let user = config
         .nextcloud
         .username
         .clone()
         .ok_or(CommandError::NotConfigured)?;
-    let password = session
-        .store
+    let password = store
         .load(&server, &user)
         .map_err(CommandError::Credential)?;
     DeckClient::new(&server, &user, password.expose()).map_err(map_deck_error)
+}
+
+/// The daemon-side attach from persisted state (ADR 0014 decision 7,
+/// the IPC `AttachConnector` verb's body): re-read the daemon's own
+/// config, match the requested identity, build the client off the
+/// daemon's credential store, swap-first (the session's detach-first
+/// rule — a same-identity re-connect stores a *new* secret, and only
+/// detach + re-attach rebuilds the client), attach, and settle with the
+/// boot pull's exact mirror. Every failure is a typed wire outcome; a
+/// pre-swap failure never leaves the daemon detached.
+pub(crate) async fn attach_from_persisted(
+    app: &crate::App,
+    config_path: Option<&std::path::Path>,
+    store: &Arc<dyn crate::secrets::CredentialStore>,
+    server_url: &str,
+    username: &str,
+) -> crate::ipc::protocol::AttachWireOutcome {
+    use crate::bootstrap::AttachError;
+    use crate::ipc::protocol::AttachWireOutcome as W;
+
+    // 1. Re-read: the daemon's boot config path, env overlays resolved
+    //    against the daemon's own environment.
+    let config = match AppConfig::load(config_path.map(std::path::Path::to_path_buf)) {
+        Ok(config) => config,
+        Err(err) => {
+            tracing::warn!(?err, "attach: the daemon's config did not re-read");
+            return W::NotConfigured;
+        }
+    };
+
+    // 2. Identity: absent keys are the merged unconfigured bucket; a
+    //    different pair is refused — the client is about to claim
+    //    "connected + daemon attached" *for its* identity, so attaching
+    //    the persisted Y under that claim would be dishonest.
+    let Some(persisted_server) = config.nextcloud.server_url.as_deref() else {
+        tracing::warn!("attach: the daemon's config names no identity");
+        return W::NotConfigured;
+    };
+    let Some(persisted_user) = config.nextcloud.username.as_deref() else {
+        tracing::warn!("attach: the daemon's config names no username");
+        return W::NotConfigured;
+    };
+    if persisted_server != server_url || persisted_user != username {
+        tracing::warn!(
+            requested = %server_url,
+            persisted = %persisted_server,
+            "attach requested for a foreign identity; refusing"
+        );
+        return W::IdentityMismatch;
+    }
+
+    // 3. Build before any swap: the only post-swap failures are a raced
+    //    shutdown — a failure the daemon's own state could have
+    //    prevented never strands it detached. A credential miss is the
+    //    env-store caveat's typed surface; every other construction
+    //    failure is malformed persisted state (the identity was already
+    //    extracted), logged for diagnosis.
+    let client = match deck_client_from(&config, store) {
+        Ok(client) => client,
+        Err(CommandError::Credential(err)) => {
+            tracing::warn!(
+                ?err,
+                "attach: the daemon's store has no secret for the identity"
+            );
+            return W::CredentialUnavailable;
+        }
+        Err(err) => {
+            tracing::warn!(?err, "attach: the daemon's persisted state built no client");
+            return W::NotConfigured;
+        }
+    };
+
+    // 4. Swap-first (the detach-first session rule, applied daemon-side).
+    if app.connector_attached() {
+        let outcome = app.detach_connector().await;
+        tracing::info!(?outcome, "attach: swapped out the live connector");
+    }
+
+    // 5. Attach: the primitive's guard is unreachable here by
+    //    construction (the dispatcher is serial and this handler just
+    //    swapped); carried for wire honesty if dispatch ever widens.
+    if let Err(err) = app.attach_connector(client).await {
+        tracing::warn!(?err, "attach: the primitive refused the connector");
+        return match err {
+            AttachError::AlreadyAttached => W::AlreadyAttached,
+            AttachError::Engine(_) => W::Engine,
+            AttachError::Draining => W::Draining,
+        };
+    }
+
+    // 6. Settle: the REPL's exact mirror — bounded, offline-first,
+    //    degrade-to-local; freshness rides later poll cycles.
+    let timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs.max(1));
+    crate::bootstrap::wait_for_boot_pull(app, timeout).await;
+    W::Attached
 }

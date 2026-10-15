@@ -354,7 +354,8 @@ fn request_version(req: &Request) -> u32 {
         Request::Exec { v, .. }
         | Request::Status { v }
         | Request::Shutdown { v }
-        | Request::DetachConnector { v, .. } => *v,
+        | Request::DetachConnector { v, .. }
+        | Request::AttachConnector { v, .. } => *v,
     }
 }
 
@@ -410,6 +411,28 @@ async fn handle(app: &App, session: &BasicSession, req: Request) -> Response {
                 DetachWireOutcome::IdentityMismatch
             };
             Response::DetachConnector {
+                v: PROTOCOL_VERSION,
+                outcome,
+            }
+        }
+        Request::AttachConnector {
+            server_url,
+            username,
+            ..
+        } => {
+            // The daemon-side attach (ADR 0014 decision 7): a two-line
+            // relay into the frontend-agnostic ceremony — the body
+            // (re-read, identity match, store load, swap-first, attach,
+            // settle) lives in `session_ceremonies`, not on the wire.
+            let outcome = crate::session_ceremonies::attach_from_persisted(
+                app,
+                session.config_path.as_deref(),
+                &session.store,
+                &server_url,
+                &username,
+            )
+            .await;
+            Response::AttachConnector {
                 v: PROTOCOL_VERSION,
                 outcome,
             }

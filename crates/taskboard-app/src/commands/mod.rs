@@ -1172,20 +1172,29 @@ async fn sync_line(
     no_wait: bool,
     timeout_secs: u64,
 ) -> u8 {
-    match crate::commands::require_connector(session.session_config()) {
-        Ok(()) => match sync::sync_on(app, no_wait, Duration::from_secs(timeout_secs)).await {
-            Ok(outcome) => {
-                emit_to(io, outcome.view(), &sync::render_text(&outcome));
-                match outcome {
-                    sync::SyncOutcome::Succeeded(_) | sync::SyncOutcome::NoWait(_) => 0,
-                    sync::SyncOutcome::Failed(kind, _) => {
-                        report_to(io, &CommandError::SyncFailed(kind))
-                    }
-                    sync::SyncOutcome::TimedOut(_) => report_to(io, &CommandError::SyncTimedOut),
+    // A live connector outranks the boot-frozen backend word (the
+    // status projection's same honesty rule): a standalone-booted
+    // daemon that attached from persisted state serves cycles. The
+    // refusal classes are otherwise untouched — `standalone` with no
+    // connector still refuses `sync-disabled`, and a gated pass with a
+    // detached connector still answers `sync-unavailable` from the verb.
+    let gated = crate::commands::require_connector(session.session_config());
+    if let Err(err) = gated
+        && !app.connector_attached()
+    {
+        return report_to(io, &err);
+    }
+    match sync::sync_on(app, no_wait, Duration::from_secs(timeout_secs)).await {
+        Ok(outcome) => {
+            emit_to(io, outcome.view(), &sync::render_text(&outcome));
+            match outcome {
+                sync::SyncOutcome::Succeeded(_) | sync::SyncOutcome::NoWait(_) => 0,
+                sync::SyncOutcome::Failed(kind, _) => {
+                    report_to(io, &CommandError::SyncFailed(kind))
                 }
+                sync::SyncOutcome::TimedOut(_) => report_to(io, &CommandError::SyncTimedOut),
             }
-            Err(err) => report_to(io, &err),
-        },
+        }
         Err(err) => report_to(io, &err),
     }
 }

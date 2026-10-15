@@ -21,7 +21,9 @@ use interprocess::local_socket::{tokio::Stream, traits::tokio::Stream as _};
 use crate::commands::CommandError;
 use crate::commands::status::StatusView;
 use crate::ipc::codec;
-use crate::ipc::protocol::{DetachWireOutcome, PROTOCOL_VERSION, Request, Response};
+use crate::ipc::protocol::{
+    AttachWireOutcome, DetachWireOutcome, PROTOCOL_VERSION, Request, Response,
+};
 use crate::ipc::socket_name;
 
 /// The connect budget for ambiguous transport failures only (see the
@@ -35,6 +37,12 @@ const CONNECT_RETRY: Duration = Duration::from_millis(50);
 /// bounds pathological hangs, so it must comfortably exceed the largest
 /// legitimate bounded join.
 const DETACH_BUDGET: Duration = Duration::from_secs(30);
+/// The attach read budget (the daemon-side attach): covers the
+/// daemon's worst path — serial-queue wait + a detach join + the
+/// bounded settle — with margin; on expiry the daemon still completes
+/// its attach and the caller degrades to the warning (the detach
+/// budget's reading).
+const ATTACH_BUDGET: Duration = Duration::from_secs(30);
 
 /// The response-side version gate (pure; unit-pinned): a typed
 /// `VersionMismatch` or any wrong-version answer is the `ipc-version`
@@ -223,6 +231,41 @@ impl Connection {
         .await
         {
             Ok(Ok(Response::DetachConnector { outcome, .. })) => Ok(outcome),
+            Ok(Ok(_)) => Err(CommandError::IpcTransport),
+            Ok(Err(err)) => Err(err),
+            Err(_elapsed) => Err(CommandError::IpcTransport),
+        }
+    }
+
+    /// Asks the daemon to attach its connector from persisted state
+    /// (ADR 0014 decision 7): the identity the caller just connected.
+    /// The secret never rides the wire — the daemon re-reads its own
+    /// config and loads its own credential store. Bounded by
+    /// [`ATTACH_BUDGET`]; on budget expiry the daemon still completes
+    /// its attach and the caller degrades to the warning.
+    ///
+    /// # Errors
+    ///
+    /// [`CommandError`] — transport and version classes (including the
+    /// budget expiry and a pre-`attach-connector` daemon, which cannot
+    /// decode the variant and drops the connection).
+    pub async fn attach(
+        self,
+        server_url: &str,
+        username: &str,
+    ) -> Result<AttachWireOutcome, CommandError> {
+        let request = Request::AttachConnector {
+            v: PROTOCOL_VERSION,
+            server_url: server_url.to_owned(),
+            username: username.to_owned(),
+        };
+        match tokio::time::timeout(
+            ATTACH_BUDGET,
+            self.request(request, codec::MAX_RESPONSE_BYTES),
+        )
+        .await
+        {
+            Ok(Ok(Response::AttachConnector { outcome, .. })) => Ok(outcome),
             Ok(Ok(_)) => Err(CommandError::IpcTransport),
             Ok(Err(err)) => Err(err),
             Err(_elapsed) => Err(CommandError::IpcTransport),
