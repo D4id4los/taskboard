@@ -297,49 +297,54 @@ mod tests {
     /// `set_window_size` maps the breakpoints.
     #[test]
     fn driver_boots_mounts_and_addresses_the_board() {
-        run(DriverOptions::default(), |driver: &mut SlintDriver| {
-            let (commands_tx, _commands_rx) = mpsc::channel(16);
-            let (system_tx, system_rx) = broadcast::channel(4);
-            let (signals_tx, signals_rx) = broadcast::channel(4);
-            drop(system_tx);
-            drop(signals_tx);
-            let handle = taskboard_ui_slint::mount(
-                Arc::new(ArcSwap::from_pointee(AppState::default())),
-                signals_rx,
-                system_rx,
-                commands_tx,
-                UiSettings::default(),
-            )
-            .expect("mount succeeds on the testing backend");
-            driver.bind(&handle);
-            // Instantiate conditional trees before querying.
-            driver.advance_time(0);
+        run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            |driver: &mut SlintDriver| {
+                let (commands_tx, _commands_rx) = mpsc::channel(16);
+                let (system_tx, system_rx) = broadcast::channel(4);
+                let (signals_tx, signals_rx) = broadcast::channel(4);
+                drop(system_tx);
+                drop(signals_tx);
+                let handle = taskboard_ui_slint::mount(
+                    Arc::new(ArcSwap::from_pointee(AppState::default())),
+                    signals_rx,
+                    system_rx,
+                    commands_tx,
+                    UiSettings::default(),
+                )
+                .expect("mount succeeds on the testing backend");
+                driver.bind(&handle);
+                // Instantiate conditional trees before querying.
+                driver.advance_time(0);
 
-            let board = driver
-                .find_by_label("Board")
-                .expect("the board region is addressable by its a11y label");
-            assert_eq!(board.label().as_deref(), Some("Board"));
+                let board = driver
+                    .find_by_label("Board")
+                    .expect("the board region is addressable by its a11y label");
+                assert_eq!(board.label().as_deref(), Some("Board"));
 
-            driver.set_window_size(600, 800);
-            assert_eq!(
-                handle
-                    .window()
-                    .global::<taskboard_ui_slint::Responsive>()
-                    .get_current_breakpoint(),
-                taskboard_ui_slint::Breakpoint::Compact,
-                "the width push maps the compact breakpoint"
-            );
-            driver.set_window_size(1500, 900);
-            assert_eq!(
-                handle
-                    .window()
-                    .global::<taskboard_ui_slint::Responsive>()
-                    .get_current_breakpoint(),
-                taskboard_ui_slint::Breakpoint::Expansive,
-            );
+                driver.set_window_size(600, 800);
+                assert_eq!(
+                    handle
+                        .window()
+                        .global::<taskboard_ui_slint::Responsive>()
+                        .get_current_breakpoint(),
+                    taskboard_ui_slint::Breakpoint::Compact,
+                    "the width push maps the compact breakpoint"
+                );
+                driver.set_window_size(1500, 900);
+                assert_eq!(
+                    handle
+                        .window()
+                        .global::<taskboard_ui_slint::Responsive>()
+                        .get_current_breakpoint(),
+                    taskboard_ui_slint::Breakpoint::Expansive,
+                );
 
-            // The mock clock advances without an event loop.
-            driver.advance_time(1_000);
-        });
+                // The mock clock advances without an event loop.
+                driver.advance_time(1_000);
+            },
+        );
     }
 }
