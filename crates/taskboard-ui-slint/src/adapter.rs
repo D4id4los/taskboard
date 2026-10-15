@@ -234,6 +234,23 @@ pub(crate) fn install(
             adapter.borrow_mut().invoke_entry(&window, index);
         });
     }
+    {
+        // The D17 width push: the window reports logical widths, the
+        // unscaled Rust mapping lands in the `Responsive` global
+        // (widths `<= 0` are ignored inside the mapping — the null
+        // platform reports 0×0).
+        let weak = window.as_weak();
+        window.on_window_width_changed(move |width: f32| {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let breakpoint =
+                crate::models::to_slint_breakpoint(crate::responsive::breakpoint_for_width(width));
+            window
+                .global::<crate::Responsive>()
+                .set_current_breakpoint(breakpoint);
+        });
+    }
     adapter.borrow().sync(window);
     adapter
 }
