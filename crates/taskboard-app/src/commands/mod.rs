@@ -752,16 +752,23 @@ async fn connect_command(
             let store = production_store(raw.nextcloud.credential_store);
             let mut prompts = connect::StdinPrompts;
             match connect::run(&path, raw, args, &mut prompts, &store).await {
-                Ok(receipt) => {
-                    // The §6/D11 heads-up: best-effort, success-path
-                    // only, never exit-code-relevant. The alias warns
-                    // too — the liveness gap is the operation's, not
-                    // the verb spelling's.
-                    if let Some(warning) =
-                        connect::daemon_warning(connect::daemon_serves(&db_path).await)
-                    {
+                Ok(mut receipt) => {
+                    // The ADR 0014 decision-7 nudge: best-effort,
+                    // success-path only, never exit-code-relevant. The
+                    // daemon is asked to attach from persisted state —
+                    // identity on the wire, never the secret. The alias
+                    // (`login`) inherits the nudge by delegation.
+                    let nudge = connect::nudge_daemon_attach(
+                        &db_path,
+                        &receipt.server_url,
+                        &receipt.username,
+                    )
+                    .await;
+                    let state = connect::map_attach_nudge(&nudge);
+                    if let Some(warning) = connect::attach_nudge_warning(state) {
                         let _ = writeln!(io.err, "{warning}");
                     }
+                    receipt.daemon_connector = Some(state);
                     emit_to(io, &receipt, &connect::render_text(&receipt));
                     0
                 }

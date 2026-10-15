@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use taskboard_sync_nextcloud::{DeckClient, DeckError};
 
-use crate::commands::output::ConnectReceipt;
+use crate::commands::output::{ConnectReceipt, DaemonAttachState};
 use crate::commands::{CommandError, map_deck_error};
 use crate::config::{AppConfig, SyncBackend};
 use crate::secrets::{AppPassword, CredentialError, CredentialStore};
@@ -258,6 +258,7 @@ pub async fn run<P: PromptReader>(
         backend_switched,
         repointed: repoint.is_some(),
         attached: None,
+        daemon_connector: None,
     })
 }
 
@@ -454,6 +455,8 @@ pub fn render_text(receipt: &ConnectReceipt) -> String {
     };
     if receipt.attached == Some(true) {
         format!("{base} — connector attached to the running session")
+    } else if receipt.daemon_connector == Some(DaemonAttachState::Attached) {
+        format!("{base} — the serving daemon attached it")
     } else {
         base
     }
@@ -500,26 +503,83 @@ fn write_config_overlay(
     std::fs::rename(&tmp, path)
 }
 
-/// The connect-while-daemon heads-up (design §6/D11): whether a daemon
-/// serves this database — a best-effort per-database IPC probe; a
-/// transport failure answers `false` (a dead socket sidecar means
-/// nothing serves — silent, not degraded; the same reading as
-/// `NudgeOutcome::NoDaemon`).
-pub(crate) async fn daemon_serves(db_path: &Path) -> bool {
-    crate::ipc::client::try_connect(db_path).await.is_some()
+/// The hermetic input of the attach nudge's degradation mapping: the
+/// post-connect daemon nudge's outcome, socket-free.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttachNudgeOutcome {
+    /// No daemon serves this database — nothing to attach there; not a
+    /// degradation (no warning).
+    NoDaemon,
+    /// The daemon answered the attach request.
+    Answered(crate::ipc::protocol::AttachWireOutcome),
+    /// Transport failure — a dead connection, a pre-`attach-connector`
+    /// daemon (it cannot decode the variant and drops the link), or the
+    /// client read budget expired (the daemon still completes its
+    /// attach in that case).
+    Transport,
+    /// The daemon speaks a different wire-protocol version.
+    Version,
 }
 
-/// The stderr warning for a served database (D11): the connect *is*
-/// done; this tells the operator the daemon keeps running
-/// connector-less until restarted. `None` when nothing serves —
-/// `--json` runs included (stdout stays one payload; warnings are the
-/// established stderr channel).
+/// Maps the nudge outcome onto the receipt's `daemon_connector` field
+/// (pure; unit-pinned over every arm).
 #[must_use]
-pub fn daemon_warning(present: bool) -> Option<&'static str> {
-    present.then_some(
-        "warning: a daemon is serving this database; it keeps running without \
-         the new connection until restarted (or `taskboard daemon stop`)",
-    )
+pub fn map_attach_nudge(nudge: &AttachNudgeOutcome) -> DaemonAttachState {
+    use crate::ipc::protocol::AttachWireOutcome as W;
+    match nudge {
+        AttachNudgeOutcome::NoDaemon => DaemonAttachState::None,
+        AttachNudgeOutcome::Answered(W::Attached) => DaemonAttachState::Attached,
+        AttachNudgeOutcome::Answered(W::IdentityMismatch) => DaemonAttachState::Mismatch,
+        AttachNudgeOutcome::Transport => DaemonAttachState::Unreachable,
+        // Every other answer is a daemon-side state the client cannot
+        // remedy from here (the daemon's own config/store governs, or a
+        // raced shutdown), and a foreign version is equally opaque: the
+        // honest bucket is the warning. `already-attached` folds in —
+        // the daemon reports a connector either way.
+        AttachNudgeOutcome::Answered(_) | AttachNudgeOutcome::Version => DaemonAttachState::Unknown,
+    }
+}
+
+/// The stderr warning for the degraded outcomes: the connect *is* done;
+/// this tells the operator the daemon did not pick the connection up.
+/// `None` for the clean arms (`None`/`Attached`).
+#[must_use]
+pub fn attach_nudge_warning(state: DaemonAttachState) -> Option<&'static str> {
+    match state {
+        DaemonAttachState::Mismatch => Some(
+            "warning: the daemon serves this database under a different identity; \
+             restart it or run `taskboard daemon stop`",
+        ),
+        DaemonAttachState::Unreachable => Some(
+            "warning: the daemon serving this database could not be asked to attach; \
+             restart it or run `taskboard daemon stop`",
+        ),
+        DaemonAttachState::Unknown => Some(
+            "warning: the daemon could not attach the new connection; \
+             restart it or run `taskboard daemon stop`",
+        ),
+        DaemonAttachState::Attached | DaemonAttachState::None => None,
+    }
+}
+
+/// The best-effort daemon nudge (ADR 0014 decision 7): after the local
+/// connect succeeded, ask the daemon serving the same database to
+/// attach from persisted state — identity only, never the secret. Never
+/// fails the connect; every outcome degrades through
+/// [`map_attach_nudge`]/[`attach_nudge_warning`].
+pub(crate) async fn nudge_daemon_attach(
+    db_path: &Path,
+    server: &str,
+    username: &str,
+) -> AttachNudgeOutcome {
+    let Some(conn) = crate::ipc::client::try_connect(db_path).await else {
+        return AttachNudgeOutcome::NoDaemon;
+    };
+    match conn.attach(server, username).await {
+        Ok(outcome) => AttachNudgeOutcome::Answered(outcome),
+        Err(CommandError::IpcVersion { .. }) => AttachNudgeOutcome::Version,
+        Err(_) => AttachNudgeOutcome::Transport,
+    }
 }
 
 /// The bare variant name of a `DeckError` (log-only; never the secret,
@@ -574,18 +634,71 @@ mod tests {
         );
     }
 
-    /// D11: the daemon heads-up warns only when a daemon actually
-    /// serves the database (structural both-arms pin; the text is UX,
-    /// never asserted).
+    /// The attach nudge's pure mapping covers every arm, and only the
+    /// degraded arms warn (the no-daemon row is not a degradation — the
+    /// connect is done either way). Socket-free.
     #[test]
-    fn daemon_warning_covers_both_arms() {
-        assert!(super::daemon_warning(true).is_some());
-        assert!(super::daemon_warning(false).is_none());
+    fn the_attach_nudge_mapping_covers_every_arm() {
+        use super::{AttachNudgeOutcome as N, attach_nudge_warning, map_attach_nudge};
+        use crate::commands::output::DaemonAttachState as S;
+        use crate::ipc::protocol::AttachWireOutcome as W;
+
+        assert_eq!(map_attach_nudge(&N::NoDaemon), S::None);
+        assert_eq!(map_attach_nudge(&N::Answered(W::Attached)), S::Attached);
+        assert_eq!(
+            map_attach_nudge(&N::Answered(W::IdentityMismatch)),
+            S::Mismatch
+        );
+        assert_eq!(map_attach_nudge(&N::Transport), S::Unreachable);
+        for opaque in [
+            W::AlreadyAttached,
+            W::NotConfigured,
+            W::CredentialUnavailable,
+            W::Engine,
+            W::Draining,
+        ] {
+            assert_eq!(
+                map_attach_nudge(&N::Answered(opaque)),
+                S::Unknown,
+                "{opaque:?} is the daemon-side bucket"
+            );
+        }
+        assert_eq!(map_attach_nudge(&N::Version), S::Unknown);
+
+        assert!(attach_nudge_warning(S::Attached).is_none());
+        assert!(attach_nudge_warning(S::None).is_none());
+        assert!(attach_nudge_warning(S::Mismatch).is_some());
+        assert!(attach_nudge_warning(S::Unreachable).is_some());
+        assert!(attach_nudge_warning(S::Unknown).is_some());
     }
 
-    /// ADR 0014 §7: the one-shot receipt's JSON shape is byte-identical
-    /// to the pre-session era (`attached` absent); the session ceremony
-    /// adds `"attached":true`.
+    /// The receipt's `daemon_connector` field serializes kebab-case and
+    /// is absent when no daemon was consulted (the pure-local shape
+    /// stays stable).
+    #[test]
+    fn the_daemon_connector_field_serializes_kebab_case_or_is_absent() {
+        use crate::commands::output::DaemonAttachState;
+        let base = |state| crate::commands::output::ConnectReceipt {
+            server_url: "https://c.example.com".to_owned(),
+            username: "alice".to_owned(),
+            verified: true,
+            stored: "keyring".to_owned(),
+            backend_switched: false,
+            repointed: false,
+            attached: None,
+            daemon_connector: state,
+        };
+        let json =
+            serde_json::to_value(base(Some(DaemonAttachState::Attached))).expect("serialize");
+        assert_eq!(json["daemon_connector"], "attached");
+        let json = serde_json::to_value(base(Some(DaemonAttachState::Unknown))).expect("serialize");
+        assert_eq!(json["daemon_connector"], "unknown");
+        let json = serde_json::to_value(base(None)).expect("serialize");
+        assert!(json.get("daemon_connector").is_none());
+    }
+
+    /// ADR 0014 §7: the one-shot receipt's JSON shape carries
+    /// `attached` absent (the session ceremony adds `"attached":true`).
     #[test]
     fn the_attached_field_is_absent_for_the_one_shot_and_true_for_the_session() {
         let base = |attached| crate::commands::output::ConnectReceipt {
@@ -596,6 +709,7 @@ mod tests {
             backend_switched: false,
             repointed: false,
             attached,
+            daemon_connector: None,
         };
         let json = serde_json::to_value(base(None)).expect("serialize");
         assert!(json.get("attached").is_none());
