@@ -136,7 +136,12 @@ pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result
         app.engine.subscribe(),
         app.system.subscribe(),
         commands_tx,
-        taskboard_ui_slint::UiSettings { scale },
+        // The keymap config surface lands with the `[ui.keymap]`
+        // table (chunk 2 step 9); until then the default preset ships.
+        taskboard_ui_slint::UiSettings {
+            scale,
+            ..taskboard_ui_slint::UiSettings::default()
+        },
     )?;
 
     // D5b: the physical exit paths are wired so shutdown is always

@@ -132,6 +132,52 @@ impl Stroke {
         mods
     }
 
+    /// Builds a stroke from a delivered key event (the adapter's
+    /// conversion, D6/D18): the same normalization `parse` applies —
+    /// named keys keep shift as a modifier, bare printables fold it
+    /// into the (case-carrying) character, chorded printables keep
+    /// it. `None` for modifier-only/control events (rejected).
+    #[allow(clippy::fn_params_excessive_bools)] // mirrors KeyboardModifiers verbatim
+    #[must_use]
+    pub fn from_event(key: char, ctrl: bool, alt: bool, shift: bool, meta: bool) -> Option<Self> {
+        // Named keys first: they *are* control/private-use chars in
+        // Slint's char-based key model (Return, Escape, Delete, …).
+        if NAMED_KEYS.iter().any(|&(_, ch)| ch == key) {
+            return Some(Self {
+                key,
+                ctrl,
+                alt,
+                shift,
+                meta,
+            });
+        }
+        if key.is_control() {
+            return None;
+        }
+        if !is_printable(key) {
+            return None;
+        }
+        let chorded = ctrl || alt || meta;
+        if chorded {
+            Some(Self {
+                key,
+                ctrl,
+                alt,
+                shift,
+                meta,
+            })
+        } else {
+            // Bare printables arrive case-carrying; shift folds away.
+            Some(Self {
+                key: if shift { key.to_ascii_uppercase() } else { key },
+                ctrl: false,
+                alt: false,
+                shift: false,
+                meta: false,
+            })
+        }
+    }
+
     #[must_use]
     pub const fn named_name(self) -> Option<&'static str> {
         let mut i = 0;
@@ -312,6 +358,33 @@ mod tests {
         assert!(redo.shift);
         assert_eq!(redo.to_string(), "Ctrl+Shift+Z");
         assert_eq!(undo.to_string(), "Ctrl+Z");
+    }
+
+    /// The event-side conversion (D18): named keys are control chars
+    /// in Slint's model and must be checked *before* the control-char
+    /// rejection; modifier-only events are `None`.
+    #[test]
+    fn from_event_accepts_named_keys_and_rejects_modifier_only() {
+        assert_eq!(
+            Stroke::from_event('\u{a}', false, false, false, false),
+            Some(ok("Return"))
+        );
+        assert_eq!(
+            Stroke::from_event('\u{1b}', false, false, false, false),
+            Some(ok("Escape"))
+        );
+        assert_eq!(
+            Stroke::from_event('\u{7}', false, false, false, false),
+            None
+        );
+        assert_eq!(
+            Stroke::from_event('x', true, false, false, false),
+            Some(ok("Ctrl+x"))
+        );
+        assert_eq!(
+            Stroke::from_event('X', false, false, true, false),
+            Some(ok("X"))
+        );
     }
 
     #[test]

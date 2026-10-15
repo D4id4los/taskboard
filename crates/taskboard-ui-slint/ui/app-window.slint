@@ -45,6 +45,7 @@ export component AppWindow inherits Window {
     // The single key path (§5.1): capture-phase tunneling hits this
     // scope before any focused element; accepting consumes the event.
     forward-focus: key-root;
+    init => key-root.focus();
     key-root := FocusScope {
         capture-key-pressed(event) => {
             root.intercept-key(event.text, event.modifiers) ? accept : reject
