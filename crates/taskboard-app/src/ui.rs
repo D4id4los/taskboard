@@ -86,6 +86,43 @@ pub fn bare_invocation_route(mode: crate::config::AppMode, tty: bool) -> BareRou
     }
 }
 
+/// Resolves the `[ui]` table into the UI crate's typed hand-over
+/// (D14): the validated effective keymap plus the Q15 startup-warning
+/// summary. Pure — the figment layer stops at raw strings; the
+/// keymap layer owns value validation. Findings are *returned* (the
+/// caller surfaces them via `tracing`); nothing here can fail —
+/// a hostile keymap never blocks UI start (Q15).
+#[must_use]
+pub fn resolve_ui_settings(
+    ui: &crate::config::UiSection,
+) -> (
+    taskboard_ui_slint::UiSettings,
+    Vec<taskboard_ui_slint::keymap::Finding>,
+) {
+    let raw = taskboard_ui_slint::keymap::RawKeymap {
+        preset: match ui.keymap.preset {
+            crate::config::KeymapPreset::Standard => taskboard_ui_slint::keymap::Preset::Standard,
+            crate::config::KeymapPreset::Emacs => taskboard_ui_slint::keymap::Preset::Emacs,
+            crate::config::KeymapPreset::Vi => taskboard_ui_slint::keymap::Preset::Vi,
+        },
+        overrides: ui
+            .keymap
+            .overrides
+            .iter()
+            .map(|(id, spec)| (id.clone(), spec.to_sequences()))
+            .collect(),
+    };
+    let built = taskboard_ui_slint::keymap::build(&raw);
+    let settings = taskboard_ui_slint::UiSettings {
+        scale: ui.scale,
+        startup: taskboard_ui_slint::adapter::StartupWarnings {
+            keymap_findings: built.findings.len().try_into().unwrap_or(u32::MAX),
+        },
+        keymap: built.keymap,
+    };
+    (settings, built.findings)
+}
+
 /// The OS-DPI escape hatch (§6.2, D13): reads `SLINT_SCALE_FACTOR`
 /// *before* any slint-touching call and logs its presence. The app
 /// never sets it programmatically — the user's env is the input;
@@ -121,7 +158,18 @@ pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result
     // D13: the env var is read before anything slint-side.
     observe_scale_escape_hatch();
 
-    let scale = config.ui.scale;
+    let (ui_settings, keymap_findings) = resolve_ui_settings(&config.ui);
+    // Q15 surfacing: typed findings logged with structured fields —
+    // the keymap still applied (drops fall back to preset bindings).
+    for finding in &keymap_findings {
+        tracing::warn!(
+            kind = ?finding.kind,
+            action = ?finding.action,
+            context = %finding.context,
+            stroke = %finding.stroke,
+            "keymap override finding (preset binding wins)"
+        );
+    }
     let store = crate::secrets::resolve_credential_store(config.nextcloud.credential_store);
     let app =
         crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
@@ -136,12 +184,7 @@ pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result
         app.engine.subscribe(),
         app.system.subscribe(),
         commands_tx,
-        // The keymap config surface lands with the `[ui.keymap]`
-        // table (chunk 2 step 9); until then the default preset ships.
-        taskboard_ui_slint::UiSettings {
-            scale,
-            ..taskboard_ui_slint::UiSettings::default()
-        },
+        ui_settings,
     )?;
 
     // D5b: the physical exit paths are wired so shutdown is always
@@ -266,5 +309,98 @@ mod tests {
             .await
             .expect("forwarder exits on a closed channel");
         assert!(sink.0.lock().expect("sink lock").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod keymap_resolution_tests {
+    use super::*;
+    use crate::config::{KeymapPreset, KeymapSection, OverrideSpec};
+    use std::collections::BTreeMap;
+
+    /// T30 — the hand-over is typed and total: valid overrides land
+    /// in `UiSettings.keymap`, the findings count rides
+    /// `StartupWarnings`, and a hostile table changes nothing but the
+    /// findings (never an error — Q15).
+    #[test]
+    fn resolve_hands_over_keymap_and_counts_findings() {
+        // Hostile config: unknown action, malformed stroke, and a
+        // conflict with the preset — plus one valid override.
+        let ui = crate::config::UiSection {
+            scale: 1.25,
+            keymap: KeymapSection {
+                preset: KeymapPreset::Standard,
+                overrides: BTreeMap::from([
+                    (
+                        "ghost.action".to_owned(),
+                        OverrideSpec::Single("X".to_owned()),
+                    ),
+                    (
+                        "task.complete".to_owned(),
+                        OverrideSpec::Single("Ctrl+!!".to_owned()),
+                    ),
+                    (
+                        "app.undo".to_owned(),
+                        OverrideSpec::Single("Ctrl+Q".to_owned()),
+                    ),
+                    (
+                        "app.exit".to_owned(),
+                        OverrideSpec::Single("Ctrl+\\".to_owned()),
+                    ),
+                ]),
+            },
+        };
+        let (settings, findings) = resolve_ui_settings(&ui);
+
+        // Structural asserts on the handed-over map (no strings).
+        assert_eq!(settings.scale, 1.25);
+        assert_eq!(
+            settings.startup.keymap_findings,
+            u32::try_from(findings.len()).expect("findings fit u32")
+        );
+        assert_eq!(findings.len(), 3, "exhaustive: every offender listed");
+        let seq = taskboard_ui_slint::keymap::stroke::parse("Ctrl+\\")
+            .expect("the valid override's stroke parses");
+        assert_eq!(
+            settings
+                .keymap
+                .resolve(&[taskboard_ui_slint::actions::ContextId::Global], &[seq]),
+            Some(taskboard_ui_slint::actions::ActionId::AppExit),
+            "the one valid override landed in the keymap"
+        );
+
+        // The dropped overrides left the preset bindings intact.
+        let undo = taskboard_ui_slint::keymap::stroke::parse("Ctrl+Z").expect("parses");
+        assert_eq!(
+            settings
+                .keymap
+                .resolve(&[taskboard_ui_slint::actions::ContextId::Global], &[undo]),
+            Some(taskboard_ui_slint::actions::ActionId::AppUndo),
+            "preset fallback survives the dropped override"
+        );
+    }
+
+    /// The vi preset selection carries through to the handed-over
+    /// keymap (mode contexts bound).
+    #[test]
+    fn preset_selection_reaches_the_keymap() {
+        let ui = crate::config::UiSection {
+            keymap: KeymapSection {
+                preset: KeymapPreset::Vi,
+                overrides: BTreeMap::new(),
+            },
+            ..crate::config::UiSection::default()
+        };
+        let (settings, findings) = resolve_ui_settings(&ui);
+        assert_eq!(findings, Vec::new());
+        let colon = taskboard_ui_slint::keymap::stroke::parse(":").expect("parses");
+        assert_eq!(
+            settings.keymap.resolve(
+                &[taskboard_ui_slint::actions::ContextId::ViNormal],
+                &[colon]
+            ),
+            Some(taskboard_ui_slint::actions::ActionId::AppMenu),
+            "vi preset bound app.menu in the normal-mode context"
+        );
     }
 }
