@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The kbd-hint primitive (L1 seed, §4.4): renders one binding's key
+// sequence as a keycap row. Styles flow from tokens only (Rule A);
+// the text source is the keymap's canonical Display form (D19) —
+// hints are projections of keymap data, never hand-written.
+
+import { Theme, Typography, RoleText } from "../theme.slint";
+
+export component KbdHint inherits HorizontalLayout {
+    in property <[string]> keys;
+    spacing: Theme.space-1;
+
+    for key in keys: Rectangle {
+        border-width: Theme.focus-ring-width;
+        border-color: Theme.border;
+        border-radius: Theme.radius-small;
+        background: Theme.surface;
+        // Caps hug their key: an inner layout owns the padding
+        // (padding has effect on layout elements only).
+        HorizontalLayout {
+            padding-left: Theme.space-1;
+            padding-right: Theme.space-1;
+            RoleText {
+                role: Typography.mono;
+                text-color: Theme.text-secondary;
+                text: key;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

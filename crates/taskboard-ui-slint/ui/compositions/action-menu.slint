@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The generated action menu (L2 composition, §5.9): renders the
+// menu::entries projection. No key handlers (menu cursor movement is
+// actions, D3); a click invokes the same Rust path the `menu.invoke`
+// action reaches (every click affordance has an action equivalent,
+// §7.1). Layout only — no domain knowledge (Rule E).
+
+import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
+import { KbdHint } from "../widgets/kbd-hint.slint";
+
+export struct MenuEntryModel {
+    action: string,
+    label: string,
+    enabled: bool,
+    hint: [string],
+}
+
+export component ActionMenu {
+    in property <[MenuEntryModel]> entries;
+    in property <int> selected-index;
+    callback invoke-entry(int);
+
+    Rectangle {
+        background: Theme.surface-raised;
+        border-width: Theme.focus-ring-width;
+        border-color: Theme.focus-ring;
+        border-radius: Theme.radius-medium;
+        min-width: 320px * Theme.base-scale;
+        min-height: 240px * Theme.base-scale;
+
+        VerticalLayout {
+            padding: Theme.space-2;
+            spacing: Theme.space-1;
+
+            for entry[entry-index] in entries: Rectangle {
+                border-width: root.selected-index == entry-index ? Theme.focus-ring-width : 0;
+                border-color: Semantic.focus-ring;
+                border-radius: Theme.radius-small;
+                background: root.selected-index == entry-index ? Theme.surface : transparent;
+                // Disabled rows stay visible (menu generation is
+                // total, §5.8); enabled rows are clickable and hit
+                // the same path as the `menu.invoke` action.
+                TouchArea {
+                    enabled: entry.enabled;
+                    clicked => root.invoke-entry(entry-index);
+                }
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-2;
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.body-emphasized;
+                        text-color: entry.enabled ? Theme.text-primary : Theme.text-secondary;
+                        text: entry.label;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    VerticalLayout {
+                        KbdHint {
+                            keys: entry.hint;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
