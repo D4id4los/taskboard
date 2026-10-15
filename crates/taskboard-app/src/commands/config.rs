@@ -4,7 +4,7 @@
 //! exit code. Pre-core (no actor graph, no database, no lock).
 
 use crate::cli::ConfigCmd;
-use crate::commands::output::ConfigView;
+use crate::commands::output::{ConfigPathView, ConfigView};
 use crate::commands::{CommandCtx, CommandError, emit_to, report_to};
 use crate::config::{AppConfig, ConfigError, SyncBackend};
 
@@ -102,6 +102,36 @@ pub fn render_text(view: &ConfigView) -> String {
     lines.join("\n")
 }
 
+/// The resolved-path diagnosis: which file reads resolve and where
+/// `connect`/`login` writes. Pure path resolution — no decode, no
+/// validation, no lock, no boot; infallible. Both resolution calls
+/// take the original `explicit` option: `write_path` re-resolves
+/// internally, so passing the already-resolved read path would collapse
+/// the very divergence this verb exists to show.
+#[must_use]
+pub fn path(explicit: Option<std::path::PathBuf>) -> ConfigPathView {
+    ConfigPathView {
+        config_path: AppConfig::config_path(explicit.clone())
+            .as_ref()
+            .map(|p| p.display().to_string()),
+        write_path: AppConfig::write_path(explicit).display().to_string(),
+    }
+}
+
+/// The human-readable path diagnosis: deterministic `key: value` lines
+/// in `print`'s style.
+#[must_use]
+pub fn render_path_text(view: &ConfigPathView) -> String {
+    [
+        format!(
+            "config_path: {}",
+            view.config_path.as_deref().unwrap_or("(none)")
+        ),
+        format!("write_path: {}", view.write_path),
+    ]
+    .join("\n")
+}
+
 /// Dispatch glue so `dispatch` stays a flat table.
 pub(crate) fn handle(cmd: &ConfigCmd, ctx: &mut CommandCtx<'_>) -> u8 {
     match *cmd {
@@ -112,5 +142,10 @@ pub(crate) fn handle(cmd: &ConfigCmd, ctx: &mut CommandCtx<'_>) -> u8 {
             }
             Err(err) => report_to(&mut ctx.io, &err),
         },
+        ConfigCmd::Path => {
+            let view = path(ctx.config_path.clone());
+            emit_to(&mut ctx.io, &view, &render_path_text(&view));
+            0
+        }
     }
 }
