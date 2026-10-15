@@ -30,5 +30,6 @@ workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+uuid.workspace = true
 proptest.workspace = true
 serde.workspace = true
