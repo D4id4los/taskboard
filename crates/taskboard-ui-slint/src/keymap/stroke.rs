@@ -169,7 +169,7 @@ impl Stroke {
         } else {
             // Bare printables arrive case-carrying; shift folds away.
             Some(Self {
-                key: if shift { key.to_ascii_uppercase() } else { key },
+                key: if shift { fold_shift(key) } else { key },
                 ctrl: false,
                 alt: false,
                 shift: false,
@@ -207,6 +207,20 @@ impl fmt::Display for Stroke {
 /// a control character, a named-key char, or a modifier-space char.
 fn is_printable(c: char) -> bool {
     !c.is_control() && NAMED_KEYS.iter().all(|&(_, ch)| ch != c)
+}
+
+/// Shift-folding for a printable (D6): the character carries the
+/// case, so `Shift+a` normalizes onto the cased character — the same
+/// normalization on both the config side (`parse`) and the event side
+/// (`from_event`, where printables arrive case-carrying).
+/// `char::to_uppercase` can yield several scalars (e.g. `ß` → "SS");
+/// those keep the character unchanged rather than inventing a key.
+fn fold_shift(c: char) -> char {
+    let mut upper = c.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(single), None) => single,
+        _ => c,
+    }
 }
 
 /// Parses one stroke spelling (D6 grammar). Pure and total: every
@@ -249,10 +263,9 @@ pub fn parse(spelling: &str) -> Result<Stroke, StrokeParseError> {
     if last.is_empty() || Mod::from_spelling(last).is_some() {
         return Err(StrokeParseError::ModifierOnly);
     }
-    if let Some((name, ch)) = NAMED_KEYS.iter().find(|(name, _)| *name == last) {
-        let _ = name;
+    if let Some(&(_, ch)) = NAMED_KEYS.iter().find(|(name, _)| *name == last) {
         return Ok(Stroke {
-            key: *ch,
+            key: ch,
             ctrl,
             alt,
             shift,
@@ -279,7 +292,7 @@ pub fn parse(spelling: &str) -> Result<Stroke, StrokeParseError> {
     let (key, shift) = if chorded {
         (c, shift)
     } else {
-        (if shift { c.to_ascii_uppercase() } else { c }, false)
+        (if shift { fold_shift(c) } else { c }, false)
     };
     Ok(Stroke {
         key,
@@ -345,6 +358,19 @@ mod tests {
         assert_eq!(folded.key, 'A');
         assert!(!folded.shift);
         assert_eq!(folded, ok("A"));
+
+        // The fold is case-carrying for every single-char-uppercase
+        // scalar, not only ASCII: `Shift+ä` *is* `Ä`, on both the
+        // config and the event side.
+        assert_eq!(ok("Shift+ä"), ok("Ä"));
+        assert_eq!(ok("Shift+ä").to_string(), "Ä");
+        assert_eq!(
+            Stroke::from_event('ä', false, false, true, false),
+            Some(ok("Ä"))
+        );
+
+        // A scalar whose uppercase is multi-char keeps the character.
+        assert_eq!(ok("Shift+ß").key, 'ß');
 
         let named = ok("Shift+Up");
         assert!(named.shift);
