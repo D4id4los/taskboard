@@ -4,12 +4,12 @@
 // itself on mount (D15's programmatic-focus seam; conditional
 // mounting creates the element, `init` grabs focus).
 
-import { Theme } from "../theme.slint";
+import { Theme, Semantic } from "../theme.slint";
 import { BoardLayout, StackColumnModel } from "../compositions/board-layout.slint";
 
-// The board model (D22): title, columns, and the focus/flow fields.
+// The board model (D22): the kanban geometry. The board title renders
+// in the toolbar (the window's `toolbar-title`), not in this model.
 export struct BoardModel {
-    title: string,
     stacks: [StackColumnModel],
     selected-stack: int,
     move-target: int, // stack index, −1 = no move flow
@@ -23,26 +23,35 @@ export component BoardView inherits FocusScope {
     callback switcher-activated(int);
     callback create-committed(int, string);
     callback create-edited(int, string);
-    callback create-cancelled();
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
     accessible-label: "Board";
     init => self.focus();
 
-    VerticalLayout {
-        spacing: Theme.space-2;
+    // The D15 ring: every FocusScope renders its ring while it holds
+    // focus — no keyboard-detection heuristics.
+    ring := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-width: root.has-focus ? Theme.focus-ring-width : 0;
+        border-color: Semantic.focus-ring;
+        border-radius: Theme.radius-medium;
 
-        BoardLayout {
-            stacks: root.board.stacks;
-            selected-stack: root.board.selected-stack;
-            move-target: root.board.move-target;
-            task-activated(c, r) => root.task-activated(c, r);
-            task-clicked(c, r) => root.task-clicked(c, r);
-            header-activated(c) => root.header-activated(c);
-            switcher-activated(c) => root.switcher-activated(c);
-            create-committed(c, t) => root.create-committed(c, t);
-            create-edited(c, t) => root.create-edited(c, t);
+        VerticalLayout {
+            spacing: Theme.space-2;
+
+            BoardLayout {
+                stacks: root.board.stacks;
+                selected-stack: root.board.selected-stack;
+                move-target: root.board.move-target;
+                task-activated(c, r) => root.task-activated(c, r);
+                task-clicked(c, r) => root.task-clicked(c, r);
+                header-activated(c) => root.header-activated(c);
+                switcher-activated(c) => root.switcher-activated(c);
+                create-committed(c, t) => root.create-committed(c, t);
+                create-edited(c, t) => root.create-edited(c, t);
+            }
         }
     }
 }

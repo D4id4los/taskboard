@@ -15,10 +15,12 @@ pub const COMPACT_MAX_WIDTH: f32 = 720.0;
 pub const EXPANSIVE_MIN_WIDTH: f32 = 1440.0;
 
 /// The breakpoint vocabulary (Q16): `Compact` < [`COMPACT_MAX_WIDTH`],
-/// `Regular` up to [`EXPANSIVE_MIN_WIDTH`], `Expansive` beyond.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// `Regular` up to [`EXPANSIVE_MIN_WIDTH`], `Expansive` beyond. No
+/// `Default`: the "no measurement yet" fallback is `Regular` (see
+/// [`breakpoint_for_width`]) and lives in the mapping, not in a trait
+/// impl that could drift from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Breakpoint {
-    #[default]
     Compact,
     Regular,
     Expansive,

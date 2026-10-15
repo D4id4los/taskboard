@@ -108,10 +108,7 @@ pub fn push(
 ) -> IdTables {
     let sets = presentation::due_sets(state, now);
     let board = presentation::live_board(state);
-    let stack_ids: Vec<StackId> = board
-        .map(|b| presentation::stacks_in_board(state, b.id))
-        .map(|stacks| stacks.into_iter().map(|s| s.id).collect())
-        .unwrap_or_default();
+    let stack_ids: Vec<StackId> = ViewState::stack_ids(state);
 
     push_chrome(window, board, keymap, chain);
     window.set_current_view(match vs.view() {
@@ -150,7 +147,9 @@ fn push_chrome(
 }
 
 /// The board model: one column per live stack, the flow's create row
-/// and move target marked by index (D8/D22).
+/// and move target marked by index (D8/D22). The board title renders
+/// in the toolbar (`push_chrome`), so the model carries only the
+/// kanban geometry.
 fn push_board(
     window: &AppWindow,
     state: &AppState,
@@ -180,13 +179,6 @@ fn push_board(
         });
     }
     window.set_board_model(BoardModel {
-        title: SharedString::from(
-            state
-                .boards
-                .values()
-                .find(|b| !b.deleted && !b.archived)
-                .map_or(String::new(), |b| b.title.clone()),
-        ),
         stacks: ModelRc::new(columns),
         selected_stack: i32::try_from(
             vs.selected_stack()

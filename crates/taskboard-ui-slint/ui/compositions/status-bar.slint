@@ -80,18 +80,43 @@ export component StatusBar inherits Rectangle {
 
                 for row[row-index] in root.banner: HorizontalLayout {
                     spacing: Theme.space-2;
-                    Rectangle {
+
+                    row-scope := FocusScope {
                         horizontal-stretch: 1;
-                        list := ListRow {
-                            text: row.title;
-                            meta: row.due-phrase;
-                            tone: Tone.overdue;
+                        // The D16 address: one list-item per overdue
+                        // task; a real tab stop whose focus IS the
+                        // activation (D12: keyboard focus into a
+                        // banner row sets the snooze/mute target —
+                        // the same seam a click hits).
+                        focus-on-tab-navigation: true;
+                        accessible-role: AccessibleRole.list-item;
+                        accessible-label: row.title;
+                        changed has-focus => {
+                            if (self.has-focus) {
+                                root.row-activated(row-index);
+                            }
                         }
-                        // Row activation: click sets focus/selection
-                        // state + the reminder target (D12) — the
-                        // caller routes it.
-                        TouchArea {
-                            clicked => root.row-activated(row-index);
+
+                        row-box := Rectangle {
+                            width: 100%;
+                            height: 100%;
+                            border-width: row-scope.has-focus ? Theme.focus-ring-width : 0;
+                            border-color: Semantic.focus-ring;
+                            border-radius: Theme.radius-small;
+
+                            list := ListRow {
+                                text: row.title;
+                                meta: row.due-phrase;
+                                tone: Tone.overdue;
+                            }
+                            // Click activation: the same seam as tab
+                            // focus, plus the focus hand-off (D15).
+                            touch := TouchArea {
+                                clicked => {
+                                    row-scope.focus();
+                                    root.row-activated(row-index);
+                                }
+                            }
                         }
                     }
                     VerticalLayout {

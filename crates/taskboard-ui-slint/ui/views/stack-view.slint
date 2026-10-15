@@ -2,11 +2,10 @@
 // The stack-detail view (L3, D22): one stack's task list plus its
 // inline create row. The scope focuses itself on mount (D15).
 
-import { Theme } from "../theme.slint";
+import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 import { TextField } from "../widgets/text-field.slint";
-import { RoleText, Typography } from "../theme.slint";
 
 // The stack-detail model (D22).
 export struct StackDetailModel {
@@ -27,33 +26,42 @@ export component StackView inherits FocusScope {
     accessible-label: "Stack: \{root.stack.title}";
     init => self.focus();
 
-    VerticalLayout {
-        spacing: Theme.space-2;
-
-        RoleText {
-            role: Typography.heading;
-            text: root.stack.title;
-        }
-
-        if (root.stack.tasks.length == 0 && !root.stack.create-open): EmptyState {
-            text: "No tasks in this stack";
-            hint: "Create one to get started";
-        }
+    // The D15 ring: rendered whenever the scope holds focus.
+    ring := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-width: root.has-focus ? Theme.focus-ring-width : 0;
+        border-color: Semantic.focus-ring;
+        border-radius: Theme.radius-medium;
 
         VerticalLayout {
-            alignment: start;
-            spacing: Theme.space-1;
-            for task[task-index] in root.stack.tasks: TaskCard {
-                model: task;
-                activated => root.task-activated(task-index);
-                clicked => root.task-clicked(task-index);
+            spacing: Theme.space-2;
+
+            RoleText {
+                role: Typography.heading;
+                text: root.stack.title;
             }
 
-            if (root.stack.create-open): TextField {
-                placeholder: "New task title";
-                label: "New task title";
-                accepted(text) => root.create-committed(text);
-                edited(text) => root.create-edited(text);
+            if (root.stack.tasks.length == 0 && !root.stack.create-open): EmptyState {
+                text: "No tasks in this stack";
+                hint: "Create one to get started";
+            }
+
+            VerticalLayout {
+                alignment: start;
+                spacing: Theme.space-1;
+                for task[task-index] in root.stack.tasks: TaskCard {
+                    model: task;
+                    activated => root.task-activated(task-index);
+                    clicked => root.task-clicked(task-index);
+                }
+
+                if (root.stack.create-open): TextField {
+                    placeholder: "New task title";
+                    label: "New task title";
+                    accepted(text) => root.create-committed(text);
+                    edited(text) => root.create-edited(text);
+                }
             }
         }
     }

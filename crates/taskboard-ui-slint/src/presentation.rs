@@ -382,16 +382,20 @@ mod tests {
     }
 
     #[test]
-    fn due_phrase_direction_follows_the_sign() {
+    fn due_phrase_renders_when_dated_and_stays_empty_when_not() {
+        // Structural facts only (AGENTS §5): the phrase assembly is
+        // glue over `duration_bucket`, whose edges the tests above own
+        // — no label-text assertions here.
         let now = Utc::now();
-        let overdue_at = now - TimeDelta::hours(3);
-        let future_at = now + TimeDelta::hours(3);
-        let overdue = due_phrase(DueKind::Overdue, Some(overdue_at), now);
-        let soon = due_phrase(DueKind::Soon, Some(future_at), now);
-        assert!(overdue.contains("3h"), "magnitude bucketed: {overdue}");
-        assert!(soon.contains("3h"), "magnitude bucketed: {soon}");
-        assert_ne!(overdue, soon, "direction differs");
-        assert_eq!(due_phrase(DueKind::None, None, now), "");
+        assert!(due_phrase(DueKind::None, None, now).is_empty(), "undated");
+        assert!(
+            !due_phrase(DueKind::Later, Some(now + TimeDelta::hours(3)), now).is_empty(),
+            "dated future"
+        );
+        assert!(
+            !due_phrase(DueKind::Overdue, Some(now - TimeDelta::hours(3)), now).is_empty(),
+            "dated past"
+        );
     }
 
     #[test]
