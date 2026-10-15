@@ -14,7 +14,7 @@ mod support;
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fake_engine::FakeEngine;
 use support::fixture;
-use support::guard::Guard;
+use support::guard::{Guard, Verb};
 
 use arc_swap::ArcSwap;
 use slint::ComponentHandle as _;
@@ -22,7 +22,7 @@ use slint::Model as _;
 use std::sync::Arc;
 use taskboard_domain::{AppState, StateCommand};
 use taskboard_ui_slint::actions::{ActionId, ContextId};
-use taskboard_ui_slint::keymap::stroke;
+use taskboard_ui_slint::keymap::stroke::{self, parse};
 use taskboard_ui_slint::menu;
 use taskboard_ui_slint::{UiSettings, View};
 
@@ -95,7 +95,12 @@ impl Harness {
         let entry = entries
             .iter()
             .find(|entry| entry.action == action)
-            .unwrap_or_else(|| panic!("{action:?} is bound in the visible chain"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "{action:?} is bound in the visible chain {:?}",
+                    self.chain()
+                )
+            });
         assert!(entry.enabled, "{action:?} is enabled");
         for spelling in &entry.hint {
             let stroke = stroke::parse(spelling)
@@ -105,10 +110,15 @@ impl Harness {
         }
     }
 
+    /// Injects one raw stroke (a text field's Return, a flow's
+    /// arrow) — counted like any press.
+    fn stroke(&mut self, stroke: taskboard_ui_slint::keymap::Stroke) {
+        let presses = self.driver.press_stroke(stroke);
+        self.guard.press_n(presses);
+    }
+
     /// Types raw text (the title-entry convention: the characters go
-    /// through the same `press_stroke` path — they count). Callers
-    /// land with the create/edit steps.
-    #[allow(dead_code)]
+    /// through the same `press_stroke` path — they count).
     fn type_text(&mut self, text: &str) {
         for ch in text.chars() {
             let stroke = taskboard_ui_slint::keymap::Stroke {
@@ -169,10 +179,12 @@ fn dummy_system_receiver() -> SignalReceiver {
 }
 
 /// §7.3 — the ten core verbs in one continuous session (one `#[test]`
-/// is the contract; per-step asserts inside).
+/// is the contract; per-step asserts inside — the length is the
+/// contract's, not sprawl).
+#[allow(clippy::too_many_lines)]
 #[test]
 fn the_ten_step_keyboard_session() {
-    let (_fixture, state) = fixture::journey_state();
+    let (fixture, state) = fixture::journey_state();
     support::driver::run(DriverOptions::default(), move |_driver| {
         // -- step 1: launch → the board view owns focus --------------
         let mut harness = Harness::mount(SlintDriver::default(), state);
@@ -226,5 +238,134 @@ fn the_ten_step_keyboard_session() {
         harness.press(ActionId::NavPrevView);
         assert_eq!(harness.handle.window().get_current_view(), View::Board);
         harness.assert_commands(&[]);
+
+        // -- step 3: task.create — one-character title (the guard
+        //    convention: create counts N + x + Return against ≤ 3) --
+        let create_row = |harness: &Harness, column: usize| {
+            harness
+                .handle
+                .window()
+                .get_board_model()
+                .stacks
+                .row_data(column)
+                .expect("column")
+                .create_open
+        };
+        harness.guard.begin(Verb::Create);
+        harness.press(ActionId::TaskCreate);
+        assert!(create_row(&harness, 0), "the create row opened in stack a");
+        harness.assert_commands(&[]);
+        harness.type_text("x");
+        harness.stroke(parse("Return").expect("Return"));
+        harness.guard.end(Verb::Create);
+        assert!(!create_row(&harness, 0), "the commit closed the row");
+        harness.assert_commands(&[StateCommand::CreateTask {
+            title: "x".into(),
+            stack: fixture.stack_a,
+            order: 2,
+        }]);
+        harness.engine.settle(&harness.handle);
+        assert_eq!(
+            harness.board_shape(),
+            vec![3, 1],
+            "the created task joined stack a"
+        );
+
+        // -- step 4: task.edit — walk to the created task, open the
+        //    detail, type over the selected title, save (R1's risk
+        //    case: the title field's keyboard reachability) ---------
+        harness.press(ActionId::NavNextItem);
+        harness.press(ActionId::NavNextItem);
+        assert_eq!(
+            harness.emphasized_card(),
+            Some((0, 2)),
+            "the created task takes the emphasis"
+        );
+        harness.guard.begin(Verb::Edit);
+        harness.press(ActionId::TaskEdit);
+        assert_eq!(
+            harness.handle.window().get_current_view(),
+            View::TaskDetail,
+            "task.edit opens the detail (focus ownership)"
+        );
+        harness.type_text("y");
+        harness.stroke(parse("Return").expect("Return"));
+        harness.guard.end(Verb::Edit);
+        // The created task's id only exists once the fake applied the
+        // create; the edit's command is matched structurally (exact
+        // variant + typed title) and its id carries steps 5–7.
+        let drained = harness.engine.drain();
+        let created = match drained.as_slice() {
+            [StateCommand::UpdateTask { id, changes }] if changes.title.as_deref() == Some("y") => {
+                Some(*id)
+            }
+            other => panic!("the title edit reached the boundary, got {other:?}"),
+        };
+        harness.engine.settle(&harness.handle);
+        assert_eq!(
+            harness.handle.window().get_task_model().title,
+            "y",
+            "the detail model reflects the retitled task"
+        );
+        let created = created.expect("the edit command carried the created task's id");
+
+        // -- step 5: task.complete (the standard preset binds Space in
+        //    the Board context; the keyboard path back is focus-board)
+        harness.press(ActionId::NavFocusBoard);
+        assert_eq!(harness.handle.window().get_current_view(), View::Board);
+        harness.guard.begin(Verb::Complete);
+        harness.press(ActionId::TaskComplete);
+        harness.guard.end(Verb::Complete);
+        harness.assert_commands(&[StateCommand::SetTaskDone {
+            id: created,
+            done: true,
+        }]);
+        harness.engine.settle(&harness.handle);
+
+        // -- step 6: task.move — begin, retarget, confirm -------------
+        harness.guard.begin(Verb::Move);
+        harness.press(ActionId::TaskMove);
+        assert!(
+            harness.handle.window().get_flow_hint_model().visible,
+            "the flow hint shows while moving"
+        );
+        harness.stroke(parse("Down").expect("Down"));
+        assert_eq!(
+            harness.handle.window().get_board_model().move_target,
+            1,
+            "the second stack highlights as the target"
+        );
+        harness.stroke(parse("Return").expect("Return"));
+        harness.guard.end(Verb::Move);
+        assert!(
+            !harness.handle.window().get_flow_hint_model().visible,
+            "the confirm ends the flow hint"
+        );
+        harness.assert_commands(&[StateCommand::MoveTask {
+            id: created,
+            stack: fixture.stack_b,
+            order: 1,
+        }]);
+        harness.engine.settle(&harness.handle);
+        assert_eq!(
+            harness.board_shape(),
+            vec![2, 2],
+            "the created task joined stack b"
+        );
+
+        // -- step 7: task.delete — the confirmation-free flow ---------
+        harness.press(ActionId::TaskDelete);
+        harness.assert_commands(&[StateCommand::DeleteTask { id: created }]);
+        harness.engine.settle(&harness.handle);
+        assert_eq!(
+            harness.board_shape(),
+            vec![2, 1],
+            "the view reconciles off the deleted subject"
+        );
+        assert_eq!(
+            harness.handle.window().get_current_view(),
+            View::Board,
+            "the session stays on the board"
+        );
     });
 }

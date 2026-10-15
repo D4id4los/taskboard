@@ -22,6 +22,10 @@ pub struct FakeEngine {
     commands: mpsc::Receiver<StateCommand>,
     state: Arc<ArcSwap<AppState>>,
     received: Vec<StateCommand>,
+    /// The prefix of `received` already folded into the state
+    /// snapshot (assertions drain the channel first; `settle`
+    /// applies from the log, not the channel).
+    applied: usize,
 }
 
 impl FakeEngine {
@@ -36,6 +40,7 @@ impl FakeEngine {
                 commands: rx,
                 state,
                 received: Vec::new(),
+                applied: 0,
             },
         )
     }
@@ -59,12 +64,14 @@ impl FakeEngine {
     /// continuity (insert/create, mark done, move, delete, retitle),
     /// stores, and triggers the UI's deterministic refresh.
     pub fn settle(&mut self, ui: &UiHandle) {
-        let drained = self.drain();
-        if drained.is_empty() {
+        self.drain();
+        let unapplied = &self.received[self.applied..];
+        if unapplied.is_empty() {
             return;
         }
+        self.applied = self.received.len();
         let mut state = self.state.load_full().as_ref().clone();
-        for command in drained {
+        for command in unapplied.iter().cloned() {
             match command {
                 StateCommand::CreateTask {
                     title,
