@@ -25,6 +25,13 @@ tokio.workspace = true
 # Observability (AGENTS-approved stack; the lib only emits spans).
 tracing.workspace = true
 
+[features]
+# Dev/testing only (design §8.2/Q19): compiles the embedded MCP server
+# into the slint runtime (started when SLINT_MCP_PORT is set). Never
+# enabled by default; the CI feature-off assertion (ci.yml/release.yml)
+# guards the release profile.
+mcp = ["slint/mcp"]
+
 [build-dependencies]
 slint-build.workspace = true
 
