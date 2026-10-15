@@ -11,6 +11,19 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::commands::output::SyncStatusView;
+use crate::config::SyncBackend;
+
+/// The connector-attached fact under the backend gate: present iff
+/// `nextcloud` — a `standalone` core has no connector concept, and
+/// `false` there would read as "detached (logged out)". Held once here
+/// so the daemon-side and in-session projections cannot drift.
+#[must_use]
+pub(crate) fn connector_flag(backend: SyncBackend, attached: bool) -> Option<bool> {
+    match backend {
+        SyncBackend::Nextcloud => Some(attached),
+        SyncBackend::Standalone => None,
+    }
+}
 
 /// The status answer shared by the daemon-side (IPC `Status` request)
 /// and client-side (no daemon / in-session) projections.
@@ -34,10 +47,10 @@ pub struct StatusView {
     /// the client-side answer; diagnostic, best-effort).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holder_pid: Option<u32>,
-    /// Whether the daemon's sync connector is still attached (WI-H):
-    /// present only in daemon-side answers under the `nextcloud`
+    /// Whether the sync connector is still attached (WI-H): present in
+    /// daemon-side and in-session answers under the `nextcloud`
     /// backend — `true` live actor, `false` detached (e.g. a `logout`
-    /// nudged the daemon). A detached daemon would otherwise answer
+    /// nudged the core). A detached connector would otherwise answer
     /// `backend: "nextcloud"` with phase `Idle`: structurally true,
     /// operationally misleading.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,10 +66,8 @@ impl StatusView {
             crate::config::SyncBackend::Standalone => "standalone",
             crate::config::SyncBackend::Nextcloud => "nextcloud",
         };
-        let connector_attached = match app.config.sync_backend() {
-            crate::config::SyncBackend::Nextcloud => Some(app.connector_attached()),
-            crate::config::SyncBackend::Standalone => None,
-        };
+        let connector_attached =
+            connector_flag(app.config.sync_backend(), app.connector_attached());
         Self {
             daemon: true,
             version: Some(crate::VERSION.to_owned()),
@@ -87,9 +98,11 @@ impl StatusView {
     }
 
     /// The in-session answer (REPL `status` line): the session *is* the
-    /// core holder, so its own pid is the honest client-side view.
+    /// core holder, so its own pid is the honest client-side view, and —
+    /// under the `nextcloud` backend — the live attach/detach fact the
+    /// caller gated through [`connector_flag`].
     #[must_use]
-    pub fn in_session() -> Self {
+    pub fn in_session(connector_attached: Option<bool>) -> Self {
         Self {
             daemon: false,
             version: None,
@@ -97,7 +110,7 @@ impl StatusView {
             pid: None,
             sync: None,
             holder_pid: Some(std::process::id()),
-            connector_attached: None,
+            connector_attached,
         }
     }
 }
@@ -105,6 +118,13 @@ impl StatusView {
 /// The human-readable status line (presentation text, never asserted).
 #[must_use]
 pub fn render_text(view: &StatusView) -> String {
+    // One spelling of the detached marker: every projection whose
+    // answer carries the connector fact appends the same suffix.
+    let detached = if view.connector_attached == Some(false) {
+        " — connector detached (logged out)"
+    } else {
+        ""
+    };
     if view.daemon {
         let mut daemon = format!(
             "daemon v{} (backend: {}, pid {})",
@@ -119,15 +139,15 @@ pub fn render_text(view: &StatusView) -> String {
             daemon.push_str(&sync.pending_ops.to_string());
             daemon.push_str(" pending");
         }
-        if view.connector_attached == Some(false) {
-            daemon.push_str(" — connector detached (logged out)");
-        }
+        daemon.push_str(detached);
         daemon
     } else {
-        match view.holder_pid {
+        let mut line = match view.holder_pid {
             Some(pid) => format!("no daemon serving this database (lock holder pid {pid})"),
             None => "no daemon serving this database".to_owned(),
-        }
+        };
+        line.push_str(detached);
+        line
     }
 }
 
@@ -141,7 +161,7 @@ pub fn emit(io: &mut crate::commands::CommandIo<'_>, view: &StatusView) {
 
 #[cfg(test)]
 mod tests {
-    use super::{StatusView, render_text};
+    use super::{StatusView, connector_flag, render_text};
 
     /// The daemon-side projection: live fields present, holder pid
     /// absent; the client-side projection is its mirror.
@@ -156,9 +176,51 @@ mod tests {
         assert!(client_view.pid.is_none());
         assert!(client_view.sync.is_none());
 
-        let session_view = StatusView::in_session();
+        let session_view = StatusView::in_session(None);
         assert!(!session_view.daemon);
         assert_eq!(session_view.holder_pid, Some(std::process::id()));
+    }
+
+    /// The in-session projection carries whatever connector fact the
+    /// caller gated on the backend — the view itself never re-derives.
+    #[test]
+    fn in_session_carries_the_connector_fact() {
+        assert_eq!(
+            StatusView::in_session(Some(true)).connector_attached,
+            Some(true)
+        );
+        assert_eq!(
+            StatusView::in_session(Some(false)).connector_attached,
+            Some(false)
+        );
+    }
+
+    /// The gate is view vocabulary, held once: present iff `nextcloud`.
+    #[test]
+    fn the_connector_flag_is_gated_on_the_backend() {
+        use crate::config::SyncBackend;
+        assert_eq!(connector_flag(SyncBackend::Nextcloud, true), Some(true));
+        assert_eq!(connector_flag(SyncBackend::Nextcloud, false), Some(false));
+        assert_eq!(connector_flag(SyncBackend::Standalone, true), None);
+        assert_eq!(connector_flag(SyncBackend::Standalone, false), None);
+    }
+
+    /// The serde contract for the in-session arms: the key is skipped
+    /// when absent, serialized when the fact exists.
+    #[test]
+    fn the_connector_key_is_skipped_when_absent() {
+        let absent = serde_json::to_value(StatusView::in_session(None)).expect("json");
+        assert!(absent.get("connector_attached").is_none());
+        let detached = serde_json::to_value(StatusView::in_session(Some(false))).expect("json");
+        assert_eq!(
+            detached["connector_attached"],
+            serde_json::Value::Bool(false)
+        );
+        let attached = serde_json::to_value(StatusView::in_session(Some(true))).expect("json");
+        assert_eq!(
+            attached["connector_attached"],
+            serde_json::Value::Bool(true)
+        );
     }
 
     /// Human text is presentation (never asserted in journeys), but the
@@ -182,7 +244,14 @@ mod tests {
         )));
         assert!(no_daemon.contains("no daemon"));
 
-        let holder = render_text(&StatusView::in_session());
+        let holder = render_text(&StatusView::in_session(None));
         assert!(holder.contains("no daemon") && holder.contains("pid"));
+
+        // The in-session detached fact reaches the human text too — the
+        // module's own presentation smoke, not a journey assertion.
+        let detached = render_text(&StatusView::in_session(Some(false)));
+        assert!(detached.contains("no daemon") && detached.contains("connector detached"));
+        let plain = render_text(&StatusView::in_session(None));
+        assert!(!plain.contains("connector detached"));
     }
 }

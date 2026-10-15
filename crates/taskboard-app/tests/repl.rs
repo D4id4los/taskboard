@@ -1521,6 +1521,103 @@ async fn j8_logout_on_a_standalone_session_refuses_typed_and_survives() {
     assert_eq!(receipts[0]["title"], "Personal");
 }
 
+/// R14: the in-session `status` under `standalone` omits the connector
+/// fact entirely — a standalone core has no connector concept, and a
+/// `false` would read as "detached (logged out)".
+#[tokio::test]
+async fn r14_in_session_status_under_standalone_omits_the_connector_fact() {
+    let dir = tempdir();
+    let db = dir.path().join("r14.db");
+    let app = taskboard_app::bootstrap::bootstrap(
+        standalone_config(&db),
+        forbidden_store(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("session core boots");
+    let session = ReplSession::headless(app.config.clone(), forbidden_store(), true);
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    {
+        let mut io = CommandIo {
+            out: &mut out,
+            err: &mut err,
+            json: true,
+        };
+        let code = dispatch_line(&session, &app, Command::Status, &mut io).await;
+        assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    }
+    app.shutdown().await;
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["daemon"], serde_json::Value::Bool(false));
+    assert!(
+        receipts[0].get("connector_attached").is_none(),
+        "standalone has no connector fact: {}",
+        receipts[0]
+    );
+}
+
+/// J10: the in-session `status` under an explicit `nextcloud` backend
+/// answers the live attach fact — `true` at boot-attach, `false` after
+/// an in-session `logout` detaches (the session stays `nextcloud`:
+/// the config keys survive).
+#[tokio::test]
+async fn j10_in_session_status_surfaces_the_connector_fact_across_logout() {
+    let dir = tempdir();
+    let db = dir.path().join("j10.db");
+    let server = wiremock::MockServer::start().await;
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+    let config_path = seeded_config_file(
+        dir.path(),
+        &db,
+        &minimal_toml(format!(
+            "[nextcloud]\ncredential_store = 'keyring'\nserver_url = '{}'\nusername = 'alice'\n[sync]\nbackend = 'nextcloud'\npoll_interval_secs = 1\n",
+            server.uri()
+        )),
+    );
+    let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::with(
+        &server.uri(),
+        "alice",
+        "j10-secret",
+    ));
+
+    let (code, out, err) = run_with(
+        config,
+        Some(config_path),
+        store,
+        true,
+        vec![
+            line("status --json"),
+            line("logout --json"),
+            line("status --json"),
+            line("exit"),
+        ],
+        vec![],
+    )
+    .await;
+
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 3, "out: {}", String::from_utf8_lossy(&out));
+    assert_eq!(
+        receipts[0]["connector_attached"],
+        serde_json::Value::Bool(true),
+        "boot-attached"
+    );
+    assert_eq!(
+        receipts[1]["config_cleared"],
+        serde_json::Value::Bool(false),
+        "the explicit backend keeps the keys"
+    );
+    assert_eq!(
+        receipts[2]["connector_attached"],
+        serde_json::Value::Bool(false),
+        "detached after the in-session logout"
+    );
+}
+
 /// J9: an `Interrupted` event gets its `Next` verdict and the session
 /// continues — a following line works, and the session end drops the
 /// peer cleanly (the journey's own deadline guards the liveness).
