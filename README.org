@@ -217,7 +217,10 @@ config, connector, and credential store are fixed for the lock
 epoch). Tab completion is on: verbs, subverbs, long flags, and the
 live stack/task/label titles complete at the cursor (the offered
 titles are exactly what the corresponding selector would accept; the
-in-session-refused verbs and =--config= are never offered).
+in-session-refused verbs and =--config= are never offered). Submitted
+lines persist across sessions in =<data-dir>/taskboard/history=
+(owner-only 0600, best-effort: a missing or corrupt file is warned
+about and rebuilt, never fatal; prompted secrets are never recorded).
 The instance-lock mutex applies both ways — a running daemon
 makes bare =taskboard= (a *second* core boot) fail with
 =instance-locked=: stop the daemon first. Core *verbs* typed while a

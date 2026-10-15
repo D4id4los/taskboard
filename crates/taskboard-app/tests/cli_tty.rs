@@ -79,7 +79,12 @@ fn feed_session_lines(
 
 /// `script` wraps the binary in a pty; `timeout` guards the hang
 /// regression (a wedged prompt must fail the test, not stall it).
-fn run_login_under_pty(config: &std::path::Path, url: &str, input: &str) -> std::process::Output {
+fn run_login_under_pty(
+    config: &std::path::Path,
+    url: &str,
+    input: &str,
+    data_home: &std::path::Path,
+) -> std::process::Output {
     let binary = env!("CARGO_BIN_EXE_taskboard");
     let inner = format!(
         "{} --config {} login --server {} --user alice",
@@ -96,6 +101,10 @@ fn run_login_under_pty(config: &std::path::Path, url: &str, input: &str) -> std:
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // History persistence (once it exists) must never touch the
+        // developer's real data dir: every pty session's XDG data home
+        // is the test's own tempdir.
+        .env("XDG_DATA_HOME", data_home)
         .spawn()
         .expect("spawn script(1) pty wrapper");
     child
@@ -150,6 +159,7 @@ fn tty_login_prompts_all_three_values_and_persists() {
         &config,
         &server.uri(),
         &format!("{}\nalice\ns3cret-tty-pw\n", server.uri()),
+        dir.path(),
     );
 
     // The hang guard: `timeout 30` exits 124 when the prompt wedges.
@@ -249,6 +259,10 @@ fn tty_in_session_connect_prompts_masked_and_persists() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // History persistence must never touch the developer's real
+        // data dir: every pty session's XDG data home is the test's own
+        // tempdir (see `run_login_under_pty`).
+        .env("XDG_DATA_HOME", dir.path())
         .spawn()
         .expect("spawn script(1) pty wrapper");
     let mut stdin = child.stdin.take().expect("stdin piped");
@@ -360,6 +374,10 @@ fn tty_ctrl_c_during_the_masked_read_never_persists_and_never_wedges() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // History persistence must never touch the developer's real
+        // data dir: every pty session's XDG data home is the test's own
+        // tempdir (see `run_login_under_pty`).
+        .env("XDG_DATA_HOME", dir.path())
         .spawn()
         .expect("spawn script(1) pty wrapper");
     let mut stdin = child.stdin.take().expect("stdin piped");
@@ -464,6 +482,10 @@ fn tty_bare_invocation_opens_a_repl_session_and_persists() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // History persistence must never touch the developer's real
+        // data dir: every pty session's XDG data home is the test's own
+        // tempdir (see `run_login_under_pty`).
+        .env("XDG_DATA_HOME", dir.path())
         .spawn()
         .expect("spawn script(1) pty wrapper");
     // Feed the script one line at a time, each only after its prompt
@@ -596,6 +618,10 @@ fn tty_repl_exit_hands_the_line_discipline_back_intact() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // History persistence must never touch the developer's real
+        // data dir: every pty session's XDG data home is the test's own
+        // tempdir (see `run_login_under_pty`).
+        .env("XDG_DATA_HOME", dir.path())
         .spawn()
         .expect("spawn script(1) pty wrapper");
 
@@ -704,6 +730,10 @@ fn tty_repl_refuses_while_the_daemon_holds_the_database() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // History persistence must never touch the developer's real
+        // data dir: every pty session's XDG data home is the test's own
+        // tempdir (see `run_login_under_pty`).
+        .env("XDG_DATA_HOME", dir.path())
         .spawn()
         .expect("spawn script(1) pty wrapper");
     // The session refuses at boot and never reads a line; a dead pty
@@ -784,6 +814,10 @@ fn tty_explicit_daemon_stays_the_daemon_and_serves_standalone() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // History persistence must never touch the developer's real
+        // data dir: every pty session's XDG data home is the test's own
+        // tempdir (see `run_login_under_pty`).
+        .env("XDG_DATA_HOME", dir.path())
         .spawn()
         .expect("spawn script(1) pty wrapper");
     drop(child.stdin.take());
@@ -1054,6 +1088,29 @@ fn wait_for_readline(out_pipe: &mut std::process::ChildStdout, seen: &mut Vec<u8
     );
 }
 
+/// Blocks until the session prompt appeared on the pty (the first-feed
+/// gate: raw mode is provably active and `readline` is reading — see
+/// the hazard note on `feed_session_lines`). Wording is a
+/// synchronization gate, never asserted.
+fn wait_for_prompt(out_pipe: &mut std::process::ChildStdout, seen: &mut Vec<u8>) {
+    loop {
+        if seen
+            .windows(SESSION_PROMPT.len())
+            .any(|w| w == SESSION_PROMPT.as_bytes())
+        {
+            return;
+        }
+        let mut chunk = [0u8; 256];
+        match std::io::Read::read(out_pipe, &mut chunk) {
+            Ok(0) | Err(_) => panic!(
+                "the pty ended before the session prompt: {}",
+                String::from_utf8_lossy(seen)
+            ),
+            Ok(n) => seen.extend_from_slice(&chunk[..n]),
+        }
+    }
+}
+
 /// Waits for the Nth readline cycle, then writes one scripted line
 /// (CR is the Enter key in raw mode — see `feed_session_lines`).
 fn feed_line(
@@ -1129,6 +1186,10 @@ fn tty_connect_confirms_the_backend_switch_and_persists() {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // History persistence must never touch the developer's real
+        // data dir: every pty session's XDG data home is the test's own
+        // tempdir (see `run_login_under_pty`).
+        .env("XDG_DATA_HOME", dir.path())
         .spawn()
         .expect("spawn script(1) pty wrapper");
     // The flags supply server/user, and the D2 guard runs before the
@@ -1168,4 +1229,136 @@ fn tty_connect_confirms_the_backend_switch_and_persists() {
     );
     assert!(written.contains(&server.uri()));
     assert!(!written.contains("s3cret-tty-pw"));
+}
+
+/// File-backed history across sessions: session 1 records a submitted
+/// line into the data dir's history file and leaves; session 2 (a fresh
+/// process, same data home) recalls it with Up-arrow alone — the
+/// recalled line must execute and produce the same structural JSON
+/// payload session 1 produced (payload-parse assertion, never output
+/// text). Proves the load→recall→execute wiring the hermetic unit
+/// suite cannot reach. Skipped when `script` is unavailable.
+#[test]
+#[allow(clippy::too_many_lines)] // two full pty sessions, one journey
+fn tty_repl_history_recalls_the_previous_sessions_line() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let inner = format!("{} --config {}", binary, config.display());
+
+    // Session 1: one recorded line, then a clean exit.
+    let mut child = std::process::Command::new("timeout")
+        .arg("60")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("TERM", "xterm")
+        .spawn()
+        .expect("spawn script(1) pty wrapper");
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut out_pipe = child.stdout.take().expect("stdout piped");
+    let mut seen = Vec::new();
+    // The first feed gates on the *prompt* (raw mode provably active
+    // and reading), not on the readline marker: the marker is printed
+    // before the raw-mode switch, and bytes parked in the input queue
+    // through that switch are flushed (see `feed_session_lines`).
+    wait_for_prompt(&mut out_pipe, &mut seen);
+    stdin
+        .write_all(b"tasks list --json\r")
+        .expect("write the recorded line");
+    feed_line(&mut stdin, &mut out_pipe, &mut seen, 2, "exit");
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut out_pipe, &mut tail).expect("drain session 1");
+    drop(out_pipe);
+    let status = child.wait().expect("session 1 completes");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "session 1 failed: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert_eq!(
+        json_list_payloads(&seen).len(),
+        1,
+        "session 1 produced its payload: {}",
+        String::from_utf8_lossy(&seen)
+    );
+
+    // Session 2: a fresh process over the same data home sends only the
+    // Up-arrow key and Enter — no typed line. The recalled line is the
+    // proof that the history file loaded.
+    let mut child = std::process::Command::new("timeout")
+        .arg("60")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env("XDG_DATA_HOME", dir.path())
+        .env("TERM", "xterm")
+        .spawn()
+        .expect("spawn script(1) pty wrapper");
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut out_pipe = child.stdout.take().expect("stdout piped");
+    let mut seen = Vec::new();
+    // Same first-feed gating as session 1: the prompt, not the marker.
+    // Two Up-arrows: session 1's LAST recorded line is its `exit`; the
+    // recall targets the line under test, one entry above it.
+    wait_for_prompt(&mut out_pipe, &mut seen);
+    stdin
+        .write_all(b"\x1b[A\x1b[A\r")
+        .expect("write the Up-arrow recall");
+    // The recalled line runs; the only other input is the exit line
+    // (pacing: the editor's second readline proves the first completed).
+    feed_line(&mut stdin, &mut out_pipe, &mut seen, 2, "exit");
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut out_pipe, &mut tail).expect("drain session 2");
+    drop(out_pipe);
+    drop(stdin);
+    let status = child.wait().expect("session 2 completes");
+    assert_ne!(
+        status.code(),
+        Some(124),
+        "session 2 hung on the recalled line: {}",
+        String::from_utf8_lossy(&seen)
+    );
+
+    let payloads = json_list_payloads(&seen);
+    assert_eq!(
+        payloads.len(),
+        1,
+        "the Up-arrow recalled exactly the recorded line: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        payloads[0].get("stacks").is_some(),
+        "the recalled line produced the list payload shape: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        json_error_lines(&seen).is_empty(),
+        "the recalled line executed cleanly: {}",
+        String::from_utf8_lossy(&seen)
+    );
 }

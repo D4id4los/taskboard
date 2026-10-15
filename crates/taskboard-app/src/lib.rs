@@ -38,6 +38,7 @@ pub mod ipc;
 pub mod lockfile;
 pub mod notifications;
 pub mod repl;
+mod repl_history;
 pub mod secrets;
 mod session_ceremonies;
 pub mod ui;
