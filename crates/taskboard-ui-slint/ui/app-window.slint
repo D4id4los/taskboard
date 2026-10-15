@@ -67,7 +67,6 @@ export component AppWindow inherits Window {
     in-out property <StackDetailModel> stack-model;
     in-out property <TaskDetailModel> task-model;
     in-out property <SyncBadgeModel> sync-model;
-    in-out property <int> startup-findings;
     in-out property <[BannerRowModel]> banner-model;
     in-out property <int> banner-overflow;
     in-out property <FlowHintModel> flow-hint-model;
@@ -125,7 +124,7 @@ export component AppWindow inherits Window {
 
             status := StatusBar {
                 sync: root.sync-model;
-                startup-findings: root.startup-findings;
+                startup-findings: UiStatus.startup-keymap-findings;
                 banner: root.banner-model;
                 banner-overflow: root.banner-overflow;
                 flow-hint: root.flow-hint-model;

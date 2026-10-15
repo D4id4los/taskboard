@@ -22,12 +22,17 @@ use taskboard_domain::{AppState, StackId, StateCommand, TaskId};
 use crate::actions::{ActionId, ContextId};
 use crate::keymap::Keymap;
 use crate::menu::{self, MenuEntry};
+use crate::models::IdTables;
 use crate::presentation::ReminderTarget;
 use crate::resolver::{KeymapResolver, Resolution};
 use crate::router::{ActionRouter, DispatchOutcome, Mode, UiEffect};
 use crate::shell::KeymapShell;
 use crate::view_state::{Flow, FlowOutcome, ViewState};
 use crate::{AppWindow, Breakpoint, KeyFeedback, KeyboardState, Responsive, UiStatus};
+
+/// The repaint cadence (D1): the UI-owned timer's tick, in
+/// milliseconds — signal drain, minute boundary, then refresh.
+pub const REPAINT_CADENCE_MS: u64 = 100;
 
 /// The Q15 startup-warning summary handed over with the validated
 /// keymap; the status bar renders it from `UiStatus` (chunk 3).
@@ -52,6 +57,8 @@ pub(crate) struct Adapter {
     /// The banner row target set by row activation (D4); consumed by
     /// the next snooze/mute dispatch, then cleared (one-shot).
     reminder_target: Option<ReminderTarget>,
+    /// The id tables of the last refresh pass (D2): index → id.
+    tables: IdTables,
 }
 
 impl Adapter {
@@ -138,9 +145,9 @@ impl Adapter {
     }
 
     /// Applies flow outcomes verbatim (D9): the adapter never
-    /// re-decides. `RefreshNow` only marks the repaint need — the
-    /// timer-driven `refresh()` (D1) picks it up.
-    fn apply_outcomes(&mut self, outcomes: &[FlowOutcome]) {
+    /// re-decides. `RefreshNow` re-derives the models immediately —
+    /// the timer-driven refresh (D1) covers the passive side.
+    fn apply_outcomes(&mut self, window: &AppWindow, outcomes: &[FlowOutcome]) {
         for outcome in outcomes {
             match outcome {
                 FlowOutcome::Command(command) => {
@@ -151,16 +158,22 @@ impl Adapter {
                 FlowOutcome::SetMode(mode) => {
                     self.shell.apply(&UiEffect::SetMode(*mode), 0);
                 }
-                FlowOutcome::RefreshNow => {}
+                FlowOutcome::RefreshNow => self.refresh(window),
             }
         }
     }
 
-    /// The D1 refresh's view-state half: reconcile subjects and focus
-    /// against the current snapshot (the model pushes grow with the
-    /// views).
-    pub(crate) fn reconcile(&mut self, state: &AppState) {
-        self.view_state.reconcile(state);
+    /// The D1 refresh: reconcile, then one full re-derive of the
+    /// display models from the current snapshot (lock-free load) and
+    /// a fresh id tables pass. Deterministic, timer-free; the repaint
+    /// timer and the tests call this.
+    pub(crate) fn refresh(&mut self, window: &AppWindow) {
+        self.sync_view_context();
+        let state = self.state.load();
+        let chain = self.shell.chain();
+        let now = chrono::Utc::now();
+        self.tables =
+            crate::models::push(window, &state, &self.view_state, &self.keymap, &chain, now);
     }
 
     /// Whether the window is at the compact breakpoint (D17).
@@ -185,11 +198,11 @@ impl Adapter {
             match flow {
                 Flow::Create { .. } | Flow::EditTitle { .. } => {
                     let outcomes = self.view_state.commit_edit(&state);
-                    self.apply_outcomes(&outcomes);
+                    self.apply_outcomes(window, &outcomes);
                 }
                 Flow::Move { .. } => {
                     let outcomes = self.view_state.cancel_move();
-                    self.apply_outcomes(&outcomes);
+                    self.apply_outcomes(window, &outcomes);
                 }
                 Flow::None => {}
             }
@@ -247,7 +260,7 @@ impl Adapter {
             }
             (_, _) => Vec::new(),
         };
-        self.apply_outcomes(&outcomes);
+        self.apply_outcomes(window, &outcomes);
     }
 
     fn apply_effect(&mut self, window: &AppWindow, effect: UiEffect) {
@@ -354,6 +367,7 @@ pub(crate) fn install(
         commands,
         menu_entries: Vec::new(),
         reminder_target: None,
+        tables: IdTables::default(),
     }));
     // Startup warnings are pure input (Q15): pushed once at mount.
     window
@@ -400,8 +414,260 @@ pub(crate) fn install(
                 .set_current_breakpoint(breakpoint);
         });
     }
+    install_view_seams(window, &adapter);
     adapter.borrow().sync(window);
     adapter
+}
+
+/// The view dispatch seams (D22): every index-carrying callback
+/// resolves against the id tables of the last refresh pass (D2) and
+/// lands in the view-state machine or the router — never in ad-hoc
+/// logic. Each handler ends in a refresh so the models carry the new
+/// state (the adapter applies `view_state` outcomes verbatim, D9).
+fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    install_toolbar_seam(window, adapter);
+    install_board_seams(window, adapter);
+    install_stack_seams(window, adapter);
+    install_task_seam(window, adapter);
+    install_banner_seams(window, adapter);
+}
+
+/// The toolbar's menu button routes the `app.menu` action (§7.1).
+fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let adapter = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_toolbar_menu_clicked(move || {
+        let Some(window) = weak.upgrade() else { return };
+        adapter.borrow_mut().route(&window, ActionId::AppMenu);
+    });
+}
+
+/// A `Fn(&mut Adapter, &AppWindow, Args)` wrapper shape is over
+/// generics' worth of closure types; the per-seam helpers below stay
+/// explicit instead.
+fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let (card, activated) = (Rc::clone(adapter), Rc::clone(adapter));
+    let (click_weak, act_weak) = (window.as_weak(), window.as_weak());
+    window.on_board_task_clicked(move |column, row| {
+        let Some(window) = click_weak.upgrade() else {
+            return;
+        };
+        let mut a = card.borrow_mut();
+        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+            return;
+        };
+        let Some((stack, task)) = a.tables.board_task(column, row) else {
+            return;
+        };
+        let outcomes = a.view_state.activate_card(task, stack);
+        a.apply_outcomes(&window, &outcomes);
+    });
+    window.on_board_task_activated(move |column, row| {
+        let Some(window) = act_weak.upgrade() else {
+            return;
+        };
+        let mut a = activated.borrow_mut();
+        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+            return;
+        };
+        let Some((stack, task)) = a.tables.board_task(column, row) else {
+            return;
+        };
+        let outcomes = a.view_state.activate_card(task, stack);
+        a.apply_outcomes(&window, &outcomes);
+        a.route(&window, ActionId::TaskEdit);
+    });
+
+    // Header and switcher activation are the same selection move (D8:
+    // one mechanism per breakpoint; D13: no stack management in UI).
+    let (header, switcher) = (Rc::clone(adapter), Rc::clone(adapter));
+    let (head_weak, switch_weak) = (window.as_weak(), window.as_weak());
+    window.on_board_header_activated(move |column| {
+        let Some(window) = head_weak.upgrade() else {
+            return;
+        };
+        let mut a = header.borrow_mut();
+        select_column(&mut a, &window, column);
+    });
+    window.on_board_switcher_activated(move |column| {
+        let Some(window) = switch_weak.upgrade() else {
+            return;
+        };
+        let mut a = switcher.borrow_mut();
+        select_column(&mut a, &window, column);
+    });
+
+    // The create-row field: keystrokes mirror into the Rust buffer
+    // (D9 rule 1); Return commits.
+    let mirror = Rc::clone(adapter);
+    window.on_board_create_edited(move |column, text| {
+        let _ = column;
+        mirror.borrow_mut().view_state.set_buffer(text.to_string());
+    });
+    let commit = Rc::clone(adapter);
+    let commit_weak = window.as_weak();
+    window.on_board_create_committed(move |column, text| {
+        let Some(window) = commit_weak.upgrade() else {
+            return;
+        };
+        let _ = column;
+        let mut a = commit.borrow_mut();
+        let state = a.state.load_full();
+        a.view_state.set_buffer(text.to_string());
+        let outcomes = a.view_state.commit_edit(&state);
+        a.apply_outcomes(&window, &outcomes);
+    });
+}
+
+/// Header/switcher activation: select the column's stack (D8).
+fn select_column(adapter: &mut Adapter, window: &AppWindow, column: i32) {
+    let Some(stack) = adapter
+        .tables
+        .stack_ids
+        .get(usize::try_from(column).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return;
+    };
+    let state = adapter.state.load_full();
+    let outcomes = adapter.view_state.select_stack(&state, stack);
+    adapter.apply_outcomes(window, &outcomes);
+}
+
+fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let (card, activated) = (Rc::clone(adapter), Rc::clone(adapter));
+    let (click_weak, act_weak) = (window.as_weak(), window.as_weak());
+    window.on_stack_task_clicked(move |row| {
+        let Some(window) = click_weak.upgrade() else {
+            return;
+        };
+        let mut a = card.borrow_mut();
+        activate_stack_row(&mut a, &window, row);
+    });
+    window.on_stack_task_activated(move |row| {
+        let Some(window) = act_weak.upgrade() else {
+            return;
+        };
+        let mut a = activated.borrow_mut();
+        activate_stack_row(&mut a, &window, row);
+        a.route(&window, ActionId::TaskEdit);
+    });
+
+    let mirror = Rc::clone(adapter);
+    window.on_stack_create_edited(move |text| {
+        mirror.borrow_mut().view_state.set_buffer(text.to_string());
+    });
+    let commit = Rc::clone(adapter);
+    let commit_weak = window.as_weak();
+    window.on_stack_create_committed(move |text| {
+        let Some(window) = commit_weak.upgrade() else {
+            return;
+        };
+        let mut a = commit.borrow_mut();
+        let state = a.state.load_full();
+        a.view_state.set_buffer(text.to_string());
+        let outcomes = a.view_state.commit_edit(&state);
+        a.apply_outcomes(&window, &outcomes);
+    });
+}
+
+/// A stack-detail card click: focus the row's task (selection state
+/// only, §7.1); activation routes `task.edit` after it.
+fn activate_stack_row(adapter: &mut Adapter, window: &AppWindow, row: i32) {
+    let Some(task) = adapter
+        .tables
+        .stack_task(usize::try_from(row).unwrap_or(usize::MAX))
+    else {
+        return;
+    };
+    let Some(stack) = adapter.view_state.subject_stack() else {
+        return;
+    };
+    let outcomes = adapter.view_state.activate_card(task, stack);
+    adapter.apply_outcomes(window, &outcomes);
+}
+
+/// The task-detail title field: mirror + commit (D14).
+fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let mirror = Rc::clone(adapter);
+    window.on_task_title_edited(move |text| {
+        mirror.borrow_mut().view_state.set_buffer(text.to_string());
+    });
+    let commit = Rc::clone(adapter);
+    let commit_weak = window.as_weak();
+    window.on_task_title_committed(move |text| {
+        let Some(window) = commit_weak.upgrade() else {
+            return;
+        };
+        let mut a = commit.borrow_mut();
+        let state = a.state.load_full();
+        a.view_state.set_buffer(text.to_string());
+        let outcomes = a.view_state.commit_edit(&state);
+        a.apply_outcomes(&window, &outcomes);
+    });
+}
+
+/// The banner seams (D12): row activation sets focus state plus the
+/// one-shot reminder target (D4); snooze/mute set the target and
+/// route the registry actions.
+fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let row = Rc::clone(adapter);
+    let row_weak = window.as_weak();
+    window.on_banner_row_activated(move |index| {
+        let Some(window) = row_weak.upgrade() else {
+            return;
+        };
+        let mut a = row.borrow_mut();
+        let Some(banner_row) = a
+            .tables
+            .banner
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return;
+        };
+        a.view_state.set_focused(Some(banner_row.task));
+        a.reminder_target = Some(banner_row.target);
+        a.refresh(&window);
+    });
+
+    let snooze = Rc::clone(adapter);
+    let snooze_weak = window.as_weak();
+    window.on_banner_snooze_clicked(move |index| {
+        let Some(window) = snooze_weak.upgrade() else {
+            return;
+        };
+        let mut a = snooze.borrow_mut();
+        let Some(banner_row) = a
+            .tables
+            .banner
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return;
+        };
+        a.reminder_target = Some(banner_row.target);
+        a.route(&window, ActionId::ReminderSnooze);
+    });
+
+    let mute = Rc::clone(adapter);
+    let mute_weak = window.as_weak();
+    window.on_banner_mute_clicked(move |index| {
+        let Some(window) = mute_weak.upgrade() else {
+            return;
+        };
+        let mut a = mute.borrow_mut();
+        let Some(banner_row) = a
+            .tables
+            .banner
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return;
+        };
+        a.reminder_target = Some(banner_row.target);
+        a.route(&window, ActionId::ReminderMute);
+    });
 }
 
 /// The chunk-3 focus seam surface (D16/D17): sets the view context /

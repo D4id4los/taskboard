@@ -98,15 +98,18 @@ pub enum UiRunError {
 /// receivers merely go `Lagged`, which is inert.
 pub struct UiHandle {
     window: AppWindow,
-    /// The keymap adapter (chunk 2): interception, shell state, and
-    /// the `set_view_context`/`set_focused_entities` seam (D16/D17).
+    /// The keymap adapter (chunk 2): interception, shell state, the
+    /// view-state machine, and the D9 interpretation table.
     adapter: Rc<RefCell<adapter::Adapter>>,
-    /// Lock-free state reads for the rendering thread (AGENTS §3).
+    /// Lock-free state reads for the rendering thread (AGENTS §3);
+    /// shared with the adapter at mount, kept here for the tests'
+    /// state injection.
+    #[cfg_attr(not(test), allow(dead_code))]
     state: Arc<ArcSwap<AppState>>,
-    /// Engine repaint triggers (design §1.2; chunk 3's consumers).
-    _signals: broadcast::Receiver<EngineSignal>,
-    /// System status events (chunk 3's status bar).
-    _system: broadcast::Receiver<SystemEvent>,
+    /// The D1 repaint driver (signal drain + minute boundary +
+    /// refresh). Started by `mount`; never fires without a running
+    /// event loop (the tests call `refresh` directly).
+    timer: slint::Timer,
 }
 
 /// Creates the window and applies the theme state (theme init is a
@@ -144,13 +147,77 @@ pub fn mount(
         commands,
         Arc::clone(&state),
     );
-    Ok(UiHandle {
+    let handle = UiHandle {
         window,
         adapter,
         state,
-        _signals: signals,
-        _system: system,
-    })
+        timer: slint::Timer::default(),
+    };
+    start_repaint_driver(&handle, signals, system);
+    // The first paint is a refresh, not a timer wait (D1's
+    // first-refresh flag, collapsed into an immediate pass).
+    handle.refresh();
+    Ok(handle)
+}
+
+/// Starts the D1 repaint driver: a repeating slint `Timer` on the
+/// slint thread that drains the engine-signal and system-event
+/// receivers (non-blocking; `Lagged` counts as changed — chunk 1's
+/// recorded semantics), detects the wall-minute boundary (the
+/// reminders §7 time repaint), and refreshes when anything fired.
+fn start_repaint_driver(
+    handle: &UiHandle,
+    mut signals: broadcast::Receiver<EngineSignal>,
+    mut system: broadcast::Receiver<SystemEvent>,
+) {
+    let weak = handle.window.as_weak();
+    let adapter = Rc::clone(&handle.adapter);
+    let minute = std::cell::Cell::new(None::<i64>);
+    handle.timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(adapter::REPAINT_CADENCE_MS),
+        move || {
+            let Some(window) = weak.upgrade() else { return };
+            let mut dirty = false;
+            loop {
+                match signals.try_recv() {
+                    Ok(_) => dirty = true,
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                        dirty = true;
+                        break;
+                    }
+                    Err(
+                        broadcast::error::TryRecvError::Empty
+                        | broadcast::error::TryRecvError::Closed,
+                    ) => break,
+                }
+            }
+            loop {
+                match system.try_recv() {
+                    // `Shutdown` is inert here (the app-side exit
+                    // watcher owns quit); the rest are refresh
+                    // triggers only — sync truth renders from state.
+                    Ok(_) => dirty = true,
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                        dirty = true;
+                        break;
+                    }
+                    Err(
+                        broadcast::error::TryRecvError::Empty
+                        | broadcast::error::TryRecvError::Closed,
+                    ) => break,
+                }
+            }
+            let wall_minute = chrono::Utc::now().timestamp() / 60;
+            if minute.get() != Some(wall_minute) {
+                minute.set(Some(wall_minute));
+                dirty = true;
+            }
+            if dirty {
+                adapter.borrow_mut().refresh(&window);
+            }
+        },
+    );
 }
 
 impl UiHandle {
@@ -158,8 +225,9 @@ impl UiHandle {
     /// pass over the current state snapshot. The repaint timer calls
     /// this; tests may call it directly.
     pub fn refresh(&self) {
-        let state = self.state.load();
-        self.adapter.borrow_mut().reconcile(&state);
+        if let Some(window) = self.window.as_weak().upgrade() {
+            self.adapter.borrow_mut().refresh(&window);
+        }
     }
 }
 
