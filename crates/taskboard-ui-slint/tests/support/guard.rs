@@ -103,8 +103,14 @@ impl Guard {
 
     /// Records one physical press against the open phase.
     pub fn press(&mut self) {
+        self.press_n(1);
+    }
+
+    /// Records `n` presses against the open phase (a stroke
+    /// contributes exactly one; a typed character is a stroke).
+    pub fn press_n(&mut self, n: u32) {
         if let Some((_, count)) = &mut self.open {
-            *count += 1;
+            *count += n;
         }
     }
 
