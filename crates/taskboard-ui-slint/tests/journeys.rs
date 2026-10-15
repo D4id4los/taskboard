@@ -457,3 +457,174 @@ fn the_ten_step_keyboard_session() {
         );
     });
 }
+
+/// §8.1 scriptability — the cold-start view-graph walk (chunk plan
+/// §5.2): every view reachable by action, `nav.focus-board` returns
+/// from everywhere, the menu and the edit flow's Escape always land
+/// in a stable state (no dead ends), and the compact board's stack
+/// switcher is keyboard-complete.
+#[test]
+#[allow(clippy::too_many_lines)] // the walk is the contract's length
+fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
+    fn current_view(harness: &Harness) -> View {
+        harness.handle.window().get_current_view()
+    }
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(DriverOptions::default(), move |_driver| {
+        let mut harness = Harness::mount(SlintDriver::default(), state);
+
+        // Cold start: the board, no selection yet.
+        assert_eq!(current_view(&harness), View::Board);
+        assert_eq!(harness.emphasized_card(), None, "no focus at rest");
+
+        // Every view is reachable by action, and nav.focus-board
+        // (Alt+1) returns from everywhere.
+        harness.press(ActionId::NavNextView);
+        assert_eq!(current_view(&harness), View::StackDetail);
+        harness.press(ActionId::NavFocusBoard);
+        assert_eq!(current_view(&harness), View::Board);
+
+        harness.press(ActionId::NavNextView);
+        harness.press(ActionId::NavNextView);
+        assert_eq!(current_view(&harness), View::TaskDetail);
+        harness.press(ActionId::NavFocusBoard);
+        assert_eq!(current_view(&harness), View::Board);
+
+        // The cycle wraps from any starting view (no one-way edges).
+        harness.press(ActionId::NavPrevView);
+        assert_eq!(current_view(&harness), View::TaskDetail, "wrap backwards");
+        harness.press(ActionId::NavFocusBoard);
+
+        // The menu opens from the board and dismisses cleanly.
+        harness.press(ActionId::AppMenu);
+        assert!(
+            harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_open()
+        );
+        harness.stroke(parse("Escape").expect("Escape"));
+        assert!(
+            !harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_open()
+        );
+
+        // The create flow's Escape ends the flow back at rest.
+        harness.press(ActionId::TaskCreate);
+        assert!(
+            harness
+                .handle
+                .window()
+                .get_board_model()
+                .stacks
+                .row_data(0)
+                .expect("column")
+                .create_open
+        );
+        harness.stroke(parse("Escape").expect("Escape"));
+        assert!(
+            !harness
+                .handle
+                .window()
+                .get_board_model()
+                .stacks
+                .row_data(0)
+                .expect("column")
+                .create_open,
+            "Escape discarded the create flow"
+        );
+
+        // The edit flow's Escape leaves a stable TaskDetail (no dead
+        // end): focus-board still works afterwards.
+        harness.press(ActionId::NavNextItem); // seed the focus walk
+        harness.press(ActionId::TaskEdit);
+        assert_eq!(current_view(&harness), View::TaskDetail);
+        harness.stroke(parse("Escape").expect("Escape"));
+        assert!(
+            !harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_vi_insert(),
+            "the discard returned to normal mode"
+        );
+        harness.press(ActionId::NavFocusBoard);
+        assert_eq!(current_view(&harness), View::Board);
+        harness.assert_commands(&[]); // the whole walk dispatched nothing
+
+        // One compact leg (§6.4's keyboard-completeness proof): at
+        // 600 px the switcher leads — nav.next-item walks the stacks
+        // with selection-follows-focus, wrapping.
+        harness.driver.set_window_size(600, 800);
+        assert!(
+            harness.handle.window().get_compact_active(),
+            "600 px is the compact breakpoint"
+        );
+        assert_eq!(
+            harness.handle.window().get_board_model().selected_stack,
+            0,
+            "the compact board starts on the first stack"
+        );
+        // Retreat hands the card focus back to the switcher level
+        // (D8's selection-follows-focus entry point).
+        harness.press(ActionId::NavPrevItem);
+        assert_eq!(harness.emphasized_card(), None, "the switcher leads");
+        // From the switcher, Down selects stack a and lands its first
+        // task; the next Down walks that stack's cards.
+        harness.press(ActionId::NavNextItem);
+        assert_eq!(
+            harness.handle.window().get_board_model().selected_stack,
+            0,
+            "the switcher step selects stack a"
+        );
+        assert_eq!(harness.emphasized_card(), Some((0, 0)));
+        harness.press(ActionId::NavNextItem);
+        assert_eq!(
+            harness.handle.window().get_board_model().selected_stack,
+            0,
+            "the walk continues inside stack a"
+        );
+        assert_eq!(harness.emphasized_card(), Some((0, 1)));
+        // Retreating past the first card hands focus back to the
+        // switcher; the next step from there advances the selection
+        // (wrap) to stack b and lands its first task.
+        harness.press(ActionId::NavPrevItem);
+        harness.press(ActionId::NavPrevItem);
+        assert_eq!(harness.emphasized_card(), None, "back at the switcher");
+        harness.press(ActionId::NavNextItem);
+        assert_eq!(
+            harness.handle.window().get_board_model().selected_stack,
+            1,
+            "the switcher selection advanced (wrapped) to stack b"
+        );
+        assert_eq!(
+            harness.emphasized_card(),
+            Some((1, 0)),
+            "the emphasis sits on stack b's first card (its own column)"
+        );
+        // And one more switcher round wraps back to stack a.
+        harness.press(ActionId::NavPrevItem);
+        harness.press(ActionId::NavNextItem);
+        assert_eq!(
+            harness.handle.window().get_board_model().selected_stack,
+            0,
+            "the switcher walk wraps"
+        );
+        assert_eq!(harness.emphasized_card(), Some((0, 0)));
+
+        // Back at the regular width, the full board is keyboard-alive.
+        harness.driver.set_window_size(1000, 800);
+        assert!(!harness.handle.window().get_compact_active());
+        harness.press(ActionId::NavNextItem);
+        assert_eq!(
+            harness.emphasized_card(),
+            Some((0, 1)),
+            "the regular full-board walk resumes across columns"
+        );
+        harness.assert_commands(&[]);
+    });
+}
