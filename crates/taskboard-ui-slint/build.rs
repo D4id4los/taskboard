@@ -5,5 +5,14 @@
 //! runtime (chunk decision D11), not via the compiler's embed-resources.
 
 fn main() {
-    slint_build::compile("ui/app-window.slint").expect("slint compilation failed");
+    // Element debug info (element ids/type names/counts) is required
+    // by the automation harness: the testing backend's ElementQuery
+    // traverses it (upstream: "set SLINT_EMIT_DEBUG_INFO=1 at
+    // application build time"), and the MCP lane's element-tree
+    // tools read it. The cost is a few names per element.
+    slint_build::compile_with_config(
+        "ui/app-window.slint",
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("slint compilation failed");
 }

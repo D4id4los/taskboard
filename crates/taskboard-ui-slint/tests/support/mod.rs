@@ -5,5 +5,6 @@
 //! modules compile per test binary and are invisible to the shipped
 //! library.
 
+pub mod driver;
 pub mod golden_compare;
 pub mod guard;
