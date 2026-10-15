@@ -98,6 +98,10 @@ wiremock = "0.6"
 dotenvy = "0.15"
 base64 = "0.23"
 insta = { version = "1", features = ["yaml"] }
+# Micro-benchmarks (`cargo bench`; storage hot-path benches). Criterion
+# 0.8 has no default features; `cargo_bench_support` is required for
+# `cargo bench` integration and must be requested explicitly.
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [profile.release]
 # The kiosk targets low-power hardware: optimize for size + runtime, not build time.
