@@ -607,3 +607,456 @@ mod keymap_adapter_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod view_component_tests {
+    use super::*;
+    use crate::actions::ContextId;
+    use crate::test_platform::on_slint_thread;
+    use chrono::TimeDelta;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    use slint::Model as _;
+
+    type Handover = (UiHandle, mpsc::Receiver<StateCommand>);
+
+    fn epoch() -> chrono::DateTime<chrono::Utc> {
+        taskboard_domain::BoardClocks::epoch()
+    }
+
+    fn task_clocks() -> taskboard_domain::TaskClocks {
+        taskboard_domain::TaskClocks {
+            title: epoch(),
+            description: epoch(),
+            duedate: epoch(),
+            done: epoch(),
+            position: epoch(),
+            labels: epoch(),
+            archived: epoch(),
+            deleted: epoch(),
+        }
+    }
+
+    fn task(
+        id: taskboard_domain::TaskId,
+        stack: taskboard_domain::StackId,
+        order: i64,
+    ) -> taskboard_domain::Task {
+        taskboard_domain::Task {
+            id,
+            remote: None,
+            title: format!("task-{order}"),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            stack,
+            order,
+            labels: BTreeSet::new(),
+            archived: false,
+            deleted: false,
+            clocks: task_clocks(),
+            remote_seen: None,
+        }
+    }
+
+    fn stack(
+        id: taskboard_domain::StackId,
+        board: taskboard_domain::BoardId,
+        order: i64,
+    ) -> taskboard_domain::Stack {
+        taskboard_domain::Stack {
+            id,
+            remote: None,
+            board,
+            title: format!("stack-{order}"),
+            order,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: epoch(),
+                order: epoch(),
+                deleted: epoch(),
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn board(id: taskboard_domain::BoardId) -> taskboard_domain::Board {
+        taskboard_domain::Board {
+            id,
+            remote: None,
+            title: "board".to_owned(),
+            color: taskboard_domain::Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks { title: epoch() },
+            remote_seen: None,
+        }
+    }
+
+    /// Two stacks (a: tasks 0,1; b: task 2), task 1 overdue, sync idle.
+    fn fixture_state() -> taskboard_domain::AppState {
+        let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+        let s0 = taskboard_domain::StackId::from_uuid(uuid::Uuid::now_v7());
+        let s1 = taskboard_domain::StackId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = taskboard_domain::AppState::default();
+        state.boards.insert(board_id, board(board_id));
+        state.stacks.insert(s0, stack(s0, board_id, 0));
+        state.stacks.insert(s1, stack(s1, board_id, 1));
+        let t0 = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+        let t1 = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+        let t2 = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut overdue = task(t1, s0, 1);
+        overdue.duedate = Some(chrono::Utc::now() - TimeDelta::hours(2));
+        state.tasks.insert(t0, task(t0, s0, 0));
+        state.tasks.insert(t1, overdue);
+        state.tasks.insert(t2, task(t2, s1, 0));
+        state
+    }
+
+    fn handover_with(state: taskboard_domain::AppState, keymap: keymap::Keymap) -> Handover {
+        let (commands_tx, commands_rx) = mpsc::channel(16);
+        let (system_tx, system_rx) = broadcast::channel(16);
+        let (signals_tx, signals_rx) = broadcast::channel(16);
+        drop(system_tx);
+        drop(signals_tx);
+        let handle = mount(
+            Arc::new(ArcSwap::from_pointee(state)),
+            signals_rx,
+            system_rx,
+            commands_tx,
+            UiSettings {
+                keymap,
+                ..UiSettings::default()
+            },
+        )
+        .expect("mount succeeds on the null platform");
+        (handle, commands_rx)
+    }
+
+    fn press(handle: &UiHandle, text: &str) {
+        handle
+            .window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.into() });
+    }
+
+    fn replace_state(handle: &UiHandle, state: taskboard_domain::AppState) {
+        handle.state.store(Arc::new(state));
+        handle.refresh();
+    }
+
+    fn vi_keymap() -> keymap::Keymap {
+        keymap::Keymap::from_preset(keymap::Preset::Vi)
+    }
+
+    /// §6 test 1 — refresh from a fake `AppState`: column count,
+    /// per-column card counts, banner row count, sync badge phase —
+    /// structural facts, no engine involved.
+    #[test]
+    fn refresh_pushes_the_board_structure_from_a_fake_state() {
+        on_slint_thread(|| {
+            let mut state = fixture_state();
+            state.sync.phase = taskboard_domain::SyncPhase::Offline;
+            state.sync.pending_ops = 2;
+            let (handle, _commands) = handover_with(state, UiSettings::default().keymap);
+
+            let board = handle.window.get_board_model();
+            assert_eq!(board.stacks.row_count(), 2, "one column per stack");
+            let column0 = board.stacks.row_data(0).expect("column");
+            assert_eq!(column0.tasks.row_count(), 2, "canonical tasks");
+            let column1 = board.stacks.row_data(1).expect("column");
+            assert_eq!(column1.tasks.row_count(), 1);
+
+            assert_eq!(
+                handle.window.get_banner_model().row_count(),
+                1,
+                "one overdue banner row"
+            );
+            assert_eq!(handle.window.get_sync_model().phase, SyncPhaseUi::Offline);
+            assert_eq!(handle.window.get_sync_model().pending, 2);
+            assert_eq!(
+                handle.window.get_current_view(),
+                View::Board,
+                "the cycle starts on the board"
+            );
+        });
+    }
+
+    /// §6 test 2 — breakpoint demotion: the width push through the
+    /// generated callback flips the read-back `compact-active` fact;
+    /// the board model itself is breakpoint-independent (the degeneration
+    /// is a rendering concern, D8).
+    #[test]
+    fn width_push_flips_the_compact_rendering_fact() {
+        on_slint_thread(|| {
+            let (handle, _commands) = handover_with(fixture_state(), UiSettings::default().keymap);
+            assert!(!handle.window.get_compact_active(), "default is regular");
+
+            handle.window.invoke_window_width_changed(600.0);
+            assert!(handle.window.get_compact_active(), "compact below 720");
+            handle.window.invoke_window_width_changed(1500.0);
+            assert!(!handle.window.get_compact_active(), "expansive above 1440");
+
+            let stacks = handle.window.get_board_model().stacks;
+            assert_eq!(stacks.row_count(), 2, "the model stays breakpoint-blind");
+        });
+    }
+
+    /// §6 test 3 — editing safety (standard preset): `N` opens the
+    /// create row; typing dispatches nothing; Escape ends the flow;
+    /// Ctrl+Q stays live mid-edit (the quit counter seam); a refresh
+    /// mid-edit never closes the user's flow.
+    #[test]
+    fn editing_dispatches_nothing_and_exits_via_escape() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(fixture_state(), UiSettings::default().keymap);
+            press(&handle, "N"); // task.create (standard Board — the keymap spells the shifted key)
+            assert!(
+                handle
+                    .window
+                    .get_board_model()
+                    .stacks
+                    .row_data(0)
+                    .expect("col")
+                    .create_open,
+                "the create row opened in the first stack"
+            );
+            assert!(commands.try_recv().is_err(), "opening dispatches nothing");
+
+            press(&handle, "h"); // a Board printable — must reach the field
+            assert!(commands.try_recv().is_err(), "typing dispatches nothing");
+
+            // A signal arrives mid-edit: the refresh must not close the
+            // flow (D9 rule 4).
+            handle.refresh();
+            assert!(
+                handle
+                    .window
+                    .get_board_model()
+                    .stacks
+                    .row_data(0)
+                    .expect("col")
+                    .create_open,
+                "mid-edit refresh keeps the flow open"
+            );
+
+            press(&handle, "\u{1b}"); // Escape → mode.normal → discard
+            assert!(
+                !handle
+                    .window
+                    .get_board_model()
+                    .stacks
+                    .row_data(0)
+                    .expect("col")
+                    .create_open,
+                "Escape ended the flow"
+            );
+            assert!(commands.try_recv().is_err(), "cancel dispatches nothing");
+        });
+    }
+
+    /// §6 test 3b — the action layer stays live mid-edit: the menu
+    /// opens over the flow and invoking `app.exit` fires the quit
+    /// effect (counter seam, not the platform's quit). Chords cannot
+    /// be injected modifier-carrying on this backend; the menu is the
+    /// §7.1 action-equivalent path for the same claim.
+    #[test]
+    fn menu_path_stays_live_mid_edit() {
+        on_slint_thread(|| {
+            let (handle, _commands) = handover_with(fixture_state(), UiSettings::default().keymap);
+            press(&handle, "N"); // task.create: the create flow holds insert
+            handle.window.invoke_toolbar_menu_clicked();
+            assert!(
+                handle.window.global::<KeyboardState>().get_menu_open(),
+                "the menu opens over the edit flow"
+            );
+            // Invoke the first application row (app.exit) by index.
+            let entries = handle.window.global::<KeyboardState>().get_menu_entries();
+            let exit_index = (0..entries.row_count())
+                .find(|i| entries.row_data(*i).expect("row").action == "app.exit")
+                .expect("app.exit is a menu row");
+            handle
+                .window
+                .invoke_menu_entry_invoked(i32::try_from(exit_index).unwrap_or(i32::MAX));
+            assert!(
+                handle.adapter.borrow().quit_requests > 0,
+                "the exit effect fired over the edit flow"
+            );
+        });
+    }
+
+    /// §6 test 4 — banner end-to-end: activating a row then snooze/mute
+    /// sends the exact typed commands (rule-less task → the implicit
+    /// default with the duedate anchor).
+    #[test]
+    fn banner_actions_send_exact_commands() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(fixture_state(), UiSettings::default().keymap);
+            let overdue_id = {
+                let state = handle.state.load();
+                taskboard_domain::overdue_tasks(&state.tasks, chrono::Utc::now())
+                    .into_iter()
+                    .map(|t| t.id)
+                    .next()
+                    .expect("fixture has one overdue task")
+            };
+
+            handle.window.invoke_banner_row_activated(0);
+            handle.window.invoke_banner_snooze_clicked(0);
+            let command = commands.try_recv().expect("the snooze command arrived");
+            match command {
+                StateCommand::SnoozeReminder {
+                    reminder,
+                    occurrence,
+                    postpone,
+                } => {
+                    assert_eq!(reminder, taskboard_domain::ReminderRef::Default(overdue_id));
+                    // The anchor is the refresh pass's clock read; a
+                    // one-second window is the honest tolerance.
+                    let expected = chrono::Utc::now() - TimeDelta::hours(2);
+                    assert!((occurrence - expected).abs() < TimeDelta::seconds(1));
+                    assert_eq!(postpone, TimeDelta::hours(1));
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+
+            handle.window.invoke_banner_row_activated(0);
+            handle.window.invoke_banner_mute_clicked(0);
+            assert_eq!(
+                commands.try_recv().expect("the mute command arrived"),
+                StateCommand::SetTaskRemindersMuted {
+                    task: overdue_id,
+                    muted: true
+                }
+            );
+            assert!(commands.try_recv().is_err(), "nothing else dispatched");
+        });
+    }
+
+    /// §6 test 5 — the move flow (standard preset): begin with `M`,
+    /// arrows retarget (read-back via `move-target`), Return confirms
+    /// with an append `MoveTask`, and a re-request cancels without
+    /// dispatching.
+    #[test]
+    fn move_flow_retargets_confirms_and_cancels() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(fixture_state(), UiSettings::default().keymap);
+            let task = {
+                let state = handle.state.load();
+                state
+                    .tasks_in_stack(state.stacks.keys().copied().next().expect("stack"))
+                    .first()
+                    .map(|t| t.id)
+            };
+            handle.set_focused_entities(task, None);
+
+            press(&handle, "M"); // task.move
+            assert!(
+                handle.window.get_flow_hint_model().visible,
+                "the flow hint shows while moving"
+            );
+            press(&handle, "\u{F701}"); // Down (nav.next-item) — retarget
+            assert_eq!(
+                handle.window.get_board_model().move_target,
+                1,
+                "the second stack highlights as the target"
+            );
+
+            press(&handle, "\u{a}"); // Return — confirm
+            let command = commands.try_recv().expect("the move command arrived");
+            match command {
+                StateCommand::MoveTask { id, stack, order } => {
+                    assert_eq!(id, task.expect("focused task"));
+                    let state = handle.state.load();
+                    let board = state.boards.values().next().expect("board").id;
+                    let ordered: Vec<_> = crate::presentation::stacks_in_board(&state, board);
+                    assert_eq!(
+                        stack, ordered[1].id,
+                        "append to the retargeted stack (display order)"
+                    );
+                    assert_eq!(order, 1, "append after the target stack's task");
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+
+            press(&handle, "M"); // re-request cancels
+            press(&handle, "\u{e015}");
+            assert!(commands.try_recv().is_err(), "cancel dispatches nothing");
+        });
+    }
+
+    /// §6 test 6 — the view cycle (vi preset: `g t` advances) and the
+    /// reconciliation pop: a deleted focused task pops `TaskDetail` →
+    /// Board on refresh.
+    #[test]
+    fn view_cycle_advances_and_reconcile_pops_deleted_subjects() {
+        on_slint_thread(|| {
+            let initial = fixture_state();
+            let victim = crate::view_state::ViewState::reading_order(&initial)
+                .first()
+                .copied()
+                .expect("fixture has tasks");
+            let (handle, _commands) = handover_with(initial.clone(), vi_keymap());
+            assert_eq!(handle.window.get_current_view(), View::Board);
+
+            press(&handle, "g");
+            press(&handle, "t");
+            assert_eq!(handle.window.get_current_view(), View::StackDetail);
+            press(&handle, "g");
+            press(&handle, "t");
+            assert_eq!(handle.window.get_current_view(), View::TaskDetail);
+            press(&handle, "g");
+            press(&handle, "t");
+            assert_eq!(
+                handle.window.get_current_view(),
+                View::Board,
+                "the cycle wraps"
+            );
+
+            // A deleted TaskDetail subject pops to Board on refresh.
+            handle.set_focused_entities(Some(victim), None);
+            press(&handle, "g");
+            press(&handle, "t");
+            press(&handle, "g");
+            press(&handle, "t");
+            assert_eq!(handle.window.get_current_view(), View::TaskDetail);
+            let mut state = initial;
+            state.tasks.get_mut(&victim).expect("task").deleted = true;
+            replace_state(&handle, state);
+            assert_eq!(
+                handle.window.get_current_view(),
+                View::Board,
+                "a deleted subject pops the view"
+            );
+        });
+    }
+
+    /// §6 test 7 — the Board chain's generated menu offers the enabled
+    /// task verbs and the reminder actions (row-count + enabled bits;
+    /// the snapshot covers the dump).
+    #[test]
+    fn board_menu_offers_the_enabled_verbs() {
+        use crate::actions::ActionId;
+        use crate::menu;
+        let keymap = UiSettings::default().keymap;
+        let rows = menu::entries(
+            &keymap,
+            &[ContextId::Board, ContextId::ViNormal, ContextId::Global],
+        );
+        let enabled = |id: ActionId| rows.iter().any(|r| r.action == id && r.enabled);
+        assert!(enabled(ActionId::TaskComplete));
+        assert!(enabled(ActionId::TaskCreate));
+        assert!(enabled(ActionId::TaskMove));
+        assert!(enabled(ActionId::ReminderSnooze));
+        assert!(enabled(ActionId::ReminderMute));
+        assert!(
+            rows.iter().all(|r| r.action != ActionId::MenuNext),
+            "menu cursor rows never appear in a view menu"
+        );
+    }
+}

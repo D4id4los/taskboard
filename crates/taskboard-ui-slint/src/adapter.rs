@@ -59,6 +59,9 @@ pub(crate) struct Adapter {
     reminder_target: Option<ReminderTarget>,
     /// The id tables of the last refresh pass (D2): index → id.
     tables: IdTables,
+    /// The exit-effect counter (the §6 component-test seam: journeys
+    /// assert the quit request without killing the platform).
+    pub(crate) quit_requests: usize,
 }
 
 impl Adapter {
@@ -170,6 +173,7 @@ impl Adapter {
     pub(crate) fn refresh(&mut self, window: &AppWindow) {
         self.sync_view_context();
         let state = self.state.load();
+        self.view_state.reconcile(&state);
         let chain = self.shell.chain();
         let now = chrono::Utc::now();
         self.tables =
@@ -265,7 +269,10 @@ impl Adapter {
 
     fn apply_effect(&mut self, window: &AppWindow, effect: UiEffect) {
         match effect {
-            UiEffect::Exit => crate::quit(),
+            UiEffect::Exit => {
+                self.quit_requests += 1;
+                crate::quit();
+            }
             UiEffect::OpenMenu => {
                 // The projection is computed for the pre-menu chain
                 // (the active context's actions, §5.9); the menu
@@ -368,6 +375,7 @@ pub(crate) fn install(
         menu_entries: Vec::new(),
         reminder_target: None,
         tables: IdTables::default(),
+        quit_requests: 0,
     }));
     // Startup warnings are pure input (Q15): pushed once at mount.
     window

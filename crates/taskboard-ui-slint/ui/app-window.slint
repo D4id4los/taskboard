@@ -9,7 +9,7 @@
 // callbacks below are the dispatch seams, no key handlers (§5.1).
 
 import { Theme, Typography, Semantic } from "theme.slint";
-import { Responsive } from "responsive.slint";
+import { Responsive, Breakpoint } from "responsive.slint";
 import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
 import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
@@ -70,6 +70,10 @@ export component AppWindow inherits Window {
     in-out property <[BannerRowModel]> banner-model;
     in-out property <int> banner-overflow;
     in-out property <FlowHintModel> flow-hint-model;
+
+    // The rendering fact for tests and reviews (§6 test 2): compact
+    // mode is active (board degeneration, D8/D17).
+    out property <bool> compact-active: Responsive.current-breakpoint == Breakpoint.compact;
 
     // The single key path (§5.1): capture-phase tunneling hits this
     // scope before any focused element; accepting consumes the event.
