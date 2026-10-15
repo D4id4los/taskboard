@@ -55,9 +55,16 @@ export component BoardLayout inherits Rectangle {
         spacing: Theme.space-3;
         for column[column-index] in root.stacks: VerticalLayout {
             spacing: Theme.space-1;
+            // The D16 address: the column is a list labelled by its
+            // stack title.
+            accessible-role: AccessibleRole.list;
+            accessible-label: column.title;
             // Column header: display + activation (D13 — stack
-            // management is CLI-only in v0.1.0).
+            // management is CLI-only in v0.1.0); a labelled button
+            // (D16), click = select the column's stack.
             header := Rectangle {
+                accessible-role: AccessibleRole.button;
+                accessible-label: column.title;
                 header-hit := TouchArea {
                     clicked => root.header-activated(column-index);
                 }
@@ -150,6 +157,9 @@ export component BoardLayout inherits Rectangle {
         // collapsed via `compact: true` (D8).
         for column[column-index] in [root.selected-column()]: VerticalLayout {
             spacing: Theme.space-1;
+            // The D16 address: same list role as a regular column.
+            accessible-role: AccessibleRole.list;
+            accessible-label: column.title;
             VerticalLayout {
                 alignment: start;
                 spacing: Theme.space-1;
@@ -163,8 +173,8 @@ export component BoardLayout inherits Rectangle {
                 if (column.create-open): TextField {
                     placeholder: "New task title";
                     label: "New task title";
-                    accepted(text) => root.create-committed(column-index, text);
-                    edited(text) => root.create-edited(column-index, text);
+                    accepted(text) => root.create-committed(root.selected-stack, text);
+                    edited(text) => root.create-edited(root.selected-stack, text);
                 }
             }
         }

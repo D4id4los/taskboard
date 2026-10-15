@@ -37,82 +37,92 @@ export component TaskView inherits FocusScope {
         : Theme.text-secondary
     }
 
-    VerticalLayout {
-        spacing: Theme.space-3;
+    // The D15 ring: rendered whenever the scope holds focus (the
+    // title field's own ring supersedes it while editing).
+    ring := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-width: root.has-focus ? Theme.focus-ring-width : 0;
+        border-color: Semantic.focus-ring;
+        border-radius: Theme.radius-medium;
 
-        // The title: the edit flow's field when open, the display
-        // title otherwise (cycle-entry shows the detail, D14).
-        if (root.task.edit-open): title-field := TextField {
-            placeholder: "Task title";
-            label: "Task title";
-            initial-text: root.task.initial-text;
-            selected-on-focus: true;
-            accepted(text) => root.title-committed(text);
-            edited(text) => root.title-edited(text);
-        }
-        if (!root.task.edit-open): RoleText {
-            role: Typography.title;
-            text: root.task.title;
-        }
-
-        // The metadata row (tertiary per D17's demotion table).
-        HorizontalLayout {
-            spacing: Theme.space-3;
-            VerticalLayout {
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Theme.text-secondary;
-                    text: "Stack";
-                }
-                RoleText {
-                    role: Typography.body;
-                    text: root.task.stack-title;
-                }
-            }
-            VerticalLayout {
-                // The due-date region (D16): display-only — date
-                // editing is a recorded scope cut (D13).
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Theme.text-secondary;
-                    text: "Due date";
-                }
-                RoleText {
-                    role: Typography.mono;
-                    text-color: root.due-color();
-                    text: root.task.due-phrase == "" ? "—" : root.task.due-phrase;
-                }
-            }
-            VerticalLayout {
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Theme.text-secondary;
-                    text: "State";
-                }
-                RoleText {
-                    role: Typography.body;
-                    text-color: root.task.done ? Semantic.success : Theme.text-primary;
-                    text: root.task.done ? "Completed" : "Open";
-                }
-            }
-        }
-
-        // The description (read-only body text — markup rendering is
-        // POST-1.0/R10; editing is a recorded scope cut, D13).
         VerticalLayout {
-            RoleText {
-                role: Typography.caption;
-                text-color: Theme.text-secondary;
-                text: "Description";
-            }
-            RoleText {
-                role: Typography.body;
-                text: root.task.description == "" ? "—" : root.task.description;
-                wrap: word-wrap;
-                horizontal-stretch: 1;
-            }
-        }
+            spacing: Theme.space-3;
 
-        Rectangle { vertical-stretch: 1; }
+            // The title: the edit flow's field when open, the display
+            // title otherwise (cycle-entry shows the detail, D14).
+            if (root.task.edit-open): title-field := TextField {
+                placeholder: "Task title";
+                label: "Task title";
+                initial-text: root.task.initial-text;
+                selected-on-focus: true;
+                accepted(text) => root.title-committed(text);
+                edited(text) => root.title-edited(text);
+            }
+            if (!root.task.edit-open): RoleText {
+                role: Typography.title;
+                text: root.task.title;
+            }
+
+            // The metadata row (tertiary per D17's demotion table).
+            HorizontalLayout {
+                spacing: Theme.space-3;
+                VerticalLayout {
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Stack";
+                    }
+                    RoleText {
+                        role: Typography.body;
+                        text: root.task.stack-title;
+                    }
+                }
+                VerticalLayout {
+                    // The due-date region (D16): display-only — date
+                    // editing is a recorded scope cut (D13).
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Due date";
+                    }
+                    RoleText {
+                        role: Typography.mono;
+                        text-color: root.due-color();
+                        text: root.task.due-phrase == "" ? "—" : root.task.due-phrase;
+                    }
+                }
+                VerticalLayout {
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "State";
+                    }
+                    RoleText {
+                        role: Typography.body;
+                        text-color: root.task.done ? Semantic.success : Theme.text-primary;
+                        text: root.task.done ? "Completed" : "Open";
+                    }
+                }
+            }
+
+            // The description (read-only body text — markup rendering
+            // is POST-1.0/R10; editing is a recorded scope cut, D13).
+            VerticalLayout {
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Description";
+                }
+                RoleText {
+                    role: Typography.body;
+                    text: root.task.description == "" ? "—" : root.task.description;
+                    wrap: word-wrap;
+                    horizontal-stretch: 1;
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+        }
     }
 }

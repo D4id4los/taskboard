@@ -984,8 +984,20 @@ mod view_component_tests {
                 other => panic!("typed outcome expected, got {other:?}"),
             }
 
-            press(&handle, "M"); // re-request cancels
-            press(&handle, "\u{e015}");
+            // Re-request is the cancel (toggle): the flow hint appears
+            // with the new flow and disappears on the second press —
+            // and nothing reaches the mpsc.
+            press(&handle, "M");
+            assert!(
+                handle.window.get_flow_hint_model().visible,
+                "a fresh move flow opens after the confirm"
+            );
+            press(&handle, "M");
+            assert!(
+                !handle.window.get_flow_hint_model().visible,
+                "the re-request cancelled the flow"
+            );
+            press(&handle, "\u{e015}"); // Down now walks focus, not a target
             assert!(commands.try_recv().is_err(), "cancel dispatches nothing");
         });
     }

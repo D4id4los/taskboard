@@ -46,7 +46,9 @@ export component TaskCard inherits Rectangle {
     border-color: Semantic.focus-ring;
 
     accessible-role: AccessibleRole.list-item;
-    accessible-label: root.model.title;
+    // The D16 address: task title (+ due phrase).
+    accessible-label: root.model.due-phrase == "" ? root.model.title
+        : "\{root.model.title} (\{root.model.due-phrase})";
 
     touch := TouchArea {
         double-clicked => root.activated();

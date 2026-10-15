@@ -454,6 +454,9 @@ fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// generics' worth of closure types; the per-seam helpers below stay
 /// explicit instead.
 fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // A card click: focus the (column, row) card (selection state
+    // only, §7.1 mouse discipline); activation routes `task.edit`
+    // after it.
     let (card, activated) = (Rc::clone(adapter), Rc::clone(adapter));
     let (click_weak, act_weak) = (window.as_weak(), window.as_weak());
     window.on_board_task_clicked(move |column, row| {
@@ -461,29 +464,16 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = card.borrow_mut();
-        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
-            return;
-        };
-        let Some((stack, task)) = a.tables.board_task(column, row) else {
-            return;
-        };
-        let outcomes = a.view_state.activate_card(task, stack);
-        a.apply_outcomes(&window, &outcomes);
+        focus_board_card(&mut a, &window, column, row);
     });
     window.on_board_task_activated(move |column, row| {
         let Some(window) = act_weak.upgrade() else {
             return;
         };
         let mut a = activated.borrow_mut();
-        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
-            return;
-        };
-        let Some((stack, task)) = a.tables.board_task(column, row) else {
-            return;
-        };
-        let outcomes = a.view_state.activate_card(task, stack);
-        a.apply_outcomes(&window, &outcomes);
-        a.route(&window, ActionId::TaskEdit);
+        if focus_board_card(&mut a, &window, column, row).is_some() {
+            a.route(&window, ActionId::TaskEdit);
+        }
     });
 
     // Header and switcher activation are the same selection move (D8:
@@ -519,12 +509,27 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let _ = column;
-        let mut a = commit.borrow_mut();
-        let state = a.state.load_full();
-        a.view_state.set_buffer(text.to_string());
-        let outcomes = a.view_state.commit_edit(&state);
-        a.apply_outcomes(&window, &outcomes);
+        commit_text(&mut commit.borrow_mut(), &window, &text);
     });
+}
+
+/// A board card at (column, row): resolves the id tables (D2) and
+/// applies the click's selection state. Returns the addressed
+/// `(stack, task)`, or `None` for a stale index against an older
+/// tables pass.
+fn focus_board_card(
+    adapter: &mut Adapter,
+    window: &AppWindow,
+    column: i32,
+    row: i32,
+) -> Option<(StackId, TaskId)> {
+    let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+        return None;
+    };
+    let (stack, task) = adapter.tables.board_task(column, row)?;
+    let outcomes = adapter.view_state.activate_card(task, stack);
+    adapter.apply_outcomes(window, &outcomes);
+    Some((stack, task))
 }
 
 /// Header/switcher activation: select the column's stack (D8).
@@ -542,7 +547,19 @@ fn select_column(adapter: &mut Adapter, window: &AppWindow, column: i32) {
     adapter.apply_outcomes(window, &outcomes);
 }
 
+/// The text flows' commit path (D9): mirror the final buffer, commit
+/// through the view state, apply the outcomes (a commit outside a
+/// flow is inert — `commit_edit` ends nothing).
+fn commit_text(adapter: &mut Adapter, window: &AppWindow, text: &str) {
+    adapter.view_state.set_buffer(text.to_owned());
+    let state = adapter.state.load_full();
+    let outcomes = adapter.view_state.commit_edit(&state);
+    adapter.apply_outcomes(window, &outcomes);
+}
+
 fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // A card click: focus the row's task (selection state only, §7.1);
+    // activation routes `task.edit` after it.
     let (card, activated) = (Rc::clone(adapter), Rc::clone(adapter));
     let (click_weak, act_weak) = (window.as_weak(), window.as_weak());
     window.on_stack_task_clicked(move |row| {
@@ -571,16 +588,12 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let Some(window) = commit_weak.upgrade() else {
             return;
         };
-        let mut a = commit.borrow_mut();
-        let state = a.state.load_full();
-        a.view_state.set_buffer(text.to_string());
-        let outcomes = a.view_state.commit_edit(&state);
-        a.apply_outcomes(&window, &outcomes);
+        commit_text(&mut commit.borrow_mut(), &window, &text);
     });
 }
 
 /// A stack-detail card click: focus the row's task (selection state
-/// only, §7.1); activation routes `task.edit` after it.
+/// only, §7.1).
 fn activate_stack_row(adapter: &mut Adapter, window: &AppWindow, row: i32) {
     let Some(task) = adapter
         .tables
@@ -607,17 +620,24 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let Some(window) = commit_weak.upgrade() else {
             return;
         };
-        let mut a = commit.borrow_mut();
-        let state = a.state.load_full();
-        a.view_state.set_buffer(text.to_string());
-        let outcomes = a.view_state.commit_edit(&state);
-        a.apply_outcomes(&window, &outcomes);
+        commit_text(&mut commit.borrow_mut(), &window, &text);
     });
 }
 
-/// The banner seams (D12): row activation sets focus state plus the
-/// one-shot reminder target (D4); snooze/mute set the target and
-/// route the registry actions.
+/// The banner row at `index` (D2: the index resolves against the
+/// refresh pass's row table).
+fn banner_row(adapter: &Adapter, index: i32) -> Option<crate::presentation::BannerRow> {
+    adapter
+        .tables
+        .banner
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+}
+
+/// The banner seams (D12): row activation (click or Tab focus — the
+/// markup's `changed has-focus` lands on the same seam) sets focus
+/// state plus the one-shot reminder target (D4); snooze/mute set the
+/// target and route the registry actions.
 fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let row = Rc::clone(adapter);
     let row_weak = window.as_weak();
@@ -626,12 +646,7 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = row.borrow_mut();
-        let Some(banner_row) = a
-            .tables
-            .banner
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied()
-        else {
+        let Some(banner_row) = banner_row(&a, index) else {
             return;
         };
         a.view_state.set_focused(Some(banner_row.task));
@@ -646,12 +661,7 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = snooze.borrow_mut();
-        let Some(banner_row) = a
-            .tables
-            .banner
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied()
-        else {
+        let Some(banner_row) = banner_row(&a, index) else {
             return;
         };
         a.reminder_target = Some(banner_row.target);
@@ -665,12 +675,7 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = mute.borrow_mut();
-        let Some(banner_row) = a
-            .tables
-            .banner
-            .get(usize::try_from(index).unwrap_or(usize::MAX))
-            .copied()
-        else {
+        let Some(banner_row) = banner_row(&a, index) else {
             return;
         };
         a.reminder_target = Some(banner_row.target);
