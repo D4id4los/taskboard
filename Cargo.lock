@@ -6479,7 +6479,9 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "chrono",
+ "i-slint-backend-testing",
  "insta",
+ "png",
  "proptest",
  "serde",
  "slint",

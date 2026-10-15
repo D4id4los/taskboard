@@ -38,6 +38,13 @@ taskboard-ui-slint = { path = "crates/taskboard-ui-slint" }
 slint = "1.18.1"
 # Companion build-time crate for slint::include_modules!() codegen.
 slint-build = "1.18.1"
+# Dev-only testing harness for the UI crate (design §8.1/Q8; internal,
+# non-semver — exact pin mandatory, moves with the slint pin on every
+# bump; `tests/pin_guard.rs` asserts the two reqs stay equal).
+# renderer-software is the headless rasterizer behind golden snapshots
+# and the MCP screenshot smoke — the same crate version the slint
+# default features already put in the tree, no new vendors.
+i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }
 
 # Async runtime & channels
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs"] }
@@ -97,6 +104,9 @@ tempfile = "3"
 wiremock = "0.6"
 dotenvy = "0.15"
 base64 = "0.23"
+# Golden-image encode/decode for the UI visual tier (§10); already in
+# the tree via the slint software renderer's snapshot path.
+png = "0.18"
 insta = { version = "1", features = ["yaml"] }
 # Micro-benchmarks (`cargo bench`; storage hot-path benches). Criterion
 # 0.8 has no default features; `cargo_bench_support` is required for
