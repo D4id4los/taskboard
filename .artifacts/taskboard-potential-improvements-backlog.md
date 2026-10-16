@@ -2246,6 +2246,13 @@ expected beyond UI work.
 
 ## [2026-10-12] Raise the Miri pipeline/state case caps on a measured probe
 
+- **Status**: ✅ DONE (implemented 2026-10-16 on `ci/miri-cap-probe`:
+  state cap raised 16 → 128 and pipeline cap 1 → 2, both kept on the
+  green in-budget run
+  https://github.com/D4id4los/taskboard/actions/runs/38846463650
+  (pipeline 55 min, state 71 min, all four jobs ≤ 90); full
+  measurement ladder + variance findings recorded in
+  `docs/testing_strategy.org` §10.)
 - **Category**: `Testing` / `CI`
 - **Originating Plan/Report**: WI-C review analysis of green run
   38312493624 (chat context; plan
