@@ -3061,20 +3061,22 @@ Zero-code first: a README "Launching" section documenting the
 bare-launch semantics (TTY → REPL, no-TTY → daemon,
 `desktop` → GUI) and the `TASKBOARD_APP__MODE=desktop` escape hatch
 (figment `__`-nesting, verified working), plus a `taskboard.desktop`
-(`Exec=env TASKBOARD_APP__MODE=desktop taskboard`) staged into the
-release archive so file-manager launches get a window while the raw
-binary keeps its appliance/daemon semantics for systemd. Optional: a
-`--mode` CLI override or `taskboard gui` verb for a cleaner `Exec`
-line. Longer term, revisit the default mode after the kiosk wave
-(plan doc §6 Q6).
+staged into the release archive so file-manager launches get a
+window while the raw binary keeps its appliance/daemon semantics for
+systemd. Decided in the 2026-10-16 review: the launcher uses a new
+`taskboard gui` verb (`Exec=taskboard gui`) rather than the env var
+or a `--mode` flag. The fix lands with the kiosk wave-1 packaging
+chunk (`.artifacts/plans/2026-10-16-kiosk-mode-wave1-plan.md`).
 
 ---
 
-## [2026-10-16] Kiosk mode: daemon-owned core with an on-seat GUI, controlled over CLI/ssh
+## [2026-10-16] Kiosk mode: daemon-owned core with an on-seat GUI, controlled over CLI/ssh — accepted (2026-10-16)
 
 - **Category**: `Architecture` / `UI`
 - **Originating Plan/Report**: Chat (user report 2026-10-16); proposals in
-  `.artifacts/plans/2026-10-16-kiosk-daemon-gui-control-plan.md`
+  `.artifacts/plans/2026-10-16-kiosk-daemon-gui-control-plan.md` (accepted),
+  implementation in
+  `.artifacts/plans/2026-10-16-kiosk-mode-wave1-plan.md`
 - **Target Area**: `crates/taskboard-app/src/{main,ui}.rs` (routing,
   lifecycle), `crates/taskboard-ui-slint/` (kiosk window profile)
 
@@ -3088,20 +3090,19 @@ already exists (ADR 0012 per-database socket, argv relay, `daemon
 stop`); what is missing is exclusively the on-seat GUI and the
 lifecycle that hosts it.
 
-### Proposed Approach
+### Accepted Approach (2026-10-16 review)
 
-Plan doc Option A (recommended first wave): bare invocation with
-`mode = "kiosk"` boots the daemon-style core (actors + IPC server)
-*and* mounts a fullscreen kiosk window in-process — structurally
-`run_desktop` plus `spawn_server`; the explicit `taskboard daemon`
-subcommand stays headless as the ssh-spawned maintenance path.
-Reuses the ADR 0015 hand-over and the UI command forwarder; zero new
-protocol. Option B (an attachable `taskboard gui` process over IPC
-snapshot/delta streams, consuming the *IPC keep-alive / pipelining /
-event streams* entry) is the follow-up for GUI crash isolation and
-off-box seats; the *web kiosk dashboard* entry stays the
-complementary tablet path. Sequencing and open questions: plan doc
-§4/§6.
+Option A, with the review's decisions: bare `mode = "kiosk"` boots
+the daemon-style core (actors + IPC server) *and* mounts a
+fullscreen kiosk window in-process; window close exits the whole
+appliance; a start without a usable display falls back to the
+headless daemon lifecycle with a loud log (requires a display-presence
+gate *before* mounting — slint 1.18.1 panics without a display
+instead of erroring); a `taskboard gui` verb joins the CLI as the
+explicit desktop-frontend selection; the explicit `taskboard daemon`
+subcommand stays headless as the ssh/maintenance path. Wave 2:
+web dashboard (C) before the attachable GUI process (B). Chunk
+breakdown and test strategy: wave-1 plan.
 
 ---
 

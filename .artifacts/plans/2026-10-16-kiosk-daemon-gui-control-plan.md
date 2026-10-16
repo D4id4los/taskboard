@@ -1,12 +1,11 @@
 # [Plan] Kiosk Daemon + GUI Control — Design Proposals (for review)
 
 - **Date**: 2026-10-16
-- **Kind**: design-proposal options paper (pre-acceptance). This is
-  **not** a dispatch plan and contains no implementation prompts; per
-  AGENTS §7 a dispatch plan is written only after a proposal is
-  accepted in a decision session.
-- **Status**: PROPOSED — awaiting the user's review (§6 collects the
-  decisions to make).
+- **Kind**: design-proposal options paper. **ACCEPTED 2026-10-16** —
+  the decision record is §6; the implementation plan for the accepted
+  wave 1 is `.artifacts/plans/2026-10-16-kiosk-mode-wave1-plan.md`.
+  This document stays the design-of-record for the wave-2 options
+  (B, C) and the diagnosis (§1).
 - **Origin**: user report 2026-10-16, two observations from trying the
   Linux binary produced by the v0.1.0 release CI run
   (`taskboard-0.1.0-x86_64-unknown-linux-gnu`, artifact of run
@@ -209,21 +208,39 @@ Ordered, first two are zero-code-change:
    workflows depend on it); revisit "default = desktop for bare
    interactive use" only after the kiosk wave settles — §6 Q6.
 
-## 6. Open questions for the review session
+## 6. Decision record (user review, 2026-10-16)
 
-1. Accept Option A as the next GUI wave's kiosk proposal?
-2. Kiosk window close semantics: close exits the whole appliance
-   (systemd restarts) vs close is intercepted/ignored on kiosk?
-3. Bare kiosk start without a usable display: headless fallback with
-   a loud log (my lean) or typed refusal?
-4. `.desktop`/launcher form: env var today vs `--mode` flag vs `gui`
-   verb (§5.3)?
-5. Kiosk profile contents for wave 1: fullscreen + scale preset on
-   the desktop `AppWindow` — enough, or does the ambient view move
-   into wave 1?
-6. Revisit the default `[app] mode` after the wave, or freeze
-   `daemon` as permanent default?
-7. Priority of B vs C for wave 2 (GUI attach vs web dashboard)?
+All §6 questions from the PROPOSED draft, resolved:
+
+1. **Q1 — proposal**: Option **A accepted** as the wave-1 kiosk
+   design, with a `taskboard gui` verb included in the same wave.
+2. **Q2 — kiosk window close**: closing the kiosk window **exits the
+   whole appliance** (graceful shutdown, IPC drain included). Richer
+   semantics (ignore/restart/supervisor) deferred until a need
+   appears.
+3. **Q3 — bare kiosk start without a display**: **headless fallback
+   with a loud log.** Implementation constraint discovered while
+   verifying (release artifact, display vars removed): slint 1.18.1
+   **panics** during backend init without a display (exit 101,
+   panic in `slint-1.18.1/lib.rs:784`) instead of surfacing the
+   typed `UiMountError` — so the lifecycle must **gate on display
+   presence before mounting** (`WAYLAND_DISPLAY`/`DISPLAY` seams),
+   log `error!` on fallback, and only then attempt the window. The
+   gate-to-mount race (display vanishing in between) is tolerated
+   for wave 1; hardening idea in the wave plan.
+4. **Q4 — launcher form**: a **`taskboard gui` verb**, not a
+   `--mode` flag — it fits the existing subcommand surface (explicit
+   frontend selection like `daemon`). The `.desktop` `Exec` line
+   becomes `taskboard gui`; the env-var escape hatch stays documented
+   as-is.
+5. **Q5 — kiosk window profile for wave 1**: **fullscreen + scale
+   preset on the existing desktop `AppWindow`** — enough to measure
+   real performance on the target hardware (see backlog *Kiosk
+   hardware bring-up*); the dedicated ambient view is a later wave.
+6. **Q6 — default `[app] mode`**: **still open, deferred** to after
+   the wave ships (needs the kiosk on-device experience first).
+7. **Q7 — wave-2 priority**: **C (web dashboard) before B**
+   (attachable GUI process).
 
 ## 7. References
 
