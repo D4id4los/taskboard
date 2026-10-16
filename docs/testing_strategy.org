@@ -82,12 +82,49 @@ Task reminders and Kiosk screen rotations depend on time passing. Standard
   instantly. Strict timeouts, delayed API retries, and task deadlines are
   tested deterministically.
 
-* 7. UI Unit/Component Tests
+* 7. UI Testing: Tiers & Pins (ADR 0015)
 
-Use the UI framework's test utilities (e.g., =slint::testing=) to verify
-that local widget state (like active typing in a text field) is preserved
-while waiting for an async round-trip, and that the correct commands are
-sent over =mpsc= upon simulated user input.
+Slint ships no public =slint::testing= API (the design round's
+recorded finding); the landed UI test suite is four tiers over what
+does exist. Nothing tests the Slint framework's internals — the UI
+suite proves *this application's* presentation layer.
+
+- *Tier 1 — Unit (pure Rust).* Everything that needs no Slint
+  runtime: keymap parse/merge/validate, resolver proptests (chords,
+  prefixes, vi modes, masking), preset coverage + conflict-freeness,
+  WCAG contrast pairs over token pairs, presentation helpers
+  (time-boundary formatting). No Slint types involved.
+- *Tier 2 — Component / journeys.* =i-slint-backend-testing=
+  (exact-pinned, workspace) behind the thin journey-driver module
+  (=tests/support/driver.rs=), with mock time, element addressing by
+  accessible role/label, and generated getters. The engine is faked
+  at the forwarder boundary (=support/fake_engine.rs=), so journeys
+  assert routing only — engine semantics live in the engine's own
+  suites. The ten design journey steps run as one continuous session
+  plus a cold-start view-graph walk; the keypress-count guard
+  (=support/guard.rs=) encodes the design's per-verb ceilings as
+  design contracts (any improvement passes).
+- *Tier 3 — Golden visuals.* The board view at scale extremes × each
+  breakpoint: software renderer, headless, bundled fonts (rendering
+  is deterministic by construction); perceptual-hash tolerance with
+  a renderer-presence assertion ahead of any comparison. Golden
+  regeneration is an explicit, reviewed step — never CI-blessed.
+- *Tier 4 — Harness smoke.* The dev-gated =slint/mcp= feature gets a
+  CI job that boots headless-with-renderer, captures one screenshot,
+  and asserts it is non-empty and changes after interaction; the
+  feature-off assertions in =ci.yml= / =release.yml= (=cargo tree=)
+  keep the MCP server out of every release resolution.
+
+House rules carried into this tier: no sleeps (mock time only);
+accessible labels are element *addresses* — message/label text is
+never matched; journeys assert typed outcomes at stable seams, never
+per-widget internals.
+
+*Pin discipline.* =slint = "1.18.1"= (caret) and
+=i-slint-backend-testing = "=1.18.1"= (exact) move together on every
+bump; =tests/pin_guard.rs= asserts the pin equality in CI. Every
+Slint bump follows ADR 0015's upgrade runbook — a per-bump chore,
+recorded where the ADR lives.
 
 * 8. Integration Testing: Nextcloud Sync (Deck OCS REST API)
 
