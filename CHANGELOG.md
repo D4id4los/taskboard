@@ -9,6 +9,8 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-16
+
 ### Added
 - The desktop GUI (ADR 0015): `mode = "desktop"` boots a Slint
   application — kanban board, stack detail, and task detail views
