@@ -292,7 +292,7 @@ Miri is applied targetedly:
    pipeline. Run it locally when introducing complex serialization
    structures or concurrency primitives.
 
-** The weekly job's contract (measured 2026-10-12)
+** The weekly job's contract (measured 2026-10-12 through 2026-10-16)
 
 The job (=.github/workflows/miri.yml=) splits the sweep into four
 parallel jobs — domain core, domain =pipeline::= tests, domain
@@ -320,18 +320,51 @@ are outside these jobs), and no assertion is weakened or skipped.
   replaying them, including the checked-in seed file.
 
 - *Per-job case caps* (=PROPTEST_CASES=): domain core 16, domain
-  =pipeline::= 1, domain remote/state properties 16, state 16. The
+  =pipeline::= 2, domain remote/state properties 16, state 128. The
   =pipeline::= family does carry properties —
   =apply_push_report_equals_the_pipeline_push_phase= (the family's
   cost dominator, ≈ 15 min per interpreted case by subtraction from
-  the measured walls) and =equal_replicas_converge= — so its cap of 1
+  the measured walls) and =equal_replicas_converge= — so its cap of 2
   is a measured budget statement for those two, not an empty-family
-  guard. Measured wall times at these caps (2026-10-12 green run):
-  core ≈ 57 min, pipeline ≈ 21 min, properties ≈ 13 min, state
-  ≈ 10 min — all inside the ≈ 90-minute headroom bar (25% margin under
-  the timeout). Caps exist to fit the budget; they are never a coverage
-  statement, and moving one requires a measured budget justification
-  recorded in the PR that moves it.
+  guard. Measured job walls at the kept caps, all judged against the
+  ≈ 90-minute headroom bar (25% margin under the timeout):
+
+  | job (cap)                 | 2026-10-12 run 38312493624 | 2026-10-15 run 38786976628 | probe run 38814917035 | run 38846463650 | run 38853294730 | run 38862752532 |
+  |---------------------------+----------------------------+----------------------------+-----------------------+-----------------+-----------------+-----------------|
+  | domain core (16)          | 55 min                     | 81 min                     | 82 min                | 66 min          | 46 min          | 82 min          |
+  | domain =pipeline::= (1→2) | 24 min                     | 72 min                     | 105 min               | 55 min          | 102 min         | 91 min          |
+  | remote/state props (16)   | 21 min                     | 18 min                     | 15 min                | 16 min          | 14 min          | 18 min          |
+  | state (16 → 128)          | 8 min                      | 13 min                     | 71 min                | 71 min          | 93 min          | 77 min          |
+
+  The 2026-10-15/16 probe (workflow_dispatch ladder on
+  =ci/miri-cap-probe=) raised state 16 → 128 and pipeline 1 → 2, both
+  kept on the green in-budget run 38846463650 (pipeline 55 min,
+  state 71 min, core 66 min, props 16 min — all four ≤ 90 in the same
+  run). Intermediate evidence, kept honest in the record: state 64
+  has a single sample — 39 min (day window, run 38804930006); state
+  128 measured 71/71/77/91/93 min across five windows (runs
+  38814917035, 38846463650, 38862752532, 38826477952, 38853294730) —
+  so no same-window pair exists for the two caps and the 39-vs-71 gap
+  is not a per-case slope. What the record does show: window
+  variance, not case count, sets this job's wall (the unchanged-cap
+  control jobs swung 46 ↔ 82 min core and 14 ↔ 18 min props within
+  the probe's own windows), and 128 was kept because doubling
+  interpreted coverage costs a worst-observed wall (93 min) that
+  still holds ≈ 22% margin under the 120-minute timeout. Pipeline
+  cap 2's walls across seven dispatches ({55, 59, 91, 102, 105, 106,
+  111} min) overlap cap 1's own pre-probe walls ({24, 72} min) once
+  window variance is accounted for — cap 2 adds ≈ one dominator case
+  (≈ 15–30 min) in a like-for-like window. In the observed slow
+  windows it is the raised caps that cross the 90-minute bar
+  (pipeline 102–111, state 91/93) while the unchanged caps stay under
+  it (core ≤ 82, props ≤ 18, cap 1's own slow window 72): reverting
+  to cap 1 would have restored the soft bar, but the raise was kept
+  because the bar is a 25%-margin heuristic under the 120-minute
+  kill, cap 2's worst observed wall (111 min) still clears the kill
+  with ≈ 7% margin, and the night-curve follow-up below owns the
+  residual risk. Caps exist to fit the budget; they are never a
+  coverage statement, and moving one requires a measured budget
+  justification recorded in the PR that moves it.
 
 - *Do not read libtest's =finished in= figure as wall time*: under
   isolation Miri emulates the monotonic clock from interpreted work
@@ -358,6 +391,26 @@ are outside these jobs), and no assertion is weakened or skipped.
   =UuidV7Generator=). Each gated test runs natively unchanged;
   existing gates follow the same pattern (insta S-series socketpair,
   =sqlite_smoke= tempdir+FFI, P4/P5 live-engine properties).
+
+- *Same-config walls drift window-to-window on the rolling nightly*,
+  and the drift swamps the caps themselves: pipeline 24 → 72 min at
+  cap 1, then 59 → 105 → 106 → 111 → 55 → 102 → 91 min across seven
+  cap-2 dispatches in two days; core 55 → 81 → 82 → 66 → 46 → 82 min
+  at the unchanged cap 16; and state 64's only sample (39 min, run
+  38804930006) landed in the probe's fastest window — the two caps
+  share no comparable window. The slow
+  windows matter because the weekly cron fires Monday 03:00 UTC,
+  inside one. Consequences: a single in-budget measurement is weak
+  evidence of weekly repeatability; the ≥ 25% headroom preference
+  applies to the worst-observed wall, not the best (state's worst
+  observed is 93 min ≈ 22% margin under the timeout; pipeline's is
+  111 min ≈ 7%); a drift-driven weekly red is re-triaged on the next
+  nightly; and a cap that proves chronically over budget is lowered
+  in a recorded follow-up, never quietly. At the 2026-10-15/16 night
+  curve core and pipeline measure up to 82 and 111 min against the
+  120-minute kill — if that curve persists on Mondays, re-sizing
+  those budgets (or the 90-minute bar itself) is a recorded
+  follow-up, not a quiet cap cut.
 
 - *Why the job split exists*: interpreter cost is wildly
   non-uniform — the plain =pipeline::= tests dominate (the slowest,
