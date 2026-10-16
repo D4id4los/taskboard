@@ -3027,3 +3027,107 @@ main, tag the merged commit, push the tag (which triggers
 `release.yml`). The tag step stays outside the script (agents never
 push; the merge is the user's on GitHub). Update AGENTS §9 and
 coding_guidelines §7 in the same commit.
+
+---
+
+## [2026-10-16] File-manager double-click of the release binary silently starts a headless daemon
+
+- **Category**: `UI` / `DX`
+- **Originating Plan/Report**: Chat (user report 2026-10-16); full
+  diagnosis in
+  `.artifacts/plans/2026-10-16-kiosk-daemon-gui-control-plan.md` §1.1/§5
+- **Target Area**: `crates/taskboard-app/src/{config,ui,main}.rs`,
+  `scripts/package_release.py`, `README.org`, release packaging
+
+### Context & Description
+
+Executing the v0.1.0 Linux release binary from Dolphin spawns a
+process that never opens a GUI and must be killed from a terminal.
+Diagnosed as routing-by-design over an unlucky default, not a crash:
+the archive ships no config, so `[app] mode` resolves to its default
+`daemon` (`config.rs:87-95`); a file-manager launch has no TTY on
+stdin, so the bare-invocation routing sends `daemon` to the headless
+daemon lifecycle (`ui.rs:79-87`), which serves the per-database IPC
+socket forever with no window (`main.rs:244-334`) — and every log
+line goes to stderr, which Dolphin discards. Reproduced with the
+release artifact (CI run 38872697980, isolated XDG dirs, no TTY):
+`mode=Daemon` → `daemon serving commands over ipc` → idles until
+SIGTERM, clean shutdown. With `TASKBOARD_APP__MODE=desktop` the same
+binary opens the GUI window (user-confirmed on the desktop).
+
+### Proposed Approach
+
+Zero-code first: a README "Launching" section documenting the
+bare-launch semantics (TTY → REPL, no-TTY → daemon,
+`desktop` → GUI) and the `TASKBOARD_APP__MODE=desktop` escape hatch
+(figment `__`-nesting, verified working), plus a `taskboard.desktop`
+(`Exec=env TASKBOARD_APP__MODE=desktop taskboard`) staged into the
+release archive so file-manager launches get a window while the raw
+binary keeps its appliance/daemon semantics for systemd. Optional: a
+`--mode` CLI override or `taskboard gui` verb for a cleaner `Exec`
+line. Longer term, revisit the default mode after the kiosk wave
+(plan doc §6 Q6).
+
+---
+
+## [2026-10-16] Kiosk mode: daemon-owned core with an on-seat GUI, controlled over CLI/ssh
+
+- **Category**: `Architecture` / `UI`
+- **Originating Plan/Report**: Chat (user report 2026-10-16); proposals in
+  `.artifacts/plans/2026-10-16-kiosk-daemon-gui-control-plan.md`
+- **Target Area**: `crates/taskboard-app/src/{main,ui}.rs` (routing,
+  lifecycle), `crates/taskboard-ui-slint/` (kiosk window profile)
+
+### Context & Description
+
+`mode = "kiosk"` is refused at boot ("not implemented yet",
+`main.rs:250-257`), so the kiosk requirement — an unattended seat
+showing a GUI whose state is controlled by CLI commands issued over
+ssh — has no implementation. Remote CLI control of a *running* core
+already exists (ADR 0012 per-database socket, argv relay, `daemon
+stop`); what is missing is exclusively the on-seat GUI and the
+lifecycle that hosts it.
+
+### Proposed Approach
+
+Plan doc Option A (recommended first wave): bare invocation with
+`mode = "kiosk"` boots the daemon-style core (actors + IPC server)
+*and* mounts a fullscreen kiosk window in-process — structurally
+`run_desktop` plus `spawn_server`; the explicit `taskboard daemon`
+subcommand stays headless as the ssh-spawned maintenance path.
+Reuses the ADR 0015 hand-over and the UI command forwarder; zero new
+protocol. Option B (an attachable `taskboard gui` process over IPC
+snapshot/delta streams, consuming the *IPC keep-alive / pipelining /
+event streams* entry) is the follow-up for GUI crash isolation and
+off-box seats; the *web kiosk dashboard* entry stays the
+complementary tablet path. Sequencing and open questions: plan doc
+§4/§6.
+
+---
+
+## [2026-10-16] `release.yml` MCP-feature guard cannot parse on the Windows leg (pwsh vs bash `!`)
+
+- **Category**: `DX`
+- **Originating Plan/Report**: Chat (v0.1.0 tag run triage, run
+  38872697980, 2026-10-16)
+- **Target Area**: `.github/workflows/release.yml`
+
+### Context & Description
+
+The "MCP feature off in the release resolution" step runs
+`run: '! cargo tree … | grep -q …'` under the job's default shell.
+On the Linux matrix leg that is bash (pipeline negation works); on
+`windows-latest` the default shell is pwsh, which fails to parse the
+leading `!` ("Missing expression after unary operator '!'") — the
+step exits 1 before cargo tree even runs, so the whole v0.1.0 tag
+run went red and no Release was published. The Linux artifact is
+fine, and the feature guard itself is not implicated: the resolution
+is clean on both targets locally. The identical step in `ci.yml` is
+Linux-only and unaffected.
+
+### Proposed Approach
+
+Pin the step to `shell: bash` (the workflow already uses that
+pattern on the "Compute Archive Name" step), re-cut/retag v0.1.0,
+and prefer `shell: bash` for any future `run:` one-liner starting
+with `!` in multi-OS workflows.
