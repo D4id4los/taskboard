@@ -172,6 +172,51 @@ runner / invocation), symptom, evidence for the flake verdict
   `strace -f` output first; the deny window seems tied to
   freshly-created directories.
 
+### [2026-10-17] `e2e_hermetic` predicate deadline exhausted on CI (plain nextest lane)
+
+- **Test**: `taskboard-sync-nextcloud --test e2e_hermetic` —
+  `i1_offline_creates_round_trip_to_the_server` and
+  `i2_remote_newer_edit_adopts` (two of the binary's five tests, run
+  concurrently with the rest of the workspace suite).
+- **Where**: CI, GitHub Actions run `38975646645` (2026-10-16
+  22:25 UTC), `Test Execution` job (plain `cargo nextest`, not the
+  instrumented lane), PR #106 branch `docs/audit-theme-docs-drift` @
+  `4e5ec0a`. The branch's `crates/` tree is byte-identical to the
+  `v0.1.0` tag (`git diff --stat v0.1.0 4e5ec0a -- crates/ Cargo.lock`
+  is empty) — the branch delta is docs-only.
+- **Symptom**: both tests failed in 0.34 s / 0.54 s wall clock with the
+  `eventually` helper's deadline assertion (`e2e_hermetic.rs:134`,
+  panic message `predicate satisfied within the deadline`): the
+  engine-state predicate never became true across the helper's full
+  60-second **virtual** deadline (tests run under paused tokio time,
+  advanced 5 ms per `eventually` iteration ⇒ ~12,000 predicate polls
+  without the actor producing the expected state). Fail-fast cancelled
+  the run; 143 workspace tests were not executed.
+- **Flake evidence**: the identical test code passed in the CI run
+  eight minutes earlier (run `38974850188`, 22:17 UTC — full 965-test
+  suite green, same crate contents), and both tests pass locally on
+  the failed commit (`cargo nextest run -p taskboard-sync-nextcloud
+  --test e2e_hermetic`, 0.02–0.03 s each). Runs since the re-run:
+  see the `docs/audit-theme-docs-drift` run list.
+- **Suspicion**: a virtual-time-vs-real-I/O starvation race. The
+  sync actor's progress depends on real mock-server I/O completing on
+  the tokio runtime, while `eventually` burns its 60 s deadline in
+  *virtual* time (each `advance(5ms)` yields, but the deadline is
+  measured on the paused clock). Under heavy CI parallelism the
+  I/O-driven tasks can be repeatedly delayed while the test loop
+  exhausts all ~12,000 polls in well under a second of wall time.
+  Same crate as the `[2026-10-11]` `actor_wiremock` entry but a
+  different binary and a *plain nextest* lane (that entry's new
+  run-level evidence, recorded by the audit's test-quality chunk, was
+  also a plain-nextest failure — the sync crate's mock-I/O timing
+  sensitivity may be one family spanning both).
+- **Mitigation applied**: none in-repo (watchlist discipline — the
+  tests are correct; do not fix opportunistically). The PR gate was
+  satisfied by re-running. Candidate directions for the dedicated
+  review pass: measure the deadline on wall clock (or a hybrid) while
+  keeping the paused-clock determinism, or drive the loop from actor
+  progress signals instead of a poll budget.
+
 ## [2026-10-07] Add the `slint` dependency to taskboard-ui-slint — ✅ DONE (2026-10-16)
 
 - **Category**: `UI` / `DX`
