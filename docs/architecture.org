@@ -94,11 +94,23 @@ rendering loop.
 
 ** Framework-Agnostic "Thin Client" UI
 
-The GUI layer operates as a disposable presentation client. It relies on
-standard Rust primitives (=tokio::sync= and =arc_swap::ArcSwap=) to
-communicate with the core engine. This enables spiking and swapping
-front-end libraries (Slint, Iced, egui) without altering business logic or
-IO code.
+Slint 1.18.1 is the shipped UI framework (ADR 0015), and the GUI layer
+operates as a dumb presentation client over it. It relies on standard
+Rust primitives to communicate with the core engine: lock-free
+=ArcSwap<AppState>= reads for state, =EngineSignal= /
+=SystemEvent= broadcast receivers drained by the UI's repaint timer
+(a Slint =Timer= that also wakes on the wall-minute boundary), typed
+=UiSettings= handed over from the app side (config is read there via
+figment — never inside the UI crate), and user intents dispatched as
+typed =StateCommand=s on the state-command =mpsc=, drained by the
+bootstrap-owned UI-command forwarder. No IO crates, no business
+logic, no state mutation inside the UI.
+
+The framework-swap seam survives as the *crate boundary*
+(=taskboard-ui-slint= contains presentation logic only), not as an
+unexercised aspiration: =taskboard-app= depends on the UI crate and
+its other actors never do, so a future frontend would be a new
+workspace member behind the same hand-over contract.
 
 * Inter-Component Communication Protocol
 
@@ -107,7 +119,7 @@ avoiding central runtime bottlenecks.
 
 | Communication Path | Mechanism / Type | Description & Purpose |
 |---+---+---|
-| *UI → State Engine* | =tokio::sync::mpsc= | Sends user intent commands (=Command::TaskCompleted(id)=) asynchronously. |
+| *UI → State Engine* | =tokio::sync::mpsc= | Sends user intent commands (=StateCommand=) asynchronously; the mpsc is drained by the bootstrap-owned UI-command forwarder (=taskboard_app::ui::spawn_ui_command_forwarder=: =recv()= → =EngineHandle::dispatch= over the =CommandSink= trait, dropped-command logging, capacity 64). |
 | *State Engine → UI (Read)* | =arc_swap::ArcSwap<AppState>= | Provides lock-free, zero-contention state inspection during UI repaints. |
 | *State Engine → UI (Signal)* | =tokio::sync::broadcast= | Emits lightweight triggers (=EngineSignal::StateUpdated=) to prompt GUI repaints. |
 | *UI/CLI → State Engine* | =tokio::sync::mpsc= + =oneshot= | =EngineCommand::Execute= carries a =StateCommand= payload with an optional oneshot receipt (typed =Result<CommandOutcome, ExecuteError>=; a received reply implies durability). =EngineCommand::Flush= is the reply-less dispatch durability barrier (CLI exit). |
@@ -195,9 +207,30 @@ dependency hierarchies.
    touching a query or migration. Dependencies: =taskboard-domain=,
    =sqlx=, =tokio=.
 
-5. *taskboard-ui-slint* — Handles presentation rendering. Reads state via
-   lock-free =ArcSwap= loads and emits =mpsc= commands on user input.
-   Dependencies: =taskboard-domain=, =slint= (deferred), =arc-swap=.
+5. *taskboard-ui-slint* — The Slint presentation layer (ADR 0015). The
+   module map: =theme= (the token module — colour/text-role/spacing
+   globals with closed text roles — plus the bundled tri-licensed
+   fonts with runtime registration), =actions= + =keymap= +
+   =resolver= (action registry with reserved global actions,
+   keymap-as-data with standard/emacs/vi presets and drop-and-warn
+   merge validation, pure stroke resolver with chords/prefixes/vi
+   modes/masking), =adapter= (the root-FocusScope capture
+   interception) + =menu= (the generated action menu), =router= /
+   =view_state= (the Board → StackDetail → TaskDetail view machine),
+   the L1 widget / L2 composition / L3 view component layering
+   under =ui/=, and =presentation= (pure display helpers reusing the
+   domain's overdue/due-soon semantics) + =responsive= (unscaled
+   breakpoints). State enters via lock-free =ArcSwap<AppState>=
+   loads and the broadcast receivers; config arrives as typed
+   =UiSettings= — no IO crates, no business logic, no state
+   mutation (AGPL-3.0-only, with the ADR 0003 =unsafe= exception for
+   Slint-generated code). Dependencies: =taskboard-domain=,
+   =slint= (default renderer features + the additive
+   =unstable-fontique-011= font-registration feature), =arc-swap=,
+   =tokio= (channel types only — the mandated fabric, not an IO
+   dependency), =chrono=, =thiserror=, =tracing=; =slint-build= at
+   build time (the UI codegen); dev-only: =i-slint-backend-testing=
+   (exact pin), =insta=, =proptest=, =png=, =uuid=, =serde=.
 
 6. *taskboard-app* — The bootstrap library (ADR 0008) plus the thin
    =taskboard= binary. The library owns =config= (figment hierarchy
@@ -250,6 +283,16 @@ dependency hierarchies.
    =NoDaemon=/=IpcTransport=/=IpcVersion= failures; =route_for_ipc=
    picks each verb's transport lane (Local / IpcOrLocal / IpcOnly) and
    =status=/=daemon stop= are the operator verbs over the wire.
+   =ui= (ADR 0015): the GUI lifecycle — D4 bare-invocation routing
+   (=mode = "desktop"= boots the Slint GUI regardless of TTY;
+   =AppMode= is frontend selection, so only =Daemon=+TTY falls to
+   the REPL; otherwise the daemon lifecycle), the UI-command
+   forwarder (=spawn_ui_command_forwarder= over the =CommandSink=
+   trait), and =resolve_ui_settings= (the figment =[ui]= table into
+   typed =UiSettings=; keymap findings surface as startup warnings
+   and never block start). The =[ui]= config surface: =scale=
+   (0.5–3.0, typed-validated) and =keymap.preset= /
+   =keymap.overrides=.
    Dependencies: all workspace
    crates, =figment=, =clap=, =keyring= (platform features via
    target-specific deps), =rpassword=, =fd-lock=, =toml_edit=,
@@ -278,6 +321,7 @@ dependency hierarchies.
 | *Observability* | =tracing= + =tracing-subscriber= | Contextual logging across async =.await= boundaries, with standard =log= compatibility enabled. |
 | *Async Debugging* | =tokio-console= | Captures async task/channel state via =console_subscriber::ConsoleLayer= (gRPC on 127.0.0.1:6669); compiled in behind the =tokio-console= feature. |
 | *Snapshot Testing* | =insta= | Comparing large structs, JSON payloads, or state trees over time without manually writing assertions. |
+| *UI Toolkit* | =slint= | Declarative UI with a software-renderer fallback for low-power kiosks; pinned 1.18.1 in =[workspace.dependencies]= (renderer default features + the additive font-registration feature; the exact-pinned =i-slint-backend-testing= is dev-only and moves with it, ADR 0015). |
 | *Mutation Testing* | =cargo-mutants= | Finds holes in test coverage for pure & core crates (=taskboard-domain= and =taskboard-state=). |
 
 * Quality Gate & Tooling Strategy
@@ -293,6 +337,7 @@ dependency hierarchies.
 | *Mutation Testing* | =cargo-mutants= | Weekly scheduled CI job plus manual =workflow_dispatch=. |
 | *Dependency Audit* | =cargo-deny= | Unified linter for =Cargo.lock=: RustSec vulnerabilities, license compliance, crate sources, duplicate versions. |
 | *Memory Safety* | =miri= | Weekly scheduled CI job scoped to =taskboard-domain= and =taskboard-state= (see =docs/testing_strategy.org=). |
+| *UI token lint* | =scripts/check_slint_tokens.py= | No literal colours, font attributes, or spacing dimensions outside the theme module (=ui/theme.slint=); runs in CI and the pre-commit hook; no suppression escape. (The WCAG contrast check rides nextest as an ordinary unit test.) |
 
 * Versioning
 
