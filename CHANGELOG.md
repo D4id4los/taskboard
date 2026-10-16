@@ -10,6 +10,28 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The desktop GUI (ADR 0015): `mode = "desktop"` boots a Slint
+  application — kanban board, stack detail, and task detail views
+  driven by the same headless core as the CLI (lock-free state reads;
+  no business logic in the UI). Bare `taskboard` routes by the
+  configured app mode.
+- Keyboard-first operation: every verb is an action with a rebindable
+  keybinding — `standard`, `emacs`, and `vi` presets plus per-action
+  overrides under `[ui.keymap]` (invalid overrides are dropped with a
+  startup warning, never blocking); a generated action menu lists the
+  current context's verbs with their key hints.
+- Display scaling and responsiveness: `[ui] scale` (0.5–3.0) applies
+  as a live token multiplier, with `SLINT_SCALE_FACTOR` as the OS-DPI
+  escape hatch; unscaled responsive breakpoints (compact below 720 px,
+  regular, expansive at 1440 px and up) degenerate the board for
+  narrow windows.
+- Sync status and overdue banner: a persistent status-bar sync
+  indicator, and an overdue-task banner whose snooze/mute actions ride
+  the reminders command path.
+- Accessibility and quality machinery: a WCAG contrast-checked dark
+  theme, screen-reader labels on every control, and a headless
+  keyboard-journey test suite that keeps every core verb within its
+  keypress budget.
 - REPL completion disambiguates hard title collisions: when two live
   stacks, tasks, or labels share a title, the menu replaces the
   (guaranteed-`Ambiguous*`) title row with one `title - uuid` row per
