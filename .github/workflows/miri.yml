@@ -73,7 +73,7 @@ jobs:
           components: miri
       - name: Run Miri on taskboard-domain (pipeline tests)
         env:
-          PROPTEST_CASES: "1"
+          PROPTEST_CASES: "2"
         run: |
           cargo +nightly miri setup
           cargo +nightly miri test -p taskboard-domain --lib --tests -- pipeline::
@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      PROPTEST_CASES: "16"
+      PROPTEST_CASES: "128"
     steps:
       - uses: actions/checkout@v7
       - name: Install system deps (keyring sync-secret-service links libdbus-1)
