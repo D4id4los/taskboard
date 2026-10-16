@@ -172,11 +172,19 @@ runner / invocation), symptom, evidence for the flake verdict
   `strace -f` output first; the deny window seems tied to
   freshly-created directories.
 
-## [2026-10-07] Add the `slint` dependency to taskboard-ui-slint
+## [2026-10-07] Add the `slint` dependency to taskboard-ui-slint — ✅ DONE (2026-10-16)
 
 - **Category**: `UI` / `DX`
 - **Originating Plan/Report**: Repository bootstrap (ADR 0003)
 - **Target Area**: `crates/taskboard-ui-slint/`
+- **Status**: ✅ DONE (2026-10-16) — implemented via GUI Phase 7 chunk 1
+  (`feat/ui-shell-theme`): `slint = "1.18.1"` in
+  `[workspace.dependencies]`, renderer question answered by the stress
+  report §3.8 (default features — femtovg + software with runtime
+  fallback); CI consequence: the Linux legs install the GL/font system
+  deps. The kiosk-renderer *Update* below stays — complementary, not
+  superseded: it names the kiosk software path, and the
+  default-features choice is what makes that fallback work.
 
 ### Context & Description
 The UI crate ships dependency-free so the GUI/OpenGL system-library stack
@@ -897,11 +905,15 @@ the UI raise a persistent error banner.
 Bundle with Phase 5's error-UX plan; consider debouncing (a failing disk
 fires per command otherwise).
 
-## [2026-10-09] UI command forwarder bootstrap task
+## [2026-10-09] UI command forwarder bootstrap task — ✅ DONE (2026-10-16)
 
 - **Category**: `Architecture`
 - **Originating Plan/Report**: `.artifacts/plans/2026-10-09-growth-roadmap-phase3-state-engine-plan.md` (§9, §12)
 - **Target Area**: `crates/taskboard-app/` (Phase 5 bootstrap)
+- **Status**: ✅ DONE (2026-10-16) — implemented in GUI Phase 7 chunk 1
+  as `spawn_ui_command_forwarder` in `crates/taskboard-app/src/ui.rs`
+  (`CommandSink` trait over `EngineHandle::dispatch`; hermetic
+  fake-sink test).
 
 ### Context & Description
 The UI dispatches domain-typed `StateCommand`s on a plain `mpsc` (no
@@ -2714,6 +2726,30 @@ limiter and installs the floor then.
 Widen `GroupOutcome::Aborted` to carry the aborting `DeckError` (or at
 least its `retry_after`) up to `fail_cycle`.
 
+## [2026-10-14] Formalise ADR 0013 (reminders) from the reminders design plan §12/§13
+
+- **Category**: `Architecture` / `DX`
+- **Originating Plan/Report**: `.artifacts/plans/2026-10-12-reminders-design-plan.md`
+  (§12 draft + §13 decisions, approved 2026-10-12); surfaced by the GUI
+  Phase 7 design plan §13.1/Q21 (2026-10-14)
+- **Target Area**: `docs/adr/` (0013 file)
+
+### Context & Description
+The reminders design round drafted ADR 0013 (§12) and resolved every
+decision (§13, user review 2026-10-12), but the ADR file never landed
+— the number is reserved by that round, deliberately not reused by
+ADR 0014 or ADR 0015 (numbering honesty per Q21), so `docs/adr/`
+skips 0013. The 2026-10-16 v0.1.0 audit plan flags the gap as a
+standing docs question. The implementation itself (rules, tick arm,
+storage, CLI verbs, UI banner consumption) is merged; only the
+decision record is missing.
+
+### Proposed Approach
+One small docs chunk: formalise the §12 draft into
+`docs/adr/0013-reminders-local-due-anchored-rules.org` with the §13
+decisions folded in, Status Accepted, dated 2026-10-12 (the decision
+date), noting the landed implementation. No code, no renumbering.
+
 ### [2026-10-15] Uuid-fragment stem completion in the REPL
 
 - **Category**: `DX`
@@ -2956,3 +2992,31 @@ server-rendered or static board view, reusing the already-tracked
 sync-actor/engine metrics as dashboard content. Keep the page
 intentionally conservative for old embedded browsers. The Slint
 Android port is a separate future entry if it earns itself.
+
+## [2026-10-16] `bump_version.sh`: adapt the release cut to branch-protected `main`
+
+- **Category**: `DX`
+- **Originating Plan/Report**: user note on the GUI Phase 7 chunk-5
+  plan (`.artifacts/plans/2026-10-16-ui-adr-release-plan.md` §6.3)
+- **Target Area**: `scripts/bump_version.sh`,
+  `docs/coding_guidelines.org` §7, `AGENTS.md` §9
+
+### Context & Description
+The script predates branch protection on `main`: it aborts unless
+run on `main` and then commits + tags directly there — both now
+impossible (every change enters `main` through a PR, AGENTS §8).
+v0.1.0 is cut by hand instead (changelog promote on a release branch
+→ PR → post-merge tag on main's rebased commit). Until the script
+is adapted, every future release faces the same manual dance, and
+the "exclusively via bump_version.sh" wording in AGENTS §9 /
+coding_guidelines §7 is stale.
+
+### Proposed Approach
+Rework the script for the protected-main reality: verify a clean
+tree, create `chore/release-v<X.Y.Z>` off the fetched `origin/main`,
+do the bump/promote commit on the branch, push and open the PR with
+`gh` (CI must pass), and print the user's post-merge steps — fetch
+main, tag the merged commit, push the tag (which triggers
+`release.yml`). The tag step stays outside the script (agents never
+push; the merge is the user's on GitHub). Update AGENTS §9 and
+coding_guidelines §7 in the same commit.
