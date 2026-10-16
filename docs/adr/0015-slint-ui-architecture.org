@@ -1,0 +1,100 @@
+#+title: ADR 0015: Slint UI — Dumb Presentation Client, Action-Dispatch Keymap, Token Theming
+- *Date:* 2026-10-14
+- *Status:* Accepted (implemented across GUI Phase 7 chunks 1–4:
+  shell/theme, action-keymap, views, harness)
+- *Depends on:* ADR 0001 (multi-actor core), ADR 0003 (unsafe exception for the UI crate)
+
+* Context
+
+Phase 7 (M2 → v0.1.0) builds the first real frontend over the M1
+headless core. The GUI requirements brief (2026-10-14) names
+retrofit-hostile foundations — reusable components (R1), theming
+(R2), scaling (R3), keyboard-first (R4), fully-rebindable keybindings
+with chords and modes (R5), an LLM automation harness seam (R6),
+accessibility (R7) — which the Slint 1.18.1 stress test verified as
+expressible, with two partials: no runtime window-scale API (→
+application-level root multiplier) and no public =slint::testing=
+(→ the internal =i-slint-backend-testing= crate + embedded MCP
+server).
+
+The ADR numbering skips 0013 deliberately: that number is reserved by
+the reminders design round (2026-10-12, drafted but not yet
+formalised — the formalisation debt is tracked in the improvements
+backlog). It is not a withdrawn or accidental number, and it was not
+reused here to keep the reservation honest.
+
+* Decision
+
+1. *The UI crate stays a dumb presentation client* (ADR 0001):
+   ArcSwap reads, broadcast subscriptions, command mpsc out. No IO
+   crates, no business logic, no state mutation; config is read
+   app-side (figment) and handed over as typed values (=UiSettings=).
+   AGPL-3.0-only; =unsafe= only via Slint-generated code (ADR 0003).
+2. *All styling flows from one token module* (colour/text-role/
+   spacing globals); a repo lint forbids literal colours, font
+   attributes, and spacing literals outside it; contrast over token
+   pairs is a CI check. Text roles are a closed, theme-level
+   vocabulary.
+3. *Views bind to actions, never keys.* A Rust-side action registry
+   (stable =scope.verb= ids + labels + contexts) and keymap resolver
+   (chords, vi-mode contexts, masking) live inside the UI crate as
+   pure modules; the keymap is data (preset ⊕ user overrides in
+   [ui] config); standard/emacs/vi presets ship with enforced
+   core-verb coverage; a single root FocusScope intercepts keys.
+   Undo/redo, quick-capture, and search are reserved global actions
+   from day one.
+4. *Scaling is an application-level root multiplier* over the token
+   system (live, config-driven), with the SLINT_SCALE_FACTOR env
+   var as the OS-DPI escape hatch; responsive breakpoints are
+   unscaled window-width bands; adaptive UI is parked (no telemetry).
+5. *The automation seam is logical-first*: journeys via
+   =i-slint-backend-testing= (exact-pinned beside the slint pin;
+   both move together and are re-audited per bump), addressing
+   elements by accessible role/label — which simultaneously enforces
+   the accessibility discipline. Visual automation rides the
+   dev-gated embedded MCP server (screenshot smoke in CI; driver
+   tooling post-1.0).
+6. *Renderer set = Slint's default renderer/backend features plus the
+   additive runtime font-registration feature.* Concretely, the
+   manifest takes Slint's default features (winit backend, femtovg +
+   software renderers with runtime fallback; no skia; linuxkms
+   deferred to a real kiosk target) and adds
+   =unstable-fontique-011= — the 1.18-documented runtime font path
+   the bundled fonts register through (=src/fonts.rs=). The draft's
+   "slint default features" is true of renderer/backend selection
+   only; the font feature is additive and required by the bundled
+   fonts decision.
+7. *Licensing*: AGPL-3.0-only application combined with the Slint
+   runtime's GPL-3.0-only OR Royalty-free-2.0 OR Software-3.0
+   tri-license is acceptable for this project's posture (AGPLv3 §13
+   combination path); recorded here so the distribution question has
+   one home. Revisit only if distribution terms change.
+
+* Consequences
+
+- Every later GUI wave (search palette, inbox, pomodoro overlay,
+  kiosk rotation, undo tree, keymap visualiser) lands as a
+  projection over these seams rather than a subsystem.
+- The internal testing-crate pin adds a per-Slint-upgrade audit
+  chore; accepted for a headless, mock-time, CI-friendly harness.
+  The audit is a fixed runbook, not an ad-hoc re-review. On any
+  Slint version bump:
+  1. move =slint = "<new>"= (caret) and =i-slint-backend-testing =
+     "=<new>"= (exact) *together* — the move-together rule;
+  2. =tests/pin_guard.rs= must stay green (it asserts pin equality);
+  3. re-audit the stress-report sections this round cites (§3.2
+     interception, §3.4 scaling, §3.5 testing backend, §3.8
+     renderer) before merging;
+  4. re-run the golden tier; regenerate goldens as an explicit
+     reviewed step, never CI-blessed.
+- Strict token discipline (incl. spacing literals) is authoring
+  overhead traded for live scaling, theme development, and
+  mechanical style enforcement.
+- *Kiosk rendering corollary:* the 2026-10-16 kiosk hardware
+  assessment (gen3-class Intel graphics; modern Mesa ships no gen3
+  hardware GL) makes the software renderer the kiosk path — by
+  runtime fallback where a GL context exists, and via
+  =renderer-software= (optionally =backend-fb=) on a no-X kiosk
+  image. Skia/femtovg remain the desktop-GPU choices. Choosing the
+  default features in decision 6 is what makes this fallback work;
+  =backend-linuxkms= stays deferred to a real kiosk target.
