@@ -374,4 +374,108 @@ mod tests {
         let repo = open_memory().await.expect("open");
         assert_eq!(repo.pool.size(), 1);
     }
+
+    /// A live board entity with a deterministic id (ids burned from one
+    /// shared counter so the fixture boards can never collide).
+    fn board(id: BoardId, title: &str) -> taskboard_domain::Board {
+        taskboard_domain::Board {
+            id,
+            remote: None,
+            title: title.into(),
+            color: taskboard_domain::Color::new("0000ff"),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks {
+                title: taskboard_domain::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        }
+    }
+
+    /// F5-02 (#241): concurrent operations share one `:memory:` dataset —
+    /// the single-connection pool stance. A held connection pins the
+    /// seeded database; a non-pinning pool would be forced to open fresh
+    /// (empty) `:memory:` databases for the probes, and no probe can then
+    /// ever observe base + its own marker together. The size poll fires
+    /// only in that mutant world; expiry is the pinned world's normal
+    /// path (bounded, not a fixed sleep).
+    #[tokio::test]
+    async fn concurrent_operations_share_one_memory_dataset() {
+        use std::collections::BTreeSet;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use taskboard_domain::idgen::IdGenerator as _;
+        use taskboard_domain::persistence::PersistenceAction;
+        use taskboard_domain::test_support::CountingIds;
+
+        let repo = Arc::new(open_memory().await.expect("open"));
+        let ids = CountingIds::new();
+        let base = board(ids.new_board_id(), "base");
+        let base_id = base.id;
+        repo.apply(vec![PersistenceAction::UpsertBoard(base)])
+            .await
+            .expect("base seeded");
+        assert_eq!(
+            repo.load().await.expect("load").boards.len(),
+            1,
+            "sanity: the base board is loaded back"
+        );
+        assert_eq!(repo.pool.size(), 1, "sanity: exactly one connection");
+
+        // Holder: pins the seeded connection for the whole probe phase.
+        let held = repo.pool.acquire().await.expect("acquire");
+
+        let markers: Vec<taskboard_domain::Board> = (1..=4)
+            .map(|n| board(ids.new_board_id(), &format!("marker {n}")))
+            .collect();
+        let marker_ids: BTreeSet<BoardId> = markers.iter().map(|b| b.id).collect();
+        let mut probes = Vec::new();
+        for marker in markers {
+            let repo = Arc::clone(&repo);
+            let marker_id = marker.id;
+            probes.push(tokio::spawn(async move {
+                repo.apply(vec![PersistenceAction::UpsertBoard(marker)])
+                    .await
+                    .expect("marker applied");
+                let loaded = repo.load().await.expect("load");
+                loaded.boards.contains_key(&base_id) && loaded.boards.contains_key(&marker_id)
+            }));
+        }
+
+        // Fires only if extra connections were opened (the mutant world).
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            while repo.pool.size() <= 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        drop(held); // release: queued probes proceed serially
+
+        for probe in probes {
+            let saw_base_and_marker = tokio::time::timeout(Duration::from_secs(60), probe)
+                .await
+                .expect("probe joins within the deadline")
+                .expect("probe task survives");
+            assert!(
+                saw_base_and_marker,
+                "every operation must observe the one shared dataset"
+            );
+        }
+
+        let terminal = repo.load().await.expect("final load");
+        let expected: BTreeSet<BoardId> = marker_ids
+            .into_iter()
+            .chain(std::iter::once(base_id))
+            .collect();
+        assert_eq!(
+            terminal
+                .boards
+                .keys()
+                .copied()
+                .collect::<BTreeSet<BoardId>>(),
+            expected,
+            "the terminal dataset holds the base and every marker exactly once"
+        );
+    }
 }
