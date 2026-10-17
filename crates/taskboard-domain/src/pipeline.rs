@@ -3449,4 +3449,102 @@ mod tests {
         assert_eq!(merged.clocks.title, ts(BASE + 120));
         assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
     }
+
+    // ---- F3-10: the board arms of the R9 decision table ---------------
+
+    #[test]
+    fn remote_missing_board_push_tombstones_the_bound_board() {
+        // Twin of `remote_missing_stack_and_label_ops_finalize_tombstones`
+        // for the board arm: a 404 on the board rename push finalizes the
+        // board itself (tombstone_board clears the binding); cascading to
+        // the board's children belongs to the sync path, not to the push.
+        let state = base_state(bound_task(1));
+        let board_id = *state.boards.keys().next().unwrap();
+        let stack_id = *state.stacks.keys().next().unwrap();
+        let task_id = task_by_card(&state, 1).id;
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(70));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::RenameBoard(board_id),
+            queued_at: ts(BASE),
+        };
+
+        let app = apply_push_report(
+            &state,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::RemoteMissing,
+            }],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+
+        let merged_board = &app.0.boards[&board_id];
+        assert!(merged_board.deleted, "the board arm tombstones");
+        assert!(merged_board.remote.is_none(), "binding cleared");
+        assert!(merged_board.remote_seen.is_none());
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::CompleteOp(id) if *id == op_id)),
+            "the op completes"
+        );
+        assert!(
+            !app.0.stacks[&stack_id].deleted && !app.0.tasks[&task_id].deleted,
+            "R9c finalizes the entity itself; no push-path cascade"
+        );
+        assert!(
+            !app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(_))),
+            "no op is cancelled by the push path"
+        );
+    }
+
+    #[test]
+    fn board_rename_push_echo_is_adopted() {
+        // Twin of `create_stack_push_echo_binds_remote` for the board arm:
+        // the rename echo is adopted unconditionally with the max clock.
+        let state = base_state(bound_task(1));
+        let board_id = *state.boards.keys().next().unwrap();
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(71));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::RenameBoard(board_id),
+            queued_at: ts(BASE),
+        };
+        let echo = remote_board(REMOTE_BOARD_NUM, BASE + 300);
+        let expected_ref = echo.id;
+
+        let app = apply_push_report(
+            &state,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Board(echo)),
+                },
+            }],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let merged = &app.0.boards[&board_id];
+        assert_eq!(merged.title, "board 77", "echo adopted unconditionally");
+        assert_eq!(
+            merged.clocks.title,
+            ts(BASE + 300),
+            "clock is max(local, echo stamp)"
+        );
+        assert_eq!(merged.remote, Some(expected_ref));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::CompleteOp(id) if *id == op_id)),
+        );
+    }
 }
