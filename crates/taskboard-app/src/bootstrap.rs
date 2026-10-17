@@ -558,6 +558,16 @@ pub async fn bootstrap(
                 poll = config.sync.poll_interval_secs,
                 "resolved configuration (backend: nextcloud)"
             );
+            // F12-03: one cleartext warn per process — bootstrap runs
+            // once, so every front end that learns the URL from config
+            // (one-shot, REPL, daemon) is warned exactly once.
+            if crate::config::url_is_cleartext(&server) {
+                tracing::warn!(
+                    server = %server,
+                    "server_url uses cleartext http; the app password \
+                     travels unencrypted — prefer https"
+                );
+            }
             Some(DeckClient::new(
                 &server,
                 &username,

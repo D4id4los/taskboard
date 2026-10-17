@@ -427,6 +427,10 @@ pub struct ConfigPathView {
 
 /// The `connect` (and deprecated `login` alias) receipt. No secret ever
 /// appears in any projection.
+// The bools are independent, documented receipt facts (what the
+// ceremony did, what transport it used) — a state machine or enums
+// would obscure the JSON shape the CLI contract pins.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ConnectReceipt {
     /// The verified server URL.
@@ -454,6 +458,10 @@ pub struct ConnectReceipt {
     /// when none was consulted (the pure-local shape).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daemon_connector: Option<DaemonAttachState>,
+    /// The server URL's scheme is plain `http` — the app password
+    /// travels unencrypted (F12-03). A plain bool: every receipt knows
+    /// its URL, unlike the front-end-dependent fields beside it.
+    pub cleartext_transport: bool,
 }
 
 /// The `boards select` receipt: the adopted board summary plus the sync

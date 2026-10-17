@@ -699,6 +699,16 @@ impl AppConfig {
     }
 }
 
+/// F12-03 (#261): pure cleartext classifier — true iff the scheme is
+/// exactly `http`. Consulted at exactly two emission sites (the connect
+/// ceremony and bootstrap's nextcloud arm), so the warning is
+/// once-per-process by construction; never per request or per poll
+/// cycle. No loopback exemption (the flag is informational, not a gate).
+#[must_use]
+pub(crate) fn url_is_cleartext(raw: &str) -> bool {
+    matches!(raw.split_once("://"), Some(("http", _)))
+}
+
 /// The provider chain (binding, plan §4.1).
 fn figment(path: Option<PathBuf>) -> Figment {
     let path = path.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
@@ -823,6 +833,17 @@ mod tests {
                 "{raw} must be rejected"
             );
         }
+    }
+
+    /// F12-03 (#261): the cleartext classifier is pure and
+    /// scheme-only — the warning trigger is literally the `http://`
+    /// scheme, no host classification.
+    #[test]
+    fn url_is_cleartext_classifies_by_scheme_only() {
+        assert!(super::url_is_cleartext("http://cloud.example.com"));
+        assert!(!super::url_is_cleartext("https://cloud.example.com"));
+        assert!(!super::url_is_cleartext("ftp://x"));
+        assert!(!super::url_is_cleartext("not a url"));
     }
 
     #[test]
