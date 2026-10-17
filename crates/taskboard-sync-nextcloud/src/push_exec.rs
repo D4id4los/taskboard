@@ -1586,6 +1586,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_completes_subsumed_label_ops_by_resolvability() {
+        // One outcome per op, no duplicates (#310): the subsumed label
+        // ops are decided by resolvability alone — label 6 is bound to
+        // remote 3 (applied by the delta's single `assignLabel(3)`),
+        // label 9 has no binding and must surface its `Rejected
+        // { LocalData }` instead of being shadowed by a synthetic
+        // `Applied`.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/assignLabel",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+        let shape = CardShape {
+            title: "edited".into(),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            order: 3,
+            archived: false,
+            labels: std::collections::BTreeSet::from([label_id(6), label_id(9)]),
+        };
+        let outbox = [
+            op(101, LocalOp::AssignLabel(task_id(10), label_id(6))),
+            op(102, LocalOp::AssignLabel(task_id(10), label_id(9))),
+        ];
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: shape,
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[101, 102],
+                ),
+                &outbox,
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert_eq!(outcomes.len(), 3, "one outcome per op, no duplicates");
+        assert_eq!(outcomes[0].op, taskboard_domain::OpId(uid(100)));
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Applied { echo: Some(_) }
+        ));
+        assert_eq!(outcomes[1].op, taskboard_domain::OpId(uid(101)));
+        assert!(matches!(
+            outcomes[1].result,
+            PushResult::Applied { echo: None }
+        ));
+        assert_eq!(outcomes[2].op, taskboard_domain::OpId(uid(102)));
+        assert!(
+            matches!(
+                outcomes[2].result,
+                PushResult::Rejected {
+                    kind: taskboard_domain::SyncErrorKind::LocalData
+                }
+            ),
+            "the unresolvable label op must not be shadowed"
+        );
+    }
+
+    #[tokio::test]
     async fn move_same_stack_different_order_sends_the_reorder() {
         // Card sits at stack 7 / order 3; the local intent is the *same*
         // stack at order 9. The fast path must not fire: exactly one
