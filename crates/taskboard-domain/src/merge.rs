@@ -807,6 +807,7 @@ pub fn tombstone_label(local: &Label, observed_at: DateTime<Utc>) -> Label {
 mod tests {
     use super::*;
     use crate::merge_testutil::*;
+    use crate::test_support;
     use proptest::prelude::*;
     use std::collections::BTreeSet;
 
@@ -1276,6 +1277,44 @@ mod tests {
             // Idempotence: merging again with the same remote changes nothing.
             let again = merge_task(&merged, &remote, &ctx);
             prop_assert_eq!(again, merged);
+        }
+
+        #[test]
+        fn merge_clocks_are_total_monotone_and_idempotent_at_extremes(
+            local_secs in test_support::adversarial_timestamp_seconds(),
+            remote_secs in test_support::adversarial_timestamp_seconds(),
+            card in 1_u64..100,
+        ) {
+            // #303: the bounded props above never approach chrono's
+            // representable bounds; the same three properties re-asserted
+            // where plain `+` would panic.
+            let mut local = bound_task(card);
+            local.title = "local title".into();
+            local.clocks = clocks_at(local_secs);
+            let mut remote = remote_task(1, card, remote_secs);
+            remote.title = "remote title".into();
+
+            let ctx = RemoteIndex::default();
+            let merged = merge_task(&local, &remote, &ctx);
+
+            prop_assert!(merged.clocks.title >= local.clocks.title);
+            prop_assert!(merged.clocks.description >= local.clocks.description);
+            prop_assert!(merged.clocks.duedate >= local.clocks.duedate);
+            prop_assert!(merged.clocks.done >= local.clocks.done);
+            prop_assert!(merged.clocks.position >= local.clocks.position);
+            prop_assert!(merged.clocks.labels >= local.clocks.labels);
+            prop_assert!(merged.clocks.archived >= local.clocks.archived);
+            prop_assert!(merged.clocks.deleted >= local.clocks.deleted);
+
+            let expected_title = if remote_secs > local_secs {
+                "remote title"
+            } else {
+                "local title"
+            };
+            prop_assert_eq!(merged.title.clone(), expected_title, "strict-newer-wins tie-break");
+
+            let again = merge_task(&merged, &remote, &ctx);
+            prop_assert_eq!(again, merged, "idempotent at the extremes");
         }
     }
 }

@@ -116,6 +116,67 @@ pub fn timestamp_strategy() -> impl Strategy<Value = DateTime<Utc>> {
     (31_536_000_i64..=4_102_444_800_i64).prop_map(|secs| Utc.timestamp_opt(secs, 0).unwrap())
 }
 
+/// Hard-coded UTC instants of the 2026 DST transitions (EU, US, AU) plus
+/// their ±1 s neighbors. The crate is UTC-only by design and no timezone
+/// dependency is added: the battery's meaning is that these instants are
+/// *ordinary instants* to the timestamp arithmetic — the zone-freeness is
+/// the pinned contract (issue #303).
+///
+/// # Panics
+///
+/// Panics only if chrono cannot represent the hard-coded 2026 instants —
+/// a programming error, not an input condition.
+#[must_use]
+pub fn dst_boundary_instants() -> Vec<DateTime<Utc>> {
+    let bases = [
+        (2026, 3, 29, 1, 0, 0),  // EU spring forward
+        (2026, 10, 25, 1, 0, 0), // EU fall back
+        (2026, 3, 8, 7, 0, 0),   // US spring forward
+        (2026, 11, 1, 6, 0, 0),  // US fall back
+        (2026, 4, 5, 16, 0, 0),  // AU exit
+        (2026, 10, 4, 16, 0, 0), // AU entry
+    ];
+    let one_second = chrono::TimeDelta::try_seconds(1).unwrap();
+    let mut instants = Vec::with_capacity(bases.len() * 3);
+    for &(year, month, day, hour, minute, second) in &bases {
+        let base = Utc
+            .with_ymd_and_hms(year, month, day, hour, minute, second)
+            .unwrap();
+        instants.push(base - one_second);
+        instants.push(base);
+        instants.push(base + one_second);
+    }
+    instants
+}
+
+/// Epoch seconds across adversarial ranges (#303): the ordinary bounded
+/// band, the seconds adjacent to chrono's own representable bounds
+/// (derived from the constants, so a chrono bump shifts the strategy
+/// with the types instead of panicking the strategy), and the
+/// DST-boundary battery.
+pub fn adversarial_timestamp_seconds() -> impl Strategy<Value = i64> {
+    let min_ts = DateTime::<Utc>::MIN_UTC.timestamp();
+    let max_ts = DateTime::<Utc>::MAX_UTC.timestamp();
+    let day = 86_400_i64;
+    prop_oneof![
+        4 => 31_536_000_i64..=4_102_444_800_i64,
+        2 => min_ts..=min_ts + day,
+        2 => max_ts - day..=max_ts,
+        2 => Just(
+            dst_boundary_instants()
+                .iter()
+                .map(DateTime::timestamp)
+                .collect::<Vec<_>>()
+        )
+        .prop_flat_map(proptest::sample::select),
+    ]
+}
+
+/// [`adversarial_timestamp_seconds`] as `DateTime<Utc>`.
+pub fn adversarial_timestamp_strategy() -> impl Strategy<Value = DateTime<Utc>> {
+    adversarial_timestamp_seconds().prop_map(|secs| Utc.timestamp_opt(secs, 0).unwrap())
+}
+
 macro_rules! id_strategy {
     ($fn_name:ident, $id_type:ty) => {
         /// A random local id (from a random 128-bit UUID).
