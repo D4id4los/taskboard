@@ -3547,4 +3547,159 @@ mod tests {
                 .any(|a| matches!(a, PersistenceAction::CompleteOp(id) if *id == op_id)),
         );
     }
+
+    // ---- F3-12: the apply_sync_report guard conjunction differentials -
+
+    #[test]
+    fn a_live_stack_merge_does_not_re_cascade_its_tasks() {
+        // The (false, false) arm of the newly-tombstoned detection: an
+        // ordinary changed-but-live stack merge must not enter the
+        // cascade list — its tasks stay live and their ops untouched.
+        let state = base_state(bound_task(1));
+        let stack_id = *state.stacks.keys().next().unwrap();
+        let task_id = task_by_card(&state, 1).id;
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(80));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateTask(task_id),
+            queued_at: ts(BASE),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        assert!(
+            !app.0.stacks[&stack_id].deleted,
+            "the live merge must not tombstone the stack"
+        );
+        assert!(
+            !app.0.tasks[&task_id].deleted,
+            "a live-stack merge must not cascade its tasks"
+        );
+        assert!(
+            !app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(_))),
+            "no op cancellation without a tombstone"
+        );
+    }
+
+    #[test]
+    fn a_standing_tombstone_keeps_its_pending_delete_queued() {
+        // The tombstone-stands arm of the R5 drop-window: the local
+        // tombstone is newer than the remote write, so nothing
+        // resurrects and the pre-read DeleteTask op stays queued to
+        // re-push (twin of
+        // `a_pre_read_delete_still_yields_to_a_newer_remote_write`).
+        let mut local = bound_task(1);
+        local.deleted = true;
+        local.clocks.deleted = ts(BASE + 300);
+        let state = base_state(local);
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(81));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::DeleteTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE),
+        };
+        // Newer than remote_seen (the merge runs) but older than the
+        // tombstone clock (the tombstone stands).
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 180)], BASE + 180);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let final_state = app_into_state(&app);
+        let merged = task_by_card(&final_state, 1);
+        assert!(merged.deleted, "the standing tombstone is not resurrected");
+        assert_eq!(
+            merged.remote,
+            Some(card_ref(1, 1)),
+            "R9c pre-push semantics keep the binding"
+        );
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 180)));
+        assert!(
+            !app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) | PersistenceAction::CompleteOp(id) if *id == op_id)),
+            "the delete op stays queued untouched"
+        );
+        assert_eq!(app.0.sync.pending_ops, 1);
+    }
+
+    #[test]
+    fn a_push_settled_op_verdict_survives_absence_cancellation() {
+        // First verdict wins: an op this cycle's push echo already
+        // settled must stay CompleteOp when the same task is then
+        // absence-tombstoned; only still-pending ops of the task are
+        // failed by R3.
+        let state = base_state(bound_task(1));
+        let task_id = task_by_card(&state, 1).id;
+        let echo_op_id = crate::outbox::OpId(uuid::Uuid::from_u128(82));
+        let pending_op_id = crate::outbox::OpId(uuid::Uuid::from_u128(83));
+        let outbox = [
+            crate::outbox::PendingOp {
+                op_id: echo_op_id,
+                op: LocalOp::UpdateTask(task_id),
+                queued_at: ts(BASE),
+            },
+            crate::outbox::PendingOp {
+                op_id: pending_op_id,
+                op: LocalOp::MoveTask(task_id),
+                queued_at: ts(BASE),
+            },
+        ];
+        let mut echo = remote_task(1, 1, BASE + 60);
+        echo.title = "echoed".into();
+        let snap = single_stack_snapshot(vec![], BASE + 60);
+
+        let app = apply_sync_report(
+            &state,
+            &outbox,
+            &snap,
+            &[PushOutcome {
+                op: echo_op_id,
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Task(echo)),
+                },
+            }],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 120),
+        );
+
+        let merged = &app.0.tasks[&task_id];
+        assert!(merged.deleted, "the absence tombstones the task");
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::CompleteOp(id) if *id == echo_op_id)),
+            "the pushed op keeps its first (complete) verdict"
+        );
+        assert!(
+            !app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == echo_op_id)),
+        );
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == pending_op_id)),
+            "the still-pending op of the tombstoned task is cancelled"
+        );
+    }
 }
