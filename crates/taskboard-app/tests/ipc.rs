@@ -899,3 +899,79 @@ async fn ip18_attach_refusals_are_typed_and_leave_the_daemon_untouched() {
     })
     .await;
 }
+
+/// Boots a standalone core the way the daemon lifecycle does: this
+/// scope keeps the daemon-side `Arc<App>` and a clone goes into
+/// `spawn_server` — the exact two-ref composition of `main.rs`.
+async fn served_with_core(
+    dir: &Path,
+    db_name: &str,
+) -> (
+    server::IpcServerHandle,
+    Arc<taskboard_app::bootstrap::App>,
+    PathBuf,
+) {
+    let db = dir.join(db_name);
+    let store: Arc<dyn CredentialStore> = Arc::new(EnvCredentialStore);
+    let app = Arc::new(
+        taskboard_app::bootstrap::bootstrap(
+            standalone_config(&db),
+            store.clone(),
+            Arc::new(taskboard_app::notifications::LogSink),
+        )
+        .await
+        .expect("core boots"),
+    );
+    let session = Arc::new(BasicSession {
+        config: app.config.clone(),
+        store,
+        config_path: None,
+    });
+    let handle = server::spawn_server(app.clone(), session, &db)
+        .await
+        .expect("server binds");
+    (handle, app, db)
+}
+
+/// IP19 — the F9-01 regression: a stray second strong ref to the core
+/// held across the server drain must turn the daemon-shutdown tail into
+/// a typed failure, not a panic (the old `expect` died here).
+#[tokio::test]
+async fn ip19_a_stray_second_ref_across_join_is_a_typed_shutdown_failure() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, app, _db) = served_with_core(dir.path(), "ip19.db").await;
+        // The "future bug" stray: a clone a mis-planted feature would
+        // leave behind, alive across the entire shutdown tail.
+        let stray = app.clone();
+        handle.join(DRAIN_BUDGET).await;
+        let Err(shared) = taskboard_app::bootstrap::shutdown_from_arc(app).await else {
+            panic!("a shared core must fail typed, not shut down");
+        };
+        // Advisory count, never exact: a floor only (AGENTS §5).
+        assert!(shared.strong_refs >= 2);
+        drop(stray);
+    })
+    .await;
+}
+
+/// IP20 — the happy-path seam: with no stray ref, the daemon's own
+/// dispatcher ref is fully released by a real `join`, so the tail takes
+/// exclusive ownership and the graceful sequence completes normally.
+#[tokio::test]
+async fn ip20_the_shutdown_tail_takes_exclusive_ownership_after_the_drain() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, app, _db) = served_with_core(dir.path(), "ip20.db").await;
+        handle.join(DRAIN_BUDGET).await;
+        let outcome = taskboard_app::bootstrap::shutdown_from_arc(app).await;
+        // Standalone idle boot: no sync actor to abort.
+        assert_eq!(
+            outcome,
+            Ok(taskboard_app::bootstrap::ShutdownOutcome {
+                actor_aborted: false
+            })
+        );
+    })
+    .await;
+}

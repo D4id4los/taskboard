@@ -394,6 +394,19 @@ pub struct ShutdownOutcome {
     pub actor_aborted: bool,
 }
 
+/// The daemon-shutdown tail found a second strong reference to the
+/// core: the owned graceful sequence cannot run. The two
+/// ownership-free salvage steps (engine flush + `Shutdown` broadcast)
+/// have already been performed when this is returned.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("the core is still shared at daemon shutdown")]
+pub struct CoreStillShared {
+    /// Advisory strong-refcount observed at detection — evidence for
+    /// the log line, not a lock: by the time it is read, other
+    /// references may already have dropped.
+    pub strong_refs: usize,
+}
+
 /// Outcome of [`App::detach_connector`] (WI-H).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetachOutcome {
@@ -713,14 +726,32 @@ pub(crate) async fn wait_for_boot_pull(app: &App, timeout: Duration) {
 /// reference, hand the core's exclusive ownership to the graceful
 /// shutdown sequence.
 ///
-/// # Panics
+/// If some other strong reference to the core still exists, the owned
+/// sequence cannot run (it is written as a one-shot destructuring whose
+/// actor-join ordering depends on `App` being the *last* holder of the
+/// reports sender). The salvage then performs exactly the two
+/// ownership-free steps — an engine flush and the `Shutdown` broadcast —
+/// and the failure surfaces typed; actor joins and the storage drain
+/// are skipped (a stray ref pins the reports sender, so the engine join
+/// could only stall into its bounded abort).
 ///
-/// If any other strong reference to the core outlives the server
-/// drain — unreachable while the daemon wires exactly one `Arc<App>`
-/// into `spawn_server`.
-pub async fn shutdown_from_arc(app: Arc<App>) -> ShutdownOutcome {
-    let app = Arc::try_unwrap(app).expect("the ipc server released the core");
-    app.shutdown().await
+/// # Errors
+///
+/// [`CoreStillShared`] when the refcount exceeds one at the tail: the
+/// daemon reports failure through the regular runtime-error path
+/// instead of the process dying to a panic.
+pub async fn shutdown_from_arc(app: Arc<App>) -> Result<ShutdownOutcome, CoreStillShared> {
+    match Arc::try_unwrap(app) {
+        Ok(app) => Ok(app.shutdown().await),
+        Err(app) => {
+            let strong_refs = Arc::strong_count(&app);
+            tracing::error!(strong_refs, "core still shared at daemon shutdown");
+            app.engine.flush().await;
+            // No live receivers is fine, as in the owned sequence.
+            let _ = app.system.send(SystemEvent::Shutdown);
+            Err(CoreStillShared { strong_refs })
+        }
+    }
 }
 
 /// Daemon lifecycle: await `ctrl_c` (and SIGTERM on unix), then run the

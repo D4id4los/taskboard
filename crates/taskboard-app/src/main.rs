@@ -326,6 +326,9 @@ async fn daemon_lifecycle(
             std::process::exit(130);
         }
     };
+    // A shared core at the tail is a typed runtime failure (the salvage
+    // flush+broadcast already ran) — exit 1 via eyre, never a panic.
+    let outcome = outcome?;
     if outcome.actor_aborted {
         tracing::warn!("sync actor did not stop in time and was aborted");
     }
