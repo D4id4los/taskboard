@@ -12,12 +12,12 @@
 //! remotely) rebinds and pushes at the fresh location instead of being
 //! misread as `RemoteMissing` (issue #258).
 
+#[cfg(test)]
+use taskboard_domain::RemoteIndex;
 use taskboard_domain::{
     CardShape, EntityTables, LocalOp, MaterializedOp, PendingOp, PushGroup, PushOutcome,
-    PushResult, RemoteCardRef, RemoteEcho, RemoteLabelId, RemoteStackId,
+    PushResult, RemoteBoardId, RemoteCardRef, RemoteEcho, RemoteLabelId, RemoteStackId,
 };
-#[cfg(test)]
-use taskboard_domain::{RemoteBoardId, RemoteIndex};
 
 use crate::client::DeckClient;
 use crate::color::DeckColor;
@@ -25,26 +25,16 @@ use crate::error::DeckError;
 use crate::mapping::{self, PushCtx};
 use crate::model::{Card, StackFilter};
 
+mod outcomes;
 mod overlay;
+
+pub use outcomes::GroupOutcome;
 
 pub use overlay::BindingOverlay;
 
-/// What one group's execution produced: the outcomes to report, or the
-/// transport failure that aborted the cycle.
-#[derive(Debug, Clone, PartialEq)]
-pub enum GroupOutcome {
-    /// Outcomes for (at least) the group's primary op. An empty vec means
-    /// the whole group was deferred to the next cycle (no outcomes).
-    Outcomes(Vec<PushOutcome>),
-    /// A transport-class failure: stop pushing; nothing is reported for
-    /// this group or anything after it (decision 8). The typed error is
-    /// logged at the abort site (`DeckError` is not `Clone`). `landed`
-    /// carries the outcomes for writes that *did* complete before the
-    /// transport failure — most importantly a create whose post-create
-    /// sub-call failed: without the evidence the engine would re-POST the
-    /// create next cycle, and Deck has no idempotency keys.
-    Aborted { landed: Vec<PushOutcome> },
-}
+use self::outcomes::{
+    all_applied, cannot_ride_a_task_group, classify, primary_outcome, reject_kind, reject_primary,
+};
 
 /// One push cycle's executor over the injected client.
 #[derive(Debug)]
@@ -79,7 +69,7 @@ impl<'a> PushExecutor<'a> {
     ) -> GroupOutcome {
         tracing::trace!(?group, "executing push group");
         match group.materialized.clone() {
-            MaterializedOp::Noop => GroupOutcome::Outcomes(Self::all_applied(group)),
+            MaterializedOp::Noop => GroupOutcome::Outcomes(all_applied(group)),
             MaterializedOp::CreateTask {
                 task,
                 stack,
@@ -93,12 +83,12 @@ impl<'a> PushExecutor<'a> {
             }
             MaterializedOp::MoveTask { task, to } => self.move_task(group, task, to).await,
             MaterializedOp::DeleteTask { task } => match self.overlay.card_of(task) {
-                None => GroupOutcome::Outcomes(Self::all_applied(group)),
+                None => GroupOutcome::Outcomes(all_applied(group)),
                 Some(card_ref) => self.delete_card(group, card_ref).await,
             },
             MaterializedOp::CreateStack { stack } => {
                 let Some(row) = tables.stacks.get(&stack) else {
-                    return GroupOutcome::Outcomes(Self::all_applied(group));
+                    return GroupOutcome::Outcomes(all_applied(group));
                 };
                 match self
                     .client
@@ -109,14 +99,14 @@ impl<'a> PushExecutor<'a> {
                         self.overlay
                             .stack_by_local
                             .insert(stack, RemoteStackId(created.id));
-                        GroupOutcome::Outcomes(Self::primary_outcome(
+                        GroupOutcome::Outcomes(primary_outcome(
                             group,
                             PushResult::Applied {
                                 echo: Some(mapping::map_stack_echo(&created, self.overlay.board)),
                             },
                         ))
                     }
-                    Err(err) => Self::classify(
+                    Err(err) => classify(
                         group,
                         &err,
                         PushCtx {
@@ -128,7 +118,7 @@ impl<'a> PushExecutor<'a> {
             }
             MaterializedOp::RenameBoard { board } => {
                 let Some(row) = tables.boards.get(&board) else {
-                    return GroupOutcome::Outcomes(Self::all_applied(group));
+                    return GroupOutcome::Outcomes(all_applied(group));
                 };
                 // Full-send like every Deck write; the lenient stored
                 // color falls back (the `publish` precedent) because a
@@ -139,7 +129,7 @@ impl<'a> PushExecutor<'a> {
                     .update_board(self.overlay.board.get(), &changes)
                     .await
                 {
-                    Ok(updated) => GroupOutcome::Outcomes(Self::primary_outcome(
+                    Ok(updated) => GroupOutcome::Outcomes(primary_outcome(
                         group,
                         PushResult::Applied {
                             echo: Some(taskboard_domain::RemoteEcho::Board(mapping::map_board(
@@ -147,7 +137,7 @@ impl<'a> PushExecutor<'a> {
                             ))),
                         },
                     )),
-                    Err(err) => Self::classify(
+                    Err(err) => classify(
                         group,
                         &err,
                         PushCtx {
@@ -162,10 +152,10 @@ impl<'a> PushExecutor<'a> {
             // arm serves both materializations.
             MaterializedOp::RenameStack { stack } | MaterializedOp::MoveStack { stack } => {
                 let Some(stack_num) = self.overlay.stack_by_local.get(&stack).copied() else {
-                    return Self::reject_primary(group);
+                    return reject_primary(group);
                 };
                 let Some(row) = tables.stacks.get(&stack) else {
-                    return GroupOutcome::Outcomes(Self::all_applied(group));
+                    return GroupOutcome::Outcomes(all_applied(group));
                 };
                 match self
                     .client
@@ -176,13 +166,13 @@ impl<'a> PushExecutor<'a> {
                     )
                     .await
                 {
-                    Ok(updated) => GroupOutcome::Outcomes(Self::primary_outcome(
+                    Ok(updated) => GroupOutcome::Outcomes(primary_outcome(
                         group,
                         PushResult::Applied {
                             echo: Some(mapping::map_stack_echo(&updated, self.overlay.board)),
                         },
                     )),
-                    Err(err) => Self::classify(
+                    Err(err) => classify(
                         group,
                         &err,
                         PushCtx {
@@ -194,19 +184,19 @@ impl<'a> PushExecutor<'a> {
             }
             MaterializedOp::DeleteStack { stack } => {
                 match self.overlay.stack_by_local.get(&stack).copied() {
-                    None => GroupOutcome::Outcomes(Self::all_applied(group)),
+                    None => GroupOutcome::Outcomes(all_applied(group)),
                     Some(stack_num) => match self
                         .client
                         .delete_stack(self.overlay.board.get(), stack_num.get())
                         .await
                     {
-                        Ok(deleted) => GroupOutcome::Outcomes(Self::primary_outcome(
+                        Ok(deleted) => GroupOutcome::Outcomes(primary_outcome(
                             group,
                             PushResult::Applied {
                                 echo: Some(mapping::map_stack_echo(&deleted, self.overlay.board)),
                             },
                         )),
-                        Err(err) => Self::classify(
+                        Err(err) => classify(
                             group,
                             &err,
                             PushCtx {
@@ -219,10 +209,10 @@ impl<'a> PushExecutor<'a> {
             }
             MaterializedOp::CreateLabel { label } => {
                 let Some(row) = tables.labels.get(&label) else {
-                    return GroupOutcome::Outcomes(Self::all_applied(group));
+                    return GroupOutcome::Outcomes(all_applied(group));
                 };
                 let Ok(color) = DeckColor::from_hex(row.color.as_str()) else {
-                    return Self::reject_kind(
+                    return reject_kind(
                         group,
                         PushResult::Rejected {
                             kind: taskboard_domain::SyncErrorKind::BadRequest,
@@ -238,14 +228,14 @@ impl<'a> PushExecutor<'a> {
                         self.overlay
                             .label_by_local
                             .insert(label, RemoteLabelId(created.id));
-                        GroupOutcome::Outcomes(Self::primary_outcome(
+                        GroupOutcome::Outcomes(primary_outcome(
                             group,
                             PushResult::Applied {
                                 echo: Some(mapping::map_label_echo(&created, self.overlay.board)),
                             },
                         ))
                     }
-                    Err(err) => Self::classify(
+                    Err(err) => classify(
                         group,
                         &err,
                         PushCtx {
@@ -257,13 +247,13 @@ impl<'a> PushExecutor<'a> {
             }
             MaterializedOp::UpdateLabel { label } => {
                 let Some(label_num) = self.overlay.label_by_local.get(&label).copied() else {
-                    return Self::reject_primary(group);
+                    return reject_primary(group);
                 };
                 let Some(row) = tables.labels.get(&label) else {
-                    return GroupOutcome::Outcomes(Self::all_applied(group));
+                    return GroupOutcome::Outcomes(all_applied(group));
                 };
                 let Some(changes) = mapping::label_changes_from(row) else {
-                    return Self::reject_kind(
+                    return reject_kind(
                         group,
                         PushResult::Rejected {
                             kind: taskboard_domain::SyncErrorKind::BadRequest,
@@ -275,13 +265,13 @@ impl<'a> PushExecutor<'a> {
                     .update_label(self.overlay.board.get(), label_num.get(), &changes)
                     .await
                 {
-                    Ok(updated) => GroupOutcome::Outcomes(Self::primary_outcome(
+                    Ok(updated) => GroupOutcome::Outcomes(primary_outcome(
                         group,
                         PushResult::Applied {
                             echo: Some(mapping::map_label_echo(&updated, self.overlay.board)),
                         },
                     )),
-                    Err(err) => Self::classify(
+                    Err(err) => classify(
                         group,
                         &err,
                         PushCtx {
@@ -293,19 +283,19 @@ impl<'a> PushExecutor<'a> {
             }
             MaterializedOp::DeleteLabel { label } => {
                 match self.overlay.label_by_local.get(&label).copied() {
-                    None => GroupOutcome::Outcomes(Self::all_applied(group)),
+                    None => GroupOutcome::Outcomes(all_applied(group)),
                     Some(label_num) => match self
                         .client
                         .delete_label(self.overlay.board.get(), label_num.get())
                         .await
                     {
-                        Ok(deleted) => GroupOutcome::Outcomes(Self::primary_outcome(
+                        Ok(deleted) => GroupOutcome::Outcomes(primary_outcome(
                             group,
                             PushResult::Applied {
                                 echo: Some(mapping::map_label_echo(&deleted, self.overlay.board)),
                             },
                         )),
-                        Err(err) => Self::classify(
+                        Err(err) => classify(
                             group,
                             &err,
                             PushCtx {
@@ -333,7 +323,7 @@ impl<'a> PushExecutor<'a> {
         outbox: &[PendingOp],
     ) -> GroupOutcome {
         let Some(stack_num) = self.overlay.stack_by_local.get(&stack).copied() else {
-            return Self::reject_primary(group);
+            return reject_primary(group);
         };
         let created = match self
             .client
@@ -346,7 +336,7 @@ impl<'a> PushExecutor<'a> {
         {
             Ok(created) => created,
             Err(err) => {
-                return Self::classify(
+                return classify(
                     group,
                     &err,
                     PushCtx {
@@ -374,7 +364,7 @@ impl<'a> PushExecutor<'a> {
             let Some(op) = outbox.iter().find(|entry| entry.op_id == *op_id) else {
                 continue;
             };
-            if Self::cannot_ride_a_task_group(&op.op) {
+            if cannot_ride_a_task_group(&op.op) {
                 continue;
             }
             match op.op {
@@ -504,12 +494,12 @@ impl<'a> PushExecutor<'a> {
             Ok(fetched) => return Ok((card_ref, fetched)),
             // Stale binding or a genuine deletion — resolve which.
             Err(DeckError::NotFound) => {}
-            Err(err) => return Err(Self::classify(group, &err, ctx)),
+            Err(err) => return Err(classify(group, &err, ctx)),
         }
         for filter in [StackFilter::Active, StackFilter::Archived] {
             let stacks = match self.client.stacks(card_ref.board.get(), filter).await {
                 Ok(stacks) => stacks,
-                Err(err) => return Err(Self::classify(group, &err, ctx)),
+                Err(err) => return Err(classify(group, &err, ctx)),
             };
             let Some(fresh_stack) = stacks
                 .into_iter()
@@ -541,10 +531,10 @@ impl<'a> PushExecutor<'a> {
                 .await
             {
                 Ok(fetched) => Ok((fresh_ref, fetched)),
-                Err(err) => Err(Self::classify(group, &err, ctx)),
+                Err(err) => Err(classify(group, &err, ctx)),
             };
         }
-        Err(Self::classify(group, &DeckError::NotFound, ctx))
+        Err(classify(group, &DeckError::NotFound, ctx))
     }
 
     /// Field PUT built from the fetched card (fetch-before-write),
@@ -559,7 +549,7 @@ impl<'a> PushExecutor<'a> {
         outbox: &[PendingOp],
     ) -> GroupOutcome {
         let Some(card_ref) = self.overlay.card_of(task) else {
-            return Self::reject_primary(group);
+            return reject_primary(group);
         };
         let (card_ref, fetched) = match self.fetch_card_for_write(group, task, card_ref).await {
             Ok(pair) => pair,
@@ -618,7 +608,7 @@ impl<'a> PushExecutor<'a> {
             // A 2xx write whose echo failed to decode still landed.
             Err(DeckError::Envelope(_)) => fetched.clone(),
             Err(err) => {
-                return Self::classify(
+                return classify(
                     group,
                     &err,
                     PushCtx {
@@ -694,7 +684,7 @@ impl<'a> PushExecutor<'a> {
             let Some(op) = outbox.iter().find(|entry| &entry.op_id == op_id) else {
                 continue;
             };
-            if Self::cannot_ride_a_task_group(&op.op) {
+            if cannot_ride_a_task_group(&op.op) {
                 continue;
             }
             match op.op {
@@ -734,10 +724,10 @@ impl<'a> PushExecutor<'a> {
         to: (taskboard_domain::StackId, i64),
     ) -> GroupOutcome {
         let Some(card_ref) = self.overlay.card_of(task) else {
-            return Self::reject_primary(group);
+            return reject_primary(group);
         };
         let Some(target_stack) = self.overlay.stack_by_local.get(&to.0).copied() else {
-            return Self::reject_primary(group);
+            return reject_primary(group);
         };
         let (_, fetched) = match self.fetch_card_for_write(group, task, card_ref).await {
             Ok(pair) => pair,
@@ -767,7 +757,7 @@ impl<'a> PushExecutor<'a> {
                 op: group.primary,
                 result: PushResult::Applied { echo: None },
             }]),
-            Err(err) => Self::classify(
+            Err(err) => classify(
                 group,
                 &err,
                 PushCtx {
@@ -788,7 +778,7 @@ impl<'a> PushExecutor<'a> {
             )
             .await
         {
-            Ok(deleted) => GroupOutcome::Outcomes(Self::primary_outcome(
+            Ok(deleted) => GroupOutcome::Outcomes(primary_outcome(
                 group,
                 PushResult::Applied {
                     echo: Some(RemoteEcho::Task(mapping::map_card(
@@ -797,7 +787,7 @@ impl<'a> PushExecutor<'a> {
                     ))),
                 },
             )),
-            Err(err) => Self::classify(
+            Err(err) => classify(
                 group,
                 &err,
                 PushCtx {
@@ -805,92 +795,6 @@ impl<'a> PushExecutor<'a> {
                     delete: true,
                 },
             ),
-        }
-    }
-
-    // ---- outcome assembly -------------------------------------------
-
-    /// A task group's subsumed bucket carries label, update and move ops
-    /// only (`plan_task_groups`); these op classes have no outcome to
-    /// report there and stay queued untouched.
-    fn cannot_ride_a_task_group(op: &LocalOp) -> bool {
-        matches!(
-            op,
-            LocalOp::CreateTask(_)
-                | LocalOp::DeleteTask(_)
-                | LocalOp::CreateStack(_)
-                | LocalOp::RenameStack(_)
-                | LocalOp::MoveStack(_)
-                | LocalOp::DeleteStack(_)
-                | LocalOp::CreateLabel(_)
-                | LocalOp::UpdateLabel(_)
-                | LocalOp::DeleteLabel(_)
-                | LocalOp::RenameBoard(_)
-        )
-    }
-
-    /// `Applied` for the primary, synthetic `Applied { echo: None }` for
-    /// every subsumed op (decision 6).
-    fn primary_outcome(group: &PushGroup, result: PushResult) -> Vec<PushOutcome> {
-        let mut outcomes = vec![PushOutcome {
-            op: group.primary,
-            result,
-        }];
-        outcomes.extend(group.subsumed.iter().map(|op| PushOutcome {
-            op: *op,
-            result: PushResult::Applied { echo: None },
-        }));
-        outcomes
-    }
-
-    /// Every member op completes synthetically (unbound-entity delete or
-    /// missing-row `Noop` group: the server never knew the entity).
-    fn all_applied(group: &PushGroup) -> Vec<PushOutcome> {
-        std::iter::once(group.primary)
-            .chain(group.subsumed.iter().copied())
-            .map(|op| PushOutcome {
-                op,
-                result: PushResult::Applied { echo: None },
-            })
-            .collect()
-    }
-
-    /// Unresolved dependency: `Rejected { LocalData }` for the primary
-    /// only; the subsumed ops stay untouched (queued for the next cycle).
-    fn reject_primary(group: &PushGroup) -> GroupOutcome {
-        GroupOutcome::Outcomes(vec![PushOutcome {
-            op: group.primary,
-            result: PushResult::Rejected {
-                kind: taskboard_domain::SyncErrorKind::LocalData,
-            },
-        }])
-    }
-
-    fn reject_kind(group: &PushGroup, result: PushResult) -> GroupOutcome {
-        GroupOutcome::Outcomes(vec![PushOutcome {
-            op: group.primary,
-            result,
-        }])
-    }
-
-    /// Applies the classification table. A *successful* classification
-    /// (`Applied`, e.g. the 2xx-but-undecodable-echo case) completes the
-    /// subsumed ops with the primary; a failure result (`Rejected` /
-    /// `RemoteMissing`) completes the primary only — the subsumed ops stay
-    /// queued with their sibling for the next cycle (decision 6). `None`
-    /// (transport class) aborts the cycle with the landed evidence.
-    fn classify(group: &PushGroup, err: &DeckError, ctx: PushCtx) -> GroupOutcome {
-        match mapping::classify_push(err, ctx) {
-            Some(result @ PushResult::Applied { .. }) => {
-                GroupOutcome::Outcomes(Self::primary_outcome(group, result))
-            }
-            Some(result) => GroupOutcome::Outcomes(vec![PushOutcome {
-                op: group.primary,
-                result,
-            }]),
-            // Transport class: the cycle aborts (decision 8) — no outcome
-            // for this group's writes (they did not land) or anything after.
-            None => GroupOutcome::Aborted { landed: Vec::new() },
         }
     }
 
@@ -915,7 +819,7 @@ impl<'a> PushExecutor<'a> {
         )
         .is_some()
         {
-            return GroupOutcome::Outcomes(Self::primary_outcome(
+            return GroupOutcome::Outcomes(primary_outcome(
                 group,
                 PushResult::Applied {
                     echo: Some(mapping::map_echo(updated, board)),
