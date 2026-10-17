@@ -57,3 +57,19 @@ pub enum DeckError {
     #[error("service unavailable")]
     Unavailable,
 }
+
+impl DeckError {
+    /// Whether this is a network-level retryable failure — the
+    /// `Transport` / `RateLimited` / `Unavailable` triple. The retry
+    /// loop and the push executor's abort checks key off this
+    /// membership. The `mapping.rs` classifiers deliberately do not:
+    /// their matches must stay compiler-exhaustive, so a fifth
+    /// retryable class edits here *and* is forced into both
+    /// classifiers' arms by the build.
+    pub(crate) fn is_transport(&self) -> bool {
+        matches!(
+            self,
+            Self::Transport(_) | Self::RateLimited { .. } | Self::Unavailable
+        )
+    }
+}

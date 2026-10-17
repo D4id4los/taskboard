@@ -1364,11 +1364,7 @@ impl DeckClient {
             };
             match outcome {
                 Ok(value) => return Ok(value),
-                Err(
-                    retryable @ (DeckError::RateLimited { .. }
-                    | DeckError::Unavailable
-                    | DeckError::Transport(_)),
-                ) => {
+                Err(retryable) if retryable.is_transport() => {
                     let Some(delay) = self.backoff.delay(retry_index) else {
                         return Err(retryable);
                     };
