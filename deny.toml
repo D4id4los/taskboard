@@ -100,7 +100,19 @@ yanked = "warn"
 # known) — pulled in transitively by the slint text stack (via
 # fontdb). No fixed version exists; revisit when slint moves off it.
 # Recorded as part of the chunk-1 dependency landing (D1/D3).
-ignore = ["RUSTSEC-2026-0192"]
+#
+# RUSTSEC-2026-0370/0371/0372: `zvariant`, `zbus_names` and
+# `zvariant_derive` are unmaintained as standalone crates (no
+# vulnerability known) — merged into `zbus` 6 as modules. The 5.x line
+# arrives transitively via slint → accesskit → atspi, so no safe
+# upgrade exists below that stack; revisit at the zbus-6 refresh
+# (#311).
+ignore = [
+    "RUSTSEC-2026-0192",
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+]
 
 [sources]
 unknown-registry = "deny"
