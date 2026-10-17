@@ -2,7 +2,7 @@
 name: Feature Request
 about: Suggest an idea or improvement for taskboard
 labels: ["enhancement"]
-title: "[feat]: "
+title: "backlog: "
 ---
 
 **Is your feature request related to a problem? Please describe.**
@@ -13,6 +13,12 @@ always frustrated when [...]".
 What you want to happen. If it touches architecture (state engine
 behaviour, channel topology, crate boundaries), link
 `docs/architecture.org` and note which boundaries are affected.
+
+**Originating artefact (if any)**
+If this idea came out of a plan, report, or audit, link the file under
+`.artifacts/` (a permalink is best). Deep context stays in that file —
+keep this issue a summary. If it came from a conversation, write
+"Chat/Context".
 
 **Describe alternatives you've considered**
 Any alternative solutions or features you've considered.
