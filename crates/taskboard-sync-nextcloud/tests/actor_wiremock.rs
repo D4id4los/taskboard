@@ -952,3 +952,156 @@ async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
     let ok = next_report(&mut actor).await;
     assert!(matches!(ok, SyncReport::Completed { .. }));
 }
+
+/// A15: a listed board whose *detail* answers a non-403/404 error (a hard
+/// 500) fails the whole cycle — `Failed { Server }`, no snapshot, hence no
+/// tombstone. A dead-server condition must never declare the network lost.
+#[tokio::test(start_paused = true)]
+async fn a15_detail_500_fails_the_cycle_without_a_tombstone() {
+    let server = start_server().await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(boards_json(false, &serde_json::json!([]))),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}"
+        )))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
+    let report = set_board_and_report(&mut actor).await;
+    assert!(
+        matches!(
+            report,
+            SyncReport::Failed {
+                kind: SyncErrorKind::Server,
+                ..
+            }
+        ),
+        "a hard detail 500 fails the cycle as Server"
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "the cycle stopped at the detail failure: listing + detail, no stacks reads"
+    );
+    assert!(
+        actor.system_rx.try_recv().is_err(),
+        "a dead server is not a lost network"
+    );
+}
+
+/// A16: a board still present in the (lagging) listing whose detail
+/// answers 403 is dead — the tombstone is synthesized from the listing
+/// entry and the cycle *completes*. The stacks endpoints answer healthy
+/// 200s (empty listings), so the 403 detail is the only death signal in
+/// the scenario.
+#[tokio::test(start_paused = true)]
+async fn a16_forbidden_detail_while_listed_synthesizes_the_tombstone() {
+    let server = start_server().await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(boards_json(false, &serde_json::json!([]))),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}"
+        )))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
+    let report = set_board_and_report(&mut actor).await;
+    let SyncReport::Completed { snapshot, .. } = report else {
+        panic!("expected a Completed report: the tombstone snapshot is valid");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    assert!(
+        snapshot.board.deleted_at.is_some(),
+        "the synthesized board carries the delete-wins tombstone"
+    );
+    assert!(snapshot.stacks.is_empty() && snapshot.tasks.is_empty());
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        4,
+        "listing, detail, and both stacks reads: the pull ran through the dead-board path"
+    );
+}
+
+/// A17: a 404 stacks listing on a *live* board (the detail answered) must
+/// propagate — the dead-board carve-out's `if dead_board` conjunct forbids
+/// carving it to an empty board, which would merge-tombstone a live
+/// board's whole task set.
+#[tokio::test(start_paused = true)]
+async fn a17_stacks_404_on_a_live_board_fails_the_cycle() {
+    let server = start_server().await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(boards_json(false, &serde_json::json!([]))),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(board_json(false, &serde_json::json!([]))),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"
+        )))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
+    let report = set_board_and_report(&mut actor).await;
+    assert!(
+        matches!(
+            report,
+            SyncReport::Failed {
+                kind: SyncErrorKind::Server,
+                ..
+            }
+        ),
+        "a read-side 404 on a live board fails the cycle, never completes empty"
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        3,
+        "listing, detail, active stacks — the archived read is never reached"
+    );
+    assert!(
+        actor.system_rx.try_recv().is_err(),
+        "a dead server is not a lost network"
+    );
+}
