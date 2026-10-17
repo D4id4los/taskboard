@@ -730,6 +730,36 @@ fn reqwest_host_ok(raw: &str) -> bool {
     !host.is_empty()
 }
 
+/// Atomically rewrites the config file at `path` with `contents`
+/// (overlay on connect, key strip on logout — the only two writers of
+/// this artifact): tmp sidecar in the same directory, then rename.
+/// The sidecar is created owner-only (F12-01; ADR 0012 — the
+/// `repl_history` idiom, never a process-global umask mutation) and
+/// the rename carries the mode onto the final file, so every rewrite
+/// re-establishes 0600 and a pre-hardening permissive config
+/// self-heals at the next ceremony.
+pub(crate) fn write_owner_only_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("taskboard-tmp");
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        std::io::Write::write_all(&mut file, contents.as_bytes())?;
+        file.sync_all().ok();
+    }
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

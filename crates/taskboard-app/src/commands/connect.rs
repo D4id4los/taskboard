@@ -489,18 +489,7 @@ fn write_config_overlay(
         doc["sync"]["backend"] = toml_edit::value("nextcloud");
     }
 
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("taskboard-tmp");
-    {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(doc.to_string().as_bytes())?;
-        file.sync_all().ok();
-    }
-    std::fs::rename(&tmp, path)
+    crate::config::write_owner_only_atomic(path, doc.to_string().as_str())
 }
 
 /// The hermetic input of the attach nudge's degradation mapping: the
@@ -605,6 +594,57 @@ fn deck_variant(err: &DeckError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{PromptReader as _, StdinPrompts, parse_confirm};
+
+    // -- owner-only config modes (F12-01) ------------------------------------
+
+    /// Asserts the mode bits recorded in the metadata view (never the
+    /// access-as-another-user view, which root would defeat).
+    #[cfg(unix)]
+    fn owner_mode_is(path: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .expect("config exists")
+            .permissions()
+            .mode()
+            & 0o777
+            == 0o600
+    }
+
+    /// F12-01 (#297): a config file written by the connect overlay is
+    /// owner read/write only (ADR 0012 — the file sits in the same
+    /// trust story as the db and lock beside it).
+    #[cfg(unix)]
+    #[test]
+    fn the_written_config_overlay_is_owner_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+
+        super::write_config_overlay(&config, "https://c.example.com", "alice", false)
+            .expect("overlay written");
+
+        assert!(owner_mode_is(&config), "the written config must be 0600");
+    }
+
+    /// F12-01 (#297): every overlay rewrite re-establishes owner-only
+    /// modes, so a pre-hardening (or otherwise loosened) config
+    /// self-heals at the next ceremony.
+    #[cfg(unix)]
+    #[test]
+    fn an_overlay_rewrite_tightens_a_preexisting_world_readable_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(&config, "[app]\nmode = \"desktop\"\n").expect("seed config");
+        let mut perms = std::fs::metadata(&config).expect("meta").permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&config, perms).expect("loosen");
+
+        super::write_config_overlay(&config, "https://c.example.com", "alice", false)
+            .expect("overlay written");
+
+        assert!(owner_mode_is(&config), "the rewrite must tighten to 0600");
+    }
 
     /// The confirm grammar's truth table: y/yes in any case consent;
     /// everything else (empty, n, garbage, whitespace-padded) declines.
