@@ -490,7 +490,7 @@ impl<'a> PushExecutor<'a> {
                 .await
         {
             tracing::warn!(error = %err, "post-create archive failed; the flag repairs on a later cycle");
-            if is_transport(&err) {
+            if err.is_transport() {
                 tracing::warn!(error = %err, "push aborted: transport failure");
                 // The create landed; report its evidence (see the
                 // assignLabel abort above).
@@ -506,7 +506,7 @@ impl<'a> PushExecutor<'a> {
                 .await
             {
                 tracing::warn!(error = %err, "post-create done stamp failed; it repairs on a later cycle");
-                if is_transport(&err) {
+                if err.is_transport() {
                     tracing::warn!(error = %err, "push aborted: transport failure");
                     return GroupOutcome::Aborted { landed: outcomes };
                 }
@@ -973,15 +973,6 @@ impl<'a> PushExecutor<'a> {
             None => GroupOutcome::Aborted { landed: Vec::new() },
         }
     }
-}
-
-/// Transport-classified: the cycle aborts (no outcome), matching the
-/// client's retry semantics ("network lost" = these after retries).
-pub(crate) fn is_transport(err: &DeckError) -> bool {
-    matches!(
-        err,
-        DeckError::Transport(_) | DeckError::RateLimited { .. } | DeckError::Unavailable
-    )
 }
 
 #[cfg(test)]
