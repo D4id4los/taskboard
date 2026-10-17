@@ -444,9 +444,17 @@ mod tests {
             sync_phase_from_columns("failed", Some("meteor")),
             Err(CodecError)
         );
-        // Dangling error kind on a non-failed phase.
+        // Dangling error kind on a non-failed phase (every guard arm).
         assert_eq!(
             sync_phase_from_columns("idle", Some("network")),
+            Err(CodecError)
+        );
+        assert_eq!(
+            sync_phase_from_columns("syncing", Some("auth")),
+            Err(CodecError)
+        );
+        assert_eq!(
+            sync_phase_from_columns("offline", Some("forbidden")),
             Err(CodecError)
         );
     }
