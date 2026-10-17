@@ -640,6 +640,9 @@ impl AppConfig {
             poll_interval: Duration::from_secs(self.sync.poll_interval_secs),
             backoff_initial: Duration::from_secs(self.sync.backoff_initial_secs),
             backoff_max: Duration::from_secs(self.sync.backoff_max_secs),
+            // Stateless: engine and actor read one wall source. A fresh
+            // Arc of the zero-sized clock is that same source.
+            clock: std::sync::Arc::new(taskboard_domain::SystemClock),
         }
     }
 

@@ -15,6 +15,10 @@ use taskboard_domain::{
 use taskboard_sync_nextcloud::{DeckClient, SyncActorConfig, spawn_sync_actor};
 use tokio::sync::{broadcast, mpsc};
 
+mod common;
+use common::FixedClock;
+use common::hermetic::{T, ts};
+
 /// A boardless engine view: every cycle's read succeeds and finds no
 /// bound board — commanded cycles report `NoBoard` without touching the
 /// network (the client's URI is a dark port on purpose).
@@ -39,6 +43,7 @@ async fn d1_detach_stops_the_actor_after_the_queued_cycle() {
         poll_interval: Duration::from_secs(3600),
         backoff_initial: Duration::from_secs(1),
         backoff_max: Duration::from_secs(1),
+        clock: Arc::new(FixedClock(ts(T + 1000))),
     };
     let join = spawn_sync_actor(
         client,

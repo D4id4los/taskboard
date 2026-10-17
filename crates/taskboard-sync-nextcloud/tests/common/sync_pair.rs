@@ -18,11 +18,16 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::LIVE_DEADLINE;
 
-const CFG: SyncActorConfig = SyncActorConfig {
-    poll_interval: Duration::from_millis(300),
-    backoff_initial: Duration::from_millis(200),
-    backoff_max: Duration::from_millis(800),
-};
+fn cfg() -> SyncActorConfig {
+    SyncActorConfig {
+        poll_interval: Duration::from_millis(300),
+        backoff_initial: Duration::from_millis(200),
+        backoff_max: Duration::from_millis(800),
+        // The docker tier runs against a real server: real timing is the
+        // subject, injected explicitly through the seam.
+        clock: Arc::new(taskboard_domain::SystemClock),
+    }
+}
 
 /// The engine + actor pair over one shared fake repository.
 pub(crate) struct SyncPair {
@@ -64,7 +69,7 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
         nudges_rx,
         report_tx,
         system_tx.clone(),
-        CFG,
+        cfg(),
     );
 
     SyncPair {

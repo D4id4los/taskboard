@@ -11,7 +11,7 @@
 //! exactly while the test waits for an expected report — never between
 //! assertions. The wait helpers' deadline is wall-clock
 //! (`std::time::Instant`): the stepping is virtual, but the actor's
-//! progress depends on real wiremock I/O. `CFG.poll_interval` sits far beyond every test horizon, so
+//! progress depends on real wiremock I/O. `cfg().poll_interval` sits far beyond every test horizon, so
 //! cycles are nudge/`SetBoard`/backoff-driven only and wiremock request
 //! counts stay an exact observable of how many cycles ran.
 
@@ -30,19 +30,25 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod common;
+use common::FixedClock;
 use common::hermetic::{
     BOARD, STACK, T, board_json, boards_json, card_json, mount_conditional_pull, stacks_json,
     start_server, ts, uuid, wait_subscribed,
 };
 
-const CFG: SyncActorConfig = SyncActorConfig {
-    // No poll ticks inside a test horizon: cycles fire only on nudges,
-    // `SetBoard`, and backoff deadlines (all test-driven), keeping the
-    // request-count observables exact.
-    poll_interval: Duration::from_secs(3_600),
-    backoff_initial: Duration::from_millis(100),
-    backoff_max: Duration::from_millis(400),
-};
+fn cfg() -> SyncActorConfig {
+    SyncActorConfig {
+        // No poll ticks inside a test horizon: cycles fire only on nudges,
+        // `SetBoard`, and backoff deadlines (all test-driven), keeping the
+        // request-count observables exact.
+        poll_interval: Duration::from_secs(3_600),
+        backoff_initial: Duration::from_millis(100),
+        backoff_max: Duration::from_millis(400),
+        // Every LWW-participating stamp the actor mints is `T + 1000` —
+        // after every fixture stamp, preserving the real-clock orderings.
+        clock: Arc::new(FixedClock(ts(T + 1000))),
+    }
+}
 
 /// The actor plus every channel half a test needs.
 #[allow(dead_code)] // the repo is kept for symmetry with the I-series harness
@@ -210,7 +216,7 @@ async fn mount_standard_pull(server: &MockServer, cards: serde_json::Value) {
 }
 
 fn spawn(server: &MockServer, repo: Arc<InMemoryRepository>) -> Actor {
-    spawn_with_cfg(server, repo, CFG)
+    spawn_with_cfg(server, repo, cfg())
 }
 
 fn spawn_with_cfg(
@@ -493,7 +499,7 @@ async fn a7_offline_episode_broadcasts_lost_once_then_restored() {
         }
     ));
     assert!(
-        lost_at.elapsed() >= CFG.backoff_initial,
+        lost_at.elapsed() >= cfg().backoff_initial,
         "the second cycle respected the initial backoff"
     );
     assert!(
@@ -868,10 +874,11 @@ async fn a5_a6_rejection_outcomes_travel_in_the_report() {
 /// `poll_interval`).
 #[tokio::test(start_paused = true)]
 async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
-    const CFG_RATE: SyncActorConfig = SyncActorConfig {
+    let cfg_rate = SyncActorConfig {
         poll_interval: Duration::from_secs(3_600),
         backoff_initial: Duration::from_millis(100),
         backoff_max: Duration::from_secs(30),
+        clock: Arc::new(FixedClock(ts(T + 1000))),
     };
     let server = start_server().await;
     let limited = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -902,7 +909,7 @@ async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
         .mount(&server)
         .await;
 
-    let mut actor = spawn_with_cfg(&server, repo_with(&[(2, STACK)], &[]), CFG_RATE);
+    let mut actor = spawn_with_cfg(&server, repo_with(&[(2, STACK)], &[]), cfg_rate);
     let first = set_board_and_report(&mut actor).await;
     assert!(matches!(first, SyncReport::Completed { .. }));
 
@@ -1258,5 +1265,132 @@ async fn a18_remote_moved_card_survives_its_queued_edit() {
         view.id.stack,
         taskboard_domain::RemoteStackId(8),
         "the snapshot reports the card under its fresh stack"
+    );
+}
+
+// ---- the injected clock seam (#259) ---------------------------------
+
+/// The instant every actor-minted stamp carries under `cfg()`: strictly
+/// after the fixtures' base stamp, so today's real-clock orderings hold.
+fn stamped() -> chrono::DateTime<chrono::Utc> {
+    ts(T + 1000)
+}
+
+/// A19: the dead-board tombstone's stamps come from the injected clock —
+/// the observation instant, not an untestable wall read (the tombstone
+/// must win every LWW against the fixture stamps).
+#[tokio::test(start_paused = true)]
+async fn a19_dead_board_tombstone_stamps_come_from_the_injected_clock() {
+    let server = start_server().await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(boards_json(false, &serde_json::json!([]))),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}"
+        )))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    for p in [
+        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
+        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .mount(&server)
+            .await;
+    }
+
+    let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
+    let report = set_board_and_report(&mut actor).await;
+    let SyncReport::Completed { snapshot, .. } = report else {
+        panic!("expected a Completed report: the tombstone snapshot is valid");
+    };
+    assert_eq!(snapshot.board.deleted_at, Some(stamped()));
+    assert!(
+        snapshot.board.last_modified >= stamped(),
+        "the tombstone is floored at the observation instant"
+    );
+}
+
+/// A20: the report envelope's `read_at` comes from the injected clock —
+/// both the Completed path (a18 exercises it incidentally) and the
+/// `NoBoard` failure path, asserted here in isolation.
+#[tokio::test(start_paused = true)]
+async fn a20_report_read_at_comes_from_the_injected_clock() {
+    let server = start_server().await;
+    let mut actor = spawn(&server, Arc::new(InMemoryRepository::new()));
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let report = next_report(&mut actor).await;
+    let SyncReport::Failed { read_at, .. } = report else {
+        panic!("expected the NoBoard failure report");
+    };
+    assert_eq!(read_at, stamped());
+}
+
+/// A21: an archive-flag mismatch is stamped with the observation instant
+/// from the injected clock (the server offers no version stamp for the
+/// flag — "observed now" is the only truthful recency).
+#[tokio::test(start_paused = true)]
+async fn a21_archive_mismatch_stamp_uses_the_injected_clock() {
+    let server = start_server().await;
+    let mut archived_card = card_json(55, "archived remotely");
+    archived_card["archived"] = serde_json::json!(true);
+    mount_standard_pull(&server, serde_json::json!([archived_card.clone()])).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/55"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(archived_card))
+        .mount(&server)
+        .await;
+
+    // One bound task, locally not archived — the detail refresh's mismatch.
+    let mut state = PersistedState::default();
+    state.boards.insert(bound_board().id, bound_board());
+    let stack = bound_stack(2, STACK);
+    state.stacks.insert(stack.id, stack);
+    let task = Task {
+        id: taskboard_domain::TaskId::from(uuid(10)),
+        remote: Some(taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(BOARD),
+            stack: taskboard_domain::RemoteStackId(STACK),
+            card: taskboard_domain::RemoteCardId(55),
+        }),
+        title: "bound".into(),
+        description: String::new(),
+        duedate: None,
+        done: None,
+        stack: taskboard_domain::StackId::from(uuid(2)),
+        order: 0,
+        labels: std::collections::BTreeSet::new(),
+        archived: false,
+        deleted: false,
+        clocks: task_clocks(),
+        remote_seen: Some(ts(T)),
+    };
+    state.tasks.insert(task.id, task);
+
+    let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
+    let report = set_board_and_report(&mut actor).await;
+    let SyncReport::Completed { snapshot, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    let view = snapshot
+        .tasks
+        .iter()
+        .find(|t| t.id.card == taskboard_domain::RemoteCardId(55))
+        .expect("the bound card is in the snapshot");
+    assert!(view.archived, "the authoritative detail settles the flag");
+    assert_eq!(
+        view.last_modified,
+        stamped(),
+        "the mismatch correction is stamped with the injected observation instant"
     );
 }
