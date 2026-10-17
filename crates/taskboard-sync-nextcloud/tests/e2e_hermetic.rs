@@ -30,6 +30,7 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod common;
+use common::SteppingClock;
 use common::hermetic::{
     BOARD, STACK, T, board_json, boards_json, card_json, mount_conditional_pull, stacks_json,
     start_server, ts, uuid, wait_subscribed,
@@ -41,11 +42,14 @@ fn board_labels() -> serde_json::Value {
     serde_json::json!([{ "id": 3, "title": "urgent", "color": "ff0000", "boardId": BOARD }])
 }
 
-const CFG: SyncActorConfig = SyncActorConfig {
-    poll_interval: Duration::from_millis(200),
-    backoff_initial: Duration::from_millis(100),
-    backoff_max: Duration::from_millis(400),
-};
+fn cfg(clock: Arc<dyn Clock>) -> SyncActorConfig {
+    SyncActorConfig {
+        poll_interval: Duration::from_millis(200),
+        backoff_initial: Duration::from_millis(100),
+        backoff_max: Duration::from_millis(400),
+        clock,
+    }
+}
 
 /// The engine half of the pair, plus every channel half a test needs to
 /// spawn (and re-spawn) actors against it.
@@ -57,12 +61,19 @@ struct Stack {
     report_tx: mpsc::Sender<SyncReport>,
     system_tx: broadcast::Sender<SystemEvent>,
     repo: Arc<InMemoryRepository>,
+    /// The one clock engine and actor share (the pair must never run on
+    /// split time: the self-clobber boundary compares their stamps).
+    clock: Arc<dyn Clock>,
 }
 
 async fn boot(server: MockServer, repo_state: taskboard_domain::PersistedState) -> Stack {
     let repo = Arc::new(InMemoryRepository::with_state(repo_state));
     let ids: Arc<dyn taskboard_domain::IdGenerator> = Arc::new(CountingIds::new());
-    let clock: Arc<dyn Clock> = Arc::new(taskboard_domain::SystemClock);
+    // Stepping, not fixed: the pair's freshness predicates compare two
+    // engine stamps (`last_success` before/after restart); a constant
+    // clock would freeze them equal. Whole-second steps from `T + 1000`
+    // stay after every fixture stamp and strictly increase.
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
     let (nudges_tx, _nudges_rx) = mpsc::channel(16);
     let (report_tx, report_rx) = mpsc::channel(16);
     let (system_tx, system_engine_rx) = broadcast::channel(16);
@@ -71,7 +82,7 @@ async fn boot(server: MockServer, repo_state: taskboard_domain::PersistedState) 
     let (engine, engine_join) = spawn_state_engine(
         repo.clone(),
         ids,
-        clock,
+        clock.clone(),
         nudges_tx,
         report_rx,
         system_tx.clone(),
@@ -89,13 +100,14 @@ async fn boot(server: MockServer, repo_state: taskboard_domain::PersistedState) 
         report_tx,
         system_tx,
         repo,
+        clock,
     }
 }
 
 /// Spawns an actor against the stack on a fresh command channel; returns
 /// the command half (for `SetBoard`/manual nudges) and the join handle.
 fn spawn_actor(stack: &Stack) -> (mpsc::Sender<SyncCommand>, tokio::task::JoinHandle<()>) {
-    spawn_actor_with_cfg(stack, CFG)
+    spawn_actor_with_cfg(stack, cfg(stack.clock.clone()))
 }
 
 fn spawn_actor_with_cfg(

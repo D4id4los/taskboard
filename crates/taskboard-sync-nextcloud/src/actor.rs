@@ -16,12 +16,11 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use taskboard_domain::{
-    BoardPullValidators, EntityTables, PushOutcome, RemoteBoard, RemoteBoardId,
+    BoardPullValidators, Clock, EntityTables, PushOutcome, RemoteBoard, RemoteBoardId,
     RemoteBoardSnapshot, RemoteLabel, RemoteStack, RemoteStackId, RemoteTask, SyncCommand,
     SyncErrorKind, SyncReport, SyncStateReader, SyncValidators, SystemEvent, ValidatorKey,
     plan_pushes,
@@ -46,6 +45,11 @@ pub struct SyncActorConfig {
     pub backoff_initial: Duration,
     /// Backoff saturation.
     pub backoff_max: Duration,
+    /// Wall-clock seam for every stamp the actor mints (`read_at`,
+    /// dead-board tombstones, archive-mismatch corrections) — the same
+    /// seam the engine runs on. Production injects `SystemClock`; the
+    /// hermetic suites a fixed clock.
+    pub clock: Arc<dyn Clock>,
 }
 
 /// Spawns the sync actor onto the current runtime.
@@ -69,7 +73,7 @@ pub struct SyncActorConfig {
 ///
 /// use taskboard_domain::{
 ///     PersistedState, RepositoryError, SyncCommand, SyncReport, SyncStateReader,
-///     SystemEvent,
+///     SystemClock, SystemEvent,
 /// };
 /// use taskboard_sync_nextcloud::{DeckClient, SyncActorConfig, spawn_sync_actor};
 /// use tokio::sync::{broadcast, mpsc};
@@ -97,6 +101,7 @@ pub struct SyncActorConfig {
 ///     poll_interval: Duration::from_secs(30),
 ///     backoff_initial: Duration::from_secs(5),
 ///     backoff_max: Duration::from_secs(300),
+///     clock: Arc::new(SystemClock),
 /// };
 /// let actor = spawn_sync_actor(
 ///     client,
@@ -296,7 +301,7 @@ async fn cycle(
     reports: &mpsc::Sender<SyncReport>,
     system: &broadcast::Sender<SystemEvent>,
     st: &mut LoopState,
-    _cfg: &SyncActorConfig,
+    cfg: &SyncActorConfig,
     commanded: bool,
 ) {
     // ---- read ----------------------------------------------------------
@@ -305,9 +310,9 @@ async fn cycle(
     // the merge must protect its fields from the pull's stamps (the
     // self-clobber guard on `SyncReport::Completed`). Conservative by
     // construction — over-protection only keeps a newer local intent.
-    // Wall-clock note: production runs engine and actor on one `SystemClock`;
-    // a seam here would be needed only if the clocks ever diverge.
-    let read_at = Utc::now();
+    // Wall-clock note: every stamp flows through the injected `Clock` seam;
+    // production runs engine and actor on one `SystemClock`.
+    let read_at = cfg.clock.now();
     let persisted = match state.read_state().await {
         Ok(persisted) => persisted,
         Err(err) => {
@@ -339,7 +344,7 @@ async fn cycle(
                 SyncReport::Failed {
                     kind: SyncErrorKind::NoBoard,
                     pushes: Vec::new(),
-                    read_at: Utc::now(),
+                    read_at: cfg.clock.now(),
                 },
             )
             .await;
@@ -421,6 +426,7 @@ async fn cycle(
         &mut st.cache,
         local_board,
         &local_cards,
+        cfg.clock.as_ref(),
     )
     .await;
     let (snapshot, validators) = match pull {
@@ -533,6 +539,7 @@ async fn pull_snapshot(
     cache: &mut PullCache,
     local_board: Option<(String, String)>,
     local_cards: &LocalCardStamps,
+    clock: &dyn Clock,
 ) -> Result<(RemoteBoardSnapshot, BoardPullValidators), crate::error::DeckError> {
     let boards_v = persisted
         .get(&ValidatorKey::Boards)
@@ -588,8 +595,8 @@ async fn pull_snapshot(
                     // and the tombstone could never be adopted. The
                     // deletion itself is the freshest fact we hold.
                     let mut dead = mapping::map_board(&listed_board);
-                    dead.deleted_at = Some(Utc::now());
-                    dead.last_modified = dead.last_modified.max(Utc::now());
+                    dead.deleted_at = Some(clock.now());
+                    dead.last_modified = dead.last_modified.max(clock.now());
                     (dead, inline_labels(&listed_board), true)
                 }
                 Err(err) => return Err(err),
@@ -614,8 +621,8 @@ async fn pull_snapshot(
                         title,
                         color,
                         archived: false,
-                        deleted_at: Some(Utc::now()),
-                        last_modified: Utc::now(),
+                        deleted_at: Some(clock.now()),
+                        last_modified: clock.now(),
                     },
                     Vec::new(),
                     true,
@@ -714,7 +721,7 @@ async fn pull_snapshot(
                 Ok(detail) => {
                     let mut refreshed = mapping::map_card(&detail, target);
                     if refreshed.archived != local_archived {
-                        refreshed.last_modified = refreshed.last_modified.max(Utc::now());
+                        refreshed.last_modified = refreshed.last_modified.max(clock.now());
                     }
                     *view = refreshed;
                 }

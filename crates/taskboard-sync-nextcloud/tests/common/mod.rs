@@ -18,7 +18,54 @@ pub(crate) mod sync_pair;
 
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use taskboard_sync_nextcloud::DeckClient;
+
+/// A clock pinned at one instant: the hermetic suites' injected seam, so
+/// every LWW-participating stamp the actor mints is deterministic. Pinned
+/// after the fixtures' base timestamp (`hermetic::T`) to preserve the
+/// real-clock orderings (ops seen by the cycle, local stamps newer than
+/// fixture stamps).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FixedClock(pub DateTime<Utc>);
+
+impl taskboard_domain::Clock for FixedClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.0
+    }
+}
+
+/// A clock that advances a fixed step per read: the engine+actor pair's
+/// seam where later stamps must compare newer (freshness predicates, the
+/// self-clobber ordering) while staying deterministic. Whole-second steps
+/// keep the stamps trivially readable next to the fixture stamps.
+#[derive(Debug)]
+pub(crate) struct SteppingClock {
+    next_secs: std::sync::atomic::AtomicI64,
+    step_secs: i64,
+}
+
+impl SteppingClock {
+    pub(crate) fn new(start: DateTime<Utc>, step_secs: i64) -> Self {
+        Self {
+            next_secs: std::sync::atomic::AtomicI64::new(start.timestamp()),
+            step_secs,
+        }
+    }
+}
+
+impl taskboard_domain::Clock for SteppingClock {
+    fn now(&self) -> DateTime<Utc> {
+        use chrono::TimeZone as _;
+        let secs = self
+            .next_secs
+            .fetch_add(self.step_secs, std::sync::atomic::Ordering::Relaxed);
+        chrono::Utc
+            .timestamp_opt(secs, 0)
+            .single()
+            .expect("in-range stamp")
+    }
+}
 
 /// Reads Tier 2 docker-tier credentials; `None` when any is unset.
 pub(crate) fn live_docker_config() -> Option<LiveCfg> {
