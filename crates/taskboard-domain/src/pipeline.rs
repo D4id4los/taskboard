@@ -3702,4 +3702,335 @@ mod tests {
             "the still-pending op of the tombstoned task is cancelled"
         );
     }
+
+    // ---- F3-08/F3-12: intent-quartet arms, boundaries, id-scoping ----
+    // Boundary convention: `queued_at == read_at` is a *pre-read* op —
+    // remote truth wins (the same `<=` the four guards share).
+
+    #[test]
+    fn a_post_read_task_move_survives_the_same_cycle_pull() {
+        let mut local = bound_task(1);
+        local.order = 9;
+        local.clocks.position = ts(BASE + 120);
+        let state = base_state(local);
+        let stack_before = task_by_card(&state, 1).stack;
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(90)),
+            op: LocalOp::MoveTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE + 120),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let final_state = app_into_state(&app);
+        let merged = task_by_card(&final_state, 1);
+        assert_eq!(merged.stack, stack_before, "protected stack half");
+        assert_eq!(merged.order, 9, "protected order half");
+        assert_eq!(merged.clocks.position, ts(BASE + 120));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+    }
+
+    #[test]
+    fn a_post_read_label_assignment_survives_the_same_cycle_pull() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(5);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        let mut local = bound_task(1);
+        local.labels.insert(label_id);
+        local.clocks.labels = ts(BASE + 120);
+        state.tasks.insert(local.id, local);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(91)),
+            op: LocalOp::AssignLabel(task_by_card(&state, 1).id, label_id),
+            queued_at: ts(BASE + 120),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let final_state = app_into_state(&app);
+        let merged = task_by_card(&final_state, 1);
+        assert_eq!(merged.labels, BTreeSet::from([label_id]), "protected set");
+        assert_eq!(merged.clocks.labels, ts(BASE + 120));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+    }
+
+    #[test]
+    fn a_post_read_stack_delete_survives_the_same_cycle_pull() {
+        // The live remote entry would resurrect; the unseen local delete
+        // intent must stand (the pull never carried it).
+        let mut local = local_stack();
+        local.deleted = true;
+        local.clocks.deleted = ts(BASE + 120);
+        let mut state = base_state(bound_task(1));
+        state.stacks.insert(local.id, local.clone());
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(92)),
+            op: LocalOp::DeleteStack(local.id),
+            queued_at: ts(BASE + 120),
+        };
+        let snap = snapshot(vec![remote_stack(1, BASE + 300)], vec![]);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let merged = &app.0.stacks[&local.id];
+        assert!(merged.deleted, "post-read delete intent survives");
+        assert_eq!(merged.clocks.deleted, ts(BASE + 120));
+    }
+
+    #[test]
+    fn a_post_read_label_delete_survives_the_same_cycle_pull() {
+        let mut local = bound_label(1);
+        local.deleted = true;
+        local.clocks.deleted = ts(BASE + 120);
+        let mut state = base_state(bound_task(1));
+        state.labels.insert(local.id, local.clone());
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(93)),
+            op: LocalOp::DeleteLabel(local.id),
+            queued_at: ts(BASE + 120),
+        };
+        let mut snap = single_stack_snapshot(vec![], BASE + 300);
+        snap.labels = vec![remote_label(1, BASE + 300)];
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let merged = &app.0.labels[&local.id];
+        assert!(merged.deleted, "post-read delete intent survives");
+        assert_eq!(merged.clocks.deleted, ts(BASE + 120));
+    }
+
+    #[test]
+    fn an_op_queued_exactly_at_read_at_is_not_protected_task() {
+        // Equality is pre-read: the cycle saw the op, so the snapshot is
+        // the post-push truth for its fields.
+        let mut local = bound_task(1);
+        local.done = Some(ts(BASE));
+        let state = base_state(local);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(94)),
+            op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let final_state = app_into_state(&app);
+        assert_eq!(
+            task_by_card(&final_state, 1).done,
+            None,
+            "remote truth wins at the boundary"
+        );
+    }
+
+    #[test]
+    fn an_op_queued_exactly_at_read_at_is_not_protected_stack() {
+        let mut local = local_stack();
+        local.title = "renamed locally".into();
+        local.clocks.title = ts(BASE);
+        let mut state = base_state(bound_task(1));
+        state.stacks.insert(local.id, local.clone());
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(95)),
+            op: LocalOp::RenameStack(local.id),
+            queued_at: ts(BASE),
+        };
+        let mut remote = remote_stack(1, BASE + 300);
+        remote.title = "remote rename".into();
+        let snap = snapshot(vec![remote], vec![]);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        assert_eq!(
+            app.0.stacks[&local.id].title, "remote rename",
+            "remote truth wins at the boundary"
+        );
+    }
+
+    #[test]
+    fn an_op_queued_exactly_at_read_at_is_not_protected_label() {
+        let mut state = base_state(bound_task(1));
+        let local = bound_label(1);
+        let label_id = local.id;
+        state.labels.insert(label_id, local);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(96)),
+            op: LocalOp::UpdateLabel(label_id),
+            queued_at: ts(BASE),
+        };
+        let mut snap = single_stack_snapshot(vec![], BASE + 300);
+        snap.labels = vec![remote_label(1, BASE + 300)];
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        assert_eq!(
+            app.0.labels[&label_id].title, "label 1 renamed",
+            "remote truth wins at the boundary"
+        );
+    }
+
+    #[test]
+    fn an_op_queued_exactly_at_read_at_is_not_protected_board() {
+        let state = base_state(bound_task(1));
+        let board_id = *state.boards.keys().next().unwrap();
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(97)),
+            op: LocalOp::RenameBoard(board_id),
+            queued_at: ts(BASE),
+        };
+        let mut snap = single_stack_snapshot(vec![], BASE + 300);
+        snap.board = remote_board(REMOTE_BOARD_NUM, BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        assert_eq!(
+            app.0.boards[&board_id].title, "board 77",
+            "remote truth wins at the boundary"
+        );
+    }
+
+    #[test]
+    fn a_post_read_stack_op_protects_only_its_own_stack() {
+        let stack1 = local_stack();
+        let mut stack2 = local_stack();
+        stack2.id = StackId::from(uuid::Uuid::from_u128(901));
+        stack2.remote = Some(stack_ref(2));
+        stack2.title = "stack 2".into();
+        stack2.order = 2;
+        let mut state = base_state(bound_task(1));
+        state.stacks.insert(stack1.id, stack1.clone());
+        state.stacks.insert(stack2.id, stack2.clone());
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(98)),
+            op: LocalOp::RenameStack(stack1.id),
+            queued_at: ts(BASE + 120),
+        };
+        let mut remote1 = remote_stack(1, BASE + 300);
+        remote1.title = "remote one".into();
+        let mut remote2 = remote_stack(2, BASE + 300);
+        remote2.title = "remote two".into();
+        let snap = snapshot(vec![remote1, remote2], vec![]);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        assert_eq!(
+            app.0.stacks[&stack1.id].title, "stack 1",
+            "the op's own stack is protected"
+        );
+        assert_eq!(
+            app.0.stacks[&stack2.id].title, "remote two",
+            "the other stack adopts the remote title"
+        );
+    }
+
+    #[test]
+    fn a_post_read_label_op_protects_only_its_own_label() {
+        let mut state = base_state(bound_task(1));
+        let label1 = bound_label(1);
+        let label2 = bound_label(2);
+        let (label1_id, label2_id) = (label1.id, label2.id);
+        state.labels.insert(label1_id, label1);
+        state.labels.insert(label2_id, label2);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(99)),
+            op: LocalOp::UpdateLabel(label1_id),
+            queued_at: ts(BASE + 120),
+        };
+        let mut snap = single_stack_snapshot(vec![], BASE + 300);
+        snap.labels = vec![remote_label(1, BASE + 300), remote_label(2, BASE + 300)];
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        assert_eq!(
+            app.0.labels[&label1_id].title, "label 1",
+            "the op's own label is protected"
+        );
+        assert_eq!(
+            app.0.labels[&label2_id].title, "label 2 renamed",
+            "the other label adopts the remote title"
+        );
+    }
 }
