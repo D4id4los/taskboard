@@ -420,6 +420,9 @@ impl<'a> PushExecutor<'a> {
             let Some(op) = outbox.iter().find(|entry| entry.op_id == *op_id) else {
                 continue;
             };
+            if Self::cannot_ride_a_task_group(&op.op) {
+                continue;
+            }
             match op.op {
                 LocalOp::AssignLabel(_, label) => {
                     match self.overlay.label_by_local.get(&label).copied() {
@@ -472,16 +475,9 @@ impl<'a> PushExecutor<'a> {
                         result: PushResult::Applied { echo: None },
                     });
                 }
-                LocalOp::CreateTask(_)
-                | LocalOp::DeleteTask(_)
-                | LocalOp::CreateStack(_)
-                | LocalOp::RenameStack(_)
-                | LocalOp::MoveStack(_)
-                | LocalOp::DeleteStack(_)
-                | LocalOp::CreateLabel(_)
-                | LocalOp::UpdateLabel(_)
-                | LocalOp::DeleteLabel(_)
-                | LocalOp::RenameBoard(_) => {}
+                // `cannot_ride_a_task_group` already continued; nothing
+                // else can reach the match.
+                _ => {}
             }
         }
         if new_card.archived
@@ -711,6 +707,9 @@ impl<'a> PushExecutor<'a> {
             let Some(op) = outbox.iter().find(|entry| &entry.op_id == op_id) else {
                 continue;
             };
+            if Self::cannot_ride_a_task_group(&op.op) {
+                continue;
+            }
             match op.op {
                 LocalOp::AssignLabel(_, label) | LocalOp::UnassignLabel(_, label) => {
                     outcomes.push(PushOutcome {
@@ -724,24 +723,16 @@ impl<'a> PushExecutor<'a> {
                         },
                     });
                 }
-                // Updates/moves rode the PUT's field state; nothing else
-                // can be subsumed under a task group.
+                // Updates/moves rode the PUT's field state.
                 LocalOp::UpdateTask(_) | LocalOp::MoveTask(_) => {
                     outcomes.push(PushOutcome {
                         op: *op_id,
                         result: PushResult::Applied { echo: None },
                     });
                 }
-                LocalOp::CreateTask(_)
-                | LocalOp::DeleteTask(_)
-                | LocalOp::CreateStack(_)
-                | LocalOp::RenameStack(_)
-                | LocalOp::MoveStack(_)
-                | LocalOp::DeleteStack(_)
-                | LocalOp::CreateLabel(_)
-                | LocalOp::UpdateLabel(_)
-                | LocalOp::DeleteLabel(_)
-                | LocalOp::RenameBoard(_) => {}
+                // `cannot_ride_a_task_group` already continued; nothing
+                // else can reach the match.
+                _ => {}
             }
         }
         GroupOutcome::Outcomes(outcomes)
@@ -848,6 +839,25 @@ impl<'a> PushExecutor<'a> {
     }
 
     // ---- outcome assembly -------------------------------------------
+
+    /// A task group's subsumed bucket carries label, update and move ops
+    /// only (`plan_task_groups`); these op classes have no outcome to
+    /// report there and stay queued untouched.
+    fn cannot_ride_a_task_group(op: &LocalOp) -> bool {
+        matches!(
+            op,
+            LocalOp::CreateTask(_)
+                | LocalOp::DeleteTask(_)
+                | LocalOp::CreateStack(_)
+                | LocalOp::RenameStack(_)
+                | LocalOp::MoveStack(_)
+                | LocalOp::DeleteStack(_)
+                | LocalOp::CreateLabel(_)
+                | LocalOp::UpdateLabel(_)
+                | LocalOp::DeleteLabel(_)
+                | LocalOp::RenameBoard(_)
+        )
+    }
 
     /// `Applied` for the primary, synthetic `Applied { echo: None }` for
     /// every subsumed op (decision 6).
