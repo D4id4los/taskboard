@@ -22,6 +22,9 @@ use crate::error::DeckError;
 use crate::model::{Attachment, Board, Card, Label, Stack, StackFilter};
 use crate::ocs::OcsEnvelope;
 
+/// The typed outcome a request method's logging closure inspects.
+type CallResult<T> = Result<T, DeckError>;
+
 const DECK_API_PATH: &str = "index.php/apps/deck/api/v1.0";
 
 /// Multipart attachment-kind value; the only evidenced kind is `deck_file`
@@ -374,14 +377,16 @@ impl DeckClient {
     /// (after retries) transport/rate-limit failures.
     pub async fn boards(&self) -> Result<Vec<Board>, DeckError> {
         tracing::debug!("listing deck boards");
-        let result: Result<Vec<Board>, DeckError> = self
-            .send_json(Method::GET, "boards", None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(boards) => tracing::info!(count = boards.len(), "deck boards listed"),
-            Err(err) => tracing::warn!(error = %err, "listing deck boards failed"),
-        }
-        result
+        self.call(
+            Method::GET,
+            "boards",
+            None::<serde_json::Value>,
+            |result: &CallResult<Vec<Board>>| match result {
+                Ok(boards) => tracing::info!(count = boards.len(), "deck boards listed"),
+                Err(err) => tracing::warn!(error = %err, "listing deck boards failed"),
+            },
+        )
+        .await
     }
 
     /// Conditional variant of [`DeckClient::boards`].
@@ -446,18 +451,18 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn board(&self, id: u64) -> Result<Board, DeckError> {
         tracing::debug!(board_id = id, "fetching deck board");
-        let result: Result<Board, DeckError> = self
-            .send_json(
-                Method::GET,
-                &format!("boards/{id}"),
-                None::<serde_json::Value>,
-            )
-            .await;
-        match &result {
-            Ok(_) => tracing::info!(board_id = id, "deck board fetched"),
-            Err(err) => tracing::warn!(board_id = id, error = %err, "fetching deck board failed"),
-        }
-        result
+        self.call(
+            Method::GET,
+            &format!("boards/{id}"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Board>| match result {
+                Ok(_) => tracing::info!(board_id = id, "deck board fetched"),
+                Err(err) => {
+                    tracing::warn!(board_id = id, error = %err, "fetching deck board failed");
+                }
+            },
+        )
+        .await
     }
 
     /// Creates a board with a six-digit hex [`DeckColor`].
@@ -467,18 +472,16 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn create_board(&self, title: &str, color: &DeckColor) -> Result<Board, DeckError> {
         tracing::debug!(title, color = %color, "creating deck board");
-        let result: Result<Board, DeckError> = self
-            .send_json(
-                Method::POST,
-                "boards",
-                Some(CreateBoardBody { title, color }),
-            )
-            .await;
-        match &result {
-            Ok(board) => tracing::info!(board_id = board.id, "deck board created"),
-            Err(err) => tracing::warn!(error = %err, "creating deck board failed"),
-        }
-        result
+        self.call(
+            Method::POST,
+            "boards",
+            Some(CreateBoardBody { title, color }),
+            |result: &CallResult<Board>| match result {
+                Ok(board) => tracing::info!(board_id = board.id, "deck board created"),
+                Err(err) => tracing::warn!(error = %err, "creating deck board failed"),
+            },
+        )
+        .await
     }
 
     /// Deletes a board by id.
@@ -493,22 +496,22 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn delete_board(&self, id: u64) -> Result<Board, DeckError> {
         tracing::debug!(board_id = id, "deleting deck board");
-        let result: Result<Board, DeckError> = self
-            .send_json(
-                Method::DELETE,
-                &format!("boards/{id}"),
-                None::<serde_json::Value>,
-            )
-            .await;
-        match &result {
-            Ok(board) => tracing::info!(
-                board_id = id,
-                deleted_at = board.deleted_at,
-                "deck board deleted"
-            ),
-            Err(err) => tracing::warn!(board_id = id, error = %err, "deleting deck board failed"),
-        }
-        result
+        self.call(
+            Method::DELETE,
+            &format!("boards/{id}"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Board>| match result {
+                Ok(board) => tracing::info!(
+                    board_id = id,
+                    deleted_at = board.deleted_at,
+                    "deck board deleted"
+                ),
+                Err(err) => {
+                    tracing::warn!(board_id = id, error = %err, "deleting deck board failed");
+                }
+            },
+        )
+        .await
     }
 
     /// Lists a board's stacks with their nested cards.
@@ -522,15 +525,16 @@ impl DeckClient {
         filter: StackFilter,
     ) -> Result<Vec<Stack>, DeckError> {
         tracing::debug!(board_id, ?filter, "listing deck stacks");
-        let resource = format!("boards/{board_id}/{}", filter.path_segment());
-        let result: Result<Vec<Stack>, DeckError> = self
-            .send_json(Method::GET, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(stacks) => tracing::info!(count = stacks.len(), "deck stacks listed"),
-            Err(err) => tracing::warn!(error = %err, "listing deck stacks failed"),
-        }
-        result
+        self.call(
+            Method::GET,
+            &format!("boards/{board_id}/{}", filter.path_segment()),
+            None::<serde_json::Value>,
+            |result: &CallResult<Vec<Stack>>| match result {
+                Ok(stacks) => tracing::info!(count = stacks.len(), "deck stacks listed"),
+                Err(err) => tracing::warn!(error = %err, "listing deck stacks failed"),
+            },
+        )
+        .await
     }
 
     /// Fetches a single stack (with its cards).
@@ -540,15 +544,16 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn stack(&self, board_id: u64, stack_id: u64) -> Result<Stack, DeckError> {
         tracing::debug!(board_id, stack_id, "fetching deck stack");
-        let resource = format!("boards/{board_id}/stacks/{stack_id}");
-        let result: Result<Stack, DeckError> = self
-            .send_json(Method::GET, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(_) => tracing::info!(stack_id, "deck stack fetched"),
-            Err(err) => tracing::warn!(error = %err, "fetching deck stack failed"),
-        }
-        result
+        self.call(
+            Method::GET,
+            &format!("boards/{board_id}/stacks/{stack_id}"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Stack>| match result {
+                Ok(_) => tracing::info!(stack_id, "deck stack fetched"),
+                Err(err) => tracing::warn!(error = %err, "fetching deck stack failed"),
+            },
+        )
+        .await
     }
 
     /// Fetches a single card.
@@ -563,15 +568,16 @@ impl DeckClient {
         card_id: u64,
     ) -> Result<Card, DeckError> {
         tracing::debug!(board_id, stack_id, card_id, "fetching deck card");
-        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}");
-        let result: Result<Card, DeckError> = self
-            .send_json(Method::GET, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(_) => tracing::info!(card_id, "deck card fetched"),
-            Err(err) => tracing::warn!(error = %err, "fetching deck card failed"),
-        }
-        result
+        self.call(
+            Method::GET,
+            &format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Card>| match result {
+                Ok(_) => tracing::info!(card_id, "deck card fetched"),
+                Err(err) => tracing::warn!(error = %err, "fetching deck card failed"),
+            },
+        )
+        .await
     }
 
     /// Lists a board's labels.
@@ -581,15 +587,16 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn labels(&self, board_id: u64) -> Result<Vec<Label>, DeckError> {
         tracing::debug!(board_id, "listing deck labels");
-        let resource = format!("boards/{board_id}/labels");
-        let result: Result<Vec<Label>, DeckError> = self
-            .send_json(Method::GET, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(labels) => tracing::info!(count = labels.len(), "deck labels listed"),
-            Err(err) => tracing::warn!(error = %err, "listing deck labels failed"),
-        }
-        result
+        self.call(
+            Method::GET,
+            &format!("boards/{board_id}/labels"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Vec<Label>>| match result {
+                Ok(labels) => tracing::info!(count = labels.len(), "deck labels listed"),
+                Err(err) => tracing::warn!(error = %err, "listing deck labels failed"),
+            },
+        )
+        .await
     }
 
     /// Lists a card's attachment metadata.
@@ -607,15 +614,18 @@ impl DeckClient {
         card_id: u64,
     ) -> Result<Vec<Attachment>, DeckError> {
         tracing::debug!(board_id, stack_id, card_id, "listing deck attachments");
-        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments");
-        let result: Result<Vec<Attachment>, DeckError> = self
-            .send_json(Method::GET, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(attachments) => tracing::info!(count = attachments.len(), "deck attachments listed"),
-            Err(err) => tracing::warn!(error = %err, "listing deck attachments failed"),
-        }
-        result
+        self.call(
+            Method::GET,
+            &format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Vec<Attachment>>| match result {
+                Ok(attachments) => {
+                    tracing::info!(count = attachments.len(), "deck attachments listed");
+                }
+                Err(err) => tracing::warn!(error = %err, "listing deck attachments failed"),
+            },
+        )
+        .await
     }
 
     /// Uploads a file attachment to a card via `multipart/form-data`.
@@ -647,26 +657,20 @@ impl DeckClient {
             bytes = upload.content.len(),
             "uploading deck attachment"
         );
-        let call = Call {
-            method: Method::POST,
-            resource: format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments"),
-            scope: Scope::OcsApi,
-            body: Some(CallBody::Multipart(upload.clone(), false)),
-            validators: None,
-        };
-        let result = self
-            .send_with_retries(call, |raw| {
-                map_status(&raw)?;
-                decode_envelope::<Attachment>(&raw.body)
-            })
-            .await;
-        match &result {
-            Ok(attachment) => {
-                tracing::info!(attachment_id = attachment.id, "deck attachment uploaded");
-            }
-            Err(err) => tracing::warn!(error = %err, "uploading deck attachment failed"),
-        }
-        result
+        self.call_multipart(
+            Method::POST,
+            &format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments"),
+            Scope::OcsApi,
+            upload,
+            false,
+            |result: &CallResult<Attachment>| match result {
+                Ok(attachment) => {
+                    tracing::info!(attachment_id = attachment.id, "deck attachment uploaded");
+                }
+                Err(err) => tracing::warn!(error = %err, "uploading deck attachment failed"),
+            },
+        )
+        .await
     }
 
     /// Downloads an attachment's content as raw bytes.
@@ -745,29 +749,21 @@ impl DeckClient {
             bytes = upload.content.len(),
             "updating deck attachment content"
         );
-        let call = Call {
-            method: Method::POST,
-            resource: format!(
-                "cards/{card_id}/attachment/deck_file:{attachment_id}?boardId={board_id}"
-            ),
-            scope: Scope::App,
-            body: Some(CallBody::Multipart(upload.clone(), true)),
-            validators: None,
-        };
-        let result = self
-            .send_with_retries(call, |raw| {
-                map_status(&raw)?;
-                decode_envelope::<Attachment>(&raw.body)
-            })
-            .await;
-        match &result {
-            Ok(attachment) => tracing::info!(
-                attachment_id = attachment.id,
-                "deck attachment content updated"
-            ),
-            Err(err) => tracing::warn!(error = %err, "updating deck attachment content failed"),
-        }
-        result
+        self.call_multipart(
+            Method::POST,
+            &format!("cards/{card_id}/attachment/deck_file:{attachment_id}?boardId={board_id}"),
+            Scope::App,
+            upload,
+            true,
+            |result: &CallResult<Attachment>| match result {
+                Ok(attachment) => tracing::info!(
+                    attachment_id = attachment.id,
+                    "deck attachment content updated"
+                ),
+                Err(err) => tracing::warn!(error = %err, "updating deck attachment content failed"),
+            },
+        )
+        .await
     }
 
     /// Soft-deletes an attachment. The response carries a non-zero
@@ -793,21 +789,22 @@ impl DeckClient {
             attachment_id,
             "deleting deck attachment"
         );
-        let resource = format!(
-            "boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}"
-        );
-        let result: Result<Attachment, DeckError> = self
-            .send_json(Method::DELETE, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(attachment) => tracing::info!(
-                attachment_id,
-                deleted_at = attachment.deleted_at,
-                "deck attachment deleted"
+        self.call(
+            Method::DELETE,
+            &format!(
+                "boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}"
             ),
-            Err(err) => tracing::warn!(error = %err, "deleting deck attachment failed"),
-        }
-        result
+            None::<serde_json::Value>,
+            |result: &CallResult<Attachment>| match result {
+                Ok(attachment) => tracing::info!(
+                    attachment_id,
+                    deleted_at = attachment.deleted_at,
+                    "deck attachment deleted"
+                ),
+                Err(err) => tracing::warn!(error = %err, "deleting deck attachment failed"),
+            },
+        )
+        .await
     }
 
     /// Restores a soft-deleted attachment (`deleted_at` back to `0`; the
@@ -830,21 +827,22 @@ impl DeckClient {
             attachment_id,
             "restoring deck attachment"
         );
-        let resource = format!(
-            "boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}/restore"
-        );
-        let result: Result<Attachment, DeckError> = self
-            .send_json(Method::PUT, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(attachment) => tracing::info!(
-                attachment_id,
-                deleted_at = attachment.deleted_at,
-                "deck attachment restored"
+        self.call(
+            Method::PUT,
+            &format!(
+                "boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}/restore"
             ),
-            Err(err) => tracing::warn!(error = %err, "restoring deck attachment failed"),
-        }
-        result
+            None::<serde_json::Value>,
+            |result: &CallResult<Attachment>| match result {
+                Ok(attachment) => tracing::info!(
+                    attachment_id,
+                    deleted_at = attachment.deleted_at,
+                    "deck attachment restored"
+                ),
+                Err(err) => tracing::warn!(error = %err, "restoring deck attachment failed"),
+            },
+        )
+        .await
     }
 
     /// Applies a full [`BoardChanges`] changeset to a board (PUT).
@@ -854,14 +852,18 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn update_board(&self, id: u64, changes: &BoardChanges) -> Result<Board, DeckError> {
         tracing::debug!(board_id = id, "updating deck board");
-        let result: Result<Board, DeckError> = self
-            .send_json(Method::PUT, &format!("boards/{id}"), Some(changes))
-            .await;
-        match &result {
-            Ok(_) => tracing::info!(board_id = id, "deck board updated"),
-            Err(err) => tracing::warn!(board_id = id, error = %err, "updating deck board failed"),
-        }
-        result
+        self.call(
+            Method::PUT,
+            &format!("boards/{id}"),
+            Some(changes),
+            |result: &CallResult<Board>| match result {
+                Ok(_) => tracing::info!(board_id = id, "deck board updated"),
+                Err(err) => {
+                    tracing::warn!(board_id = id, error = %err, "updating deck board failed");
+                }
+            },
+        )
+        .await
     }
 
     /// Restores a soft-deleted board (`undoDelete`).
@@ -871,18 +873,18 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn restore_board(&self, id: u64) -> Result<Board, DeckError> {
         tracing::debug!(board_id = id, "restoring deck board");
-        let result: Result<Board, DeckError> = self
-            .send_json(
-                Method::PUT,
-                &format!("boards/{id}/undoDelete"),
-                None::<serde_json::Value>,
-            )
-            .await;
-        match &result {
-            Ok(_) => tracing::info!(board_id = id, "deck board restored"),
-            Err(err) => tracing::warn!(board_id = id, error = %err, "restoring deck board failed"),
-        }
-        result
+        self.call(
+            Method::PUT,
+            &format!("boards/{id}/undoDelete"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Board>| match result {
+                Ok(_) => tracing::info!(board_id = id, "deck board restored"),
+                Err(err) => {
+                    tracing::warn!(board_id = id, error = %err, "restoring deck board failed");
+                }
+            },
+        )
+        .await
     }
 
     /// Clones a board with the given [`CloneOptions`].
@@ -892,14 +894,18 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn clone_board(&self, id: u64, options: &CloneOptions) -> Result<Board, DeckError> {
         tracing::debug!(board_id = id, "cloning deck board");
-        let result: Result<Board, DeckError> = self
-            .send_json(Method::POST, &format!("boards/{id}/clone"), Some(options))
-            .await;
-        match &result {
-            Ok(board) => tracing::info!(board_id = board.id, "deck board cloned"),
-            Err(err) => tracing::warn!(board_id = id, error = %err, "cloning deck board failed"),
-        }
-        result
+        self.call(
+            Method::POST,
+            &format!("boards/{id}/clone"),
+            Some(options),
+            |result: &CallResult<Board>| match result {
+                Ok(board) => tracing::info!(board_id = board.id, "deck board cloned"),
+                Err(err) => {
+                    tracing::warn!(board_id = id, error = %err, "cloning deck board failed");
+                }
+            },
+        )
+        .await
     }
 
     /// Creates a stack on a board at display position `order`.
@@ -915,14 +921,16 @@ impl DeckClient {
     ) -> Result<Stack, DeckError> {
         tracing::debug!(board_id, title, order, "creating deck stack");
         let body = serde_json::json!({"title": title, "order": order});
-        let resource = format!("boards/{board_id}/stacks");
-        let result: Result<Stack, DeckError> =
-            self.send_json(Method::POST, &resource, Some(body)).await;
-        match &result {
-            Ok(stack) => tracing::info!(stack_id = stack.id, "deck stack created"),
-            Err(err) => tracing::warn!(error = %err, "creating deck stack failed"),
-        }
-        result
+        self.call(
+            Method::POST,
+            &format!("boards/{board_id}/stacks"),
+            Some(body),
+            |result: &CallResult<Stack>| match result {
+                Ok(stack) => tracing::info!(stack_id = stack.id, "deck stack created"),
+                Err(err) => tracing::warn!(error = %err, "creating deck stack failed"),
+            },
+        )
+        .await
     }
 
     /// Applies a full [`StackChanges`] changeset to a stack (PUT).
@@ -937,14 +945,16 @@ impl DeckClient {
         changes: &StackChanges,
     ) -> Result<Stack, DeckError> {
         tracing::debug!(board_id, stack_id, "updating deck stack");
-        let resource = format!("boards/{board_id}/stacks/{stack_id}");
-        let result: Result<Stack, DeckError> =
-            self.send_json(Method::PUT, &resource, Some(changes)).await;
-        match &result {
-            Ok(_) => tracing::info!(stack_id, "deck stack updated"),
-            Err(err) => tracing::warn!(stack_id, error = %err, "updating deck stack failed"),
-        }
-        result
+        self.call(
+            Method::PUT,
+            &format!("boards/{board_id}/stacks/{stack_id}"),
+            Some(changes),
+            |result: &CallResult<Stack>| match result {
+                Ok(_) => tracing::info!(stack_id, "deck stack updated"),
+                Err(err) => tracing::warn!(stack_id, error = %err, "updating deck stack failed"),
+            },
+        )
+        .await
     }
 
     /// Deletes a stack. Returns the deleted stack as the server reports it.
@@ -954,15 +964,16 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn delete_stack(&self, board_id: u64, stack_id: u64) -> Result<Stack, DeckError> {
         tracing::debug!(board_id, stack_id, "deleting deck stack");
-        let resource = format!("boards/{board_id}/stacks/{stack_id}");
-        let result: Result<Stack, DeckError> = self
-            .send_json(Method::DELETE, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(_) => tracing::info!(stack_id, "deck stack deleted"),
-            Err(err) => tracing::warn!(stack_id, error = %err, "deleting deck stack failed"),
-        }
-        result
+        self.call(
+            Method::DELETE,
+            &format!("boards/{board_id}/stacks/{stack_id}"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Stack>| match result {
+                Ok(_) => tracing::info!(stack_id, "deck stack deleted"),
+                Err(err) => tracing::warn!(stack_id, error = %err, "deleting deck stack failed"),
+            },
+        )
+        .await
     }
 
     /// Creates a card on a stack from a [`NewCard`] payload.
@@ -977,15 +988,16 @@ impl DeckClient {
         new_card: &NewCard,
     ) -> Result<Card, DeckError> {
         tracing::debug!(board_id, stack_id, title = %new_card.title, "creating deck card");
-        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards");
-        let result: Result<Card, DeckError> = self
-            .send_json(Method::POST, &resource, Some(new_card))
-            .await;
-        match &result {
-            Ok(card) => tracing::info!(card_id = card.id, "deck card created"),
-            Err(err) => tracing::warn!(error = %err, "creating deck card failed"),
-        }
-        result
+        self.call(
+            Method::POST,
+            &format!("boards/{board_id}/stacks/{stack_id}/cards"),
+            Some(new_card),
+            |result: &CallResult<Card>| match result {
+                Ok(card) => tracing::info!(card_id = card.id, "deck card created"),
+                Err(err) => tracing::warn!(error = %err, "creating deck card failed"),
+            },
+        )
+        .await
     }
 
     /// Updates a card by `PUT`-ing the *full* card back (round-trip).
@@ -1001,19 +1013,21 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn update_card(&self, board_id: u64, card: &Card) -> Result<Card, DeckError> {
         tracing::debug!(board_id, card_id = card.id, "updating deck card");
-        let resource = format!(
-            "boards/{board_id}/stacks/{}/cards/{}",
-            card.stack_id, card.id
-        );
-        let result: Result<Card, DeckError> =
-            self.send_json(Method::PUT, &resource, Some(card)).await;
-        match &result {
-            Ok(_) => tracing::info!(card_id = card.id, "deck card updated"),
-            Err(err) => {
-                tracing::warn!(card_id = card.id, error = %err, "updating deck card failed");
-            }
-        }
-        result
+        self.call(
+            Method::PUT,
+            &format!(
+                "boards/{board_id}/stacks/{}/cards/{}",
+                card.stack_id, card.id
+            ),
+            Some(card),
+            |result: &CallResult<Card>| match result {
+                Ok(_) => tracing::info!(card_id = card.id, "deck card updated"),
+                Err(err) => {
+                    tracing::warn!(card_id = card.id, error = %err, "updating deck card failed");
+                }
+            },
+        )
+        .await
     }
 
     /// Deletes a card. Returns the deleted card as the server reports it.
@@ -1028,15 +1042,16 @@ impl DeckClient {
         card_id: u64,
     ) -> Result<Card, DeckError> {
         tracing::debug!(board_id, stack_id, card_id, "deleting deck card");
-        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}");
-        let result: Result<Card, DeckError> = self
-            .send_json(Method::DELETE, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(_) => tracing::info!(card_id, "deck card deleted"),
-            Err(err) => tracing::warn!(card_id, error = %err, "deleting deck card failed"),
-        }
-        result
+        self.call(
+            Method::DELETE,
+            &format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Card>| match result {
+                Ok(_) => tracing::info!(card_id, "deck card deleted"),
+                Err(err) => tracing::warn!(card_id, error = %err, "deleting deck card failed"),
+            },
+        )
+        .await
     }
 
     /// Archives a card (dedicated sub-endpoint, not a card PUT).
@@ -1167,15 +1182,17 @@ impl DeckClient {
         color: &DeckColor,
     ) -> Result<Label, DeckError> {
         tracing::debug!(board_id, title, color = %color, "creating deck label");
-        let resource = format!("boards/{board_id}/labels");
         let body = serde_json::json!({"title": title, "color": color.as_str()});
-        let result: Result<Label, DeckError> =
-            self.send_json(Method::POST, &resource, Some(body)).await;
-        match &result {
-            Ok(label) => tracing::info!(label_id = label.id, "deck label created"),
-            Err(err) => tracing::warn!(error = %err, "creating deck label failed"),
-        }
-        result
+        self.call(
+            Method::POST,
+            &format!("boards/{board_id}/labels"),
+            Some(body),
+            |result: &CallResult<Label>| match result {
+                Ok(label) => tracing::info!(label_id = label.id, "deck label created"),
+                Err(err) => tracing::warn!(error = %err, "creating deck label failed"),
+            },
+        )
+        .await
     }
 
     /// Applies a full [`LabelChanges`] changeset to a label (PUT).
@@ -1190,14 +1207,16 @@ impl DeckClient {
         changes: &LabelChanges,
     ) -> Result<Label, DeckError> {
         tracing::debug!(board_id, label_id, "updating deck label");
-        let resource = format!("boards/{board_id}/labels/{label_id}");
-        let result: Result<Label, DeckError> =
-            self.send_json(Method::PUT, &resource, Some(changes)).await;
-        match &result {
-            Ok(_) => tracing::info!(label_id, "deck label updated"),
-            Err(err) => tracing::warn!(label_id, error = %err, "updating deck label failed"),
-        }
-        result
+        self.call(
+            Method::PUT,
+            &format!("boards/{board_id}/labels/{label_id}"),
+            Some(changes),
+            |result: &CallResult<Label>| match result {
+                Ok(_) => tracing::info!(label_id, "deck label updated"),
+                Err(err) => tracing::warn!(label_id, error = %err, "updating deck label failed"),
+            },
+        )
+        .await
     }
 
     /// Deletes a label.
@@ -1207,15 +1226,16 @@ impl DeckClient {
     /// See [`DeckError`].
     pub async fn delete_label(&self, board_id: u64, label_id: u64) -> Result<Label, DeckError> {
         tracing::debug!(board_id, label_id, "deleting deck label");
-        let resource = format!("boards/{board_id}/labels/{label_id}");
-        let result: Result<Label, DeckError> = self
-            .send_json(Method::DELETE, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(_) => tracing::info!(label_id, "deck label deleted"),
-            Err(err) => tracing::warn!(label_id, error = %err, "deleting deck label failed"),
-        }
-        result
+        self.call(
+            Method::DELETE,
+            &format!("boards/{board_id}/labels/{label_id}"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Label>| match result {
+                Ok(_) => tracing::info!(label_id, "deck label deleted"),
+                Err(err) => tracing::warn!(label_id, error = %err, "deleting deck label failed"),
+            },
+        )
+        .await
     }
 
     /// Shared body of the archive/unarchive sub-endpoints (no request body).
@@ -1227,15 +1247,18 @@ impl DeckClient {
         flag: &str,
     ) -> Result<Card, DeckError> {
         tracing::debug!(board_id, stack_id, card_id, flag, "flagging deck card");
-        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/{flag}");
-        let result: Result<Card, DeckError> = self
-            .send_json(Method::PUT, &resource, None::<serde_json::Value>)
-            .await;
-        match &result {
-            Ok(_) => tracing::info!(card_id, flag, "deck card flagged"),
-            Err(err) => tracing::warn!(card_id, flag, error = %err, "flagging deck card failed"),
-        }
-        result
+        self.call(
+            Method::PUT,
+            &format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/{flag}"),
+            None::<serde_json::Value>,
+            |result: &CallResult<Card>| match result {
+                Ok(_) => tracing::info!(card_id, flag, "deck card flagged"),
+                Err(err) => {
+                    tracing::warn!(card_id, flag, error = %err, "flagging deck card failed");
+                }
+            },
+        )
+        .await
     }
 
     /// Shared body of the assignLabel/removeLabel sub-endpoints.
@@ -1255,16 +1278,70 @@ impl DeckClient {
             action,
             "card label change"
         );
-        let resource = format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/{action}");
-        let result: Result<Card, DeckError> = self
-            .send_json(Method::PUT, &resource, Some(LabelIdBody { label_id }))
+        self.call(
+            Method::PUT,
+            &format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/{action}"),
+            Some(LabelIdBody { label_id }),
+            |result: &CallResult<Card>| match result {
+                Ok(_) => tracing::info!(card_id, label_id, action, "deck card label changed"),
+                Err(err) => {
+                    tracing::warn!(card_id, label_id, action, error = %err, "card label change failed");
+                }
+            },
+        )
+        .await
+    }
+
+    /// Sends one JSON request (with retries) and logs the typed outcome
+    /// through `log`. The scaffold every request method shares; the
+    /// per-site event fields and texts live in each method's `log`
+    /// closure.
+    async fn call<T, L>(
+        &self,
+        method: Method,
+        resource: &str,
+        body: Option<impl Serialize>,
+        log: L,
+    ) -> Result<T, DeckError>
+    where
+        T: serde::de::DeserializeOwned,
+        L: FnOnce(&CallResult<T>),
+    {
+        let result = self.send_json(method, resource, body).await;
+        log(&result);
+        result
+    }
+
+    /// Multipart sibling of [`DeckClient::call`] for the two
+    /// attachment-content routes; `scope`/`for_update` carry the
+    /// app-level update route's shape (D1 spike §3.2).
+    async fn call_multipart<T, L>(
+        &self,
+        method: Method,
+        resource: &str,
+        scope: Scope,
+        upload: &AttachmentUpload,
+        for_update: bool,
+        log: L,
+    ) -> Result<T, DeckError>
+    where
+        T: serde::de::DeserializeOwned,
+        L: FnOnce(&CallResult<T>),
+    {
+        let call = Call {
+            method,
+            resource: resource.to_owned(),
+            scope,
+            body: Some(CallBody::Multipart(upload.clone(), for_update)),
+            validators: None,
+        };
+        let result = self
+            .send_with_retries(call, |raw| {
+                map_status(&raw)?;
+                decode_envelope::<T>(&raw.body)
+            })
             .await;
-        match &result {
-            Ok(_) => tracing::info!(card_id, label_id, action, "deck card label changed"),
-            Err(err) => {
-                tracing::warn!(card_id, label_id, action, error = %err, "card label change failed");
-            }
-        }
+        log(&result);
         result
     }
 
