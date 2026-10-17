@@ -1158,6 +1158,111 @@ mod tests {
     }
 
     #[test]
+    fn update_task_archived_edit_flips_the_flag_and_stamps_the_clock() {
+        // F3-11: the arm `task edit --archive` drives (command.rs
+        // UpdateTask.archived): archived is a field like any other — flag
+        // flips, its clock stamps, untouched clocks stand, and the generic
+        // update op enqueues.
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: TaskChanges {
+                    archived: Some(true),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert!(updated.archived);
+        assert_eq!(updated.clocks.archived, now());
+        assert_eq!(updated.clocks.title, ts(T0 - 3_600));
+        assert_eq!(updated.clocks.duedate, ts(T0 - 3_600));
+        assert_eq!(updated.clocks.position, ts(T0 - 3_600));
+        let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert!(matches!(op.op, LocalOp::UpdateTask(id) if id == task_id()));
+    }
+
+    #[test]
+    fn move_to_a_different_stack_with_unchanged_order_is_not_a_no_op() {
+        // The order conjunct of the MoveTask no-op guard: a same-order
+        // move across stacks is a real move (position is one composite
+        // field — the stack half alone changes it).
+        let (mut app, outbox) = base();
+        let other = stack(901, true);
+        app.stacks.insert(other.id, other.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::MoveTask {
+                id: task_id(),
+                stack: other.id,
+                order: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.stack, other.id);
+        assert_eq!(updated.order, 1);
+        assert_eq!(updated.clocks.position, now());
+        let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert!(matches!(op.op, LocalOp::MoveTask(id) if id == task_id()));
+    }
+
+    #[test]
+    fn stack_delete_cascade_spares_live_tasks_of_other_stacks() {
+        // The cascade filter conjunction: only live tasks *of the deleted
+        // stack* follow the delete — another stack's live bound task is
+        // absent from the plan entirely.
+        let (mut app, outbox) = base();
+        let other = stack(901, true);
+        app.stacks.insert(other.id, other.clone());
+        let spared = task(2, other.id, true);
+        let spared_id = spared.id;
+        app.tasks.insert(spared_id, spared);
+
+        let plan = run(&app, &outbox, &StateCommand::DeleteStack { id: stack_id() }).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert!(
+            !plan
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::UpsertTask(t) if t.id == spared_id)),
+            "the other stack's task is not upserted",
+        );
+        assert!(
+            !plan.actions.iter().any(|a| matches!(
+                a,
+                PersistenceAction::EnqueueOp(op) if matches!(op.op, LocalOp::DeleteTask(id) if id == spared_id)
+            )),
+            "the other stack's task is not cascaded",
+        );
+        let deletes: Vec<&PersistenceAction> = plan
+            .actions
+            .iter()
+            .filter(|a| matches!(a, PersistenceAction::EnqueueOp(op) if matches!(op.op, LocalOp::DeleteTask(_))))
+            .collect();
+        assert_eq!(deletes.len(), 1, "only the in-stack task cascades");
+        let PersistenceAction::EnqueueOp(op) = deletes[0] else {
+            unreachable!("filtered above");
+        };
+        assert!(matches!(op.op, LocalOp::DeleteTask(id) if id == task_id()));
+    }
+
+    #[test]
     fn set_task_done_to_current_state_is_a_no_op() {
         let (app, outbox) = base();
         let plan = run(
