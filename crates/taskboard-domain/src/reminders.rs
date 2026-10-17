@@ -1064,4 +1064,246 @@ mod tests {
             }
         }
     }
+
+    // ---- #303 adversarial arithmetic (issue #303, plan §proptests) ----
+
+    fn adversarial_offset_rule(
+        rule_raw: u128,
+        offset_secs: i64,
+        task: TaskId,
+        created_at: DateTime<Utc>,
+    ) -> ReminderRule {
+        let offset =
+            ReminderOffset::before(chrono::TimeDelta::try_seconds(offset_secs).unwrap()).unwrap();
+        ReminderRule {
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(rule_raw)),
+            task,
+            offset,
+            created_at,
+        }
+    }
+
+    proptest! {
+        #![proptest_config(test_support::proptest_config(256))]
+
+        #[test]
+        fn occurrence_of_is_total_and_saturating(
+            offset_secs in prop_oneof![
+                Just(0_i64),
+                (-2_592_000_i64..=-1),
+                (chrono::TimeDelta::MIN.num_seconds()..=-2_592_001),
+            ],
+            due_secs in test_support::adversarial_timestamp_seconds(),
+            d1 in test_support::adversarial_timestamp_seconds(),
+            d2 in test_support::adversarial_timestamp_seconds(),
+        ) {
+            let rule =
+                adversarial_offset_rule(400, offset_secs, TaskId::from(uuid::Uuid::from_u128(1)), ts(100));
+            let due = ts(due_secs);
+            // Library oracle: the contract *is* chrono's checked
+            // arithmetic — no clamping, `None` ⇔ overflow.
+            prop_assert_eq!(
+                occurrence_of(&rule, Some(due)),
+                due.checked_add_signed(rule.offset.as_duration()),
+            );
+            // Totality covers `None` dues trivially; monotonicity in the
+            // due, `None` sorting below `Some` (the saturation contract).
+            let (early, late) = if d1 <= d2 { (d1, d2) } else { (d2, d1) };
+            prop_assert!(
+                occurrence_of(&rule, Some(ts(early))) <= occurrence_of(&rule, Some(ts(late))),
+            );
+        }
+
+        #[test]
+        fn effective_occurrence_terminates_on_arbitrary_chains(
+            due_secs in 1_000_000_i64..=2_000_000,
+            links in prop::collection::vec((0_usize..=5, 0_usize..=5), 0..=6),
+        ) {
+            // Snooze links over a small instant set drawn *with
+            // replacement*, so self-links and cycles generate naturally:
+            // the cycle bound (the `visited` set) is under test.
+            let due = ts(due_secs);
+            let task = live_task(1, Some(due), 0);
+            let task_id = task.id;
+            let tasks = BTreeMap::from([(task.id, task)]);
+            let rule = ReminderRule {
+                id: ReminderRuleId::from(uuid::Uuid::from_u128(401)),
+                task: task_id,
+                offset: ReminderOffset::at_due(),
+                created_at: due,
+            };
+            let reminder = ReminderRef::Rule(rule.id);
+            let instants: Vec<DateTime<Utc>> = (0..=6)
+                .map(|i| due + chrono::TimeDelta::try_hours(i).unwrap())
+                .collect();
+            let mut reminders = ReminderState::default();
+            reminders.rules.insert(rule.id, rule);
+            for &(source, target) in &links {
+                reminders.snoozes.insert(
+                    ReminderSnoozeKey {
+                        reminder,
+                        occurrence: instants[source],
+                    },
+                    instants[target],
+                );
+            }
+
+            let result = reminders.effective_occurrence(&reminder, &tasks, &ReminderDefaults::default());
+            prop_assert!(result.is_some(), "total: the walk returns the base at worst");
+
+            // Bounded ≤ len(links)-hop manual walk reaches the same fixed
+            // point, and the walked path never repeats a node.
+            let mut walked = due;
+            let mut visited = BTreeSet::from([due]);
+            let mut hops = 0_usize;
+            while hops <= links.len() {
+                let Some(&next) = reminders.snoozes.get(&ReminderSnoozeKey {
+                    reminder,
+                    occurrence: walked,
+                }) else {
+                    break;
+                };
+                if !visited.insert(next) {
+                    break;
+                }
+                walked = next;
+                hops += 1;
+            }
+            prop_assert_eq!(result, Some(walked));
+            prop_assert_eq!(visited.len(), hops + 1, "no node repeats on the path");
+        }
+
+        #[test]
+        fn due_soon_saturates_the_horizon_never_panics(
+            now_secs in test_support::adversarial_timestamp_seconds(),
+            horizon in prop_oneof![
+                (1_i64..=2_592_000).prop_map(|s| chrono::TimeDelta::try_seconds(s).unwrap()),
+                Just(chrono::TimeDelta::try_seconds(i64::MAX / 1000).unwrap()),
+                Just(-chrono::TimeDelta::try_seconds(i64::MAX / 1000).unwrap()),
+                Just(chrono::TimeDelta::zero()),
+            ],
+        ) {
+            let now = ts(now_secs);
+            let edge = DateTime::<Utc>::MAX_UTC - chrono::TimeDelta::try_seconds(1).unwrap();
+            let task = live_task(1, Some(edge), 0);
+            let task_id = task.id;
+            let tasks = BTreeMap::from([(task.id, task)]);
+
+            let got = due_soon(&tasks, now, horizon);
+            let limit = now
+                .checked_add_signed(horizon)
+                .unwrap_or(DateTime::<Utc>::MAX_UTC);
+            for t in &got {
+                prop_assert!(
+                    t.duedate.is_some_and(|d| d > now && d <= limit),
+                    "library oracle: the half-open window in `(now, limit]`",
+                );
+            }
+            if horizon == chrono::TimeDelta::try_seconds(i64::MAX / 1000).unwrap() && now < edge {
+                prop_assert!(
+                    got.iter().any(|t| t.id == task_id),
+                    "the max horizon degrades to everything ahead",
+                );
+            }
+        }
+
+        #[test]
+        fn due_firings_total_deterministic_ordered_on_adversarial_instants(
+            now_secs in test_support::adversarial_timestamp_seconds(),
+            dues in prop::collection::vec(test_support::adversarial_timestamp_seconds(), 1..=4),
+            offset_secs in prop_oneof![
+                Just(0_i64),
+                (-2_592_000_i64..=-1),
+                (chrono::TimeDelta::MIN.num_seconds()..=-2_592_001),
+            ],
+        ) {
+            let now = ts(now_secs);
+            let mut tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
+            let mut reminders = ReminderState::default();
+            for (i, due_secs) in dues.iter().enumerate() {
+                let order = i64::try_from(i).unwrap();
+                let task = live_task(u128::try_from(i).unwrap() + 1, Some(ts(*due_secs)), order);
+                // Distinct rule ids: the rules map is keyed by id, so a
+                // shared id would silently keep only the last task's
+                // explicit rule and drop the rest to default reminders.
+                let rule = adversarial_offset_rule(
+                    u128::try_from(i).unwrap() + 401,
+                    offset_secs,
+                    task.id,
+                    ts(100),
+                );
+                reminders.rules.insert(rule.id, rule);
+                tasks.insert(task.id, task);
+            }
+            let defaults = ReminderDefaults::default();
+
+            let a = due_firings(&tasks, &reminders, &defaults, now);
+            let b = due_firings(&tasks, &reminders, &defaults, now);
+            prop_assert_eq!(&a, &b, "deterministic");
+            for pair in a.windows(2) {
+                prop_assert!(
+                    (pair[0].occurrence, pair[0].reminder) < (pair[1].occurrence, pair[1].reminder),
+                    "total (occurrence, reminder) order",
+                );
+            }
+            for firing in &a {
+                prop_assert!(firing.occurrence <= now);
+                prop_assert!(!reminders.is_delivered(&firing.reminder, &firing.occurrence));
+                let task = &tasks[&firing.task];
+                prop_assert!(task.is_live() && task.is_open() && task.duedate.is_some());
+                prop_assert!(!reminders.muted.contains(&firing.task));
+            }
+        }
+
+        #[test]
+        fn reminder_offset_before_rejects_exactly_positive_durations(
+            secs in (-(i64::MAX / 1000)..=(i64::MAX / 1000)),
+        ) {
+            // The full `try_seconds` domain: `before` is `Ok` iff the
+            // duration is not positive; the error is exactly AfterDue.
+            let dur = chrono::TimeDelta::try_seconds(secs).unwrap();
+            match ReminderOffset::before(dur) {
+                Ok(offset) => {
+                    prop_assert!(dur <= chrono::TimeDelta::zero());
+                    prop_assert!(offset.as_duration() <= chrono::TimeDelta::zero());
+                    prop_assert_eq!(offset.as_duration(), dur);
+                }
+                Err(err) => {
+                    prop_assert!(matches!(err, InvalidReminderOffset::AfterDue));
+                    prop_assert!(dur > chrono::TimeDelta::zero());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dst_boundary_instants_are_ordinary_instants() {
+        // Known-answer battery over the 2026 DST transitions: the
+        // arithmetic is zone-free, so every battery instant behaves like
+        // any other — occurrence is instant-exact and firings fire at the
+        // offset instant, never at a wall-clock reading of it.
+        let one_hour = chrono::TimeDelta::try_hours(1).unwrap();
+        for instant in test_support::dst_boundary_instants() {
+            let task = live_task(31, Some(instant), 0);
+            let task_id = task.id;
+            let tasks = BTreeMap::from([(task.id, task)]);
+            let rule = ReminderRule {
+                id: ReminderRuleId::from(uuid::Uuid::from_u128(402)),
+                task: task_id,
+                offset: ReminderOffset::before(-one_hour).unwrap(),
+                created_at: instant,
+            };
+            assert_eq!(
+                occurrence_of(&rule, Some(instant)),
+                Some(instant - one_hour),
+                "instant-exact at {instant}"
+            );
+            let mut reminders = ReminderState::default();
+            reminders.rules.insert(rule.id, rule);
+
+            let firings = due_firings(&tasks, &reminders, &ReminderDefaults::default(), instant);
+            assert_eq!(firings.len(), 1, "exactly one firing at {instant}");
+            assert_eq!(firings[0].occurrence, instant - one_hour);
+        }
+    }
 }
