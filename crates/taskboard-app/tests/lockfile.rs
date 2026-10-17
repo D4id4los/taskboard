@@ -151,3 +151,55 @@ async fn k6_holder_pid_reads_the_recorded_holder_while_locked() {
         Some(std::process::id())
     );
 }
+
+// -- owner-only sidecar modes (F12-01) ------------------------------------
+
+/// Asserts the mode bits recorded in the metadata view (never the
+/// access-as-another-user view, which root would defeat).
+#[cfg(unix)]
+fn owner_mode_is(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .expect("sidecar exists")
+        .permissions()
+        .mode()
+        & 0o777
+        == 0o600
+}
+
+/// F12-01 (#297): a freshly created lock sidecar is owner read/write
+/// only (ADR 0012 — OS permissions are the whole auth story).
+#[cfg(unix)]
+#[test]
+fn the_lock_sidecar_is_owner_only() {
+    let dir = tempdir();
+    let db = dir.path().join("modes.db");
+
+    let lock = taskboard_app::lockfile::InstanceLock::acquire(&db).expect("acquire");
+    assert!(owner_mode_is(lock.path()), "the fresh sidecar must be 0600");
+}
+
+/// F12-01 (#297): acquiring a lock tightens a pre-existing
+/// world-readable sidecar (a crashed run's file, or a pre-hardening
+/// leftover) — only the holder touches the mode.
+#[cfg(unix)]
+#[test]
+fn acquire_tightens_a_preexisting_world_readable_sidecar() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir();
+    let db = dir.path().join("loose.db");
+    let sidecar = dir.path().join("loose.lock");
+    std::fs::write(&sidecar, "pid=1\n").expect("pre-create sidecar");
+    let mut perms = std::fs::metadata(&sidecar).expect("meta").permissions();
+    perms.set_mode(0o644);
+    std::fs::set_permissions(&sidecar, perms).expect("loosen");
+
+    let lock = taskboard_app::lockfile::InstanceLock::acquire(&db).expect("acquire succeeds");
+    assert!(owner_mode_is(lock.path()), "acquire must tighten to 0600");
+    assert_eq!(
+        taskboard_app::lockfile::holder_pid(&db),
+        Some(std::process::id()),
+        "the holder record survives the tighten"
+    );
+}

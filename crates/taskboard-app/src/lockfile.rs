@@ -90,13 +90,16 @@ impl InstanceLock {
         // holder PID must survive until *this* acquire overwrites it
         // (it is read for the `Held` diagnostic after a failed
         // try_lock).
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .map_err(LockError::Io)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            // Owner-only at create (F12-01; ADR 0012) — the repl_history
+            // idiom, never a process-global umask mutation.
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let file = options.open(&path).map_err(LockError::Io)?;
         let lock: &'static mut RwLock<File> = Box::leak(Box::new(RwLock::new(file)));
         let mut guard = match lock.try_write() {
             Ok(guard) => guard,
@@ -116,6 +119,11 @@ impl InstanceLock {
             .and_then(|()| guard.set_len(body.len() as u64))
             .and_then(|()| guard.flush())
             .map_err(LockError::Io)?;
+        // Tighten pre-existing permissive sidecars (crashed runs,
+        // pre-hardening leftovers): only the lock's holder touches the
+        // mode. Failure warns, not fatal (kiosk boot resilience).
+        #[cfg(unix)]
+        tighten_owner_mode(&path);
         tracing::info!(lock = %path.display(), "instance lock acquired");
         Ok(Self {
             path,
@@ -127,6 +135,36 @@ impl InstanceLock {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+/// Best-effort owner-only mode for the acquired sidecar (F12-01; ADR
+/// 0012 — the file joins the db and config in the same trust story).
+/// Runs only after a successful acquire, so this process is the sole
+/// mode writer. The sidecar must exist here (it was just opened and
+/// written), so *any* stat or chmod failure warns — never fatal (the
+/// ipc socket's `harden` stance; kiosk boot resilience).
+#[cfg(unix)]
+fn tighten_owner_mode(path: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut perms = match std::fs::metadata(path) {
+        Ok(meta) => meta.permissions(),
+        Err(err) => {
+            tracing::warn!(
+                lock = %path.display(),
+                error = %err,
+                "could not stat lock sidecar for mode tighten"
+            );
+            return;
+        }
+    };
+    perms.set_mode(0o600);
+    if let Err(err) = std::fs::set_permissions(path, perms) {
+        tracing::warn!(
+            lock = %path.display(),
+            error = %err,
+            "could not tighten lock sidecar mode to owner-only"
+        );
     }
 }
 
