@@ -76,6 +76,41 @@ impl TaskRepository for FlakyRepository {
     }
 }
 
+/// Delegates to an in-memory repository and records every applied batch —
+/// the observation seam for "append nothing" assertions (the domain fake
+/// keeps state only).
+#[derive(Debug)]
+struct RecordingRepository {
+    inner: InMemoryRepository,
+    log: std::sync::Mutex<Vec<Vec<PersistenceAction>>>,
+}
+
+impl RecordingRepository {
+    fn seeded() -> Self {
+        Self {
+            inner: InMemoryRepository::with_state(seed_board_state("board")),
+            log: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn batches(&self) -> Vec<Vec<PersistenceAction>> {
+        self.log.lock().expect("poisoned").clone()
+    }
+}
+
+impl TaskRepository for RecordingRepository {
+    fn load(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>> {
+        self.inner.load()
+    }
+
+    fn apply(&self, actions: Vec<PersistenceAction>) -> BoxFuture<'_, Result<(), RepositoryError>> {
+        Box::pin(async move {
+            self.log.lock().expect("poisoned").push(actions.clone());
+            self.inner.apply(actions).await
+        })
+    }
+}
+
 /// Always fails loads: the boot-hydration failure class.
 #[derive(Debug)]
 struct DeadRepository;
@@ -1270,6 +1305,210 @@ async fn h1_engine_continues_without_sync_after_the_reports_channel_closes() {
         h.handle.shared_state().load_full().sync.phase,
         SyncPhase::Idle,
         "a dead connector must not mark the engine Syncing"
+    );
+}
+
+// ---------------------------------------------------------------------
+// F4: loop lifecycle + ingestion-equality negatives (#240)
+// ---------------------------------------------------------------------
+
+/// F4-01: with the command inbox and the reports channel both closed, the
+/// engine stays a daemon while a system-event producer still lives — the
+/// `NetworkLost` event must still be ingested into the persisted Offline
+/// phase. (The mirror contract h1 pins for connector death.)
+#[tokio::test]
+async fn engine_stays_a_daemon_when_commands_and_reports_close() {
+    let Harness {
+        handle,
+        report_tx,
+        system_tx,
+        ..
+    } = harness().await;
+    let state = handle.shared_state();
+    drop(handle); // closes the command inbox
+    drop(report_tx);
+
+    system_tx
+        .send(SystemEvent::NetworkLost)
+        .expect("the engine is still a system-channel receiver");
+
+    let deadline = Duration::from_secs(60);
+    tokio::time::timeout(deadline, async {
+        loop {
+            if state.load_full().sync.phase == SyncPhase::Offline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the live engine ingests the network event after its other sources closed");
+}
+
+/// A `Completed` report's validator triple with etag-bearing keys —
+/// non-default, so the first report has something to store.
+fn etag_validators() -> taskboard_domain::BoardPullValidators {
+    let mk = |etag: &str| taskboard_domain::SyncValidators {
+        etag: Some(etag.into()),
+        last_modified: None,
+    };
+    taskboard_domain::BoardPullValidators {
+        boards: mk("\"b1\""),
+        stacks: mk("\"s1\""),
+        archived_stacks: mk("\"a1\""),
+    }
+}
+
+/// The fixture `Completed` report: board 77, no stacks/tasks/labels,
+/// etag validators, fixed `read_at` — byte-identical on every call.
+fn completed_report() -> SyncReport {
+    SyncReport::Completed {
+        snapshot: Box::new(RemoteBoardSnapshot {
+            board: RemoteBoard {
+                id: RemoteBoardId(77),
+                title: "remote board".into(),
+                color: "00ff00".into(),
+                archived: false,
+                deleted_at: None,
+                last_modified: ts(T0),
+            },
+            stacks: vec![],
+            tasks: vec![],
+            labels: vec![],
+        }),
+        validators: etag_validators(),
+        pushes: vec![],
+        read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+    }
+}
+
+/// F4-02a: sending the *identical* `Completed` report a second time
+/// appends nothing — the iff-differs batching means no second batch
+/// reaches the repository at all (the empty-batch fast path).
+#[tokio::test]
+async fn identical_completed_report_appends_nothing() {
+    let repo = Arc::new(RecordingRepository::seeded());
+    let h = spawn(Spawner {
+        repo: repo.clone() as Arc<dyn TaskRepository>,
+        ..Spawner::default()
+    })
+    .await;
+
+    h.report_tx
+        .send(completed_report())
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.boards
+            .values()
+            .any(|b| b.remote == Some(RemoteBoardId(77)))
+            && app.sync.last_success == Some(ts(T0))
+            && app.sync.phase == SyncPhase::Idle
+    })
+    .await;
+    h.handle.flush().await;
+
+    // The identical report, then a marker report whose ingestion is the
+    // settle signal (the identical report publishes nothing to wait for;
+    // mpsc FIFO orders it first).
+    h.report_tx
+        .send(completed_report())
+        .await
+        .expect("report channel open");
+    h.report_tx
+        .send(SyncReport::Failed {
+            kind: SyncErrorKind::Auth,
+            pushes: vec![],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+        })
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.sync.phase
+            == SyncPhase::Failed {
+                last_error: SyncErrorKind::Auth,
+            }
+    })
+    .await;
+
+    let batches = repo.batches();
+    assert_eq!(
+        batches.len(),
+        2,
+        "the identical report must contribute zero batches"
+    );
+    let first = &batches[0];
+    assert_eq!(
+        first
+            .iter()
+            .filter(|a| matches!(a, PersistenceAction::UpsertValidators(..)))
+            .count(),
+        3,
+        "the first report stores its three validators"
+    );
+    assert_eq!(
+        first
+            .iter()
+            .filter(|a| matches!(a, PersistenceAction::UpsertBoard(..)))
+            .count(),
+        1,
+        "the first report adopts the board"
+    );
+    for batch in batches.iter().skip(1) {
+        assert!(
+            !batch
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::UpsertValidators(..))),
+            "no batch after the first may re-store validators"
+        );
+    }
+    assert_eq!(
+        batches[1].len(),
+        1,
+        "the marker batch is the status write alone"
+    );
+    assert!(matches!(
+        batches[1][0],
+        PersistenceAction::UpsertSyncStatus(_)
+    ));
+}
+
+/// F4-02b: a subsequent `Failed` report carries the last-success stamp
+/// forward instead of clearing it — the status write reads the engine's
+/// carried status, not a default.
+#[tokio::test]
+async fn failed_report_keeps_the_last_success_stamp() {
+    let h = harness().await;
+    h.report_tx
+        .send(completed_report())
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.sync.last_success == Some(ts(T0)) && app.sync.phase == SyncPhase::Idle
+    })
+    .await;
+    let stamp = h.handle.shared_state().load_full().sync.last_success;
+
+    h.report_tx
+        .send(SyncReport::Failed {
+            kind: SyncErrorKind::Network,
+            pushes: vec![],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+        })
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.sync.phase
+            == SyncPhase::Failed {
+                last_error: SyncErrorKind::Network,
+            }
+    })
+    .await;
+
+    assert_eq!(
+        h.handle.shared_state().load_full().sync.last_success,
+        stamp,
+        "the failure verdict must not erase the last success"
     );
 }
 
