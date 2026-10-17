@@ -276,6 +276,26 @@ async fn connect_with_a_userinfo_url_fails_typed_and_persists_nothing() {
     );
 }
 
+/// F12-03 (#261): a connect over a cleartext `http://` URL flags the
+/// receipt (the wiremock surface is http, i.e. the loud case).
+#[tokio::test]
+async fn connect_over_http_flags_the_receipt_cleartext() {
+    let server = mount_boards_ok().await;
+    let dir = tempdir();
+    let config_path = dir.path().join("taskboard.toml");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+
+    let receipt = run_connect(
+        &config_path,
+        args(Some(server.uri())),
+        &mut FakePrompts::new(&["s3cret-pw"]),
+        &store,
+    )
+    .await
+    .expect("connect succeeds");
+    assert!(receipt.cleartext_transport, "wiremock serves http");
+}
+
 /// C16 (was L4): env store → connect succeeds with `stored == "env"`.
 #[tokio::test]
 async fn c16_env_store_connect_succeeds_with_stored_env() {

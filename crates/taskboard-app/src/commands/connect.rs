@@ -250,6 +250,17 @@ pub async fn run<P: PromptReader>(
     let stored = store_secret(store, &identity, repoint.as_ref())?;
 
     tracing::info!(stored, "connect verified and persisted");
+    // F12-03: one loud cleartext flag per ceremony — the receipt field
+    // and one warn beside the info log; once by construction (the
+    // ceremony runs once per invocation).
+    let cleartext_transport = crate::config::url_is_cleartext(&identity.server);
+    if cleartext_transport {
+        tracing::warn!(
+            server = %identity.server,
+            "server_url uses cleartext http; the app password travels \
+             unencrypted — prefer https"
+        );
+    }
     Ok(ConnectReceipt {
         server_url: identity.server,
         username: identity.user,
@@ -259,6 +270,7 @@ pub async fn run<P: PromptReader>(
         repointed: repoint.is_some(),
         attached: None,
         daemon_connector: None,
+        cleartext_transport,
     })
 }
 
@@ -450,6 +462,14 @@ pub fn render_text(receipt: &ConnectReceipt) -> String {
     };
     let base = if receipt.repointed {
         format!("{base} — re-pointed")
+    } else {
+        base
+    };
+    let base = if receipt.cleartext_transport {
+        format!(
+            "{base} — warning: transport is cleartext http; \
+             credentials are not encrypted in transit (prefer https)"
+        )
     } else {
         base
     };
@@ -725,6 +745,7 @@ mod tests {
             stored: "keyring".to_owned(),
             backend_switched: false,
             repointed: false,
+            cleartext_transport: false,
             attached: None,
             daemon_connector: state,
         };
@@ -735,6 +756,28 @@ mod tests {
         assert_eq!(json["daemon_connector"], "unknown");
         let json = serde_json::to_value(base(None)).expect("serialize");
         assert!(json.get("daemon_connector").is_none());
+    }
+
+    /// F12-03 (#261): the cleartext flag serializes as a plain bool on
+    /// every receipt (not `Option` + skip — every receipt knows its
+    /// URL).
+    #[test]
+    fn the_cleartext_flag_serializes_as_a_plain_bool() {
+        let base = |cleartext| crate::commands::output::ConnectReceipt {
+            server_url: "http://c.example.com".to_owned(),
+            username: "alice".to_owned(),
+            verified: true,
+            stored: "keyring".to_owned(),
+            backend_switched: false,
+            repointed: false,
+            cleartext_transport: cleartext,
+            attached: None,
+            daemon_connector: None,
+        };
+        let json = serde_json::to_value(base(true)).expect("serialize");
+        assert_eq!(json["cleartext_transport"], true);
+        let json = serde_json::to_value(base(false)).expect("serialize");
+        assert_eq!(json["cleartext_transport"], false);
     }
 
     /// ADR 0014 §7: the one-shot receipt's JSON shape carries
@@ -748,6 +791,7 @@ mod tests {
             stored: "keyring".to_owned(),
             backend_switched: false,
             repointed: false,
+            cleartext_transport: false,
             attached,
             daemon_connector: None,
         };

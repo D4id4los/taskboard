@@ -124,6 +124,7 @@ fn o1b_receipt_payloads_expose_documented_fields() {
         repointed: false,
         attached: None,
         daemon_connector: None,
+        cleartext_transport: false,
     };
     let v = serde_json::to_value(&connect).unwrap();
     assert_eq!(
@@ -134,7 +135,8 @@ fn o1b_receipt_payloads_expose_documented_fields() {
             "verified": true,
             "stored": "keyring",
             "backend_switched": false,
-            "repointed": false
+            "repointed": false,
+            "cleartext_transport": false
         })
     );
 
@@ -343,6 +345,7 @@ fn o4_login_projection_never_carries_the_secret() {
         repointed: false,
         attached: None,
         daemon_connector: None,
+        cleartext_transport: false,
     };
     let json = serde_json::to_string(&receipt).unwrap();
     assert!(!json.contains(SECRET));
