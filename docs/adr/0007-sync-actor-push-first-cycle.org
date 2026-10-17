@@ -162,3 +162,34 @@ would fail the cycle forever and the cascade could never land).
   verbatim above) is now =EngineEnvelope::ReadState=; the
   payload/envelope split is unchanged and no variant, field, or
   behavior moved. See issue #302.
+
+* Amendment (2026-10-17): stale-binding pre-write-fetch 404s re-resolve once before classification (#258)
+
+The "stale-binding 404s are never misread as =RemoteMissing=" clause
+now holds for the remote-move case. The push-side ref carries the
+stack component, so a card another client moved answers *404* its
+pre-write fetch at the stale location. On a pre-write-fetch 404 in
+update/move, the executor re-resolves the card once against the fresh
+active+archived stack listings — the same presence truth the pull
+trusts; card identity is (board, card), the stack component ignored,
+mirroring the pull-side match. Found → the overlay binding is
+refreshed and the fetch retried once at the fresh location; absent
+from both listings → =RemoteMissing=, now confirmed-truthful; the
+listing's own failure classifies through the normative write table
+(transport aborts the cycle; a board-gone listing 404 maps to
+=RemoteMissing=). Write-path 404s *after* a successful fetch — a
+genuine mid-flight disappearance — remain =RemoteMissing=. There is
+no configuration knob: this is the classification policy.
+
+* Amendment (2026-10-17): the cycle's wall stamps flow through the injected =Clock= seam (#259)
+
+The actor's wall reads — =read_at=, the =NoBoard= report stamp, the
+dead-board tombstone stamps, the archive-mismatch correction stamp —
+now read =SyncActorConfig.clock: Arc<dyn taskboard_domain::Clock>=,
+the same seam the engine uses, replacing the former
+same-clock-by-convention note. Production injects =SystemClock=
+(stateless: engine and actor read one wall source); the hermetic
+suites inject fixed or stepping clocks, making every
+LWW-participating stamp deterministic. Skew mitigation itself remains
+unimplemented — the backlog entry's conditional trigger stands; this
+seam is its prerequisite.
