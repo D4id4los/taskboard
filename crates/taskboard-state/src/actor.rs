@@ -40,7 +40,7 @@ const SIGNAL_BUFFER: usize = 64;
 /// The engine inbox: channel-bearing envelopes owned by this crate, with
 /// the domain payloads inside (payload/envelope split).
 #[derive(Debug)]
-pub enum EngineCommand {
+pub enum EngineEnvelope {
     /// Execute one [`StateCommand`]; the optional reply is the command
     /// receipt (CLI `execute`). `None` is the fire-and-forget UI path.
     Execute {
@@ -105,7 +105,7 @@ pub enum AttachError {
 /// [`EngineHandle::subscribe`], both domain-typed.
 #[derive(Debug, Clone)]
 pub struct EngineHandle {
-    commands: mpsc::Sender<EngineCommand>,
+    commands: mpsc::Sender<EngineEnvelope>,
     signals: broadcast::Sender<EngineSignal>,
     state: Arc<ArcSwap<AppState>>,
 }
@@ -123,7 +123,7 @@ impl EngineHandle {
     pub async fn execute(&self, command: StateCommand) -> Result<CommandOutcome, ExecuteError> {
         let (reply, rx) = oneshot::channel();
         self.commands
-            .send(EngineCommand::Execute {
+            .send(EngineEnvelope::Execute {
                 command,
                 reply: Some(reply),
             })
@@ -136,7 +136,7 @@ impl EngineHandle {
     /// panics. A full or closed inbox is logged and the command dropped —
     /// unreachable at human input rates.
     pub fn dispatch(&self, command: StateCommand) {
-        let result = self.commands.try_send(EngineCommand::Execute {
+        let result = self.commands.try_send(EngineEnvelope::Execute {
             command,
             reply: None,
         });
@@ -158,7 +158,7 @@ impl EngineHandle {
         let (reply, rx) = oneshot::channel();
         if self
             .commands
-            .send(EngineCommand::Flush { reply })
+            .send(EngineEnvelope::Flush { reply })
             .await
             .is_err()
         {
@@ -181,7 +181,7 @@ impl EngineHandle {
     ) -> Result<AttachReceipt, AttachError> {
         let (reply, rx) = oneshot::channel();
         self.commands
-            .send(EngineCommand::AttachConnector { sync_out, reply })
+            .send(EngineEnvelope::AttachConnector { sync_out, reply })
             .await
             .map_err(|_| AttachError::EngineGone)?;
         rx.await.map_err(|_| AttachError::EngineGone)
@@ -212,7 +212,7 @@ impl SyncStateReader for EngineHandle {
         Box::pin(async {
             let (reply, rx) = oneshot::channel();
             self.commands
-                .send(EngineCommand::ReadState { reply })
+                .send(EngineEnvelope::ReadState { reply })
                 .await
                 .map_err(|_| RepositoryError::Unavailable)?;
             rx.await.map_err(|_| RepositoryError::Unavailable)?
@@ -304,7 +304,7 @@ async fn run_loop(
     parts: EngineParts,
     shared: Arc<ArcSwap<AppState>>,
     signals: broadcast::Sender<EngineSignal>,
-    mut commands: mpsc::Receiver<EngineCommand>,
+    mut commands: mpsc::Receiver<EngineEnvelope>,
     mut sync_reports: mpsc::Receiver<taskboard_domain::SyncReport>,
     mut system: broadcast::Receiver<SystemEvent>,
 ) {
@@ -355,7 +355,7 @@ async fn run_loop(
             biased; // deterministic drain order: commands, reports, system
 
             maybe_command = commands.recv(), if commands_open => match maybe_command {
-                Some(EngineCommand::Execute { command, reply }) => {
+                Some(EngineEnvelope::Execute { command, reply }) => {
                     if draining {
                         // Declined, not executed: shutdown stopped new
                         // work. The reply mirrors a stopped engine.
@@ -376,17 +376,17 @@ async fn run_loop(
                     )
                     .await;
                 }
-                Some(EngineCommand::Flush { reply }) => {
+                Some(EngineEnvelope::Flush { reply }) => {
                     // FIFO: everything before this was applied, interpreted,
                     // and published. In drain mode the pre-drain prefix is
                     // already settled, so the immediate reply preserves the
                     // barrier semantics.
                     let _ = reply.send(());
                 }
-                Some(EngineCommand::ReadState { reply }) => {
+                Some(EngineEnvelope::ReadState { reply }) => {
                     let _ = reply.send(Ok(core.persisted_view()));
                 }
-                Some(EngineCommand::AttachConnector { sync_out, reply }) => {
+                Some(EngineEnvelope::AttachConnector { sync_out, reply }) => {
                     if draining {
                         // Mirrors Execute's decline: no new work — and no
                         // new connectors — after Shutdown.
