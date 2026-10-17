@@ -701,25 +701,7 @@ impl<'a> PushExecutor<'a> {
                     current.insert(*label_num);
                 }
                 Err(err) => {
-                    let ctx = PushCtx {
-                        existing: true,
-                        delete: false,
-                    };
-                    if mapping::classify_push(&err, ctx).is_some() {
-                        // A classified rejection: report the fields' PUT
-                        // (it landed) and let the label ops retry.
-                        return GroupOutcome::Outcomes(Self::primary_outcome(
-                            group,
-                            PushResult::Applied {
-                                echo: Some(mapping::map_echo(&updated, card_ref.board)),
-                            },
-                        ));
-                    }
-                    tracing::warn!(error = %err, "push aborted: transport failure");
-                    // The fields' PUT landed, but it is a full-send of
-                    // unchanged-after-retry fields: reporting nothing is
-                    // safe, the whole group retried next cycle.
-                    return GroupOutcome::Aborted { landed: Vec::new() };
+                    return Self::label_delta_failure(group, &updated, card_ref.board, &err);
                 }
             }
         }
@@ -739,20 +721,7 @@ impl<'a> PushExecutor<'a> {
             {
                 Ok(_) => {}
                 Err(err) => {
-                    let ctx = PushCtx {
-                        existing: true,
-                        delete: false,
-                    };
-                    if mapping::classify_push(&err, ctx).is_some() {
-                        return GroupOutcome::Outcomes(Self::primary_outcome(
-                            group,
-                            PushResult::Applied {
-                                echo: Some(mapping::map_echo(&updated, card_ref.board)),
-                            },
-                        ));
-                    }
-                    tracing::warn!(error = %err, "push aborted: transport failure");
-                    return GroupOutcome::Aborted { landed: Vec::new() };
+                    return Self::label_delta_failure(group, &updated, card_ref.board, &err);
                 }
             }
         }
@@ -972,6 +941,38 @@ impl<'a> PushExecutor<'a> {
             // for this group's writes (they did not land) or anything after.
             None => GroupOutcome::Aborted { landed: Vec::new() },
         }
+    }
+
+    /// Classify-or-abort tail shared by the label-delta sub-endpoints
+    /// (assign/remove): a *classified* failure reports the fields' PUT as
+    /// landed — its echo is authoritative for the primary — and the label
+    /// ops retry next cycle; a transport-class failure aborts the cycle
+    /// with nothing reported: the PUT was a full-send of fields that stay
+    /// unchanged across the retry, so re-sending the whole group is safe.
+    fn label_delta_failure(
+        group: &PushGroup,
+        updated: &Card,
+        board: RemoteBoardId,
+        err: &DeckError,
+    ) -> GroupOutcome {
+        if mapping::classify_push(
+            err,
+            PushCtx {
+                existing: true,
+                delete: false,
+            },
+        )
+        .is_some()
+        {
+            return GroupOutcome::Outcomes(Self::primary_outcome(
+                group,
+                PushResult::Applied {
+                    echo: Some(mapping::map_echo(updated, board)),
+                },
+            ));
+        }
+        tracing::warn!(error = %err, "push aborted: transport failure");
+        GroupOutcome::Aborted { landed: Vec::new() }
     }
 }
 
