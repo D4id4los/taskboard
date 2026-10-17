@@ -60,6 +60,54 @@ async fn open_with(
     Ok(SqliteTaskRepository { pool })
 }
 
+/// Owner-only modes for the database file and its `-wal`/`-shm`
+/// siblings (F12-01; ADR 0012 — OS object permissions are the whole v1
+/// auth story). sqlx owns the create (`create_if_missing`), so the
+/// tighten happens post-open, on the same synchronous path; a missing
+/// sibling is skipped (sqlite creates them at its own discretion) and
+/// any other failure warns without being fatal — the ipc socket's
+/// `harden` stance (kiosk boot resilience).
+#[cfg(unix)]
+fn harden_sibling_modes(db: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut paths = vec![db.to_owned()];
+    for suffix in ["-wal", "-shm"] {
+        let mut name = db.as_os_str().to_owned();
+        name.push(suffix);
+        paths.push(std::path::PathBuf::from(name));
+    }
+    for path in paths {
+        let mut perms = match std::fs::metadata(&path) {
+            Ok(meta) => meta.permissions(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "could not stat database file for mode tighten"
+                );
+                continue;
+            }
+        };
+        perms.set_mode(0o600);
+        if let Err(err) = std::fs::set_permissions(&path, perms) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "could not tighten database file mode to owner-only"
+            );
+        }
+    }
+}
+
+/// Non-unix platforms fall back to their platform-default ACL story
+/// (no ACL work — documented non-goal).
+#[cfg(not(unix))]
+fn harden_sibling_modes(db: &Path) {
+    let _ = db;
+}
+
 /// Opens (creating if absent) the database at `path`, applies pending
 /// migrations, and returns the repository.
 ///
@@ -73,11 +121,13 @@ async fn open_with(
 pub async fn open(path: impl AsRef<Path>) -> Result<SqliteTaskRepository, OpenError> {
     let path = path.as_ref();
     tracing::debug!(path = %path.display(), "opening sqlite database");
-    open_with(
+    let repo = open_with(
         apply_pragmas(SqliteConnectOptions::new()).filename(path),
         false,
     )
-    .await
+    .await?;
+    harden_sibling_modes(path);
+    Ok(repo)
 }
 
 /// In-memory variant for tests. The database is per-connection, so the pool
@@ -366,6 +416,76 @@ mod tests {
             .await
             .expect("pragma");
         assert_eq!(mode, "wal");
+    }
+
+    // -- owner-only file modes (F12-01) --------------------------------------
+
+    /// Asserts the mode bits recorded in the metadata view (never the
+    /// access-as-another-user view, which root would defeat).
+    #[cfg(unix)]
+    fn owner_mode_is(path: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .expect("file exists")
+            .permissions()
+            .mode()
+            & 0o777
+            == 0o600
+    }
+
+    /// F12-01 (#297): a database created by `open` is owner read/write
+    /// only — OS permissions are the whole auth story (ADR 0012).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fresh_database_file_is_owner_read_write_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("fresh.db");
+
+        let repo = open(&db).await.expect("open");
+        drop(repo);
+
+        assert!(owner_mode_is(&db), "the fresh database must be 0600");
+    }
+
+    /// F12-01 (#297): the `-wal`/`-shm` siblings carry board content
+    /// too while the pool holds the connection; they must be owner-only
+    /// as well.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wal_and_shm_siblings_are_owner_only_while_the_database_is_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("fresh.db");
+
+        let repo = open(&db).await.expect("open");
+        let _ = repo.load().await.expect("load");
+
+        let wal = dir.path().join("fresh.db-wal");
+        let shm = dir.path().join("fresh.db-shm");
+        assert!(wal.exists(), "wal exists while the pool connection lives");
+        assert!(shm.exists(), "shm exists while the pool connection lives");
+        assert!(owner_mode_is(&wal), "the wal sibling must be 0600");
+        assert!(owner_mode_is(&shm), "the shm sibling must be 0600");
+    }
+
+    /// F12-01 (#297): opening tightens a pre-existing world-readable
+    /// database (upgrade self-heal).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opening_tightens_a_preexisting_world_readable_database() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("loose.db");
+        std::fs::File::create(&db).expect("pre-create empty db");
+        let mut perms = std::fs::metadata(&db).expect("meta").permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&db, perms).expect("loosen");
+        assert!(!owner_mode_is(&db), "fixture must start permissive");
+
+        let repo = open(&db).await.expect("open");
+        drop(repo);
+
+        assert!(owner_mode_is(&db), "opening must tighten to 0600");
     }
 
     /// The pool holds exactly one connection (kiosk single-writer stance).
