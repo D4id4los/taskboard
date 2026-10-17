@@ -2,7 +2,7 @@
 //! The `taskboard` State Engine actor.
 //!
 //! Single source of runtime truth. The engine consumes
-//! [`EngineCommand`]s over an owned `tokio::sync::mpsc` inbox, advances
+//! [`EngineEnvelope`]s over an owned `tokio::sync::mpsc` inbox, advances
 //! its working state **only** by interpreting the action batches that
 //! were durably applied to the repository (memory ≡ disk by
 //! construction, ADR 0006), publishes immutable [`AppState`] snapshots
@@ -78,7 +78,7 @@ pub mod config;
 pub(crate) mod core;
 pub mod error;
 
-pub use actor::{AttachError, AttachReceipt, EngineCommand, EngineHandle, spawn_state_engine};
+pub use actor::{AttachError, AttachReceipt, EngineEnvelope, EngineHandle, spawn_state_engine};
 pub use config::ReminderEngineConfig;
 pub use core::EngineCore;
 pub use error::{EngineStartupError, ExecuteError};
