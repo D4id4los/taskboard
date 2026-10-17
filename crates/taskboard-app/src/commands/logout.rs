@@ -206,18 +206,7 @@ fn strip_config_keys(path: &Path, server: &str, username: &str) -> Result<bool, 
     if !cleared {
         return Ok(false);
     }
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("taskboard-tmp");
-    {
-        let mut file = std::fs::File::create(&tmp)?;
-        std::io::Write::write_all(&mut file, doc.to_string().as_bytes())?;
-        file.sync_all().ok();
-    }
-    std::fs::rename(&tmp, path)?;
+    crate::config::write_owner_only_atomic(path, doc.to_string().as_str())?;
     Ok(true)
 }
 
@@ -225,6 +214,37 @@ fn strip_config_keys(path: &Path, server: &str, username: &str) -> Result<bool, 
 mod detach_tests {
     use super::{DaemonConnectorState, NudgeOutcome, map_nudge, nudge_warning};
     use crate::ipc::protocol::DetachWireOutcome;
+
+    /// F12-01 (#297): the logout strip rewrite (the same tmp+rename
+    /// mechanism as the connect overlay) keeps the config owner-only
+    /// and re-establishes the mode on a loosened file.
+    #[cfg(unix)]
+    #[test]
+    fn the_logout_strip_rewrite_keeps_the_config_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &config,
+            "[nextcloud]\nserver_url = \"https://c.example.com\"\nusername = \"alice\"\n",
+        )
+        .expect("seed config");
+        let mut perms = std::fs::metadata(&config).expect("meta").permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&config, perms).expect("loosen");
+
+        let stripped =
+            super::strip_config_keys(&config, "https://c.example.com", "alice").expect("strip");
+        assert!(stripped, "the keys were present and must be removed");
+
+        let mode = std::fs::metadata(&config)
+            .expect("config exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "the strip rewrite must leave the file 0600");
+    }
 
     /// WI-H tier 8: the pure nudge → receipt-field/warning mapping
     /// covers every arm — no socket involved.
