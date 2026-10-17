@@ -28,7 +28,7 @@ Four issues reduce to **three distinct causes** (one already resolved):
 |---|---|---|---|
 | F-1 virtual-deadline starvation | #290 (both tests), #287 (a10 occurrence, CI string now recovered), likely #287 (2026-10-11 instrumented occurrence) | The hermetic suites' wait helpers bound their loops on the **paused tokio clock** while the sync actor's progress depends on **real wiremock I/O**; under CI CPU contention the virtual budget (6k–12k iterations ≈ **0.4–0.9 s wall**) expires before the I/O chain completes | **Yes** — hybrid wall-clock deadline (plan chunk 1) |
 | F-2 refused-port fixture race | #287 (2026-10-16 coverage-lane occurrence of `create_stack_transport_failure_aborts`) | `refused_client` binds a port and drops the listener; between drop and the client's connect, another concurrently starting `MockServer` can win the same ephemeral port, turning the expected `Transport` (abort) into a 404 `NotFound` (rejected) | **Yes** — assert the refusal precondition in the fixture (plan chunk 2) |
-| F-3 host-kernel EACCES | #289 | The kernel intermittently returns `EACCES` for ordinary `mkdir`/`openat` calls of freshly created `/tmp` tmpfs paths, **to the same thread, on the syscall immediately after a successful sibling call**. Not DAC, not seccomp, not Landlock (proof below), not any userspace chmod (inotify watched), not reproducible by the syscall pattern alone (48k-iteration standalone reproducer clean) | **No** — host-environmental; capture protocol + escalation ladder (plan chunk 3) |
+| F-3 host-kernel EACCES | #289 | ~~kernel-level~~ **CORRECTED same day — see §7**: rustyline 18.0.1's `FileHistory::save` mutates the process-global umask around the history-file create; concurrent creates in other threads land with stripped mode bits (directories without `x` → `EACCES` on traversal/child ops). Reproduced with an independent probe. **A code defect (rustyline upstream), fixable in-repo by bypassing `FileHistory::save`.** |
 
 #288 (corrupt profraw aborting the coverage merge) is **resolved** — the
 2026-10-13 stage-2 verdict (SIGKILL inside an instrumented child's
@@ -67,7 +67,7 @@ own backlog issue in the plan.
 | #288 | CI coverage-job profraw merge | 3 CI + 1 local (2026-10-11…13) | **Resolved** 2026-10-13; quarantine script in CI; five green runs recorded. Closed family. |
 | #290 | `e2e_hermetic` i1/i2 | 1 CI run (2026-10-16 22:25), 2 tests | **Root-caused** (F-1). Panic string in the issue matches the mechanism exactly. |
 | #287 | `actor_wiremock` | 3 recorded: 2026-10-11 instrumented exit 101; 2026-10-16 a10 (plain nextest); 2026-10-16 coverage-lane `create_stack_transport_failure_aborts` | a10 **root-caused** (F-1 — see §4.1); coverage-lane occurrence **mechanism identified** (F-2, high confidence); 2026-10-11 occurrence plausibly F-1 under instrumentation (unconfirmed). |
-| #289 | `repl_history::tests` (7 tests) | ~dozens local (2026-10-15 → present), **reproduced at will during this investigation** | **Root-caused to the host/kernel boundary** (F-3); not a code or test defect; final kernel-vs-other attribution open (§4.4). |
+| #289 | `repl_history::tests` (7 tests) | ~dozens local (2026-10-15 → present), **reproduced at will during this investigation** | **Root-caused (§7 amendment): rustyline's process-global umask window** — a code defect, not environmental; fixable in-repo (plan chunk 3). |
 
 ## 4. Findings
 
@@ -320,3 +320,83 @@ separate defect is warranted.
    fixture to log its regenerations post-fix — the plan includes that
    logging, which converts future occurrences from mysteries into
    counters).
+
+## 7. Amendment (2026-10-17, same day): F-3 root cause corrected
+
+After this report was committed, an independent analysis landed on
+#289 (comment 6235443727, agent on `refactor/enginecommand-envelope-rename`)
+identifying rustyline 18.0.1's `FileHistory::save` as the trigger: the
+method wraps the history-file create in a **process-global umask
+mutation** (`rustyline-18.0.1/src/history.rs:692-695`):
+
+```rust
+let old_umask = umask();               // umask(S_IXUSR | S_IRWXG | S_IRWXO) == 0o177
+let f = File::create(path);
+restore_umask(old_umask);
+```
+
+Any `mkdir`/`File::create` executed by *another thread* of the same
+process inside that window gets its mode bits stripped
+(`0777 & !0o177 = 0o600`) — a directory **without the execute bit**.
+Every symptom in §4.3 follows mechanically: `mkdir` of a child inside
+such a directory → `EACCES` (needs `w+x`), `metadata`/`openat` through
+it → `EACCES` (traversal needs `x`), and the "empty next session"
+assertion (the save itself fails inside a 0600 directory, so the reload
+finds no file). The runner matrix follows too: nextest (one test per
+process; umask is per-process) and serial libtest are immune; only
+in-process parallel libtest (`cargo test --lib`, plain
+`cargo llvm-cov --workspace`) is exposed. CI lanes are immune by
+construction.
+
+**Independently verified in this session** (not taken on faith):
+
+1. *Source*: the quoted umask dance confirmed at
+   `~/.cargo/registry/src/…/rustyline-18.0.1/src/history.rs:693-695`
+   (unix arm :819-824). **rustyline 19.0.0 (current latest) still has
+   it** — verified against the 19.0.0 source on docs.rs; no upgrade
+   escape, and per the comment agent no upstream issue exists yet.
+2. *Reproduction*: a standalone probe (one "villain" thread running a
+   tight `DefaultHistory::add`+`save` loop; 8 victim threads doing
+   tempdir → `mkdir(taskboard, 0777)` → stat → `File::create` inside →
+   stat) produced **~1,100 EACCES per 16,000 ops across three runs**,
+   and — the decisive detail — captured the victims' actual directory
+   modes: `0o600 (384)` vs the session's normal `0o775 (509)`, i.e.
+   directories physically created inside the umask window. This also
+   explains why this report's original §4.3 reproducer (48,000 clean
+   iterations) stayed clean: it replicated rustyline's `flock`+`fchmod`
+   but not the umask mutation.
+
+**Where §4.3's elimination table stands**: rows 1 (DAC), 2 (agent
+sandbox / Landlock / seccomp) and 3 (external chmod watcher — umask
+strips at create time and leaves no `IN_ATTRIB` trace, which is exactly
+why the inotify watch was clean) remain valid and were necessary steps;
+row 4's conclusion ("the syscall pattern is not sufficient") stands but
+its framing missed that the trigger was a *fourth* syscall pattern
+element (the umask call) not present in any probe; row 5 (kernel
+timeline) is moot. The §4.3 "prime suspect: kernel regression"
+conclusion is **retracted** — the denial was userspace all along, with
+a mechanism that leaves no kernel-side fingerprint. The §4.3
+user-shell experiment is also moot: the bug reproduces under any
+parent process, including the probe above.
+
+**Impact beyond tests**: this is not a test-only defect. The REPL runs
+in the app process alongside the tokio actors; a history save landing
+while any other thread creates a file or directory (sqlite sidecars,
+config writes, IPC sockets) strips that path's group/other/execute
+bits. Severity in production is bounded (window is one `File::create`
+wide; owner access is preserved — `S_IXUSR` is stripped too, but owner
+`rw` remains, so the *history file itself* is correct at 0600) but real
+for everything else sharing the process.
+
+**Fix path** (plan chunk 3, revised): stop routing persistence through
+`FileHistory::save` — `SessionHistory` already owns "the persistence
+policy in one place"; write the history file itself via
+`OpenOptions::new().write(true).create(true).truncate(true).mode(0o600)`
+(same newline format `DefaultHistory::load` reads), keeping rustyline
+for in-memory/editor concerns. rustyline's own `save_to` already pairs
+the umask trick with an `fchmod(0600)`, so nothing is lost. Plus: file
+the upstream rustyline issue (the fix belongs in the crate for
+everyone), and the existing `repl_history` libtest suite under default
+parallel threads becomes the regression harness — on this host it
+failed ~60% of runs before the fix and must go green without any test
+change.
