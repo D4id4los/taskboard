@@ -246,7 +246,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 cargo test --doc --workspace
 cargo deny check
-cargo llvm-cov --workspace
+cargo llvm-cov nextest --workspace --all-features --no-tests=warn --no-report
+scripts/coverage-quarantine-profraw.sh target/llvm-cov-target
+cargo llvm-cov report --lcov --output-path lcov.info
 ```
+
+The coverage gate is the CI-identical three-command sequence (not the
+monolithic `cargo llvm-cov --workspace`): the quarantine step drops torn
+profraws from legitimately SIGKILLed instrumented children before the
+merge, so a killed test binary cannot abort the whole report — the
+2026-10-13 coverage-flake fix, applied on both sides.
 
 Do not offer a result containing `clippy` warnings or formatting drift.
