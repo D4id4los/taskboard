@@ -18,6 +18,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 pub(crate) const BOARD: u64 = 42;
 /// The board's one remote stack.
 pub(crate) const STACK: u64 = 7;
+/// Wall-clock budget per wait: the paused-clock stepping in the helpers
+/// below is virtual, but wiremock boot progress is real loopback I/O.
+const WALL_DEADLINE: Duration = Duration::from_secs(30);
 /// The fixtures' base timestamp (epoch seconds).
 pub(crate) const T: i64 = 1_700_000_000;
 
@@ -113,16 +116,18 @@ pub(crate) async fn mount_conditional_pull(server: &MockServer, labels: &serde_j
 
 /// Starts a wiremock server under paused time: the server's startup polls
 /// readiness with a 25 ms sleep, so time must advance while it boots.
+/// The deadline is wall-clock (real loopback I/O must complete); the
+/// stepping below stays virtual.
 pub(crate) async fn start_server() -> MockServer {
     let started = tokio::spawn(MockServer::start());
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + WALL_DEADLINE;
     loop {
         if started.is_finished() {
             return started.await.expect("wiremock server starts");
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
-            "wiremock never became ready"
+            std::time::Instant::now() < deadline,
+            "wiremock never became ready within the deadline"
         );
         tokio::time::advance(Duration::from_millis(10)).await;
     }

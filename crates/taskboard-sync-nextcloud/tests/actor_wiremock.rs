@@ -9,7 +9,9 @@
 //! the only place time advances is the `next_report`/`start_server` wait
 //! helpers, so actor timers (client retries, backoff deadlines) fire
 //! exactly while the test waits for an expected report — never between
-//! assertions. `CFG.poll_interval` sits far beyond every test horizon, so
+//! assertions. The wait helpers' deadline is wall-clock
+//! (`std::time::Instant`): the stepping is virtual, but the actor's
+//! progress depends on real wiremock I/O. `CFG.poll_interval` sits far beyond every test horizon, so
 //! cycles are nudge/`SetBoard`/backoff-driven only and wiremock request
 //! counts stay an exact observable of how many cycles ran.
 
@@ -57,17 +59,21 @@ struct Actor {
 
 /// Receives the next report, advancing time only while waiting — actor
 /// timers (retries, backoff, poll deadlines) fire inside this loop and
-/// nowhere else. Bounded in *simulated* time: a wedged actor fails the
-/// test fast instead of hanging it.
+/// nowhere else. Bounded in *wall-clock* time (the stepping stays
+/// virtual): a wedged actor fails the test within the deadline instead
+/// of hanging it.
+const WALL_DEADLINE: Duration = Duration::from_secs(30);
+
 async fn next_report(actor: &mut Actor) -> SyncReport {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + WALL_DEADLINE;
     loop {
         if let Ok(report) = actor.reports.try_recv() {
             return report;
         }
+        let reports_open = !actor.reports.is_closed();
         assert!(
-            tokio::time::Instant::now() < deadline,
-            "actor produced no report in simulated time"
+            std::time::Instant::now() < deadline,
+            "actor produced no report within the deadline (reports channel still open: {reports_open})"
         );
         tokio::time::advance(Duration::from_millis(10)).await;
     }
