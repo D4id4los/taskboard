@@ -333,6 +333,14 @@ impl DeckClient {
         if url.host_str().is_none_or(str::is_empty) {
             return Err(DeckError::InvalidBaseUrl);
         }
+        // Reject userinfo-bearing URLs (F12-02 #260): reqwest never
+        // applies URL userinfo as auth, so a pasted WebDAV-style
+        // credential could only ever leak (into logs, config, client
+        // Debug) — never authenticate. Rejection names the mistake at
+        // the earliest typed surface.
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(DeckError::InvalidBaseUrl);
+        }
         url.set_query(None);
         url.set_fragment(None);
         let path = url.path().trim_end_matches('/').to_owned();
@@ -1537,6 +1545,46 @@ mod tests {
             err_of("ftp://cloud.example.com"),
             Err(DeckError::InvalidBaseUrl)
         ));
+    }
+
+    /// F12-02 (#260): userinfo-bearing base URLs are rejected, never
+    /// parsed as auth — reqwest never applies URL userinfo, so the
+    /// credential could only ever leak (pasted WebDAV-style URLs).
+    #[test]
+    fn rejects_userinfo_bearing_base_urls() {
+        assert!(matches!(
+            err_of("https://user:app-password@cloud.example.com"),
+            Err(DeckError::InvalidBaseUrl)
+        ));
+        assert!(matches!(
+            err_of("http://user@cloud.example.com"),
+            Err(DeckError::InvalidBaseUrl)
+        ));
+    }
+
+    /// F12-02 (#260): the common case must keep parsing — plain hosts,
+    /// ports, IPv6 authorities, paths.
+    #[test]
+    fn accepts_urls_without_userinfo_across_http_https_ipv6_ports_paths() {
+        assert!(err_of("http://cloud.example.com").is_ok());
+        assert!(err_of("https://cloud.example.com:8443").is_ok());
+        assert!(err_of("https://[2001:db8::1]/nextcloud").is_ok());
+        assert!(err_of("https://cloud.example.com/nextcloud").is_ok());
+    }
+
+    /// F12-02 (#260) leak floor: the typed failure of a rejected
+    /// userinfo URL must never carry the pasted credential through any
+    /// formatting path (Display, Debug, or the Result's Debug).
+    #[test]
+    fn userinfo_rejection_never_formats_the_credential() {
+        let err = err_of("https://alice:s3cret-pw@cloud.example.com").expect_err("rejected");
+        let display = format!("{err}");
+        let debug = format!("{err:?}");
+        let result_debug = format!("{:?}", Err::<DeckClient, DeckError>(err));
+        for formatted in [display, debug, result_debug] {
+            assert!(!formatted.contains("alice:s3cret-pw"));
+            assert!(!formatted.contains("s3cret-pw"));
+        }
     }
 
     #[test]
