@@ -118,3 +118,8 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+# v0.1.0 audit standing decision (e) / issue #303: arithmetic overflow in
+# the shipped binary must be a loud, backtraced panic, never a silent
+# wrap. Runtime cost is one branch per add on timestamp/counter arithmetic
+# — negligible against the map/serde hot paths; kiosk-scale data.
+overflow-checks = true
