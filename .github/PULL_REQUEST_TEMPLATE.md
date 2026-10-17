@@ -26,4 +26,4 @@
 - [ ] `cargo deny check --workspace` passes
 - [ ] Crate boundaries respected (see `docs/architecture.org`); new `.rs` files carry the correct SPDX header
 - [ ] No test was weakened to make it pass; any discovered bugs are reported
-- [ ] Any out-of-scope ideas were added to `.artifacts/taskboard-potential-improvements-backlog.md`
+- [ ] Any out-of-scope ideas were recorded as a GitHub Issue (see AGENTS.md §7 conventions)

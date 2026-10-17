@@ -152,9 +152,28 @@ implementation specs into the root directory or source folders.
   `YYYY-MM-DD-<topic>-dispatch-plan.md` in `plans/`. A dispatch plan
   chunks an already-accepted design round or roadmap wave; it is
   written after acceptance, never instead of it.
-- Improvement ideas that are out-of-scope must also be appended to
-  `.artifacts/taskboard-potential-improvements-backlog.md` using the entry
-  template in that file.
+- Improvement ideas that are out-of-scope are recorded as **GitHub
+  Issues** in this repository (the markdown backlog file was migrated
+  to issues #109–#290 on 2026-10-17; the entry ↔ issue mapping lives in
+  `.artifacts/reports/2026-10-17-backlog-to-github-issues-migration-report.md`).
+  Conventions:
+  - One issue per idea, title prefixed `backlog:`; the body is a
+    summary plus a permalink to the originating plan/report under
+    `.artifacts/` — deep context stays in the artefact file, never
+    copied wholesale into the issue.
+  - Labels carry the structure the old template kept in prose:
+    a category label (`architecture`, `refactoring`, `testing`,
+    `performance`, `ui`, `dx`, `ci`, `security`, `documentation`, ...)
+    and, when a priority is known, `p1`/`p2`/`p3`.
+  - Milestones (`vX.Y.Z`) are the "when": assign one only when a
+    decision has been made to schedule the work; issues without a
+    milestone are the unscheduled queue.
+  - Closing an issue as completed **is** the archive — do not delete
+    issues, and do not reopen closed ones without new information.
+  - **Flaky tests**: record each observation as a comment on an issue
+    labelled `flaky-test` + `watchlist` (one issue per distinct test).
+    Never fix flaky tests opportunistically inside unrelated work;
+    triage them in a dedicated pass over that label query.
 
 ## 8. Git & Workflow Rules
 

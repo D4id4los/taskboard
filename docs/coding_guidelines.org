@@ -180,6 +180,7 @@ GitHub-parseable format.
 
 AI-generated plans and reports live under =.artifacts/plans/= and
 =.artifacts/reports/= with strict =YYYY-MM-DD-<kebab-topic>-{plan,report}.md=
-naming; out-of-scope improvement ideas are appended to
-=.artifacts/taskboard-potential-improvements-backlog.md=. Templates and the
-full policy are in =AGENTS.md= §7.
+naming; out-of-scope improvement ideas are recorded as GitHub Issues
+(see =AGENTS.md= §7 for the label/milestone conventions; the former
+markdown backlog was migrated to issues #109–#290 on 2026-10-17).
+Templates and the full policy are in =AGENTS.md= §7.
