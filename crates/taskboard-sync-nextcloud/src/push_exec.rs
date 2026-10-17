@@ -1526,6 +1526,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_defers_when_only_unresolvable_labels_differ() {
+        // The desired card equals the fetched one in every field; the only
+        // delta is label 9, which has no remote binding. The whole group
+        // defers: empty outcomes, and the only wire traffic is the
+        // pre-flight GET — no mutating request may go out.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+        let shape = CardShape {
+            title: "old".into(),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            order: 3,
+            archived: false,
+            labels: std::collections::BTreeSet::from([label_id(9)]),
+        };
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: shape,
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert!(outcomes.is_empty(), "the deferred group completes nothing");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "the pre-flight GET alone");
+        assert_eq!(requests[0].method.as_str(), "GET");
+    }
+
+    #[tokio::test]
+    async fn move_same_stack_different_order_sends_the_reorder() {
+        // Card sits at stack 7 / order 3; the local intent is the *same*
+        // stack at order 9. The fast path must not fire: exactly one
+        // reorder carrying order 9 and the destination stack.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/reorder",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[(10, 7, 55)], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::MoveTask {
+                        task: task_id(10),
+                        to: (stack_id(5), 9),
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes");
+        };
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].op, taskboard_domain::OpId(uid(100)));
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Applied { echo: None }
+        ));
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2, "the pre-flight GET, then one reorder");
+        assert_eq!(requests[1].method.as_str(), "PUT");
+        let body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"order": 9, "stackId": 7}),
+            "the reorder carries order 9 and the destination stack"
+        );
+    }
+
+    #[tokio::test]
     async fn move_sends_reorder_only_when_the_position_differs() {
         // Card sits at stack 7 / order 3; the local intent is stack 8 / order 1.
         let server = MockServer::start().await;
