@@ -155,3 +155,10 @@ would fail the cycle forever and the cascade could never land).
   its outcome reaching the engine re-POSTs next cycle (no idempotency
   keys exist to prevent it); the window is one oneshot hop wide and
   the reconciliation idea is backlogged.
+
+* Amendment (2026-10-17): the engine inbox envelope enum renamed to =EngineEnvelope=
+
+- The envelope mention at the top of §5 (its original spelling kept
+  verbatim above) is now =EngineEnvelope::ReadState=; the
+  payload/envelope split is unchanged and no variant, field, or
+  behavior moved. See issue #302.

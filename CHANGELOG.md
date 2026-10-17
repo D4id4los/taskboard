@@ -9,6 +9,12 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ## [Unreleased]
 
+### Changed
+- The engine inbox envelope enum re-exported by `taskboard-state` is
+  renamed to `EngineEnvelope` — a mechanical rename so the type name
+  matches the payload/envelope vocabulary the docs already use; no
+  variant, field, or behavior change (#302).
+
 ## [0.1.0] - 2026-10-16
 
 ### Added

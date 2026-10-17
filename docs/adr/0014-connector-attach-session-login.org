@@ -182,3 +182,10 @@ behind an unanswered read.
 - The multi-connector round lifts the app-layer guard, extends the
   deferred list in the WI-J design §4.5, and touches nothing designed
   here (backlog entry stays open).
+
+* Amendment (2026-10-17): the engine inbox envelope enum renamed to =EngineEnvelope=
+
+- The =AttachConnector= envelope mention above (original spelling
+  kept verbatim) is now qualified by =EngineEnvelope= instead of the
+  enum's former name; a mechanical rename only, no variant, field, or
+  behavior change. See issue #302.
