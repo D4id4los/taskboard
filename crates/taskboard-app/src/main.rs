@@ -317,8 +317,7 @@ async fn daemon_lifecycle(
         // wedged peer must never hold the daemon's shutdown hostage)
         // and the refcount is released either way.
         server.join(shutdown_timeout).await;
-        let app = Arc::try_unwrap(app).expect("the ipc server released the core");
-        app.shutdown().await
+        taskboard_app::bootstrap::shutdown_from_arc(app).await
     };
     let outcome = tokio::select! {
         outcome = drain => outcome,

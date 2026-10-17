@@ -709,6 +709,20 @@ pub(crate) async fn wait_for_boot_pull(app: &App, timeout: Duration) {
     }
 }
 
+/// The daemon-shutdown tail: after the IPC server's drain released its
+/// reference, hand the core's exclusive ownership to the graceful
+/// shutdown sequence.
+///
+/// # Panics
+///
+/// If any other strong reference to the core outlives the server
+/// drain — unreachable while the daemon wires exactly one `Arc<App>`
+/// into `spawn_server`.
+pub async fn shutdown_from_arc(app: Arc<App>) -> ShutdownOutcome {
+    let app = Arc::try_unwrap(app).expect("the ipc server released the core");
+    app.shutdown().await
+}
+
 /// Daemon lifecycle: await `ctrl_c` (and SIGTERM on unix), then run the
 /// graceful shutdown sequence. The second-signal force-exit lives in
 /// `main` (thin glue, deliberately untested).
