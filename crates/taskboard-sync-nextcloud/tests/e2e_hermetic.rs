@@ -12,7 +12,9 @@
 //! Determinism: `#[tokio::test(start_paused)]` freezes the tokio clock; the
 //! `start_server` boot helper and the `eventually` pollers are the only
 //! places time advances, so the actor's poll ticks fire exactly while a
-//! test waits on a predicate — never between assertions.
+//! test waits on a predicate — never between assertions. The wait
+//! helpers' deadline is wall-clock (`std::time::Instant`): the stepping
+//! is virtual, but the actor's progress depends on real wiremock I/O.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -125,15 +127,22 @@ async fn bind_board(commands: &mpsc::Sender<SyncCommand>) {
 // `RemoteBoardId` alias to keep the helper signatures short.
 use taskboard_domain::RemoteBoardId as RemoteBoardId0;
 
+/// Wall-clock budget per wait: the paused-clock stepping below is virtual,
+/// but the sync actor's progress depends on real loopback I/O, so the
+/// deadline must be measured in time that resource actually consumes.
+const WALL_DEADLINE: Duration = Duration::from_secs(30);
+
 async fn eventually(engine: &taskboard_state::EngineHandle, pred: impl Fn(&AppState) -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + WALL_DEADLINE;
     loop {
-        if pred(&engine.shared_state().load_full()) {
+        let state = engine.shared_state().load_full();
+        if pred(&state) {
             return;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
-            "predicate satisfied within the deadline"
+            std::time::Instant::now() < deadline,
+            "predicate not satisfied within the deadline (sync.phase: {:?})",
+            state.sync.phase
         );
         // Time advances only here: the actor's poll ticks fire while the
         // test waits, never between assertions.
@@ -825,14 +834,14 @@ async fn i4_move_label_and_delete_push_to_the_server() {
 }
 
 async fn eventually_no_state(pred: impl Fn() -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + WALL_DEADLINE;
     loop {
         if pred() {
             return;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
-            "predicate satisfied within the deadline"
+            std::time::Instant::now() < deadline,
+            "predicate not satisfied within the deadline"
         );
         // Time advances only here: the actor's poll ticks fire while the
         // test waits, never between assertions.
