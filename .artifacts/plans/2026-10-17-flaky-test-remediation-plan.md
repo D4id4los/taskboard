@@ -12,7 +12,8 @@
 - **Branch / worktree for execution**: one branch/PR per chunk (§3–§5
   name them), created off `main` at execution time; parallel worktrees
   per house convention `../taskboard-WT-<branch-with-dashes>`.
-- **Status**: PROPOSED.
+- **Status**: ACCEPTED (user, 2026-10-17 — plan extended in the same
+  round with chunk 4 and the #288 closure task; kickoff prompt issued).
 
 ## 1. Root causes (one line each, full evidence in the report)
 
@@ -213,7 +214,16 @@ occurrence cheap to attribute and the eventual escalation turnkey.
    #290 — root cause + chunk 1 pointer; #287 — per-occurrence verdicts
    (a10: root-caused; coverage lane: hardened; 2026-10-11: attributed
    plausibly, pending soak), closure conditions (§4 acceptance).
-5. **Backlog issues** for the report's §5 discoveries:
+5. **Close #288 as completed.** Its verdict is confirmed and its soak
+   bar long met (five consecutive green CI runs at fix time, plus the
+   audit-era non-recurrence data points incl. a troubled lane run
+   surviving on quarantine protection — report §3 roll-call). Final
+   comment: cite the 2026-10-13 verdict, the 2026-10-16/17 audit
+   confirmations, the investigation report as the retrospective
+   cross-reference, and chunk 4 as the follow-up that aligns the local
+   gate with the CI fix. Per house convention the closure *is* the
+   archive.
+6. **Backlog issues** for the report's §5 discoveries:
    - `backlog: sqlite test pools leak -shm/-wal sidecar files into /tmp`
      (labels `testing`, `dx`, `p3`): 10,923 files recorded 2026-10-17;
      fix candidates: dispose pools before drop / teardown assertion.
@@ -230,12 +240,57 @@ occurrence cheap to attribute and the eventual escalation turnkey.
 **Effort**: docs/comments only.
 **Risk**: none.
 
+## 5a. Chunk 4 — align the local coverage gate with the CI fix (AGENTS.md)
+
+**Fixes**: the residual local exposure of the resolved #288 family —
+the documented local gate still runs the monolithic
+`cargo llvm-cov --workspace`, whose merge step aborts on a torn profraw
+(SIGKILLed instrumented child) with no quarantine on that path
+(report §4 of the follow-up Q&A: "CI-side only, locally opt-in").
+**Branch**: `docs/local-coverage-gate-quarantine` — one PR (AGENTS.md
+is the only file changed).
+
+**Change.** In `AGENTS.md` §10, replace the `cargo llvm-cov --workspace`
+gate line with the CI-identical three-command sequence:
+
+```sh
+cargo llvm-cov nextest --workspace --all-features --no-tests=warn --no-report
+scripts/coverage-quarantine-profraw.sh target/llvm-cov-target
+cargo llvm-cov report --lcov --output-path lcov.info
+```
+
+with one sentence of rationale (quarantines torn profraws from
+legitimately killed instrumented children before the merge — the
+2026-10-13 coverage-flake fix, now applied on both sides) and a pointer
+to `scripts/coverage-quarantine-profraw.sh`. Keep the other §10 gate
+lines untouched. Deliberately *not* done: a wrapper script — the user
+chose the explicit three-command form, matching CI verbatim and keeping
+AGENTS.md the single place the gate is written down.
+
+**Acceptance criteria.**
+
+- AGENTS.md §10 shows the sequence and rationale; no other section
+  touched; `docs/` lint-adjacent gates green (fmt/clippy unaffected but
+  run the full gate anyway — the pre-commit hook does).
+- One local execution of the new sequence end-to-end on the branch
+  (green; quarantine reports zero or logged drops) — evidence in the PR
+  description.
+- #288's closure comment (chunk 3) points here as the follow-up that
+  removes the local gap.
+
+**Effort**: trivial (one file, ~8 lines).
+**Risk**: none — the sequence is exactly CI's, already validated
+locally twice (2026-10-13 fix validation, 2026-10-16 audit baseline).
+
 ## 6. Execution order & handoff
 
-1 → 2 → 3 (chunk 1 first: it addresses every CI-visible flake; chunk 2
-hardens the residual; chunk 3 is bookkeeping that should land last so it
-can reference the others' soak results). Chunks 1 and 2 are independent
-and may proceed in parallel if desired.
+1 → 2 → 3 → 4 (chunk 1 first: it addresses every CI-visible flake;
+chunk 2 hardens the residual; chunk 4 aligns the local gate so the
+local coverage run can no longer trip over what chunk 1/2 don't cover;
+chunk 3 is bookkeeping that lands last so it can reference the others'
+results — including closing #288 only after chunk 4 is in). Chunks 1
+and 2 are independent and may proceed in parallel if desired; chunk 4
+is independent of 1–2 but must precede chunk 3's #288 closure.
 
 Handoff per chunk: PR open + `gh pr checks` green + §3/§4 acceptance
 evidence in the PR description; the user merges on GitHub (rebase-merge
