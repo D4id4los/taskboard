@@ -7,21 +7,26 @@
 //!
 //! Location follows the db-path precedent (`config::default_db_path`):
 //! `<data-dir>/taskboard/history`, with `data_dir` injected so the
-//! logic unit-tests without environment mutation. Permissions are
-//! rustyline's own (`FileHistory::save_to` fchmods the file to 0600 on
-//! every save; a no-op on Windows). Save cadence is a full rewrite per
-//! recorded line: `append` is poisoned by a corrupt file (it re-reads
-//! it), while `save` overwrites — so the first recorded line of the
-//! next session self-heals a corrupt file. Single-writer is guaranteed
-//! by the instance lock (one core per database, and daemon mode runs
-//! no editor).
+//! logic unit-tests without environment mutation. Persistence is written
+//! by this module's own writer, *not* rustyline's `FileHistory::save`:
+//! that method wraps its file create in a process-global umask mutation
+//! (still present in rustyline 19.0.0), stripping the mode bits of any
+//! file or directory a sibling thread creates inside the window. This
+//! writer sets 0600 at create time via `OpenOptions::mode` on unix —
+//! no process-global state touched (on Windows the platform default
+//! applies). Save cadence is a full rewrite per recorded line: `append`
+//! is poisoned by a corrupt file (it re-reads it), while a truncated
+//! overwrite is not — so the first recorded line of the next session
+//! self-heals a corrupt file. Single-writer is guaranteed by the
+//! instance lock (one core per database, and daemon mode runs no
+//! editor).
 //!
 //! Prompted ceremony answers (masked secrets, confirms) never reach
 //! the recorder: they bypass `readline` by construction (ADR 0014).
 
 use std::path::{Path, PathBuf};
 
-use rustyline::history::History;
+use rustyline::history::{History, SearchDirection};
 
 /// The history file under an injected data dir: the `default_db_path`
 /// formula with `history` for `taskboard.db`. `None` means the
@@ -100,10 +105,35 @@ impl SessionHistory {
         let Some(path) = &self.path else {
             return;
         };
-        if let Err(err) = history.save(path) {
+        if let Err(err) = save_entries(history, path) {
             tracing::warn!(?err, file = %path.display(), "history save failed");
         }
     }
+}
+
+/// The persistence writer: a truncated overwrite in rustyline's own
+/// on-disk format (newline-separated lines, exactly what
+/// `DefaultHistory::load` reads). Deliberately not
+/// `History::save` — see the module docs on the umask defect. Mode 0600
+/// is enforced at create time on unix; owner access is the only access
+/// the file ever needs.
+fn save_entries(history: &impl History, path: &Path) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    for index in 0..history.len() {
+        if let Some(entry) = history.get(index, SearchDirection::Forward).ok().flatten() {
+            writeln!(file, "{}", entry.entry)?;
+        }
+    }
+    file.flush()
 }
 
 #[cfg(test)]
