@@ -714,9 +714,11 @@ fn default_db_path() -> Option<PathBuf> {
 }
 
 /// The host-presence half of `DeckClient::new`'s URL rules, without
-/// constructing a client: scheme http/https and a non-empty host. The
-/// sync crate parses the same string again at client construction, so a
-/// drift here fails closed (bootstrap's `Client` variant).
+/// constructing a client: scheme http/https, a non-empty host, and no
+/// userinfo in the authority (F12-02 — reqwest never applies URL
+/// userinfo as auth, so a pasted credential could only leak). The
+/// sync crate parses the same string again at client construction, so
+/// a drift here fails closed (bootstrap's `Client` variant).
 fn reqwest_host_ok(raw: &str) -> bool {
     // Minimal structural parse (no extra dependency): scheme://host/…
     let Some((scheme, rest)) = raw.split_once("://") else {
@@ -726,8 +728,13 @@ fn reqwest_host_ok(raw: &str) -> bool {
         return false;
     }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    !host.is_empty()
+    // Any `@` in the authority is userinfo (rejected even when the
+    // user part is empty — fail-closed direction of the documented
+    // parity policy).
+    if authority.contains('@') {
+        return false;
+    }
+    !authority.is_empty()
 }
 
 /// Atomically rewrites the config file at `path` with `contents`
@@ -793,6 +800,22 @@ mod tests {
     #[test]
     fn validate_rejects_bad_urls_like_the_deck_client() {
         for raw in ["cloud.example.com", "ftp://x", "https://"] {
+            let mut c = valid();
+            c.nextcloud.server_url = Some(raw.into());
+            assert!(
+                matches!(c.validate(), Err(ConfigError::InvalidServerUrl)),
+                "{raw} must be rejected"
+            );
+        }
+    }
+
+    /// F12-02 (#260): userinfo-bearing server URLs are rejected like
+    /// any other invalid URL — the credential was never applied as auth
+    /// and could only leak (this is the config half; the sync crate's
+    /// client rejects the same string at construction).
+    #[test]
+    fn validate_rejects_userinfo_urls_like_the_deck_client() {
+        for raw in ["https://u:pw@example.com", "http://u@example.com"] {
             let mut c = valid();
             c.nextcloud.server_url = Some(raw.into());
             assert!(
