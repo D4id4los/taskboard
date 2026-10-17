@@ -14,6 +14,9 @@
   per house convention `../taskboard-WT-<branch-with-dashes>`.
 - **Status**: ACCEPTED (user, 2026-10-17 — plan extended in the same
   round with chunk 4 and the #288 closure task; kickoff prompt issued).
+  **Amended 2026-10-17 (2nd round)**: #289 root cause confirmed as the
+  rustyline umask defect (report §7); chunk 3 rewritten from
+  protocol-only to the production fix, bookkeeping split into chunk 5.
 
 ## 1. Root causes (one line each, full evidence in the report)
 
@@ -26,9 +29,13 @@
   dropped listener's port still refuses; a concurrently started
   `MockServer` can win the port in the drop→connect window and turn the
   expected abort into a 404-rejected outcome.
-- **F-3 (#289)**: host/kernel-level intermittent `EACCES` on fresh /tmp
-  tmpfs paths, local-libtest-parallel only; not a code or test defect —
-  nothing to fix in-repo; encode a capture/escalation protocol instead.
+- **F-3 (#289)**: rustyline 18.0.1 (and 19.0.0, current latest) mutates
+  the **process-global umask** around `FileHistory::save`'s file create;
+  concurrent creates in sibling threads land with stripped mode bits
+  (directories without `x` → `EACCES`). Confirmed by source inspection
+  and an independent reproduction probe (report §7 amendment). A real
+  defect — production code fix in `SessionHistory` plus an upstream
+  rustyline issue.
 
 ## 2. Scope, hard rules, non-goals
 
@@ -57,8 +64,8 @@
   environment).
 - No CI lane changes beyond what #288 already shipped (quarantine
   script stays as is).
-- No in-repo change for #289 (F-3 is environmental; §5 defines the
-  protocol-only work).
+- No rustyline version bump (19.0.0 still carries the umask defect —
+  verified, report §7); the fix is local bypass, not an upgrade.
 
 ## 3. Chunk 1 — hybrid wall-clock deadlines in the hermetic wait helpers
 
@@ -173,48 +180,87 @@ expected abort.
 **Risk**: near zero — regeneration is strictly more conservative than
 the status quo.
 
-## 5. Chunk 3 — #289 protocol + watchlist bookkeeping
+## 5. Chunk 3 — #289 production fix: bypass rustyline's umask-mutating save
 
-**Fixes**: nothing in-repo for F-3 (environmental); makes the next
-occurrence cheap to attribute and the eventual escalation turnkey.
-**Branch**: `docs/flaky-watchlist-protocol` — one PR (artefacts only).
+**Fixes**: F-3 → #289 at the root (report §7 amendment; confirmed
+against the independent analysis in issue comment 6235443727).
+**Branch**: `fix/repl-history-umask-bypass` — one PR (code only; the
+issue bookkeeping moved to chunk 5).
+
+**Root cause in one paragraph.** rustyline 18.0.1's
+`FileHistory::save` (history.rs:692-695; **19.0.0 still has it** —
+verified on docs.rs source) wraps its file create in a process-global
+umask mutation (`umask(0o177)` → `File::create` → restore). Any
+`mkdir`/`File::create` by a sibling thread inside that window gets its
+mode stripped (`0777 & !0o177 = 0o600`): directories without the
+execute bit, hence the observed EACCES family, the empty-next-session
+symptom, and the runner matrix (nextest/serial/CI immune; in-process
+parallel libtest exposed). Verified independently by this
+investigation's probe: ~1,100 EACCES per 16,000 ops, with victims'
+directory modes captured as `0o600`.
+
+**Code change** (`crates/taskboard-app/src/repl_history.rs` only):
+`SessionHistory` already owns "the persistence policy in one place" —
+give it its own writer instead of `history.save(path)`: serialize the
+entries via the `History` trait's `get` and write them
+newline-separated through
+`OpenOptions::new().write(true).create(true).truncate(true).mode(0o600)`
+— byte-format-compatible with what `DefaultHistory::load` reads, and
+with what rustyline itself produces (its `save_to` pairs the umask
+trick with an `fchmod(0600)` anyway). `record()` switches to the own
+writer; `load` is untouched (read-only, no umask). The infallible
+warn-and-degrade API stays exactly as is.
+
+**Rejected alternatives** (for the reviewer): a rustyline upgrade
+(19.0.0 not fixed); a mutex around the save (cannot protect sibling
+threads' creates — the window would still swallow them); waiting for
+upstream (the production REPL shares its process with the tokio
+actors' sqlite/config/socket writes — real exposure, not test-only).
+
+**Acceptance criteria.**
+
+- **The flake is the regression harness**: on this host,
+  `cargo test -p taskboard-app --lib repl_history` (default parallel
+  libtest) failed ~60% of runs pre-fix; post-fix it must pass **≥ 20
+  consecutive runs**. No test file changed — the existing tests are
+  correct and stay untouched.
+- Full quality gate green; `the_history_file_is_owner_read_write_only`
+  still passes (the file remains 0600).
+- Optional honest strengthening: assert the file mode under a
+  pre-tightened process umask (deterministic, no threads). Do **not**
+  add a threaded test for the race itself.
+- **Upstream**: draft the rustyline issue text (root cause, the
+  `OpenOptions::…::mode(0o600)` fix, "still present in 19.0.0") into
+  the #289 comment for chunk 5. Posting to the rustyline repo is
+  outward-facing — **draft only; the user posts it or explicitly
+  authorizes posting.**
+
+**Effort**: small (~30 lines in one module).
+**Risk**: low — the writer replaces a save path whose semantics (full
+rewrite per recorded line, 0600, warn-and-degrade) are already pinned
+by the existing tests.
+
+## 5b. Chunk 5 — watchlist bookkeeping (issues only, lands last)
+
+**Fixes**: documentation of record — issues reflect the confirmed root
+causes and closures; no repo files.
+**Branch**: `docs/flaky-watchlist-protocol` — one PR (artefacts only;
+lands after chunks 1–4 so comments can link merged work).
 
 **Change.**
 
-1. **Capture protocol** (append to the #289 issue, and as the plan's
-   normative text): on any future occurrence — record (a) exact command
-   and runner (libtest parallel / llvm-cov / nextest), (b) full failure
-   output, (c) `strace -f -o /tmp/repl_strace_<n>.txt -e
-   trace=%file,network,process cargo test -p taskboard-app --lib
-   repl_history` of a failing run, (d) the host kernel
-   (`uname -v`) and boot id. The strace signature to look for
-   (established in the report §4.3): same-thread consecutive syscalls
-   with the second returning EACCES on a fresh `.tmpXXXXXX` path.
-2. **Decisive next experiments** (user-assisted, in order):
-   a. **User-shell run** of the §4.3 loop command from the report —
-      green ⇒ the agent exec pipeline reopens as a suspect (re-attack
-      hypothesis 2); failing ⇒ host/kernel confirmed. Record the
-      outcome as an issue comment either way.
-   b. **Root-assisted audit** (needs sudo, one session): `journalctl -k`
-      around a failing run for AppArmor/Landlock denials; if empty,
-      `auditctl -a always,exit -F arch=b64 -S mkdir,openat -F success=0`
-      during a failing loop to catch the denying hook with its
-      `subj=`/`exe=` fields.
-   c. **Kernel bisect** only if (a) confirms host-level and (b) is
-      silent: `7.0.0-15 → 7.0.0-22` or upstream; out of repo scope,
-      recorded as the terminal escalation step.
-3. **Interim developer guidance** (one paragraph in the issue, not in
-   AGENTS.md): on this host, prefer the gate commands (`cargo nextest
-   run --workspace`, `cargo llvm-cov nextest …`) over raw
-   `cargo test --lib` for app-lib suites; raw libtest remains a valid
-   local convenience, and its failures with the §4.3 strace signature
-   are this environmental family — re-run, don't hunt production bugs.
-   (The tests are correct; nothing is skipped or weakened.)
-4. **Watchlist comments on #287/#290** citing the investigation report:
+1. **Comment on #289** (root cause confirmed): cross-reference both
+   analyses (issue comment 6235443727 and report §7), the independent
+   reproduction (probe results, stripped-mode capture), the fix PR,
+   and the drafted upstream rustyline issue text (§5 acceptance) —
+   the user posts the upstream issue or authorizes it. Close #289 as
+   completed once the fix PR is merged and the ≥20-run libtest soak
+   is recorded.
+2. **Watchlist comments on #287/#290** citing the investigation report:
    #290 — root cause + chunk 1 pointer; #287 — per-occurrence verdicts
    (a10: root-caused; coverage lane: hardened; 2026-10-11: attributed
    plausibly, pending soak), closure conditions (§4 acceptance).
-5. **Close #288 as completed.** Its verdict is confirmed and its soak
+3. **Close #288 as completed.** Its verdict is confirmed and its soak
    bar long met (five consecutive green CI runs at fix time, plus the
    audit-era non-recurrence data points incl. a troubled lane run
    surviving on quarantine protection — report §3 roll-call). Final
@@ -223,7 +269,7 @@ occurrence cheap to attribute and the eventual escalation turnkey.
    cross-reference, and chunk 4 as the follow-up that aligns the local
    gate with the CI fix. Per house convention the closure *is* the
    archive.
-6. **Backlog issues** for the report's §5 discoveries:
+4. **Backlog issues** for the report's §5 discoveries:
    - `backlog: sqlite test pools leak -shm/-wal sidecar files into /tmp`
      (labels `testing`, `dx`, `p3`): 10,923 files recorded 2026-10-17;
      fix candidates: dispose pools before drop / teardown assertion.
@@ -232,8 +278,10 @@ occurrence cheap to attribute and the eventual escalation turnkey.
 
 **Acceptance criteria.**
 
-- #289 carries the capture protocol + next-step ladder as comments; no
-  test file changed; no issue closed.
+- #289 carries the confirmed-root-cause comment and closes only after
+  the fix PR is merged with its soak evidence; #290/#287 carry their
+  per-occurrence verdicts; #288 is closed as completed; the upstream
+  rustyline issue text is drafted (posted only with user authorization).
 - Backlog issues exist with body = summary + permalink to the report
   (house convention: deep context stays in the artefact).
 
@@ -284,13 +332,12 @@ locally twice (2026-10-13 fix validation, 2026-10-16 audit baseline).
 
 ## 6. Execution order & handoff
 
-1 → 2 → 3 → 4 (chunk 1 first: it addresses every CI-visible flake;
-chunk 2 hardens the residual; chunk 4 aligns the local gate so the
-local coverage run can no longer trip over what chunk 1/2 don't cover;
-chunk 3 is bookkeeping that lands last so it can reference the others'
-results — including closing #288 only after chunk 4 is in). Chunks 1
-and 2 are independent and may proceed in parallel if desired; chunk 4
-is independent of 1–2 but must precede chunk 3's #288 closure.
+1 → 2 → 3 → 4 → 5. Chunk 1 first (it addresses every CI-visible flake);
+chunk 2 hardens the residual; chunk 3 removes the #289 defect at the
+root; chunk 4 aligns the local coverage gate with CI; chunk 5 (issue
+bookkeeping, incl. the #288 and #289 closures) lands last so comments
+link merged work and recorded soaks. Chunks 1–4 are mutually
+independent and may proceed in parallel if desired.
 
 Handoff per chunk: PR open + `gh pr checks` green + §3/§4 acceptance
 evidence in the PR description; the user merges on GitHub (rebase-merge
@@ -304,4 +351,4 @@ preferred).
 | Wall deadline constant too tight for a future slower environment | low | One `const` per suite; bump with a watchlist comment, never per-site |
 | A test relies on the virtual deadline being short (hidden timing assumption) | very low | Grepped all four sites; predicates are pure state reads; soak protocol catches regressions |
 | Regeneration loop in `refused_client` masks a real regression (ports suddenly always taken) | very low | Bounded at 10 attempts with a loud panic + counter log |
-| #289 recurs during chunk work and confuses gate runs | medium (it recurs ~60% under raw libtest) | §5.3 guidance: gate commands are unaffected; strace signature distinguishes the family in one look |
+| #289 family recurs during other chunks' gate runs | medium (raw `cargo test --lib` fails ~60% pre-fix) | Harmless to the other chunks: the mandated gate commands (nextest, `cargo llvm-cov nextest`) are immune; after chunk 3 the family is gone |
