@@ -1098,12 +1098,38 @@ mod tests {
     /// A refused local port: deterministically transport-class. The
     /// listener is dropped before use — a bound-but-unaccepted socket
     /// would complete the TCP handshake and hang the client instead of
-    /// refusing it.
+    /// refusing it. The refusal is verified, not assumed: in the
+    /// drop-to-connect window a concurrently starting server can win the
+    /// same ephemeral port, so any probe outcome other than
+    /// `ConnectionRefused` triggers bounded regeneration with a fresh
+    /// port.
     fn refused_client() -> DeckClient {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        DeckClient::new(&format!("http://127.0.0.1:{port}"), "u", "t").unwrap()
+        const MAX_ATTEMPTS: u32 = 10;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            match std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+                std::time::Duration::from_millis(100),
+            ) {
+                Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    if attempt > 1 {
+                        let regenerations = attempt - 1;
+                        eprintln!("refused_client: regenerated port {regenerations} time(s)");
+                    }
+                    return DeckClient::new(&format!("http://127.0.0.1:{port}"), "u", "t").unwrap();
+                }
+                other => {
+                    let why = match &other {
+                        Ok(_) => "connect succeeded (port won by another process)".to_string(),
+                        Err(err) => format!("probe error: {err}"),
+                    };
+                    eprintln!("refused_client: port {port} not refusing ({why}), regenerating");
+                }
+            }
+        }
+        panic!("refused_client: no refusing port found after {MAX_ATTEMPTS} attempts");
     }
 
     fn overlay_with(
