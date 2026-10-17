@@ -249,6 +249,33 @@ async fn c15_connect_invalid_server_url_is_typed() {
     assert!(!config_path.exists());
 }
 
+/// F12-02 (#260): a userinfo-bearing URL fails typed at the client and
+/// nothing is persisted — no config file, no store entry (the pasted
+/// credential must never reach disk in any form).
+#[tokio::test]
+async fn connect_with_a_userinfo_url_fails_typed_and_persists_nothing() {
+    let dir = tempdir();
+    let config_path = dir.path().join("taskboard.toml");
+    let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
+
+    let err = run_connect(
+        &config_path,
+        args(Some("https://alice:s3cret-pw@127.0.0.1".to_owned())),
+        &mut FakePrompts::new(&["pw"]),
+        &store,
+    )
+    .await
+    .expect_err("userinfo url must be rejected");
+    assert_eq!(err.error_kind(), "deck");
+    assert!(!config_path.exists());
+    assert!(
+        store
+            .load("https://alice:s3cret-pw@127.0.0.1", "alice")
+            .is_err(),
+        "nothing may be stored under the rejected identity"
+    );
+}
+
 /// C16 (was L4): env store → connect succeeds with `stored == "env"`.
 #[tokio::test]
 async fn c16_env_store_connect_succeeds_with_stored_env() {
