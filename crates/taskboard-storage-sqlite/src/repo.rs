@@ -684,11 +684,51 @@ async fn execute_batch(
     tx: &mut sqlx::SqliteConnection,
     actions: &[PersistenceAction],
 ) -> Result<(), RepositoryError> {
+    // No wildcard arm: a new `PersistenceAction` variant must fail this
+    // crate's build (E0004) until storage persists it — a silent
+    // fall-through here means an action class accepted with `Ok(())` and
+    // never written.
+    let mut boards = Vec::new();
+    let mut stacks = Vec::new();
+    let mut labels = Vec::new();
+    let mut tasks = Vec::new();
+    let mut op_removals = Vec::new();
+    let mut op_appends = Vec::new();
+    let mut validator_upserts = Vec::new();
+    let mut sync_status_upserts = Vec::new();
+    let mut rule_upserts = Vec::new();
+    let mut rule_deletes = Vec::new();
+    let mut deliveries = Vec::new();
+    let mut snoozes = Vec::new();
+    let mut mute_toggles = Vec::new();
     for action in actions {
-        if let PersistenceAction::UpsertBoard(board) = action {
-            let remote = board.remote.map(|b| codec::remote_col(b.get()));
-            sqlx::query!(
-                r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen)
+        match action {
+            PersistenceAction::UpsertBoard(board) => boards.push(board),
+            PersistenceAction::UpsertStack(stack) => stacks.push(stack),
+            PersistenceAction::UpsertLabel(label) => labels.push(label),
+            PersistenceAction::UpsertTask(task) => tasks.push(task),
+            PersistenceAction::CompleteOp(op_id) | PersistenceAction::FailOp(op_id) => {
+                op_removals.push(op_id);
+            }
+            PersistenceAction::EnqueueOp(op) => op_appends.push(op),
+            PersistenceAction::UpsertValidators(key, validators) => {
+                validator_upserts.push((key, validators));
+            }
+            PersistenceAction::UpsertSyncStatus(status) => sync_status_upserts.push(status),
+            PersistenceAction::UpsertReminderRule(rule) => rule_upserts.push(rule),
+            PersistenceAction::DeleteReminderRule(rule_id) => rule_deletes.push(rule_id),
+            PersistenceAction::RecordReminderDelivery(delivery) => deliveries.push(delivery),
+            PersistenceAction::RecordReminderSnooze(snooze) => snoozes.push(snooze),
+            PersistenceAction::SetTaskRemindersMuted(task, muted) => {
+                mute_toggles.push((task, muted));
+            }
+        }
+    }
+
+    for board in boards {
+        let remote = board.remote.map(|b| codec::remote_col(b.get()));
+        sqlx::query!(
+            r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        remote_board_id = excluded.remote_board_id,
@@ -698,29 +738,27 @@ async fn execute_batch(
                        deleted = excluded.deleted,
                        ck_title = excluded.ck_title,
                        remote_seen = excluded.remote_seen"#,
-                codec::uuid_to_text(board.id.as_uuid()),
-                remote,
-                board.title,
-                board.color.as_str(),
-                board.archived,
-                board.deleted,
-                board.clocks.title.to_rfc3339(),
-                board.remote_seen,
-            )
-            .execute(&mut *tx)
-            .await.map_err(|e| stmt_error(&e))?;
-            tracing::trace!(board = ?board.id, "board upserted");
-        }
+            codec::uuid_to_text(board.id.as_uuid()),
+            remote,
+            board.title,
+            board.color.as_str(),
+            board.archived,
+            board.deleted,
+            board.clocks.title.to_rfc3339(),
+            board.remote_seen,
+        )
+        .execute(&mut *tx)
+        .await.map_err(|e| stmt_error(&e))?;
+        tracing::trace!(board = ?board.id, "board upserted");
     }
 
-    for action in actions {
-        if let PersistenceAction::UpsertStack(stack) = action {
-            let (rb, rs) = stack.remote.map_or((None, None), |r| {
-                let (b, s) = codec::remote_stack_to_columns(r);
-                (Some(b), Some(s))
-            });
-            sqlx::query!(
-                r#"INSERT INTO stacks (id, board, remote_board_id, remote_stack_id, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted, remote_seen)
+    for stack in stacks {
+        let (rb, rs) = stack.remote.map_or((None, None), |r| {
+            let (b, s) = codec::remote_stack_to_columns(r);
+            (Some(b), Some(s))
+        });
+        sqlx::query!(
+            r#"INSERT INTO stacks (id, board, remote_board_id, remote_stack_id, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted, remote_seen)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        board = excluded.board,
@@ -734,33 +772,31 @@ async fn execute_batch(
                        ck_sort_order = excluded.ck_sort_order,
                        ck_deleted = excluded.ck_deleted,
                        remote_seen = excluded.remote_seen"#,
-                codec::uuid_to_text(stack.id.as_uuid()),
-                codec::uuid_to_text(stack.board.as_uuid()),
-                rb,
-                rs,
-                stack.title,
-                stack.order,
-                stack.archived,
-                stack.deleted,
-                stack.clocks.title.to_rfc3339(),
-                stack.clocks.order.to_rfc3339(),
-                stack.clocks.deleted.to_rfc3339(),
-                stack.remote_seen,
-            )
-            .execute(&mut *tx)
-            .await.map_err(|e| stmt_error(&e))?;
-            tracing::trace!(stack = ?stack.id, board = ?stack.board, "stack upserted");
-        }
+            codec::uuid_to_text(stack.id.as_uuid()),
+            codec::uuid_to_text(stack.board.as_uuid()),
+            rb,
+            rs,
+            stack.title,
+            stack.order,
+            stack.archived,
+            stack.deleted,
+            stack.clocks.title.to_rfc3339(),
+            stack.clocks.order.to_rfc3339(),
+            stack.clocks.deleted.to_rfc3339(),
+            stack.remote_seen,
+        )
+        .execute(&mut *tx)
+        .await.map_err(|e| stmt_error(&e))?;
+        tracing::trace!(stack = ?stack.id, board = ?stack.board, "stack upserted");
     }
 
-    for action in actions {
-        if let PersistenceAction::UpsertLabel(label) = action {
-            let (rb, rl) = label.remote.map_or((None, None), |r| {
-                let (b, l) = codec::remote_label_to_columns(r);
-                (Some(b), Some(l))
-            });
-            sqlx::query!(
-                r#"INSERT INTO labels (id, board, remote_board_id, remote_label_id, title, color, deleted, ck_title, ck_color, ck_deleted, remote_seen)
+    for label in labels {
+        let (rb, rl) = label.remote.map_or((None, None), |r| {
+            let (b, l) = codec::remote_label_to_columns(r);
+            (Some(b), Some(l))
+        });
+        sqlx::query!(
+            r#"INSERT INTO labels (id, board, remote_board_id, remote_label_id, title, color, deleted, ck_title, ck_color, ck_deleted, remote_seen)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        board = excluded.board,
@@ -773,32 +809,30 @@ async fn execute_batch(
                        ck_color = excluded.ck_color,
                        ck_deleted = excluded.ck_deleted,
                        remote_seen = excluded.remote_seen"#,
-                codec::uuid_to_text(label.id.as_uuid()),
-                codec::uuid_to_text(label.board.as_uuid()),
-                rb,
-                rl,
-                label.title,
-                label.color.as_str(),
-                label.deleted,
-                label.clocks.title.to_rfc3339(),
-                label.clocks.color.to_rfc3339(),
-                label.clocks.deleted.to_rfc3339(),
-                label.remote_seen,
-            )
-            .execute(&mut *tx)
-            .await.map_err(|e| stmt_error(&e))?;
-            tracing::trace!(label = ?label.id, board = ?label.board, "label upserted");
-        }
+            codec::uuid_to_text(label.id.as_uuid()),
+            codec::uuid_to_text(label.board.as_uuid()),
+            rb,
+            rl,
+            label.title,
+            label.color.as_str(),
+            label.deleted,
+            label.clocks.title.to_rfc3339(),
+            label.clocks.color.to_rfc3339(),
+            label.clocks.deleted.to_rfc3339(),
+            label.remote_seen,
+        )
+        .execute(&mut *tx)
+        .await.map_err(|e| stmt_error(&e))?;
+        tracing::trace!(label = ?label.id, board = ?label.board, "label upserted");
     }
 
-    for action in actions {
-        if let PersistenceAction::UpsertTask(task) = action {
-            let (rb, rs, rc) = task.remote.map_or((None, None, None), |r| {
-                let (b, s, c) = codec::remote_card_to_columns(r);
-                (Some(b), Some(s), Some(c))
-            });
-            sqlx::query!(
-                r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, done, sort_order, archived, deleted, ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, ck_archived, ck_deleted, remote_seen)
+    for task in tasks {
+        let (rb, rs, rc) = task.remote.map_or((None, None, None), |r| {
+            let (b, s, c) = codec::remote_card_to_columns(r);
+            (Some(b), Some(s), Some(c))
+        });
+        sqlx::query!(
+            r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, done, sort_order, archived, deleted, ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, ck_archived, ck_deleted, remote_seen)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        stack = excluded.stack,
@@ -821,82 +855,78 @@ async fn execute_batch(
                        ck_archived = excluded.ck_archived,
                        ck_deleted = excluded.ck_deleted,
                        remote_seen = excluded.remote_seen"#,
-                codec::uuid_to_text(task.id.as_uuid()),
-                codec::uuid_to_text(task.stack.as_uuid()),
-                rb,
-                rs,
-                rc,
-                task.title,
-                task.description,
-                task.duedate,
-                task.done,
-                task.order,
-                task.archived,
-                task.deleted,
-                task.clocks.title.to_rfc3339(),
-                task.clocks.description.to_rfc3339(),
-                task.clocks.duedate.to_rfc3339(),
-                task.clocks.done.to_rfc3339(),
-                task.clocks.position.to_rfc3339(),
-                task.clocks.labels.to_rfc3339(),
-                task.clocks.archived.to_rfc3339(),
-                task.clocks.deleted.to_rfc3339(),
-                task.remote_seen,
-            )
-            .execute(&mut *tx)
-            .await.map_err(|e| stmt_error(&e))?;
+            codec::uuid_to_text(task.id.as_uuid()),
+            codec::uuid_to_text(task.stack.as_uuid()),
+            rb,
+            rs,
+            rc,
+            task.title,
+            task.description,
+            task.duedate,
+            task.done,
+            task.order,
+            task.archived,
+            task.deleted,
+            task.clocks.title.to_rfc3339(),
+            task.clocks.description.to_rfc3339(),
+            task.clocks.duedate.to_rfc3339(),
+            task.clocks.done.to_rfc3339(),
+            task.clocks.position.to_rfc3339(),
+            task.clocks.labels.to_rfc3339(),
+            task.clocks.archived.to_rfc3339(),
+            task.clocks.deleted.to_rfc3339(),
+            task.remote_seen,
+        )
+        .execute(&mut *tx)
+        .await.map_err(|e| stmt_error(&e))?;
 
-            // The label set is one whole-set field: replace its join rows
-            // wholesale. Plain upserts only — `INSERT OR REPLACE` would
-            // delete-then-insert and fire `ON DELETE CASCADE` (plan T5).
+        // The label set is one whole-set field: replace its join rows
+        // wholesale. Plain upserts only — `INSERT OR REPLACE` would
+        // delete-then-insert and fire `ON DELETE CASCADE` (plan T5).
+        sqlx::query!(
+            r#"DELETE FROM task_labels WHERE task = ?"#,
+            codec::uuid_to_text(task.id.as_uuid())
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        for label in &task.labels {
             sqlx::query!(
-                r#"DELETE FROM task_labels WHERE task = ?"#,
-                codec::uuid_to_text(task.id.as_uuid())
+                r#"INSERT INTO task_labels (task, label) VALUES (?, ?)"#,
+                codec::uuid_to_text(task.id.as_uuid()),
+                codec::uuid_to_text(label.as_uuid()),
             )
             .execute(&mut *tx)
             .await
             .map_err(|e| stmt_error(&e))?;
-            for label in &task.labels {
-                sqlx::query!(
-                    r#"INSERT INTO task_labels (task, label) VALUES (?, ?)"#,
-                    codec::uuid_to_text(task.id.as_uuid()),
-                    codec::uuid_to_text(label.as_uuid()),
-                )
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| stmt_error(&e))?;
-            }
-            tracing::trace!(task = ?task.id, stack = ?task.stack, labels = task.labels.len(), "task upserted");
         }
+        tracing::trace!(task = ?task.id, stack = ?task.stack, labels = task.labels.len(), "task upserted");
     }
 
     // Op removals before appends so a batch that completes and re-enqueues
     // the same id keeps the new entry.
-    for action in actions {
-        if let PersistenceAction::CompleteOp(op_id) | PersistenceAction::FailOp(op_id) = action {
-            sqlx::query!(
-                r#"DELETE FROM outbox WHERE op_id = ?"#,
-                codec::uuid_to_text(op_id.0)
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
-            tracing::trace!(op = ?op_id.0, "op removed from outbox");
-        }
+    for op_id in op_removals {
+        sqlx::query!(
+            r#"DELETE FROM outbox WHERE op_id = ?"#,
+            codec::uuid_to_text(op_id.0)
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(op = ?op_id.0, "op removed from outbox");
     }
 
-    for action in actions {
-        if let PersistenceAction::EnqueueOp(op) = action {
-            let cols = codec::op_to_columns(&op.op);
-            let task_id = cols.task_id.map(|t| codec::uuid_to_text(t.as_uuid()));
-            let stack_id = cols.stack_id.map(|s| codec::uuid_to_text(s.as_uuid()));
-            let label_id = cols.label_id.map(|l| codec::uuid_to_text(l.as_uuid()));
-            let board_id = cols.board_id.map(|b| codec::uuid_to_text(b.as_uuid()));
-            // Upsert on op_id: re-enqueueing an existing id refreshes the
-            // row in place and keeps the original queue position — the
-            // `UNIQUE` constraint stays the integrity backstop (plan P4).
-            sqlx::query!(
-                r#"INSERT INTO outbox (op_id, op_kind, task_id, stack_id, label_id, board_id, queued_at)
+    for op in op_appends {
+        let cols = codec::op_to_columns(&op.op);
+        let task_id = cols.task_id.map(|t| codec::uuid_to_text(t.as_uuid()));
+        let stack_id = cols.stack_id.map(|s| codec::uuid_to_text(s.as_uuid()));
+        let label_id = cols.label_id.map(|l| codec::uuid_to_text(l.as_uuid()));
+        let board_id = cols.board_id.map(|b| codec::uuid_to_text(b.as_uuid()));
+        // Upsert on op_id: re-enqueueing an existing id refreshes the
+        // row in place and keeps the original queue position — the
+        // `UNIQUE` constraint stays the integrity backstop (plan P4).
+        sqlx::query!(
+            r#"INSERT INTO outbox (op_id, op_kind, task_id, stack_id, label_id, board_id, queued_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(op_id) DO UPDATE SET
                        op_kind = excluded.op_kind,
@@ -905,68 +935,61 @@ async fn execute_batch(
                        label_id = excluded.label_id,
                        board_id = excluded.board_id,
                        queued_at = excluded.queued_at"#,
-                codec::uuid_to_text(op.op_id.0),
-                codec::op_kind_to_text(&op.op),
-                task_id,
-                stack_id,
-                label_id,
-                board_id,
-                op.queued_at,
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
-            tracing::trace!(op = ?op.op_id.0, kind = codec::op_kind_to_text(&op.op), "op enqueued");
-        }
+            codec::uuid_to_text(op.op_id.0),
+            codec::op_kind_to_text(&op.op),
+            task_id,
+            stack_id,
+            label_id,
+            board_id,
+            op.queued_at,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(op = ?op.op_id.0, kind = codec::op_kind_to_text(&op.op), "op enqueued");
     }
 
-    for action in actions {
-        if let PersistenceAction::UpsertValidators(key, validators) = action {
-            sqlx::query!(
-                r#"INSERT INTO sync_metadata (key, etag, last_modified) VALUES (?, ?, ?)
+    for (key, validators) in validator_upserts {
+        sqlx::query!(
+            r#"INSERT INTO sync_metadata (key, etag, last_modified) VALUES (?, ?, ?)
                    ON CONFLICT(key) DO UPDATE SET
                        etag = excluded.etag,
                        last_modified = excluded.last_modified"#,
-                codec::validator_key_to_text(key),
-                validators.etag,
-                validators.last_modified,
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
-            tracing::trace!(
-                key = codec::validator_key_to_text(key),
-                "validators upserted"
-            );
-        }
+            codec::validator_key_to_text(key),
+            validators.etag,
+            validators.last_modified,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(
+            key = codec::validator_key_to_text(key),
+            "validators upserted"
+        );
     }
 
-    for action in actions {
-        if let PersistenceAction::UpsertSyncStatus(status) = action {
-            let last_error = match status.phase {
-                SyncPhase::Failed { last_error } => {
-                    Some(codec::sync_error_kind_to_text(last_error))
-                }
-                _ => None,
-            };
-            sqlx::query!(
-                r#"INSERT INTO sync_status (id, phase, last_error, last_success) VALUES (1, ?, ?, ?)
+    for status in sync_status_upserts {
+        let last_error = match status.phase {
+            SyncPhase::Failed { last_error } => Some(codec::sync_error_kind_to_text(last_error)),
+            _ => None,
+        };
+        sqlx::query!(
+            r#"INSERT INTO sync_status (id, phase, last_error, last_success) VALUES (1, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        phase = excluded.phase,
                        last_error = excluded.last_error,
                        last_success = excluded.last_success"#,
-                codec::sync_phase_to_text(status.phase),
-                last_error,
-                status.last_success,
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
-            tracing::trace!(
-                phase = codec::sync_phase_to_text(status.phase),
-                "sync status upserted"
-            );
-        }
+            codec::sync_phase_to_text(status.phase),
+            last_error,
+            status.last_success,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(
+            phase = codec::sync_phase_to_text(status.phase),
+            "sync status upserted"
+        );
     }
 
     // Reminder partitions (tasks precede rules — the only FK). Within
@@ -975,117 +998,107 @@ async fn execute_batch(
     // snooze links with it; a delivery insert is set-union on the
     // `(reminder, occurrence)` key (first write wins); a snooze link
     // replaces the prior link for the same key; mute toggles membership.
-    for action in actions {
-        if let PersistenceAction::UpsertReminderRule(rule) = action {
-            // Whole-second column granularity: sub-second offsets
-            // truncate toward zero (due-date reminders are minute-scale;
-            // config durations are seconds-granularity).
-            sqlx::query!(
-                r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at)
+    for rule in rule_upserts {
+        // Whole-second column granularity: sub-second offsets
+        // truncate toward zero (due-date reminders are minute-scale;
+        // config durations are seconds-granularity).
+        sqlx::query!(
+            r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at)
                    VALUES (?, ?, ?, ?)
                    ON CONFLICT(rule_id) DO UPDATE SET
                        task_id = excluded.task_id,
                        offset_seconds = excluded.offset_seconds,
                        created_at = excluded.created_at"#,
-                codec::uuid_to_text(rule.id.as_uuid()),
-                codec::uuid_to_text(rule.task.as_uuid()),
-                rule.offset.as_duration().num_seconds(),
-                rule.created_at.to_rfc3339(),
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
-            tracing::trace!(rule = ?rule.id, task = ?rule.task, "reminder rule upserted");
-        }
+            codec::uuid_to_text(rule.id.as_uuid()),
+            codec::uuid_to_text(rule.task.as_uuid()),
+            rule.offset.as_duration().num_seconds(),
+            rule.created_at.to_rfc3339(),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(rule = ?rule.id, task = ?rule.task, "reminder rule upserted");
     }
 
-    for action in actions {
-        if let PersistenceAction::DeleteReminderRule(rule_id) = action {
-            let reminder = codec::reminder_ref_to_text(ReminderRef::Rule(*rule_id));
-            sqlx::query!(
-                r#"DELETE FROM reminder_deliveries WHERE reminder = ?"#,
-                reminder
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
-            sqlx::query!(
-                r#"DELETE FROM reminder_snoozes WHERE reminder = ?"#,
-                reminder
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
-            sqlx::query!(
-                r#"DELETE FROM reminder_rules WHERE rule_id = ?"#,
-                codec::uuid_to_text(rule_id.as_uuid())
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
-            tracing::trace!(rule = ?rule_id, "reminder rule pruned with its dependents");
-        }
+    for rule_id in rule_deletes {
+        let reminder = codec::reminder_ref_to_text(ReminderRef::Rule(*rule_id));
+        sqlx::query!(
+            r#"DELETE FROM reminder_deliveries WHERE reminder = ?"#,
+            reminder
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM reminder_snoozes WHERE reminder = ?"#,
+            reminder
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM reminder_rules WHERE rule_id = ?"#,
+            codec::uuid_to_text(rule_id.as_uuid())
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(rule = ?rule_id, "reminder rule pruned with its dependents");
     }
 
-    for action in actions {
-        if let PersistenceAction::RecordReminderDelivery(delivery) = action {
-            // First write wins: a replayed delivery is a no-op in SQL too,
-            // so the crash-between-apply-and-notify replay stays benign.
-            sqlx::query!(
-                r#"INSERT INTO reminder_deliveries (reminder, occurrence, delivered_at)
+    for delivery in deliveries {
+        // First write wins: a replayed delivery is a no-op in SQL too,
+        // so the crash-between-apply-and-notify replay stays benign.
+        sqlx::query!(
+            r#"INSERT INTO reminder_deliveries (reminder, occurrence, delivered_at)
                    VALUES (?, ?, ?)
                    ON CONFLICT(reminder, occurrence) DO NOTHING"#,
-                codec::reminder_ref_to_text(delivery.reminder),
-                delivery.occurrence.to_rfc3339(),
-                delivery.delivered_at.to_rfc3339(),
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| stmt_error(&e))?;
-            tracing::trace!(reminder = %codec::reminder_ref_to_text(delivery.reminder), "reminder delivery recorded");
-        }
+            codec::reminder_ref_to_text(delivery.reminder),
+            delivery.occurrence.to_rfc3339(),
+            delivery.delivered_at.to_rfc3339(),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(reminder = %codec::reminder_ref_to_text(delivery.reminder), "reminder delivery recorded");
     }
 
-    for action in actions {
-        if let PersistenceAction::RecordReminderSnooze(snooze) = action {
-            sqlx::query!(
-                r#"INSERT INTO reminder_snoozes (reminder, occurrence, rescheduled_to)
+    for snooze in snoozes {
+        sqlx::query!(
+            r#"INSERT INTO reminder_snoozes (reminder, occurrence, rescheduled_to)
                    VALUES (?, ?, ?)
                    ON CONFLICT(reminder, occurrence) DO UPDATE SET
                        rescheduled_to = excluded.rescheduled_to"#,
-                codec::reminder_ref_to_text(snooze.reminder),
-                snooze.occurrence.to_rfc3339(),
-                snooze.rescheduled_to.to_rfc3339(),
+            codec::reminder_ref_to_text(snooze.reminder),
+            snooze.occurrence.to_rfc3339(),
+            snooze.rescheduled_to.to_rfc3339(),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(reminder = %codec::reminder_ref_to_text(snooze.reminder), "reminder snooze recorded");
+    }
+
+    for (task, muted) in mute_toggles {
+        if *muted {
+            sqlx::query!(
+                r#"INSERT INTO reminder_muted (task_id) VALUES (?)
+                       ON CONFLICT(task_id) DO NOTHING"#,
+                codec::uuid_to_text(task.as_uuid()),
             )
             .execute(&mut *tx)
             .await
             .map_err(|e| stmt_error(&e))?;
-            tracing::trace!(reminder = %codec::reminder_ref_to_text(snooze.reminder), "reminder snooze recorded");
+        } else {
+            sqlx::query!(
+                r#"DELETE FROM reminder_muted WHERE task_id = ?"#,
+                codec::uuid_to_text(task.as_uuid())
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
         }
-    }
-
-    for action in actions {
-        if let PersistenceAction::SetTaskRemindersMuted(task, muted) = action {
-            if *muted {
-                sqlx::query!(
-                    r#"INSERT INTO reminder_muted (task_id) VALUES (?)
-                       ON CONFLICT(task_id) DO NOTHING"#,
-                    codec::uuid_to_text(task.as_uuid()),
-                )
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| stmt_error(&e))?;
-            } else {
-                sqlx::query!(
-                    r#"DELETE FROM reminder_muted WHERE task_id = ?"#,
-                    codec::uuid_to_text(task.as_uuid())
-                )
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| stmt_error(&e))?;
-            }
-            tracing::trace!(task = ?task, muted, "task reminders muted toggled");
-        }
+        tracing::trace!(task = ?task, muted, "task reminders muted toggled");
     }
 
     Ok(())
