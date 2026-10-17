@@ -694,26 +694,45 @@ impl<'a> PushExecutor<'a> {
             }
         }
 
-        // One outcome per queued label op (the `create_task` precedent):
-        // the delta phase brought the server to the desired set, so a
+        // One outcome per op: the primary-only vec is the sole source for
+        // the subsumed label ops (the `create_task` precedent) — the
+        // delta phase brought the server to the desired set, so a
         // resolvable op is Applied and an unresolvable one rejects.
-        let mut outcomes = Self::primary_outcome(
-            group,
-            PushResult::Applied {
+        // Starting from `primary_outcome` here would double-emit every
+        // subsumed label op and shadow an unresolvable one's `Rejected
+        // { LocalData }` behind a synthetic `Applied`.
+        let mut outcomes = vec![PushOutcome {
+            op: group.primary,
+            result: PushResult::Applied {
                 echo: Some(mapping::map_echo(&updated, card_ref.board)),
             },
-        );
+        }];
         for op_id in &group.subsumed {
             let Some(op) = outbox.iter().find(|entry| &entry.op_id == op_id) else {
                 continue;
             };
-            let label = match op.op {
-                LocalOp::AssignLabel(_, label) | LocalOp::UnassignLabel(_, label) => label,
+            match op.op {
+                LocalOp::AssignLabel(_, label) | LocalOp::UnassignLabel(_, label) => {
+                    outcomes.push(PushOutcome {
+                        op: *op_id,
+                        result: if self.overlay.label_by_local.contains_key(&label) {
+                            PushResult::Applied { echo: None }
+                        } else {
+                            PushResult::Rejected {
+                                kind: taskboard_domain::SyncErrorKind::LocalData,
+                            }
+                        },
+                    });
+                }
                 // Updates/moves rode the PUT's field state; nothing else
                 // can be subsumed under a task group.
-                LocalOp::UpdateTask(_)
-                | LocalOp::MoveTask(_)
-                | LocalOp::CreateTask(_)
+                LocalOp::UpdateTask(_) | LocalOp::MoveTask(_) => {
+                    outcomes.push(PushOutcome {
+                        op: *op_id,
+                        result: PushResult::Applied { echo: None },
+                    });
+                }
+                LocalOp::CreateTask(_)
                 | LocalOp::DeleteTask(_)
                 | LocalOp::CreateStack(_)
                 | LocalOp::RenameStack(_)
@@ -722,18 +741,8 @@ impl<'a> PushExecutor<'a> {
                 | LocalOp::CreateLabel(_)
                 | LocalOp::UpdateLabel(_)
                 | LocalOp::DeleteLabel(_)
-                | LocalOp::RenameBoard(_) => continue,
-            };
-            outcomes.push(PushOutcome {
-                op: *op_id,
-                result: if self.overlay.label_by_local.contains_key(&label) {
-                    PushResult::Applied { echo: None }
-                } else {
-                    PushResult::Rejected {
-                        kind: taskboard_domain::SyncErrorKind::LocalData,
-                    }
-                },
-            });
+                | LocalOp::RenameBoard(_) => {}
+            }
         }
         GroupOutcome::Outcomes(outcomes)
     }
