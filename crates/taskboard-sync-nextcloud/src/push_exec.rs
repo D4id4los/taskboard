@@ -7,8 +7,10 @@
 //! create echoes return — never re-derived by search (decision 7). Every
 //! op that touches an existing bound card fetches the card first
 //! (fetch-before-write, decision 5): the round-trip PUT is built from the
-//! fetched card, and the fetched location protects reorder/delete from
-//! stale-binding 404s that would be misread as `RemoteMissing`.
+//! fetched card, and a fetch 404 re-resolves the card once against the
+//! fresh listings before classifying — a stale binding (the card moved
+//! remotely) rebinds and pushes at the fresh location instead of being
+//! misread as `RemoteMissing` (issue #258).
 
 use std::collections::HashMap;
 
@@ -22,6 +24,7 @@ use crate::client::DeckClient;
 use crate::color::DeckColor;
 use crate::error::DeckError;
 use crate::mapping::{self, PushCtx};
+use crate::model::{Card, StackFilter};
 
 /// Local id → remote id bindings for one cycle, extendable by create
 /// echoes. The *inverse* of the domain's read-side [`RemoteIndex`].
@@ -512,6 +515,87 @@ impl<'a> PushExecutor<'a> {
         GroupOutcome::Outcomes(outcomes)
     }
 
+    /// Fetches a card's authoritative detail immediately before a write,
+    /// recovering a stale binding first (ADR 0007's fetch-before-write,
+    /// amended for the move case, issue #258): the overlay's ref carries
+    /// the stack component, so a card another client *moved* answers 404
+    /// at the stale location while still existing — card identity is
+    /// (board, card), the pull-side rule. A fetch 404 therefore
+    /// re-resolves the card once against the fresh active+archived
+    /// listings (the pull's presence truth): found → the overlay is
+    /// rebound and the detail fetched once at the fresh location (the
+    /// detail outranks the lagging listing); absent from both listings →
+    /// `NotFound`, confirmed-truthful, for the normative classification.
+    /// Any other failure — original fetch, listing, or refetch —
+    /// classifies as itself.
+    ///
+    /// Returns the card and the ref at its *fresh* location: the group's
+    /// subsequent calls must address it there.
+    async fn fetch_card_for_write(
+        &mut self,
+        group: &PushGroup,
+        task: taskboard_domain::TaskId,
+        card_ref: RemoteCardRef,
+    ) -> Result<(RemoteCardRef, Card), GroupOutcome> {
+        let ctx = PushCtx {
+            existing: true,
+            delete: false,
+        };
+        match self
+            .client
+            .card(
+                card_ref.board.get(),
+                card_ref.stack.get(),
+                card_ref.card.get(),
+            )
+            .await
+        {
+            Ok(fetched) => return Ok((card_ref, fetched)),
+            // Stale binding or a genuine deletion — resolve which.
+            Err(DeckError::NotFound) => {}
+            Err(err) => return Err(Self::classify(group, &err, ctx)),
+        }
+        for filter in [StackFilter::Active, StackFilter::Archived] {
+            let stacks = match self.client.stacks(card_ref.board.get(), filter).await {
+                Ok(stacks) => stacks,
+                Err(err) => return Err(Self::classify(group, &err, ctx)),
+            };
+            let Some(fresh_stack) = stacks
+                .into_iter()
+                .find(|stack| {
+                    stack
+                        .cards
+                        .iter()
+                        .any(|card| taskboard_domain::RemoteCardId(card.id) == card_ref.card)
+                })
+                .map(|stack| RemoteStackId(stack.id))
+            else {
+                continue;
+            };
+            let fresh_ref = RemoteCardRef {
+                board: card_ref.board,
+                stack: fresh_stack,
+                card: card_ref.card,
+            };
+            self.overlay
+                .task_by_local
+                .insert(task, (fresh_stack, card_ref.card));
+            return match self
+                .client
+                .card(
+                    fresh_ref.board.get(),
+                    fresh_stack.get(),
+                    card_ref.card.get(),
+                )
+                .await
+            {
+                Ok(fetched) => Ok((fresh_ref, fetched)),
+                Err(err) => Err(Self::classify(group, &err, ctx)),
+            };
+        }
+        Err(Self::classify(group, &DeckError::NotFound, ctx))
+    }
+
     /// Field PUT built from the fetched card (fetch-before-write),
     /// then the label-set delta through the sub-endpoints. A group
     /// whose only delta is unresolvable labels defers entirely.
@@ -526,26 +610,9 @@ impl<'a> PushExecutor<'a> {
         let Some(card_ref) = self.overlay.card_of(task) else {
             return Self::reject_primary(group);
         };
-        let fetched = match self
-            .client
-            .card(
-                card_ref.board.get(),
-                card_ref.stack.get(),
-                card_ref.card.get(),
-            )
-            .await
-        {
-            Ok(fetched) => fetched,
-            Err(err) => {
-                return Self::classify(
-                    group,
-                    &err,
-                    PushCtx {
-                        existing: true,
-                        delete: false,
-                    },
-                );
-            }
+        let (card_ref, fetched) = match self.fetch_card_for_write(group, task, card_ref).await {
+            Ok(pair) => pair,
+            Err(outcome) => return outcome,
         };
         let (desired, has_unresolved): (Vec<u64>, bool) = {
             let mut resolved = Vec::new();
@@ -752,26 +819,9 @@ impl<'a> PushExecutor<'a> {
         let Some(target_stack) = self.overlay.stack_by_local.get(&to.0).copied() else {
             return Self::reject_primary(group);
         };
-        let fetched = match self
-            .client
-            .card(
-                card_ref.board.get(),
-                card_ref.stack.get(),
-                card_ref.card.get(),
-            )
-            .await
-        {
-            Ok(fetched) => fetched,
-            Err(err) => {
-                return Self::classify(
-                    group,
-                    &err,
-                    PushCtx {
-                        existing: true,
-                        delete: false,
-                    },
-                );
-            }
+        let (_, fetched) = match self.fetch_card_for_write(group, task, card_ref).await {
+            Ok(pair) => pair,
+            Err(outcome) => return outcome,
         };
         if fetched.stack_id == target_stack.get() && fetched.order == to.1 {
             // Already there (an earlier cycle landed it): nothing to send.
@@ -1869,6 +1919,405 @@ mod tests {
             server2.received_requests().await.unwrap().len() == 1,
             "only the pre-flight GET, no reorder"
         );
+    }
+
+    // ---- stale-binding pre-write-fetch 404s (#258) ---------------------
+
+    /// The stacks listing carrying card 55 under stack 8 (the card "moved"
+    /// there behind our back; the overlay still says stack 7).
+    fn moved_listing_json() -> String {
+        serde_json::json!([{
+            "id": 8, "title": "moved-here", "boardId": 42, "order": 1,
+            "lastModified": 1_700_000_000, "deletedAt": 0, "archived": false,
+            "cards": [{ "id": 55, "title": "old", "stackId": 8, "type": "plain",
+                        "order": 3, "labels": [], "archived": false,
+                        "duedate": null, "done": null }]
+        }])
+        .to_string()
+    }
+
+    fn edited_shape() -> CardShape {
+        CardShape {
+            title: "edited".into(),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            order: 9,
+            archived: false,
+            labels: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// E1: a pre-write fetch 404 on a card another client *moved*
+    /// re-resolves the card from the fresh listing, rebinds the overlay,
+    /// and pushes at the fresh location — the update lands instead of
+    /// misclassifying as `RemoteMissing` (which tombstoned the task and
+    /// silently cancelled the queued edit; issue #258).
+    #[tokio::test]
+    async fn update_preflight_404_reresolves_the_card_from_a_fresh_listing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(moved_listing_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/8/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 8, 3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/8/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 8, 9)))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: edited_shape(),
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes, got {outcome:?}");
+        };
+        assert!(matches!(
+            &outcomes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
+                if view.id.stack == RemoteStackId(8) && view.id.card == taskboard_domain::RemoteCardId(55)
+        ));
+        assert_eq!(
+            exec.overlay().card_of(task_id(10)),
+            Some(RemoteCardRef {
+                board: RemoteBoardId(42),
+                stack: RemoteStackId(8),
+                card: taskboard_domain::RemoteCardId(55),
+            }),
+            "the overlay is rebound to the fresh location"
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            4,
+            "stale GET (404), fresh listing, fresh GET, PUT at the fresh stack"
+        );
+    }
+
+    /// E2: the same recovery on the move path — the reorder's *path* is
+    /// the card's fetched (fresh) location while its *body* carries the
+    /// distinct destination (the wire contract); the stale stack appears
+    /// in no request after the initial 404.
+    #[tokio::test]
+    async fn move_preflight_404_reresolves_then_reorders_from_the_fresh_location() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(moved_listing_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/8/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 8, 3)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/8/cards/55/reorder",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(
+            &client,
+            overlay_with(42, &[(6, 8), (7, 9)], &[(10, 7, 55)], &[]),
+        );
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::MoveTask {
+                        task: task_id(10),
+                        to: (stack_id(7), 5),
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes, got {outcome:?}");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Applied { echo: None }
+        ));
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            4,
+            "stale GET (404), fresh listing, fresh GET, reorder from the fresh stack"
+        );
+        let body: serde_json::Value = serde_json::from_slice(&requests[3].body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"order": 5, "stackId": 9}),
+            "the body carries the destination (stack 9, order 5); the \
+             request path stayed at the fetched stack 8"
+        );
+    }
+
+    /// E3: a 404 the fresh listings *confirm* (the card is in neither)
+    /// still classifies `RemoteMissing` — now truthful absence, and the
+    /// genuine-deletion terminal is unchanged.
+    #[tokio::test]
+    async fn preflight_404_with_the_card_absent_from_both_listings_classifies_remote_missing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        for listing in ["stacks", "stacks/archived"] {
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/index.php/apps/deck/api/v1.0/boards/42/{listing}"
+                )))
+                .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+                .mount(&server)
+                .await;
+        }
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: edited_shape(),
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes, got {outcome:?}");
+        };
+        assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+    }
+
+    /// E4: a lagging listing that claims the card while the fresh detail
+    /// 404s defers to the detail — `RemoteMissing`.
+    #[tokio::test]
+    async fn preflight_404_with_a_lying_listing_maps_the_refetch_404_to_remote_missing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(moved_listing_json()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/8/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: edited_shape(),
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes, got {outcome:?}");
+        };
+        assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+    }
+
+    /// Sleeps zero: the E5 retry exhaustion must not depend on real time.
+    #[derive(Debug)]
+    struct InstantSleeper;
+
+    impl crate::client::RetrySleep for InstantSleeper {
+        fn sleep(
+            &self,
+            _delay: std::time::Duration,
+        ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    /// E5: a listing that fails transport-class aborts the cycle — the
+    /// re-resolve must not turn an unknown listing outcome into a
+    /// classification (today it never asks, which this test also pins as
+    /// a change).
+    #[tokio::test]
+    async fn preflight_404_with_a_transport_failing_listing_aborts_the_cycle() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t")
+            .unwrap()
+            .with_sleeper(std::sync::Arc::new(InstantSleeper));
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: edited_shape(),
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        assert_eq!(
+            outcome,
+            GroupOutcome::Aborted { landed: Vec::new() },
+            "a transport-class listing failure aborts with no outcomes"
+        );
+    }
+
+    /// E6: a forbidden listing classifies `Rejected { Forbidden }` —
+    /// retryable, never a tombstone.
+    #[tokio::test]
+    async fn preflight_404_with_a_forbidden_listing_rejects_forbidden() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+            ))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+        let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+        let outcome = exec
+            .execute(
+                &group(
+                    100,
+                    MaterializedOp::UpdateTask {
+                        task: task_id(10),
+                        card: edited_shape(),
+                    },
+                    taskboard_domain::PushTarget::Task(task_id(10)),
+                    &[],
+                ),
+                &[],
+                empty_tables(),
+            )
+            .await;
+        server.verify().await;
+
+        let GroupOutcome::Outcomes(outcomes) = outcome else {
+            panic!("expected outcomes, got {outcome:?}");
+        };
+        assert!(matches!(
+            outcomes[0].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::Forbidden
+            }
+        ));
     }
 
     #[tokio::test]

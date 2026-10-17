@@ -1111,3 +1111,152 @@ async fn a17_stacks_404_on_a_live_board_fails_the_cycle() {
         "a dead server is not a lost network"
     );
 }
+
+/// A18: the issue #258 regression — a pre-write fetch 404 on a card
+/// another client *moved* (the binding's stack component is stale) must
+/// never classify `RemoteMissing`: the executor re-resolves the card from
+/// the fresh listing and the queued edit lands at the fresh location.
+/// Today's code tombstones the task, cancels the edit, and the same
+/// cycle's pull re-adopts the card as a twin — the exact silent loss.
+#[allow(clippy::too_many_lines)] // fixture seeding is the scenario
+#[tokio::test(start_paused = true)]
+async fn a18_remote_moved_card_survives_its_queued_edit() {
+    // Remote truth: card 55 lives under stack 8; our binding says stack 7.
+    let moved_listing = serde_json::json!([{
+        "id": 8, "title": "moved-here", "boardId": BOARD, "order": 1,
+        "lastModified": T, "deletedAt": 0, "archived": false,
+        "cards": [{ "id": 55, "title": "remote title", "stackId": 8,
+                    "type": "plain", "order": 3, "labels": [],
+                    "archived": false, "duedate": null, "done": null }]
+    }]);
+    let fresh_detail = serde_json::json!({ "id": 55, "title": "remote title",
+        "stackId": 8, "type": "plain", "order": 3, "labels": [],
+        "archived": false, "duedate": null, "done": null });
+
+    let server = start_server().await;
+    for (p, body) in [
+        (
+            "/index.php/apps/deck/api/v1.0/boards".to_string(),
+            boards_json(false, &serde_json::json!([])),
+        ),
+        (
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}"),
+            board_json(false, &serde_json::json!([])),
+        ),
+        (
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
+            moved_listing.to_string(),
+        ),
+        (
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"),
+            "[]".to_string(),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"gen-1\"")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+    }
+    // The stale pre-write fetch; the re-resolve's fresh detail; the PUT.
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/55"
+        )))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/8/cards/55"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fresh_detail.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/8/cards/55"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": 55, "title": "edited locally", "stackId": 8,
+            "type": "plain", "order": 5, "labels": [], "archived": false,
+            "duedate": null, "done": null
+        })))
+        .mount(&server)
+        .await;
+
+    // Local state: card 55 bound at (BOARD, 7, 55), an UpdateTask queued.
+    let mut state = PersistedState::default();
+    state.boards.insert(bound_board().id, bound_board());
+    let stack_a = bound_stack(2, STACK);
+    state.stacks.insert(stack_a.id, stack_a);
+    let stack_b = bound_stack(3, 8);
+    state.stacks.insert(stack_b.id, stack_b);
+    let mut task = Task {
+        id: taskboard_domain::TaskId::from(uuid(10)),
+        remote: Some(taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(BOARD),
+            stack: taskboard_domain::RemoteStackId(STACK),
+            card: taskboard_domain::RemoteCardId(55),
+        }),
+        title: "edited locally".into(),
+        description: String::new(),
+        duedate: None,
+        done: None,
+        stack: taskboard_domain::StackId::from(uuid(2)),
+        order: 5,
+        labels: std::collections::BTreeSet::new(),
+        archived: false,
+        deleted: false,
+        clocks: task_clocks(),
+        remote_seen: Some(ts(T)),
+    };
+    task.clocks.title = ts(T + 1);
+    state.tasks.insert(task.id, task);
+    state.outbox.push(PendingOp {
+        op_id: OpId(uuid(11)),
+        op: LocalOp::UpdateTask(taskboard_domain::TaskId::from(uuid(10))),
+        queued_at: ts(T),
+    });
+
+    let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let SyncReport::Completed {
+        snapshot, pushes, ..
+    } = next_report(&mut actor).await
+    else {
+        panic!("expected a Completed report");
+    };
+
+    assert!(
+        !pushes
+            .iter()
+            .any(|outcome| matches!(outcome.result, PushResult::RemoteMissing)),
+        "a stale-binding 404 must never classify RemoteMissing: {pushes:?}"
+    );
+    assert!(
+        pushes.iter().any(|outcome| {
+            matches!(
+                &outcome.result,
+                PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
+                    if view.id.stack == taskboard_domain::RemoteStackId(8)
+                        && view.id.card == taskboard_domain::RemoteCardId(55)
+            )
+        }),
+        "the edit landed at the card's fresh location: {pushes:?}"
+    );
+    let view = snapshot
+        .tasks
+        .iter()
+        .find(|t| t.id.card == taskboard_domain::RemoteCardId(55))
+        .expect("the moved card is in the post-push snapshot");
+    assert_eq!(
+        view.id.stack,
+        taskboard_domain::RemoteStackId(8),
+        "the snapshot reports the card under its fresh stack"
+    );
+}
