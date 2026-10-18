@@ -140,17 +140,28 @@ Naming guidelines:
 - Avoid personal prefixes; if two people create separate versions of the
   same feature/fix, use a personal suffix instead.
 
-** Double-Rebase Merge into main
+** Merging into main (branch-protected PR flow)
 
-Completed feature and issue branches are merged into =main= via the
-double-rebase technique:
+=main= is branch-protected on GitHub: every change enters through a PR
+that must pass its required CI checks, and local merges into =main= are
+not available — the double-rebase procedure this section used to
+describe is no longer performable by anyone.
 
-1. Rebase =feat/foo= onto =main=; fix any merge conflicts.
-2. Rerun automatic tests if the rebase changed the code.
-3. Check out =main= and rebase =main= onto =feat/foo=.
+The flow: commits land on the feature branch (freely; house subject
+format above) → push only on explicit instruction → open the PR →
+=gh pr checks= green → hand off. /The user performs the merge on
+GitHub/ (rebase-merge), so no merge commit ever enters =main= either.
 
-This way no merge commit ever enters =main=. Merging into =main= requires
-explicit user approval (see =AGENTS.md= §8).
+Rebase-merge consequence: commits land on =main= verbatim — every
+commit must stand alone (correct build, meaningful subject, no WIP or
+leftover noise); corrections are amended or reworded before the PR
+opens, never in follow-up commits with duplicate subjects.
+
+Stacked PRs: after an upstream PR merges, descendant branches rebase
+onto =origin/main= dropping the already-merged commits and push with
+=--force-with-lease=. The exact commands live in =AGENTS.md= §8 — the
+normative source; this section is the summary and must not drift from
+it.
 
 ** Git Usage Policy (for agents)
 
