@@ -220,6 +220,84 @@ mod tests {
         );
     }
 
+    /// A pre-0005 database (no board edit-verb clocks, `rename_board`
+    /// outbox tags) upgrades cleanly: the epoch defaults keep the
+    /// never-locally-written merge semantics, and the legacy tag is
+    /// backfilled to `update_board` so the row decodes.
+    #[tokio::test]
+    async fn migration_0005_upgrades_a_pre_edit_verb_database() {
+        let board_uuid = uuid::Uuid::from_u128(0xb1);
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
+            .await
+            .expect("raw connect");
+        // Simulate a 0004-era database: run the shipped migrations, then
+        // strip the 0005 effects (the clock columns and the tag rename)
+        // and the bookkeeping row.
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        sqlx::query("ALTER TABLE boards DROP COLUMN ck_color")
+            .execute(&raw)
+            .await
+            .expect("strip ck_color");
+        sqlx::query("ALTER TABLE boards DROP COLUMN ck_archived")
+            .execute(&raw)
+            .await
+            .expect("strip ck_archived");
+        sqlx::query("ALTER TABLE boards DROP COLUMN ck_deleted")
+            .execute(&raw)
+            .await
+            .expect("strip ck_deleted");
+        sqlx::query("UPDATE outbox SET op_kind = 'rename_board'")
+            .execute(&raw)
+            .await
+            .expect("restore legacy tag");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 5")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        let _ = sqlx::query(
+            "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen) \
+             VALUES (?, 42, 'board', '00ff00', 0, 0, '0001-01-01T00:00:00+00:00', NULL)",
+        )
+        .bind(board_uuid.to_string())
+        .execute(&raw)
+        .await
+        .expect("seed row");
+        let _ = sqlx::query(
+            "INSERT INTO outbox (op_id, op_kind, board_id, queued_at) \
+             VALUES ('0197c0ff-eeee-7ccc-8ddd-0000000000b1', 'rename_board', ?, '2026-01-01T00:00:00+00:00')",
+        )
+        .bind(board_uuid.to_string())
+        .execute(&raw)
+        .await
+        .expect("seed outbox row");
+        raw.close().await;
+
+        let repo = open(file.path()).await.expect("migrating open");
+        let state = repo.load().await.expect("load");
+        let board = &state.boards[&taskboard_domain::BoardId::from(board_uuid)];
+        assert_eq!(
+            board.clocks.color,
+            taskboard_domain::BoardClocks::epoch(),
+            "the epoch default means never-locally-written"
+        );
+        assert_eq!(
+            board.clocks.archived,
+            taskboard_domain::BoardClocks::epoch()
+        );
+        assert_eq!(board.clocks.deleted, taskboard_domain::BoardClocks::epoch());
+        assert!(
+            state.outbox.iter().any(|o| o.op
+                == taskboard_domain::LocalOp::UpdateBoard(taskboard_domain::BoardId::from(
+                    board_uuid
+                ))),
+            "the backfilled rename_board row decodes as update_board"
+        );
+    }
+
     type LegacyRow = (
         &'static str,
         &'static str,
