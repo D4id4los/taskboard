@@ -5,11 +5,12 @@
 use std::path::{Path, PathBuf};
 
 use taskboard_domain::persistence::{PersistedState, PersistenceAction};
+use taskboard_domain::reminders::ReminderSnooze;
 use taskboard_storage_sqlite::{SqliteTaskRepository, open};
 
 /// The one `apply` batch that persists a whole state (the batching
 /// discipline Phase 3's engine will use): entity upserts, outbox appends,
-/// validator upserts, and the sync status.
+/// reminder facts, validator upserts, and the sync status.
 #[must_use]
 pub fn actions_from_state(state: &PersistedState) -> Vec<PersistenceAction> {
     let mut actions = Vec::new();
@@ -27,6 +28,22 @@ pub fn actions_from_state(state: &PersistedState) -> Vec<PersistenceAction> {
     }
     for op in &state.outbox {
         actions.push(PersistenceAction::EnqueueOp(op.clone()));
+    }
+    for rule in state.reminders.rules.values() {
+        actions.push(PersistenceAction::UpsertReminderRule(rule.clone()));
+    }
+    for delivery in &state.reminders.deliveries {
+        actions.push(PersistenceAction::RecordReminderDelivery(*delivery));
+    }
+    for (key, rescheduled_to) in &state.reminders.snoozes {
+        actions.push(PersistenceAction::RecordReminderSnooze(ReminderSnooze {
+            reminder: key.reminder,
+            occurrence: key.occurrence,
+            rescheduled_to: *rescheduled_to,
+        }));
+    }
+    for task in &state.reminders.muted {
+        actions.push(PersistenceAction::SetTaskRemindersMuted(*task, true));
     }
     for (key, validators) in &state.validators {
         actions.push(PersistenceAction::UpsertValidators(
