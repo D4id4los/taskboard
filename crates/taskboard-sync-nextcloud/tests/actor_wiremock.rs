@@ -1399,3 +1399,168 @@ async fn a21_archive_mismatch_stamp_uses_the_injected_clock() {
         "the mismatch correction is stamped with the injected observation instant"
     );
 }
+
+/// A22: the issue #319 regression — a delete pushed at a stale binding
+/// (another client moved the card) 404s, and the pre-fix code classified
+/// `RemoteMissing`: the tombstone cleared the binding and the same
+/// cycle's pull re-adopted the still-live card as a twin, silently
+/// losing the delete intent. Now the delete re-resolves once from the
+/// fresh listing and lands at the fresh stack; the pull adopts nothing.
+#[allow(clippy::too_many_lines)] // fixture seeding is the scenario
+#[tokio::test(start_paused = true)]
+async fn a22_remote_moved_card_delete_lands_without_a_twin() {
+    let server = start_server().await;
+    for (p, body) in [
+        (
+            "/index.php/apps/deck/api/v1.0/boards".to_string(),
+            boards_json(false, &serde_json::json!([])),
+        ),
+        (
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}"),
+            board_json(false, &serde_json::json!([])),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"gen-1\"")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+    }
+    // The stacks listing is call-counted: the first serving (the push's
+    // re-resolve) still carries card 55 under stack 8; later servings
+    // (the pull) omit it — the delete landed. Distinct ETags per serving
+    // so the pull's conditional reads always miss the cache.
+    let servings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let listing = servings.clone();
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"
+        )))
+        .respond_with(move |_req: &wiremock::Request| {
+            let n = listing.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body = if n == 0 {
+                serde_json::json!([
+                    { "id": 7, "title": "col", "boardId": BOARD, "order": 0,
+                      "lastModified": T, "deletedAt": 0, "archived": false,
+                      "cards": [] },
+                    { "id": 8, "title": "moved-here", "boardId": BOARD, "order": 1,
+                      "lastModified": T, "deletedAt": 0, "archived": false,
+                      "cards": [{ "id": 55, "title": "remote title", "stackId": 8,
+                                  "type": "plain", "order": 3, "labels": [],
+                                  "archived": false, "duedate": null, "done": null }] }]
+                )
+            } else {
+                serde_json::json!([
+                    { "id": 7, "title": "col", "boardId": BOARD, "order": 0,
+                      "lastModified": T, "deletedAt": 0, "archived": false,
+                      "cards": [] },
+                    { "id": 8, "title": "moved-here", "boardId": BOARD, "order": 1,
+                      "lastModified": T, "deletedAt": 0, "archived": false,
+                      "cards": [] }]
+                )
+            };
+            ResponseTemplate::new(200)
+                .insert_header("ETag", format!("\"gen-{n}\""))
+                .set_body_json(body)
+        })
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/55"
+        )))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/8/cards/55"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": 55, "title": "remote title", "stackId": 8,
+            "type": "plain", "order": 3, "labels": [], "archived": false,
+            "duedate": null, "done": null
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Local state: card 55 bound at (BOARD, 7, 55), a DeleteTask queued.
+    let mut state = PersistedState::default();
+    state.boards.insert(bound_board().id, bound_board());
+    let stack_a = bound_stack(2, STACK);
+    state.stacks.insert(stack_a.id, stack_a);
+    let stack_b = bound_stack(3, 8);
+    state.stacks.insert(stack_b.id, stack_b);
+    let task = Task {
+        id: taskboard_domain::TaskId::from(uuid(10)),
+        remote: Some(taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(BOARD),
+            stack: taskboard_domain::RemoteStackId(STACK),
+            card: taskboard_domain::RemoteCardId(55),
+        }),
+        title: "deleted locally".into(),
+        description: String::new(),
+        duedate: None,
+        done: None,
+        stack: taskboard_domain::StackId::from(uuid(2)),
+        order: 3,
+        labels: std::collections::BTreeSet::new(),
+        archived: false,
+        deleted: false,
+        clocks: task_clocks(),
+        remote_seen: Some(ts(T)),
+    };
+    state.tasks.insert(task.id, task);
+    state.outbox.push(PendingOp {
+        op_id: OpId(uuid(11)),
+        op: LocalOp::DeleteTask(taskboard_domain::TaskId::from(uuid(10))),
+        queued_at: ts(T),
+    });
+
+    let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let SyncReport::Completed {
+        snapshot, pushes, ..
+    } = next_report(&mut actor).await
+    else {
+        panic!("expected a Completed report");
+    };
+
+    assert!(
+        !pushes
+            .iter()
+            .any(|outcome| matches!(outcome.result, PushResult::RemoteMissing)),
+        "a moved card must not read as missing on the delete path: {pushes:?}"
+    );
+    assert!(
+        pushes.iter().any(|outcome| {
+            matches!(
+                &outcome.result,
+                PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
+                    if view.id.stack == taskboard_domain::RemoteStackId(8)
+                        && view.id.card == taskboard_domain::RemoteCardId(55)
+            )
+        }),
+        "the delete landed at the card's fresh location: {pushes:?}"
+    );
+    assert!(
+        !snapshot
+            .tasks
+            .iter()
+            .any(|t| t.id.card == taskboard_domain::RemoteCardId(55)),
+        "the tombstone finalized and nothing re-adopted the deleted card"
+    );
+}
