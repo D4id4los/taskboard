@@ -138,13 +138,16 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         std::process::exit(i32::from(code));
     }
 
-    // Bare `taskboard` routing (D4): `mode = "desktop"` boots the GUI
-    // *regardless of TTY* — `AppMode` is frontend selection (ADR 0008),
-    // and launching from a terminal is how desktop apps start. The
-    // REPL stays the TTY front-end of `daemon` mode (ADR 0011); a
-    // non-TTY daemon (and the refused `kiosk`) keeps the daemon
-    // lifecycle. An explicit `daemon` subcommand is `Some` above and
-    // skips this routing entirely.
+    // Bare `taskboard` routing (D4, amended per the ADR 0015 display
+    // gate): `mode = "desktop"` boots the GUI *regardless of TTY* —
+    // `AppMode` is frontend selection (ADR 0008), and launching from a
+    // terminal is how desktop apps start. The REPL stays the TTY
+    // front-end of `daemon` mode (ADR 0011); a non-TTY daemon inside a
+    // graphical session boots the GUI (#236), and a daemon with
+    // neither TTY nor display keeps the daemon lifecycle (as `kiosk`
+    // does in every cell — refused by the lifecycle's mode gate). An
+    // explicit `daemon` subcommand is `Some` above and skips this
+    // routing entirely.
     if bare_invocation {
         let config = match AppConfig::load(cli.config.clone()) {
             Ok(config) => config,
@@ -155,6 +158,7 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         match taskboard_app::ui::bare_invocation_route(
             config.app.mode,
             std::io::stdin().is_terminal(),
+            taskboard_app::ui::display_env_available(),
         ) {
             taskboard_app::ui::BareRoute::DesktopUi => {
                 return taskboard_app::ui::run_desktop(config).await;
