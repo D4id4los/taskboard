@@ -1,0 +1,357 @@
+#+title: taskboard Data & Control Flow Model
+#+options: toc:t
+
+* What this document is
+
+The *derived actor/edge model of the shipped runtime*: every channel,
+task, and shared-state edge that exists in the code, with a
+=file:line= anchor for each half. It is *release-anchored* —
+regenerated as part of every release cut (see [[*Maintenance][Maintenance]]) — so the
+anchors below describe one tree, not a moving target.
+
+- *Derivation base:* code state of =76838a1= (=origin/main= at the
+  time of derivation; the branch adding this file is docs-only).
+- *Derivation date:* 2026-10-18.
+- *Origin:* promoted from the v0.1.0 audit's flow-model chunk
+  (=.artifacts/reports/2026-10-16-v0.1.0-audit-flow-model-report.md=),
+  re-derived at the base above. The derivation reproduced the audit's
+  topology exactly (23 production constructors, 13 actors, 36 edge
+  rows); only line anchors moved.
+- *Companion documents:* =docs/architecture.org= (the normative
+  architecture prose) and the ADRs. Where this file and
+  =docs/architecture.org= disagree about the topology, one of them is
+  wrong — file an issue, never silently absorb the difference.
+
+* Method — how to regenerate this document
+
+Six passes, each a mechanical grep plus a reading pass. Reproduce them
+from any clone at the derivation base. *Exclusion rule* (applies to
+every pass): hits inside =#[cfg(test)]= modules, =tests/= directories,
+and doc comments (=//!=, =///=) are not part of the shipped runtime
+and are excluded.
+
+1. *Channel constructors, workspace-wide.*
+
+   #+begin_example
+   grep -rn -E 'mpsc::channel|mpsc::unbounded_channel|broadcast::channel|watch::channel|oneshot::channel' crates/*/src --include='*.rs'
+   #+end_example
+
+   Filter per the exclusion rule. Expect **23 production constructor
+   sites**: =bootstrap.rs= ×6, state =actor.rs= ×6, storage
+   =actor.rs= ×3, ipc =server.rs= ×3, =repl.rs= ×4 (incl. the headless
+   orphan), =ui.rs= ×1. =mpsc::unbounded_channel= must have **zero**
+   production hits — that is a recorded invariant, not an assumption.
+
+2. *Spawn sites.*
+
+   #+begin_example
+   grep -rn -E 'tokio::spawn|task::spawn|spawn_blocking|thread::spawn|thread::Builder|run_event_loop' crates/*/src --include='*.rs'
+   #+end_example
+
+   Filter per the exclusion rule; classify the rest into the actor
+   inventory (below) or as non-spawn executors (the Slint event loop
+   on the process main thread; the REPL session loop as an async
+   future).
+
+3. *Wiring trace.* From the three roots — =bootstrap()=
+   (=bootstrap.rs:512=), =run_desktop= (=ui.rs:157=), =main::run=
+   (=main.rs:79=) — follow each constructor half to its consumer by
+   reading the owning function and its callers. Do not infer
+   crossings; read them.
+
+4. *ArcSwap writer/reader enumeration.*
+
+   #+begin_example
+   grep -rn -E '\.rcu\(|\.store\(|\.load_full\(\)|\.load\(\)' crates/*/src --include='*.rs'
+   #+end_example
+
+   Filter per the exclusion rule (watch for the false friend
+   =CredentialStore::store=). Exactly **one** production write site
+   may remain: =publish= in the state actor. More than one is a
+   finding against the AGENTS §2 sole-writer rule.
+
+5. *Shutdown routes.* Trace the four triggers (signal, =daemon stop=,
+   UI window close/signal, REPL EOF/exit) into =App::shutdown= and
+   record the implemented step order (below).
+
+6. *Mode matrix.* Derive presence/absence of each actor per process
+   mode from =main::run=, =bare_invocation_route= (=ui.rs:79=), the
+   REPL entry (=repl.rs=), and the daemon mode gate (=main.rs:250=).
+
+*Mermaid validation fallback:* when no =mmdc= is available, keep the
+diagrams in a conservative label subset (ASCII labels, all labels
+quoted, no bare =end= tokens, no exotic shapes beyond one =[( )]=
+database node) and run a structural lint — balanced quotes and
+brackets, declare-before-use for every node id. A parse-check with
+mermaid's own parser is the preferred validation when tooling exists.
+
+* Actor inventory
+
+Every long-lived executor of the shipped runtime. "Substrate" is the
+execution mechanism as found; join-handle ownership drives the
+shutdown routes. Anchors are at the derivation base.
+
+| ID | Actor / task | Crate · module | Substrate | Spawn / entry site | Inbox(es) | Lifetime / join owner |
+|---+---+---+---+---+---+---|
+| ENG | State engine run loop | taskboard-state · actor.rs | tokio task | =spawn_state_engine= → =tokio::spawn(run_loop(..))= actor.rs:266 (loop fn :302, biased =select!= :354) | E-01..E-05 (EngineEnvelope mpsc), E-07 (SyncReport mpsc), E-11 (SystemEvent broadcast), reminder timer arm :463 | =App.engine_join= (bounded join at shutdown, bootstrap.rs:372) |
+| STO | Storage actor | taskboard-storage-sqlite · actor.rs | tokio task | =spawn_storage_actor= actor.rs:86 (called bootstrap.rs:589) | E-18 (StorageCommand mpsc :85) | =App.storage_join= (joined unbounded last, bootstrap.rs:384-385) |
+| SYN | Sync connector actor (0..1) | taskboard-sync-nextcloud · actor.rs | tokio task | =spawn_sync_actor= actor.rs:128 (boot call bootstrap.rs:631; attach call :293) | E-06 (SyncCommand mpsc), E-12 (SystemEvent broadcast :180) | =SyncActor.join= inside =App.connectors= (bounded join via =stop_actor=, bootstrap.rs:472) |
+| NTF | Notifier consumer | taskboard-app · notifications.rs | tokio task | =spawn_notifier= notifications.rs:75 (fn :71; called bootstrap.rs:600) | E-20 (Notification mpsc) | =App.notifier_join= (bounded join, bootstrap.rs:379) |
+| SYSLOG | System-event logger | taskboard-app · bootstrap.rs | tokio task | =spawn_system_event_logger= bootstrap.rs:680 (fn :676; called main.rs:280, daemon only) | E-13 (SystemEvent broadcast :679) | daemon-lifecycle local =_logger=; exits on close or first =Lagged= |
+| IPCA | IPC accept loop | taskboard-app · ipc/server.rs | tokio task | =spawn_server= → server.rs:174 (accept_loop fn :263) | local-socket listener; E-23 (stop watch) | =IpcServerHandle.accept= (drained by =server.join=, server.rs:104) |
+| IPCD | IPC dispatcher (serial) | taskboard-app · ipc/server.rs | tokio task | =spawn_server= → server.rs:162 | E-22 (InboundRequest mpsc :155) | =IpcServerHandle.dispatcher= (same join) |
+| UI | Slint event loop + repaint timer | taskboard-ui-slint · lib.rs | *process main thread* (inside =block_on=) | =run= → =slint::run_event_loop()= lib.rs:266; repaint =slint::Timer= lib.rs:177 (fn =start_repaint_driver= :168) | E-16/E-14 (broadcast =try_recv= drains :183/:196) | loop returns on window close or =quit=; no join |
+| UIF | UI-command forwarder | taskboard-app · ui.rs | tokio task | =spawn_ui_command_forwarder= ui.rs:50 (fn :46; called :180) | E-21 (StateCommand mpsc) | aborted after the loop returns, ui.rs:203 |
+| EXITW | UI exit watcher | taskboard-app · ui.rs | tokio task | ui.rs:194 | none — awaits =wait_for_signal= then =slint::quit= | aborted ui.rs:202 |
+| RPL | REPL session loop | taskboard-app · repl.rs | async future on the runtime (no dedicated task) | =run_session= → =run_session_with_parts= :654 → =repl_loop= :515 | E-26 (LineEvent mpsc) | ends on =Eof=/=Exit=; runs =app.shutdown()= :620 |
+| EDT | REPL line-reader ("repl-line-reader") | taskboard-app · repl.rs | *std thread* (=thread::Builder= :178) | =spawn_line_reader= repl.rs:175 | E-27 (Disposition mpsc) | exits when the disposition sender drops (:235 =None=) or on send failure; OS thread, no join handle kept |
+| CLI | One-shot verb / relay client | taskboard-app · main.rs | separate OS process | =main= main.rs:58 → =run= :79 (verb dispatch :137; relay :107-121) | none in-process (client of E-25 when relaying) | exits with the verb's code |
+
+Non-actor helpers deliberately *not* inventory rows: =wait_for_signal=
+(bootstrap.rs:780) and the daemon =select!= (main.rs:306) are arms of
+the lifecycle future, not tasks; =wait_for_boot_pull=
+(bootstrap.rs:705) is a bounded await inside the CLI/REPL/attach
+flows (rows E-17/E-36).
+
+* Main runtime graph
+
+Broadcast channels are drawn as hub nodes; =ArcSwap<AppState>= as a
+shared-state node with one solid write edge and dashed read edges; the
+external CLI process in a dashed subgraph; shutdown-only message flow
+is dotted (the ordered teardown is the next section's diagram).
+
+#+begin_src mermaid
+graph LR
+  subgraph EXT["external process"]
+    CLI["CLI proc · one-shot verb or relay client · main.rs:58"]
+  end
+
+  subgraph FRONT["frontends in-process"]
+    RPL["RPL · repl session loop · repl.rs:515"]
+    EDT["EDT · repl line-reader std thread · repl.rs:178"]
+    UIF["UIF · ui-command forwarder tokio task · ui.rs:50"]
+    UI["UI · slint event loop main thread · lib.rs:266"]
+  end
+
+  subgraph CORE["core actors"]
+    ENG["ENG · state engine select loop · actor.rs:266"]
+    STO["STO · storage actor · storage actor.rs:86"]
+    SYN["SYN · sync connector 0..1 · sync actor.rs:128"]
+    NTF["NTF · notifier consumer · notifications.rs:75"]
+  end
+
+  subgraph IPC["ipc frontend daemon only"]
+    IPCA["IPCA · accept loop · server.rs:174"]
+    IPCD["IPCD · serial dispatcher · server.rs:162"]
+    VERBS["VERBS · commands dispatch_line layer · commands/mod.rs:920"]
+  end
+
+  SYS(("SYS · SystemEvent broadcast cap=64 · bootstrap.rs:591"))
+  SIG(("SIG · EngineSignal broadcast cap=64 · state actor.rs:260"))
+  AS[("AS · ArcSwap AppState")]
+
+  CLI -- "E-25 local-socket JSON v1 lanes route_for_ipc mod.rs:1228" --> IPCA
+  IPCA -- "E-22 InboundRequest cap=64 + reply oneshot" --> IPCD
+  IPCD --> VERBS
+
+  RPL --> VERBS
+  CLI -. "in-process mode: dispatch main.rs:137" .-> VERBS
+
+  EDT -- "E-26 LineEvent cap=1" --> RPL
+  RPL -- "E-27 Disposition cap=1 + E-28 prompt oneshot" --> EDT
+
+  UI -- "E-21 StateCommand cap=64 adapter.rs:130" --> UIF
+  UIF -- "E-01 EngineEnvelope Execute reply=None cap=256" --> ENG
+  VERBS -- "E-02..E-05 EngineEnvelope Execute Flush ReadState AttachConnector cap=256 + oneshots" --> ENG
+
+  ENG -- "E-32 store actor.rs:487 sole writer" --> AS
+  UI -. "E-33 load adapter.rs:144 190 207 560 570" .-> AS
+  VERBS -. "E-34 load_full x39 commands layer" .-> AS
+  EDT -. "E-35 load_full per Tab completion.rs:777" .-> AS
+  RPL -. "E-36 load_full boot pull bootstrap.rs:710" .-> AS
+
+  ENG -- "E-15 StateUpdated publish actor.rs:488" --> SIG
+  SIG -- "E-16 try_recv per tick lib.rs:183" --> UI
+  SIG -. "E-17 boot-pull wait bootstrap.rs:706" .-> RPL
+
+  ENG -- "E-08 StorageFailed actor.rs:761" --> SYS
+  SYN -- "E-09 NetworkLost Restored actor.rs:499 467" --> SYS
+  ENG -- "E-10 SystemEvent Shutdown bootstrap.rs:351" --> SYS
+  SYS -- "E-11 recv actor.rs:428 drain and network arms" --> ENG
+  SYS -- "E-12 recv Shutdown only sync actor.rs:231" --> SYN
+  SYS -- "E-13 logger bootstrap.rs:679 daemon only" --> SYSLOG["SYSLOG · system-event logger · bootstrap.rs:680"]
+  SYS -- "E-14 try_recv lib.rs:196" --> UI
+
+  ENG -- "E-06 SyncCommand nudge cap=32 forward_sync_now actor.rs:587" --> SYN
+  SYN -- "E-07 SyncReport cap=32 fan-in sync actor.rs:523" --> ENG
+  ENG -- "E-18 StorageCommand via TaskRepository port storage-sqlite/port.rs:3" --> STO
+  STO -- "E-19 apply load oneshots storage actor.rs:55 71" --> ENG
+  ENG -- "E-20 Notification cap=64 reminder tick actor.rs:832" --> NTF
+
+  classDef hub fill:#fff3cd,stroke:#856404;
+  classDef shared fill:#d1ecf1,stroke:#0c5460;
+  classDef ext fill:#f8d7da,stroke:#721c24,stroke-dasharray: 5 5;
+  class SYS,SIG hub;
+  class AS shared;
+  class CLI ext;
+#+end_src
+
+Reads of AS are dashed (a fact of the primitive: lock-free loads).
+E-10 is drawn as a message flow because the Shutdown broadcast *is*
+data flowing to subscribers (the ordering discipline around it is the
+next section).
+
+* Shutdown routes
+
+** Triggers (pre-sequences)
+
+| Trigger | Route into =App::shutdown= |
+|---+---|
+| =ctrl_c= / SIGTERM, daemon | =wait_for_signal= (bootstrap.rs:780) vs =server.stopped()= in the daemon =select!= (main.rs:306-313) → =server.join(timeout)= (server.rs:104; aborts accept+dispatcher at the budget, drains accepted connections) → =shutdown_from_arc= (main.rs:320, fn bootstrap.rs:753) → =app.shutdown()=. A second signal during the drain force-exits 130 (main.rs:326). |
+| =taskboard daemon stop= | CLI IpcOnly lane (main.rs:95ff) → =Request::Shutdown= → IPCD answers and sets the stop watch (server.rs:165-169) → the daemon trigger above completes the sequence. |
+| =ctrl_c= / SIGTERM, desktop | EXITW (ui.rs:194-198) calls =slint::quit= → loop returns → watcher+forwarder aborted (ui.rs:202-203) → =app.shutdown()= (ui.rs:204). |
+| Window close, desktop | =run_event_loop= returns (lib.rs:266) → same ui.rs:202-204 path. |
+| REPL =exit= / Ctrl-D / EOF | =repl_loop= breaks (repl.rs:528/533) → =app.shutdown()= (repl.rs:620); the dropped disposition sender is the editor thread's exit signal (repl.rs:235); =TtyStateGuard= restores termios on drop. |
+| Detach (connector only) | =App::detach_connector= (bootstrap.rs:219): drain registry → =stop_actor= per actor (send =SyncCommand::Detach= :473, bounded join) — the rest of the graph keeps running. |
+| Attach unwinding | A lost attach race unwinds the refused actor outside the lock (bootstrap.rs:293ff). |
+
+** =App::shutdown= implemented order (bootstrap.rs:330-390)
+
+#+begin_src mermaid
+sequenceDiagram
+  participant SRC as trigger
+  participant APP as App::shutdown
+  participant ENG as ENG engine
+  participant SYN as SYN connector
+  participant NTF as NTF notifier
+  participant STO as STO storage
+  SRC->>APP: shutdown self bootstrap.rs:330
+  APP->>ENG: EngineEnvelope Flush receipt bootstrap.rs:348 actor.rs:157
+  APP->>SYS: broadcast SystemEvent Shutdown bootstrap.rs:351
+  Note over ENG: enters drain actor.rs:434 declines Execute and AttachConnector disarms reminder timer
+  APP->>SYN: stop_actor Detach + bounded join bootstrap.rs:360-363 via :472
+  APP->>APP: drop parked reports twin closes fan-in bootstrap.rs:370
+  APP->>ENG: join_bounded engine_join bootstrap.rs:372
+  APP->>NTF: join_bounded notifier_join bootstrap.rs:379
+  APP->>STO: drop StorageHandle then storage_join await bootstrap.rs:384-385
+#+end_src
+
+Numbered, each step with evidence: (1) destructure =App= so the parked
+reports twin's drop is structural (bootstrap.rs:335-347); (2)
+=engine.flush()= — the durability barrier receipt (boot strapping
+actor.rs:157) :348; (3) =system.send(SystemEvent::Shutdown)= :351 —
+the engine's drain flip (state/actor.rs:434: declines
+=Execute=/=AttachConnector=, disarms the reminder timer, keeps
+ingesting sync reports until the channel closes) and the sync actor's
+stop (sync/actor.rs:231); (4) per-connector =stop_actor= =
+=SyncCommand::Detach= + bounded join with abort-at-budget
+(bootstrap.rs:360-363 → =stop_actor= :472, =join_bounded= :482); (5)
+=drop(reports)= — closes the fan-in inbox so the engine's
+linger-drain can finish (:365-370); (6) bounded engine join :372; (7)
+bounded notifier join :379 (the consumer would exit on its own — the
+engine exit closed its channel); (8) =drop(storage)= then
+=storage_join.await= (:384-385).
+
+On the daemon path the call arrives through =shutdown_from_arc=
+(bootstrap.rs:753, called from main.rs:320): the typed tail that
+hands the core's exclusive ownership to the sequence above, returning
+a typed runtime failure instead of panicking when a stray strong
+reference pins the core.
+
+* Edge table
+
+"Constructed" is the =channel()= site; "send"/"recv" pin the
+production sites of each half. External endpoints: =CLI(proc)=. All
+anchors at the derivation base.
+
+| ID | From → To | Primitive | Payload | Capacity | Constructed | Send evidence | Recv evidence | Return path | Notes |
+|---+---+---+---+---+---+---+---+---+---|
+| E-01 | UIF → ENG | mpsc | =EngineEnvelope::Execute{reply:None}= | 256 (=COMMAND_BUFFER=, state/actor.rs:36) | state/actor.rs:259 (fn =spawn_state_engine=) | ui.rs:52 → =EngineHandle::dispatch= try_send actor.rs:139 | select arm actor.rs:357 | — | UI path is fire-and-forget; full/closed logged+dropped :139-152 |
+| E-02 | VERBS (CLI/RPL/IPC) → ENG | mpsc | =EngineEnvelope::Execute= + receipt | 256 (same channel as E-01) | state/actor.rs:259 | commands layer → =execute= send actor.rs:126 | actor.rs:357 | oneshot actor.rs:124; receipt sent inside =execute_command= (actor.rs:500ff; drain-decline reply :364) | reply implies durability (:115) |
+| E-03 | VERBS → ENG | mpsc | =EngineEnvelope::Flush= | 256 (same) | state/actor.rs:259 | actor.rs:160-161 | actor.rs:379 | oneshot actor.rs:158, reply :384 | =App::shutdown= barrier bootstrap.rs:348 |
+| E-04 | SYN (via =SyncStateReader=) → ENG | mpsc | =EngineEnvelope::ReadState= | 256 (same) | state/actor.rs:259 | port impl actor.rs:213-215 (trait impl :208) | actor.rs:386 | oneshot actor.rs:213, reply :387 | sync never reads SQL directly (ADR 0005) |
+| E-05 | App (=attach_connector=) → ENG | mpsc | =EngineEnvelope::AttachConnector= | 256 (same) | state/actor.rs:259 | bootstrap.rs:277 → actor.rs:183-184 | actor.rs:389 | oneshot actor.rs:182, receipt :394-397 (=Attached=/=Draining=) | pushes the new sender onto the nudge registry |
+| E-06 | ENG → SYN | mpsc | =SyncCommand= nudges (=SyncNow=/=SetBoard=) | 32 (=SYNC_COMMAND_CAPACITY=, bootstrap.rs:80) | bootstrap.rs:592 | =forward_sync_now= try_send actor.rs:587 (registry fan-out :585); ceremony =SetBoard= via =App::sync_commands= boards.rs | sync actor.rs:198 (=commands.recv=) | — | standalone: rx dropped bootstrap.rs:652; full channel = coalesced |
+| E-07 | SYN → ENG | mpsc | =SyncReport= | 32 (=SYNC_REPORT_CAPACITY=, bootstrap.rs:82) | bootstrap.rs:593 | sync actor.rs:523 | actor.rs:403 (=sync_reports.recv=, =reports_open= guard) | — | fan-in "N actors, one inbox": parked twin =App.reports= (bootstrap.rs:149, :370) + per-attach clones (:297); attach pair E-30 feeds the same receiver type |
+| E-08 | ENG → SYS hub | broadcast | =SystemEvent::StorageFailed= | 64 (=SYSTEM_BROADCAST_CAPACITY=, bootstrap.rs:77) | bootstrap.rs:591 | state/actor.rs:761 | subscribers below | — | producer-only arm for the engine itself; edge-triggered per failure epoch |
+| E-09 | SYN → SYS hub | broadcast | =SystemEvent::NetworkLost=/=NetworkRestored= | 64 (same) | bootstrap.rs:591 | sync actor.rs:499 / :467 | subscribers below | — | the sync actor is the network authority |
+| E-10 | App::shutdown → SYS hub | broadcast | =SystemEvent::Shutdown= | 64 (same) | bootstrap.rs:591 | bootstrap.rs:351 | subscribers below | — | no live receivers is fine (:350) |
+| E-11 | SYS hub → ENG | broadcast | all =SystemEvent= | 64 (same) | bootstrap.rs:591 | — | recv arm actor.rs:428 (=system_open= guard) | — | acts on =Shutdown= → drain :434, =NetworkLost= → =go_offline= :728, =NetworkRestored= → nudge; rx handed at bootstrap.rs:591 (=system_rx_engine=) |
+| E-12 | SYS hub → SYN | broadcast | all =SystemEvent= | 64 (same) | bootstrap.rs:591 | — | subscribe sync actor.rs:180, recv arm :231 | — | acts on =Shutdown= only; ignores the rest |
+| E-13 | SYS hub → SYSLOG | broadcast | all =SystemEvent= | 64 (same) | bootstrap.rs:591 | — | subscribe bootstrap.rs:679, recv :680ff | — | daemon-only (main.rs:280); exits on close or first =Lagged= |
+| E-14 | SYS hub → UI | broadcast | all =SystemEvent= | 64 (same) | bootstrap.rs:591 | — | =try_recv= drain lib.rs:196 | — | rx handed at mount ui.rs:184; =Shutdown= inert in the UI |
+| E-15 | ENG → SIG hub | broadcast | =EngineSignal::StateUpdated= | 64 (=SIGNAL_BUFFER=, state/actor.rs:38) | state/actor.rs:260 | =publish= actor.rs:488 | subscribers below | — | swap-then-signal ordering :487-488 |
+| E-16 | SIG hub → UI | broadcast | =StateUpdated= | 64 (same) | state/actor.rs:260 | — | =try_recv= drain lib.rs:183 | — | rx handed at ui.rs:184 |
+| E-17 | SIG hub → boot-pull wait | broadcast | =StateUpdated= | 64 (same) | state/actor.rs:260 | — | subscribe bootstrap.rs:706, timeout recv :736 | — | =wait_for_boot_pull= :705 (REPL/attach/CLI boot flows) |
+| E-18 | ENG → STO | mpsc | =StorageCommand::Apply=/=Load= | 64 (literal) | storage-sqlite/actor.rs:85 | engine =repo.apply= via =TaskRepository= port: storage-sqlite/port.rs:3 (trait: domain/persistence.rs); call sites actor.rs:547, :663, :745, :793 | storage actor.rs:89 | embedded oneshots | the handle *is* the port adapter (bootstrap.rs:588ff) |
+| E-19 | STO → ENG | oneshot | =Result<(), RepositoryError>= / =PersistedState= | n/a | storage actor.rs:55 (apply), :71 (load) | oneshot carried inside the command; actor replies :97 (apply), :104 (load) | engine at the call sites of E-18 | — | per-request pattern; dropped reply tolerated |
+| E-20 | ENG → NTF | mpsc | =Notification= | 64 (=NOTIFIER_CAPACITY=, notifications.rs:17) | bootstrap.rs:595 | reminder tick actor.rs:832 (=send=, not =try_send=: backpressures the tick) | notifications.rs:77 recv | — | consumer exits when the engine exit closes the channel (bootstrap.rs:600); sink ==LogSink= v1 (ADR 0013); delivery is durable-then-notify (markers persisted before any send) |
+| E-21 | UI → UIF | mpsc | =StateCommand= | 64 (=UI_COMMAND_CAPACITY=, ui.rs:39) | ui.rs:179 | adapter try_send adapter.rs:130, :162 | ui.rs:51 recv → =sink.dispatch= :52 | — | the UI never sees an =EngineHandle= (ui.rs:177-180) |
+| E-22 | IPCA per-conn → IPCD | mpsc | =InboundRequest{req, reply}= | 64 (literal) | ipc/server.rs:155 | =serve_connection= send :332-338 | dispatcher :163 | embedded oneshot (E-24) | serial dispatch — engine-fairness by construction |
+| E-23 | IPCD → IPCA (+daemon) | =watch<bool>= | stop flag | n/a | ipc/server.rs:156 | =send(true)= on =Response::Shutdown= :168 | accept =wait_stopped= :278/:296; daemon =server.stopped()= main.rs:311 | — | handle holds sender+rx |
+| E-24 | IPCD → conn task | oneshot | =Response= | n/a | ipc/server.rs:331 | dispatcher :170 | :343 | — | per-connection pattern |
+| E-25 | CLI(proc) ⇄ IPCA | local-socket (=interprocess=) + length-framed JSON v1 | =Request=/=Response= | n/a | bind server.rs:154 (fn =bind_with_recovery= :192; stale-socket recovery; unix sidecar 0600 :244) | client main.rs:107-121, daemon-stop lane | =listener.accept= :277ff | — | lanes: =Local=/=IpcOnly=/=IpcOrLocal= (=route_for_ipc=, commands/mod.rs:1228); one request per connection |
+| E-26 | EDT → RPL | mpsc | =LineEvent= (Line/Interrupted/Eof) | 1 | repl.rs:176 | =blocking_send= :211, :216, :221 | =repl_loop= recv :522 | — | capacity-1 strict alternation (ADR 0014) |
+| E-27 | RPL → EDT | mpsc | =Disposition= (Next/Prompt) | 1 | repl.rs:177 | resume :288; prompt ship :295 | =blocking_recv= :234 | — | dropped sender = editor exit signal :235 |
+| E-28 | EDT → RPL | oneshot | =PromptValue= | n/a | repl.rs:293 | EDT answers | =ask= await :292ff | — | rides inside =Disposition::Prompt=; masked reads never enter history |
+| E-29 | VERBS (=App::sync_commands= fallback) → ∅ | mpsc | =SyncCommand= | 1 | bootstrap.rs:184 | callers | receiver dropped :185 | — | sends fail =Closed= by design (detached world) |
+| E-30 | ENG registry → SYN (per attach) | mpsc | =SyncCommand= | 32 (=SYNC_COMMAND_CAPACITY=) | bootstrap.rs:273 | E-06 senders after the E-05 ack | new actor bootstrap.rs:293 | — | fresh pair per attach; the boot pair belongs to the boot actor |
+| E-31 | RPL =headless()= → ∅ | mpsc | prompt transport (unused) | 1 | repl.rs:377 | =ReplPrompts= orphan :377ff | receiver dropped | — | headless session prompts fail closed (=BrokenPipe=) |
+| E-32 | ENG → AS | =ArcSwap= write | =AppState= | n/a | =ArcSwap::from_pointee= state/actor.rs:258 | *state/actor.rs:487* (=publish=; sole production writer) | — | — | sole-writer check = pass 4 enumeration |
+| E-33 | UI ← AS | =ArcSwap= read | =AppState= snapshot | n/a | — | — | adapter.rs:144, :190, :207 (=.load=), :560, :570 (=.load_full=) | — | slint thread only (timer + input callbacks) |
+| E-34 | VERBS ← AS | =ArcSwap= read | =load_full= ×39 sites | n/a | — | — | commands/{tasks ×12, stacks ×6, boards ×6, labels ×4, reminders ×7, status ×1, sync ×3}.rs | — | CLI + REPL + IPC verbs converge here |
+| E-35 | EDT ← AS | =ArcSwap= read | completion context | n/a | — | — | completion.rs:777 | — | one load per Tab (:749) |
+| E-36 | RPL/boot-pull ← AS | =ArcSwap= read | sync-phase poll | n/a | — | — | bootstrap.rs:710 | — | paired with E-17's signal wait |
+
+Constructor↔row reconciliation: the engine inbox constructor
+(state/actor.rs:259) carries rows E-01..E-05 (one channel, five
+sender populations); the system broadcast (bootstrap.rs:591) carries
+E-08..E-14 (three producer populations, four subscriber edges); the
+signal broadcast (state/actor.rs:260) carries E-15..E-17; the storage
+inbox constructor (storage actor.rs:85) is E-18 with E-19 as its
+embedded-receipt rows; the IPC inbound (server.rs:155) is E-22 with
+E-24 as its embedded receipt; E-29/E-31 are whole-function orphan
+pairs; every other constructor maps 1:1. All 23 constructors are
+accounted for; every row traces to a constructor — no orphan rows.
+
+* Process-mode matrix
+
+Presence of actors/edges per process mode. "core" = ENG+STO+NTF
+(spawned unconditionally by =bootstrap=, bootstrap.rs:589-600); SYN
+only when a connector client resolves (bootstrap.rs:631ff, standalone
+drops =sync_rx= :652). The mode *gate* for explicit =daemon= refuses
+Desktop/Kiosk (main.rs:250-257); bare-invocation routing maps
+Desktop→GUI regardless of TTY, Daemon+TTY→REPL, else daemon lifecycle
+(ui.rs:79-87).
+
+| Mode (entry) | ENG | STO | SYN | NTF | SYSLOG | IPCA+IPCD | UIF | UI | EXITW | RPL | EDT | Notable edges absent |
+|---+---+---+---+---+---+---+---+---+---+---+---+---|
+| One-shot CLI, in-process (verb body boots) | ✓ | ✓ | backend | ✓ | — | — | — | — | — | — | — | E-13..14, E-21..28, E-31 |
+| One-shot CLI, relayed (daemon serving the db) | CLI proc is a client only (E-25); the daemon process runs the daemon row | | | | | | | | | | | |
+| Daemon (=daemon= subcommand, or bare non-TTY Daemon) | ✓ | ✓ | backend | ✓ | ✓ | ✓ | — | — | — | — | — | E-16/17 (SIG may have zero subscribers), E-21, E-26..28 |
+| REPL session (bare TTY Daemon) | ✓ | ✓ | backend | ✓ | — | — | — | — | — | ✓ | ✓ | E-13/14, E-21..25 |
+| Desktop GUI (bare Desktop) | ✓ | ✓ | backend | ✓ | — | — | ✓ | ✓ | ✓ | — | — | E-13, E-22..28 |
+| Kiosk (bare or explicit) | refused — mode gate main.rs:250-257 | | | | | | | | | | | all |
+
+Notes: (a) in a plain daemon the SIG bus (E-15) can have *zero live
+subscribers* — =publish='s send is =let _ == (state/actor.rs:488);
+(b) SYSLOG exists only on the daemon path (main.rs:280); (c) the
+one-shot CLI boots a full core per verb and tears it down per verb —
+the mode with the shortest actor-graph lifetimes.
+
+* Maintenance
+
+- *Release-anchor rule:* re-derive this document at every =vX.Y.Z=
+  tag as part of the release cut (six greps + a reading pass — the
+  method above is sized for one focused session). Diff the new
+  derivation against the previous one and record the diff in the
+  derivation log below.
+- *Derivation log:*
+  - 2026-10-18 — initial promotion from the v0.1.0 audit flow-model
+    report, re-derived at =76838a1=: topology identical (13 actors,
+    36 rows, 23 constructors); anchor drift only (bootstrap +23
+    lines, the =EngineEnvelope= rename, the typed shutdown tail
+    =shutdown_from_arc=, the =push_exec= module tree).
+- *A topology change that contradicts =docs/architecture.org= is
+  either fixed in the same pass (if it is a row this document owns)
+  or filed as an issue — never silently absorbed.*
