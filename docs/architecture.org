@@ -110,8 +110,9 @@ Rust primitives to communicate with the core engine: lock-free
 =UiSettings= handed over from the app side (config is read there via
 figment — never inside the UI crate), and user intents dispatched as
 typed =StateCommand=s on the state-command =mpsc=, drained by the
-bootstrap-owned UI-command forwarder. No IO crates, no business
-logic, no state mutation inside the UI.
+UI-command forwarder (spawned by =taskboard_app::ui= in
+=run_desktop=). No IO crates, no business logic, no state mutation
+inside the UI.
 
 The framework-swap seam survives as the *crate boundary*
 (=taskboard-ui-slint= contains presentation logic only), not as an
@@ -126,7 +127,7 @@ avoiding central runtime bottlenecks.
 
 | Communication Path | Mechanism / Type | Description & Purpose |
 |---+---+---|
-| *UI → State Engine* | =tokio::sync::mpsc= | Sends user intent commands (=StateCommand=) asynchronously; the mpsc is drained by the bootstrap-owned UI-command forwarder (=taskboard_app::ui::spawn_ui_command_forwarder=: =recv()= → =EngineHandle::dispatch= over the =CommandSink= trait, dropped-command logging, capacity 64). |
+| *UI → State Engine* | =tokio::sync::mpsc= | Sends user intent commands (=StateCommand=) asynchronously; the mpsc is drained by the UI-command forwarder (=taskboard_app::ui::spawn_ui_command_forwarder=: =recv()= → =EngineHandle::dispatch= over the =CommandSink= trait, dropped-command logging, capacity 64), spawned in =run_desktop=, not by bootstrap. |
 | *State Engine → UI (Read)* | =arc_swap::ArcSwap<AppState>= | Provides lock-free, zero-contention state inspection during UI repaints. |
 | *State Engine → UI (Signal)* | =tokio::sync::broadcast= | Emits lightweight triggers (=EngineSignal::StateUpdated=) to prompt GUI repaints. |
 | *UI/CLI → State Engine* | =tokio::sync::mpsc= + =oneshot= | =EngineEnvelope::Execute= carries a =StateCommand= payload with an optional oneshot receipt (typed =Result<CommandOutcome, ExecuteError>=; a received reply implies durability). =EngineEnvelope::Flush= is the reply-less dispatch durability barrier (CLI exit). |
@@ -141,11 +142,18 @@ avoiding central runtime bottlenecks.
 | *REPL loop ⇄ editor thread (disposition)* | =tokio::sync::mpsc= + embedded =oneshot= (ADR 0014) | The per-line handshake: the editor thread delivers one =LineEvent=, then awaits the loop's =Disposition= (=Next=, or =Prompt{label, kind, reply}= for a follow-up read). Masked reads (=rpassword=) run on the reader thread; answers ride the oneshot and never enter history or completion. Capacity-1 channels keep the alternation strict — the race-free property. |
 | *Session ⇄ core (connector ceremonies)* | =App::attach_connector= / =App::detach_connector= + config refresh (ADR 0014) | An in-session =connect= line runs the shared ceremony through the session's prompt reader, refreshes the session config through the boot resolution, detaches any live connector, and attaches a fresh one from the refreshed config; =logout= is the mirror (local teardown → detach → refresh). Verb bodies are frontend-agnostic functions the Phase 7 GUI reuses. |
 
-All inter-actor channels — the system broadcast, both sync =mpsc=
-pipes, and the storage/engine command inboxes — are *bootstrap-created*
-and owned by =taskboard_app::bootstrap= (ADR 0008); actors receive
-their halves as injected constructor arguments and never construct
-channels between themselves.
+Channel wiring is *handed over by bootstrap; constructed in the owning
+spawn/hand-over functions*. =bootstrap()= itself constructs the system
+broadcast, both sync =mpsc= pipes, and the notifier feed; the engine
+inbox and signal bus are constructed in =spawn_state_engine=
+(taskboard-state), the storage inbox in =spawn_storage_actor=
+(taskboard-storage-sqlite), the UI-command channel in =run_desktop=
+(=taskboard_app::ui=), the IPC inbound + stop watch in
+=spawn_server=, and the REPL handshake pairs in the REPL's
+reader/prompt setup. Actors receive their halves as injected
+constructor arguments and never construct channels between themselves
+— every off-bootstrap constructor sits in a spawn/hand-over function
+the app layer calls (ADR 0008).
 
 * Cargo Workspace Topology
 
@@ -248,7 +256,10 @@ dependency hierarchies.
    =./taskboard.toml=, absent files tolerated), =secrets= (the =CredentialStore=
    port with the keyring and env stores, config-selected, no silent
    fallback; redacting =AppPassword=), =bootstrap=: one async fn
-   that wires the whole channel graph (all channel halves created here,
+   that wires the whole channel graph (the system broadcast, both sync
+   pipes, and the notifier feed are constructed here; the engine,
+   storage, UI-command, IPC, and REPL channels are constructed inside
+   their owning spawn/hand-over functions, all called from here —
    ADR 0007's handoff note; under the resolved =standalone= backend the
    sync connector is *not* spawned and its channel halves are dropped —
    the engine sees the closed-channel world it already handles, ADR
