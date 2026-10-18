@@ -1094,7 +1094,18 @@ mod tests {
         for (group, subs) in [
             (
                 "boards",
-                vec!["create", "list", "publish", "rename", "select"],
+                vec![
+                    "archive",
+                    "color",
+                    "create",
+                    "delete",
+                    "list",
+                    "publish",
+                    "rename",
+                    "reset",
+                    "select",
+                    "unarchive",
+                ],
             ),
             ("stacks", vec!["add", "delete", "move", "rename"]),
             (

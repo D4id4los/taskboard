@@ -163,6 +163,38 @@ pub enum BoardsCmd {
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
     },
+    /// Set the board color (pushes as a full-send when the board is
+    /// bound).
+    Color {
+        /// Board color as six hex digits (no `#`).
+        #[arg(value_parser = parse_color)]
+        color: String,
+    },
+    /// Archive the board (archived boards stay commandable; the GUI
+    /// stops listing them).
+    Archive,
+    /// Unarchive the board.
+    Unarchive,
+    /// Delete the board: tombstone-cascades its stacks, tasks, and
+    /// labels, cancels the pending ops of the doomed entities, and
+    /// queues the remote delete (a bound board's remote content is
+    /// destroyed server-side on the next cycle).
+    Delete {
+        /// Confirm the destruction (the refusal without it is typed and
+        /// states what would be destroyed).
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Reset the board's local content (stacks, tasks, labels, outbox,
+    /// validators, reminder facts) in one local-only repair; the board
+    /// row and binding survive. A bound board re-materializes from the
+    /// next pull.
+    Reset {
+        /// Confirm the repair (the refusal without it is typed and
+        /// states what would be cleared).
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 /// `stacks` subcommands. The stack selector is the uuid or the exact
@@ -204,8 +236,10 @@ pub enum StacksCmd {
 /// applies it when `--color` is omitted.
 pub const DEFAULT_LABEL_COLOR: &str = "31cc7c";
 
-/// Six lowercase hex digits or a usage error — labels only (an invalid
-/// label color is a permanent push rejection; board colors stay lenient).
+/// Six lowercase hex digits or a usage error — labels and boards (an
+/// invalid color is a permanent push rejection; the lenient domain
+/// value stays for adopted remote content, new input gets this boundary
+/// validation).
 fn parse_color(raw: &str) -> Result<String, String> {
     let lower = raw.to_lowercase();
     if lower.len() == 6 && lower.bytes().all(|b| b.is_ascii_hexdigit()) {

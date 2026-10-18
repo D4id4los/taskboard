@@ -247,6 +247,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::Attach(_) => "attach-failed",
             CommandError::BackendExplicitStandalone => "backend-explicit-standalone",
             CommandError::ConnectionExists => "connection-exists",
+            CommandError::ConfirmationRequired { .. } => "confirmation-required",
             CommandError::IpcTransport => "ipc-transport",
             CommandError::IpcVersion { .. } => "ipc-version",
         }

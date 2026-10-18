@@ -206,6 +206,25 @@ pub enum CommandError {
     /// is the honest signal (ADR 0012).
     #[error("daemon ipc transport failed")]
     IpcTransport,
+    /// A destructive/repair ceremony (`boards delete`/`boards reset`)
+    /// ran without `--confirm`; the payload states what would go so the
+    /// refusal is actionable. Confirmation is CLI-layer policy only —
+    /// the domain command stays pure and total.
+    #[error("pass --confirm to {verb}: {stacks} stacks, {tasks} tasks, {labels} labels and {pending_ops} pending ops would be affected{}", bound.then(|| " (the bound remote board's content is destroyed server-side by delete)").unwrap_or(""))]
+    ConfirmationRequired {
+        /// The ceremony being confirmed (`delete` | `reset`).
+        verb: String,
+        /// Live stacks affected.
+        stacks: usize,
+        /// Live tasks affected.
+        tasks: usize,
+        /// Live labels affected.
+        labels: usize,
+        /// Pending ops affected.
+        pending_ops: usize,
+        /// Whether the board is bound (delete destroys remote content).
+        bound: bool,
+    },
     /// The daemon speaks a different wire-protocol version.
     #[error("daemon ipc protocol version mismatch")]
     IpcVersion {
@@ -279,6 +298,7 @@ impl CommandError {
             Self::BackendExplicitStandalone => "backend-explicit-standalone",
             Self::Attach(_) => "attach-failed",
             Self::ConnectionExists => "connection-exists",
+            Self::ConfirmationRequired { .. } => "confirmation-required",
             Self::IpcTransport => "ipc-transport",
             Self::IpcVersion { .. } => "ipc-version",
         }
@@ -299,6 +319,7 @@ impl CommandError {
             }
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
             Self::IpcVersion { server_v } => Some(server_v.to_string()),
+            Self::ConfirmationRequired { verb, .. } => Some(verb.clone()),
             _ => None,
         }
     }
@@ -445,6 +466,63 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 move |config, store| async move {
                     boards::publish(config, store, Duration::from_secs(timeout_secs)).await
                 },
+            )
+            .await
+        }
+        Command::Boards {
+            cmd: BoardsCmd::Color { color },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_board_edit,
+                move |config, store| async move {
+                    boards::color(config, store, taskboard_domain::Color::new(&color)).await
+                },
+            )
+            .await
+        }
+        Command::Boards {
+            cmd: BoardsCmd::Archive,
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_board_edit,
+                move |config, store| async move { boards::archive(config, store, true).await },
+            )
+            .await
+        }
+        Command::Boards {
+            cmd: BoardsCmd::Unarchive,
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_board_edit,
+                move |config, store| async move { boards::archive(config, store, false).await },
+            )
+            .await
+        }
+        Command::Boards {
+            cmd: BoardsCmd::Delete { confirm },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_destruct,
+                move |config, store| async move { boards::delete(config, store, confirm).await },
+            )
+            .await
+        }
+        Command::Boards {
+            cmd: BoardsCmd::Reset { confirm },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_destruct,
+                move |config, store| async move { boards::reset(config, store, confirm).await },
             )
             .await
         }
@@ -1024,6 +1102,31 @@ async fn boards_line(
                 Err(err) => report_to(io, &err),
             }
         }
+        BoardsCmd::Color { color } => emit_result(
+            io,
+            boards::color_on(app, taskboard_domain::Color::new(&color)).await,
+            boards::render_text_board_edit,
+        ),
+        BoardsCmd::Archive => emit_result(
+            io,
+            boards::archive_on(app, true).await,
+            boards::render_text_board_edit,
+        ),
+        BoardsCmd::Unarchive => emit_result(
+            io,
+            boards::archive_on(app, false).await,
+            boards::render_text_board_edit,
+        ),
+        BoardsCmd::Delete { confirm } => emit_result(
+            io,
+            boards::delete_on(app, confirm).await,
+            boards::render_text_destruct,
+        ),
+        BoardsCmd::Reset { confirm } => emit_result(
+            io,
+            boards::reset_on(app, confirm).await,
+            boards::render_text_destruct,
+        ),
     }
 }
 
