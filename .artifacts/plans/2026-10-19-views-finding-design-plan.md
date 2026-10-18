@@ -30,9 +30,19 @@
   day_window`, the D-F5 phrase/decoration seams), consumes doc 1 §7's
   ruled anchor-task hiding as a binding input, and stays clear of
   doc 3's banner/toast surfaces (D-R4: banner unchanged).
-- **Status**: recommendations **PROPOSED** — open for the user's
-  decision session. Zero production code; this file is the chunk's
-  entire diff.
+- **Status**: decision session **in progress** (2026-10-19): D-V1,
+  D-V2, D-V3, D-V4 (re-commit in-wave, confirmation-free), D-V6,
+  D-V7, and D-V10 **ACCEPTED**; D-V8 **ACCEPTED with an amendment**
+  (find.rs architectured so a fuzzy-matcher crate can land later
+  touching only that file); D-V9 **AMENDED and accepted** (top-level
+  `find`, not `tasks find`); **D-V5 RE-OPENED** — v1's per-board
+  Inbox rejected; the session requires an app-global Inbox plus a
+  per-board Backlog, and §3.5 now carries the re-stated
+  requirements, the option space, and a v2 recommendation awaiting
+  the ruling (§5's record). D-V6's capture-landing target and
+  D-V7's singular-inbox reading are corrected to follow the D-V5
+  direction. Zero production code; this file is the chunk's entire
+  diff.
 
 ---
 
@@ -372,64 +382,149 @@ timers; the command reuses the sparse-edit verb untouched.
 
 ### Part B — Inbox stack + quick capture (#347)
 
-#### 3.5 D-V5 — The designated-stack convention and the `CaptureTask` command
+#### 3.5 D-V5 — The inbox: one app-global bucket + per-board Backlog (v2, re-opened 2026-10-19)
 
-**Anchors.** Future-directions §3.7 ("a designated stack + a capture
-verb, core-side cost 'tiny'"); P1 ("writing to the §3.7 inbox stack
-(designated stack + capture verb)… the capture surface accepts one
-line, no required field, triage happens later (P13)"); the anchor
-card's title-convention precedent (doc 1 — "creation, title
-convention", §header :26); `StateCommand::CreateTask`/`CreateStack`
-(messages.rs :22–29/:58–64); Q8's board-resolving commands (DF-1:
-board-scoped creation resolves its board post-multi-board); the
-engine as sole mutator (AGENTS §2 — the state engine processes
-commands).
+**Session record.** v1 (per-board `Inbox` stacks,
+`CaptureTask { title, board }`) was **rejected** by the user's
+ruling: capture must be board-agnostic — a private "buy milk"
+thought captured while working in a work board must not land in
+that board — and assigning a captured task to its board is
+*triage's* job, not capture's. The per-board default-landing stack
+survives under the name **`Backlog`**; the name `Inbox` is reserved
+for the app-global collection. v1 is superseded (retained in
+history at `f0c7ce0`); the requirements, the option space, and the
+v2 recommendation follow. (D-V7's v1 text already read "inbox" in
+the singular — the global reading was in v1's stated latitude; the
+session picks that end.)
 
-**Recommendation D-V5.** The convention is a **per-board stack
-titled exactly `Inbox`**, and the verb is a **dedicated engine
-command**, not frontend glue:
+**Anchors (v2, verified).** `StateCommand::CreateBoard` (domain
+messages.rs :121) and CLI `boards create` (app cli.rs :142–151 —
+its single-board refusal is the multi-board round's to lift):
+board creation is an existing engine verb, so the global bucket
+needs no vocabulary growth. The multi-board design's unbound-board
+semantics: unbind keeps descendants local-only with "pending
+creates re-reattaching on the new remote" (design :705–708), "ops
+for an unbound board strand honestly … and drain on rebind", "a
+connector whose boards are standalone/unbound has no cycles at
+all" (doc 1 D-S8 §3.8); binding is a user ceremony with receipts
+(the `boards select --bind-local-board` local-board migration
+shape, cli.rs :129–141). D-S8's ruled cross-board limitation:
+"cross-board moves lose app-fields (accepted limitation for the
+wave); repair tracked as issue #350" — the *native* lane carries
+cross-board moves; only app-field reconciliation is the accepted
+gap. The multi-board design's own backlog parks "UI board
+creation/archive actions" (:1343–1345) — engine-side creation
+needs no UI action. P1 ("capturable in seconds, from any context,
+with a title alone"); P13 (triage is the review step).
+
+**Requirements (the session's ruling, restated).**
+
+1. **One app-global Inbox**: every capture surface lands there
+   regardless of the active board — zero decisions at capture
+   (P1), no risk of a private thought landing in a work board.
+2. **Board assignment is triage's job**: moving an inbox item into
+   the right board (its Backlog or a specific stack) is the
+   triage loop's filing motion.
+3. **A per-board `Backlog` stack**: the default landing for
+   board-directed adds that name a board but no stack.
+
+**The option space for the global bucket.**
+
+- **Option 1 — a designated real board titled `Inbox`** (the
+  title-convention precedent, one level up from v1): the engine
+  owns one board resolved by exact title, created on first
+  capture, carrying one stack (also `Inbox`; resolution ignores
+  the stack title — canonical-first live stack of the board).
+  *Zero data-model change*: tasks/stacks/moves/merge/outbox all
+  work unmodified. *Sync is a binding choice, not code*: unbound
+  (the creation default) the inbox is device-local and its ops
+  strand honestly until bound — the multi-board design's own
+  semantics; bound by the user's ceremony it becomes a normal
+  synced Deck board, giving roaming captures *and* cross-client
+  visibility in Deck's own UI (D-F2's coherence argument, one
+  level up). *Costs*: the Inbox board appears in the board bar
+  and `boards list` (badge it, don't hide it — it is a real
+  board, and GTD users expect to see it); a user board already
+  titled `Inbox` simply *becomes* the inbox (the exact-title rule
+  handles the collision deterministically).
+- **Option 2 — a marked local-only system board** (a board-kind
+  flag or config marker): rejected — once unbound boards exist as
+  a first-class state, a marker only *forbids* the binding the
+  user may want; it duplicates option 1's unbound state with
+  schema/config ceremony and cannot express the synced-inbox
+  case at all.
+- **Option 3 — boardless tasks** (a sentinel stack id or
+  `Option<TaskId>`-shaped `Task.stack`): rejected — the most
+  invasive shape by far: `Task.stack` is non-optional at every
+  layer (storage FK, push shapes, Deck cards live in stacks), a
+  boardless task has no Deck representation (local-only by
+  construction, forever), and every consumer special-cases it.
+- **Option 4 — an app-data document section** (captured items as
+  document entries, materialized at triage): rejected — captured
+  items stop being tasks (no fields, reminders, done, move), the
+  section lands in-wave against doc 1's reserve-only discipline,
+  and capture becomes sidecar-health-coupled (D-F2's resilience
+  argument, inverted).
+
+**Recommendation D-V5 (v2) — option 1, concretely:**
 
 ```rust
 // domain messages.rs — illustration.
-/// Quick-capture: append `title` to `board`'s Inbox stack,
-/// creating the stack (appended, canonical order) when the board
-/// has none. The one ceremony site every capture surface
-/// dispatches (#347).
-CaptureTask { title: String, board: BoardId },
+/// Quick-capture (#347): `board: None` lands in the app-global
+/// Inbox (the designated board, created on first capture);
+/// `Some(board)` lands in that board's Backlog stack (created on
+/// demand). The one ceremony site every capture surface
+/// dispatches; never errors on the happy path.
+CaptureTask { title: String, board: Option<BoardId> },
 ```
 
-- **Resolution rule (pure, in the engine's handler)**: the board's
-  live stacks titled exactly `Inbox`, canonical `(order, id)` order,
-  first wins; none → create (`CreateStack` semantics: append order)
-  then append the task (`CreateTask` semantics: append order). The
-  engine is single-actor sequential, so the two-step is ordered —
-  no race window. Deterministic-when-multiple (canonical first) is
-  the right failure shape for capture: **capture never errors on
-  the happy path** (P1 — seconds, zero decisions), unlike
-  `resolve_task`'s typed ambiguity errors (commands/tasks.rs
-  :492–536), which exist to protect *destructive* targeting.
-- **Why a command, not caller-side create-then-add**: the
-  convention must hold identically for the GUI overlay, the CLI
-  verb, the REPL, and the future IPC/Thunderbird capture surfaces
-  (future-directions §3.5); each would otherwise reimplement
-  resolve-or-create. One command = one ceremony site = the #244
-  lesson applied to a verb.
-- **Title validation stays at the edges** (the standing split:
-  view_state.rs :463–465 "the CLI owns title validation, the UI
-  dispatches only well-formed commands" — the CLI handler rejects
-  an empty title with a typed `CommandError`; the UI's
-  `commit_edit` already refuses empty buffers).
-- **Sync**: the Inbox is a native stack and captured tasks are
-  native cards — capture rides the proven `duedate`-carrying lane
-  (D-F2's point 2) and is **independent of sidecar health**;
-  nothing about the inbox appears in the app-data document.
-- **Engine tests** (snapshot, per the insta discipline): fresh
-  board → Inbox created + task appended; existing Inbox → appended
-  only; two Inbox-titled stacks → canonical-first, no error;
-  captured task is open, unordered fields unset.
+- **Global-Inbox resolution (engine handler)**: the live board
+  titled exactly `Inbox`, canonical `(order, id)` first; none →
+  create the board (default color; `CreateBoard` semantics) with
+  one stack `Inbox`, **unbound** — binding is the user's ceremony
+  (never auto-bound; a roaming inbox is one `boards
+  select --bind-local-board`-shaped decision away, with the
+  ceremony's receipt). Then append the task to the board's
+  canonical-first live stack. Deterministic-when-multiple,
+  never-errors-on-the-happy-path — the P1 shape (the deliberate
+  contrast with `resolve_task`'s ambiguity errors, which protect
+  destructive targeting).
+- **Backlog resolution**: `Some(board)` → that board's live stacks
+  titled exactly `Backlog`, canonical-first; none → create
+  appended; append the task. **Consumers**: `capture --board` (the
+  CLI flag becomes the board-directed variant) and `tasks add`
+  without `--stack` (post-multi-board, where per-board stack
+  ambiguity is the norm, Backlog is the default landing — the
+  "nice way to add a task to the active board" the session asked
+  for). The GUI create row is unchanged: it targets the focused
+  stack explicitly.
+- **Triage's filing motion becomes cross-board**: the move flow's
+  target ring generalizes from the focused board's stacks
+  (view_state.rs :531–547) to the **cross-board stack ring** —
+  all live boards in canonical order, their stacks in order,
+  wrapping — one keypress per candidate, the flow hint growing a
+  `board › stack` label so the position is always readable
+  (FlowHintModel, status-bar.slint :41–44). A behavior change to
+  ordinary moves (the ring now crosses board edges) — uniform, no
+  special cases, and the cross-board *native* move is a supported
+  operation; the app-field reconciliation gap is exactly #350's
+  tracked scope (fresh captures are native-only, so triage of
+  just-captured items never touches it).
+- **CLI triage**: `tasks move` stack selectors gain board scoping
+  when titles collide across boards (implementation-chunk detail,
+  the ADR 0009 cascade's home).
+- **Title validation stays at the edges** (unchanged from v1);
+  **sync** is native-lane throughout (option 1's whole point);
+  nothing inbox-shaped appears in the app-data document.
+- **Engine tests** (snapshot): first capture creates
+  board+stack+task unbound; second capture appends; `Some(board)`
+  creates/appends the Backlog; existing `Inbox`-titled board is
+  adopted, not duplicated; two `Backlog` stacks → canonical-first;
+  the kiosk/no-UI paths are untouched (a board among boards).
 
-**Constraints conformance**: one `StateCommand` variant (board-
-explicit, DF-1-shaped); no schema, no config, no document keys.
+**Constraints conformance**: one `StateCommand` variant (an
+`Option<BoardId>` payload — DF-1-shaped); no schema, no config, no
+document keys; board creation reuses the existing verb.
 
 #### 3.6 D-V6 — The capture surfaces (and the answer to doc 2's at-create question)
 
@@ -463,14 +558,16 @@ REPL/CLI shared path (repl.rs :610).
   cleared buffer; Esc discards-and-closes; Enter on an empty buffer
   closes** — the rapid-fire braindump shape (P1; Marvin's
   Braindump, ADHD report §3.1). Commit emits
-  `StateCommand::CaptureTask { title, board: ViewState.board }`
-  (focused board; `NoTarget`-shaped inertness on a boardless
-  session — capture needs a board to land in).
+  `StateCommand::CaptureTask { title, board: None }` — always the
+  app-global Inbox, never the focused board (the D-V5 v2 ruling:
+  board choice at capture is the decision P1 forbids; **session
+  correction** of v1's focused-board landing).
 - **CLI/REPL**: one new top-level verb `taskboard capture <TITLE>
-  [--board <BOARD>]` (default: the bound board, the `--stack`
-  omission precedent of `tasks add`, cli.rs :354–362). The REPL
-  dispatches the same line through `dispatch_line` (repl.rs :610)
-  — P1's "cheapest first landing" is the REPL one-liner.
+  [--board <BOARD>]` — default (no flag) is the global Inbox;
+  `--board` lands in that board's Backlog stack (D-V5 v2's
+  board-directed variant). The REPL dispatches the same line
+  through `dispatch_line` (repl.rs :610) — P1's "cheapest first
+  landing" is the REPL one-liner.
 - **The at-create-scheduling ruling (doc 2 §7's question, answered:
   no)**: capture takes a title and nothing else — no `--scheduled`,
   no flags, no overlay fields. The Inbox's whole point is deferred
@@ -498,33 +595,38 @@ P3 ("splitting a task into steps must be a cheap, first-class verb"
 models.rs :201–228); the toolbar composition (ui/compositions/
 toolbar.slint); P10 (the system stays visible).
 
-**Recommendation D-V7.** Triage is **not a new view family** — it is
-`StackDetail` opened on the Inbox stack, plus one jump action and
-one visibility chip:
+**Recommendation D-V7** (singular, per the D-V5 v2 ruling — the
+session's note that this section already read "inbox" in the
+singular is recorded). Triage is **not a new view family** — it is
+`StackDetail` opened on the global Inbox board's stack, plus one
+jump action and one visibility chip:
 
 - **`ViewInbox`** (`view.inbox`, label "Go to inbox", category
-  Navigation, contexts Global, enabled): enters `StackDetail` with
-  subject = the focused board's Inbox stack (the D-V5 resolution
-  rule, reused read-side); inert when the board has none (an empty
-  inbox is triage-done — the action quietly no-ops, P9's
-  nothing-wrong-here shape; creating the stack on navigation would
+  Navigation, contexts Global, enabled): `select_board` onto the
+  Inbox board (Q8's mechanics) and `StackDetail` on its
+  canonical-first live stack (the D-V5 v2 resolution rule, reused
+  read-side); inert when no Inbox board exists (an empty inbox is
+  triage-done — the action quietly no-ops, P9's
+  nothing-wrong-here shape; creating the board on navigation would
   violate read-write separation).
-- **The triage loop is existing verbs**: `nav.next-item` walks
-  inbox rows; `task.move` cycles target stacks (the built-in ring,
-  view_state.rs :531–547 — the GTD "file it" motion at one
-  keypress per candidate); `task.complete` for two-second items;
-  `task.edit` opens the detail where the D-F5 flags apply structure
+- **The triage loop is existing verbs + the cross-board ring**:
+  `nav.next-item` walks inbox rows; `task.move` cycles the
+  cross-board stack ring (D-V5 v2 — the filing motion that
+  assigns board + stack in one flow, hint reading `board ›
+  stack`); `task.complete` for two-second items; `task.edit`
+  opens the detail where the D-F5 flags apply structure
   (`--scheduled`-class edits through the action layer). The
   end-of-day review (W2) will drive this same loop with prompts —
   nothing here pre-empts it.
 - **Inbox count chip**: the toolbar gains a badge with the count of
-  live, open tasks in the focused board's Inbox (a presentation
-  helper `inbox_count(state, board)` — set-membership over the D-V5
-  rule, the `due_sets` template). Desktop only; hidden in compact
-  (the Q8 chrome-dropping path) and not rendered on kiosk. This is
-  P10's loop-closure (capturing is confident when the inbox is
-  glanceably non-empty) at the cost of one pure helper + one badge
-  — severable polish if the session trims.
+  live, open tasks in the global Inbox board (a presentation
+  helper `inbox_count(state)` — set-membership over the D-V5 v2
+  rule, the `due_sets` template; one inbox, one number). Desktop
+  only; hidden in compact (the Q8 chrome-dropping path) and not
+  rendered on kiosk. This is P10's loop-closure (capturing is
+  confident when the inbox is glanceably non-empty) at the cost of
+  one pure helper + one badge — severable polish if the session
+  trims.
 - **R4 journey leg**: with a captured task seeded, the journey
   performs `view.inbox`, walks to the row, `task.move` + target
   cycle + confirm, and the inbox count chip reads zero after the
@@ -606,6 +708,20 @@ pub fn find(state: &AppState, query: &str) -> Vec<SearchHit>;
   partition (filtered output = unfiltered output restricted);
   totality (no two distinct entities share the full key — the id
   tiebreak guarantees it; the proptest pins the sort is strict).
+- **The crate-swap firewall (session amendment 2026-10-19)**: the
+  module is architectured so a fuzzy-matcher crate can replace the
+  hand-rolled internals **touching nothing outside `find.rs`**.
+  Concretely: the public surface — `find`, `SearchHit`,
+  `SearchTarget`, `MatchQuality` — is the contract; the folding,
+  subsequence, and classification internals are private; and the
+  property suite lives in `find.rs`'s own test module so it moves
+  with a swap. Consumers (CLI rows, palette) read the ranked order
+  and the hit kinds only — never the algorithm — so a crate that
+  scores numerically maps its scores into `MatchQuality` (or the
+  enum grows a variant) inside the module. Note the honest boundary:
+  algorithm-shaped properties (the class-refinement invariant) are
+  internal and may change with a swap; contract-shaped properties
+  (determinism, totality, the floors) survive any implementation.
 
 **Constraints conformance**: pure data in, `Vec` out; no clocks, no
 env, no IO; the module is liftable unchanged into any consumer (the
@@ -621,22 +737,28 @@ precedent; `resolve_task`'s cascade (commands/tasks.rs :492) as the
 they compose (find surfaces candidates; resolve consumes a chosen
 one); the REPL shared dispatch (repl.rs :610).
 
-**Recommendation D-V9.** `TasksCmd::Find`:
+**Recommendation D-V9** (**amended by the session 2026-10-19**: a
+top-level verb, not `tasks find` — `taskboard tasks find --type
+board` reads as self-contradictory, and the amendment avoids it; the
+issue #348 body's "`tasks find`" wording is departed deliberately —
+the implementation round notes the amendment on the issue):
 
 ```
-taskboard tasks find <QUERY> [--type task|stack|board] [--limit N]
+taskboard find <QUERY> [--type task|stack|board] [--limit N]
 ```
 
-- Pure read, exit 0 always on a well-formed query (no results is an
-  empty table, not an error — a query, not a failure; the `List`
-  precedent). `--type` names the `SearchTarget` kinds; `--limit`
-  truncates after ranking (scripting convenience; the default
-  prints all). The REPL dispatches the identical line.
+- A new top-level `CliCommand::Find` (the `boards`/`tasks` verb
+  family's sibling); the REPL dispatches the bare `find <QUERY>`
+  line through the shared path. Pure read, exit 0 always on a
+  well-formed query (no results is an empty table, not an error —
+  a query, not a failure; the `List` precedent). `--type` names
+  the `SearchTarget` kinds; `--limit` truncates after ranking
+  (scripting convenience; the default prints all).
 - Output: a `FindRow` projection (kind, id, title, context —
   `stack › board` for tasks, `board` for stacks) rendered by the
   existing table style; the row fields are the contract, layout is
   polish (the D-F5 `TaskRow` stance). The ids make the verb a
-  scripting bridge: `tasks find "repo" --type task` feeds
+  scripting bridge: `find "repo" --type task` feeds
   `tasks done <id>` pipes.
 - Handler: `find(state, query)` + optional kind filter + row
   assembly — no engine round-trip (reads over the `ArcSwap`
@@ -721,19 +843,24 @@ in the domain; no new channels or state homes.
   (D-V10) and `tasks find` (D-V9) are projections of it; `resolve_task`
   stays the exact-inverse (errors, never ranks) for destructive
   targeting — search proposes, resolution disposes.
-- **One inbox ceremony**: `CaptureTask` (D-V5) is the single
-  resolve-or-create site; the GUI overlay, CLI verb, and
-  `view.inbox`'s read-side resolution all reuse the one rule.
+- **One inbox ceremony**: `CaptureTask` (D-V5 v2) is the single
+  resolve-or-create site — the global Inbox board and the per-board
+  Backlog stacks are its two destinations; the GUI overlay, CLI
+  verb, and `view.inbox`'s read-side resolution all reuse the one
+  rule. The Inbox is a real board, so triage's filing motion is an
+  ordinary (cross-board) move, not a special transfer.
 - **Banner vs today**: the overdue banner is reminder-side
   (snooze/mute, D-R4 unchanged); the today view's overdue section
   is planning-side (complete / re-commit / detail). Two surfaces,
   one truth (`overdue_tasks`), zero shared policy.
 - **Board scoping, stated once**: board-scoped surfaces (board
-  view, stack detail, inbox, move targets) route through
-  `ViewState.board` (Q8); the today view is cross-board on desktop
-  with selection-follows-focus retargeting (D-V3); the palette and
-  capture are board-*landing* (jump selects the hit's board;
-  capture lands in the focused board).
+  view, stack detail, Backlog defaults, move targets) route
+  through `ViewState.board` (Q8); the today view is cross-board on
+  desktop with selection-follows-focus retargeting (D-V3); the
+  palette is board-*landing* (jump selects the hit's board); and
+  capture is **board-free by design** (global Inbox — the D-V5 v2
+  ruling), with board-directed capture (`--board`) as the explicit
+  opt-out to Backlog.
 - **Kiosk degeneration, consolidated (R9)**: kiosk renders no
   capture overlay, no palette, no inbox chip (passive, keyboardless
   — Q8's stance keeps verbs operator-available); the today view
@@ -741,20 +868,44 @@ in the domain; no new channels or state homes.
   rotation-ready for the kiosk wave's display-mode machine. All
   three rules are presentation filters; no kiosk code paths.
 
-## 5. Decision record — one recommendation each (PROPOSED)
+## 5. Decision record — one recommendation each
 
 | ID | Point | Recommendation (exactly one) | Status |
 |---|---|---|---|
-| D-V1 | Today membership | `days.rs::today_sections(tasks, now, window)` — four first-match sections (Overdue / Scheduled / Due-today / Done-today), ids-only, one definition for all consumers; proptests: partition, bounds, first-match, done-move | PROPOSED |
-| D-V2 | Today placement | `ViewId::Today` in the cycle `Today → Board → StackDetail → TaskDetail`; **default Desktop start view**; `view.today` global action; `ContextId::Today`; rows are `task-card` + decorations slot; journey leg added | PROPOSED |
-| D-V3 | Today scope + kiosk | Cross-board on desktop (stack title always, board badge when >1 live board; selection-follows-focus retargets `ViewState.board`); kiosk = focused-board subset, compact, passive, rotation-ready | PROPOSED |
-| D-V4 | Now + missed day | Rollover rides the existing minute-boundary repaint (no new timer); `task.due-today` re-commit action (`EditTask`-shaped `UpdateTask { duedate: Some(Some(window_end)) }`) via `DispatchCtx.day_window`; done-today count caption | PROPOSED |
-| D-V5 | Inbox convention + verb | Per-board stack titled exactly `Inbox`, canonical-first resolution, created on demand; **`StateCommand::CaptureTask { title, board }`** as the one engine-side ceremony; edges validate titles; native-lane sync | PROPOSED |
-| D-V6 | Capture surfaces | Flip `capture.quick`; `Flow::Capture` + `capture-overlay.slint` (Enter commits-and-continues, Esc closes, empty Enter closes; lands in `ViewState.board`'s inbox); CLI/REPL `capture <TITLE> [--board]`; **at-create scheduling ruled out** (answers doc 2 §7); no kiosk surface | PROPOSED |
-| D-V7 | Triage UX | No new view: `StackDetail(Inbox)` + `view.inbox` jump action + toolbar inbox-count chip (desktop); the triage loop is existing verbs (move ring / complete / edit flags); journey leg | PROPOSED |
-| D-V8 | Ranking core | Domain `find.rs`: case-folded subsequence matcher with ordered `MatchQuality` classes, key `(quality, title_len, id)` — no numeric score; title-only, live+done tasks, no anchor filtering (presentation-side per doc 1 §7); the proptest suite is the issue's named target | PROPOSED |
-| D-V9 | `tasks find` | `TasksCmd::Find { query, --type, --limit }` — pure read, exit 0, `FindRow` projection (kind/id/title/context); REPL shares the line | PROPOSED |
-| D-V10 | Jump-to palette | Flip `palette.search`; `Flow::Palette` + `ContextId::Palette` (chain flip, menu-cursor actions widened); `search-palette.slint` composition calling domain `find` per keystroke, 8-row cap, `IdTables.palette` indices-back; jump-to retargets board/focus per hit kind; no kiosk surface; journey leg | PROPOSED |
+| D-V1 | Today membership | `days.rs::today_sections(tasks, now, window)` — four first-match sections (Overdue / Scheduled / Due-today / Done-today), ids-only, one definition for all consumers; proptests: partition, bounds, first-match, done-move | **ACCEPTED (2026-10-19)** |
+| D-V2 | Today placement | `ViewId::Today` in the cycle `Today → Board → StackDetail → TaskDetail`; **default Desktop start view**; `view.today` global action; `ContextId::Today`; rows are `task-card` + decorations slot; journey leg added | **ACCEPTED (2026-10-19)** |
+| D-V3 | Today scope + kiosk | Cross-board on desktop (stack title always, board badge when >1 live board; selection-follows-focus retargets `ViewState.board`); kiosk = focused-board subset, compact, passive, rotation-ready | **ACCEPTED (2026-10-19)** |
+| D-V4 | Now + missed day | Rollover rides the existing minute-boundary repaint (no new timer); `task.due-today` re-commit action (`EditTask`-shaped `UpdateTask { duedate: Some(Some(window_end)) }`) via `DispatchCtx.day_window`; done-today count caption | **ACCEPTED (2026-10-19)** — in-wave, confirmation-free (the session's explicit riders) |
+| D-V5 | Inbox convention + verb | **v2 (re-opened)**: one app-global Inbox as a **designated real board** (exact title, created unbound on first capture, canonical-first resolution) + per-board **`Backlog`** stacks as the board-directed default landing; **`StateCommand::CaptureTask { title, board: Option<BoardId> }`** (None = global Inbox, Some = Backlog); triage files via the cross-board move ring; native-lane sync throughout | **PROPOSED (v2)** — v1 rejected; awaiting the session's ruling |
+| D-V6 | Capture surfaces | Flip `capture.quick`; `Flow::Capture` + `capture-overlay.slint` (Enter commits-and-continues, Esc closes, empty Enter closes; **commits to the global Inbox** per D-V5 v2); CLI/REPL `capture <TITLE> [--board]` (`--board` = Backlog variant); **at-create scheduling ruled out** (answers doc 2 §7); no kiosk surface | **ACCEPTED (2026-10-19)** — landing target corrected to follow the D-V5 ruling |
+| D-V7 | Triage UX | No new view: `StackDetail` on the global Inbox board + `view.inbox` jump action + toolbar inbox-count chip (desktop, global count); the triage loop is existing verbs + the cross-board move ring; journey leg | **ACCEPTED (2026-10-19)** — singular-inbox reading confirmed |
+| D-V8 | Ranking core | Domain `find.rs`: case-folded subsequence matcher with ordered `MatchQuality` classes, key `(quality, title_len, id)` — no numeric score; title-only, live+done tasks, no anchor filtering (presentation-side per doc 1 §7); the proptest suite is the issue's named target; **the crate-swap firewall** (public surface = contract, internals + properties in-module) | **ACCEPTED (2026-10-19)** — amended: architecture must confine a future fuzzy-matcher crate to `find.rs` |
+| D-V9 | `find` CLI | **Top-level** `CliCommand::Find { query, --type, --limit }` (not `tasks find` — `--type board` under `tasks` reads self-contradictory); pure read, exit 0, `FindRow` projection; REPL `find <QUERY>`; issue #348's wording departed — note on the issue at implementation | **AMENDED + ACCEPTED (2026-10-19)** |
+| D-V10 | Jump-to palette | Flip `palette.search`; `Flow::Palette` + `ContextId::Palette` (chain flip, menu-cursor actions widened); `search-palette.slint` composition calling domain `find` per keystroke, 8-row cap, `IdTables.palette` indices-back; jump-to retargets board/focus per hit kind; no kiosk surface; journey leg | **ACCEPTED (2026-10-19)** |
+
+**Decision session record (2026-10-19, partial)** — the user ruled
+on every point:
+
+1. **D-V1–D-V4**: accept as designed; D-V4 with the explicit riders
+   that the re-commit lands **in-wave** and stays
+   **confirmation-free**.
+2. **D-V5**: **v1 rejected** — capture must land in one app-global
+   bucket (a private thought captured in a work context must not
+   land in the work board; board assignment is triage's job); the
+   per-board default-landing stack is wanted under the name
+   **Backlog**, with **Inbox** reserved for the app-global
+   collection. §3.5 was rewritten (v2) with the re-stated
+   requirements, the four-option analysis, and the designated-board
+   recommendation — **the v2 ruling is the session's one open
+   item**.
+3. **D-V6, D-V7, D-V10**: accept; D-V6's capture landing and D-V7's
+   singular-inbox reading corrected to follow the D-V5 direction.
+4. **D-V8**: accept, **amended** — `find.rs` must be architected so
+   a fuzzy-matcher crate can be adopted later touching nothing
+   outside `find.rs` (§3.8's firewall paragraph).
+5. **D-V9**: **amended** to a top-level `find` verb and accepted;
+   the `tasks find --type board` self-contradiction is the recorded
+   rationale.
 
 ## 6. Consequences for the wave implementation plan
 
@@ -762,17 +913,24 @@ Against framing §6's chunk sketch (advisory sizes there, mapped
 here):
 
 - **Chunk 9 (fuzzy search — M, confirmed)**: D-V8 (find.rs +
-  proptests), D-V9 (CLI/REPL), D-V10 (palette). Lands fully
-  independent of the field family (issue #348's "no prerequisites"
-  holds after design: nothing in Part C reads `scheduled` or the
-  window). Registry/keymap snapshot corpora regenerate (the
-  deliberate insta pass, DF-9's rule).
+  proptests + the crate-swap firewall), D-V9 (top-level `find`
+  CLI/REPL + the issue-#348 amendment note), D-V10 (palette).
+  Lands fully independent of the field family (issue #348's "no
+  prerequisites" holds after design: nothing in Part C reads
+  `scheduled` or the window). Registry/keymap snapshot corpora
+  regenerate (the deliberate insta pass, DF-9's rule).
 - **Chunk 10 (today view + inbox capture — M–L, confirmed)**:
   D-V1–D-V7, **gated on chunks 1–2** (the fields and
-  `day_window` — framing's dependency spine "2 + 1 → 10" holds).
+  `day_window` — framing's dependency spine "2 + 1 → 10" holds)
+  and on the multi-board round (the v2 inbox is board machinery:
+  `CreateBoard` reuse, unbound-board semantics, the cross-board
+  move ring — framing §7's gate, already the wave's stance).
   Contains: `today_sections` + proptests, the view/context/action
-  growth, `CaptureTask` engine snapshots, the two overlays'
-  compositions, the CLI verb, the journey legs, golden-visual
+  growth, `CaptureTask` v2 engine snapshots (board + stack + task
+  creation; Backlog resolution), the move-ring generalization
+  (a behavior change to ordinary moves — its journey leg extends),
+  the two overlays' compositions, the CLI verbs (`capture`, the
+  `tasks add` Backlog default), the journey legs, golden-visual
   regeneration for the new view.
 - **Test-strategy hooks** (for the implementation chunks, per
   AGENTS §5): domain proptests as designed; engine snapshots for
@@ -833,6 +991,21 @@ there first:
 8. **`TaskChanges.duedate`'s double option (doc 2 D-F1)**: the
    re-commit's `Some(Some(window_end))` relies on the
    clearing-is-a-write/clock-stamp contract; unchanged by this doc.
+9. **The v2 inbox's multi-board dependencies (D-V5 v2, added at the
+   2026-10-19 re-open)**: `CreateBoard`'s post-multi-board shape
+   (the single-board refusal lifts there), the unbound-board op
+   stranding semantics ("strand honestly, drain on rebind"), and
+   the `--bind-local-board` ceremony the user runs to make the
+   Inbox roam — all consumed by role from the accepted multi-board
+   design + doc 1 D-S8. Cross-board moves during triage hit D-S8's
+   accepted app-field limitation exactly at #350's tracked scope;
+   no new limitation is introduced.
+10. **The move-ring generalization (D-V5 v2)** changes ordinary
+    same-board moves' ring behavior (targets now continue across
+    the board edge); the existing move-flow journey/snapshot tests
+    own the regeneration, and the `board › stack` hint is the
+    disambiguator. Flagged so the implementation chunk treats it
+    as a deliberate behavior change, not drift.
 
 ## 8. Backlog candidates (out-of-scope ideas; the user promotes)
 
