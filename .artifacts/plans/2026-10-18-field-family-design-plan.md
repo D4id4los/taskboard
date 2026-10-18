@@ -9,8 +9,9 @@
   ruling, and the `UserPreferences` home (day-start-time semantics,
   device-local until D5). Each point carries re-verified anchors,
   exactly one recommendation, and a decision-table row; §5 is the
-  decision record, with the sub-points left open for the user's
-  session named explicitly (framing D-D6).
+  decision-table row; §5 is the decision record, including the
+  user's session record of 2026-10-18 (framing D-D6's process
+  completed).
 - **Origin**: framing plan
   `.artifacts/plans/2026-10-18-daily-driver-wave-design-plan.md`
   (§5 Q2 normative; §2 scope incl. #208, #209, #244, #345). Normative
@@ -36,11 +37,16 @@
   consumes doc 1's D-S2 document schema (`TaskEntry` field keys,
   `{v, clock}` shape, `null` = cleared, no tombstones in `tasks`),
   D-S5's op, and D-S6's guard widening as settled interfaces.
-- **Status**: recommendations **RECORDED, OPEN for the user's
-  decision session** (framing D-D6 / §7 step 3). The headline item is
-  **D-F2, the native-`startdate` ruling** — flagged for the session;
-  everything else is engineering-follows-from-rulings. Zero production
-  code — this file is the chunk's entire diff.
+- **Status**: recommendations **ACCEPTED** — the user's decision
+  session (2026-10-18) accepted all of §5's recommendations, with one
+  amendment (D-F1: importance/urgency ruled to **five** levels; enums
+  retained for exhaustive matching; ordering comparability required),
+  one rationale addition (D-F3: the local state and data model is a
+  single construct independent of what sync connectors implement
+  internally), and one ordered tracker edit (a GUI settings editor,
+  recorded as backlog issue #351, §7). Record in §5. Zero production
+  code beyond that tracker edit — this file is the chunk's entire
+  diff.
 
 ---
 
@@ -182,20 +188,25 @@ pub struct TaskClocks {
   One range note: the storage codec writes it into a SQLite INTEGER
   (i64) — the codec validates `≤ i64::MAX` and errors typed
   otherwise; no artificial cap on the domain type itself.
-- **`Importance` / `Urgency`** — two distinct three-level enums
-  (`Low | Normal | High`, serde unit variants `"low"/"normal"/"high"`,
-  derived `Ord` in declaration order). Two types, not one reused:
-  cross-assignment becomes a type error and the later matrix view can
-  grow them independently. `Option<…>` wrapper: `None` = unset — a
-  task not participating in the matrix must not render as
-  "Normal" (the same presence distinction `duedate: Option<…>` makes).
-  Three levels, not scores: named levels carry vocabulary and
-  exhaustive matches; a 0–10 score carries range validation and
-  "what does 4 mean". The report's own bias — "two small enums (or
-  scores) … keep the fields dumb" — is settled toward enums because
-  every Wave-1 consumer (CLI flag, list glyph) is vocabulary-shaped;
-  if decision support (Wave 2–3) ever wants finer granularity that is
-  *its* re-modeling decision, not this wave's.
+- **`Importance` / `Urgency`** — two distinct **five-level** enums
+  (`VeryLow | Low | Normal | High | VeryHigh`, serde unit variants
+  `"very_low"/"low"/"normal"/"high"/"very_high"`), **amended from the
+  drafted three levels by the session (2026-10-18)**. Two types, not
+  one reused: cross-assignment becomes a type error and the later
+  matrix view can grow them independently. `Option<…>` wrapper:
+  `None` = unset — a task not participating in the matrix must not
+  render as "Normal" (the same presence distinction
+  `duedate: Option<…>` makes). Enums, not scores (the session's
+  explicit choice): named levels carry vocabulary and exhaustive
+  matches; a numeric score carries range validation and "what does 4
+  mean". **Ordering is part of the contract (ruled)**: both enums
+  derive `PartialOrd`/`Ord` with declaration order = severity order,
+  so sorting tasks by importance or urgency is a plain sort key on
+  the enum (derived field-less `Ord` compares discriminants — the
+  variant order *is* the rank); a proptest pins that ordering a mixed
+  collection by the enum is monotonic in the variant index. Five is
+  now the ruled granularity; re-leveling beyond five is decision
+  support's re-modeling decision (Wave 2–3), not this wave's.
 - **Out of wave, recorded**: derived priority, matrix quadrants,
   effort-fit scoring, calibration loops (framing §2 out-list). No
   `TaskKind`/respite/recurrence fields land (doc 1 D-S2 reserves the
@@ -321,14 +332,12 @@ Trade-offs, recorded against the recommendation:
    identical to `duedate`'s seconds-resolution normalization story
    (merge.rs :284–289 R9a doc).
 
-**Status: OPEN — the ruling goes to the user's decision session**
-(framing D-D6 names it first in the list). The session rules on this
-§3.2 as a whole; the rest of this doc is written branch-A-native
-because every downstream section's shape is branch-invariant *except*
-§3.3's manifest family split, §3.4's nothing (storage is identical
-either way), and §3.5's op-routing row — each of which names the
-branch-B delta inline (drop `scheduled` from the native lists, add it
-to the sidecar lists) so a contrary ruling re-scopes mechanically.
+**Ruled (2026-10-18): ACCEPTED — branch A.** Deck's native
+`startdate` maps scheduled-start; the document's `tasks` section never
+gains a `scheduled` key. The doc's downstream sections stand as
+written (branch-A-native throughout); the inlined branch-B deltas in
+§3.3/§3.5 are retained for provenance only — they are no longer
+live re-scope instructions.
 
 **DF conformance**: DTO + push-shape widening inside the existing
 per-board cycle; `UpdateTask`-class op (already board-resolving per
@@ -386,6 +395,17 @@ parallel map would fork every consumer (`TaskChanges` still needs
 slots; the guard still needs flags; storage still needs columns) while
 additionally breaking struct-pattern ergonomics; F16-01's ceremony is
 the same size either way, so the seam, not the shape, is the fix.
+**Ruled rationale addition (2026-10-18)**: more than one sync
+connector is planned, and the local state and data model is therefore
+to be viewed as **a single construct independent of what sync
+connectors implement internally to do the syncing**. Consequences,
+stated once: the domain field shapes carry no lane information; the
+manifest's `family` field records *the Deck connector's* lane
+assignment for a field (today: entity-stamp native vs app-data
+document), not an intrinsic property of the field — a future
+connector that carries `scheduled` differently (or not at all) is a
+connector-side mapping concern, never a reason to fork `Task`/
+`TaskClocks`.
 
 The four assertions (each is one small test; together they are *the*
 manifest test):
@@ -477,8 +497,8 @@ chunks need no migration of their own:
 -- stamp / document clock wins bit-for-bit.
 ALTER TABLE tasks ADD COLUMN scheduled   TEXT NULL;    -- rfc3339, duedate's twin
 ALTER TABLE tasks ADD COLUMN effort      INTEGER NULL; -- Effort seconds (u64, codec-checked ≤ i64::MAX)
-ALTER TABLE tasks ADD COLUMN importance  TEXT NULL;    -- "low"|"normal"|"high" (serde unit names)
-ALTER TABLE tasks ADD COLUMN urgency     TEXT NULL;    -- "low"|"normal"|"high"
+ALTER TABLE tasks ADD COLUMN importance  TEXT NULL;    -- "very_low"|"low"|"normal"|"high"|"very_high" (serde unit names)
+ALTER TABLE tasks ADD COLUMN urgency     TEXT NULL;    -- "very_low"|"low"|"normal"|"high"|"very_high"
 ALTER TABLE tasks ADD COLUMN ck_scheduled   TEXT NOT NULL DEFAULT '0001-01-01T00:00:00+00:00';
 ALTER TABLE tasks ADD COLUMN ck_effort      TEXT NOT NULL DEFAULT '0001-01-01T00:00:00+00:00';
 ALTER TABLE tasks ADD COLUMN ck_importance  TEXT NOT NULL DEFAULT '0001-01-01T00:00:00+00:00';
@@ -537,9 +557,10 @@ either):
   explicit suffixes `s`/`m`/`h` compose (`1h30m`), `none` clears.
   Parsed to `Effort` seconds; overflow past `u64` is a clap usage
   error (exit 2), matching `parse_due`'s failure shape.
-- `--importance <low|normal|high|none>` and
-  `--urgency <low|normal|high|none>` — enum value parsers; `none`
-  clears (unset). Unknown levels are clap usage errors.
+- `--importance <LEVEL>` and `--urgency <LEVEL>` —
+  `<very-low|low|normal|high|very-high|none>`; the parser maps the
+  hyphenated CLI spelling to the serde variant name, `none` clears
+  (unset). Unknown levels are clap usage errors.
 - REPL mirrors the flags (it shares `commands/tasks.rs::edit_on`;
   completion tables grow the flag names).
 - `TaskRow` (output.rs) grows `scheduled`, `effort`, `importance`,
@@ -554,7 +575,7 @@ either):
   importance/urgency carriers (strings from the presentation layer);
   `presentation.rs` grows the pure phrase helpers mirroring
   `due_phrase`, and the decoration *visuals* (weight/color tokens for
-  the three levels) use the existing token system — no new component
+  the five levels) use the existing token system — no new component
   family, no slint-side logic (the dumb-client rule; `due_sets'`
   set-membership-over-domain-functions pattern :50 is the template).
   Classification stays out of slint: anything semantic ("starts
@@ -609,6 +630,13 @@ day_start_time = "00:00"   # default; "05:00" for the night-owl case
   document section (doc 1 D-S2) is keyed by preference name and
   agnostic to where the device's local value lived — migration is
   "seed the document from config at first D5 sync", not a data move.
+- **Ruled addition (2026-10-18)**: config's one real cost — no
+  in-app editing route (a preference change means editing
+  `taskboard.toml` or an env var, then restarting) — gets its relief
+  as **backlog issue #351**, a GUI settings editor riding the
+  config-write machinery the logout flow already owns
+  (`AppConfig::write_path`, config.rs :26–30). No domain entity, no
+  in-wave scope.
 - **The resurrection trigger, recorded**: re-open the domain-entity
   question only if a future feature needs *engine-merged* preferences
   (cross-device conflict resolution on the preference itself, or
@@ -711,20 +739,33 @@ vocabulary, no channels, no state growth. **Topology untouched.**
 
 | ID | Point | Recommendation (exactly one) | Status |
 |---|---|---|---|
-| D-F1 | Field shapes | `scheduled: Option<DateTime<Utc>>` (duedate's twin), `Effort` newtype over u64 seconds, `Importance`/`Urgency` as two distinct 3-level enums (`Low/Normal/High`) under `Option`; all four + clocks on `Task`/`TaskClocks`, all four as double-option `TaskChanges` slots; derived priority out of wave | **OPEN** — follows rulings mechanically; session confirms |
-| D-F2 | Native `startdate` | **Map Deck's native `startdate` for scheduled-start** (DTO + `merge_task` verdict + push shapes + client encode; no sidecar key). Trade-offs recorded (§3.2): entity-stamp merge basis, Deck date-granularity picker truncation, write-path wire gate folded into doc 1's contract-fixture | **OPEN — the session's headline ruling** (framing D-D6) |
-| D-F3 | #244 lockstep seam | Home = extend `Task`/`TaskClocks` (no parallel map); one exported `TASK_FIELDS` manifest (clock / task_fields / family) + four assertions: domain bijection (serde key sets), storage `PRAGMA` columns, document key set = AppData rows, engine op routing per family — landing with the field-family chunk | **OPEN** — engineering-follows; session confirms |
-| D-F4 | Storage migration | `0007_task_field_family.sql`: 4 value columns (NULL = unset) + 4 epoch-defaulted clock columns + the D-S9 rule clock column; TEXT enums, INTEGER effort; row codec/batch/snapshot regen in the same chunk; branch-invariant | **OPEN** — engineering-follows |
-| D-F5 | CLI + UI surfaces | `tasks edit` flags `--scheduled/--effort/--importance/--urgency` (no new verbs; `parse_effort` hand-rolled, bare number = minutes); `TaskRow` + UI row model grow phrase/level fields; visuals via existing tokens; no slint-side logic | **OPEN** — engineering-follows |
-| D-F6 | UserPreferences home | `[preferences] day_start_time` config section (device-local; typed validation; consumers get `(NaiveTime, FixedOffset)` explicitly); domain `days.rs::day_window` pure fixed-offset contract (DST delta ≤1h twice-yearly accepted); Phase-1 deferral stands, D5 `settings` section is the later vehicle | **OPEN** — session confirms; the entity-resurrection trigger is recorded |
+| D-F1 | Field shapes | `scheduled: Option<DateTime<Utc>>` (duedate's twin), `Effort` newtype over u64 seconds, `Importance`/`Urgency` as two distinct **five-level** enums (`VeryLow…VeryHigh`) under `Option` with derived `Ord` as the sorting contract; all four + clocks on `Task`/`TaskClocks`, all four as double-option `TaskChanges` slots; derived priority out of wave | **ACCEPTED (ruled 2026-10-18)** — amended: five levels (not the drafted three), enums retained, ordering comparability required; effort confirmed (seconds + suffix-with-minutes-fallback) |
+| D-F2 | Native `startdate` | **Map Deck's native `startdate` for scheduled-start** (DTO + `merge_task` verdict + push shapes + client encode; no sidecar key). Trade-offs recorded (§3.2): entity-stamp merge basis, Deck-side normalization, write-path wire gate folded into doc 1's contract-fixture | **ACCEPTED (ruled 2026-10-18)** |
+| D-F3 | #244 lockstep seam | Home = extend `Task`/`TaskClocks` (no parallel map); one exported `TASK_FIELDS` manifest (clock / task_fields / family) + four assertions: domain bijection (serde key sets), storage `PRAGMA` columns, document key set = AppData rows, engine op routing per family — landing with the field-family chunk | **ACCEPTED (ruled 2026-10-18)** — with the connector-independence rationale recorded (§3.3) |
+| D-F4 | Storage migration | `0007_task_field_family.sql`: 4 value columns (NULL = unset) + 4 epoch-defaulted clock columns + the D-S9 rule clock column; TEXT enums (five serde names), INTEGER effort; row codec/batch/snapshot regen in the same chunk; branch-invariant | **ACCEPTED (ruled 2026-10-18)** |
+| D-F5 | CLI + UI surfaces | `tasks edit` flags `--scheduled/--effort/--importance/--urgency` (no new verbs; `parse_effort` hand-rolled, bare number = minutes); `TaskRow` + UI row model grow phrase/level fields; visuals via existing tokens; no slint-side logic | **ACCEPTED (ruled 2026-10-18)** |
+| D-F6 | UserPreferences home | `[preferences] day_start_time` config section (device-local; typed validation; consumers get `(NaiveTime, FixedOffset)` explicitly); domain `days.rs::day_window` pure fixed-offset contract (DST delta ≤1h twice-yearly accepted); Phase-1 deferral stands, D5 `settings` section is the later vehicle | **ACCEPTED (ruled 2026-10-18)** — both sub-points (config section; device-offset computation); ruled addition: GUI settings editor → issue #351 |
 
-**Decision-session leftovers (framing D-D6)**: **D-F2 is the one
-genuine ruling** — native `startdate` vs sidecar for `scheduled`,
-with §3.2's four-point case and trade-off table. D-F1/D-F3/D-F4/D-F5
-follow mechanically from the framing and the accepted doc 1; D-F6's
-config-section choice is recommended firmly (an entity now would be
-ceremony without a consumer) but is the session's to confirm since
-#345 names it a home *ruling*.
+**Decision session record (2026-10-18)** — the user ruled on every
+point (framing D-D6's list, this doc's entries):
+
+1. **D-F2 (the headline)**: **accept** — native `startdate` maps
+   scheduled-start (branch A; §3.2's ruled paragraph).
+2. **D-F1, amended**: importance/urgency at **five levels**, encoded
+   as enums (exhaustive matching), with an ordering comparison so
+   sorting by importance/urgency is easy — recorded as the derived
+   `Ord` contract (§3.1). Effort confirmed: stored seconds, CLI
+   explicit suffixes with bare-number = minutes fallback.
+3. **D-F3**: **accept** — extend `Task`/`TaskClocks`; the user added
+   the connector-independence rationale (planned multi-connector
+   support ⇒ the local data model is one construct, never forked by
+   connector internals) — recorded in §3.3.
+4. **D-F6**: **accept both** — `[preferences]` config section, and
+   the fixed-offset day-boundary computation from the device's UTC
+   offset. Ordered tracker edit: a way to edit `taskboard.toml`
+   settings from the GUI, recorded as backlog issue **#351**
+   (unscheduled; §3.6/§7).
+5. **D-F4, D-F5**: **accept as designed**.
 
 ## 6. Consequences for the wave implementation plan
 
@@ -758,12 +799,15 @@ Against framing §6's chunk sketch:
 - `tasks add` flag parity for the new fields (today `add` takes no
   `--due` either; revisit if quick-capture UX (#347) wants
   at-create scheduling).
-- Finer-than-three importance/urgency granularity — decision
-  support's re-modeling decision, not the field family's.
+- Re-leveling importance/urgency beyond the ruled five levels —
+  decision support's re-modeling decision, not the field family's.
 - Tz-database-aware day boundaries if a consumer ever observes the
   ≤1h twice-yearly wobble (D-F6's fixed-offset contract).
 - `UserPreferences` domain entity + settings sync — D5's design
   round owns the resurrection question with a real consumer in hand.
+- GUI settings editor (view/edit `taskboard.toml` from the app) —
+  **tracked as issue #351** (ruled addition 2026-10-18;
+  `AppConfig::write_path` is the write-machinery precedent).
 - Effort calibration feedback loop (#214) — out per framing §2.
 
 ## 8. References
