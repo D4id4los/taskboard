@@ -54,6 +54,9 @@ expression: rows
             - N
           action: task.create
         - sequence:
+            - S
+          action: stack.create
+        - sequence:
             - Delete
           action: task.delete
         - sequence:
@@ -241,6 +244,9 @@ expression: rows
         - sequence:
             - ":"
           action: app.menu
+        - sequence:
+            - O
+          action: stack.create
         - sequence:
             - Z
             - Q

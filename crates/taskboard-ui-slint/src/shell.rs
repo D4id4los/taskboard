@@ -107,6 +107,7 @@ impl KeymapShell {
             | UiEffect::PrevView
             | UiEffect::FocusBoard
             | UiEffect::BeginCreate
+            | UiEffect::BeginCreateStack
             | UiEffect::Activate
             | UiEffect::RequestMove => {}
         }

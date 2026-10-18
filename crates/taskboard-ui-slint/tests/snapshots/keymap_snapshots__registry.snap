@@ -91,6 +91,13 @@ expression: rows
     - stack-detail
   category: task
   enabled: true
+- id: stack.create
+  label: New stack
+  contexts:
+    - board
+    - stack-detail
+  category: task
+  enabled: true
 - id: task.edit
   label: Edit task
   contexts:

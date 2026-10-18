@@ -215,7 +215,7 @@ impl Adapter {
         // a move flow ends without dispatch (D9's recorded rule).
         if leaving {
             match flow {
-                Flow::Create { .. } | Flow::EditTitle { .. } => {
+                Flow::Create { .. } | Flow::CreateStack | Flow::EditTitle { .. } => {
                     let outcomes = self.view_state.commit_edit(&state);
                     self.apply_outcomes(window, &outcomes);
                 }
@@ -251,6 +251,15 @@ impl Adapter {
             (Flow::None, UiEffect::BeginCreate) => {
                 match self.view_state.create_target_stack(&state) {
                     Some(stack) => self.view_state.begin_create(stack),
+                    None => Vec::new(),
+                }
+            }
+            (Flow::None, UiEffect::BeginCreateStack) => {
+                // The refusal class of TaskCreate on an empty board: a
+                // never-booted session offers nothing to create a stack
+                // on (D9).
+                match crate::presentation::live_board(&state) {
+                    Some(_) => self.view_state.begin_create_stack(),
                     None => Vec::new(),
                 }
             }
@@ -333,6 +342,7 @@ impl Adapter {
             | UiEffect::PrevView
             | UiEffect::FocusBoard
             | UiEffect::BeginCreate
+            | UiEffect::BeginCreateStack
             | UiEffect::Activate
             | UiEffect::RequestMove => self.interpret(window, effect),
         }
