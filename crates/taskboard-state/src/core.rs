@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use taskboard_domain::{
-    AppState, PendingOp, PersistedState, PersistenceAction, SyncPhase, SyncStatus, SyncValidators,
-    ValidatorKey, apply_actions,
+    AppState, BoardId, PendingOp, PersistedState, PersistenceAction, SyncValidators, ValidatorKey,
+    apply_actions,
 };
 
 /// The engine's private working state: the persisted shape plus the one
@@ -26,8 +26,19 @@ pub struct EngineCore {
 
 impl EngineCore {
     /// Hydrated at boot; `last_updated` starts `None` (unknown-at-boot).
+    /// The derived sync projection runs here exactly like every
+    /// repository `load()` runs it — memory ≡ disk by construction from
+    /// the first published snapshot, not only from the first batch.
     #[must_use]
-    pub fn from_persisted(state: PersistedState) -> Self {
+    pub fn from_persisted(mut state: PersistedState) -> Self {
+        taskboard_domain::derive_sync_states(
+            &state.boards,
+            &state.stacks,
+            &state.tasks,
+            &state.labels,
+            &state.outbox,
+            &mut state.sync,
+        );
         Self {
             state,
             last_updated: None,
@@ -66,11 +77,11 @@ impl EngineCore {
         &self.state.outbox
     }
 
-    /// The current sync status (phase + last success feed the
-    /// status-transition decisions).
+    /// The stored sync status row of one board (phase + last success feed
+    /// the status-transition decisions); `None` = no stored row.
     #[must_use]
-    pub fn sync_status(&self) -> &SyncStatus {
-        &self.state.sync
+    pub fn sync_status(&self, board: BoardId) -> Option<&taskboard_domain::SyncStatus> {
+        self.state.sync.get(board)
     }
 
     /// The stored conditional-read validators (the ingestion compares
@@ -107,15 +118,13 @@ impl EngineCore {
         self.state.clone()
     }
 
-    /// Marks the `Syncing` transient in memory only — it is never
-    /// persisted (a reboot mid-sync must not advertise a phantom in-flight
-    /// cycle). Returns whether the phase actually changed.
-    pub fn mark_syncing(&mut self) -> bool {
-        if self.state.sync.phase == SyncPhase::Syncing {
-            return false;
-        }
-        self.state.sync.phase = SyncPhase::Syncing;
-        true
+    /// Marks the `Syncing` transient of one board in memory only — it is
+    /// never persisted (a reboot mid-sync must not advertise a phantom
+    /// in-flight cycle). Returns whether the phase actually changed
+    /// (per-board idempotence). The row's derived `pending_ops` stays
+    /// visible while the cycle runs.
+    pub fn mark_syncing(&mut self, board: BoardId) -> bool {
+        self.state.sync.mark_syncing(board)
     }
 }
 
@@ -192,10 +201,14 @@ mod tests {
     fn mark_syncing_is_idempotent_and_stamps_nothing() {
         let (state, _) = seeded();
         let mut core = EngineCore::from_persisted(state);
-        assert_eq!(core.sync_status().phase, SyncPhase::Idle);
-        assert!(core.mark_syncing());
-        assert_eq!(core.app().sync.phase, SyncPhase::Syncing);
-        assert!(!core.mark_syncing(), "repeat is a no-op");
+        let board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1));
+        assert_eq!(core.sync_status(board).map(|row| row.phase), None);
+        assert!(core.mark_syncing(board));
+        assert_eq!(
+            core.app().sync.get(board).map(|row| row.phase),
+            Some(SyncPhase::Syncing)
+        );
+        assert!(!core.mark_syncing(board), "repeat is a no-op");
         // The transient is memory-only in the persistence sense: the
         // engine emits no `UpsertSyncStatus` for it (actor-level pin) and
         // `last_updated` — the mutation stamp — is not advanced.

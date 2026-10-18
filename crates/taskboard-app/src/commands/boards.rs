@@ -468,7 +468,7 @@ pub(crate) async fn publish_on(
     ));
     send_set_board(app, created.id).await?;
 
-    let startup = app.engine.shared_state().load_full().sync.clone();
+    let startup = app.engine.shared_state().load_full().sync.aggregate();
     let receipt = match crate::commands::sync::wait_for_sync_result(app, &startup, timeout).await {
         crate::commands::sync::SyncOutcome::Succeeded(view)
         | crate::commands::sync::SyncOutcome::NoWait(view) => view,
@@ -583,7 +583,7 @@ pub async fn select_on(
                     archived: bound.archived,
                     deleted: bound.deleted,
                 },
-                sync: SyncStatusView::new(&state.sync),
+                sync: SyncStatusView::new(&state.sync.aggregate()),
             });
         }
         let current = remote.0;
@@ -615,7 +615,7 @@ pub async fn select_on(
     // `Failed` (e.g. from a `sync` run before any binding) must not mask
     // the fresh adoption cycle — the same S0 guard `wait_for_sync_result`
     // applies.
-    let startup = app.engine.shared_state().load_full().sync.clone();
+    let startup = app.engine.shared_state().load_full().sync.aggregate();
     send_set_board(app, board).await?;
 
     wait_for_adoption(app, board, &startup, timeout).await
@@ -650,13 +650,13 @@ async fn wait_for_adoption(
                     archived: adopted.archived,
                     deleted: adopted.deleted,
                 },
-                sync: SyncStatusView::new(&state.sync),
+                sync: SyncStatusView::new(&state.sync.aggregate()),
             });
         }
-        let fresh_failure = matches!(state.sync.phase, SyncPhase::Failed { .. })
-            && (seen_change || state.sync != *startup);
+        let fresh_failure = matches!(state.sync.aggregate().phase, SyncPhase::Failed { .. })
+            && (seen_change || state.sync.aggregate() != *startup);
         if fresh_failure {
-            let SyncPhase::Failed { last_error } = state.sync.phase else {
+            let SyncPhase::Failed { last_error } = state.sync.aggregate().phase else {
                 unreachable!("checked by fresh_failure");
             };
             return Err(CommandError::SyncFailed(last_error));

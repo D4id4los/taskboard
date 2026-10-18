@@ -24,6 +24,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- Sync status is tracked per board (multi-board wave chunk 1): the
+  storage schema's singleton `sync_status` row becomes a per-board
+  table (migration 0006, which also tags board bindings with their
+  connector; the legacy `NULL` tag keeps its meaning until the
+  board's next edit), and the engine state exposes
+  `sync.aggregate()` — every existing surface (CLI receipts, wait
+  decisions, UI badge) reads that fold and behaves as before on a
+  single-board install.
 - A bare `taskboard` launch in `daemon` mode (the default) without a
   terminal but with a graphical session (a file-manager double-click)
   now boots the desktop UI instead of silently starting a headless

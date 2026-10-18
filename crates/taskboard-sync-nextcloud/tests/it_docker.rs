@@ -264,7 +264,7 @@ mod d {
             })
             .await
             .expect("accepted");
-        eventually(&pair, |app| app.sync.pending_ops == 0).await;
+        eventually(&pair, |app| app.sync.aggregate().pending_ops == 0).await;
 
         // Terminal state on the server: the card is listed under stack b.
         eventually_no_pair(&client, board.id, stack_b.id, card.id).await;
@@ -515,7 +515,7 @@ mod d {
             })
             .await
             .expect("accepted");
-        eventually(&pair, |app| app.sync.pending_ops == 0).await;
+        eventually(&pair, |app| app.sync.aggregate().pending_ops == 0).await;
         // Terminal state on the server: done and the due date, read back
         // through the raw client. Polled under the deadline: Deck's
         // listings lag its write cache (the D2 precedent).

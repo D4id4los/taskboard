@@ -47,6 +47,7 @@ fn pool_options(memory: bool) -> SqlitePoolOptions {
 async fn open_with(
     options: SqliteConnectOptions,
     memory: bool,
+    default_connector: taskboard_domain::ConnectorId,
 ) -> Result<SqliteTaskRepository, OpenError> {
     let pool: SqlitePool = pool_options(memory)
         .connect_with(options)
@@ -57,7 +58,10 @@ async fn open_with(
         migrations_embedded = MIGRATOR.iter().count(),
         "sqlite database opened; schema ensured"
     );
-    Ok(SqliteTaskRepository { pool })
+    Ok(SqliteTaskRepository {
+        pool,
+        default_connector,
+    })
 }
 
 /// Owner-only modes for the database file and its `-wal`/`-shm`
@@ -109,7 +113,10 @@ fn harden_sibling_modes(db: &Path) {
 }
 
 /// Opens (creating if absent) the database at `path`, applies pending
-/// migrations, and returns the repository.
+/// migrations, and returns the repository. `default_connector` is the
+/// config-derived tag every board upsert writes into the binding — the
+/// single resolution home for the decode rule (NULL = this default,
+/// resolved at read; no boot-time backfill).
 ///
 /// The path is handed to sqlite as a filename (never interpolated into a
 /// connection URL), so `%`, `?`, and non-UTF-8 path components survive.
@@ -118,12 +125,16 @@ fn harden_sibling_modes(db: &Path) {
 ///
 /// [`OpenError::Connect`] when the file cannot be opened;
 /// [`OpenError::Migrate`] when applying pending migrations fails.
-pub async fn open(path: impl AsRef<Path>) -> Result<SqliteTaskRepository, OpenError> {
+pub async fn open(
+    path: impl AsRef<Path>,
+    default_connector: taskboard_domain::ConnectorId,
+) -> Result<SqliteTaskRepository, OpenError> {
     let path = path.as_ref();
     tracing::debug!(path = %path.display(), "opening sqlite database");
     let repo = open_with(
         apply_pragmas(SqliteConnectOptions::new()).filename(path),
         false,
+        default_connector,
     )
     .await?;
     harden_sibling_modes(path);
@@ -137,14 +148,24 @@ pub async fn open(path: impl AsRef<Path>) -> Result<SqliteTaskRepository, OpenEr
 ///
 /// [`OpenError::Connect`] if the pool cannot be created;
 /// [`OpenError::Migrate`] if the embedded migrations fail.
-pub async fn open_memory() -> Result<SqliteTaskRepository, OpenError> {
+pub async fn open_memory(
+    default_connector: taskboard_domain::ConnectorId,
+) -> Result<SqliteTaskRepository, OpenError> {
     let parsed: SqliteConnectOptions = "sqlite::memory:".parse().map_err(OpenError::Connect)?;
-    open_with(apply_pragmas(parsed), true).await
+    open_with(apply_pragmas(parsed), true, default_connector).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taskboard_domain::ConnectorId;
+
+    /// The fixed default connector the tests open repositories with
+    /// (bootstrap derives the same value; see C5 of the chunk plan).
+    pub(super) fn test_connector() -> ConnectorId {
+        ConnectorId::from("nextcloud")
+    }
+
     use taskboard_domain::ids::BoardId;
     use taskboard_domain::outbox::LocalOp;
     use taskboard_domain::persistence::{PersistedState, TaskRepository};
@@ -153,7 +174,7 @@ mod tests {
     /// `pending_ops` = 0).
     #[tokio::test]
     async fn fresh_database_loads_default_state() {
-        let repo = open_memory().await.expect("open");
+        let repo = open_memory(test_connector()).await.expect("open");
         let loaded = repo.load().await.expect("load");
         assert_eq!(loaded, PersistedState::default());
     }
@@ -162,10 +183,14 @@ mod tests {
     #[tokio::test]
     async fn reopening_applies_no_new_migrations() {
         let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
-        let first = open(file.path()).await.expect("first open");
+        let first = open(file.path(), test_connector())
+            .await
+            .expect("first open");
         first.close().await;
 
-        let second = open(file.path()).await.expect("second open");
+        let second = open(file.path(), test_connector())
+            .await
+            .expect("second open");
         second.load().await.expect("load");
         let raw = SqlitePool::connect(&format!("sqlite://{}", file.path().display()))
             .await
@@ -174,7 +199,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 5, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 6, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -211,7 +236,9 @@ mod tests {
         .expect("seed row");
         raw.close().await;
 
-        let repo = open(file.path()).await.expect("migrating open");
+        let repo = open(file.path(), test_connector())
+            .await
+            .expect("migrating open");
         let state = repo.load().await.expect("load");
         let board = state.boards.values().next().expect("board row");
         assert_eq!(board.title, "board");
@@ -279,7 +306,9 @@ mod tests {
         .expect("seed outbox row");
         raw.close().await;
 
-        let repo = open(file.path()).await.expect("migrating open");
+        let repo = open(file.path(), test_connector())
+            .await
+            .expect("migrating open");
         let state = repo.load().await.expect("load");
         let board = &state.boards[&taskboard_domain::BoardId::from(board_uuid)];
         assert_eq!(
@@ -299,6 +328,229 @@ mod tests {
                 ))),
             "the backfilled rename_board row decodes as update_board"
         );
+        repo.close().await;
+    }
+
+    // -- 0006: the per-board sync_status rebuild + the binding connector
+    //    tag (F16-22 / connect-flow §4.5). Same construction recipe as the
+    //    0005 pin: shipped migrations, then strip 0006's effects and its
+    //    bookkeeping row so the reopening open() replays the real
+    //    upgrade path.
+
+    /// Builds a pre-0006 database: strips the `connector` column and the
+    /// per-board `sync_status` rebuild, restores the legacy singleton
+    /// (with its seed row), and deletes 0006's bookkeeping entry.
+    async fn pre_0006_database() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("legacy.db");
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.display()))
+            .await
+            .expect("raw connect");
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        sqlx::query("ALTER TABLE boards DROP COLUMN connector")
+            .execute(&raw)
+            .await
+            .expect("strip connector");
+        sqlx::query("DROP TABLE sync_status")
+            .execute(&raw)
+            .await
+            .expect("strip per-board status");
+        sqlx::query(
+            "CREATE TABLE sync_status (
+                id           INTEGER PRIMARY KEY CHECK (id = 1),
+                phase        TEXT NOT NULL,
+                last_error   TEXT NULL,
+                last_success TEXT NULL
+            )",
+        )
+        .execute(&raw)
+        .await
+        .expect("rebuild legacy singleton");
+        sqlx::query("INSERT INTO sync_status (id, phase) VALUES (1, 'idle')")
+            .execute(&raw)
+            .await
+            .expect("re-seed legacy singleton");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 6")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        raw.close().await;
+        (dir, db)
+    }
+
+    /// C10-1 + C10-2: the legacy singleton's status backfills the one
+    /// bound live board's row; the legacy table shape is gone.
+    #[tokio::test]
+    async fn migration_0006_backfills_the_bound_boards_row_and_drops_the_singleton() {
+        let (_dir, db) = pre_0006_database().await;
+        let board_uuid = uuid::Uuid::from_u128(0xc1);
+        let raw = SqlitePool::connect(&format!("sqlite://{}", db.display()))
+            .await
+            .expect("raw connect");
+        sqlx::query(
+            "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen) \
+             VALUES (?, 42, 'board', '00ff00', 0, 0, '2026-01-01T00:00:00+00:00', NULL)",
+        )
+        .bind(board_uuid.to_string())
+        .execute(&raw)
+        .await
+        .expect("seed bound board");
+        sqlx::query(
+            "UPDATE sync_status SET phase = 'offline', \
+             last_success = '2026-01-01T00:00:00+00:00' WHERE id = 1",
+        )
+        .execute(&raw)
+        .await
+        .expect("seed singleton");
+        raw.close().await;
+
+        let repo = open(&db, test_connector()).await.expect("migrating open");
+        let state = repo.load().await.expect("load");
+        let row = state
+            .sync
+            .get(taskboard_domain::BoardId::from(board_uuid))
+            .expect("the bound board's row backfilled");
+        assert_eq!(
+            row.phase,
+            taskboard_domain::SyncPhase::Offline,
+            "the singleton's phase backfills the board's row"
+        );
+        assert_eq!(
+            row.last_success,
+            chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00+00:00")
+                .ok()
+                .map(chrono::DateTime::<chrono::Utc>::from),
+            "the singleton's last_success backfills with it"
+        );
+        assert_eq!(
+            state.sync.iter().count(),
+            1,
+            "the stored map holds exactly the backfilled row"
+        );
+
+        // C10-2: the legacy singleton shape is structurally gone.
+        let raw = SqlitePool::connect(&format!("sqlite://{}", db.display()))
+            .await
+            .expect("raw connect");
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('sync_status')")
+                .fetch_all(&raw)
+                .await
+                .expect("table info");
+        assert!(
+            !columns.iter().any(|c| c == "id"),
+            "the legacy singleton id column is gone"
+        );
+        assert!(
+            columns.iter().any(|c| c == "board"),
+            "the per-board key is present"
+        );
+        raw.close().await;
+        repo.close().await;
+    }
+
+    /// C10-3: a board-less singleton (standalone installs) is dropped —
+    /// `open` + `load` succeed with an empty stored map.
+    #[tokio::test]
+    async fn migration_0006_drops_a_board_less_singleton() {
+        let (_dir, db) = pre_0006_database().await;
+        let raw = SqlitePool::connect(&format!("sqlite://{}", db.display()))
+            .await
+            .expect("raw connect");
+        sqlx::query("UPDATE sync_status SET phase = 'failed', last_error = 'network'")
+            .execute(&raw)
+            .await
+            .expect("singleton content no board can claim");
+        raw.close().await;
+
+        let repo = open(&db, test_connector()).await.expect("migrating open");
+        let state = repo.load().await.expect("load");
+        assert_eq!(
+            state.sync.iter().count(),
+            0,
+            "the board-less singleton's content is dropped"
+        );
+        repo.close().await;
+    }
+
+    /// C10-4: the legacy NULL tag is a read-only relic; the first board
+    /// upsert re-tags the binding with the repo's default connector
+    /// (the DF-4 write rule, pinned end-to-end).
+    #[tokio::test]
+    async fn migration_0006_leaves_the_null_tag_and_upserts_write_the_default() {
+        let (_dir, db) = pre_0006_database().await;
+        let board_uuid = uuid::Uuid::from_u128(0xc2);
+        let raw = SqlitePool::connect(&format!("sqlite://{}", db.display()))
+            .await
+            .expect("raw connect");
+        sqlx::query(
+            "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen) \
+             VALUES (?, 42, 'board', '00ff00', 0, 0, '2026-01-01T00:00:00+00:00', NULL)",
+        )
+        .bind(board_uuid.to_string())
+        .execute(&raw)
+        .await
+        .expect("seed bound board");
+        raw.close().await;
+
+        let repo = open(&db, test_connector()).await.expect("migrating open");
+        let connector_column = || async {
+            let raw = SqlitePool::connect(&format!("sqlite://{}", db.display()))
+                .await
+                .expect("raw connect");
+            let tag: Option<String> =
+                sqlx::query_scalar("SELECT connector FROM boards WHERE id = ?")
+                    .bind(board_uuid.to_string())
+                    .fetch_one(&raw)
+                    .await
+                    .expect("board row");
+            raw.close().await;
+            tag
+        };
+        assert_eq!(
+            connector_column().await,
+            None,
+            "the migrated NULL tag is a read-only relic (no boot-time backfill)"
+        );
+
+        let board = taskboard_domain::Board {
+            id: taskboard_domain::BoardId::from(board_uuid),
+            remote: Some(taskboard_domain::RemoteBoardId(42)),
+            title: "board".into(),
+            color: taskboard_domain::Color::new("00ff00"),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks {
+                title: taskboard_domain::BoardClocks::epoch(),
+                color: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        };
+        repo.apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
+            board,
+        )])
+        .await
+        .expect("apply");
+        assert_eq!(
+            connector_column().await.as_deref(),
+            Some(test_connector().as_str()),
+            "the upsert re-tags the binding with the repo's default connector"
+        );
+        repo.close().await;
+    }
+
+    /// C10-5: a fresh install loads the empty map — the old
+    /// `Corrupted`-on-missing-singleton path is dead.
+    #[tokio::test]
+    async fn a_fresh_database_loads_an_empty_sync_map() {
+        let repo = open_memory(test_connector()).await.expect("open");
+        let loaded = repo.load().await.expect("load");
+        assert_eq!(loaded.sync, taskboard_domain::SyncStates::new());
         repo.close().await;
     }
 
@@ -395,7 +647,9 @@ mod tests {
         }
         raw.close().await;
 
-        let repo = open(file.path()).await.expect("migrating open");
+        let repo = open(file.path(), test_connector())
+            .await
+            .expect("migrating open");
         let state = repo.load().await.expect("load");
         assert!(
             state
@@ -495,7 +749,9 @@ mod tests {
         .expect("seed task");
         raw.close().await;
 
-        let repo = open(file.path()).await.expect("migrating open");
+        let repo = open(file.path(), test_connector())
+            .await
+            .expect("migrating open");
         let state = repo.load().await.expect("load");
         assert_eq!(state.tasks.len(), 1, "the seeded task survives");
         assert_eq!(
@@ -510,7 +766,7 @@ mod tests {
     #[tokio::test]
     async fn journal_mode_is_wal() {
         let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
-        let repo = open(file.path()).await.expect("open");
+        let repo = open(file.path(), test_connector()).await.expect("open");
         let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
             .fetch_one(&repo.pool)
             .await
@@ -542,7 +798,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = dir.path().join("fresh.db");
 
-        let repo = open(&db).await.expect("open");
+        let repo = open(&db, test_connector()).await.expect("open");
         drop(repo);
 
         assert!(owner_mode_is(&db), "the fresh database must be 0600");
@@ -557,7 +813,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = dir.path().join("fresh.db");
 
-        let repo = open(&db).await.expect("open");
+        let repo = open(&db, test_connector()).await.expect("open");
         let _ = repo.load().await.expect("load");
 
         let wal = dir.path().join("fresh.db-wal");
@@ -583,7 +839,7 @@ mod tests {
         std::fs::set_permissions(&db, perms).expect("loosen");
         assert!(!owner_mode_is(&db), "fixture must start permissive");
 
-        let repo = open(&db).await.expect("open");
+        let repo = open(&db, test_connector()).await.expect("open");
         drop(repo);
 
         assert!(owner_mode_is(&db), "opening must tighten to 0600");
@@ -592,7 +848,7 @@ mod tests {
     /// The pool holds exactly one connection (kiosk single-writer stance).
     #[tokio::test]
     async fn pool_is_single_connection() {
-        let repo = open_memory().await.expect("open");
+        let repo = open_memory(test_connector()).await.expect("open");
         assert_eq!(repo.pool.size(), 1);
     }
 
@@ -633,7 +889,7 @@ mod tests {
         use taskboard_domain::persistence::PersistenceAction;
         use taskboard_domain::test_support::CountingIds;
 
-        let repo = Arc::new(open_memory().await.expect("open"));
+        let repo = Arc::new(open_memory(test_connector()).await.expect("open"));
         let ids = CountingIds::new();
         let base = board(ids.new_board_id(), "base");
         let base_id = base.id;

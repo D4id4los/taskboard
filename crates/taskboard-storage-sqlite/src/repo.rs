@@ -10,8 +10,8 @@ use taskboard_domain::entities::{
     Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
 };
 use taskboard_domain::ids::{
-    BoardId, LabelId, ReminderRuleId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId,
-    RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
+    BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardId, RemoteCardId, RemoteCardRef,
+    RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 use taskboard_domain::outbox::{OpId, PendingOp};
 use taskboard_domain::persistence::{
@@ -20,7 +20,7 @@ use taskboard_domain::persistence::{
 use taskboard_domain::reminders::{
     ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderSnoozeKey, ReminderState,
 };
-use taskboard_domain::state::{SyncPhase, SyncStatus};
+use taskboard_domain::state::{SyncPhase, SyncStates, derive_sync_states};
 use uuid::Uuid;
 
 use crate::codec;
@@ -30,6 +30,11 @@ use crate::codec;
 #[derive(Debug, Clone)]
 pub struct SqliteTaskRepository {
     pub(crate) pool: SqlitePool,
+    /// The connector every board upsert tags its binding with (the
+    /// config-derived default; see `connect::open`). Legacy NULL tags
+    /// are read-only relics — decoded by this rule only when a decode
+    /// consumer exists (chunk 4); never backfilled at boot.
+    pub(crate) default_connector: ConnectorId,
 }
 
 /// Raw `boards` row (`query_as!` target; domain structs with nested clocks
@@ -126,8 +131,9 @@ struct ValidatorRow {
     last_modified: Option<String>,
 }
 
-/// Raw `sync_status` row.
+/// Raw `sync_status` row (one per board).
 struct SyncStatusRow {
+    board: String,
     phase: String,
     last_error: Option<String>,
     last_success: Option<DateTime<Utc>>,
@@ -508,16 +514,15 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
-        let status_row = sqlx::query_as!(
+        let status_rows = sqlx::query_as!(
             SyncStatusRow,
-            r#"SELECT phase, last_error,
+            r#"SELECT board, phase, last_error,
                       last_success as "last_success: DateTime<Utc>"
-               FROM sync_status WHERE id = 1"#
+               FROM sync_status"#
         )
-        .fetch_optional(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|e| stmt_error(&e))?
-        .ok_or(RepositoryError::Corrupted)?;
+        .map_err(|e| stmt_error(&e))?;
 
         let reminder_rule_rows = sqlx::query_as!(
             ReminderRuleRow,
@@ -607,9 +612,16 @@ impl SqliteTaskRepository {
             );
         }
 
-        let phase =
-            codec::sync_phase_from_columns(&status_row.phase, status_row.last_error.as_deref())
-                .map_err(|_| RepositoryError::Corrupted)?;
+        // Zero rows is success (the empty map — a fresh install or a
+        // standalone whose board-less singleton the 0006 rebuild dropped).
+        let mut sync = SyncStates::new();
+        for status_row in status_rows {
+            let phase =
+                codec::sync_phase_from_columns(&status_row.phase, status_row.last_error.as_deref())
+                    .map_err(|_| RepositoryError::Corrupted)?;
+            let board = decode::uuid(&status_row.board)?;
+            sync.set_stored(BoardId::from(board), phase, status_row.last_success);
+        }
 
         let mut rules = BTreeMap::new();
         for row in reminder_rule_rows {
@@ -636,25 +648,27 @@ impl SqliteTaskRepository {
             muted,
         };
 
-        // `pending_ops` is derived, never stored (plan decision 9): the
-        // outbox rows just hydrated are the single source of truth for
-        // queue depth — no second query that could drift from them.
-        let pending_ops = u32::try_from(outbox.len()).unwrap_or(u32::MAX);
-
-        let state = PersistedState {
+        let mut state = PersistedState {
             boards,
             stacks,
             tasks,
             labels,
             outbox,
             validators,
-            sync: SyncStatus {
-                phase,
-                last_success: status_row.last_success,
-                pending_ops,
-            },
+            sync,
             reminders,
         };
+        // The per-board projection is derived, never stored: stored rows
+        // carry phase/last_success, `pending_ops` is attributed from the
+        // outbox rows just hydrated — no second query that could drift.
+        derive_sync_states(
+            &state.boards,
+            &state.stacks,
+            &state.tasks,
+            &state.labels,
+            &state.outbox,
+            &mut state.sync,
+        );
         // Read-only transaction: dropping without commit releases the
         // snapshot.
         drop(tx);
@@ -663,7 +677,7 @@ impl SqliteTaskRepository {
             stacks = state.stacks.len(),
             tasks = state.tasks.len(),
             labels = state.labels.len(),
-            pending_ops = state.sync.pending_ops,
+            pending_ops = state.sync.aggregate().pending_ops,
             "load complete"
         );
         Ok(state)
@@ -679,7 +693,7 @@ impl SqliteTaskRepository {
         // validators → sync status. Within each partition batch order is
         // preserved, so the last write of a field wins exactly as the
         // engine issued it.
-        let result = execute_batch(&mut tx, &actions).await;
+        let result = execute_batch(&mut tx, &actions, &self.default_connector).await;
 
         match result {
             Ok(()) => {
@@ -702,6 +716,7 @@ impl SqliteTaskRepository {
 async fn execute_batch(
     tx: &mut sqlx::SqliteConnection,
     actions: &[PersistenceAction],
+    default_connector: &ConnectorId,
 ) -> Result<(), RepositoryError> {
     // No wildcard arm: a new `PersistenceAction` variant must fail this
     // crate's build (E0004) until storage persists it — a silent
@@ -734,7 +749,9 @@ async fn execute_batch(
             PersistenceAction::UpsertValidators(key, validators) => {
                 validator_upserts.push((key, validators));
             }
-            PersistenceAction::UpsertSyncStatus(status) => sync_status_upserts.push(status),
+            PersistenceAction::UpsertSyncStatus(board, status) => {
+                sync_status_upserts.push((*board, status.clone()));
+            }
             PersistenceAction::UpsertReminderRule(rule) => rule_upserts.push(rule),
             PersistenceAction::DeleteReminderRule(rule_id) => rule_deletes.push(rule_id),
             PersistenceAction::RecordReminderDelivery(delivery) => deliveries.push(delivery),
@@ -750,15 +767,19 @@ async fn execute_batch(
 
     for board in boards {
         let remote = board.remote.map(|b| codec::remote_col(b.get()));
+        // The binding's connector tag is repo policy, not domain data
+        // (the domain binding widening is chunk 4's): every upsert
+        // writes the config-derived default, non-NULL.
         sqlx::query!(
-            r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, ck_color, ck_archived, ck_deleted, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, connector, ck_title, ck_color, ck_archived, ck_deleted, remote_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        remote_board_id = excluded.remote_board_id,
                        title = excluded.title,
                        color = excluded.color,
                        archived = excluded.archived,
                        deleted = excluded.deleted,
+                       connector = excluded.connector,
                        ck_title = excluded.ck_title,
                        ck_color = excluded.ck_color,
                        ck_archived = excluded.ck_archived,
@@ -770,6 +791,7 @@ async fn execute_batch(
             board.color.as_str(),
             board.archived,
             board.deleted,
+            default_connector.as_str(),
             board.clocks.title.to_rfc3339(),
             board.clocks.color.to_rfc3339(),
             board.clocks.archived.to_rfc3339(),
@@ -997,17 +1019,18 @@ async fn execute_batch(
         );
     }
 
-    for status in sync_status_upserts {
+    for (board, status) in sync_status_upserts {
         let last_error = match status.phase {
             SyncPhase::Failed { last_error } => Some(codec::sync_error_kind_to_text(last_error)),
             _ => None,
         };
         sqlx::query!(
-            r#"INSERT INTO sync_status (id, phase, last_error, last_success) VALUES (1, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
+            r#"INSERT INTO sync_status (board, phase, last_error, last_success) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(board) DO UPDATE SET
                        phase = excluded.phase,
                        last_error = excluded.last_error,
                        last_success = excluded.last_success"#,
+            codec::uuid_to_text(board.as_uuid()),
             codec::sync_phase_to_text(status.phase),
             last_error,
             status.last_success,
@@ -1016,6 +1039,7 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(
+            board = ?board,
             phase = codec::sync_phase_to_text(status.phase),
             "sync status upserted"
         );

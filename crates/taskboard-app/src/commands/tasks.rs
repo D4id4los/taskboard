@@ -171,7 +171,7 @@ pub fn list_on(app: &crate::App, stack: Option<&str>) -> Result<TaskList, Comman
     let state = app.engine.shared_state().load_full();
     Ok(TaskList {
         stacks: stack_groups(&state, stack)?,
-        sync: SyncStatusView::new(&state.sync),
+        sync: SyncStatusView::new(&state.sync.aggregate()),
     })
 }
 

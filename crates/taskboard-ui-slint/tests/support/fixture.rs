@@ -110,8 +110,27 @@ pub fn journey_state() -> (Fixture, AppState) {
     let mut overdue = state.tasks.get(&fixture.task1).expect("task").clone();
     overdue.duedate = Some(chrono::Utc::now() - TimeDelta::hours(2));
     state.tasks.insert(fixture.task1, overdue);
-    state.sync.phase = SyncPhase::Offline;
-    state.sync.pending_ops = 2;
+    // The projection is derived: two fabricated ops give the badge its
+    // pending count; the phase carries the stored Offline.
+    let board = *state.boards.keys().next().expect("fixture board");
+    state.sync.set_stored(board, SyncPhase::Offline, None);
+    let ops: Vec<taskboard_domain::PendingOp> = (0..2)
+        .map(|i| taskboard_domain::PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(
+                u128::try_from(0x9000 + i).expect("fixture op index fits"),
+            )),
+            op: taskboard_domain::LocalOp::UpdateTask(fixture.task1),
+            queued_at: epoch(),
+        })
+        .collect();
+    taskboard_domain::derive_sync_states(
+        &state.boards,
+        &state.stacks,
+        &state.tasks,
+        &state.labels,
+        &ops,
+        &mut state.sync,
+    );
     (fixture, state)
 }
 

@@ -434,8 +434,8 @@ async fn a5_completed_report_ingestion_publishes() {
                 .boards
                 .values()
                 .any(|b| b.remote == Some(RemoteBoardId(77)))
-            && app.sync.last_success == Some(ts(T0))
-            && app.sync.phase == SyncPhase::Idle
+            && app.sync.aggregate().last_success == Some(ts(T0))
+            && app.sync.aggregate().phase == SyncPhase::Idle
     })
     .await;
 }
@@ -443,7 +443,14 @@ async fn a5_completed_report_ingestion_publishes() {
 /// A6: a `Failed` report sets the typed phase.
 #[tokio::test]
 async fn a6_failed_report_sets_typed_phase() {
-    let h = harness().await;
+    // The per-board status write addresses bound boards.
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    })
+    .await;
     h.report_tx
         .send(SyncReport::Failed {
             kind: SyncErrorKind::Auth,
@@ -455,7 +462,7 @@ async fn a6_failed_report_sets_typed_phase() {
         .expect("report channel open");
 
     eventually(&h.handle, |app| {
-        app.sync.phase
+        app.sync.aggregate().phase
             == SyncPhase::Failed {
                 last_error: SyncErrorKind::Auth,
             }
@@ -467,11 +474,20 @@ async fn a6_failed_report_sets_typed_phase() {
 /// forwards a nudge (no self-declared phase change).
 #[tokio::test]
 async fn a7_network_lost_persists_offline_and_restored_only_nudges() {
-    let mut h = harness().await;
+    let mut h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    })
+    .await;
     h.system_tx
         .send(SystemEvent::NetworkLost)
         .expect("broadcast");
-    eventually(&h.handle, |app| app.sync.phase == SyncPhase::Offline).await;
+    eventually(&h.handle, |app| {
+        app.sync.aggregate().phase == SyncPhase::Offline
+    })
+    .await;
 
     h.system_tx
         .send(SystemEvent::NetworkRestored)
@@ -484,7 +500,7 @@ async fn a7_network_lost_persists_offline_and_restored_only_nudges() {
         "NetworkRestored must forward a sync nudge, got {nudge:?}"
     );
     assert_eq!(
-        h.handle.shared_state().load_full().sync.phase,
+        h.handle.shared_state().load_full().sync.aggregate().phase,
         SyncPhase::Offline,
         "restoration alone is no evidence; the phase stays until a report"
     );
@@ -669,7 +685,7 @@ async fn a11_boot_hydration_publishes_pre_loop() {
         app.stacks.contains_key(&stack_id),
         "the hydrated stack is visible before any command"
     );
-    assert_eq!(app.sync.pending_ops, 0);
+    assert_eq!(app.sync.aggregate().pending_ops, 0);
 }
 
 /// A12: a failing boot repo surfaces `EngineStartupError::Load` and no
@@ -961,7 +977,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
         .expect("report channel open");
 
     eventually(&h.handle, |app| {
-        app.sync.pending_ops == 0
+        app.sync.aggregate().pending_ops == 0
             && app.tasks.get(&task_id).is_some_and(|t| {
                 t.remote
                     == Some(taskboard_domain::RemoteCardRef {
@@ -970,7 +986,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
                         card: taskboard_domain::RemoteCardId(42),
                     })
             })
-            && app.sync.phase == SyncPhase::Idle
+            && app.sync.aggregate().phase == SyncPhase::Idle
     })
     .await;
 }
@@ -994,7 +1010,14 @@ fn failed_report() -> SyncReport {
 /// duplicate-create window).
 #[tokio::test]
 async fn g1_shutdown_keeps_ingesting_reports() {
-    let h = harness().await;
+    // The per-board status write addresses bound boards.
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    })
+    .await;
     h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
     h.report_tx
         .send(failed_report())
@@ -1002,7 +1025,7 @@ async fn g1_shutdown_keeps_ingesting_reports() {
         .expect("channel open");
 
     eventually(&h.handle, |app| {
-        app.sync.phase
+        app.sync.aggregate().phase
             == SyncPhase::Failed {
                 last_error: SyncErrorKind::Network,
             }
@@ -1078,7 +1101,14 @@ async fn g4_shutdown_with_reports_already_closed_exits_immediately() {
 /// begins (biased order: reports are drained ahead of system events).
 #[tokio::test]
 async fn g5_pre_shutdown_reports_ingest_before_drain() {
-    let h = harness().await;
+    // The per-board status write addresses bound boards.
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    })
+    .await;
     h.report_tx
         .send(failed_report())
         .await
@@ -1086,7 +1116,7 @@ async fn g5_pre_shutdown_reports_ingest_before_drain() {
     h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
 
     eventually(&h.handle, |app| {
-        app.sync.phase
+        app.sync.aggregate().phase
             == SyncPhase::Failed {
                 last_error: SyncErrorKind::Network,
             }
@@ -1184,7 +1214,17 @@ async fn a14_create_board_refuses_a_second_live_board() {
 /// A15: `BindBoard` mutates the board row in memory and persistence.
 #[tokio::test]
 async fn a15_bind_board_sets_the_remote_binding() {
-    let h = harness().await;
+    // The harness board ships bound (the configured-install fixture);
+    // the binding act itself needs an unbound one.
+    let mut unbound = common::seed_board_state("board");
+    for board in unbound.boards.values_mut() {
+        board.remote = None;
+    }
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(unbound)),
+        ..Spawner::default()
+    })
+    .await;
     let outcome = h
         .handle
         .execute(StateCommand::BindBoard {
@@ -1302,7 +1342,7 @@ async fn h1_engine_continues_without_sync_after_the_reports_channel_closes() {
         .expect("the engine still answers");
     assert_eq!(outcome, CommandOutcome::NoOp);
     assert_eq!(
-        h.handle.shared_state().load_full().sync.phase,
+        h.handle.shared_state().load_full().sync.aggregate().phase,
         SyncPhase::Idle,
         "a dead connector must not mark the engine Syncing"
     );
@@ -1318,12 +1358,20 @@ async fn h1_engine_continues_without_sync_after_the_reports_channel_closes() {
 /// phase. (The mirror contract h1 pins for connector death.)
 #[tokio::test]
 async fn engine_stays_a_daemon_when_commands_and_reports_close() {
+    // The per-board offline write addresses bound boards.
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    })
+    .await;
     let Harness {
         handle,
         report_tx,
         system_tx,
         ..
-    } = harness().await;
+    } = h;
     let state = handle.shared_state();
     drop(handle); // closes the command inbox
     drop(report_tx);
@@ -1335,7 +1383,7 @@ async fn engine_stays_a_daemon_when_commands_and_reports_close() {
     let deadline = Duration::from_secs(60);
     tokio::time::timeout(deadline, async {
         loop {
-            if state.load_full().sync.phase == SyncPhase::Offline {
+            if state.load_full().sync.aggregate().phase == SyncPhase::Offline {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -1484,8 +1532,8 @@ async fn identical_completed_report_appends_nothing() {
         app.boards
             .values()
             .any(|b| b.remote == Some(RemoteBoardId(77)))
-            && app.sync.last_success == Some(ts(T0))
-            && app.sync.phase == SyncPhase::Idle
+            && app.sync.aggregate().last_success == Some(ts(T0))
+            && app.sync.aggregate().phase == SyncPhase::Idle
     })
     .await;
     h.handle.flush().await;
@@ -1506,7 +1554,7 @@ async fn identical_completed_report_appends_nothing() {
         .await
         .expect("report channel open");
     eventually(&h.handle, |app| {
-        app.sync.phase
+        app.sync.aggregate().phase
             == SyncPhase::Failed {
                 last_error: SyncErrorKind::Auth,
             }
@@ -1551,7 +1599,7 @@ async fn identical_completed_report_appends_nothing() {
     );
     assert!(matches!(
         batches[1][0],
-        PersistenceAction::UpsertSyncStatus(_)
+        PersistenceAction::UpsertSyncStatus(..)
     ));
 }
 
@@ -1566,10 +1614,17 @@ async fn failed_report_keeps_the_last_success_stamp() {
         .await
         .expect("report channel open");
     eventually(&h.handle, |app| {
-        app.sync.last_success == Some(ts(T0)) && app.sync.phase == SyncPhase::Idle
+        app.sync.aggregate().last_success == Some(ts(T0))
+            && app.sync.aggregate().phase == SyncPhase::Idle
     })
     .await;
-    let stamp = h.handle.shared_state().load_full().sync.last_success;
+    let stamp = h
+        .handle
+        .shared_state()
+        .load_full()
+        .sync
+        .aggregate()
+        .last_success;
 
     h.report_tx
         .send(SyncReport::Failed {
@@ -1580,7 +1635,7 @@ async fn failed_report_keeps_the_last_success_stamp() {
         .await
         .expect("report channel open");
     eventually(&h.handle, |app| {
-        app.sync.phase
+        app.sync.aggregate().phase
             == SyncPhase::Failed {
                 last_error: SyncErrorKind::Network,
             }
@@ -1588,7 +1643,12 @@ async fn failed_report_keeps_the_last_success_stamp() {
     .await;
 
     assert_eq!(
-        h.handle.shared_state().load_full().sync.last_success,
+        h.handle
+            .shared_state()
+            .load_full()
+            .sync
+            .aggregate()
+            .last_success,
         stamp,
         "the failure verdict must not erase the last success"
     );
@@ -1646,7 +1706,7 @@ async fn j2_standalone_dead_entry_prunes_and_the_registry_keeps_working() {
         .expect("accepted");
     assert_eq!(outcome, CommandOutcome::NoOp);
     assert_eq!(
-        h.handle.shared_state().load_full().sync.phase,
+        h.handle.shared_state().load_full().sync.aggregate().phase,
         SyncPhase::Idle
     );
 

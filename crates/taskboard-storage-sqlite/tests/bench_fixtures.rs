@@ -73,23 +73,32 @@ fn fixture_is_valid_persistence_input() {
     let n = 100;
     let fixture = build_fixture(n);
     let mut expected = fixture.state.clone();
-    // `pending_ops` is never stored: load() re-derives it from the
-    // outbox depth (roundtrip.rs P1), so the fixture's zero is not what
-    // comes back.
-    expected.sync.pending_ops = u32::try_from(outbox_count(n)).expect("op count fits u32");
+    // The per-board projection is never stored: load() re-derives it
+    // from the outbox attribution, so the fixture's zero is not what
+    // comes back. Reproduce the same derivation over the fixture.
+    taskboard_domain::derive_sync_states(
+        &expected.boards,
+        &expected.stacks,
+        &expected.tasks,
+        &expected.labels,
+        &expected.outbox,
+        &mut expected.sync,
+    );
 
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("runtime")
         .block_on(async move {
-            let repo = open_memory().await.expect("open");
+            let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+                .await
+                .expect("open");
             repo.apply(fixture.actions).await.expect("apply");
             let loaded = repo.load().await.expect("load");
 
             assert_eq!(loaded, expected);
             assert_eq!(
-                loaded.sync.pending_ops as usize,
+                loaded.sync.aggregate().pending_ops as usize,
                 outbox_count(n),
                 "pending_ops must be re-derived from the outbox depth"
             );

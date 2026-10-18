@@ -385,7 +385,7 @@ pub async fn create_board_and_stack(
 /// through the binding ceremony itself).
 pub async fn seed_board_binding(db_path: &Path, local_id: u128, remote_id: u64, run: &str) {
     let repo = std::sync::Arc::new(
-        taskboard_storage_sqlite::open(db_path)
+        taskboard_storage_sqlite::open(db_path, taskboard_domain::ConnectorId::from("nextcloud"))
             .await
             .expect("seed db"),
     );

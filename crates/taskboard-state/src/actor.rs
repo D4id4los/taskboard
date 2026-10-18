@@ -26,8 +26,8 @@ use tokio::task::JoinHandle;
 use taskboard_domain::{
     AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, Notification, PersistedState,
     PersistenceAction, ReminderFiring, RepositoryError, StateCommand, SyncCommand, SyncPhase,
-    SyncStateReader, SyncStatus, SystemEvent, TaskRepository, ValidatorKey, apply_push_report,
-    apply_sync_report, notifications_for, plan_command,
+    SyncStateReader, SyncStates, SyncStatus, SystemEvent, TaskRepository, ValidatorKey,
+    apply_push_report, apply_sync_report, notifications_for, plan_command,
 };
 
 use crate::config::ReminderEngineConfig;
@@ -525,7 +525,9 @@ async fn execute_command(
     if let StateCommand::RequestSync = command {
         let forwarded = forward_sync_now(sync_outs);
         let outcome = if forwarded {
-            if core.mark_syncing() {
+            // No board-scoped commands exist yet (chunk 2): both nudge
+            // sites derive the set engine-side — every bound board.
+            if mark_bound_syncing(core) {
                 publish(core, shared, signals);
             }
             CommandOutcome::SyncRequested
@@ -579,7 +581,7 @@ async fn execute_command(
         .actions
         .iter()
         .any(|action| matches!(action, PersistenceAction::EnqueueOp(_)));
-    let marked_syncing = enqueued_ops && forward_sync_now(sync_outs) && core.mark_syncing();
+    let marked_syncing = enqueued_ops && forward_sync_now(sync_outs) && mark_bound_syncing(core);
     if changed || marked_syncing {
         publish(core, shared, signals);
     }
@@ -649,11 +651,27 @@ async fn ingest_sync_report(
             batch
         }
         taskboard_domain::SyncReport::Failed { kind, pushes, .. } if pushes.is_empty() => {
-            vec![PersistenceAction::UpsertSyncStatus(SyncStatus {
-                phase: SyncPhase::Failed { last_error: kind },
-                last_success: core.sync_status().last_success,
-                pending_ops: 0, // ignored: derived at apply time
-            })]
+            // No board identity exists anywhere in the report: every bound
+            // board carries the verdict with its own row's last success
+            // (exact in the one-bound-board world; per-connector
+            // attribution scopes this when reports carry a connector).
+            // A board-less failure vanishes from the map — the aggregate
+            // stays idle, like the singleton it replaces.
+            core.app()
+                .bound_boards()
+                .into_iter()
+                .map(|board| {
+                    let last_success = core.sync_status(board).and_then(|row| row.last_success);
+                    PersistenceAction::UpsertSyncStatus(
+                        board,
+                        SyncStatus {
+                            phase: SyncPhase::Failed { last_error: kind },
+                            last_success,
+                            pending_ops: 0, // ignored: derived at apply time
+                        },
+                    )
+                })
+                .collect::<Vec<PersistenceAction>>()
         }
         // Evidence-then-verdict (phase 4 decision 3): the cycle's completed
         // pushes land even though the pull aborted — no snapshot merge, no
@@ -687,17 +705,30 @@ async fn ingest_sync_report(
     }
 }
 
-/// Appends the status write only when the stable part (phase or
-/// `last_success`) actually changed; `pending_ops` is derived, never stored.
+/// Appends one `UpsertSyncStatus` per board whose stable part (phase or
+/// `last_success`) actually changed against the engine's stored rows; a
+/// missing row compares as the default (so a first write lands, a
+/// materialized default does not). `pending_ops` is derived, never stored.
 fn append_status_if_changed(
     core: &EngineCore,
     batch: &mut Vec<PersistenceAction>,
-    merged: &SyncStatus,
+    merged: &SyncStates,
 ) {
-    let current = core.sync_status();
-    if merged.phase != current.phase || merged.last_success != current.last_success {
-        batch.push(PersistenceAction::UpsertSyncStatus(merged.clone()));
+    for (board, status) in merged.iter() {
+        let (current_phase, current_success) = core
+            .sync_status(*board)
+            .map_or((SyncPhase::Idle, None), |row| (row.phase, row.last_success));
+        if status.phase != current_phase || status.last_success != current_success {
+            batch.push(PersistenceAction::UpsertSyncStatus(*board, status.clone()));
+        }
     }
+}
+
+/// Marks every bound board's row `Syncing` (memory-only transient);
+/// returns whether any row changed.
+fn mark_bound_syncing(core: &mut EngineCore) -> bool {
+    let boards = core.app().bound_boards();
+    boards.into_iter().any(|board| core.mark_syncing(board))
 }
 
 /// Appends one `UpsertValidators` per key derived from the report's
@@ -745,16 +776,37 @@ async fn go_offline(
     repo: &Arc<dyn TaskRepository>,
     clock: &dyn Clock,
 ) {
-    // Idempotent: already-offline is a no-action no-op.
-    if core.sync_status().phase == SyncPhase::Offline {
+    // Per-board idempotence: one Offline write per bound board not
+    // already offline; the batch is empty (a no-action no-op) iff every
+    // bound board is already offline — or none is bound.
+    let targets: Vec<taskboard_domain::BoardId> = core
+        .app()
+        .bound_boards()
+        .into_iter()
+        .filter(|board| {
+            !core
+                .sync_status(*board)
+                .is_some_and(|row| matches!(row.phase, SyncPhase::Offline))
+        })
+        .collect();
+    if targets.is_empty() {
         return;
     }
     let now = clock.now();
-    let actions = vec![PersistenceAction::UpsertSyncStatus(SyncStatus {
-        phase: SyncPhase::Offline,
-        last_success: core.sync_status().last_success,
-        pending_ops: 0, // ignored: derived at apply time
-    })];
+    let actions: Vec<PersistenceAction> = targets
+        .into_iter()
+        .map(|board| {
+            let last_success = core.sync_status(board).and_then(|row| row.last_success);
+            PersistenceAction::UpsertSyncStatus(
+                board,
+                SyncStatus {
+                    phase: SyncPhase::Offline,
+                    last_success,
+                    pending_ops: 0, // ignored: derived at apply time
+                },
+            )
+        })
+        .collect();
     match repo.apply(actions.clone()).await {
         Err(err) => tracing::error!(?err, "offline transition lost"),
         Ok(()) => {

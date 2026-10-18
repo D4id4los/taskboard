@@ -30,9 +30,12 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
     // First boot: seed a live board (no command creates boards), then
     // author one stack + one task through the full stack.
     {
-        let repo = taskboard_storage_sqlite::open(&db_path)
-            .await
-            .expect("db opens");
+        let repo = taskboard_storage_sqlite::open(
+            &db_path,
+            taskboard_domain::ConnectorId::from("nextcloud"),
+        )
+        .await
+        .expect("db opens");
         let (storage, storage_join) = taskboard_storage_sqlite::spawn_storage_actor(Arc::new(repo));
         let repo_port: Arc<dyn TaskRepository> = Arc::new(storage);
         let board = seeded_board();
@@ -93,9 +96,12 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
 
     // Second boot on the same file: the hydration sees the authored data.
     {
-        let repo = taskboard_storage_sqlite::open(&db_path)
-            .await
-            .expect("db reopens");
+        let repo = taskboard_storage_sqlite::open(
+            &db_path,
+            taskboard_domain::ConnectorId::from("nextcloud"),
+        )
+        .await
+        .expect("db reopens");
         let (storage, _storage_join) =
             taskboard_storage_sqlite::spawn_storage_actor(Arc::new(repo));
         let repo_port: Arc<dyn TaskRepository> = Arc::new(storage);
@@ -111,7 +117,11 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
                 .title,
             "durable"
         );
-        assert_eq!(hydrated.sync.pending_ops, 2, "outbox depth derived at load");
+        assert_eq!(
+            hydrated.sync.aggregate().pending_ops,
+            2,
+            "outbox depth derived at load"
+        );
     }
 }
 

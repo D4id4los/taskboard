@@ -970,7 +970,6 @@ fn applied_task(task: &Task, ids: &dyn IdGenerator, now: DateTime<Utc>) -> Comma
 mod tests {
     use super::*;
     use crate::entities::{LabelClocks, StackClocks};
-    use crate::state::SyncStatus;
     use crate::test_support::CountingIds;
     use chrono::TimeZone;
 
@@ -1098,7 +1097,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             reminders: crate::reminders::ReminderState::default(),
-            sync: SyncStatus::default(),
+            sync: crate::state::SyncStates::new(),
             last_updated: None,
         };
         let task_id = TaskId::from(uuid::Uuid::from_u128(u128::from(TASK)));
@@ -2203,7 +2202,7 @@ mod tests {
             tasks: std::collections::BTreeMap::new(),
             labels: std::collections::BTreeMap::new(),
             reminders: crate::reminders::ReminderState::default(),
-            sync: SyncStatus::default(),
+            sync: crate::state::SyncStates::new(),
             last_updated: None,
         };
         // Give the board content so bind tests exercise a non-empty board.
@@ -2680,7 +2679,7 @@ mod tests {
             tasks: std::collections::BTreeMap::new(),
             labels: std::collections::BTreeMap::new(),
             reminders: crate::reminders::ReminderState::default(),
-            sync: SyncStatus::default(),
+            sync: crate::state::SyncStates::new(),
             last_updated: None,
         };
         assert_eq!(run(&app, &[], &StateCommand::ResetBoard), Ok(no_op()));

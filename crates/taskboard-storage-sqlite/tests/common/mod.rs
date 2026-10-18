@@ -51,7 +51,11 @@ pub fn actions_from_state(state: &PersistedState) -> Vec<PersistenceAction> {
             validators.clone(),
         ));
     }
-    actions.push(PersistenceAction::UpsertSyncStatus(state.sync.clone()));
+    // One stored row per board carrying a phase (the generated states
+    // here hold a single status row keyed to the bound board).
+    for (board, status) in state.sync.iter() {
+        actions.push(PersistenceAction::UpsertSyncStatus(*board, status.clone()));
+    }
     actions
 }
 
@@ -87,7 +91,12 @@ impl FileDb {
             .suffix(".db")
             .tempfile()
             .expect("tempfile");
-        let repo = open(file.path()).await.expect("open");
+        let repo = open(
+            file.path(),
+            taskboard_domain::ConnectorId::from("nextcloud"),
+        )
+        .await
+        .expect("open");
         Self {
             repo: Some(repo),
             file,
@@ -116,7 +125,14 @@ impl FileDb {
     /// Closes and reopens the same file (close/reopen cycles).
     pub async fn reopen(&mut self) {
         self.close().await;
-        self.repo = Some(open(self.file.path()).await.expect("reopen"));
+        self.repo = Some(
+            open(
+                self.file.path(),
+                taskboard_domain::ConnectorId::from("nextcloud"),
+            )
+            .await
+            .expect("reopen"),
+        );
     }
 }
 

@@ -159,9 +159,10 @@ async fn daemon_journey(cfg: &common::LiveCfg) {
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted, "idle shutdown must not abort");
 
-    let repo = taskboard_storage_sqlite::open(&db_path)
-        .await
-        .expect("reopen");
+    let repo =
+        taskboard_storage_sqlite::open(&db_path, taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("reopen");
     let state = repo.load().await.expect("reload");
     assert_eq!(
         state.outbox.len(),
@@ -238,9 +239,10 @@ async fn shutdown_mid_cycle(cfg: &common::LiveCfg) {
     // The database reopens; the queued op is consistent: either the
     // cycle completed it (remote binding present, outbox drained) or it
     // is still queued intact — never half-applied.
-    let repo = taskboard_storage_sqlite::open(&db_path)
-        .await
-        .expect("reopen");
+    let repo =
+        taskboard_storage_sqlite::open(&db_path, taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("reopen");
     let state = repo.load().await.expect("reload");
     let raced: Vec<_> = state
         .tasks

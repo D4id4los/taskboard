@@ -26,7 +26,7 @@ use taskboard_domain::test_support::{
 use taskboard_domain::{
     AppState, Board, BoardClocks, BoardId, Clock, Color, CommandOutcome, Label, LabelClocks,
     LocalOp, Notification, OpId, PendingOp, PersistedState, PersistenceAction, Stack, StackClocks,
-    StackId, SyncPhase, SyncStatus, Task, TaskClocks, TaskId, apply_sync_report,
+    StackId, SyncPhase, Task, TaskClocks, TaskId, apply_sync_report,
 };
 use taskboard_state::{EngineCore, ReminderEngineConfig, spawn_state_engine};
 
@@ -48,6 +48,7 @@ fn uuid(raw: u128) -> uuid::Uuid {
 
 /// An arbitrary [`PersistenceAction`]. No referential consistency needed:
 /// P2 compares two interpreters of the *same* batch.
+#[allow(clippy::too_many_lines)] // one strategy arm per action class
 fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
     let board = any::<u128>().prop_map(|raw| {
         PersistenceAction::UpsertBoard(Board {
@@ -142,11 +143,14 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
         enqueue,
         complete,
         fail,
-        Just(PersistenceAction::UpsertSyncStatus(SyncStatus {
-            phase: SyncPhase::Offline,
-            last_success: None,
-            pending_ops: 0
-        })),
+        Just(PersistenceAction::UpsertSyncStatus(
+            taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1)),
+            taskboard_domain::SyncStatus {
+                phase: SyncPhase::Offline,
+                last_success: None,
+                pending_ops: 0,
+            },
+        )),
     ]
 }
 
@@ -217,10 +221,15 @@ proptest! {
             now());
         // The engine appends the status action iff phase or last_success
         // changed — the same rule the actor applies.
-        if merged.sync.phase != persisted.sync.phase
-            || merged.sync.last_success != persisted.sync.last_success
-        {
-            actions.push(PersistenceAction::UpsertSyncStatus(merged.sync.clone()));
+        for (board, status) in merged.sync.iter() {
+            let current = persisted.sync.get(*board);
+            let (phase, success) = current
+                .map_or((taskboard_domain::SyncPhase::Idle, None), |row| {
+                    (row.phase, row.last_success)
+                });
+            if status.phase != phase || status.last_success != success {
+                actions.push(PersistenceAction::UpsertSyncStatus(*board, status.clone()));
+            }
         }
 
         let mut core = EngineCore::from_persisted(persisted);
@@ -432,6 +441,7 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
 #[allow(clippy::too_many_lines)] // the step mapping IS the catalogue transcription
 fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
     let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .start_paused(true)
         .build()
         .expect("runtime");
@@ -578,13 +588,25 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
             }
 
             // Memory ≡ disk after every command (the ADR 0006 invariant).
+            // The comparison uses the *derived* disk view (`load`), not
+            // the raw stored snapshot: the sync projection is a load-time
+            // derivation on both sides.
+            let mut disk_derived = disk_after.clone();
+            taskboard_domain::derive_sync_states(
+                &disk_derived.boards,
+                &disk_derived.stacks,
+                &disk_derived.tasks,
+                &disk_derived.labels,
+                &disk_derived.outbox,
+                &mut disk_derived.sync,
+            );
             let disk_projection = AppState {
-                boards: disk_after.boards,
-                stacks: disk_after.stacks,
-                tasks: disk_after.tasks,
-                labels: disk_after.labels,
-                reminders: disk_after.reminders,
-                sync: disk_after.sync,
+                boards: disk_derived.boards,
+                stacks: disk_derived.stacks,
+                tasks: disk_derived.tasks,
+                labels: disk_derived.labels,
+                reminders: disk_derived.reminders,
+                sync: disk_derived.sync,
                 last_updated: mem_after.last_updated,
             };
             prop_assert_eq!(

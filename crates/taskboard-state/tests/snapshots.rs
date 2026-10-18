@@ -365,6 +365,7 @@ async fn s4_sync_resolution_drains_outbox() {
                 .shared_state()
                 .load_full()
                 .sync
+                .aggregate()
                 .last_success
                 .is_some()
             {
@@ -444,7 +445,9 @@ async fn s5_rejections_leave_state_untouched() {
 #[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
 #[tokio::test]
 async fn s6_network_lost_restored_cycle() {
-    let mut s = Scenario::start().await;
+    // The offline transition addresses bound boards (C8): the scenario's
+    // subject is a configured install, so it seeds the bound shape.
+    let mut s = Scenario::start_with(common::seed_bound_board_state("kiosk")).await;
     let CommandOutcome::CreatedStack(_stack) = s
         .run(StateCommand::CreateStack {
             title: "todo".into(),
@@ -462,7 +465,7 @@ async fn s6_network_lost_restored_cycle() {
     // Deterministic settle: poll for the persisted Offline phase.
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
         loop {
-            if s.repo.snapshot().sync.phase == SyncPhase::Offline {
+            if s.repo.snapshot().sync.aggregate().phase == SyncPhase::Offline {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -488,7 +491,7 @@ async fn s6_network_lost_restored_cycle() {
         .expect("report channel open");
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
         loop {
-            if s.repo.snapshot().sync.phase
+            if s.repo.snapshot().sync.aggregate().phase
                 == (SyncPhase::Failed {
                     last_error: SyncErrorKind::Network,
                 })

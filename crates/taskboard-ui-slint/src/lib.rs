@@ -727,6 +727,32 @@ mod view_component_tests {
         }
     }
 
+    /// Marks the fixture's sync offline with `pending` derived pending
+    /// ops (the projection is derived; the ops are fabrication-only).
+    fn sync_offline_pending(state: &mut taskboard_domain::AppState, pending: u32) {
+        use taskboard_domain::{LocalOp, OpId, PendingOp};
+        let board = *state.boards.keys().next().expect("fixture board");
+        let task = *state.tasks.keys().next().expect("fixture task");
+        state
+            .sync
+            .set_stored(board, taskboard_domain::SyncPhase::Offline, None);
+        let ops: Vec<PendingOp> = (0..pending)
+            .map(|i| PendingOp {
+                op_id: OpId(uuid::Uuid::from_u128(u128::from(0x9000 + i))),
+                op: LocalOp::UpdateTask(task),
+                queued_at: chrono::Utc::now(),
+            })
+            .collect();
+        taskboard_domain::derive_sync_states(
+            &state.boards,
+            &state.stacks,
+            &state.tasks,
+            &state.labels,
+            &ops,
+            &mut state.sync,
+        );
+    }
+
     /// Two stacks (a: tasks 0,1; b: task 2), task 1 overdue, sync idle.
     fn fixture_state() -> taskboard_domain::AppState {
         let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
@@ -790,8 +816,7 @@ mod view_component_tests {
     fn refresh_pushes_the_board_structure_from_a_fake_state() {
         on_slint_thread(|| {
             let mut state = fixture_state();
-            state.sync.phase = taskboard_domain::SyncPhase::Offline;
-            state.sync.pending_ops = 2;
+            sync_offline_pending(&mut state, 2);
             let (handle, _commands) = handover_with(state, UiSettings::default().keymap);
 
             let board = handle.window.get_board_model();

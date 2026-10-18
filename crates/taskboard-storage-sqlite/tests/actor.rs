@@ -30,7 +30,11 @@ fn board_action(n: u128) -> PersistenceAction {
 /// it (routing works, handles are cloneable).
 #[tokio::test]
 async fn apply_routes_to_repo_and_load_observes() {
-    let repo = Arc::new(open_memory().await.expect("open"));
+    let repo = Arc::new(
+        open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("open"),
+    );
     let (handle, _join) = spawn_storage_actor(repo.clone());
     let observer = handle.clone();
 
@@ -44,7 +48,11 @@ async fn apply_routes_to_repo_and_load_observes() {
 /// without extra waiting (the flush semantics Phase 5 relies on).
 #[tokio::test]
 async fn apply_reply_is_a_flush_barrier() {
-    let repo = Arc::new(open_memory().await.expect("open"));
+    let repo = Arc::new(
+        open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("open"),
+    );
     let (handle, _join) = spawn_storage_actor(repo);
 
     // Both commands are in flight at once; the mpsc inbox serializes them.
@@ -65,7 +73,11 @@ async fn apply_reply_is_a_flush_barrier() {
 /// (deadline-guarded await, not a sleep).
 #[tokio::test]
 async fn dropping_handles_shuts_the_actor_down() {
-    let repo = Arc::new(open_memory().await.expect("open"));
+    let repo = Arc::new(
+        open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("open"),
+    );
     let (handle, join) = spawn_storage_actor(repo.clone());
     let second = handle.clone();
     drop(handle);

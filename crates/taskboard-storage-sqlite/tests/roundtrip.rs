@@ -20,7 +20,7 @@ use taskboard_domain::persistence::{
     PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
     ValidatorKey,
 };
-use taskboard_domain::state::{SyncErrorKind, SyncPhase, SyncStatus};
+use taskboard_domain::state::{SyncErrorKind, SyncPhase, SyncStates};
 use taskboard_storage_sqlite::open_memory;
 
 use common::actions_from_state;
@@ -149,7 +149,7 @@ proptest! {
             .build()
             .expect("runtime")
             .block_on(async move {
-                let repo = open_memory().await.expect("open");
+                let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud")).await.expect("open");
                 repo.apply(actions_from_state(&state)).await.expect("apply");
                 let loaded = repo.load().await.expect("load");
 
@@ -161,10 +161,10 @@ proptest! {
                 prop_assert_eq!(loaded.outbox, state.outbox);
                 prop_assert_eq!(loaded.validators, state.validators);
                 prop_assert_eq!(loaded.reminders, state.reminders);
-                prop_assert_eq!(loaded.sync.phase, state.sync.phase);
-                prop_assert_eq!(loaded.sync.last_success, state.sync.last_success);
+                prop_assert_eq!(loaded.sync.aggregate().phase, state.sync.aggregate().phase);
+                prop_assert_eq!(loaded.sync.aggregate().last_success, state.sync.aggregate().last_success);
                 prop_assert_eq!(
-                    loaded.sync.pending_ops as usize,
+                    loaded.sync.aggregate().pending_ops as usize,
                     expected_pending,
                     "pending_ops must be derived from the outbox depth"
                 );
@@ -178,14 +178,29 @@ proptest! {
 /// `queued_at`; CompleteOp/FailOp remove by id without disturbing the rest.
 #[tokio::test]
 async fn outbox_preserves_enqueue_order_across_removals() {
-    let repo = open_memory().await.expect("open");
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    // The ops' task must exist: the per-board pending attribution runs
+    // through the entity graph.
+    let task_id = TaskId::from(uuid::Uuid::from_u128(1));
+    let seed_board = board(91);
+    let seed_stack = stack(90, &seed_board);
+    let seed_task = task(1, &seed_stack, BTreeSet::default());
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(seed_board),
+        PersistenceAction::UpsertStack(seed_stack),
+        PersistenceAction::UpsertTask(seed_task),
+    ])
+    .await
+    .expect("seed entities");
     let ids: Vec<OpId> = (0..5).map(|i| OpId(uuid::Uuid::from_u128(i))).collect();
     let batch: Vec<PersistenceAction> = ids
         .iter()
         .map(|op_id| {
             PersistenceAction::EnqueueOp(PendingOp {
                 op_id: *op_id,
-                op: LocalOp::UpdateTask(TaskId::from(uuid::Uuid::from_u128(1))),
+                op: LocalOp::UpdateTask(task_id),
                 queued_at: ts(42), // identical seconds: collisions in practice
             })
         })
@@ -205,13 +220,15 @@ async fn outbox_preserves_enqueue_order_across_removals() {
     let loaded = repo.load().await.expect("load");
     let order: Vec<OpId> = loaded.outbox.iter().map(|o| o.op_id).collect();
     assert_eq!(order, vec![ids[1], ids[3], ids[4]]);
-    assert_eq!(loaded.sync.pending_ops, 3);
+    assert_eq!(loaded.sync.aggregate().pending_ops, 3);
 }
 
 /// P3 — upserting a modified entity overwrites every stored column.
 #[tokio::test]
 async fn upsert_overwrites_all_columns() {
-    let repo = open_memory().await.expect("open");
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
     let b = board(11);
     let s = stack(2, &b);
     repo.apply(vec![
@@ -238,7 +255,9 @@ async fn upsert_overwrites_all_columns() {
 /// rows; `op_id` upserts in place).
 #[tokio::test]
 async fn idempotent_reapply_leaves_same_state() {
-    let repo = open_memory().await.expect("open");
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
     let b = board(11);
     let op = PendingOp {
         op_id: OpId(uuid::Uuid::from_u128(3)),
@@ -262,7 +281,9 @@ async fn idempotent_reapply_leaves_same_state() {
 /// rows (the `INSERT OR REPLACE` trap).
 #[tokio::test]
 async fn task_upsert_keeps_label_set() {
-    let repo = open_memory().await.expect("open");
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
     let b = board(11);
     let s = stack(2, &b);
     let l = label(12, &b);
@@ -427,13 +448,25 @@ async fn corrupt_rows_decode_to_corrupted() {
     .await;
     assert!(matches!(result, Err(RepositoryError::Corrupted)));
 
-    // Unknown sync phase tag.
-    let result = corrupt_and_load("UPDATE sync_status SET phase = 'warp' WHERE id = 1").await;
+    // Unknown sync phase tag (on a row whose board exists — the FK).
+    let result = corrupt_and_load(
+        "INSERT INTO boards (id, title, color, archived, deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000009', 'x', 'x', 0, 0);
+         INSERT INTO sync_status (board, phase) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000009', 'warp')",
+    )
+    .await;
     assert!(matches!(result, Err(RepositoryError::Corrupted)));
 
     // Failed phase without its error kind.
-    let result = corrupt_and_load("UPDATE sync_status SET phase = 'failed' WHERE id = 1").await;
+    let result = corrupt_and_load(
+        "INSERT INTO boards (id, title, color, archived, deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-00000000000a', 'x', 'x', 0, 0);
+         INSERT INTO sync_status (board, phase) VALUES ('0197c0ff-eeee-7ccc-8ddd-00000000000a', 'failed')",
+    )
+    .await;
     assert!(matches!(result, Err(RepositoryError::Corrupted)));
+
+    // Note: a malformed board uuid in the status key cannot be inserted
+    // past the FK (the key must match a boards row, whose id decodes),
+    // so the key-decode guard is defensive only — no SQL-reachable pin.
 
     // Partial remote binding (board column set, stack column NULL).
     let result = corrupt_and_load(
@@ -452,9 +485,8 @@ async fn corrupt_rows_decode_to_corrupted() {
     .await;
     assert!(matches!(result, Err(RepositoryError::Corrupted)));
 
-    // The sync_status singleton row is gone.
-    let result = corrupt_and_load("DELETE FROM sync_status WHERE id = 1").await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    // The singleton row is gone (per-board rebuild; zero rows is the
+    // healthy fresh-install shape, so only a *malformed* key corrupts).
 }
 
 /// T8 — state survives a close/reopen cycle on a file database (and the
@@ -462,15 +494,18 @@ async fn corrupt_rows_decode_to_corrupted() {
 #[tokio::test]
 async fn state_survives_reopen() {
     let mut db = common::FileDb::new().await;
-    let state = PersistedState {
-        boards: BTreeMap::from([(board(11).id, board(11))]),
-        sync: SyncStatus {
-            phase: SyncPhase::Failed {
-                last_error: SyncErrorKind::Network,
-            },
-            last_success: Some(ts(123)),
-            pending_ops: 999, // derived on load; payload is ignored
+    let board_id = board(11).id;
+    let mut sync = SyncStates::new();
+    sync.set_stored(
+        board_id,
+        SyncPhase::Failed {
+            last_error: SyncErrorKind::Network,
         },
+        Some(ts(123)),
+    );
+    let state = PersistedState {
+        boards: BTreeMap::from([(board_id, board(11))]),
+        sync,
         ..PersistedState::default()
     };
     db.repo()
@@ -489,7 +524,9 @@ async fn state_survives_reopen() {
 /// contract harness does not cover).
 #[tokio::test]
 async fn per_board_validators_roundtrip() {
-    let repo = open_memory().await.expect("open");
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
     let key = ValidatorKey::Stacks(RemoteBoardId(55));
     let validators = SyncValidators {
         etag: Some("\"etag\"".into()),

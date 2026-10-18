@@ -76,9 +76,9 @@ pub(crate) async fn sync_on(
     timeout: Duration,
 ) -> Result<SyncOutcome, CommandError> {
     // Hydrated from the db — may be a stale `Idle`/`Failed`.
-    let startup = app.engine.shared_state().load_full().sync.clone();
+    let startup = app.engine.shared_state().load_full().sync.aggregate();
     if no_wait {
-        let view = SyncStatusView::new(&app.engine.shared_state().load_full().sync);
+        let view = SyncStatusView::new(&app.engine.shared_state().load_full().sync.aggregate());
         return Ok(SyncOutcome::NoWait(view));
     }
     // Belt-and-braces nudge; the boot cycle coalesces with it. A
@@ -113,7 +113,7 @@ pub async fn wait_for_sync_result(
     let mut seen_change = false;
     let deadline_at = Instant::now() + deadline;
     loop {
-        let status = app.engine.shared_state().load_full().sync.clone();
+        let status = app.engine.shared_state().load_full().sync.aggregate();
         if status.last_success > startup.last_success {
             return SyncOutcome::Succeeded(SyncStatusView::new(&status));
         }

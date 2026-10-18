@@ -19,7 +19,7 @@ use crate::ids::{
 };
 use crate::outbox::{LocalOp, PendingOp};
 use crate::persistence::{PersistedState, SyncValidators, ValidatorKey};
-use crate::state::{AppState, SyncErrorKind, SyncPhase, SyncStatus};
+use crate::state::{AppState, SyncErrorKind, SyncPhase, SyncStates};
 
 /// A remotely-created entity bound with `board_remote` (or a fixed
 /// fallback when the board itself is unbound, keeping refs well-formed).
@@ -374,7 +374,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                 tasks,
                 labels,
                 reminders: crate::reminders::ReminderState::default(),
-                sync: SyncStatus::default(),
+                sync: SyncStates::new(),
                 last_updated: None,
             }
         },
@@ -448,11 +448,13 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
             )| {
                 let outbox = build_outbox(&state, op_rows);
                 let validators = build_validators(validator_board, etag, last_modified);
-                let sync = SyncStatus {
-                    phase: phase.unwrap_or(SyncPhase::Idle),
-                    last_success,
-                    pending_ops,
-                };
+                // One stored row per generated board; `pending_ops` is
+                // derived, so the random counter is dropped here.
+                let mut sync = SyncStates::new();
+                for board in state.boards.keys() {
+                    sync.set_stored(*board, phase.unwrap_or(SyncPhase::Idle), last_success);
+                }
+                let _ = pending_ops;
                 PersistedState {
                     boards: state.boards,
                     stacks: state.stacks,

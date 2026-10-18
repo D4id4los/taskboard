@@ -128,7 +128,11 @@ async fn seed_binding(
     with_stack: bool,
 ) -> (StorageHandle, tokio::task::JoinHandle<()>) {
     let db_path = dir.path().join(db_name);
-    let repo = Arc::new(open(&db_path).await.expect("open seed db"));
+    let repo = Arc::new(
+        open(&db_path, taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("open seed db"),
+    );
     let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
 
     let mut actions = vec![taskboard_domain::PersistenceAction::UpsertBoard(
@@ -182,7 +186,8 @@ async fn boot(config: AppConfig) -> (App, PasswordEnv) {
 /// B1: boot on an empty temp database — the engine hydrates the default
 /// state, and a `RequestSync` runs a real cycle through the whole graph:
 /// with no board bound, the actor reports `Failed { NoBoard }` and the
-/// phase lands in `AppState`.
+/// engine ingests it as a no-op (C8: the board-less verdict has no
+/// status row to land on; the aggregate never lies).
 #[tokio::test]
 async fn b1_boot_and_no_board_cycle_through_the_graph() {
     let dir = tempdir();
@@ -199,13 +204,14 @@ async fn b1_boot_and_no_board_cycle_through_the_graph() {
         taskboard_domain::CommandOutcome::SyncRequested
     ));
 
-    eventually(&app, |state| {
-        state.sync.phase
-            == SyncPhase::Failed {
-                last_error: taskboard_domain::SyncErrorKind::NoBoard,
-            }
-    })
-    .await;
+    // The board-less cycle's `NoBoard` verdict vanishes from the map (C8:
+    // status rows exist per bound board; a board-less report has no row to
+    // land on). The graph still runs — the cycle fires, the report is
+    // ingested as a no-op — and the phase never lies.
+    assert_eq!(
+        app.engine.shared_state().load_full().sync.aggregate().phase,
+        SyncPhase::Idle
+    );
 
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted);
@@ -250,7 +256,7 @@ async fn b2_seeded_cycle_pulls_and_authenticates() {
         .expect("RequestSync accepted");
 
     eventually(&app, |state| {
-        state.sync.last_success.is_some()
+        state.sync.aggregate().last_success.is_some()
             && state
                 .boards
                 .values()
@@ -282,7 +288,9 @@ async fn b3_graceful_shutdown_reopens_the_database() {
         assert!(!outcome.actor_aborted);
 
         // The reopened database hydrates exactly the last projection.
-        let repo = open(&db_path).await.expect("reopen");
+        let repo = open(&db_path, taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("reopen");
         let reopened: PersistedState = repo.load().await.expect("reload");
         assert_eq!(reopened.boards, last.boards);
         assert_eq!(reopened.stacks, last.stacks);
@@ -334,7 +342,12 @@ async fn b4_shutdown_mid_cycle_is_bounded_and_keeps_the_outbox() {
 
     // The database reopens; the queued op is intact (not lost, and the
     // aborted cycle cannot have completed it).
-    let repo = open(dir.path().join("taskboard.db")).await.expect("reopen");
+    let repo = open(
+        dir.path().join("taskboard.db"),
+        taskboard_domain::ConnectorId::from("nextcloud"),
+    )
+    .await
+    .expect("reopen");
     let state: PersistedState = repo.load().await.expect("reload");
     assert_eq!(state.outbox.len(), 1, "the queued op survives");
     assert!(
@@ -471,7 +484,7 @@ async fn b7_restart_continuity_with_validators() {
             .execute(StateCommand::RequestSync)
             .await
             .expect("RequestSync accepted");
-        eventually(&app, |state| state.sync.last_success.is_some()).await;
+        eventually(&app, |state| state.sync.aggregate().last_success.is_some()).await;
         app.shutdown().await;
     }
 
@@ -519,7 +532,7 @@ async fn b7_restart_continuity_with_validators() {
         .await
         .expect("RequestSync accepted");
     eventually(&app, |state| {
-        state.sync.last_success.is_some()
+        state.sync.aggregate().last_success.is_some()
             && state
                 .boards
                 .values()
@@ -532,7 +545,10 @@ async fn b7_restart_continuity_with_validators() {
         .execute(StateCommand::RequestSync)
         .await
         .expect("RequestSync accepted");
-    eventually(&app, |state| state.sync.phase == SyncPhase::Idle).await;
+    eventually(&app, |state| {
+        state.sync.aggregate().phase == SyncPhase::Idle
+    })
+    .await;
 
     // The hydrated validators must be *used*: at least one endpoint of
     // the follow-up cycles went conditional (`304` only answers
@@ -592,7 +608,7 @@ async fn b8_standalone_boot_never_touches_credentials_and_serves_commands() {
         .expect("accepted");
     assert!(matches!(outcome, taskboard_domain::CommandOutcome::NoOp));
     assert_eq!(
-        app.engine.shared_state().load_full().sync.phase,
+        app.engine.shared_state().load_full().sync.aggregate().phase,
         SyncPhase::Idle
     );
 
@@ -632,7 +648,7 @@ async fn b9_detach_connector_is_graceful_idempotent_and_fails_closed() {
         .expect("the engine still answers");
     assert_eq!(outcome, taskboard_domain::CommandOutcome::NoOp);
     assert_eq!(
-        app.engine.shared_state().load_full().sync.phase,
+        app.engine.shared_state().load_full().sync.aggregate().phase,
         SyncPhase::Idle,
         "a detached connector must not mark the engine Syncing"
     );
@@ -718,7 +734,7 @@ async fn b10_standalone_attach_makes_the_engine_live_and_the_report_is_ingested(
         .expect("accepted");
     assert_eq!(outcome, taskboard_domain::CommandOutcome::NoOp);
     assert_eq!(
-        app.engine.shared_state().load_full().sync.phase,
+        app.engine.shared_state().load_full().sync.aggregate().phase,
         SyncPhase::Idle
     );
 
@@ -735,16 +751,14 @@ async fn b10_standalone_attach_makes_the_engine_live_and_the_report_is_ingested(
         .expect("accepted");
     assert_eq!(outcome, taskboard_domain::CommandOutcome::SyncRequested);
 
-    // The actor's commanded cycle reports `Failed { NoBoard }` (no HTTP:
-    // the report precedes any request) through its clone of the parked
-    // sender, and the engine ingests it.
-    eventually(&app, |state| {
-        state.sync.phase
-            == SyncPhase::Failed {
-                last_error: taskboard_domain::SyncErrorKind::NoBoard,
-            }
-    })
-    .await;
+    // The actor's commanded cycle reports `Failed { NoBoard }` through
+    // its clone of the parked sender, and the engine ingests it — as a
+    // no-op now (C8: a board-less report has no status row to land on).
+    // The ingestion itself is exercised by the clean drain below.
+    assert_eq!(
+        app.engine.shared_state().load_full().sync.aggregate().phase,
+        SyncPhase::Idle
+    );
 
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted);
@@ -807,13 +821,12 @@ async fn b12_detach_then_re_attach_round_trips() {
         .await
         .expect("accepted");
     assert_eq!(outcome, taskboard_domain::CommandOutcome::SyncRequested);
-    eventually(&app, |state| {
-        state.sync.phase
-            == SyncPhase::Failed {
-                last_error: taskboard_domain::SyncErrorKind::NoBoard,
-            }
-    })
-    .await;
+    // The fresh actor's `NoBoard` report is ingested as a no-op (C8: no
+    // bound board, no status row); the phase never lies.
+    assert_eq!(
+        app.engine.shared_state().load_full().sync.aggregate().phase,
+        SyncPhase::Idle
+    );
 
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted);

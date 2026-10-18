@@ -57,8 +57,8 @@ pub use entities::{
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
-    BoardId, LabelId, ReminderRuleId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId,
-    RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
+    BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardId, RemoteCardId, RemoteCardRef,
+    RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 pub use merge::{
     adopt_board_if_newer, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
@@ -87,4 +87,7 @@ pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,
     RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
-pub use state::{AppState, SyncErrorKind, SyncPhase, SyncStatus};
+pub use state::{
+    AppState, SyncErrorKind, SyncPhase, SyncStates, SyncStatus, attributed_board,
+    derive_sync_states,
+};
