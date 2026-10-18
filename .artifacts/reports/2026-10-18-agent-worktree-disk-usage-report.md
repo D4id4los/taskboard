@@ -171,6 +171,18 @@ gates are unaffected. Trade-off: variable inspection in a debugger gets
 worse. This is a workspace-wide dev-experience change, so it deserves
 its own small PR and the user's call, not a rider on the template fix.
 
+**Executed 2026-10-18** (user accepted; branch
+`chore/dev-debuginfo-line-tables`, measured on a clean
+`cargo build --workspace --all-targets`): `target/debug`
+23G (full debuginfo) → **11G** (−52%); rustc verified to receive
+`-C debuginfo=line-tables-only`; `.debug_line` sections present in
+built binaries (backtraces keep file:line); full AGENTS §10 gate
+suite green (nextest 1057 passed / 28 skipped, coverage + quarantine,
+lcov report). Note for future profiling work: a profile flip does
+not shrink an existing `target/` — old artifacts linger until
+`cargo clean`; only fresh builds (as in a new agent worktree) see
+the smaller steady state.
+
 ## 4. Alternatives considered and rejected
 
 - **Frequent/scheduled `cargo clean` mid-chunk** — the user's framing.
