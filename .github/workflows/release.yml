@@ -99,7 +99,10 @@ jobs:
 
       - name: MCP feature off in the release resolution
         # The §8.2/Q19 assertion (chunk plan D9): the dev-gated mcp
-        # feature never ships.
+        # feature never ships. Pinned to bash: the job's default shell
+        # is pwsh on the windows-latest leg, which cannot parse the `!`
+        # pipeline negation (#238).
+        shell: bash
         run: '! cargo tree -e features -p taskboard-app | grep -q ''feature "mcp"'''
 
       - name: Package Release
