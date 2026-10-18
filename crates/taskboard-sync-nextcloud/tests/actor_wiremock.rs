@@ -1564,3 +1564,28 @@ async fn a22_remote_moved_card_delete_lands_without_a_twin() {
         "the tombstone finalized and nothing re-adopted the deleted card"
     );
 }
+
+// ---- the #242 gap set (F6-04/05/06/23/24) ------------------------------
+
+/// A23 (F6-04): the board *detail*'s labels reach the snapshot's label set —
+/// the tier-2 fact the listings carry `labels: []` makes the detail the
+/// only authoritative label source, so dropping `inline_labels` (the
+/// audit's survivor mutant) must fail here.
+#[tokio::test(start_paused = true)]
+async fn a23_pulled_board_labels_reach_the_snapshot() {
+    let server = start_server().await;
+    let labels = serde_json::json!([{ "id": 1, "title": "todo", "color": "ff0000" }]);
+    mount_conditional_pull(&server, &labels).await;
+
+    let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
+    let report = set_board_and_report(&mut actor).await;
+    let SyncReport::Completed { snapshot, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert_eq!(snapshot.labels.len(), 1, "the pulled label set is complete");
+    let label = &snapshot.labels[0];
+    assert_eq!(label.id.board, RemoteBoardId(BOARD));
+    assert_eq!(label.id.label, taskboard_domain::RemoteLabelId(1));
+    assert_eq!(label.title, "todo");
+    assert_eq!(label.color, "ff0000");
+}
