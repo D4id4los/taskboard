@@ -52,6 +52,9 @@ pub enum UiEffect {
     FocusBoard,
     /// Open the inline create row.
     BeginCreate,
+    /// Open the inline create row for a new stack on the live board
+    /// (works on an empty board — no target stack needed).
+    BeginCreateStack,
     /// The primary-activation intent: open/commit whatever the focus
     /// and the active flow mean by "activate".
     Activate,
@@ -147,6 +150,7 @@ impl ActionRouter {
             ActionId::NavNextItem => DispatchOutcome::UiEffect(UiEffect::FocusNext),
             ActionId::NavPrevItem => DispatchOutcome::UiEffect(UiEffect::FocusPrev),
             ActionId::TaskCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreate),
+            ActionId::StackCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreateStack),
             ActionId::TaskEdit => DispatchOutcome::UiEffect(UiEffect::Activate),
             ActionId::TaskMove => DispatchOutcome::UiEffect(UiEffect::RequestMove),
             // Reserved (§5.8) — the only disabled rows left (D6).
@@ -259,6 +263,7 @@ mod tests {
             (ActionId::NavNextItem, UiEffect::FocusNext),
             (ActionId::NavPrevItem, UiEffect::FocusPrev),
             (ActionId::TaskCreate, UiEffect::BeginCreate),
+            (ActionId::StackCreate, UiEffect::BeginCreateStack),
             (ActionId::TaskEdit, UiEffect::Activate),
             (ActionId::TaskMove, UiEffect::RequestMove),
         ] {

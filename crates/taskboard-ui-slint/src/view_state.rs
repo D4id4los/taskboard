@@ -36,6 +36,9 @@ pub enum Flow {
     None,
     /// The inline create row, appending to `stack`.
     Create { stack: StackId },
+    /// The inline create row for a new stack on the live board
+    /// (#304): needs no target stack, so it works on an empty board.
+    CreateStack,
     /// The task-detail title editor.
     EditTitle { task: TaskId },
     /// The move flow: moving `task` toward `target`.
@@ -78,6 +81,23 @@ pub fn append_order(state: &AppState, stack: StackId) -> i64 {
         .tasks_in_stack(stack)
         .last()
         .map_or(0, |t| t.order + 1)
+}
+
+/// The canonical append position on the board: the live stacks' max
+/// order + 1 (#304's "sensible default appended after the existing
+/// stacks"); 0 on an empty (or absent) board.
+#[must_use]
+pub fn append_stack_order(state: &AppState) -> i64 {
+    let Some(board) = state.boards.values().find(|b| !b.deleted) else {
+        return 0;
+    };
+    state
+        .stacks
+        .values()
+        .filter(|s| s.board == board.id && !s.deleted)
+        .map(|s| s.order)
+        .max()
+        .map_or(0, |max| max + 1)
 }
 
 /// The index `current` moved by `direction` (±1), wrapping over
@@ -424,6 +444,14 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
+    /// `BeginCreateStack`: opens the stack create row in insert mode
+    /// (#304) — no target stack, so an empty board offers it too.
+    pub fn begin_create_stack(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::CreateStack;
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
     /// Text commit (D9): the create row appends a task; the title
     /// editor updates it. An empty buffer commits nothing (the flow
     /// simply ends — the CLI owns title validation, the UI dispatches
@@ -442,6 +470,15 @@ impl ViewState {
                         title,
                         stack,
                         order: append_order(state, stack),
+                    }),
+                );
+            }
+            Flow::CreateStack if !title.is_empty() => {
+                outcomes.insert(
+                    0,
+                    FlowOutcome::Command(StateCommand::CreateStack {
+                        title,
+                        order: append_stack_order(state),
                     }),
                 );
             }
@@ -578,6 +615,9 @@ impl ViewState {
         }
         match self.flow {
             Flow::Create { stack } if !stacks.contains(&stack) => self.flow = Flow::None,
+            Flow::CreateStack if state.boards.values().all(|b| b.deleted) => {
+                self.flow = Flow::None;
+            }
             Flow::Move { task, .. } if !is_live(task) => self.flow = Flow::None,
             _ => {}
         }
@@ -876,6 +916,84 @@ mod tests {
             })][..]
         );
         assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn stack_create_flow_commits_the_appended_create_stack() {
+        let (state, _, [_, _], _) = fixture();
+        let mut vs = ViewState::new();
+        let outcomes = vs.begin_create_stack();
+        assert_eq!(*vs.flow(), Flow::CreateStack);
+        assert!(
+            outcomes.contains(&FlowOutcome::SetMode(Mode::Insert)),
+            "the row opens in insert mode"
+        );
+        vs.set_buffer("doing".to_owned());
+        assert_eq!(
+            vs.commit_edit(&state)[..1],
+            [FlowOutcome::Command(StateCommand::CreateStack {
+                title: "doing".to_owned(),
+                order: 2, // append after s0(0), s1(1)
+            })][..]
+        );
+        assert_eq!(*vs.flow(), Flow::None, "the flow ends either way");
+    }
+
+    #[test]
+    fn stack_create_flow_works_on_an_empty_board() {
+        // The point of #304: no target stack needed.
+        let (mut state, board_id, _, _) = fixture();
+        let stacks: Vec<_> = state.stacks.keys().copied().collect();
+        for id in stacks {
+            state.stacks.remove(&id);
+        }
+        let tasks: Vec<_> = state.tasks.keys().copied().collect();
+        for id in tasks {
+            state.tasks.remove(&id);
+        }
+        let _ = board_id;
+        let mut vs = ViewState::new();
+        vs.begin_create_stack();
+        vs.set_buffer("first".to_owned());
+        assert_eq!(
+            vs.commit_edit(&state)[..1],
+            [FlowOutcome::Command(StateCommand::CreateStack {
+                title: "first".to_owned(),
+                order: 0,
+            })][..]
+        );
+    }
+
+    #[test]
+    fn an_empty_stack_create_buffer_commits_nothing() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.begin_create_stack();
+        vs.set_buffer("   ".to_owned());
+        let outcomes = vs.commit_edit(&state);
+        assert!(
+            !outcomes
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::Command(_))),
+            "whitespace commits nothing"
+        );
+        assert_eq!(*vs.flow(), Flow::None, "the flow ends either way");
+    }
+
+    #[test]
+    fn append_stack_order_continues_the_canonical_board_order() {
+        let (state, _, [s0, s1], _) = fixture();
+        assert_eq!(append_stack_order(&state), 2);
+        let mut empty = state.clone();
+        let stacks: Vec<_> = empty.stacks.keys().copied().collect();
+        for id in stacks {
+            empty.stacks.remove(&id);
+        }
+        assert_eq!(append_stack_order(&empty), 0);
+        let mut boardless = empty;
+        boardless.boards.clear();
+        assert_eq!(append_stack_order(&boardless), 0);
+        let _ = (s0, s1);
     }
 
     #[test]

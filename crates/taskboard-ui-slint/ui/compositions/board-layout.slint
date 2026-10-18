@@ -48,7 +48,7 @@ export component BoardLayout inherits Rectangle {
 
     if (root.stacks.length == 0): EmptyState {
         text: "No stacks yet";
-        hint: "Create stacks with the CLI, then add tasks here";
+        hint: "Add the first column: menu \u{203a} New stack";
     }
 
     if (root.stacks.length > 0 && !root.compact-active): HorizontalLayout {
