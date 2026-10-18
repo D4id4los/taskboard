@@ -633,10 +633,15 @@ impl<'a> PushExecutor<'a> {
         // Apply the label-set delta through the sub-endpoints: only
         // missing assignments are sent (redundant on a PUT-clear would
         // be harmless, but the update path cannot clear — see above), so
-        // "assigned" is decided against the *fetched* set.
+        // "assigned" is decided against the *fetched* set. `settled`
+        // tracks the remote numbers the delta has brought to the desired
+        // state, so a later failure can tell an op whose write landed
+        // from one the delta never reached.
+        let mut settled = std::collections::BTreeSet::new();
         let mut current = fetched_labels;
         for label_num in &desired {
             if current.contains(label_num) {
+                settled.insert(*label_num);
                 continue;
             }
             match self
@@ -651,9 +656,18 @@ impl<'a> PushExecutor<'a> {
             {
                 Ok(_) => {
                     current.insert(*label_num);
+                    settled.insert(*label_num);
                 }
                 Err(err) => {
-                    return Self::label_delta_failure(group, &updated, card_ref.board, &err);
+                    return self.label_delta_failure(
+                        group,
+                        &updated,
+                        card_ref.board,
+                        &err,
+                        *label_num,
+                        &settled,
+                        outbox,
+                    );
                 }
             }
         }
@@ -671,9 +685,19 @@ impl<'a> PushExecutor<'a> {
                 )
                 .await
             {
-                Ok(_) => {}
+                Ok(_) => {
+                    settled.insert(label_num);
+                }
                 Err(err) => {
-                    return Self::label_delta_failure(group, &updated, card_ref.board, &err);
+                    return self.label_delta_failure(
+                        group,
+                        &updated,
+                        card_ref.board,
+                        &err,
+                        label_num,
+                        &settled,
+                        outbox,
+                    );
                 }
             }
         }
@@ -691,38 +715,9 @@ impl<'a> PushExecutor<'a> {
                 echo: Some(mapping::map_echo(&updated, card_ref.board)),
             },
         }];
-        for op_id in &group.subsumed {
-            let Some(op) = outbox.iter().find(|entry| &entry.op_id == op_id) else {
-                continue;
-            };
-            if cannot_ride_a_task_group(&op.op) {
-                continue;
-            }
-            match op.op {
-                LocalOp::AssignLabel(_, label) | LocalOp::UnassignLabel(_, label) => {
-                    outcomes.push(PushOutcome {
-                        op: *op_id,
-                        result: if self.overlay.label_by_local.contains_key(&label) {
-                            PushResult::Applied { echo: None }
-                        } else {
-                            PushResult::Rejected {
-                                kind: taskboard_domain::SyncErrorKind::LocalData,
-                            }
-                        },
-                    });
-                }
-                // Updates/moves rode the PUT's field state.
-                LocalOp::UpdateTask(_) | LocalOp::MoveTask(_) => {
-                    outcomes.push(PushOutcome {
-                        op: *op_id,
-                        result: PushResult::Applied { echo: None },
-                    });
-                }
-                // `cannot_ride_a_task_group` already continued; nothing
-                // else can reach the match.
-                _ => {}
-            }
-        }
+        outcomes.extend(Self::subsumed_task_outcomes(group, outbox, &|label| {
+            self.subsumed_label_result(label, None, &settled)
+        }));
         GroupOutcome::Outcomes(outcomes)
     }
 
@@ -808,35 +803,112 @@ impl<'a> PushExecutor<'a> {
             ),
         }
     }
-    /// Classify-or-abort tail shared by the label-delta sub-endpoints
-    /// (assign/remove): a *classified* failure reports the fields' PUT as
-    /// landed — its echo is authoritative for the primary — and the label
-    /// ops retry next cycle; a transport-class failure aborts the cycle
-    /// with nothing reported: the PUT was a full-send of fields that stay
-    /// unchanged across the retry, so re-sending the whole group is safe.
+    /// One subsumed label op's result after the delta phase. `None`
+    /// omits the op from the report (it stays queued): only a failing
+    /// delta produces omissions, for labels the delta never reached.
+    fn subsumed_label_result(
+        &self,
+        label: taskboard_domain::LabelId,
+        failed: Option<(u64, &PushResult)>,
+        settled: &std::collections::BTreeSet<u64>,
+    ) -> Option<PushResult> {
+        let Some(num) = self.overlay.label_by_local.get(&label).map(|n| n.get()) else {
+            return Some(PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::LocalData,
+            });
+        };
+        if let Some((failed_num, result)) = failed
+            && failed_num == num
+        {
+            return Some(result.clone());
+        }
+        if failed.is_none() || settled.contains(&num) {
+            return Some(PushResult::Applied { echo: None });
+        }
+        None // never reached before the failure
+    }
+
+    /// The shared subsumed-op emission site: one outcome per subsumed
+    /// op that can ride a task group, with label ops decided by
+    /// `label_result` (`None` omits — stays queued). Updates/moves rode
+    /// the PUT's field state and are always `Applied { echo: None }`.
+    fn subsumed_task_outcomes(
+        group: &PushGroup,
+        outbox: &[PendingOp],
+        label_result: &dyn Fn(taskboard_domain::LabelId) -> Option<PushResult>,
+    ) -> Vec<PushOutcome> {
+        let mut outcomes = Vec::new();
+        for op_id in &group.subsumed {
+            let Some(op) = outbox.iter().find(|entry| &entry.op_id == op_id) else {
+                continue;
+            };
+            if cannot_ride_a_task_group(&op.op) {
+                continue;
+            }
+            match op.op {
+                LocalOp::AssignLabel(_, label) | LocalOp::UnassignLabel(_, label) => {
+                    if let Some(result) = label_result(label) {
+                        outcomes.push(PushOutcome { op: *op_id, result });
+                    }
+                }
+                // Updates/moves rode the PUT's field state.
+                LocalOp::UpdateTask(_) | LocalOp::MoveTask(_) => {
+                    outcomes.push(PushOutcome {
+                        op: *op_id,
+                        result: PushResult::Applied { echo: None },
+                    });
+                }
+                // `cannot_ride_a_task_group` already continued; nothing
+                // else can reach the match.
+                _ => {}
+            }
+        }
+        outcomes
+    }
+
+    /// Classify-or-emit tail shared by the label-delta sub-endpoints
+    /// (assign/remove). A *classified* failure of the write for remote
+    /// number `failed_num` reports the fields' PUT as landed — its echo
+    /// is authoritative for the primary — and emits one outcome per
+    /// subsumed op by its own class: ops whose write landed (or already
+    /// matched in `settled`) are `Applied`, an unresolvable label
+    /// rejects `LocalData`, the failing label's ops carry the
+    /// classified result per-op, and ops the delta never reached are
+    /// omitted — they stay queued and retry next cycle. A
+    /// transport-class failure aborts the cycle with nothing reported:
+    /// the PUT was a full-send of fields that stay unchanged across the
+    /// retry, so re-sending the whole group is safe.
+    #[allow(clippy::too_many_arguments)] // the delta's full failure context
     fn label_delta_failure(
+        &self,
         group: &PushGroup,
         updated: &Card,
         board: RemoteBoardId,
         err: &DeckError,
+        failed_num: u64,
+        settled: &std::collections::BTreeSet<u64>,
+        outbox: &[PendingOp],
     ) -> GroupOutcome {
-        if mapping::classify_push(
+        let Some(classified) = mapping::classify_push(
             err,
             PushCtx {
                 existing: true,
                 delete: false,
             },
-        )
-        .is_some()
-        {
-            return GroupOutcome::Outcomes(primary_outcome(
-                group,
-                PushResult::Applied {
-                    echo: Some(mapping::map_echo(updated, board)),
-                },
-            ));
-        }
-        tracing::warn!(error = %err, "push aborted: transport failure");
-        GroupOutcome::Aborted { landed: Vec::new() }
+        ) else {
+            tracing::warn!(error = %err, "push aborted: transport failure");
+            return GroupOutcome::Aborted { landed: Vec::new() };
+        };
+        let mut outcomes = vec![PushOutcome {
+            op: group.primary,
+            result: PushResult::Applied {
+                echo: Some(mapping::map_echo(updated, board)),
+            },
+        }];
+        let failed = Some((failed_num, &classified));
+        outcomes.extend(Self::subsumed_task_outcomes(group, outbox, &|label| {
+            self.subsumed_label_result(label, failed, settled)
+        }));
+        GroupOutcome::Outcomes(outcomes)
     }
 }

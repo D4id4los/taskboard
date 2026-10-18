@@ -10,7 +10,7 @@ use taskboard_domain::{
 };
 
 use uuid::Uuid;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::client::DeckClient;
@@ -788,6 +788,519 @@ async fn update_completes_subsumed_label_ops_by_resolvability() {
             }
         ),
         "the unresolvable label op must not be shadowed"
+    );
+}
+
+/// A fetched card variant carrying label ids (bare ints on the wire).
+fn labelled_card_json(id: u64, stack_id: u64, order: i64, labels: &[u64]) -> String {
+    serde_json::json!({
+        "id": id, "title": "old", "stackId": stack_id, "type": "plain",
+        "order": order, "labels": labels, "archived": false,
+        "duedate": null, "done": null
+    })
+    .to_string()
+}
+
+/// T1: a 403 on one `assignLabel` sub-call completes each subsumed op
+/// by its own class (issue #314, F1): the primary stays `Applied`
+/// (the fields PUT landed), the label op that succeeded is `Applied`,
+/// the failing label's op carries the classified `Rejected
+/// { Forbidden }`, and updates/moves keep their synthetic `Applied`.
+#[tokio::test]
+async fn update_assign_rejection_completes_ops_per_class() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/assignLabel",
+        ))
+        .and(body_partial_json(serde_json::json!({"labelId": 2})))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/assignLabel",
+        ))
+        .and(body_partial_json(serde_json::json!({"labelId": 3})))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[(6, 2), (7, 3)]),
+    );
+    let mut shape = edited_shape();
+    shape.labels = std::collections::BTreeSet::from([label_id(6), label_id(7)]);
+    let outbox = [
+        op(101, LocalOp::AssignLabel(task_id(10), label_id(6))),
+        op(102, LocalOp::AssignLabel(task_id(10), label_id(7))),
+        op(103, LocalOp::UpdateTask(task_id(10))),
+        op(104, LocalOp::MoveTask(task_id(10))),
+    ];
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::UpdateTask {
+                    task: task_id(10),
+                    card: shape,
+                },
+                taskboard_domain::PushTarget::Task(task_id(10)),
+                &[101, 102, 103, 104],
+            ),
+            &outbox,
+            empty_tables(),
+        )
+        .await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    assert_eq!(outcomes.len(), 5, "one outcome per op, no omissions");
+    assert_eq!(outcomes[0].op, taskboard_domain::OpId(uid(100)));
+    assert!(
+        matches!(outcomes[0].result, PushResult::Applied { echo: Some(_) }),
+        "the fields PUT landed, so the primary is Applied with its echo"
+    );
+    assert_eq!(outcomes[1].op, taskboard_domain::OpId(uid(101)));
+    assert!(matches!(
+        outcomes[1].result,
+        PushResult::Applied { echo: None }
+    ));
+    assert_eq!(outcomes[2].op, taskboard_domain::OpId(uid(102)));
+    assert!(
+        matches!(
+            outcomes[2].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::Forbidden
+            }
+        ),
+        "the failing label op carries its own classification, not Applied: {:?}",
+        outcomes[2].result
+    );
+    assert!(matches!(
+        outcomes[3].result,
+        PushResult::Applied { echo: None }
+    ));
+    assert!(matches!(
+        outcomes[4].result,
+        PushResult::Applied { echo: None }
+    ));
+}
+
+/// T2: a 404 on an `assignLabel` sub-call classifies `RemoteMissing`
+/// for *the label op alone* (issue #314, F4) — the primary keeps its
+/// `Applied { echo }` so the task is never tombstone-fuelled by a
+/// label-level failure.
+#[tokio::test]
+async fn update_assign_404_routes_remote_missing_to_the_label_op_not_the_primary() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/assignLabel",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 2)]));
+    let mut shape = edited_shape();
+    shape.labels = std::collections::BTreeSet::from([label_id(6)]);
+    let outbox = [op(101, LocalOp::AssignLabel(task_id(10), label_id(6)))];
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::UpdateTask {
+                    task: task_id(10),
+                    card: shape,
+                },
+                taskboard_domain::PushTarget::Task(task_id(10)),
+                &[101],
+            ),
+            &outbox,
+            empty_tables(),
+        )
+        .await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    assert_eq!(outcomes.len(), 2);
+    assert!(
+        matches!(outcomes[0].result, PushResult::Applied { echo: Some(_) }),
+        "the primary must never inherit a label-level RemoteMissing"
+    );
+    assert!(matches!(outcomes[1].result, PushResult::RemoteMissing));
+}
+
+/// T3: the same per-op classes on the `removeLabel` arm (issue #314,
+/// F5) — a 403 on one removal leaves that label's op `Rejected
+/// { Forbidden }` while the removed-earlier one is `Applied`.
+#[tokio::test]
+async fn update_remove_rejection_completes_ops_per_class() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(labelled_card_json(55, 7, 3, &[3, 4])),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(labelled_card_json(55, 7, 3, &[3, 4])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/removeLabel",
+        ))
+        .and(body_partial_json(serde_json::json!({"labelId": 3})))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/removeLabel",
+        ))
+        .and(body_partial_json(serde_json::json!({"labelId": 4})))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[(11, 3), (12, 4)]),
+    );
+    let mut shape = edited_shape();
+    shape.labels = std::collections::BTreeSet::new();
+    let outbox = [
+        op(101, LocalOp::UnassignLabel(task_id(10), label_id(11))),
+        op(102, LocalOp::UnassignLabel(task_id(10), label_id(12))),
+        op(103, LocalOp::UpdateTask(task_id(10))),
+    ];
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::UpdateTask {
+                    task: task_id(10),
+                    card: shape,
+                },
+                taskboard_domain::PushTarget::Task(task_id(10)),
+                &[101, 102, 103],
+            ),
+            &outbox,
+            empty_tables(),
+        )
+        .await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    assert_eq!(outcomes.len(), 4);
+    assert!(matches!(
+        outcomes[0].result,
+        PushResult::Applied { echo: Some(_) }
+    ));
+    assert!(matches!(
+        outcomes[1].result,
+        PushResult::Applied { echo: None }
+    ));
+    assert!(
+        matches!(
+            outcomes[2].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::Forbidden
+            }
+        ),
+        "the failing removal's op carries the classification: {:?}",
+        outcomes[2].result
+    );
+    assert!(matches!(
+        outcomes[3].result,
+        PushResult::Applied { echo: None }
+    ));
+}
+
+/// T4: an unresolvable label's `Rejected { LocalData }` survives a
+/// classified rejection on the same delta (issue #314, F2 — the #310
+/// semantics must hold on the failure path too).
+#[tokio::test]
+async fn update_rejection_does_not_shadow_unresolvable_label_ops() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/assignLabel",
+        ))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+    let mut shape = edited_shape();
+    shape.labels = std::collections::BTreeSet::from([label_id(6), label_id(9)]);
+    let outbox = [op(101, LocalOp::AssignLabel(task_id(10), label_id(9)))];
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::UpdateTask {
+                    task: task_id(10),
+                    card: shape,
+                },
+                taskboard_domain::PushTarget::Task(task_id(10)),
+                &[101],
+            ),
+            &outbox,
+            empty_tables(),
+        )
+        .await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    assert_eq!(outcomes.len(), 2);
+    assert!(matches!(
+        outcomes[0].result,
+        PushResult::Applied { echo: Some(_) }
+    ));
+    assert!(
+        matches!(
+            outcomes[1].result,
+            PushResult::Rejected {
+                kind: taskboard_domain::SyncErrorKind::LocalData
+            }
+        ),
+        "the unresolvable label op keeps its LocalData rejection: {:?}",
+        outcomes[1].result
+    );
+}
+
+/// T5: label ops the failing delta never reached (a later assign, and
+/// any remove) are *omitted* from the report — they stay queued and
+/// retry next cycle (issue #314, decision D1a).
+#[tokio::test]
+async fn update_rejection_leaves_unreached_label_ops_queued() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(labelled_card_json(55, 7, 3, &[4])),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(labelled_card_json(55, 7, 3, &[4])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/assignLabel",
+        ))
+        .and(body_partial_json(serde_json::json!({"labelId": 2})))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/assignLabel",
+        ))
+        .and(body_partial_json(serde_json::json!({"labelId": 3})))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[(6, 2), (7, 3), (8, 5), (9, 4)]),
+    );
+    let mut shape = edited_shape();
+    shape.labels = std::collections::BTreeSet::from([label_id(6), label_id(7), label_id(8)]);
+    let outbox = [
+        op(101, LocalOp::AssignLabel(task_id(10), label_id(6))),
+        op(102, LocalOp::AssignLabel(task_id(10), label_id(7))),
+        op(103, LocalOp::AssignLabel(task_id(10), label_id(8))),
+        op(104, LocalOp::UnassignLabel(task_id(10), label_id(9))),
+    ];
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::UpdateTask {
+                    task: task_id(10),
+                    card: shape,
+                },
+                taskboard_domain::PushTarget::Task(task_id(10)),
+                &[101, 102, 103, 104],
+            ),
+            &outbox,
+            empty_tables(),
+        )
+        .await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    // Primary + the two label ops the delta actually reached; ops 103
+    // (assign, never attempted) and 104 (remove phase never ran) stay
+    // queued — absent from the report.
+    assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+    assert!(
+        !outcomes
+            .iter()
+            .any(|o| o.op == taskboard_domain::OpId(uid(103)))
+    );
+    assert!(
+        !outcomes
+            .iter()
+            .any(|o| o.op == taskboard_domain::OpId(uid(104)))
+    );
+    assert!(matches!(
+        outcomes[0].result,
+        PushResult::Applied { echo: Some(_) }
+    ));
+    assert!(matches!(
+        outcomes[1].result,
+        PushResult::Applied { echo: None }
+    ));
+    assert!(matches!(
+        outcomes[2].result,
+        PushResult::Rejected {
+            kind: taskboard_domain::SyncErrorKind::Forbidden
+        }
+    ));
+}
+
+/// T6: a transport-class failure on a label sub-call aborts the cycle
+/// with no landed evidence — the PUT is an idempotent full-send, so
+/// re-sending the whole group is safe (the preserved arm, D1).
+#[tokio::test]
+async fn label_delta_transport_failure_aborts_the_cycle() {
+    // Raw TCP server: the first two requests (the pre-flight GET, then
+    // the fields PUT) get real HTTP 200 card responses; every later
+    // connection is accepted and dropped, so the `assignLabel` fails
+    // transport-class.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            serve_one_card(stream);
+        }
+        if let Ok((stream, _)) = listener.accept() {
+            serve_one_card(stream);
+        }
+        for _ in 0..8 {
+            if listener.accept().is_err() {
+                break;
+            }
+        }
+    });
+
+    let client = DeckClient::new(&format!("http://{addr}"), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+    let mut shape = edited_shape();
+    shape.labels = std::collections::BTreeSet::from([label_id(6)]);
+    let outbox = [op(101, LocalOp::AssignLabel(task_id(10), label_id(6)))];
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::UpdateTask {
+                    task: task_id(10),
+                    card: shape,
+                },
+                taskboard_domain::PushTarget::Task(task_id(10)),
+                &[101],
+            ),
+            &outbox,
+            empty_tables(),
+        )
+        .await;
+
+    assert!(
+        matches!(outcome, GroupOutcome::Aborted { ref landed } if landed.is_empty()),
+        "a transport-class label failure aborts with nothing landed: {outcome:?}"
     );
 }
 
@@ -2456,6 +2969,45 @@ fn serve_one_create(mut stream: std::net::TcpStream) {
         }
     }
     let body = card_json(55, 7, 0);
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.flush();
+}
+
+/// Writes one minimal HTTP/1.1 response carrying the card JSON, then
+/// closes the connection (`Connection: close` forces the next request
+/// onto a fresh connection) — the two-response variant of
+/// `serve_one_create`, for tests that drive one GET and one PUT before
+/// the failure under test.
+fn serve_one_card(mut stream: std::net::TcpStream) {
+    use std::io::{Read, Write};
+    let mut buf = [0_u8; 4096];
+    let mut request = Vec::new();
+    loop {
+        let Ok(n) = stream.read(&mut buf) else { return };
+        if n == 0 {
+            return;
+        }
+        request.extend_from_slice(&buf[..n]);
+        let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]).to_lowercase();
+        let length: usize = headers
+            .lines()
+            .find_map(|l| l.strip_prefix("content-length:"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+        if request.len() >= header_end + 4 + length {
+            break;
+        }
+    }
+    let body = card_json(55, 7, 3);
     let _ = write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
