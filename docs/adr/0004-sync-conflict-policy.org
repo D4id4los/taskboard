@@ -161,3 +161,52 @@ landing between our read and our push wins after the op drains — the
 same whole-entity remote-wins every other board field already accepts
 (the "field-level merge refinement" backlog entry owns the general
 refinement).
+
+* Amendment 2026-10-18 — boards complete the per-field merge (chunk 15)
+
+The 2026-10-11 title amendment generalizes to *all four board fields*:
+=BoardClocks = { title, color, archived, deleted }= (#132/#177), and
+=merge_board= keeps the local value per field while
+=remote.last_modified <= field_clock= — remote wins strictly, per
+field, exactly like stacks and labels. Details:
+
+- The four local verbs stamp only their own clock: =SetBoardColor= →
+  =clocks.color=, =SetBoardArchived= → =clocks.archived=,
+  =DeleteBoard= → =clocks.deleted=; the edit verbs converge on one
+  full-send op, =LocalOp::UpdateBoard= (renamed from =RenameBoard= to
+  tell the full-send truth; the storage tag backfills =rename_board=
+  → =update_board= in migration 0005 — one representation, no alias).
+  =MaterializedOp::UpdateBoard= keeps the bound+live gate;
+  =MaterializedOp::DeleteBoard= is delete-dominant like stacks and
+  subsumes the board's other queued ops.
+- *Tombstone defense:* =deleted= merges field-wise like the others,
+  and the tombstone never clears without an explicit restore verb
+  (none exists): a pulled live board does *not* resurrect a
+  locally-deleted board whose =clocks.deleted >= remote.last_modified=.
+  A remote edit strictly newer than our tombstone adopts the remote
+  *fields* but the board stays deleted until restore lands.
+- Echo: =adopt_board_after_push= advances every clock to
+  =max(local, echo.last_modified)=. Delete pushes finalize through a
+  separate helper, =adopt_board_after_delete_push=: the tombstone is
+  kept (=deleted: true=, deleted clock advanced), the binding is
+  cleared, =remote_seen= moves to the echo stamp. The non-delete
+  helper hard-codes =deleted: false= and must not be reused for
+  deletes.
+- *Reset is local-only.* =ResetBoard= clears a board's content,
+  outbox, reminder facts, and — mandatorily — its *sync validators*:
+  with warm validators the next conditional pull could answer 304 and
+  the reset would silently not re-materialize. Clearing the validators
+  forces an unconditional refetch; a bound board re-adopts from the
+  next pull under fresh local ids. Nothing about a reset is pushed —
+  pushing tombstones would destroy remote content, which is
+  =DeleteBoard='s job.
+- Board deletes cascade locally at command time (stacks, tasks,
+  labels, per-task reminder rules) and cancel — never push — the
+  children's pending ops (Deck cascades server-side; per-child pushes
+  would chase 404s). Binding survives on the tombstone until the push
+  confirms.
+- The entity-granularity hazard is unchanged and now wider: a
+  full-send =UpdateBoard= PUT can overwrite a concurrent remote edit
+  to a *different* field that lands inside our pull→push window, for
+  any of the four fields. Same documented Deck limitation as before —
+  the "field-level merge refinement" backlog entry owns it.
