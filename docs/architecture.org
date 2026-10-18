@@ -320,7 +320,10 @@ dependency hierarchies.
    =ui= (ADR 0015): the GUI lifecycle — D4 bare-invocation routing
    (=mode = "desktop"= boots the Slint GUI regardless of TTY;
    =AppMode= is frontend selection, so only =Daemon=+TTY falls to
-   the REPL; otherwise the daemon lifecycle), the UI-command
+   the REPL; a non-TTY =Daemon= launch inside a graphical session
+   (display env present — ADR 0015 amendment) boots the GUI instead
+   of a silent headless daemon; otherwise the daemon lifecycle), the
+   UI-command
    forwarder (=spawn_ui_command_forwarder= over the =CommandSink=
    trait), and =resolve_ui_settings= (the figment =[ui]= table into
    typed =UiSettings=; keymap findings surface as startup warnings

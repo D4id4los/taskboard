@@ -10,6 +10,12 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Changed
+- A bare `taskboard` launch in `daemon` mode (the default) without a
+  terminal but with a graphical session (a file-manager double-click)
+  now boots the desktop UI instead of silently starting a headless
+  daemon; ssh/systemd/cron contexts (no TTY, no display) keep the
+  daemon lifecycle, and the explicit `daemon` subcommand stays the
+  headless entry (#236).
 - The engine inbox envelope enum re-exported by `taskboard-state` is
   renamed to `EngineEnvelope` — a mechanical rename so the type name
   matches the payload/envelope vocabulary the docs already use; no

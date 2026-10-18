@@ -102,3 +102,46 @@ intended, so the note above is historical record only.
   image. Skia/femtovg remain the desktop-GPU choices. Choosing the
   default features in decision 6 is what makes this fallback work;
   =backend-linuxkms= stays deferred to a real kiosk target.
+
+* Amendment 2026-10-18: bare-launch display gate (#236)
+
+Double-clicking the release binary in a file manager silently started
+a headless daemon: the archive ships no config, so =daemon= mode
+resolved by default, a file-manager launch has no TTY on stdin, and
+the bare-invocation routing sent non-TTY daemon mode to the daemon
+lifecycle — an IPC daemon with no window and all output on discarded
+stderr. The routing now splits that cell by display presence:
+
+| mode    | TTY | display | route           |
+|---------+-----+---------+-----------------|
+| desktop | any | any     | =DesktopUi=     |
+| daemon  | yes | any     | =Repl=          |
+| daemon  | no  | yes     | =DesktopUi=     |
+| daemon  | no  | no      | =DaemonLifecycle= |
+| kiosk   | any | any     | =DaemonLifecycle= |
+
+*Signal*: =WAYLAND_DISPLAY= or =DISPLAY= set and non-empty
+(=ui::display_available=, pure; the env wrapper is untested glue).
+TTY alone cannot tell a file-manager launch from ssh; display alone
+cannot tell a terminal from a double-click; together they separate
+the contexts with no platform-specific process introspection.
+Rejected alternatives: parent-process class (Linux-only =/proc=,
+spoofable, per-OS mechanisms) and launch-marker env vars
+(desktop-specific, inconsistently set).
+
+*Interplay with the kiosk design (#237)*: nothing moves — the
+daemon-owned core, IPC server, =daemon= verb, and mode gate are
+untouched; =taskboard daemon= stays the explicit headless entry, and
+systemd units must keep using it (a user unit importing a graphical
+environment would otherwise flip to the GUI). A display forwarded
+over =ssh -X= counts as a display context and attempts the GUI. A
+display variable that outlives its server fails loud and typed at
+window mount (exit non-zero, visible stderr) rather than hanging
+silently; the gate→mount race (display vanishing in between) is
+tolerated, mirroring the kiosk wave's identical tolerance.
+
+*Limitation*: Windows double-clicks spawn a fresh conhost, so stdin
+*is* a TTY and the REPL opens in a visible console window — not the
+silent-daemon trap, but not the GUI; the env-based signal has no
+Windows equivalent. The proper fix (explicit =gui= verb + launcher
+packaging) is the kiosk wave's scope.

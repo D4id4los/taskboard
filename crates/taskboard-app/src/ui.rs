@@ -67,19 +67,53 @@ pub enum BareRoute {
     DesktopUi,
     /// TTY + daemon mode: the REPL session (ADR 0011).
     Repl,
-    /// Non-TTY daemon mode (or the TTY-less REPL refusal, resolved by
-    /// `repl::entry_point`): the daemon lifecycle.
+    /// Non-TTY daemon mode with no display either (systemd, ssh, cron
+    /// — or the TTY-less REPL refusal, resolved by `repl::entry_point`):
+    /// the daemon lifecycle.
     DaemonLifecycle,
+}
+
+/// Whether a graphical session context exists, from the two session
+/// environment variables. A variable that is set but *empty* is a
+/// broken-session artifact and counts as absent. Pure so the #236
+/// detection rule is testable without a display (and so the kiosk
+/// wave's display gate can consume the same fn).
+#[must_use]
+pub fn display_available(wayland: Option<&str>, x11: Option<&str>) -> bool {
+    wayland.is_some_and(|v| !v.is_empty()) || x11.is_some_and(|v| !v.is_empty())
+}
+
+/// Trivial env glue over [`display_available`]: reads
+/// `WAYLAND_DISPLAY`/`DISPLAY`. Untested per the main-glue convention.
+/// Pub because the binary's bare-invocation wiring is the caller.
+#[must_use]
+pub fn display_env_available() -> bool {
+    display_available(
+        std::env::var_os("WAYLAND_DISPLAY")
+            .as_deref()
+            .and_then(|v| v.to_str()),
+        std::env::var_os("DISPLAY")
+            .as_deref()
+            .and_then(|v| v.to_str()),
+    )
 }
 
 /// The pure D4 mode→route mapping, extracted so the behaviour change
 /// (bare+TTY `desktop` now GUIs instead of opening a REPL) is
 /// unit-testable without a display.
+///
+/// Daemon mode without a TTY splits by display presence (#236): a
+/// file-manager launch inherits the graphical session's display
+/// variables and boots the desktop UI instead of silently starting a
+/// headless daemon; ssh/systemd/cron (no TTY, no display) keep the
+/// daemon lifecycle, and the explicit `daemon` subcommand stays the
+/// documented headless entry for sessions that do import a display.
 #[must_use]
-pub fn bare_invocation_route(mode: crate::config::AppMode, tty: bool) -> BareRoute {
+pub fn bare_invocation_route(mode: crate::config::AppMode, tty: bool, display: bool) -> BareRoute {
     match mode {
         crate::config::AppMode::Desktop => BareRoute::DesktopUi,
         crate::config::AppMode::Daemon if tty => BareRoute::Repl,
+        crate::config::AppMode::Daemon if display => BareRoute::DesktopUi,
         crate::config::AppMode::Kiosk | crate::config::AppMode::Daemon => {
             BareRoute::DaemonLifecycle
         }
@@ -266,35 +300,65 @@ mod tests {
         assert_eq!(collected, commands, "exact sequence, order preserved");
     }
 
-    /// The pure D4 routing (test 17): `desktop` routes to the UI
-    /// lifecycle regardless of TTY — the recorded behaviour change;
-    /// `daemon` keeps the TTY-sensitive REPL rule.
+    /// The pure D4 routing: `desktop` routes to the UI lifecycle
+    /// regardless of TTY; `daemon` keeps the TTY-sensitive REPL rule
+    /// and splits the non-TTY cell by display presence (#236 — a
+    /// file-manager launch boots the GUI, ssh/systemd/cron stay
+    /// headless); `kiosk` stays refused downstream (the
+    /// daemon-lifecycle gate).
     #[test]
     fn bare_invocation_routing_maps_modes_per_d4() {
         use crate::config::AppMode;
+        // Desktop is display-blind and TTY-blind (D4).
+        for tty in [true, false] {
+            for display in [true, false] {
+                assert_eq!(
+                    bare_invocation_route(AppMode::Desktop, tty, display),
+                    BareRoute::DesktopUi
+                );
+            }
+        }
+        // Daemon + TTY is the REPL under either display value.
+        for display in [true, false] {
+            assert_eq!(
+                bare_invocation_route(AppMode::Daemon, true, display),
+                BareRoute::Repl
+            );
+        }
+        // The #236 fix: non-TTY daemon with a graphical session boots
+        // the GUI instead of a silent headless daemon.
         assert_eq!(
-            bare_invocation_route(AppMode::Desktop, true),
-            BareRoute::DesktopUi,
-            "bare+TTY desktop GUIs (D4 behaviour change)"
-        );
-        assert_eq!(
-            bare_invocation_route(AppMode::Desktop, false),
+            bare_invocation_route(AppMode::Daemon, false, true),
             BareRoute::DesktopUi
         );
+        // Non-TTY daemon without a display stays the daemon lifecycle
+        // (systemd, ssh, cron).
         assert_eq!(
-            bare_invocation_route(AppMode::Daemon, true),
-            BareRoute::Repl
-        );
-        assert_eq!(
-            bare_invocation_route(AppMode::Daemon, false),
+            bare_invocation_route(AppMode::Daemon, false, false),
             BareRoute::DaemonLifecycle
         );
-        // Kiosk stays refused downstream (the daemon-lifecycle gate);
-        // it never routes to the UI in v0.1.0.
-        assert_eq!(
-            bare_invocation_route(AppMode::Kiosk, true),
-            BareRoute::DaemonLifecycle
-        );
+        // Kiosk never routes to the UI in v0.1.0; the daemon
+        // lifecycle's own mode gate refuses it.
+        for tty in [true, false] {
+            for display in [true, false] {
+                assert_eq!(
+                    bare_invocation_route(AppMode::Kiosk, tty, display),
+                    BareRoute::DaemonLifecycle
+                );
+            }
+        }
+    }
+
+    /// The #236 detection rule: a graphical session exists when either
+    /// session variable is set non-empty; empty or absent counts as no
+    /// display (broken-session artifact).
+    #[test]
+    fn display_available_needs_one_non_empty_session_var() {
+        assert!(display_available(Some("wayland-0"), None));
+        assert!(display_available(None, Some(":0")));
+        assert!(display_available(Some(""), Some(":0")));
+        assert!(!display_available(Some(""), Some("")));
+        assert!(!display_available(None, None));
     }
 
     #[tokio::test]
