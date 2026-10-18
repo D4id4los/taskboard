@@ -9,6 +9,20 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ## [Unreleased]
 
+### Added
+- Local board editing: `boards color <hex>`, `boards archive`,
+  `boards unarchive`, `boards delete [--confirm]`, and
+  `boards reset [--confirm]` (#132, #171, #177). Edits stamp per-field
+  clocks and sync through the existing full-send board PUT; delete
+  cascades locally and pushes one board delete; reset is a local-only
+  repair that also clears sync validators so the next pull
+  re-materializes. The destructive verbs ask for `--confirm` and
+  print what would be destroyed otherwise.
+- GUI stack creation on the live board (#304): a "New stack" action
+  (standard preset `S`, vi preset `O`) opens the inline create row on
+  an empty or populated board and appends the stack after the
+  existing ones.
+
 ### Changed
 - A bare `taskboard` launch in `daemon` mode (the default) without a
   terminal but with a graphical session (a file-manager double-click)
