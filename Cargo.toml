@@ -113,6 +113,15 @@ insta = { version = "1", features = ["yaml"] }
 # `cargo bench` integration and must be requested explicitly.
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
+[profile.dev]
+# Disk hygiene (2026-10-18 disk-usage report R4): full debuginfo made
+# each agent worktree's target/debug 23-30G (debuginfo-dominated;
+# report: .artifacts/reports/2026-10-18-agent-worktree-disk-usage-report.md).
+# Line-tables-only roughly halves that while keeping backtraces'
+# file:line; the trade is losing variable inspection in debuggers.
+# Release builds and coverage instrumentation are unaffected.
+debug = "line-tables-only"
+
 [profile.release]
 # The kiosk targets low-power hardware: optimize for size + runtime, not build time.
 lto = "thin"
