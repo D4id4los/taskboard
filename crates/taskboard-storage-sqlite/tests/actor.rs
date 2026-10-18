@@ -18,6 +18,9 @@ fn board_action(n: u128) -> PersistenceAction {
         deleted: false,
         clocks: taskboard_domain::entities::BoardClocks {
             title: taskboard_domain::entities::BoardClocks::epoch(),
+            color: taskboard_domain::entities::BoardClocks::epoch(),
+            archived: taskboard_domain::entities::BoardClocks::epoch(),
+            deleted: taskboard_domain::entities::BoardClocks::epoch(),
         },
         remote_seen: None,
     })

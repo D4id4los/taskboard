@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM tasks\n               WHERE id IN (SELECT t.id FROM tasks t\n                            JOIN stacks s ON t.stack = s.id\n                            WHERE s.board = ?1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "d66f835b30358200807dddedccb3be7f5e6442f4789578431b0002e4fdaa14e9"
+}

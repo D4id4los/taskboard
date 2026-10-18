@@ -80,7 +80,12 @@ fn board(id: BoardId) -> Board {
         color: Color::new(""),
         archived: false,
         deleted: false,
-        clocks: BoardClocks { title: epoch() },
+        clocks: BoardClocks {
+            title: epoch(),
+            color: taskboard_domain::BoardClocks::epoch(),
+            archived: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
         remote_seen: None,
     }
 }

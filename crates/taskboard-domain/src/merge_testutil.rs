@@ -134,7 +134,12 @@ pub(crate) fn base_board() -> Board {
         color: Color::new("ff0000"),
         archived: false,
         deleted: false,
-        clocks: crate::entities::BoardClocks { title: ts(BASE) },
+        clocks: crate::entities::BoardClocks {
+            title: ts(BASE),
+            color: ts(BASE),
+            archived: ts(BASE),
+            deleted: ts(BASE),
+        },
         remote_seen: Some(ts(BASE)),
     }
 }
@@ -151,7 +156,12 @@ pub(crate) fn base_state(task: Task) -> AppState {
             color: Color::new("ff0000"),
             archived: false,
             deleted: false,
-            clocks: crate::entities::BoardClocks { title: ts(BASE) },
+            clocks: crate::entities::BoardClocks {
+                title: ts(BASE),
+                color: ts(BASE),
+                archived: ts(BASE),
+                deleted: ts(BASE),
+            },
             remote_seen: Some(ts(BASE)),
         },
     );

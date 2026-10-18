@@ -53,6 +53,9 @@ pub fn board(title: &str) -> Board {
         archived: false,
         deleted: false,
         clocks: taskboard_domain::BoardClocks {
+            color: taskboard_domain::BoardClocks::epoch(),
+            archived: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
             title: taskboard_domain::BoardClocks::epoch(),
         },
         remote_seen: None,

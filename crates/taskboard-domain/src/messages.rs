@@ -137,6 +137,31 @@ pub enum StateCommand {
         /// New title.
         title: String,
     },
+    /// Set the single live board's color (accepted no-op when unchanged;
+    /// pushes as a full-send when the board is bound).
+    SetBoardColor {
+        /// The new color (lenient domain value; boundary layers validate).
+        color: Color,
+    },
+    /// Archive or unarchive the single live board (one verb, both
+    /// directions; accepted no-op when unchanged). Archived boards stay
+    /// commandable. Pushes as a full-send when the board is bound.
+    SetBoardArchived {
+        /// `true` = archive, `false` = unarchive.
+        archived: bool,
+    },
+    /// Delete the single live board: a local tombstone ceremony that
+    /// cascades to its live stacks, tasks, and labels, cancels the
+    /// pending ops of the doomed entities, and queues one board-delete
+    /// op (uniformly, bound or not — the planner noop-completes an
+    /// unbound board's group). Repeat is an accepted no-op.
+    DeleteBoard,
+    /// Clear the single live board's local content (stacks, tasks,
+    /// labels, outbox entries, sync validators, reminder facts) in one
+    /// local-only repair action; the board row and the connect session
+    /// survive. A bound board re-materializes from the next pull under
+    /// fresh local ids. Already-empty is an accepted no-op.
+    ResetBoard,
     /// Snooze a fired reminder occurrence: reschedule it to
     /// `now + postpone` (engine-stamped via the injected clock). The
     /// occurrence is opaque link data — a stale link is inert by map

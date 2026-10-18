@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM sync_metadata\n               WHERE key = 'boards'\n                  OR key IN (SELECT 'stacks:' || remote_board_id FROM boards WHERE id = ?1)\n                  OR key IN (SELECT 'archived_stacks:' || remote_board_id FROM boards WHERE id = ?1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "82bc39f0633b99b2c3443641505d292cd218cf75802830559c0317f86f3cc6c1"
+}

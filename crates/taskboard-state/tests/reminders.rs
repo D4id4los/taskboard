@@ -96,6 +96,9 @@ fn seeded_task_state(duedate_secs: i64) -> (PersistedState, taskboard_domain::Ta
         deleted: false,
         clocks: taskboard_domain::BoardClocks {
             title: taskboard_domain::BoardClocks::epoch(),
+            color: taskboard_domain::BoardClocks::epoch(),
+            archived: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
         },
         remote_seen: None,
     };

@@ -583,8 +583,13 @@ pub fn plan_command(
                 color: color.clone(),
                 archived: false,
                 deleted: false,
-                // Board creation *is* a local title write.
-                clocks: crate::entities::BoardClocks { title: now },
+                // Board creation is a local write of every field.
+                clocks: crate::entities::BoardClocks {
+                    title: now,
+                    color: now,
+                    archived: now,
+                    deleted: now,
+                },
                 remote_seen: None,
             };
             // No outbox op: a local board creation is not a remote intent —
@@ -608,6 +613,210 @@ pub fn plan_command(
                     PersistenceAction::UpsertBoard(updated),
                     enqueue(LocalOp::UpdateBoard(board_id), ids, now),
                 ],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::SetBoardColor { color } => {
+            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+            let board = &app.boards[&board_id];
+            if board.color == *color {
+                return Ok(no_op());
+            }
+            let mut updated = board.clone();
+            updated.color = color.clone();
+            updated.clocks.color = now;
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertBoard(updated),
+                    enqueue(LocalOp::UpdateBoard(board_id), ids, now),
+                ],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::SetBoardArchived { archived } => {
+            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+            let board = &app.boards[&board_id];
+            if board.archived == *archived {
+                return Ok(no_op());
+            }
+            let mut updated = board.clone();
+            updated.archived = *archived;
+            updated.clocks.archived = now;
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertBoard(updated),
+                    enqueue(LocalOp::UpdateBoard(board_id), ids, now),
+                ],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::DeleteBoard => {
+            // Terminal intent: a repeat (a tombstoned board still exists)
+            // is an accepted no-op; only total absence is a rejection.
+            let Some(board_id) = live_board(app) else {
+                if app.boards.is_empty() {
+                    return Err(CommandError::NoBoard);
+                }
+                return Ok(no_op());
+            };
+            let mut actions = Vec::new();
+
+            // Tombstone with binding kept (R9c: the push clears it).
+            let board = &app.boards[&board_id];
+            let mut tombstoned = board.clone();
+            tombstoned.deleted = true;
+            tombstoned.clocks.deleted = now;
+            actions.push(PersistenceAction::UpsertBoard(tombstoned));
+
+            // Cascade (the remote R6 shape, applied at command time so the
+            // local view matches what the server will do): live stacks,
+            // their live tasks, and the board's live labels follow; the
+            // D-c reminder-rule cascade fires per task.
+            let doomed_stacks: Vec<StackId> = app
+                .stacks
+                .values()
+                .filter(|s| s.board == board_id && !s.deleted)
+                .map(|s| s.id)
+                .collect();
+            let doomed_tasks: Vec<TaskId> = app
+                .tasks
+                .values()
+                .filter(|t| t.is_live() && doomed_stacks.contains(&t.stack))
+                .map(|t| t.id)
+                .collect();
+            let doomed_labels: Vec<LabelId> = app
+                .labels
+                .values()
+                .filter(|l| l.board == board_id && !l.deleted)
+                .map(|l| l.id)
+                .collect();
+            for stack_id in &doomed_stacks {
+                let mut tombstoned = app.stacks[stack_id].clone();
+                tombstoned.deleted = true;
+                tombstoned.clocks.deleted = now;
+                actions.push(PersistenceAction::UpsertStack(tombstoned));
+            }
+            for task_id in &doomed_tasks {
+                let mut tombstoned = app.tasks[task_id].clone();
+                tombstoned.deleted = true;
+                tombstoned.clocks.deleted = now;
+                actions.push(PersistenceAction::UpsertTask(tombstoned));
+                actions.extend(task_rule_deletes(app, *task_id));
+            }
+            for label_id in &doomed_labels {
+                let mut tombstoned = app.labels[label_id].clone();
+                tombstoned.deleted = true;
+                tombstoned.clocks.deleted = now;
+                actions.push(PersistenceAction::UpsertLabel(tombstoned));
+            }
+
+            // The board DELETE cascades server-side; pushing per-child
+            // deletes would chase 404s through the board's corpse. Every
+            // queued op addressing the board or any of its children is
+            // cancelled instead (the pipeline's remote-death model).
+            let doomed_tasks: std::collections::BTreeSet<TaskId> =
+                doomed_tasks.into_iter().collect();
+            let doomed_stacks: std::collections::BTreeSet<StackId> =
+                doomed_stacks.into_iter().collect();
+            let doomed_labels: std::collections::BTreeSet<LabelId> =
+                doomed_labels.into_iter().collect();
+            actions.extend(
+                outbox
+                    .iter()
+                    .filter(|pending| match pending.op {
+                        LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => id == board_id,
+                        LocalOp::CreateTask(id)
+                        | LocalOp::UpdateTask(id)
+                        | LocalOp::MoveTask(id)
+                        | LocalOp::DeleteTask(id)
+                        | LocalOp::AssignLabel(id, _)
+                        | LocalOp::UnassignLabel(id, _) => doomed_tasks.contains(&id),
+                        LocalOp::CreateStack(id)
+                        | LocalOp::RenameStack(id)
+                        | LocalOp::MoveStack(id)
+                        | LocalOp::DeleteStack(id) => doomed_stacks.contains(&id),
+                        LocalOp::CreateLabel(id)
+                        | LocalOp::UpdateLabel(id)
+                        | LocalOp::DeleteLabel(id) => doomed_labels.contains(&id),
+                    })
+                    .map(|pending| PersistenceAction::FailOp(pending.op_id)),
+            );
+
+            // Exactly one wire intent, uniformly for bound and unbound
+            // boards (the planner noop-completes an unbound group).
+            actions.push(enqueue(LocalOp::DeleteBoard(board_id), ids, now));
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::ResetBoard => {
+            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+            // The already-empty probe: content, the board's queued ops,
+            // and its tasks' reminder facts. (Validators ride the bulk
+            // action unconditionally; with zero content there is nothing
+            // a 304 could serve stale.) Zero of all three means the
+            // repair has nothing to do (house rule: nothing changed,
+            // nothing persisted).
+            let board_stacks: std::collections::BTreeSet<StackId> = app
+                .stacks
+                .values()
+                .filter(|s| s.board == board_id)
+                .map(|s| s.id)
+                .collect();
+            let board_tasks: std::collections::BTreeSet<TaskId> = app
+                .tasks
+                .values()
+                .filter(|t| board_stacks.contains(&t.stack))
+                .map(|t| t.id)
+                .collect();
+            let board_labels: std::collections::BTreeSet<LabelId> = app
+                .labels
+                .values()
+                .filter(|l| l.board == board_id)
+                .map(|l| l.id)
+                .collect();
+            let board_ops = outbox.iter().any(|pending| match pending.op {
+                LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => id == board_id,
+                LocalOp::CreateTask(id)
+                | LocalOp::UpdateTask(id)
+                | LocalOp::MoveTask(id)
+                | LocalOp::DeleteTask(id)
+                | LocalOp::AssignLabel(id, _)
+                | LocalOp::UnassignLabel(id, _) => board_tasks.contains(&id),
+                LocalOp::CreateStack(id)
+                | LocalOp::RenameStack(id)
+                | LocalOp::MoveStack(id)
+                | LocalOp::DeleteStack(id) => board_stacks.contains(&id),
+                LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
+                    board_labels.contains(&id)
+                }
+            });
+            let board_reminders = app
+                .reminders
+                .rules
+                .values()
+                .any(|r| board_tasks.contains(&r.task))
+                || app.reminders.deliveries.iter().any(|d| match d.reminder {
+                    ReminderRef::Default(t) => board_tasks.contains(&t),
+                    // A surviving rule reference belongs to a live rule,
+                    // which the rules arm above already covers.
+                    ReminderRef::Rule(_) => false,
+                })
+                || board_tasks.iter().any(|t| app.reminders.muted.contains(t));
+            if board_stacks.is_empty()
+                && board_tasks.is_empty()
+                && board_labels.is_empty()
+                && !board_ops
+                && !board_reminders
+            {
+                return Ok(no_op());
+            }
+            // One bulk action: the row deletes are the repository's SQL
+            // (scoped by board id / subqueries); the board row, its
+            // binding, clocks, and the sync status survive.
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::ClearBoardContent(board_id)],
                 outcome: CommandOutcome::Applied,
             })
         }
@@ -872,6 +1081,9 @@ mod tests {
                     deleted: false,
                     clocks: crate::entities::BoardClocks {
                         title: crate::entities::BoardClocks::epoch(),
+                        color: crate::entities::BoardClocks::epoch(),
+                        archived: crate::entities::BoardClocks::epoch(),
+                        deleted: crate::entities::BoardClocks::epoch(),
                     },
                     remote_seen: None,
                 },
@@ -1978,6 +2190,9 @@ mod tests {
                     deleted: false,
                     clocks: crate::entities::BoardClocks {
                         title: crate::entities::BoardClocks::epoch(),
+                        color: crate::entities::BoardClocks::epoch(),
+                        archived: crate::entities::BoardClocks::epoch(),
+                        deleted: crate::entities::BoardClocks::epoch(),
                     },
                     remote_seen: None,
                 },
@@ -2022,7 +2237,12 @@ mod tests {
                 color: crate::entities::Color::new("3366cc"),
                 archived: false,
                 deleted: false,
-                clocks: crate::entities::BoardClocks { title: now() },
+                clocks: crate::entities::BoardClocks {
+                    title: now(),
+                    color: now(),
+                    archived: now(),
+                    deleted: now(),
+                },
                 remote_seen: None,
             })],
             "exactly the board upsert; no outbox op"
@@ -2110,6 +2330,369 @@ mod tests {
             Err(CommandError::BoardAlreadyBound(crate::ids::RemoteBoardId(
                 42
             )))
+        );
+    }
+
+    // ---- Board color / archive / delete / reset -------------------------
+
+    #[test]
+    fn set_board_color_stamps_only_the_color_clock_and_enqueues() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetBoardColor {
+                color: crate::entities::Color::new("00ff00"),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
+            panic!("first action must be the board upsert");
+        };
+        assert_eq!(updated.color.as_str(), "00ff00");
+        assert_eq!(updated.clocks.color, now());
+        assert_eq!(
+            updated.clocks.title,
+            crate::entities::BoardClocks::epoch(),
+            "a color edit must not clobber the title clock"
+        );
+        assert_eq!(
+            updated.clocks.archived,
+            crate::entities::BoardClocks::epoch(),
+            "the archived clock stands"
+        );
+        let PersistenceAction::EnqueueOp(pending) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert_eq!(
+            pending.op,
+            LocalOp::UpdateBoard(BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))))
+        );
+    }
+
+    #[test]
+    fn set_board_color_same_color_is_a_no_op() {
+        let (app, outbox) = base();
+        let color = app.boards.values().next().unwrap().color.clone();
+        let plan = run(&app, &outbox, &StateCommand::SetBoardColor { color }).unwrap();
+        assert_eq!(plan, no_op());
+    }
+
+    #[test]
+    fn set_board_color_without_a_live_board_is_no_board() {
+        let (mut app, outbox) = base();
+        app.boards.clear();
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::SetBoardColor {
+                    color: crate::entities::Color::new("00ff00"),
+                }
+            ),
+            Err(CommandError::NoBoard)
+        );
+
+        // A tombstoned board is not commandable either (the live-board
+        // guard filters deleted only — the edit-against-tombstone class).
+        let mut dead = base().0;
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let mut board = dead.boards[&board_id].clone();
+        board.deleted = true;
+        board.clocks.deleted = ts(T0 - 60);
+        dead.boards.insert(board_id, board);
+        assert_eq!(
+            run(
+                &dead,
+                &outbox,
+                &StateCommand::SetBoardColor {
+                    color: crate::entities::Color::new("00ff00"),
+                }
+            ),
+            Err(CommandError::NoBoard)
+        );
+    }
+
+    #[test]
+    fn set_board_archived_stamps_the_archived_clock_both_directions() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetBoardArchived { archived: true },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
+            panic!("first action must be the board upsert");
+        };
+        assert!(updated.archived);
+        assert_eq!(updated.clocks.archived, now());
+        assert_eq!(
+            updated.clocks.title,
+            crate::entities::BoardClocks::epoch(),
+            "title clock untouched"
+        );
+
+        // Unarchive on an archived board (archived boards stay
+        // commandable — `live_board` filters `deleted` only).
+        let mut archived = app;
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let mut board = archived.boards[&board_id].clone();
+        board.archived = true;
+        board.clocks.archived = ts(T0 - 60);
+        archived.boards.insert(board_id, board);
+        let plan = run(
+            &archived,
+            &outbox,
+            &StateCommand::SetBoardArchived { archived: false },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
+            panic!("first action must be the board upsert");
+        };
+        assert!(!updated.archived);
+        assert_eq!(updated.clocks.archived, now());
+
+        // A redundant repeat is an accepted no-op.
+        assert_eq!(
+            run(
+                &archived,
+                &outbox,
+                &StateCommand::SetBoardArchived { archived: true }
+            ),
+            Ok(no_op())
+        );
+    }
+
+    #[test]
+    fn an_archived_board_stays_commandable() {
+        let (mut app, outbox) = base();
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let mut board = app.boards[&board_id].clone();
+        board.archived = true;
+        board.clocks.archived = ts(T0 - 60);
+        app.boards.insert(board_id, board);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetBoardColor {
+                color: crate::entities::Color::new("123456"),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+    }
+
+    #[test]
+    fn delete_board_cascades_tombstones_and_cancels_pending_ops() {
+        let (app, _outbox) = base();
+        let second = stack(901, true);
+        let second_id = second.id;
+        let mut state = app;
+        state.stacks.insert(second_id, second);
+        let other = task(2, second_id, true);
+        let other_id = other.id;
+        state.tasks.insert(other_id, other);
+        let own_rule = reminder_rule(66, task_id());
+        state.reminders.rules.insert(own_rule.id, own_rule.clone());
+        let outbox = vec![
+            op_for(41, LocalOp::UpdateTask(task_id())),
+            op_for(42, LocalOp::CreateStack(second_id)),
+            op_for(
+                43,
+                LocalOp::UpdateBoard(BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)))),
+            ),
+        ];
+
+        let plan = run(&state, &outbox, &StateCommand::DeleteBoard).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let PersistenceAction::UpsertBoard(board_upsert) = &plan.actions[0] else {
+            panic!("first action must be the board tombstone");
+        };
+        assert!(board_upsert.deleted);
+        assert_eq!(board_upsert.clocks.deleted, now());
+        assert!(
+            board_upsert.remote.is_some(),
+            "binding kept until the push (R9c)"
+        );
+
+        let tombstoned_stacks: Vec<&Stack> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::UpsertStack(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tombstoned_stacks.len(), 2, "both live stacks cascade");
+        assert!(
+            tombstoned_stacks
+                .iter()
+                .all(|s| s.deleted && s.clocks.deleted == now())
+        );
+
+        let tombstoned_tasks: Vec<&Task> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::UpsertTask(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tombstoned_tasks.len(), 2, "both live tasks cascade");
+        assert!(tombstoned_tasks.iter().all(|t| t.deleted));
+
+        let rule_deletes: Vec<_> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::DeleteReminderRule(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rule_deletes,
+            vec![own_rule.id],
+            "the D-c cascade fires per task"
+        );
+
+        let failed: Vec<OpId> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::FailOp(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            failed,
+            vec![
+                OpId(uuid::Uuid::from_u128(41)),
+                OpId(uuid::Uuid::from_u128(42)),
+                OpId(uuid::Uuid::from_u128(43)),
+            ],
+            "every queued op of the board or its children is cancelled (no 404 chase)"
+        );
+
+        let enqueued: Vec<&LocalOp> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::EnqueueOp(op) => Some(&op.op),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            enqueued,
+            vec![&LocalOp::DeleteBoard(board_id)],
+            "exactly one wire intent"
+        );
+    }
+
+    #[test]
+    fn delete_board_repeat_is_a_no_op_and_absence_is_no_board() {
+        let (mut app, outbox) = base();
+        let plan = run(&app, &outbox, &StateCommand::DeleteBoard).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let mut board = app.boards[&board_id].clone();
+        board.deleted = true;
+        board.clocks.deleted = ts(T0 - 30);
+        app.boards.insert(board_id, board);
+        assert_eq!(run(&app, &outbox, &StateCommand::DeleteBoard), Ok(no_op()));
+
+        let mut empty = app;
+        empty.boards.clear();
+        assert_eq!(
+            run(&empty, &outbox, &StateCommand::DeleteBoard),
+            Err(CommandError::NoBoard)
+        );
+    }
+
+    #[test]
+    fn delete_board_on_an_unbound_board_still_queues_the_op() {
+        let app = unbound_board_state();
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let plan = run(&app, &[], &StateCommand::DeleteBoard).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::EnqueueOp(op) if op.op == LocalOp::DeleteBoard(board_id))),
+            "uniform wire intent; the planner noop-completes an unbound group"
+        );
+    }
+
+    #[test]
+    fn reset_board_is_one_bulk_action_without_a_board_upsert() {
+        let (app, _outbox) = base();
+        let mut state = app;
+        let own_rule = reminder_rule(67, task_id());
+        state.reminders.rules.insert(own_rule.id, own_rule.clone());
+        state.reminders.muted.insert(task_id());
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let outbox = vec![
+            op_for(51, LocalOp::UpdateTask(task_id())),
+            op_for(52, LocalOp::UpdateBoard(board_id)),
+        ];
+        let plan = run(&state, &outbox, &StateCommand::ResetBoard).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            plan.actions,
+            vec![PersistenceAction::ClearBoardContent(board_id)],
+            "exactly the bulk action; the board row (title, color, binding,
+             clocks, remote_seen) is untouched by design"
+        );
+    }
+
+    #[test]
+    fn reset_board_on_an_already_empty_board_is_a_no_op() {
+        // A live board with zero content, zero board-scoped ops, and zero
+        // reminder facts: nothing to repair.
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let app = AppState {
+            boards: [(
+                board_id,
+                crate::entities::Board {
+                    id: board_id,
+                    remote: Some(crate::ids::RemoteBoardId(77)),
+                    title: "board".into(),
+                    color: crate::entities::Color::new("0000ff"),
+                    archived: false,
+                    deleted: false,
+                    clocks: crate::entities::BoardClocks {
+                        title: crate::entities::BoardClocks::epoch(),
+                        color: crate::entities::BoardClocks::epoch(),
+                        archived: crate::entities::BoardClocks::epoch(),
+                        deleted: crate::entities::BoardClocks::epoch(),
+                    },
+                    remote_seen: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            stacks: std::collections::BTreeMap::new(),
+            tasks: std::collections::BTreeMap::new(),
+            labels: std::collections::BTreeMap::new(),
+            reminders: crate::reminders::ReminderState::default(),
+            sync: SyncStatus::default(),
+            last_updated: None,
+        };
+        assert_eq!(run(&app, &[], &StateCommand::ResetBoard), Ok(no_op()));
+    }
+
+    #[test]
+    fn reset_board_without_a_live_board_is_no_board() {
+        let (mut app, outbox) = base();
+        app.boards.clear();
+        assert_eq!(
+            run(&app, &outbox, &StateCommand::ResetBoard),
+            Err(CommandError::NoBoard)
         );
     }
 
@@ -2672,7 +3255,7 @@ mod proptests {
             LocalOp::AssignLabel(task, label) | LocalOp::UnassignLabel(task, label) => {
                 tasks.contains_key(task) && labels.contains_key(label)
             }
-            LocalOp::UpdateBoard(id) => boards.contains_key(id),
+            LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => boards.contains_key(id),
         }
     }
 

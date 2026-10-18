@@ -42,6 +42,9 @@ struct BoardRow {
     archived: bool,
     deleted: bool,
     ck_title: DateTime<Utc>,
+    ck_color: DateTime<Utc>,
+    ck_archived: DateTime<Utc>,
+    ck_deleted: DateTime<Utc>,
     remote_seen: Option<DateTime<Utc>>,
 }
 
@@ -186,6 +189,9 @@ fn decode_board(row: BoardRow) -> Result<Board, RepositoryError> {
         deleted: row.deleted,
         clocks: BoardClocks {
             title: row.ck_title,
+            color: row.ck_color,
+            archived: row.ck_archived,
+            deleted: row.ck_deleted,
         },
         remote_seen: row.remote_seen,
     })
@@ -417,6 +423,9 @@ impl SqliteTaskRepository {
             r#"SELECT id, remote_board_id, title, color,
                       archived as "archived: bool", deleted as "deleted: bool",
                       ck_title as "ck_title: DateTime<Utc>",
+                      ck_color as "ck_color: DateTime<Utc>",
+                      ck_archived as "ck_archived: DateTime<Utc>",
+                      ck_deleted as "ck_deleted: DateTime<Utc>",
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM boards ORDER BY id"#
         )
@@ -701,6 +710,7 @@ async fn execute_batch(
     let mut deliveries = Vec::new();
     let mut snoozes = Vec::new();
     let mut mute_toggles = Vec::new();
+    let mut clear_board_content = Vec::new();
     for action in actions {
         match action {
             PersistenceAction::UpsertBoard(board) => boards.push(board),
@@ -722,14 +732,17 @@ async fn execute_batch(
             PersistenceAction::SetTaskRemindersMuted(task, muted) => {
                 mute_toggles.push((task, muted));
             }
+            PersistenceAction::ClearBoardContent(board) => {
+                clear_board_content.push(*board);
+            }
         }
     }
 
     for board in boards {
         let remote = board.remote.map(|b| codec::remote_col(b.get()));
         sqlx::query!(
-            r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, ck_color, ck_archived, ck_deleted, remote_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        remote_board_id = excluded.remote_board_id,
                        title = excluded.title,
@@ -737,6 +750,9 @@ async fn execute_batch(
                        archived = excluded.archived,
                        deleted = excluded.deleted,
                        ck_title = excluded.ck_title,
+                       ck_color = excluded.ck_color,
+                       ck_archived = excluded.ck_archived,
+                       ck_deleted = excluded.ck_deleted,
                        remote_seen = excluded.remote_seen"#,
             codec::uuid_to_text(board.id.as_uuid()),
             remote,
@@ -745,6 +761,9 @@ async fn execute_batch(
             board.archived,
             board.deleted,
             board.clocks.title.to_rfc3339(),
+            board.clocks.color.to_rfc3339(),
+            board.clocks.archived.to_rfc3339(),
+            board.clocks.deleted.to_rfc3339(),
             board.remote_seen,
         )
         .execute(&mut *tx)
@@ -1077,6 +1096,118 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(reminder = %codec::reminder_ref_to_text(snooze.reminder), "reminder snooze recorded");
+    }
+
+    // Content clear (the `ResetBoard` repair): one board-scoped bulk
+    // delete per table, inside the batch transaction. Order satisfies
+    // the FK graph (reminder facts → tasks → task_labels cascade →
+    // stacks/labels → outbox → validators). The board row and
+    // `sync_status` are never touched.
+    for board in clear_board_content {
+        let board_uuid = codec::uuid_to_text(board.as_uuid());
+        // 1. Outbox rows of the board and its (about-to-vanish) children —
+        // the child subqueries must run while the rows still exist.
+        sqlx::query!(
+            r#"DELETE FROM outbox
+               WHERE (op_kind IN ('update_board', 'delete_board') AND board_id = ?1)
+                  OR (op_kind IN ('create_task', 'update_task', 'move_task', 'delete_task',
+                                  'assign_label', 'unassign_label')
+                      AND task_id IN (SELECT t.id FROM tasks t
+                                      JOIN stacks s ON t.stack = s.id
+                                      WHERE s.board = ?1))
+                  OR (op_kind IN ('create_stack', 'rename_stack', 'move_stack', 'delete_stack')
+                      AND stack_id IN (SELECT id FROM stacks WHERE board = ?1))
+                  OR (op_kind IN ('create_label', 'update_label', 'delete_label')
+                      AND label_id IN (SELECT id FROM labels WHERE board = ?1))"#,
+            board_uuid
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        // 2. Reminder facts of the board's tasks (deliveries/snoozes key
+        // by `rule:<id>`/`default:<task>` text, so the board's rules are
+        // resolved while their rows are still present — scoped to this
+        // board's tasks; another board's rule facts are untouched).
+        sqlx::query!(
+            r#"DELETE FROM reminder_deliveries
+               WHERE reminder IN (SELECT 'rule:' || r.rule_id FROM reminder_rules r
+                                  WHERE r.task_id IN (SELECT t.id FROM tasks t
+                                                      JOIN stacks s ON t.stack = s.id
+                                                      WHERE s.board = ?1))
+                  OR reminder IN (SELECT 'default:' || t.id FROM tasks t
+                                  JOIN stacks s ON t.stack = s.id
+                                  WHERE s.board = ?1)"#,
+            board_uuid
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM reminder_snoozes
+               WHERE reminder IN (SELECT 'rule:' || r.rule_id FROM reminder_rules r
+                                  WHERE r.task_id IN (SELECT t.id FROM tasks t
+                                                      JOIN stacks s ON t.stack = s.id
+                                                      WHERE s.board = ?1))
+                  OR reminder IN (SELECT 'default:' || t.id FROM tasks t
+                                  JOIN stacks s ON t.stack = s.id
+                                  WHERE s.board = ?1)"#,
+            board_uuid
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM reminder_rules
+               WHERE task_id IN (SELECT t.id FROM tasks t
+                                 JOIN stacks s ON t.stack = s.id
+                                 WHERE s.board = ?1)"#,
+            board_uuid
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM reminder_muted
+               WHERE task_id IN (SELECT t.id FROM tasks t
+                                 JOIN stacks s ON t.stack = s.id
+                                 WHERE s.board = ?1)"#,
+            board_uuid
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        // 3. The content rows (task_labels cascade with the tasks).
+        sqlx::query!(
+            r#"DELETE FROM tasks
+               WHERE id IN (SELECT t.id FROM tasks t
+                            JOIN stacks s ON t.stack = s.id
+                            WHERE s.board = ?1)"#,
+            board_uuid
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(r#"DELETE FROM stacks WHERE board = ?1"#, board_uuid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(r#"DELETE FROM labels WHERE board = ?1"#, board_uuid)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+        // 4. The sync validators (mandatory: warm validators would let the
+        // next conditional pull 304 and never re-materialize the board).
+        sqlx::query!(
+            r#"DELETE FROM sync_metadata
+               WHERE key = 'boards'
+                  OR key IN (SELECT 'stacks:' || remote_board_id FROM boards WHERE id = ?1)
+                  OR key IN (SELECT 'archived_stacks:' || remote_board_id FROM boards WHERE id = ?1)"#,
+            board_uuid
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(board = ?board, "board content cleared");
     }
 
     for (task, muted) in mute_toggles {

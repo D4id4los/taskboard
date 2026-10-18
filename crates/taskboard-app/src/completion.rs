@@ -835,7 +835,12 @@ mod tests {
                 color: taskboard_domain::Color::new("0082c9"),
                 archived: false,
                 deleted: false,
-                clocks: taskboard_domain::BoardClocks { title: epoch() },
+                clocks: taskboard_domain::BoardClocks {
+                    title: epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
                 remote_seen: None,
             },
         );

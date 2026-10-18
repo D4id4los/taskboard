@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM stacks WHERE board = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "7084acfe543f95b1507d463ba65609a0aed24963161c4c382ec2a4ab2c132704"
+}
