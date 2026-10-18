@@ -19,11 +19,15 @@
   report §3.5/§4-D2/§6 (Wave 4), the GUI design requirements plan
   (R4/R9/§3), the connect-flow design plan §4.5 (the deferred
   multi-connector contract), and growth-roadmap Phase 6.
-- **Status**: PROPOSED — scope and wave-level decisions **accepted**
-  (§5); Stage-0 design questions (§6) open. All code anchors verified
-  on `main` @ `878bb12` (post remediation-wave-1 code chunks; PR #334
-  board/stack structure editing landed and folded into §3/§5 on
-  2026-10-18).
+- **Status**: scope and wave-level decisions **accepted** (§4);
+  Stage-0 design questions (§5) **resolved 2026-10-18** — decision
+  record ACCEPTED in the design doc §5
+  (`.artifacts/plans/2026-10-18-multi-board-detailed-design-plan.md`);
+  wave implementation plan written 2026-10-18
+  (`.artifacts/plans/2026-10-18-multi-board-wave-implementation-plan.md`).
+  All code anchors verified on `main` @ `878bb12` (post
+  remediation-wave-1 code chunks; PR #334 board/stack structure
+  editing landed and folded into §3/§5 on 2026-10-18).
 
 ---
 
@@ -140,12 +144,17 @@ extended post-PR #334):
 | D-W7 | Network authority at N connectors: **all connectors down ⇒ `NetworkLost`; any responding ⇒ healthy**. One offline server while others respond is normal operation, not an outage signal. |
 | D-W8 | The Stage-0 design round **starts now**, in parallel with remediation-wave-1's tail (docs-only, no code conflicts; precedent: the parallel-during-gui dispatch round). Implementation dispatch waits for remediation-wave-1 to close and chunk 15 to merge. |
 | D-W9 | SyncStatus keying (per-board vs per-connector vs pair): **open** — the user awaits the design round's detailed proposal before ruling. |
+| D-W9 (ruled 2026-10-18) | **Option (a) per-board keying** — the user's decision session accepted all design-round recommendations (no deviations); see the design doc §5. |
 
 ## 5. Stage-0 design questions (the round's work)
 
 Each question carries its evidence anchors and any binding
 constraints from §4/§5. The round resolves each with one recorded
 decision and a recommendation; D-W9's answer goes back to the user.
+
+*"Design" below = the accepted design doc
+`.artifacts/plans/2026-10-18-multi-board-detailed-design-plan.md`
+(decision record: §5, ACCEPTED 2026-10-18).*
 
 1. **Board parameter shape** (F16-06 + F16-23, one motion): how the
    nine `live_board` sites (`command.rs` — four more since the audit
@@ -157,21 +166,26 @@ decision and a recommendation; D-W9's answer goes back to the user.
    `CommandError` variants, status payloads). The outbox ops are
    already board-addressed post-#334 (`UpdateBoard(BoardId)`,
    `DeleteBoard`) — the command surface is the laggard.
+   *Resolved (2026-10-18) → design §3.1 (decision record: ACCEPTED).*
 2. **SyncStatus keying** (F16-22, the P1): per-board status with
    connector attribution vs per-connector vs (connector, board)
    pair; decides the one table-rebuild migration; the global
    `last_updated` rides the same decision (F3-04 names both).
+   *Resolved (2026-10-18) → design §3.2 (decision record: RULED (a) —
+   ACCEPTED).*
 3. **Connector addressing home** (F16-05): routing tag on commands
    vs registry map; where connector ids are minted and typed; how
    the resume path (`actor.rs:327-333`) and `App.connectors.first()`
    (`bootstrap.rs:181`) stop being "the anonymous one". Interacts
    with the trait's identity model (D-W4).
+   *Resolved (2026-10-18) → design §3.3 (decision record: ACCEPTED).*
 4. **Trait promotion shape** (D-W4, F16-08): the port's surface
    (commands/reports/state-reader + spawn contract), its home
    (domain purity per AGENTS §2 — the `BoxFuture` port pattern),
    what `taskboard-sync-nextcloud` implements vs what the app
    spawns against; the ADR 0010 amendment text. Keep it the narrow
    vocabulary seam ADR 0010 anticipated, not a plugin system.
+   *Resolved (2026-10-18) → design §3.4 (decision record: ACCEPTED).*
 5. **Ceremony redesign** (F16-24): select/refuse/adopt/resume at N
    boards and multi-binding (the `BoardAlreadyBound(RemoteBoardId)`
    variant is the refusal seed); unbind (#179); title-match attach
@@ -181,19 +195,23 @@ decision and a recommendation; D-W9's answer goes back to the user.
    ceremony (board restore stays a separate later round per #334's
    non-goals); interplay with the stale-binding re-resolve that
    remediation chunk 5 landed.
+   *Resolved (2026-10-18) → design §3.5 (decision record: ACCEPTED).*
 6. **Config shape**: `[[sync.connectors]]` array-of-tables + the
    legacy `[sync] backend` scalar resolution rule (scalar = the
    default/first connector, so `connect --switch-backend`'s writes
    stay valid); figment strictness and validation loudness.
+   *Resolved (2026-10-18) → design §3.6 (decision record: ACCEPTED).*
 7. **Network authority mechanics** (D-W7): who aggregates all-down
    across N actors and emits `NetworkLost`/`Restored`; UI banner
    semantics under partial connectivity.
+   *Resolved (2026-10-18) → design §3.7 (decision record: ACCEPTED).*
 8. **UI board dimension** (F7-05): `ViewState.board: BoardId` +
    board-switcher seam mirroring the stack switcher; the switcher as
    an action-layer action with a keyboard journey (R4's acceptance
    bar names "navigate boards" a core verb); board-bar composition
    under R1 component discipline; IdTables keyed per board
    (`models.rs:35-45/109-128`); kiosk-surface degradation (R9).
+   *Resolved (2026-10-18) → design §3.8 (decision record: ACCEPTED).*
 9. **Migration & compat plan** (D-W6 applied): the DB rebuild
    written against 0001's conventions; the config additive path; the
    `insta` snapshot regeneration strategy for the widened
@@ -202,8 +220,15 @@ decision and a recommendation; D-W9's answer goes back to the user.
    reusable precedents: epoch-default columns that keep old rows'
    merge behavior bit-for-bit, and in-migration op re-tagging with
    decode rejecting the legacy tag.
+   *Resolved (2026-10-18) → design §3.9 (decision record: ACCEPTED).*
 
 ## 6. Implementation chunk sketch (post-acceptance input)
+
+> **Superseded (2026-10-18)** by the wave implementation plan
+> `.artifacts/plans/2026-10-18-multi-board-wave-implementation-plan.md`,
+> which re-chunks this sketch per the accepted design (green-`main`
+> sequencing; each re-slice is recorded inside that plan). The sketch
+> text below remains for the historical record.
 
 Sizes use the house scale. This sketch feeds the wave implementation
 plan + dispatch plan written after the design round; the round may
@@ -240,10 +265,19 @@ the new trait port.
    editing` shapes are **incorporated** (PR #334, folded in
    2026-10-18, §3); the round re-verifies anchors at its start
    (chunks landing meanwhile may shift line numbers; the findings
-   IDs are the stable keys).
+   IDs are the stable keys). **Done**: dispatched 2026-10-18 as two
+   chunks — the design doc landed via PR #337 (2026-10-18) and the
+   user's decision session (2026-10-18) accepted all nine
+   recommendations (§5 pointers; design doc §5).
 3. **Then**: wave implementation plan (kiosk-exemplar style) →
    dispatch plan (template) → chunks, after remediation-wave-1
-   closes.
+   closes. **Progress (2026-10-18)**: the implementation plan is
+   written —
+   `.artifacts/plans/2026-10-18-multi-board-wave-implementation-plan.md`
+   (this round's chunk 2). Next: the implementation dispatch plan
+   (template `.artifacts/templates/dispatch-plan.md`), gated on this
+   chunk's PR merging and remediation-wave-1 closing (dispatch plan
+   §4); then the implementation chunks per that plan's sequencing.
 
 ## 8. Risks
 
