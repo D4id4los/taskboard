@@ -302,7 +302,7 @@ mod tests {
             state
                 .outbox
                 .iter()
-                .any(|o| o.op == LocalOp::RenameBoard(BoardId::from(board_uuid))),
+                .any(|o| o.op == LocalOp::UpdateBoard(BoardId::from(board_uuid))),
             "the backfilled rename_board row must still decode to its op"
         );
         drop(repo);

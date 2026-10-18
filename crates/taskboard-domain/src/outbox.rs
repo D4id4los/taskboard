@@ -46,8 +46,9 @@ pub enum LocalOp {
     AssignLabel(TaskId, LabelId),
     /// Label removal from a card.
     UnassignLabel(TaskId, LabelId),
-    /// Board rename (full-send on push, like [`LocalOp::RenameStack`]).
-    RenameBoard(crate::ids::BoardId),
+    /// Board edit (title/color/archived — every Deck board write is a
+    /// full-send, like [`LocalOp::RenameStack`]).
+    UpdateBoard(crate::ids::BoardId),
 }
 
 /// An outbox entry: which operation, when it was queued.
@@ -80,7 +81,7 @@ pub fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
         | LocalOp::CreateLabel(_)
         | LocalOp::UpdateLabel(_)
         | LocalOp::DeleteLabel(_)
-        | LocalOp::RenameBoard(_) => false,
+        | LocalOp::UpdateBoard(_) => false,
     }
 }
 

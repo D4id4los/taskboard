@@ -74,7 +74,7 @@ fn op_label_id(op: &LocalOp) -> Option<LabelId> {
 
 fn op_board_id(op: &LocalOp) -> Option<BoardId> {
     match op {
-        LocalOp::RenameBoard(id) => Some(*id),
+        LocalOp::UpdateBoard(id) => Some(*id),
         _ => None,
     }
 }
@@ -124,7 +124,7 @@ fn pending_task_intents(
             | LocalOp::CreateLabel(_)
             | LocalOp::UpdateLabel(_)
             | LocalOp::DeleteLabel(_)
-            | LocalOp::RenameBoard(_) => continue,
+            | LocalOp::UpdateBoard(_) => continue,
         });
         match op.op {
             LocalOp::UpdateTask(_) => {
@@ -254,11 +254,11 @@ fn keep_stack_intent(
     }
 }
 
-/// Whether a post-read `RenameBoard` op is queued for the board.
+/// Whether a post-read `UpdateBoard` op is queued for the board.
 fn pending_board_intent(outbox: &[PendingOp], board: BoardId, read_at: DateTime<Utc>) -> bool {
     outbox
         .iter()
-        .any(|op| op.queued_at > read_at && matches!(op.op, LocalOp::RenameBoard(b) if b == board))
+        .any(|op| op.queued_at > read_at && matches!(op.op, LocalOp::UpdateBoard(b) if b == board))
 }
 
 /// Restores the board's protected title from the local state.
@@ -945,7 +945,7 @@ fn apply_push_outcomes(
                     | LocalOp::UpdateLabel(_)
                     | LocalOp::AssignLabel(..)
                     | LocalOp::UnassignLabel(..)
-                    | LocalOp::RenameBoard(_) => {}
+                    | LocalOp::UpdateBoard(_) => {}
                 }
                 match echo {
                     Some(RemoteEcho::Task(echo)) => {
@@ -992,7 +992,7 @@ fn apply_push_outcomes(
                         );
                     }
                     Some(RemoteEcho::Board(echo)) => {
-                        if let LocalOp::RenameBoard(id) = op.op
+                        if let LocalOp::UpdateBoard(id) = op.op
                             && let Some(local) = boards.get(&id)
                         {
                             let mut merged = adopt_board_after_push(local, echo);
@@ -1081,7 +1081,7 @@ fn apply_push_outcomes(
                     op_results.insert(outcome.op, true);
                     tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, stack_id = ?id, "remote missing, stack tombstoned");
                 }
-                LocalOp::RenameBoard(id) => {
+                LocalOp::UpdateBoard(id) => {
                     if let Some(local) = boards.get(&id) {
                         boards.insert(id, tombstone_board(local, now));
                     }
@@ -3388,7 +3388,7 @@ mod tests {
 
         let op = crate::outbox::PendingOp {
             op_id: crate::outbox::OpId(uuid::Uuid::from_u128(9)),
-            op: LocalOp::RenameBoard(local.id),
+            op: LocalOp::UpdateBoard(local.id),
             queued_at: ts(BASE + 120),
         };
         let mut remote = crate::merge_testutil::remote_board(REMOTE_BOARD_NUM, BASE + 300);
@@ -3465,7 +3465,7 @@ mod tests {
         let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(70));
         let op = crate::outbox::PendingOp {
             op_id,
-            op: LocalOp::RenameBoard(board_id),
+            op: LocalOp::UpdateBoard(board_id),
             queued_at: ts(BASE),
         };
 
@@ -3512,7 +3512,7 @@ mod tests {
         let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(71));
         let op = crate::outbox::PendingOp {
             op_id,
-            op: LocalOp::RenameBoard(board_id),
+            op: LocalOp::UpdateBoard(board_id),
             queued_at: ts(BASE),
         };
         let echo = remote_board(REMOTE_BOARD_NUM, BASE + 300);
@@ -3934,7 +3934,7 @@ mod tests {
         let board_id = *state.boards.keys().next().unwrap();
         let op = crate::outbox::PendingOp {
             op_id: crate::outbox::OpId(uuid::Uuid::from_u128(97)),
-            op: LocalOp::RenameBoard(board_id),
+            op: LocalOp::UpdateBoard(board_id),
             queued_at: ts(BASE),
         };
         let mut snap = single_stack_snapshot(vec![], BASE + 300);

@@ -79,7 +79,7 @@ pub enum MaterializedOp {
         task: TaskId,
     },
     /// PUT the board's full changeset (title + color + archived).
-    RenameBoard {
+    UpdateBoard {
         /// The bound board to update.
         board: BoardId,
     },
@@ -213,7 +213,7 @@ pub struct EntityTables<'a> {
     pub stacks: &'a BTreeMap<StackId, Stack>,
     /// Current labels.
     pub labels: &'a BTreeMap<LabelId, Label>,
-    /// Current boards (a queued `RenameBoard` materializes only for a
+    /// Current boards (a queued `UpdateBoard` materializes only for a
     /// *bound* board; a local-only one completes synthetically).
     pub boards: &'a BTreeMap<BoardId, Board>,
 }
@@ -332,7 +332,7 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
             LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                 label_ops.push((id, idx, entry));
             }
-            LocalOp::RenameBoard(id) => board_ops.push((id, idx, entry)),
+            LocalOp::UpdateBoard(id) => board_ops.push((id, idx, entry)),
         }
     }
 
@@ -451,7 +451,7 @@ fn plan_board_groups(
                     let (_, first) = members[0];
                     PushGroup {
                         target: PushTarget::Board(board),
-                        materialized: MaterializedOp::RenameBoard { board },
+                        materialized: MaterializedOp::UpdateBoard { board },
                         primary: first.op_id,
                         subsumed: others(&members, first.op_id),
                     }
@@ -1188,8 +1188,8 @@ mod tests {
         let labels = BTreeMap::new();
 
         let outbox = vec![
-            op(100, LocalOp::RenameBoard(bound_id)),
-            op(101, LocalOp::RenameBoard(unbound_id)),
+            op(100, LocalOp::UpdateBoard(bound_id)),
+            op(101, LocalOp::UpdateBoard(unbound_id)),
         ];
         let groups = plan_pushes(
             &outbox,
@@ -1207,7 +1207,7 @@ mod tests {
                 .find(|g| g.target == PushTarget::Board(bound_id))
                 .expect("bound group")
                 .materialized,
-            MaterializedOp::RenameBoard { .. }
+            MaterializedOp::UpdateBoard { .. }
         ));
         assert!(
             groups
@@ -1237,7 +1237,7 @@ mod tests {
         // Queue order reversed: the stack op is queued first.
         let outbox = vec![
             op(100, LocalOp::RenameStack(stack_id)),
-            op(101, LocalOp::RenameBoard(board_id)),
+            op(101, LocalOp::UpdateBoard(board_id)),
         ];
         let groups = plan_pushes(
             &outbox,

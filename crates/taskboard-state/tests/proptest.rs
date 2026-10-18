@@ -623,7 +623,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                     disk.labels.contains_key(&id)
                 }
-                LocalOp::RenameBoard(id) => disk.boards.contains_key(&id),
+                LocalOp::UpdateBoard(id) => disk.boards.contains_key(&id),
                 LocalOp::AssignLabel(task, label) | LocalOp::UnassignLabel(task, label) => {
                     disk.tasks.contains_key(&task) && disk.labels.contains_key(&label)
                 }

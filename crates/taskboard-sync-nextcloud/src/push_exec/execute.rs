@@ -99,7 +99,7 @@ impl<'a> PushExecutor<'a> {
                     ),
                 }
             }
-            MaterializedOp::RenameBoard { board } => {
+            MaterializedOp::UpdateBoard { board } => {
                 let Some(row) = tables.boards.get(&board) else {
                     return GroupOutcome::Outcomes(all_applied(group));
                 };

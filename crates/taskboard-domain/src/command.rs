@@ -606,7 +606,7 @@ pub fn plan_command(
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::UpsertBoard(updated),
-                    enqueue(LocalOp::RenameBoard(board_id), ids, now),
+                    enqueue(LocalOp::UpdateBoard(board_id), ids, now),
                 ],
                 outcome: CommandOutcome::Applied,
             })
@@ -1543,7 +1543,7 @@ mod tests {
         };
         assert_eq!(
             pending.op,
-            LocalOp::RenameBoard(BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))))
+            LocalOp::UpdateBoard(BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))))
         );
     }
 
@@ -2672,7 +2672,7 @@ mod proptests {
             LocalOp::AssignLabel(task, label) | LocalOp::UnassignLabel(task, label) => {
                 tasks.contains_key(task) && labels.contains_key(label)
             }
-            LocalOp::RenameBoard(id) => boards.contains_key(id),
+            LocalOp::UpdateBoard(id) => boards.contains_key(id),
         }
     }
 

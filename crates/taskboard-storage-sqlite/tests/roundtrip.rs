@@ -337,7 +337,7 @@ async fn failed_batch_rolls_back_atomically() {
     assert!(loaded.outbox.is_empty(), "enqueue must be rolled back");
 }
 
-/// T9 — a `RenameBoard` op is stored in the outbox `board_id` column with
+/// T9 — an `UpdateBoard` op is stored in the outbox `board_id` column with
 /// `stack_id` NULL (structural column facts; the cast-era shape would put
 /// the board id in `stack_id` and pass every semantic roundtrip).
 #[tokio::test]
@@ -348,7 +348,7 @@ async fn rename_board_op_lands_in_the_board_column() {
     let op_id = OpId(uuid::Uuid::from_u128(0xb2));
     repo.apply(vec![PersistenceAction::EnqueueOp(PendingOp {
         op_id,
-        op: LocalOp::RenameBoard(BoardId::from(board_uuid)),
+        op: LocalOp::UpdateBoard(BoardId::from(board_uuid)),
         queued_at: ts(42),
     })])
     .await
@@ -370,7 +370,7 @@ async fn rename_board_op_lands_in_the_board_column() {
     let loaded = repo.load().await.expect("load");
     assert_eq!(
         loaded.outbox.iter().map(|o| o.op).collect::<Vec<_>>(),
-        vec![LocalOp::RenameBoard(BoardId::from(board_uuid))]
+        vec![LocalOp::UpdateBoard(BoardId::from(board_uuid))]
     );
 }
 
