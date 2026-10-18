@@ -283,7 +283,7 @@ fn push_status_bar(
             presentation::SyncPhaseUi::Failed => SyncPhaseUi::Failed,
         },
         pending: i32::try_from(badge.pending).unwrap_or(i32::MAX),
-        recency: SharedString::from(recency_caption(state.sync.last_success, now)),
+        recency: SharedString::from(recency_caption(state.sync.aggregate().last_success, now)),
     });
 
     let banner = presentation::banner_rows(state, now);

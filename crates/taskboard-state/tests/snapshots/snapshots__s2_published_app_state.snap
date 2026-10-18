@@ -104,7 +104,8 @@ reminders:
   snoozes: {}
   muted: []
 sync:
-  phase: Idle
-  last_success: ~
-  pending_ops: 6
+  00000000-0000-0000-0000-000000000001:
+    phase: Idle
+    last_success: ~
+    pending_ops: 6
 last_updated: "1970-01-01T10:06:00Z"

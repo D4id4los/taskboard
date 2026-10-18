@@ -584,8 +584,13 @@ pub async fn bootstrap(
         }
     };
 
+    // Chunk 1 has no connector config: the legacy scalar world has
+    // exactly one connector name, so it is the default tag every board
+    // binding gets (DF-3's mint-chain head; chunk 4 refines the
+    // derivation, chunk 5 adds validation).
+    let default_connector = taskboard_domain::ConnectorId::from("nextcloud");
     tracing::info!(db = %db_path.display(), "opening database");
-    let repo = Arc::new(taskboard_storage_sqlite::open(&db_path).await?);
+    let repo = Arc::new(taskboard_storage_sqlite::open(&db_path, default_connector).await?);
     let (storage, storage_join) = spawn_storage_actor(repo);
 
     let (system, system_rx_engine) = broadcast::channel::<SystemEvent>(SYSTEM_BROADCAST_CAPACITY);
@@ -708,13 +713,13 @@ pub(crate) async fn wait_for_boot_pull(app: &App, timeout: Duration) {
     let mut seen_syncing = false;
     loop {
         let state = app.engine.shared_state().load_full();
-        match state.sync.phase {
+        match state.sync.aggregate().phase {
             SyncPhase::Syncing => seen_syncing = true,
             _ if seen_syncing => return,
             // The cycle already settled before we started watching.
-            _ if state.sync.last_success.is_some()
+            _ if state.sync.aggregate().last_success.is_some()
                 || matches!(
-                    state.sync.phase,
+                    state.sync.aggregate().phase,
                     SyncPhase::Offline | SyncPhase::Failed { .. }
                 ) =>
             {

@@ -44,7 +44,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let repo = Arc::new(taskboard_storage_sqlite::open_memory().await?);
+//! let repo = Arc::new(taskboard_storage_sqlite::open_memory(taskboard_domain::ConnectorId::from("nextcloud")).await?);
 //! let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
 //!
 //! handle.apply(vec![]).await?; // one batch, one transaction

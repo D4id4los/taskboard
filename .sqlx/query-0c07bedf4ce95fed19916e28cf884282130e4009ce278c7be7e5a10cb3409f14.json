@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, connector, ck_title, ck_color, ck_archived, ck_deleted, remote_seen)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(id) DO UPDATE SET\n                       remote_board_id = excluded.remote_board_id,\n                       title = excluded.title,\n                       color = excluded.color,\n                       archived = excluded.archived,\n                       deleted = excluded.deleted,\n                       connector = excluded.connector,\n                       ck_title = excluded.ck_title,\n                       ck_color = excluded.ck_color,\n                       ck_archived = excluded.ck_archived,\n                       ck_deleted = excluded.ck_deleted,\n                       remote_seen = excluded.remote_seen",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 12
+    },
+    "nullable": []
+  },
+  "hash": "0c07bedf4ce95fed19916e28cf884282130e4009ce278c7be7e5a10cb3409f14"
+}

@@ -50,7 +50,13 @@ fn populate(dir: &tempfile::TempDir, n: usize) -> (tokio::runtime::Runtime, impl
     let fixture = build_fixture(n);
     let expected = fixture.state.tasks.len();
     let repo = rt
-        .block_on(async { open(dir.path().join("bench.db").as_path()).await })
+        .block_on(async {
+            open(
+                dir.path().join("bench.db").as_path(),
+                taskboard_domain::ConnectorId::from("nextcloud"),
+            )
+            .await
+        })
         .expect("open file-backed repository");
     rt.block_on(repo.apply(fixture.actions))
         .expect("population apply");

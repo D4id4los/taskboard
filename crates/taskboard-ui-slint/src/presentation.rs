@@ -16,9 +16,7 @@
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, TimeDelta, Utc};
-use taskboard_domain::{
-    AppState, Board, BoardId, ReminderRef, Stack, SyncPhase, SyncStatus, Task, TaskId,
-};
+use taskboard_domain::{AppState, Board, BoardId, ReminderRef, Stack, SyncPhase, Task, TaskId};
 
 /// The due-soon window (design §4): a presentation constant, not
 /// config — Q22 fixes the v0.1.0 `[ui]` surface at scale + keymap
@@ -155,10 +153,12 @@ pub struct SyncBadge {
 }
 
 /// Maps the domain sync status onto the badge (exhaustive, one
-/// direction).
+/// direction). The map is folded first (the selected-board read is
+/// chunk 7's) — every phase renders the aggregate.
 #[must_use]
-pub fn sync_badge(sync: &SyncStatus) -> SyncBadge {
-    let phase = match sync.phase {
+pub fn sync_badge(sync: &taskboard_domain::SyncStates) -> SyncBadge {
+    let status = sync.aggregate();
+    let phase = match status.phase {
         SyncPhase::Idle => SyncPhaseUi::Idle,
         SyncPhase::Syncing => SyncPhaseUi::Syncing,
         SyncPhase::Offline => SyncPhaseUi::Offline,
@@ -166,7 +166,7 @@ pub fn sync_badge(sync: &SyncStatus) -> SyncBadge {
     };
     SyncBadge {
         phase,
-        pending: sync.pending_ops,
+        pending: status.pending_ops,
     }
 }
 
@@ -405,9 +405,10 @@ mod tests {
 
     #[test]
     fn sync_badge_maps_every_phase() {
-        let base = SyncStatus::default();
+        let board_id = BoardId::from_uuid(uuid::Uuid::from_u128(1));
+        let empty = taskboard_domain::SyncStates::new();
         assert_eq!(
-            sync_badge(&base),
+            sync_badge(&empty),
             SyncBadge {
                 phase: SyncPhaseUi::Idle,
                 pending: 0
@@ -423,13 +424,33 @@ mod tests {
                 SyncPhaseUi::Failed,
             ),
         ] {
-            let status = SyncStatus {
-                phase,
-                pending_ops: 3,
-                ..SyncStatus::default()
-            };
+            let mut states = taskboard_domain::SyncStates::new();
+            states.set_stored(board_id, phase, None);
+            // The pending read is the aggregate fold over the derived
+            // rows: attribute three fabricated ops to the board.
+            let mut state = AppState::default();
+            let stack_id = StackId::from_uuid(uuid::Uuid::from_u128(2));
+            let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(3));
+            state.boards.insert(board_id, board(board_id));
+            state.stacks.insert(stack_id, stack(stack_id, board_id, 0));
+            state.tasks.insert(task_id, task(task_id, stack_id, 0));
+            let ops: Vec<taskboard_domain::PendingOp> = (0..3)
+                .map(|i| taskboard_domain::PendingOp {
+                    op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(10 + i)),
+                    op: taskboard_domain::LocalOp::UpdateTask(task_id),
+                    queued_at: chrono::Utc::now(),
+                })
+                .collect();
+            taskboard_domain::derive_sync_states(
+                &state.boards,
+                &state.stacks,
+                &state.tasks,
+                &state.labels,
+                &ops,
+                &mut states,
+            );
             assert_eq!(
-                sync_badge(&status),
+                sync_badge(&states),
                 SyncBadge {
                     phase: expected,
                     pending: 3

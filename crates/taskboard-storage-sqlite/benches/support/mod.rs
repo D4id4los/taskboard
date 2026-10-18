@@ -20,7 +20,7 @@ use taskboard_domain::persistence::{
     PersistedState, PersistenceAction, SyncValidators, ValidatorKey,
 };
 use taskboard_domain::reminders::{ReminderOffset, ReminderRule, ReminderState};
-use taskboard_domain::state::{SyncPhase, SyncStatus};
+use taskboard_domain::state::{SyncPhase, SyncStates};
 use taskboard_domain::{BoardClocks, ReminderRuleId};
 
 /// The N values the benches measure (dispatch P3 mandate).
@@ -273,7 +273,9 @@ fn whole_state_actions(state: &PersistedState) -> Vec<PersistenceAction> {
             .iter()
             .map(|(key, bundle)| PersistenceAction::UpsertValidators(*key, bundle.clone())),
     );
-    actions.push(PersistenceAction::UpsertSyncStatus(state.sync.clone()));
+    for (board, status) in state.sync.iter() {
+        actions.push(PersistenceAction::UpsertSyncStatus(*board, status.clone()));
+    }
     actions
 }
 
@@ -294,6 +296,8 @@ pub fn build_fixture(n: usize) -> Fixture {
         .map(|k| fixture_rule(k, &tasks))
         .collect();
 
+    let mut sync = SyncStates::new();
+    sync.set_stored(board.id, SyncPhase::Idle, Some(ts(4_000_000)));
     let state = PersistedState {
         boards: BTreeMap::from([(board.id, board.clone())]),
         stacks: stacks.iter().map(|s| (s.id, s.clone())).collect(),
@@ -301,11 +305,7 @@ pub fn build_fixture(n: usize) -> Fixture {
         labels: labels.iter().map(|l| (l.id, l.clone())).collect(),
         outbox: ops.clone(),
         validators: fixture_validators(),
-        sync: SyncStatus {
-            phase: SyncPhase::Idle,
-            last_success: Some(ts(4_000_000)),
-            pending_ops: 0, // never stored; load() re-derives it
-        },
+        sync,
         reminders: ReminderState {
             rules: rules.iter().map(|r| (r.id, r.clone())).collect(),
             ..ReminderState::default()

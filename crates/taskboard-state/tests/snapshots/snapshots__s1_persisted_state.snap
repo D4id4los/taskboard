@@ -95,9 +95,10 @@ outbox:
     queued_at: "1970-01-01T10:07:00Z"
 validators: {}
 sync:
-  phase: Idle
-  last_success: ~
-  pending_ops: 3
+  00000000-0000-0000-0000-000000000001:
+    phase: Idle
+    last_success: ~
+    pending_ops: 3
 reminders:
   rules: {}
   deliveries: []

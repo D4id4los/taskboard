@@ -73,7 +73,7 @@ async fn mount_pull_with_remote_stack(server: &wiremock::MockServer, stack_title
 #[allow(clippy::missing_panics_doc)]
 pub async fn seed_local_board(db_path: &std::path::Path, local_id: u128, run: &str, color: &str) {
     let repo = Arc::new(
-        taskboard_storage_sqlite::open(db_path)
+        taskboard_storage_sqlite::open(db_path, taskboard_domain::ConnectorId::from("nextcloud"))
             .await
             .expect("seed db"),
     );

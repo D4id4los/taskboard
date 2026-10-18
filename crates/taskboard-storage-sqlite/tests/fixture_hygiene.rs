@@ -9,18 +9,27 @@ mod common;
 
 use common::{FileDb, sidecar_paths};
 use taskboard_domain::persistence::{PersistenceAction, TaskRepository};
-use taskboard_domain::state::{SyncErrorKind, SyncPhase, SyncStatus};
 
 /// One write so sqlite actually materializes the WAL sidecars.
 async fn write_one(db: &FileDb) {
     db.repo()
-        .apply(vec![PersistenceAction::UpsertSyncStatus(SyncStatus {
-            phase: SyncPhase::Failed {
-                last_error: SyncErrorKind::Network,
+        .apply(vec![PersistenceAction::UpsertBoard(
+            taskboard_domain::Board {
+                id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1)),
+                remote: None,
+                title: "board".into(),
+                color: taskboard_domain::Color::new("0000ff"),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
             },
-            last_success: None,
-            pending_ops: 0,
-        })])
+        )])
         .await
         .expect("apply");
 }

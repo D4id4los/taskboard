@@ -69,9 +69,17 @@ impl TaskRepository for InMemoryRepository {
     fn load(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>> {
         Box::pin(async {
             let mut state = self.read()?;
-            // `pending_ops` is derived, never stored (parity with the sqlite
-            // implementation): the outbox is the single source of truth.
-            state.sync.pending_ops = u32::try_from(state.outbox.len()).unwrap_or(u32::MAX);
+            // The per-board projection is derived, never stored (parity
+            // with the sqlite implementation): the outbox is the single
+            // source of truth.
+            crate::state::derive_sync_states(
+                &state.boards,
+                &state.stacks,
+                &state.tasks,
+                &state.labels,
+                &state.outbox,
+                &mut state.sync,
+            );
             Ok(state)
         })
     }

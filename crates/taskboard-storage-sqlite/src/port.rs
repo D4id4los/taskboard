@@ -29,7 +29,9 @@ mod tests {
     use std::sync::Arc;
 
     async fn handle_over_memory() -> (StorageHandle, tokio::task::JoinHandle<()>) {
-        let repo = crate::open_memory().await.expect("memory db opens");
+        let repo = crate::open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("memory db opens");
         spawn_storage_actor(Arc::new(repo))
     }
 
@@ -41,17 +43,41 @@ mod tests {
         let state = repo.load().await.expect("fresh db loads");
         assert_eq!(state, PersistedState::default());
 
-        repo.apply(vec![taskboard_domain::PersistenceAction::UpsertSyncStatus(
-            taskboard_domain::SyncStatus {
-                phase: taskboard_domain::SyncPhase::Offline,
-                last_success: None,
-                pending_ops: 0,
+        // The per-board status row references its board: production
+        // writes always follow the board row, so the seed does too.
+        let board = taskboard_domain::Board {
+            id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1)),
+            remote: Some(taskboard_domain::RemoteBoardId(1)),
+            title: "board".into(),
+            color: taskboard_domain::Color::new("0000ff"),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks {
+                title: taskboard_domain::BoardClocks::epoch(),
+                color: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
             },
-        )])
+            remote_seen: None,
+        };
+        repo.apply(vec![
+            taskboard_domain::PersistenceAction::UpsertBoard(board),
+            taskboard_domain::PersistenceAction::UpsertSyncStatus(
+                taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1)),
+                taskboard_domain::SyncStatus {
+                    phase: taskboard_domain::SyncPhase::Offline,
+                    last_success: None,
+                    pending_ops: 0,
+                },
+            ),
+        ])
         .await
         .expect("apply");
         let state = repo.load().await.expect("reload");
-        assert_eq!(state.sync.phase, taskboard_domain::SyncPhase::Offline);
+        assert_eq!(
+            state.sync.aggregate().phase,
+            taskboard_domain::SyncPhase::Offline
+        );
         drop(repo);
         let _ = join.await;
     }

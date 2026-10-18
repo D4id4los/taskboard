@@ -70,6 +70,17 @@ pub fn seed_board_state(title: &str) -> PersistedState {
     state
 }
 
+/// [`seed_board_state`] with the board bound: the per-board status
+/// semantics (failed reports, offline transitions) address bound boards,
+/// so scenarios exercising them seed this shape.
+#[must_use]
+pub fn seed_bound_board_state(title: &str) -> PersistedState {
+    let mut state = seed_board_state(title);
+    let board = state.boards.values_mut().next().expect("one board");
+    board.remote = Some(taskboard_domain::RemoteBoardId(42));
+    state
+}
+
 /// A `Completed` report's validator triple with empty header sets: no
 /// `UpsertValidators` action can follow (nothing stored to differ from).
 pub fn test_validators() -> taskboard_domain::BoardPullValidators {

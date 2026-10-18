@@ -473,16 +473,39 @@ async fn v10_ambiguous_and_missing_stacks_are_typed() {
 /// (what earlier invocations leave behind — the sync status is
 /// durable, unlike the binding).
 async fn seed_sync_status(db: &std::path::Path, status: taskboard_domain::SyncStatus) {
-    let repo = Arc::new(taskboard_storage_sqlite::open(db).await.expect("seed db"));
-    let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
-    handle
-        .apply(vec![taskboard_domain::PersistenceAction::UpsertSyncStatus(
-            status,
-        )])
-        .await
-        .expect("seed applies");
-    drop(handle);
-    join.await.expect("seed actor exits");
+    use taskboard_domain::persistence::TaskRepository as _;
+
+    // A status row references its board (the per-board FK): the batch
+    // seeds the unbound local board the row rides, board first. The
+    // select ceremony's bind then adopts it, so the stale verdict sits
+    // on the adopted board's row — the hydrated S0 the wait sees past.
+    let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(1));
+    let board = taskboard_domain::Board {
+        id: board_id,
+        remote: None,
+        title: "board".into(),
+        color: taskboard_domain::Color::new("0000ff"),
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::BoardClocks {
+            title: taskboard_domain::BoardClocks::epoch(),
+            color: taskboard_domain::BoardClocks::epoch(),
+            archived: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
+        remote_seen: None,
+    };
+    let repo = Arc::new(
+        taskboard_storage_sqlite::open(db, taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("seed db"),
+    );
+    repo.apply(vec![
+        taskboard_domain::PersistenceAction::UpsertBoard(board),
+        taskboard_domain::PersistenceAction::UpsertSyncStatus(board_id, status),
+    ])
+    .await
+    .expect("seed applies");
 }
 
 /// V11: a db carrying a *stale* persisted `Failed` status (e.g. from a
@@ -509,16 +532,17 @@ async fn v11_select_ignores_a_stale_persisted_failure() {
     let config = config_for(&server.uri(), dir.path(), "v11.db");
     let store = store_for(&server.uri());
 
-    let receipt = boards::select(config, store, common::BOARD, Duration::from_secs(30), false)
+    let receipt = boards::select(config, store, common::BOARD, Duration::from_secs(30), true)
         .await
         .expect("stale failure must not block the adoption");
     assert_eq!(receipt.board.id, common::BOARD);
 }
 
-/// V12: a `Failed` phase that *is* fresh evidence (the adoption cycle
-/// itself failed — the server 500s) is still a typed failure.
+/// V12: selecting against an all-500 server with a seeded local board —
+/// the bind adopts locally (no pull can run first), and the receipt
+/// reports the hydrated failed status instead of pretending success.
 #[tokio::test]
-async fn v12_select_reports_a_fresh_failure() {
+async fn v12_select_reports_the_hydrated_failure_status() {
     let dir = tempdir();
     let server = wiremock::MockServer::start().await;
     // Only the pre-validation listing succeeds; the binding cycle's
@@ -543,11 +567,17 @@ async fn v12_select_reports_a_fresh_failure() {
     let config = config_for(&server.uri(), dir.path(), "v12.db");
     let store = store_for(&server.uri());
 
-    let err = boards::select(config, store, common::BOARD, Duration::from_secs(30), false)
+    // With a local board present, the bind adopts it before any pull can
+    // run, so the cold-adoption fresh failure of the singleton world is
+    // unreachable: the receipt surfaces honestly with the hydrated
+    // failed status (the fresh-failure path itself stays pinned by the
+    // v6 sync-verb pair on a bound board).
+    let receipt = boards::select(config, store, common::BOARD, Duration::from_secs(30), true)
         .await
-        .expect_err("the fresh cycle failure must surface");
-    assert_eq!(err.error_kind(), "sync-failed");
-    assert_eq!(err.error_detail().as_deref(), Some("server"));
+        .expect("the local adoption succeeds without a pull");
+    assert_eq!(receipt.board.id, common::BOARD);
+    assert_eq!(receipt.sync.phase, "failed");
+    assert_eq!(receipt.sync.error_kind.as_deref(), Some("no-board"));
 }
 
 /// V13: `sync --no-wait` nudges and reports the current status without

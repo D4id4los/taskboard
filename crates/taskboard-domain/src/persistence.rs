@@ -18,7 +18,7 @@ use crate::entities::{Board, Label, Stack};
 use crate::ids::ReminderRuleId;
 use crate::outbox::{OpId, PendingOp};
 use crate::reminders::{ReminderDelivery, ReminderRef, ReminderSnooze, ReminderState};
-use crate::state::{AppState, SyncStatus};
+use crate::state::{AppState, SyncStates, SyncStatus, derive_sync_states};
 
 /// Hand-rolled boxed future alias: the domain may not depend on
 /// `futures`, `tokio`, or `async-trait`.
@@ -93,8 +93,8 @@ pub struct PersistedState {
     /// Opaque conditional-read validators (mirror of the sync crate's
     /// `Validators`), persisted so polls survive restarts.
     pub validators: BTreeMap<ValidatorKey, SyncValidators>,
-    /// Last-known sync status.
-    pub sync: SyncStatus,
+    /// Last-known sync status, keyed per board.
+    pub sync: SyncStates,
     /// Persisted reminder facts (rules, delivery proofs, snooze links,
     /// muted tasks); delivered-ness and snoozed-ness are plain
     /// set-membership checks.
@@ -191,10 +191,11 @@ pub enum PersistenceAction {
     FailOp(OpId),
     /// Store validators for one endpoint.
     UpsertValidators(ValidatorKey, SyncValidators),
-    /// Persist the sync status (phase + last success). `pending_ops` is NOT
-    /// stored: implementations derive it at load time from the outbox depth,
-    /// so a stored counter can never drift from the queue it summarizes.
-    UpsertSyncStatus(SyncStatus),
+    /// Persist the stored part of one board's sync status (phase + last
+    /// success). `pending_ops` is NOT stored: implementations derive it at
+    /// load time from the outbox attribution, so a stored counter can never
+    /// drift from the queue it summarizes.
+    UpsertSyncStatus(crate::ids::BoardId, SyncStatus),
     /// Insert or replace a reminder rule.
     UpsertReminderRule(crate::reminders::ReminderRule),
     /// Remove a rule **and prune its deliveries and snooze links**:
@@ -229,15 +230,17 @@ pub enum PersistenceAction {
 /// EnqueueOp`] appends (an in-place replace on id collision mirrors the
 /// sqlite upsert on `op_id` — contract-pinned); `CompleteOp`/`FailOp`
 /// remove by op id; `UpsertValidators` replaces the key;
-/// `UpsertSyncStatus` sets phase + last success only (`pending_ops` is
-/// never stored). Reminder actions: rule upserts replace by id; a rule
+/// `UpsertSyncStatus` sets one board's phase + last success only
+/// (`pending_ops` is never stored). Reminder actions: rule upserts replace by id; a rule
 /// delete prunes the rule's deliveries and snooze links with it; a
 /// delivery insert is set-union on the `(reminder, occurrence)` key
 /// (first write wins); a snooze link replaces any prior link for the
 /// same key; mute toggles membership. A final derivation re-computes
 /// `sync.pending_ops` from the outbox depth, and fully-delivered snooze
 /// links are compacted — both derivations run unconditionally after
-/// every batch (both this function and `load()` derive them).
+/// every batch (both this function and `load()` derive them). The sync
+/// projection is derived the same way: every board materialized,
+/// `pending_ops` attributed from the outbox.
 #[allow(clippy::too_many_lines)] // one exhaustive semantics table; the arms ARE the contract
 pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) {
     for action in actions {
@@ -269,9 +272,10 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             PersistenceAction::UpsertValidators(key, validators) => {
                 state.validators.insert(*key, validators.clone());
             }
-            PersistenceAction::UpsertSyncStatus(status) => {
-                state.sync.phase = status.phase;
-                state.sync.last_success = status.last_success;
+            PersistenceAction::UpsertSyncStatus(board, status) => {
+                state
+                    .sync
+                    .set_stored(*board, status.phase, status.last_success);
             }
             PersistenceAction::UpsertReminderRule(rule) => {
                 state.reminders.rules.insert(rule.id, rule.clone());
@@ -426,9 +430,16 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
     // suppress on their own. Pruning it bounds chain growth with zero
     // behavioral change (the compaction-unobservability property).
     crate::reminders::compact_snooze_chains(&mut state.reminders);
-    // Derived, never tracked: after every batch the pending count is
-    // re-derived from the outbox it summarizes.
-    state.sync.pending_ops = u32::try_from(state.outbox.len()).unwrap_or(u32::MAX);
+    // Derived, never tracked: after every batch the per-board pending
+    // counts are re-derived from the outbox they summarize.
+    derive_sync_states(
+        &state.boards,
+        &state.stacks,
+        &state.tasks,
+        &state.labels,
+        &state.outbox,
+        &mut state.sync,
+    );
 }
 
 #[cfg(test)]
@@ -568,19 +579,26 @@ mod tests {
             "upsert replaces the whole bundle"
         );
 
-        state.sync.pending_ops = 7;
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(71));
+        state
+            .sync
+            .set_stored(board, SyncStatus::default().phase, None);
         apply_actions(
             &mut state,
-            &[PersistenceAction::UpsertSyncStatus(SyncStatus {
-                phase: crate::state::SyncPhase::Offline,
-                last_success: Some(ts(400)),
-                pending_ops: 9999, // ignored: derived, never stored
-            })],
+            &[PersistenceAction::UpsertSyncStatus(
+                board,
+                SyncStatus {
+                    phase: crate::state::SyncPhase::Offline,
+                    last_success: Some(ts(400)),
+                    pending_ops: 9999, // ignored: derived, never stored
+                },
+            )],
         );
-        assert_eq!(state.sync.phase, crate::state::SyncPhase::Offline);
-        assert_eq!(state.sync.last_success, Some(ts(400)));
+        let stored = state.sync.get(board).expect("board row");
+        assert_eq!(stored.phase, crate::state::SyncPhase::Offline);
+        assert_eq!(stored.last_success, Some(ts(400)));
         assert_eq!(
-            state.sync.pending_ops, 0,
+            stored.pending_ops, 0,
             "the counter is re-derived from the (empty) outbox after the batch"
         );
     }
@@ -589,7 +607,25 @@ mod tests {
     fn pending_ops_are_rederived_from_the_outbox_after_every_batch() {
         let mut state = PersistedState::default();
         let task = task_with_id(1);
-        state.sync.pending_ops = 42;
+        // The stack and task the ops target must exist: attribution runs
+        // through the entity graph (a torn state cannot attribute).
+        let stack = crate::entities::Stack {
+            id: task.stack,
+            remote: None,
+            board: crate::ids::BoardId::from(uuid::Uuid::from_u128(9)),
+            title: "stack".into(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::StackClocks {
+                title: ts(100),
+                order: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        };
+        state.stacks.insert(stack.id, stack);
+        state.tasks.insert(task.id, task.clone());
         apply_actions(
             &mut state,
             &[
@@ -597,14 +633,14 @@ mod tests {
                 PersistenceAction::EnqueueOp(op(11, task.id)),
             ],
         );
-        assert_eq!(state.sync.pending_ops, 2);
+        assert_eq!(state.sync.aggregate().pending_ops, 2);
         apply_actions(
             &mut state,
             &[PersistenceAction::CompleteOp(OpId(uuid::Uuid::from_u128(
                 10,
             )))],
         );
-        assert_eq!(state.sync.pending_ops, 1);
+        assert_eq!(state.sync.aggregate().pending_ops, 1);
     }
 
     #[test]
@@ -763,11 +799,14 @@ mod tests {
                     ValidatorKey::Stacks(crate::ids::RemoteBoardId(8)),
                     SyncValidators::default(),
                 ),
-                PersistenceAction::UpsertSyncStatus(SyncStatus {
-                    phase: crate::state::SyncPhase::Idle,
-                    last_success: Some(ts(300)),
-                    pending_ops: 0,
-                }),
+                PersistenceAction::UpsertSyncStatus(
+                    board,
+                    SyncStatus {
+                        phase: crate::state::SyncPhase::Idle,
+                        last_success: Some(ts(300)),
+                        pending_ops: 0,
+                    },
+                ),
             ],
         );
 
@@ -814,11 +853,11 @@ mod tests {
         assert!(state.reminders.deliveries.is_empty());
         assert!(!state.reminders.muted.contains(&task));
         assert_eq!(
-            state.sync.last_success,
+            state.sync.aggregate().last_success,
             Some(ts(300)),
             "sync status survives"
         );
-        assert_eq!(state.sync.pending_ops, 1);
+        assert_eq!(state.sync.aggregate().pending_ops, 1);
     }
 
     proptest! {
@@ -826,12 +865,10 @@ mod tests {
 
         #[test]
         fn empty_batch_is_identity(state in test_support::persisted_state_strategy()) {
-            // The strategy may generate a raw `pending_ops` that contradicts
-            // its own outbox; identity is claimed on invariant-satisfying
-            // states, so normalize the counter before comparing.
+            // Identity is claimed on invariant-satisfying states: normalize
+            // the derived projection by running the (empty) batch once.
             let mut expected = state.clone();
-            expected.sync.pending_ops =
-                u32::try_from(expected.outbox.len()).unwrap_or(u32::MAX);
+            apply_actions(&mut expected, &[]);
             let mut got = state;
             apply_actions(&mut got, &[]);
             prop_assert_eq!(got, expected);

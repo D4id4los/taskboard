@@ -79,7 +79,7 @@ impl StatusView {
             backend: Some(backend.to_owned()),
             pid: Some(std::process::id()),
             sync: Some(SyncStatusView::new(
-                &app.engine.shared_state().load_full().sync,
+                &app.engine.shared_state().load_full().sync.aggregate(),
             )),
             holder_pid: None,
             connector_attached,

@@ -126,7 +126,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         "enqueued op must be present"
     );
     assert_eq!(
-        after.sync.pending_ops as usize,
+        after.sync.aggregate().pending_ops as usize,
         after.outbox.len(),
         "pending_ops must be derived from the outbox depth"
     );
@@ -145,7 +145,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         "CompleteOp must not touch entities"
     );
     assert_eq!(
-        after.sync.pending_ops as usize,
+        after.sync.aggregate().pending_ops as usize,
         after.outbox.len(),
         "completing an op must move the derived pending_ops"
     );
@@ -186,17 +186,21 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         last_success: Some(Utc.timestamp_opt(1_700_000_000, 0).unwrap()),
         pending_ops: 999, // stored payload drift; must be ignored on load
     };
-    repo.apply(vec![PersistenceAction::UpsertSyncStatus(status.clone())])
-        .await
-        .expect("sync status");
+    repo.apply(vec![PersistenceAction::UpsertSyncStatus(
+        board.id,
+        status.clone(),
+    )])
+    .await
+    .expect("sync status");
     let after = repo.load().await.expect("reload");
-    assert_eq!(after.sync.phase, status.phase, "sync phase must round-trip");
+    let stored = after.sync.get(board.id).expect("board row");
+    assert_eq!(stored.phase, status.phase, "sync phase must round-trip");
     assert_eq!(
-        after.sync.last_success, status.last_success,
+        stored.last_success, status.last_success,
         "last_success must round-trip"
     );
     assert_eq!(
-        after.sync.pending_ops as usize,
+        after.sync.aggregate().pending_ops as usize,
         after.outbox.len(),
         "pending_ops must be re-derived, not taken from the status payload"
     );
@@ -206,7 +210,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         .expect("complete second op");
     let after = repo.load().await.expect("reload");
     assert_eq!(
-        after.sync.pending_ops as usize,
+        after.sync.aggregate().pending_ops as usize,
         after.outbox.len(),
         "outbox depth remains the single source of truth"
     );
@@ -247,7 +251,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         "re-enqueue must replace in place, keeping the queue position"
     );
     assert_eq!(
-        after.sync.pending_ops as usize,
+        after.sync.aggregate().pending_ops as usize,
         after.outbox.len(),
         "re-enqueue must not duplicate queue depth"
     );
@@ -420,7 +424,8 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         "the board's tasks' reminder facts are pruned"
     );
     assert_eq!(
-        after.sync.pending_ops, 0,
+        after.sync.aggregate().pending_ops,
+        0,
         "pending_ops stays derived after the clear"
     );
 }
@@ -495,7 +500,7 @@ mod tests {
     use super::assert_task_repository_contract;
     use crate::persistence::PersistedState;
     use crate::persistence::TaskRepository;
-    use crate::state::{SyncPhase, SyncStatus};
+    use crate::state::SyncPhase;
     use crate::test_support::memory::InMemoryRepository;
 
     #[test]
@@ -509,17 +514,12 @@ mod tests {
         // never stored; it is re-derived from the outbox depth at load. A
         // preloaded status keeps its phase and last_success; a hand-set
         // pending_ops counter does not survive the load boundary.
-        let state = PersistedState {
-            sync: SyncStatus {
-                phase: SyncPhase::Offline,
-                last_success: None,
-                pending_ops: 7,
-            },
-            ..PersistedState::default()
-        };
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(77));
+        let mut state = PersistedState::default();
+        state.sync.set_stored(board, SyncPhase::Offline, None);
         let repo = InMemoryRepository::with_state(state);
         let loaded = crate::test_support::contract::block_on(repo.load()).expect("load");
-        assert_eq!(loaded.sync.phase, SyncPhase::Offline);
-        assert_eq!(loaded.sync.pending_ops, 0);
+        assert_eq!(loaded.sync.aggregate().phase, SyncPhase::Offline);
+        assert_eq!(loaded.sync.aggregate().pending_ops, 0);
     }
 }

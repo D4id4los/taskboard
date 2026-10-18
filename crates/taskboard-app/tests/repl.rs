@@ -452,6 +452,8 @@ async fn r9_single_board_refusal_is_typed_inside_a_session() {
 async fn r10_a_connector_sync_failure_is_typed_and_survivable() {
     let dir = tempdir();
     let db = dir.path().join("r10.db");
+    // The typed verdict needs a row to land on (per-board status).
+    seed_bound_board(&db).await;
     let mut config = standalone_config(&db);
     config.nextcloud.server_url = Some("http://127.0.0.1:1".to_owned());
     config.nextcloud.username = Some("alice".to_owned());
@@ -1070,10 +1072,41 @@ fn minimal_toml(extra: impl std::fmt::Display) -> String {
 /// the disposition handshake, refreshes the session config, attaches
 /// the connector (receipt `attached: true`), and a following `sync`
 /// line routes to the engine against the (loopback) server.
+/// Seeds one live, bound board so a session's sync cycle has a target
+/// row for its verdict (the per-board status semantics, wave chunk 1).
+async fn seed_bound_board(db: &std::path::Path) {
+    use taskboard_domain::persistence::TaskRepository as _;
+    let repo = Arc::new(
+        taskboard_storage_sqlite::open(db, taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("seed db"),
+    );
+    repo.apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
+        taskboard_domain::Board {
+            id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x51)),
+            remote: Some(taskboard_domain::RemoteBoardId(common::BOARD)),
+            title: "board".into(),
+            color: taskboard_domain::Color::new("00ff00"),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks {
+                title: taskboard_domain::BoardClocks::epoch(),
+                color: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        },
+    )])
+    .await
+    .expect("seed applies");
+}
+
 #[tokio::test]
 async fn j1_connect_line_attaches_and_refreshes_the_session() {
     let dir = tempdir();
     let db = dir.path().join("j1.db");
+    seed_bound_board(&db).await;
     let config_path = seeded_config_file(dir.path(), &db, &minimal_toml(""));
     let config = AppConfig::load(Some(config_path.clone())).expect("config resolves");
     let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
@@ -1102,15 +1135,15 @@ async fn j1_connect_line_attaches_and_refreshes_the_session() {
     assert_eq!(receipts[0]["attached"], true);
     assert_eq!(receipts[0]["stored"], "keyring");
     // The sync line's prelude passed on the refreshed config and the
-    // cycle *ran against the engine* — the empty db classifies the
-    // pull typed (`sync-failed`/`no-board` in the status view), not
-    // the prelude's `sync-disabled`.
-    assert_eq!(receipts[1]["phase"], "failed");
-    assert_eq!(receipts[1]["error_kind"], "no-board");
+    // cycle *ran against the engine* — the seeded board's pull settles
+    // idle, not the prelude's `sync-disabled`.
+    assert_eq!(receipts[1]["phase"], "idle");
     let errors = json_lines(&err);
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0]["error"]["kind"], "sync-failed");
-    assert_eq!(errors[0]["error"]["detail"], "no-board");
+    assert!(
+        errors.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&err)
+    );
 
     // The config file was written at the session's config path (the
     // refresh re-reads exactly it), secret-free.
@@ -1254,6 +1287,7 @@ async fn j3_the_backend_guard_asks_as_a_confirm_disposition() {
 async fn j4_a_repoint_swaps_the_live_connector_to_the_new_identity() {
     let dir = tempdir();
     let db = dir.path().join("j4.db");
+    seed_bound_board(&db).await;
     let old = wiremock::MockServer::start().await;
     common::mount_standard_pull(&old, serde_json::json!([])).await;
     let config_path = seeded_config_file(
@@ -1286,7 +1320,6 @@ async fn j4_a_repoint_swaps_the_live_connector_to_the_new_identity() {
                 .insert_header("ETag", "\"j4\"")
                 .set_body_string(common::boards_json()),
         )
-        .expect(1)
         .mount(&new)
         .await;
 
@@ -1316,13 +1349,19 @@ async fn j4_a_repoint_swaps_the_live_connector_to_the_new_identity() {
     assert_eq!(receipts[0]["repointed"], true);
     assert_eq!(receipts[0]["server_url"], new.uri());
     // The sync line's cycle hit the new mock with the *new* secret's
-    // Basic header (the pinned matcher would 404 an old-secret actor);
-    // the empty db classifies the pull typed.
-    let errors = json_lines(&err);
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0]["error"]["kind"], "sync-failed");
-    assert_eq!(errors[0]["error"]["detail"], "no-board");
-    new.verify().await;
+    // Basic header (the pinned matcher would 404 an old-secret actor)
+    // and settled the seeded board's row idle on the merged listing.
+    assert_eq!(receipts[1]["phase"], "idle");
+    // At least one boards read rode the new identity's header (the
+    // pinned matcher would 404 an old-secret actor).
+    let requests = new.received_requests().await.expect("requests recorded");
+    assert!(
+        requests.iter().any(|request| request
+            .headers
+            .get("authorization")
+            .is_some_and(|value| value == &expected)),
+        "the new secret reached the wire"
+    );
     // The replaced identity's secret is gone (no keyring orphans).
     assert!(store.load(&old.uri(), "alice").is_err());
     assert_eq!(

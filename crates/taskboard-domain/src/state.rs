@@ -36,8 +36,9 @@ pub struct AppState {
     /// muted tasks); delivered-ness and snoozed-ness are plain
     /// set-membership checks.
     pub reminders: crate::reminders::ReminderState,
-    /// Current sync status.
-    pub sync: SyncStatus,
+    /// Current sync status, keyed per board (the surfaces read the
+    /// `aggregate()` fold).
+    pub sync: SyncStates,
     /// Time of the last engine mutation from ANY source (local command or
     /// sync ingestion), stamped via the injected `Clock`.
     pub last_updated: Option<DateTime<Utc>>,
@@ -206,8 +207,11 @@ pub fn derive_sync_states(
             *count = count.saturating_add(1);
         }
     }
-    for (board, row) in &mut sync.0 {
-        row.pending_ops = counts.get(board).copied().unwrap_or(0);
+    for row in sync.0.values_mut() {
+        row.pending_ops = 0;
+    }
+    for (board, count) in counts {
+        sync.0.entry(board).or_default().pending_ops = count;
     }
 }
 

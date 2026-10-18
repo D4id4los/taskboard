@@ -82,11 +82,16 @@ labels:
 outbox: []
 validators: {}
 sync:
-  phase:
-    Failed:
-      last_error: BadRequest
-  last_success: "1970-01-01T10:04:00Z"
-  pending_ops: 0
+  00000000-0000-0000-0000-000000000001:
+    phase: Idle
+    last_success: ~
+    pending_ops: 0
+  00000000-0000-0000-0000-000000000007:
+    phase:
+      Failed:
+        last_error: BadRequest
+    last_success: "1970-01-01T10:04:00Z"
+    pending_ops: 0
 reminders:
   rules: {}
   deliveries: []

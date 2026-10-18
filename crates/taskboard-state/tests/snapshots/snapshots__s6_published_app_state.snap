@@ -5,7 +5,7 @@ expression: "&*app"
 boards:
   00000000-0000-0000-0000-000000000001:
     id: 00000000-0000-0000-0000-000000000001
-    remote: ~
+    remote: 42
     title: kiosk
     color: 0000ff
     archived: false
@@ -38,9 +38,10 @@ reminders:
   snoozes: {}
   muted: []
 sync:
-  phase:
-    Failed:
-      last_error: Network
-  last_success: ~
-  pending_ops: 1
+  00000000-0000-0000-0000-000000000001:
+    phase:
+      Failed:
+        last_error: Network
+    last_success: ~
+    pending_ops: 1
 last_updated: "1970-01-01T10:04:00Z"

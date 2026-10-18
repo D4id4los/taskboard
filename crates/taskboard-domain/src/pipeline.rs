@@ -41,7 +41,7 @@ use crate::merge::{
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
 use crate::remote::{PushOutcome, PushResult, RemoteBoardSnapshot, RemoteEcho, RemoteIndex};
-use crate::state::{AppState, SyncErrorKind, SyncPhase, SyncStatus};
+use crate::state::{AppState, SyncErrorKind, SyncPhase};
 
 /// The entity id an op targets, for `tracing` fields on push-outcome
 /// events (the map lookup may miss; the op always names its target).
@@ -700,12 +700,16 @@ pub fn apply_sync_report(
 
     // ---- 7. Sync-status transition + persistence batch ---------------
     let mut actions = actions_for_changed_entities(current, &boards, &stacks, &labels, &tasks);
-    for (op_id, completed) in &op_results {
-        actions.push(if *completed {
-            PersistenceAction::CompleteOp(*op_id)
-        } else {
-            PersistenceAction::FailOp(*op_id)
-        });
+    // Outbox order, not the HashMap's: equal inputs must yield equal
+    // batches (the convergence property; the map is a lookup index).
+    for entry in outbox {
+        if let Some(completed) = op_results.get(&entry.op_id) {
+            actions.push(if *completed {
+                PersistenceAction::CompleteOp(entry.op_id)
+            } else {
+                PersistenceAction::FailOp(entry.op_id)
+            });
+        }
     }
 
     // saturating_sub defensively: a corrupted persisted outbox with
@@ -719,13 +723,10 @@ pub fn apply_sync_report(
     } else {
         SyncPhase::Idle
     };
-    let sync = SyncStatus {
-        phase,
-        last_success: Some(now),
-        #[allow(clippy::cast_possible_truncation)] // outbox depth is display-scale, not data
-        pending_ops: remaining_ops as u32,
-    };
-    let state = AppState {
+    // The report's board row transitions; every other row carries over.
+    let mut sync = current.sync.clone();
+    sync.set_stored(board_id, phase, Some(now));
+    let mut state = AppState {
         boards,
         stacks,
         tasks,
@@ -738,6 +739,17 @@ pub fn apply_sync_report(
         // stamp it like a local command would be.
         last_updated: Some(now),
     };
+    // The projection is a display derivation over the ops that remain
+    // queued after this cycle's push outcomes (the engine re-derives
+    // after its own interpret, so these values are advisory).
+    crate::state::derive_sync_states(
+        &state.boards,
+        &state.stacks,
+        &state.tasks,
+        &state.labels,
+        &remaining_outbox(outbox, &op_results),
+        &mut state.sync,
+    );
     log_report_applied(
         &state,
         &actions,
@@ -746,6 +758,16 @@ pub fn apply_sync_report(
         "sync report applied",
     );
     (state, actions)
+}
+
+/// The outbox as it will look once this cycle's outcomes are applied:
+/// the ops the cycle settled are dropped, the rest keep their order.
+fn remaining_outbox(outbox: &[PendingOp], op_results: &HashMap<OpId, bool>) -> Vec<PendingOp> {
+    outbox
+        .iter()
+        .filter(|entry| !op_results.contains_key(&entry.op_id))
+        .cloned()
+        .collect()
 }
 
 /// The closing summary both pipeline entries emit — the only event a
@@ -764,7 +786,7 @@ fn log_report_applied(
         ops_completed = op_results.values().filter(|completed| **completed).count(),
         ops_failed = op_results.values().filter(|completed| !**completed).count(),
         remaining_ops,
-        phase = ?state.sync.phase,
+        phase = ?state.sync.aggregate().phase,
         "{}",
         message,
     );
@@ -855,12 +877,16 @@ pub fn apply_push_report(
     );
 
     let mut actions = actions_for_changed_entities(current, &boards, &stacks, &labels, &tasks);
-    for (op_id, completed) in &op_results {
-        actions.push(if *completed {
-            PersistenceAction::CompleteOp(*op_id)
-        } else {
-            PersistenceAction::FailOp(*op_id)
-        });
+    // Outbox order, not the HashMap's: equal inputs must yield equal
+    // batches (the convergence property; the map is a lookup index).
+    for entry in outbox {
+        if let Some(completed) = op_results.get(&entry.op_id) {
+            actions.push(if *completed {
+                PersistenceAction::CompleteOp(entry.op_id)
+            } else {
+                PersistenceAction::FailOp(entry.op_id)
+            });
+        }
     }
 
     let remaining_ops = outbox.len().saturating_sub(op_results.len());
@@ -875,17 +901,25 @@ pub fn apply_push_report(
     } else {
         SyncPhase::Idle
     };
-    let sync = SyncStatus {
-        phase,
-        last_success: if any_rejected {
-            current.sync.last_success
-        } else {
-            Some(now)
-        },
-        #[allow(clippy::cast_possible_truncation)] // outbox depth is display-scale, not data
-        pending_ops: remaining_ops as u32,
-    };
-    let state = AppState {
+    // The cycle has no snapshot, so board identity comes from the pushed
+    // ops' attribution: exactly the boards this cycle wrote to transition.
+    // A rejection is not a successful sync — each board keeps its own
+    // last success instead of advancing it.
+    let affected: std::collections::BTreeSet<crate::ids::BoardId> = outbox
+        .iter()
+        .filter(|entry| op_results.contains_key(&entry.op_id))
+        .filter_map(|entry| crate::state::attributed_board(&entry.op, &stacks, &tasks, &labels))
+        .collect();
+    let mut sync = current.sync.clone();
+    for board in &affected {
+        let carried = sync.get(*board).and_then(|row| row.last_success);
+        sync.set_stored(
+            *board,
+            phase,
+            if any_rejected { carried } else { Some(now) },
+        );
+    }
+    let mut state = AppState {
         boards,
         stacks,
         tasks,
@@ -896,6 +930,14 @@ pub fn apply_push_report(
         sync,
         last_updated: Some(now),
     };
+    crate::state::derive_sync_states(
+        &state.boards,
+        &state.stacks,
+        &state.tasks,
+        &state.labels,
+        &remaining_outbox(outbox, &op_results),
+        &mut state.sync,
+    );
     log_report_applied(
         &state,
         &actions,
@@ -1342,7 +1384,11 @@ mod tests {
             ts(BASE + 60),
         );
 
-        assert_eq!(app.0.sync.pending_ops, 0, "reorder op completes");
+        assert_eq!(
+            app.0.sync.aggregate().pending_ops,
+            0,
+            "reorder op completes"
+        );
         let state_after = app_into_state(&app);
         let merged = task_by_card(&state_after, 1);
         assert_eq!(merged.order, 1, "baseline untouched until the next pull");
@@ -1405,10 +1451,11 @@ mod tests {
             ts(BASE + 60),
         );
         assert_eq!(
-            app.0.sync.pending_ops, 1,
+            app.0.sync.aggregate().pending_ops,
+            1,
             "retryable rejection stays queued"
         );
-        assert_eq!(app.0.sync.phase, SyncPhase::Idle);
+        assert_eq!(app.0.sync.aggregate().phase, SyncPhase::Idle);
 
         let app = apply_sync_report(
             &state,
@@ -1424,9 +1471,13 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
         );
-        assert_eq!(app.0.sync.pending_ops, 0, "BadRequest dead-letters");
         assert_eq!(
-            app.0.sync.phase,
+            app.0.sync.aggregate().pending_ops,
+            0,
+            "BadRequest dead-letters"
+        );
+        assert_eq!(
+            app.0.sync.aggregate().phase,
             SyncPhase::Failed {
                 last_error: SyncErrorKind::BadRequest
             }
@@ -1567,7 +1618,7 @@ mod tests {
         let state_after = app_into_state(&app);
         let merged = task_by_card(&state_after, 1);
         assert_eq!(merged.title, "normalized");
-        assert_eq!(app.0.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.aggregate().pending_ops, 0);
     }
 
     #[test]
@@ -1657,7 +1708,7 @@ mod tests {
                 .any(|a| matches!(a, PersistenceAction::CompleteOp(id) if *id == op_id)),
             "the create op completed"
         );
-        assert_eq!(app.0.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.aggregate().pending_ops, 0);
     }
 
     #[test]
@@ -1708,7 +1759,7 @@ mod tests {
                 .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(47)))),
             "the unrelated stack op must stay queued",
         );
-        assert_eq!(app.0.sync.pending_ops, 1);
+        assert_eq!(app.0.sync.aggregate().pending_ops, 1);
 
         // R3 path: same expectation — cancellation is op-targeted.
         let task2 = bound_task(2);
@@ -1749,7 +1800,7 @@ mod tests {
                 .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(49)))),
             "R3 cancellation must not touch unrelated ops",
         );
-        assert_eq!(app2.0.sync.pending_ops, 1);
+        assert_eq!(app2.0.sync.aggregate().pending_ops, 1);
     }
 
     #[test]
@@ -1833,7 +1884,8 @@ mod tests {
             "moved-out card survives via its target-stack listing",
         );
         assert_eq!(
-            app.0.sync.pending_ops, 1,
+            app.0.sync.aggregate().pending_ops,
+            1,
             "only the cascaded task's op is cancelled; the stack op stays queued",
         );
     }
@@ -1969,7 +2021,8 @@ mod tests {
             "cascade tombstones the listed task"
         );
         assert_eq!(
-            app.0.sync.pending_ops, 1,
+            app.0.sync.aggregate().pending_ops,
+            1,
             "stack op survives; task op cancelled"
         );
         assert!(app.0.labels[&live_label_id].deleted);
@@ -2021,16 +2074,17 @@ mod tests {
         let merged = task_by_card(&state_after, 1);
         assert_eq!(merged.title, "normalized", "echo adopted");
         assert!(!merged.deleted, "no snapshot means no tombstones");
-        assert_eq!(app.0.sync.pending_ops, 0, "the push completed");
-        assert_eq!(app.0.sync.phase, SyncPhase::Idle);
-        assert_eq!(app.0.sync.last_success, Some(ts(BASE + 3_660)));
+        assert_eq!(app.0.sync.aggregate().pending_ops, 0, "the push completed");
+        assert_eq!(app.0.sync.aggregate().phase, SyncPhase::Idle);
+        assert_eq!(app.0.sync.aggregate().last_success, Some(ts(BASE + 3_660)));
     }
 
     #[test]
     fn apply_push_report_keeps_last_success_when_an_outcome_was_rejected() {
         let task = bound_task(1);
         let mut base = base_state(task);
-        base.sync.last_success = Some(ts(BASE));
+        let bound = base.boards.keys().copied().next().expect("bound board");
+        base.sync.set_stored(bound, SyncPhase::Idle, Some(ts(BASE)));
         let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(61));
         let op = crate::outbox::PendingOp {
             op_id,
@@ -2052,10 +2106,14 @@ mod tests {
             ts(BASE + 60),
         );
 
-        assert_eq!(app.0.sync.pending_ops, 1, "rejected op stays queued");
-        assert_eq!(app.0.sync.phase, SyncPhase::Idle);
         assert_eq!(
-            app.0.sync.last_success,
+            app.0.sync.aggregate().pending_ops,
+            1,
+            "rejected op stays queued"
+        );
+        assert_eq!(app.0.sync.aggregate().phase, SyncPhase::Idle);
+        assert_eq!(
+            app.0.sync.aggregate().last_success,
             Some(ts(BASE)),
             "a rejected write is not a successful sync"
         );
@@ -2087,7 +2145,7 @@ mod tests {
         );
 
         assert_eq!(
-            app.0.sync.phase,
+            app.0.sync.aggregate().phase,
             SyncPhase::Failed {
                 last_error: SyncErrorKind::BadRequest
             }
@@ -2118,6 +2176,8 @@ mod tests {
                             .all(|l| l.remote_seen.is_some())
                         && state.tasks.values().filter(|t| t.remote.is_some())
                             .all(|t| t.remote_seen.is_some())
+                        // Push evidence must reference real outbox ops.
+                        && !state.outbox.is_empty()
                 },
             ),
             pushes in proptest::collection::vec(
@@ -2132,12 +2192,102 @@ mod tests {
                         result: crate::remote::PushResult::Applied { echo },
                     }),
                 0..6,
-            ),
+            )
+            .prop_filter("the push phase needs board evidence", |pushes| !pushes.is_empty())
         ) {
-            let Some(snapshot) = mirror_snapshot(&state) else {
+            let Some(mut snapshot) = mirror_snapshot(&state) else {
                 prop_assume!(false, "bound board available");
                 return Ok(());
             };
+            // A real cycle's push outcomes reference the outbox ops the
+            // cycle planned, and its create-echoes bind cards the next
+            // pull actually contains. The mirror cannot know a fresh
+            // echo, so echoes are kept only where they restate a ref the
+            // state already binds (an update echo); junk op references
+            // carry no board attribution. Both pipelines receive the
+            // same evidence either way — the equivalence under test.
+            let outbox_ids: Vec<crate::outbox::OpId> =
+                state.outbox.iter().map(|entry| entry.op_id).collect();
+            let bound_refs: std::collections::BTreeSet<_> = state
+                .tasks
+                .values()
+                .filter_map(|t| Some((t.remote?.board, t.remote?.card)))
+                .collect();
+            let pushes: Vec<crate::remote::PushOutcome> = pushes
+                .into_iter()
+                .enumerate()
+                .map(|(i, outcome)| crate::remote::PushOutcome {
+                    op: outbox_ids[i % outbox_ids.len()],
+                    result: match outcome.result {
+                        crate::remote::PushResult::Applied { echo } => {
+                            let mirror_bound = echo.as_ref().is_some_and(|echo| {
+                                let task_ref = match echo {
+                                    crate::remote::RemoteEcho::Task(t) => t.id,
+                                    _ => return false,
+                                };
+                                bound_refs.contains(&(task_ref.board, task_ref.card))
+                            });
+                            crate::remote::PushResult::Applied {
+                                echo: if mirror_bound { echo } else { None },
+                            }
+                        }
+                        other => other,
+                    },
+                })
+                .collect();
+            // The mirror is the *post-push* server truth: a Deck listing
+            // never returns tombstoned resources, and a delete pushed in
+            // this very cycle is already server-side gone. Drop tombstones
+            // and the refs this cycle's applied deletes finalized.
+            let op_by_id: std::collections::HashMap<_, _> = state
+                .outbox
+                .iter()
+                .map(|entry| (entry.op_id, &entry.op))
+                .collect();
+            let pushed_stack_deletes: std::collections::BTreeSet<_> = pushes
+                .iter()
+                .filter_map(|outcome| match outcome.result {
+                    crate::remote::PushResult::Applied { .. } => op_by_id.get(&outcome.op),
+                    _ => None,
+                })
+                .filter_map(|op| match op {
+                    LocalOp::DeleteStack(id) => state.stacks.get(id).and_then(|s| s.remote),
+                    _ => None,
+                })
+                .collect();
+            let pushed_label_deletes: std::collections::BTreeSet<_> = pushes
+                .iter()
+                .filter_map(|outcome| match outcome.result {
+                    crate::remote::PushResult::Applied { .. } => op_by_id.get(&outcome.op),
+                    _ => None,
+                })
+                .filter_map(|op| match op {
+                    LocalOp::DeleteLabel(id) => state.labels.get(id).and_then(|l| l.remote),
+                    _ => None,
+                })
+                .collect();
+            let pushed_task_deletes: std::collections::BTreeSet<_> = pushes
+                .iter()
+                .filter_map(|outcome| match outcome.result {
+                    crate::remote::PushResult::Applied { .. } => op_by_id.get(&outcome.op),
+                    _ => None,
+                })
+                .filter_map(|op| match op {
+                    LocalOp::DeleteTask(id) => {
+                        state.tasks.get(id).and_then(|t| t.remote.map(|r| (r.board, r.card)))
+                    }
+                    _ => None,
+                })
+                .collect();
+            snapshot.stacks.retain(|s| {
+                s.deleted_at.is_none() && !pushed_stack_deletes.contains(&s.id)
+            });
+            snapshot.labels.retain(|l| {
+                l.deleted_at.is_none() && !pushed_label_deletes.contains(&l.id)
+            });
+            snapshot.tasks.retain(|t| {
+                !pushed_task_deletes.contains(&(t.id.board, t.id.card))
+            });
 
             let app: AppState = state.clone().into();
             let now = ts(2_000_000_000);
@@ -2349,7 +2499,7 @@ mod tests {
             "R9c clears the binding immediately"
         );
         assert!(merged.remote_seen.is_none());
-        assert_eq!(app.0.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.aggregate().pending_ops, 0);
         assert!(
             !app.1
                 .iter()
@@ -2392,7 +2542,7 @@ mod tests {
         let merged = &app.0.stacks[stack_id];
         assert_eq!(merged.remote, Some(stack_ref(1)));
         assert_eq!(merged.title, "normalized");
-        assert_eq!(app.0.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.aggregate().pending_ops, 0);
     }
 
     #[test]
@@ -2431,7 +2581,7 @@ mod tests {
         let merged = &app.0.labels[&label_id];
         assert_eq!(merged.remote, Some(expected_ref));
         assert_eq!(merged.title, "normalized");
-        assert_eq!(app.0.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.aggregate().pending_ops, 0);
     }
 
     #[test]
@@ -2483,7 +2633,7 @@ mod tests {
         assert!(app.0.stacks[&stack_id].remote.is_none());
         assert!(app.0.labels[&label_id].deleted);
         assert!(app.0.labels[&label_id].remote.is_none());
-        assert_eq!(app.0.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.aggregate().pending_ops, 0);
     }
 
     #[test]
@@ -2529,7 +2679,7 @@ mod tests {
         assert!(app.0.stacks[&stack_id].remote.is_none());
         assert!(app.0.labels[&label_id].deleted);
         assert!(app.0.labels[&label_id].remote.is_none());
-        assert_eq!(app.0.sync.pending_ops, 0);
+        assert_eq!(app.0.sync.aggregate().pending_ops, 0);
     }
 
     #[test]
@@ -2580,7 +2730,11 @@ mod tests {
         );
 
         assert!(app.0.tasks[&task_id].deleted);
-        assert_eq!(app.0.sync.pending_ops, 0, "all three ops resolved");
+        assert_eq!(
+            app.0.sync.aggregate().pending_ops,
+            0,
+            "all three ops resolved"
+        );
     }
 
     #[test]
@@ -2624,7 +2778,8 @@ mod tests {
 
         assert!(app.0.tasks[&task_id].deleted);
         assert_eq!(
-            app.0.sync.pending_ops, 1,
+            app.0.sync.aggregate().pending_ops,
+            1,
             "sibling assign cancelled, stack op queued"
         );
         assert!(
@@ -2633,7 +2788,8 @@ mod tests {
                 .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(29)))),
         );
         assert_eq!(
-            app.0.sync.pending_ops, 1,
+            app.0.sync.aggregate().pending_ops,
+            1,
             "the unrelated stack op stays queued"
         );
         assert!(
@@ -2738,7 +2894,8 @@ mod tests {
         );
         assert!(app.0.labels[&label_id].deleted, "labels finalized");
         assert_eq!(
-            app.0.sync.pending_ops, 0,
+            app.0.sync.aggregate().pending_ops,
+            0,
             "the board's tasks' ops are cancelled by the cascade"
         );
     }
@@ -2770,7 +2927,11 @@ mod tests {
 
         let task_id = task_by_card(&state, 1).id;
         assert!(app.0.tasks[&task_id].deleted);
-        assert_eq!(app.0.sync.pending_ops, 0, "cascade cancels the moved op");
+        assert_eq!(
+            app.0.sync.aggregate().pending_ops,
+            0,
+            "cascade cancels the moved op"
+        );
     }
 
     #[test]
@@ -3172,7 +3333,7 @@ mod tests {
         assert!(!merged.tasks.contains_key(&ghost_task));
         assert!(!merged.stacks.contains_key(&ghost_stack));
         assert!(!merged.labels.contains_key(&ghost_label));
-        assert_eq!(merged.sync.pending_ops, 0);
+        assert_eq!(merged.sync.aggregate().pending_ops, 0);
         assert_eq!(
             actions
                 .iter()
@@ -3759,7 +3920,7 @@ mod tests {
                 .any(|a| matches!(a, PersistenceAction::FailOp(id) | PersistenceAction::CompleteOp(id) if *id == op_id)),
             "the delete op stays queued untouched"
         );
-        assert_eq!(app.0.sync.pending_ops, 1);
+        assert_eq!(app.0.sync.aggregate().pending_ops, 1);
     }
 
     #[test]

@@ -154,7 +154,7 @@ async fn eventually(engine: &taskboard_state::EngineHandle, pred: impl Fn(&AppSt
         assert!(
             std::time::Instant::now() < deadline,
             "predicate not satisfied within the deadline (sync.phase: {:?})",
-            state.sync.phase
+            state.sync.aggregate().phase
         );
         // Time advances only here: the actor's poll ticks fire while the
         // test waits, never between assertions.
@@ -569,7 +569,14 @@ async fn i1_offline_creates_round_trip_to_the_server() {
     })
     .await;
     assert!(
-        stack.engine.shared_state().load_full().sync.phase == SyncPhase::Idle,
+        stack
+            .engine
+            .shared_state()
+            .load_full()
+            .sync
+            .aggregate()
+            .phase
+            == SyncPhase::Idle,
         "the cycle completed cleanly"
     );
     assert!(
@@ -806,7 +813,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
     wait_subscribed(&stack.system_tx).await;
     bind_board(&commands).await;
 
-    eventually(&stack.engine, |app| app.sync.pending_ops == 0).await;
+    eventually(&stack.engine, |app| app.sync.aggregate().pending_ops == 0).await;
     // The move and the label assignment both reached the server.
     eventually_no_state(|| {
         let ops = sim.ops.lock().unwrap();
@@ -841,7 +848,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
         .expect("accepted");
     eventually_no_state(|| sim.ops.lock().unwrap().contains(&"delete".to_string())).await;
     eventually(&stack.engine, |app| {
-        app.sync.pending_ops == 0
+        app.sync.aggregate().pending_ops == 0
             && app
                 .tasks
                 .get(&task_id)
@@ -883,7 +890,7 @@ async fn i5_restart_resumes_conditional_polling() {
     wait_subscribed(&stack.system_tx).await;
     bind_board(&commands).await;
     eventually(&stack.engine, |app| {
-        app.sync.phase == SyncPhase::Idle && app.sync.last_success.is_some()
+        app.sync.aggregate().phase == SyncPhase::Idle && app.sync.aggregate().last_success.is_some()
     })
     .await;
     stack.engine.flush().await;
@@ -906,11 +913,17 @@ async fn i5_restart_resumes_conditional_polling() {
     assert!(first_actor.is_finished(), "the aborted actor stops");
     let before = stack.server.received_requests().await.unwrap().len();
     let (_commands2, _second_actor) = spawn_actor(&stack);
-    let first_success = stack.engine.shared_state().load_full().sync.last_success;
+    let first_success = stack
+        .engine
+        .shared_state()
+        .load_full()
+        .sync
+        .aggregate()
+        .last_success;
     eventually(&stack.engine, |app| {
-        app.sync.last_success.is_some()
-            && app.sync.phase == SyncPhase::Idle
-            && app.sync.last_success != first_success
+        app.sync.aggregate().last_success.is_some()
+            && app.sync.aggregate().phase == SyncPhase::Idle
+            && app.sync.aggregate().last_success != first_success
     })
     .await;
     stack.engine.flush().await;

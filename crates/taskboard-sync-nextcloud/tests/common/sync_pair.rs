@@ -125,5 +125,10 @@ pub(crate) async fn eventually(pair: &SyncPair, pred: impl Fn(&AppState) -> bool
 
 /// The sync phase the published state reports.
 pub(crate) fn phase(pair: &SyncPair) -> SyncPhase {
-    pair.engine.shared_state().load_full().sync.phase
+    pair.engine
+        .shared_state()
+        .load_full()
+        .sync
+        .aggregate()
+        .phase
 }
