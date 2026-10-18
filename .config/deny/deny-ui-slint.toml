@@ -1,0 +1,29 @@
+# Boundary config: taskboard-ui-slint IO ban (issue #252, audit F7-02).
+# Yardstick: AGENTS §2 — the UI is a dumb presentation client; no IO
+# crates. Run with:
+#   cargo deny --config .config/deny/deny-ui-slint.toml \
+#     --manifest-path crates/taskboard-ui-slint/Cargo.toml check bans
+# Deliberately minimal ([graph] + [bans] only): the CI step runs
+# `check bans` exclusively; the canonical full check (licenses,
+# advisories) remains the root `cargo deny check` (AGENTS §10).
+# Never banned, deliberately: tokio (the mandated channel fabric,
+# AGENTS §3) and proptest.
+
+[graph]
+exclude-dev = true   # dev-deps stay unjudged; bans target shipped edges
+
+[bans]
+deny = [
+    # Net stack.
+    "reqwest",
+    "hyper",
+    "hyper-util",
+    "tonic",
+    # Persistence.
+    "sqlx",
+    "rusqlite",
+    "libsqlite3-sys",
+    # Credential IO is app/actor territory.
+    "keyring",
+    "rpassword",
+]
