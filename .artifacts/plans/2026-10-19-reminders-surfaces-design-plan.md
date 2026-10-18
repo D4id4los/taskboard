@@ -25,9 +25,14 @@
 - **Branch / worktree**: `docs/daily-driver-design-round` in
   `../taskboard-WT-docs-daily-driver-design-round`, sequential chunk 3
   (chunks 1–2 already on the branch: `2b1a657`, `a8edfdb`+`f236c0b`).
-- **Status**: PROPOSED — one recommendation per question (§4). **D-R10
-  (the toast dependency) is a stack-approval item for the user's
-  decision session** (AGENTS §4; framing D-D6 names it explicitly).
+- **Status**: recommendations **ACCEPTED** — the user's decision
+  session (2026-10-19) accepted all of §4's recommendations as
+  designed, including the **stack approval for D-R10**
+  (`notify-rust` 4.18.x enters `[workspace.dependencies]`), with no
+  amendments, and ordered one tracker edit: the timers & alarms UI
+  surface is recorded as backlog issue **#352** (unscheduled, §3.9).
+  Record in §4. Zero production code beyond that tracker edit — this
+  file is the chunk's entire diff.
 
 ---
 
@@ -340,7 +345,9 @@ taskboard timers cancel <selector>                            # selector: alarm 
   stopwatch).
 - **No UI surface in-wave** (#211: "CLI-first; GUI/overlay surfaces
   later"). Kiosk shows nothing new: `overdue_tasks`/banner are
-  task-only by contract (reminders design §7) and stay so.
+  task-only by contract (reminders design §7) and stay so. **Ruled
+  2026-10-19**: the deferred GUI surface is tracked as backlog issue
+  **#352** (unscheduled; companions the #203 reminder center).
 
 ### Part C — The toast sink (#344, the reminders "plan 5")
 
@@ -371,6 +378,12 @@ Evaluate `z-with-tokio` vs default at implementation (both work from
 tokio; the feature removes zbus's internal executor thread — a
 reasonable kiosk-memory nicety, decided by measurement, not doctrine).
 `cargo deny check` gates the new license tree per target (AGENTS §10).
+
+**Ruled (2026-10-19): stack approval GRANTED — `notify-rust` 4.18.x
+enters the approved stack** as the notification dependency of
+`taskboard-app`, per the recommendation (default features, no image
+feature, single workspace pin; `z-with-tokio` left to implementation
+measurement).
 
 #### 3.11 D-R11 — What stays behind the port
 
@@ -435,19 +448,19 @@ precedent for a typed config failure, config.rs:212–229):
 
 ---
 
-## 4. Decision summary (one recommendation each — for the user's session)
+## 4. Decision summary (one recommendation each — ruled by the user's session 2026-10-19)
 
 | ID | Question | Recommendation | Status |
 |---|---|---|---|
-| D-R1 | N-rule verb semantics | Retire `SetReminderRule`; `AddReminderRule` (dedup-by-offset, names surviving rule) + `RemoveReminderRule` (by id) + keep `ClearReminderRules` | PROPOSED |
-| D-R3 | CLI shape | Bare `remind <task> --before` becomes add; `--remove <task> <rule>` with id/prefix/offset selectors; list/clear/off/on unchanged | PROPOSED |
-| D-R4 | N-rules UX | Task-editor rule-list composition + add affordance; banner target unchanged; no cap | PROPOSED |
-| D-R5 | Adhoc anchor | `ReminderRef::Adhoc(AdhocAlarmId)` + `AdhocAlarm { id, label, fire_at, created_at }` in `ReminderState.alarms`; absolute `fire_at`, planner stamps durations | PROPOSED |
-| D-R7 | Alarm lifecycle | Create/cancel commands; settlement-prune in the post-batch pass after snooze compaction; no GC/retention knob | PROPOSED |
-| D-R9 | Timers surface | `timers add/list/cancel` CLI+REPL two-lane; no UI in-wave; device-local | PROPOSED |
-| **D-R10** | **Toast dependency (stack approval)** | **`notify-rust` 4.18.x (single façade; zbus pure-Rust on Linux, mac-notification-sys, tauri-winrt-notification; MIT OR Apache-2.0; `z-with-tokio` evaluated at impl)** over the hand-assembled three-crate stack and the portal route | **USER MUST APPROVE** |
-| D-R12 | Toast interactivity | Passive toasts only (GNOME drops `actions`); interactive snooze stays in-app (banner seed exists; reminder center deferred to #203) | PROPOSED |
-| D-R13 | Sink config & kiosk | `[reminders] sink = auto/log/desktop`, default `auto` by AppMode (Desktop→toast, Daemon/Kiosk→log); failure logs, never retries/fallback-sends | PROPOSED |
+| D-R1 | N-rule verb semantics | Retire `SetReminderRule`; `AddReminderRule` (dedup-by-offset, names surviving rule) + `RemoveReminderRule` (by id) + keep `ClearReminderRules` | ACCEPTED (2026-10-19) |
+| D-R3 | CLI shape | Bare `remind <task> --before` becomes add; `--remove <task> <rule>` with id/prefix/offset selectors; list/clear/off/on unchanged | ACCEPTED (2026-10-19) |
+| D-R4 | N-rules UX | Task-editor rule-list composition + add affordance; banner target unchanged; no cap | ACCEPTED (2026-10-19) |
+| D-R5 | Adhoc anchor | `ReminderRef::Adhoc(AdhocAlarmId)` + `AdhocAlarm { id, label, fire_at, created_at }` in `ReminderState.alarms`; absolute `fire_at`, planner stamps durations | ACCEPTED (2026-10-19) |
+| D-R7 | Alarm lifecycle | Create/cancel commands; settlement-prune in the post-batch pass after snooze compaction; no GC/retention knob | ACCEPTED (2026-10-19) |
+| D-R9 | Timers surface | `timers add/list/cancel` CLI+REPL two-lane; no UI in-wave (tracked as #352); device-local | ACCEPTED (2026-10-19) |
+| **D-R10** | **Toast dependency (stack approval)** | **`notify-rust` 4.18.x (single façade; zbus pure-Rust on Linux, mac-notification-sys, tauri-winrt-notification; MIT OR Apache-2.0; `z-with-tokio` evaluated at impl)** over the hand-assembled three-crate stack and the portal route | **APPROVED (2026-10-19) — stack granted** |
+| D-R12 | Toast interactivity | Passive toasts only (GNOME drops `actions`); interactive snooze stays in-app (banner seed exists; reminder center deferred to #203) | ACCEPTED (2026-10-19) |
+| D-R13 | Sink config & kiosk | `[reminders] sink = auto/log/desktop`, default `auto` by AppMode (Desktop→toast, Daemon/Kiosk→log); failure logs, never retries/fallback-sends | ACCEPTED (2026-10-19) |
 
 (D-R2, D-R6, D-R8, D-R11 are engineering consequences of the above,
 recorded in §3 with their anchors; they carry no independent choice.)
@@ -540,7 +553,8 @@ sequencing of 7 pinned here to follow 6).
   §3.2 (wave-1 reminder items), §6.
 - Audit: F16-20/F16-21 (v0.1.0 audit, cross-referenced on #204/#211).
 - Issues: #204, #211, #344 (+ #202 scope fence, #203 insistence,
-  #350 the sidecar repair fence chunk 1 recorded).
+  #350 the sidecar repair fence chunk 1 recorded, #352 the timers UI
+  this round's session ordered).
 - Toast dependency evidence (verified 2026-10-19): notify-rust
   docs.rs/crates.io (4.18.2; MIT OR Apache-2.0; zbus ^5 default /
   `mac-notification-sys ^0.6.15` / `tauri-winrt-notification ^0.8`;
