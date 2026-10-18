@@ -34,6 +34,48 @@ The workspace carries a single global version (see `docs/architecture.org`);
   renamed to `EngineEnvelope` — a mechanical rename so the type name
   matches the payload/envelope vocabulary the docs already use; no
   variant, field, or behavior change (#302).
+- The `connect` ceremony and daemon bootstrap warn once per process
+  when the Nextcloud server URL is cleartext `http`, and the connect
+  receipt records a `cleartext_transport` flag (#261).
+- Release builds enable overflow-checks: arithmetic overflow in the
+  shipped binary panics loudly instead of wrapping silently (dev and
+  test builds already checked) (#303).
+
+### Fixed
+
+- A push raced by another client's move no longer loses the local
+  intent or re-adopts the card as a twin: a 404 at the stale stack
+  binding re-resolves the card once against the fresh listings and
+  retries at the fresh location — update/move re-fetch before
+  classifying (#258), delete retries at the fresh stack (#319); a
+  card absent from every stack still converges `RemoteMissing`, so
+  the local tombstone stays correct (ADR 0007).
+- Label-delta outcomes on task updates are decided per operation: a
+  failing `assignLabel`/`removeLabel` sub-call no longer completes
+  the primary edit and its other label ops with the primary's
+  result — ops whose write landed stay `Applied`, the failing
+  label's ops carry the classified outcome per op, and an
+  unresolvable label reaches `Rejected { LocalData }` instead of
+  being silently shadowed (#310, #314).
+- A stray shared reference to the running core no longer panics the
+  daemon mid-shutdown: the shutdown tail logs the advisory refcount,
+  runs the ownership-free salvage steps (engine flush, `Shutdown`
+  broadcast), and exits through the regular error path (#257).
+- Server URLs carrying credentials (`https://user:password@host`)
+  are rejected with a typed error at config validation and client
+  construction, instead of validating and carrying the credential
+  through resolved-config logs and the client's base URL (#260).
+- Files taskboard creates are owner-only (`0600`): the SQLite
+  database with its WAL/SHM siblings, the daemon lock sidecar, and
+  the config file rewritten by `connect` and `logout`; pre-existing
+  permissive copies are tightened on the next run (#297).
+- REPL history is written through taskboard's own `0600` writer
+  instead of rustyline's save, whose process-global umask window
+  could strip permission bits from files sibling threads created
+  concurrently (#289).
+- The state engine exits when every input source is closed: the run
+  loop no longer pins its own system-event sender, which had made
+  the all-sources-closed exit structurally unreachable (#316).
 
 ## [0.1.0] - 2026-10-16
 
