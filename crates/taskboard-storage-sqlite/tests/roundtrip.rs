@@ -160,6 +160,7 @@ proptest! {
                 let expected_pending = state.outbox.len();
                 prop_assert_eq!(loaded.outbox, state.outbox);
                 prop_assert_eq!(loaded.validators, state.validators);
+                prop_assert_eq!(loaded.reminders, state.reminders);
                 prop_assert_eq!(loaded.sync.phase, state.sync.phase);
                 prop_assert_eq!(loaded.sync.last_success, state.sync.last_success);
                 prop_assert_eq!(
