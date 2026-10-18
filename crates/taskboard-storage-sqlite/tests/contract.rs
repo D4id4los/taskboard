@@ -3,8 +3,11 @@
 //! on `:memory:` and on a file-backed database (the plan's Phase 2 exit
 //! criterion).
 
+mod common;
+
+use common::FileDb;
 use taskboard_domain::test_support::contract::assert_task_repository_contract_async;
-use taskboard_storage_sqlite::{open, open_memory};
+use taskboard_storage_sqlite::open_memory;
 
 #[tokio::test]
 async fn sqlite_memory_repository_satisfies_contract() {
@@ -14,10 +17,7 @@ async fn sqlite_memory_repository_satisfies_contract() {
 
 #[tokio::test]
 async fn sqlite_file_repository_satisfies_contract() {
-    let file = tempfile::Builder::new()
-        .suffix(".db")
-        .tempfile()
-        .expect("tempfile");
-    let repo = open(file.path()).await.expect("open file db");
-    assert_task_repository_contract_async(&repo).await;
+    let mut db = FileDb::new().await;
+    assert_task_repository_contract_async(db.repo()).await;
+    db.close().await;
 }

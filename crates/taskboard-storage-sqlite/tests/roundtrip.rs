@@ -21,7 +21,7 @@ use taskboard_domain::persistence::{
     ValidatorKey,
 };
 use taskboard_domain::state::{SyncErrorKind, SyncPhase, SyncStatus};
-use taskboard_storage_sqlite::{open, open_memory};
+use taskboard_storage_sqlite::open_memory;
 
 use common::actions_from_state;
 
@@ -295,19 +295,19 @@ async fn task_upsert_keeps_label_set() {
 /// temporary `RAISE(ABORT)` trigger on outbox inserts.
 #[tokio::test]
 async fn failed_batch_rolls_back_atomically() {
-    let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
-    let repo = open(file.path()).await.expect("open");
+    let mut db = common::FileDb::new().await;
     let b = board(11);
     let s = stack(2, &b);
-    repo.apply(vec![
-        PersistenceAction::UpsertBoard(b.clone()),
-        PersistenceAction::UpsertStack(s.clone()),
-    ])
-    .await
-    .expect("setup");
+    db.repo()
+        .apply(vec![
+            PersistenceAction::UpsertBoard(b.clone()),
+            PersistenceAction::UpsertStack(s.clone()),
+        ])
+        .await
+        .expect("setup");
 
     // Raw second connection to the same file: installs the sabotage.
-    let raw = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", file.path().display()))
+    let raw = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
         .await
         .expect("raw connect");
     sqlx::query("CREATE TRIGGER sabotage BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT, 'sabotage'); END")
@@ -316,7 +316,8 @@ async fn failed_batch_rolls_back_atomically() {
         .expect("trigger");
 
     let t = task(1, &s, BTreeSet::new());
-    let result = repo
+    let result = db
+        .repo()
         .apply(vec![
             PersistenceAction::UpsertTask(t.clone()),
             PersistenceAction::EnqueueOp(PendingOp {
@@ -334,12 +335,13 @@ async fn failed_batch_rolls_back_atomically() {
         .expect("drop trigger");
     raw.close().await;
 
-    let loaded = repo.load().await.expect("load after rollback");
+    let loaded = db.repo().load().await.expect("load after rollback");
     assert!(
         !loaded.tasks.contains_key(&t.id),
         "task upsert must be rolled back"
     );
     assert!(loaded.outbox.is_empty(), "enqueue must be rolled back");
+    db.close().await;
 }
 
 /// T9 — an `UpdateBoard` op is stored in the outbox `board_id` column with
@@ -348,18 +350,18 @@ async fn failed_batch_rolls_back_atomically() {
 #[tokio::test]
 async fn rename_board_op_lands_in_the_board_column() {
     let board_uuid = uuid::Uuid::from_u128(0xb1);
-    let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
-    let repo = open(file.path()).await.expect("open");
+    let mut db = common::FileDb::new().await;
     let op_id = OpId(uuid::Uuid::from_u128(0xb2));
-    repo.apply(vec![PersistenceAction::EnqueueOp(PendingOp {
-        op_id,
-        op: LocalOp::UpdateBoard(BoardId::from(board_uuid)),
-        queued_at: ts(42),
-    })])
-    .await
-    .expect("enqueue");
+    db.repo()
+        .apply(vec![PersistenceAction::EnqueueOp(PendingOp {
+            op_id,
+            op: LocalOp::UpdateBoard(BoardId::from(board_uuid)),
+            queued_at: ts(42),
+        })])
+        .await
+        .expect("enqueue");
 
-    let raw = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", file.path().display()))
+    let raw = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
         .await
         .expect("raw connect");
     let (board_id, stack_id): (Option<String>, Option<String>) =
@@ -372,20 +374,20 @@ async fn rename_board_op_lands_in_the_board_column() {
     assert_eq!(board_id.as_deref(), Some(board_uuid.to_string().as_str()));
     assert_eq!(stack_id, None, "the board id must not ride stack_id");
 
-    let loaded = repo.load().await.expect("load");
+    let loaded = db.repo().load().await.expect("load");
     assert_eq!(
         loaded.outbox.iter().map(|o| o.op).collect::<Vec<_>>(),
         vec![LocalOp::UpdateBoard(BoardId::from(board_uuid))]
     );
+    db.close().await;
 }
 
 /// T7 — raw-inserted corrupt rows decode to `Err(Corrupted)`, per class.
 #[tokio::test]
 async fn corrupt_rows_decode_to_corrupted() {
     async fn corrupt_and_load(sql: &'static str) -> Result<PersistedState, RepositoryError> {
-        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
-        let repo = open(file.path()).await.expect("open");
-        let raw = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", file.path().display()))
+        let mut db = common::FileDb::new().await;
+        let raw = sqlx::sqlite::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
             .await
             .expect("raw connect");
         sqlx::query(sql)
@@ -393,7 +395,9 @@ async fn corrupt_rows_decode_to_corrupted() {
             .await
             .expect("corrupt insert");
         raw.close().await;
-        repo.load().await
+        let outcome = db.repo().load().await;
+        db.close().await;
+        outcome
     }
 
     // Unparseable uuid in an id column.
@@ -456,8 +460,7 @@ async fn corrupt_rows_decode_to_corrupted() {
 /// second open runs zero pending migrations).
 #[tokio::test]
 async fn state_survives_reopen() {
-    let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
-    let repo = open(file.path()).await.expect("open");
+    let mut db = common::FileDb::new().await;
     let state = PersistedState {
         boards: BTreeMap::from([(board(11).id, board(11))]),
         sync: SyncStatus {
@@ -469,13 +472,16 @@ async fn state_survives_reopen() {
         },
         ..PersistedState::default()
     };
-    repo.apply(actions_from_state(&state)).await.expect("apply");
-    let expected = repo.load().await.expect("load");
-    drop(repo);
+    db.repo()
+        .apply(actions_from_state(&state))
+        .await
+        .expect("apply");
+    let expected = db.repo().load().await.expect("load");
+    db.reopen().await;
 
-    let reopened = open(file.path()).await.expect("reopen");
-    let loaded = reopened.load().await.expect("load");
+    let loaded = db.repo().load().await.expect("load");
     assert_eq!(loaded, expected);
+    db.close().await;
 }
 
 /// Validators for a `stacks:<board>` key round-trip (the key form that the
