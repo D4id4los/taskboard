@@ -297,17 +297,38 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install Bencher CLI
+        # Pinned deliberately (house pin policy, cf. the coverage lane):
+        # the CLI's flags and API are this workflow's contract, and an
+        # unpinned tool once broke a workflow silently (F1-03 class).
+        # Bencher Cloud occasionally ships server changes needing a
+        # newer CLI — a skew fails this step loudly, which is the
+        # designed posture; bump on purpose.
+        uses: bencherdev/bencher@v0.6.13
+        with:
+          version: 0.6.13
+
+      - name: Verify Bencher CLI
+        # PR-visible proof the CLI exists on PATH — the exact failure
+        # (command not found, exit 127, swallowed) the graduation fixed.
+        run: bencher --version
+
       - name: Run Criterion Benchmarks
-        # Plain `cargo bench`: a no-op while no [[bench]] targets exist.
-        # (--output-format bencher is a nightly-only libtest option and fails
-        # on stable; bencher's rust_criterion adapter parses criterion's own
-        # output, so the flag is not needed for the tracking step either.)
+        # Every non-main-push event (PRs, manual dispatch). Benches run
+        # exactly once per event: on main pushes they run inside
+        # `bencher run` below instead (the former double run).
+        # (--output-format bencher is a nightly-only libtest flag and
+        # unneeded on stable; bencher's rust_criterion adapter parses
+        # criterion's own output.)
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         run: cargo bench --workspace
 
       - name: Track Benchmarks with Bencher
-        # Only record trend data from main pushes; Bencher needs the API token.
+        # Record trend data from main pushes only; Bencher needs the API
+        # token. The rust_criterion adapter parses criterion's stdout,
+        # so the suite runs inside `bencher run`. Failures are loud —
+        # never re-add continue-on-error here.
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        continue-on-error: true # TODO: remove once the first criterion benches exist
         env:
           BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
         run: |
