@@ -5,6 +5,7 @@
 //! fresh listing, boot the core, refuse a rebind, `SetBoard`, wait for
 //! the adoption that persists the binding.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,8 @@ use taskboard_domain::{
 };
 
 use crate::commands::output::{
-    BoardReceipt, BoardsListEntry, PublishReceipt, SelectReceipt, SyncStatusView,
+    BoardDestructReceipt, BoardReceipt, BoardsListEntry, PublishReceipt, SelectReceipt,
+    SyncStatusView,
 };
 use crate::commands::{CommandError, map_deck_error};
 use crate::config::AppConfig;
@@ -111,29 +113,6 @@ pub async fn rename(
     crate::commands::tasks::with_core(config, store, async |app| rename_on(app, title).await).await
 }
 
-/// The `boards rename` steps on a booted core (the REPL/session seam).
-pub(crate) async fn rename_on(
-    app: &crate::App,
-    title: String,
-) -> Result<BoardReceipt, CommandError> {
-    app.engine
-        .execute(StateCommand::RenameBoard {
-            title: title.clone(),
-        })
-        .await?;
-    let state = app.engine.shared_state().load_full();
-    let board = state
-        .boards
-        .values()
-        .find(|b| !b.deleted)
-        .ok_or(CommandError::NoBoard)?;
-    Ok(BoardReceipt {
-        id: board.id.as_uuid().to_string(),
-        title: board.title.clone(),
-        color: board.color.as_str().to_owned(),
-    })
-}
-
 /// The `boards create` steps on a booted core (the REPL/session seam).
 pub(crate) async fn create_on(
     app: &crate::App,
@@ -158,6 +137,246 @@ pub(crate) async fn create_on(
         title,
         color: color_str,
     })
+}
+
+/// The `boards rename` steps on a booted core (the REPL/session seam).
+pub(crate) async fn rename_on(
+    app: &crate::App,
+    title: String,
+) -> Result<BoardReceipt, CommandError> {
+    app.engine
+        .execute(StateCommand::RenameBoard {
+            title: title.clone(),
+        })
+        .await?;
+    board_receipt(app)
+}
+
+/// The live board's content and queued-op scope — the shared input of
+/// the confirmation refusal and the landed receipt (one pre-count, one
+/// truth).
+struct BoardScope {
+    board_id: taskboard_domain::BoardId,
+    stacks: usize,
+    tasks: usize,
+    labels: usize,
+    pending_ops: usize,
+    bound_remote: Option<u64>,
+}
+
+/// Snapshots the scope from the booted core: the published state's live
+/// content plus the engine's persisted outbox (the queue the delete
+/// would cancel / the reset would clear).
+async fn read_scope(app: &crate::App) -> Result<BoardScope, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let Some(board) = state.boards.values().find(|b| !b.deleted) else {
+        return Err(CommandError::NoBoard);
+    };
+    let (board_id, bound_remote, stacks, tasks, board_labels) = {
+        let stacks: BTreeSet<taskboard_domain::StackId> = state
+            .stacks
+            .values()
+            .filter(|s| s.board == board.id)
+            .map(|s| s.id)
+            .collect();
+        let tasks: BTreeSet<taskboard_domain::TaskId> = state
+            .tasks
+            .values()
+            .filter(|t| t.is_live() && stacks.contains(&t.stack))
+            .map(|t| t.id)
+            .collect();
+        let labels: BTreeSet<taskboard_domain::LabelId> = state
+            .labels
+            .iter()
+            .filter(|(_, l)| l.board == board.id && !l.deleted)
+            .map(|(id, _)| *id)
+            .collect();
+        (board.id, board.remote.map(|r| r.0), stacks, tasks, labels)
+    };
+    let labels = board_labels.len();
+    drop(state);
+    let persisted = taskboard_domain::SyncStateReader::read_state(&app.engine)
+        .await
+        .map_err(|_| CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone)))?;
+    let pending_ops = persisted
+        .outbox
+        .iter()
+        .filter(|pending| match pending.op {
+            taskboard_domain::LocalOp::UpdateBoard(id)
+            | taskboard_domain::LocalOp::DeleteBoard(id) => id == board_id,
+            taskboard_domain::LocalOp::CreateTask(id)
+            | taskboard_domain::LocalOp::UpdateTask(id)
+            | taskboard_domain::LocalOp::MoveTask(id)
+            | taskboard_domain::LocalOp::DeleteTask(id)
+            | taskboard_domain::LocalOp::AssignLabel(id, _)
+            | taskboard_domain::LocalOp::UnassignLabel(id, _) => tasks.contains(&id),
+            taskboard_domain::LocalOp::CreateStack(id)
+            | taskboard_domain::LocalOp::RenameStack(id)
+            | taskboard_domain::LocalOp::MoveStack(id)
+            | taskboard_domain::LocalOp::DeleteStack(id) => stacks.contains(&id),
+            taskboard_domain::LocalOp::CreateLabel(id)
+            | taskboard_domain::LocalOp::UpdateLabel(id)
+            | taskboard_domain::LocalOp::DeleteLabel(id) => board_labels.contains(&id),
+        })
+        .count();
+    Ok(BoardScope {
+        board_id,
+        stacks: stacks.len(),
+        tasks: tasks.len(),
+        labels,
+        pending_ops,
+        bound_remote,
+    })
+}
+
+/// The shared ceremony body of `boards delete` / `boards reset`: refuse
+/// without `--confirm` (typed, stating what would go), else dispatch and
+/// report the landed counts.
+async fn destruct_on(
+    app: &crate::App,
+    verb: &'static str,
+    confirm: bool,
+    command: StateCommand,
+) -> Result<BoardDestructReceipt, CommandError> {
+    let scope = read_scope(app).await?;
+    if !confirm {
+        return Err(CommandError::ConfirmationRequired {
+            verb: verb.to_owned(),
+            stacks: scope.stacks,
+            tasks: scope.tasks,
+            labels: scope.labels,
+            pending_ops: scope.pending_ops,
+            bound: scope.bound_remote.is_some(),
+        });
+    }
+    app.engine.execute(command).await?;
+    Ok(BoardDestructReceipt {
+        board: scope.board_id.as_uuid().to_string(),
+        verb: verb.to_owned(),
+        stacks: scope.stacks,
+        tasks: scope.tasks,
+        labels: scope.labels,
+        pending_ops: scope.pending_ops,
+        bound_remote: scope.bound_remote,
+    })
+}
+
+/// The `boards color` steps on a booted core (the REPL/session seam).
+pub(crate) async fn color_on(
+    app: &crate::App,
+    color: taskboard_domain::Color,
+) -> Result<BoardReceipt, CommandError> {
+    app.engine
+        .execute(StateCommand::SetBoardColor { color })
+        .await?;
+    board_receipt(app)
+}
+
+/// The `boards archive`/`boards unarchive` steps on a booted core.
+pub(crate) async fn archive_on(
+    app: &crate::App,
+    archived: bool,
+) -> Result<BoardReceipt, CommandError> {
+    app.engine
+        .execute(StateCommand::SetBoardArchived { archived })
+        .await?;
+    board_receipt(app)
+}
+
+/// The `boards delete` steps on a booted core.
+pub(crate) async fn delete_on(
+    app: &crate::App,
+    confirm: bool,
+) -> Result<BoardDestructReceipt, CommandError> {
+    destruct_on(app, "delete", confirm, StateCommand::DeleteBoard).await
+}
+
+/// The `boards reset` steps on a booted core.
+pub(crate) async fn reset_on(
+    app: &crate::App,
+    confirm: bool,
+) -> Result<BoardDestructReceipt, CommandError> {
+    destruct_on(app, "reset", confirm, StateCommand::ResetBoard).await
+}
+
+/// The post-edit board projection shared by the edit-verb receipts.
+fn board_receipt(app: &crate::App) -> Result<BoardReceipt, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let board = state
+        .boards
+        .values()
+        .find(|b| !b.deleted)
+        .ok_or(CommandError::NoBoard)?;
+    Ok(BoardReceipt {
+        id: board.id.as_uuid().to_string(),
+        title: board.title.clone(),
+        color: board.color.as_str().to_owned(),
+    })
+}
+
+/// Sets the board color (both backends). Malformed input never reaches
+/// here: clap's value parser makes it a usage error.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn color(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    color: taskboard_domain::Color,
+) -> Result<BoardReceipt, CommandError> {
+    crate::commands::tasks::with_core(config, store, async move |app| color_on(app, color).await)
+        .await
+}
+
+/// Archives (`true`) or unarchives (`false`) the board (both backends).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn archive(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    archived: bool,
+) -> Result<BoardReceipt, CommandError> {
+    crate::commands::tasks::with_core(config, store, async move |app| {
+        archive_on(app, archived).await
+    })
+    .await
+}
+
+/// Deletes the board (both backends). The `--confirm` ceremony lives
+/// here and in the session dispatcher; the domain command stays pure.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed: [`CommandError::ConfirmationRequired`]
+/// without `--confirm`, engine classes otherwise.
+pub async fn delete(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    confirm: bool,
+) -> Result<BoardDestructReceipt, CommandError> {
+    crate::commands::tasks::with_core(config, store, async move |app| {
+        delete_on(app, confirm).await
+    })
+    .await
+}
+
+/// Resets the board's local content (both backends); same ceremony as
+/// [`delete`].
+///
+/// # Errors
+///
+/// [`CommandError`] — typed: [`CommandError::ConfirmationRequired`]
+/// without `--confirm`, engine classes otherwise.
+pub async fn reset(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    confirm: bool,
+) -> Result<BoardDestructReceipt, CommandError> {
+    crate::commands::tasks::with_core(config, store, async move |app| reset_on(app, confirm).await)
+        .await
 }
 
 /// The publish ceremony: create a fresh Deck board from the local one
@@ -496,4 +715,33 @@ pub fn render_text_create(receipt: &BoardReceipt) -> String {
 #[must_use]
 pub fn render_text_rename(receipt: &BoardReceipt) -> String {
     format!("renamed board \"{}\" ({})", receipt.title, receipt.id)
+}
+
+/// The human-readable color/archive receipt.
+#[must_use]
+pub fn render_text_board_edit(receipt: &BoardReceipt) -> String {
+    format!(
+        "board \"{}\" is now {} ({})",
+        receipt.title, receipt.color, receipt.id
+    )
+}
+
+/// The human-readable delete/reset receipt.
+#[must_use]
+pub fn render_text_destruct(receipt: &BoardDestructReceipt) -> String {
+    let mut line = format!(
+        "{} board {} — {} stacks, {} tasks, {} labels, {} pending ops",
+        receipt.verb,
+        receipt.board,
+        receipt.stacks,
+        receipt.tasks,
+        receipt.labels,
+        receipt.pending_ops
+    );
+    if let Some(remote) = receipt.bound_remote {
+        line.push_str("; bound remote board ");
+        line.push_str(&remote.to_string());
+        line.push_str(" is destroyed on the next cycle");
+    }
+    line
 }

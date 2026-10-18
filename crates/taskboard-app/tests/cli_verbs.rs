@@ -615,3 +615,199 @@ async fn v14_done_and_move_reject_unknown_task_selectors() {
         .expect_err("unknown uuid move");
     assert_eq!(err.error_kind(), "unknown-task");
 }
+
+/// V15: `boards color` sets the color and `boards archive`/`unarchive`
+/// flip the flag; the receipt carries the post-edit projection. A
+/// malformed color is a clap usage error, never a dispatch.
+#[tokio::test]
+#[allow(clippy::items_after_statements)] // the clap boundary probe is local color
+async fn v15_board_color_and_archive_edit_receipts() {
+    use clap::Parser as _;
+    use clap::error::ErrorKind as ClapKind;
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    let store = store_for(&server.uri());
+    mount_pull(&server, "[]".to_owned()).await;
+
+    let config = config_for(&server.uri(), dir.path(), "v15.db");
+    boards::create(config.clone(), Arc::clone(&store), "mine", Some("3366cc"))
+        .await
+        .expect("create");
+
+    let receipt = boards::color(
+        config_for(&server.uri(), dir.path(), "v15.db"),
+        Arc::clone(&store),
+        taskboard_domain::Color::new("00c2e0"),
+    )
+    .await
+    .expect("color set");
+    assert_eq!(receipt.color, "00c2e0");
+
+    let receipt = boards::archive(
+        config_for(&server.uri(), dir.path(), "v15.db"),
+        Arc::clone(&store),
+        true,
+    )
+    .await
+    .expect("archive");
+    assert_eq!(receipt.title, "mine");
+
+    let receipt = boards::archive(
+        config_for(&server.uri(), dir.path(), "v15.db"),
+        Arc::clone(&store),
+        false,
+    )
+    .await
+    .expect("unarchive");
+
+    // Unarchive on a live board is an accepted no-op receipt (exit 0).
+    let again = boards::archive(
+        config_for(&server.uri(), dir.path(), "v15.db"),
+        store,
+        false,
+    )
+    .await
+    .expect("repeat unarchive");
+    assert_eq!(again, receipt);
+
+    // The malformed color is a usage error at the boundary; the valid
+    // form parses (normalized to lowercase) into the dispatch payload.
+    let err = taskboard_app::cli::Cli::try_parse_from(["taskboard", "boards", "color", "not-hex"])
+        .expect_err("malformed color");
+    assert_eq!(err.kind(), ClapKind::ValueValidation);
+    let ok = taskboard_app::cli::Cli::try_parse_from(["taskboard", "boards", "color", "00C2E0"])
+        .expect("valid color parses");
+    let Some(taskboard_app::cli::Command::Boards {
+        cmd: taskboard_app::cli::BoardsCmd::Color { color },
+    }) = ok.command
+    else {
+        panic!("wrong command");
+    };
+    assert_eq!(color, "00c2e0", "the parser normalizes to lowercase");
+}
+
+/// V16: `boards delete` refuses without `--confirm` (typed, with the
+/// counts) leaving the content intact, then lands the cascade with the
+/// confirmed run: the second ceremony finds nothing to destroy.
+#[tokio::test]
+async fn v16_delete_confirmation_ceremony() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    let store = store_for(&server.uri());
+    mount_pull(&server, "[]".to_owned()).await;
+
+    let config = config_for(&server.uri(), dir.path(), "v16.db");
+    boards::create(config.clone(), Arc::clone(&store), "doomed", None)
+        .await
+        .expect("create");
+    let stack = taskboard_app::commands::stacks::add(
+        config_for(&server.uri(), dir.path(), "v16.db"),
+        Arc::clone(&store),
+        "col",
+        None,
+    )
+    .await
+    .expect("stack");
+    tasks::add(
+        config_for(&server.uri(), dir.path(), "v16.db"),
+        Arc::clone(&store),
+        "doomed task",
+        Some(&stack.title),
+    )
+    .await
+    .expect("task");
+
+    // Unconfirmed: typed refusal; the content survives (the confirmed
+    // run below still finds the stack and the task).
+    let err = boards::delete(
+        config_for(&server.uri(), dir.path(), "v16.db"),
+        Arc::clone(&store),
+        false,
+    )
+    .await
+    .expect_err("unconfirmed delete");
+    assert_eq!(err.error_kind(), "confirmation-required");
+    assert_eq!(err.error_detail().as_deref(), Some("delete"));
+
+    let receipt = boards::delete(
+        config_for(&server.uri(), dir.path(), "v16.db"),
+        Arc::clone(&store),
+        true,
+    )
+    .await
+    .expect("confirmed delete");
+    assert_eq!(receipt.verb, "delete");
+    assert_eq!(receipt.stacks, 1);
+    assert_eq!(receipt.tasks, 1);
+    assert_eq!(receipt.labels, 0);
+    assert_eq!(receipt.bound_remote, None, "local-only board");
+    assert!(
+        receipt.pending_ops >= 1,
+        "the doomed entities' queued ops are counted, not zero by accident"
+    );
+}
+
+/// V17: `boards reset` runs the same two-sided ceremony; the confirmed
+/// repair clears the content and a repeat reports an all-zero scope.
+#[tokio::test]
+async fn v17_reset_confirmation_ceremony() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    let store = store_for(&server.uri());
+    mount_pull(&server, "[]".to_owned()).await;
+
+    let config = config_for(&server.uri(), dir.path(), "v17.db");
+    boards::create(config.clone(), Arc::clone(&store), "repair", None)
+        .await
+        .expect("create");
+    let stack = taskboard_app::commands::stacks::add(
+        config_for(&server.uri(), dir.path(), "v17.db"),
+        Arc::clone(&store),
+        "col",
+        None,
+    )
+    .await
+    .expect("stack");
+    tasks::add(
+        config_for(&server.uri(), dir.path(), "v17.db"),
+        Arc::clone(&store),
+        "task",
+        Some(&stack.title),
+    )
+    .await
+    .expect("task");
+
+    let err = boards::reset(
+        config_for(&server.uri(), dir.path(), "v17.db"),
+        Arc::clone(&store),
+        false,
+    )
+    .await
+    .expect_err("unconfirmed reset");
+    assert_eq!(err.error_kind(), "confirmation-required");
+
+    let receipt = boards::reset(
+        config_for(&server.uri(), dir.path(), "v17.db"),
+        Arc::clone(&store),
+        true,
+    )
+    .await
+    .expect("confirmed reset");
+    assert_eq!(receipt.verb, "reset");
+    assert_eq!((receipt.stacks, receipt.tasks), (1, 1));
+
+    // The repeat sees the already-empty scope (the engine's no-op) with
+    // nothing left to lose.
+    let repeat = boards::reset(config_for(&server.uri(), dir.path(), "v17.db"), store, true)
+        .await
+        .expect("confirmed repeat");
+    assert_eq!(
+        (
+            repeat.stacks,
+            repeat.tasks,
+            repeat.labels,
+            repeat.pending_ops
+        ),
+        (0, 0, 0, 0)
+    );
+}

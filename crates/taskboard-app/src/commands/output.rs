@@ -490,6 +490,28 @@ pub struct BoardReceipt {
     pub color: String,
 }
 
+/// The `boards delete`/`boards reset` receipt: the landed counts of the
+/// ceremony (pre-counted from the state the command planned against).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BoardDestructReceipt {
+    /// The affected local board's uuid.
+    pub board: String,
+    /// The verb as performed (`delete` | `reset`).
+    pub verb: String,
+    /// Live stacks affected (reset) / tombstoned (delete).
+    pub stacks: usize,
+    /// Live tasks affected / tombstoned.
+    pub tasks: usize,
+    /// Live labels affected / tombstoned.
+    pub labels: usize,
+    /// Pending ops cancelled with the doomed entities (delete only;
+    /// reset clears them with the content).
+    pub pending_ops: usize,
+    /// The remote board id when the board is bound (delete only: the
+    /// remote content is destroyed server-side by the push).
+    pub bound_remote: Option<u64>,
+}
+
 /// The `stacks add` receipt: the new stack projection.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct StackReceipt {
