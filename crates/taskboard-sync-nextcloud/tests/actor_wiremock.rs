@@ -1904,3 +1904,142 @@ async fn a27_unlisted_board_tombstone_keeps_the_local_title() {
     assert_eq!(snapshot.board.title, "the local name");
     assert_eq!(snapshot.board.color, "00ff00");
 }
+
+/// A28 (F6-23): the archived listing's stack twin dedupes against the
+/// active listing and its cards dedupe against `seen_cards`, while the
+/// archived-listing flag is adopted with the observation stamp when it
+/// disagrees with the local one. Dropping a dedupe guard duplicates or
+/// swallows entries; leaving the mismatch unstamped keeps the fixture
+/// stamp and loses every LWW against fresher locals.
+#[tokio::test(start_paused = true)]
+#[allow(clippy::too_many_lines)] // fixture mounting is the scenario
+async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_stamp() {
+    let server = start_server().await;
+    let mut live_card = card_json(55, "twin");
+    live_card["archived"] = serde_json::json!(false); // the lagging live listing
+    let mut archived_twin = card_json(55, "twin");
+    archived_twin["archived"] = serde_json::json!(true);
+    let mut archived_other = card_json(77, "archived elsewhere");
+    archived_other["stackId"] = serde_json::json!(99);
+    archived_other["archived"] = serde_json::json!(true);
+    for (p, body) in [
+        (
+            "/index.php/apps/deck/api/v1.0/boards".to_string(),
+            boards_json(false, &serde_json::json!([])),
+        ),
+        (
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}"),
+            board_json(false, &serde_json::json!([])),
+        ),
+        (
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
+            serde_json::json!([{
+                "id": STACK, "title": "col", "boardId": BOARD, "order": 0,
+                "lastModified": T, "deletedAt": 0, "archived": false,
+                "cards": [live_card]
+            }])
+            .to_string(),
+        ),
+        (
+            format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"),
+            serde_json::json!([
+                { "id": STACK, "title": "col", "boardId": BOARD, "order": 0,
+                  "lastModified": T, "deletedAt": 0, "archived": true,
+                  "cards": [archived_twin] },
+                { "id": 99, "title": "old", "boardId": BOARD, "order": 99,
+                  "lastModified": T, "deletedAt": 0, "archived": true,
+                  "cards": [archived_other] }
+            ])
+            .to_string(),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"gen-1\"")
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+    }
+    // The authoritative detail for the one *bound* card; unbound cards
+    // keep the listing view, so exactly one detail request may happen.
+    let mut detail = card_json(55, "twin");
+    detail["archived"] = serde_json::json!(true);
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/55"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(detail))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // One bound task at card 55, locally not archived — the flag
+    // disagreement that drives the detail refresh.
+    let mut state = PersistedState::default();
+    state.boards.insert(bound_board().id, bound_board());
+    let stack = bound_stack(2, STACK);
+    state.stacks.insert(stack.id, stack);
+    let task = Task {
+        id: taskboard_domain::TaskId::from(uuid(10)),
+        remote: Some(taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(BOARD),
+            stack: taskboard_domain::RemoteStackId(STACK),
+            card: taskboard_domain::RemoteCardId(55),
+        }),
+        title: "twin".into(),
+        description: String::new(),
+        duedate: None,
+        done: None,
+        stack: taskboard_domain::StackId::from(uuid(2)),
+        order: 0,
+        labels: std::collections::BTreeSet::new(),
+        archived: false,
+        deleted: false,
+        clocks: task_clocks(),
+        remote_seen: Some(ts(T)),
+    };
+    state.tasks.insert(task.id, task);
+
+    let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
+    let report = set_board_and_report(&mut actor).await;
+    let SyncReport::Completed { snapshot, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    server.verify().await;
+
+    let twins: Vec<_> = snapshot
+        .tasks
+        .iter()
+        .filter(|t| t.id.card == taskboard_domain::RemoteCardId(55))
+        .collect();
+    assert_eq!(twins.len(), 1, "the archived twin must not duplicate 55");
+    assert!(
+        twins[0].archived,
+        "the authoritative detail settles the flag"
+    );
+    assert_eq!(
+        twins[0].last_modified,
+        stamped(),
+        "the mismatch correction is stamped with the observation instant"
+    );
+    let others: Vec<_> = snapshot
+        .tasks
+        .iter()
+        .filter(|t| t.id.card == taskboard_domain::RemoteCardId(77))
+        .collect();
+    assert_eq!(others.len(), 1, "the unbound archived card appears once");
+    assert!(others[0].archived, "the archived listing decides the flag");
+    let mut stack_ids: Vec<_> = snapshot.stacks.iter().map(|s| s.id.stack).collect();
+    stack_ids.sort();
+    assert_eq!(
+        stack_ids,
+        vec![
+            taskboard_domain::RemoteStackId(7),
+            taskboard_domain::RemoteStackId(99)
+        ],
+        "the stack twin dedupes: exactly stacks 7 and 99"
+    );
+}
