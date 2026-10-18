@@ -67,7 +67,7 @@ impl<'a> PushExecutor<'a> {
             MaterializedOp::MoveTask { task, to } => self.move_task(group, task, to).await,
             MaterializedOp::DeleteTask { task } => match self.overlay.card_of(task) {
                 None => GroupOutcome::Outcomes(all_applied(group)),
-                Some(card_ref) => self.delete_card(group, card_ref).await,
+                Some(card_ref) => self.delete_card(group, task, card_ref).await,
             },
             MaterializedOp::CreateStack { stack } => {
                 let Some(row) = tables.stacks.get(&stack) else {
@@ -507,6 +507,46 @@ impl<'a> PushExecutor<'a> {
             Err(DeckError::NotFound) => {}
             Err(err) => return Err(classify(group, &err, ctx)),
         }
+        match self.relocate_card(group, task, &card_ref, ctx).await {
+            Ok(Some(fresh_stack)) => {
+                let fresh_ref = RemoteCardRef {
+                    board: card_ref.board,
+                    stack: fresh_stack,
+                    card: card_ref.card,
+                };
+                // The detail outranks the (possibly lagging) listing.
+                match self
+                    .client
+                    .card(
+                        fresh_ref.board.get(),
+                        fresh_stack.get(),
+                        card_ref.card.get(),
+                    )
+                    .await
+                {
+                    Ok(fetched) => Ok((fresh_ref, fetched)),
+                    Err(err) => Err(classify(group, &err, ctx)),
+                }
+            }
+            Ok(None) => Err(classify(group, &DeckError::NotFound, ctx)),
+            Err(outcome) => Err(outcome),
+        }
+    }
+
+    /// One re-resolve against the fresh active+archived listing pair
+    /// (ADR 0007's #258 amendment): finds the stack the card actually
+    /// lives under, rebinds the overlay, and returns it — or `None`
+    /// when both listings confirm absence. A listing failure
+    /// classifies through the normative table with the caller's `ctx`
+    /// (the delete path passes the delete ctx, so a listing 403 is
+    /// "gone" there).
+    async fn relocate_card(
+        &mut self,
+        group: &PushGroup,
+        task: taskboard_domain::TaskId,
+        card_ref: &RemoteCardRef,
+        ctx: PushCtx,
+    ) -> Result<Option<RemoteStackId>, GroupOutcome> {
         for filter in [StackFilter::Active, StackFilter::Archived] {
             let stacks = match self.client.stacks(card_ref.board.get(), filter).await {
                 Ok(stacks) => stacks,
@@ -524,28 +564,12 @@ impl<'a> PushExecutor<'a> {
             else {
                 continue;
             };
-            let fresh_ref = RemoteCardRef {
-                board: card_ref.board,
-                stack: fresh_stack,
-                card: card_ref.card,
-            };
             self.overlay
                 .task_by_local
                 .insert(task, (fresh_stack, card_ref.card));
-            return match self
-                .client
-                .card(
-                    fresh_ref.board.get(),
-                    fresh_stack.get(),
-                    card_ref.card.get(),
-                )
-                .await
-            {
-                Ok(fetched) => Ok((fresh_ref, fetched)),
-                Err(err) => Err(classify(group, &err, ctx)),
-            };
+            return Ok(Some(fresh_stack));
         }
-        Err(classify(group, &DeckError::NotFound, ctx))
+        Ok(None)
     }
 
     /// Field PUT built from the fetched card (fetch-before-write),
@@ -774,7 +798,17 @@ impl<'a> PushExecutor<'a> {
         }
     }
 
-    async fn delete_card(&mut self, group: &PushGroup, card_ref: RemoteCardRef) -> GroupOutcome {
+    /// Deletes at the overlay's ref. A delete-path 404 may be a stale
+    /// binding (another client moved the card) rather than a deletion,
+    /// so it re-resolves the card once against the fresh listings and
+    /// retries the delete at the fresh location — at most one
+    /// re-resolve and one retried delete, no loop.
+    async fn delete_card(
+        &mut self,
+        group: &PushGroup,
+        task: taskboard_domain::TaskId,
+        card_ref: RemoteCardRef,
+    ) -> GroupOutcome {
         match self
             .client
             .delete_card(
@@ -793,6 +827,7 @@ impl<'a> PushExecutor<'a> {
                     ))),
                 },
             )),
+            Err(DeckError::NotFound) => self.delete_after_re_resolve(group, task, card_ref).await,
             Err(err) => classify(
                 group,
                 &err,
@@ -801,6 +836,45 @@ impl<'a> PushExecutor<'a> {
                     delete: true,
                 },
             ),
+        }
+    }
+
+    /// The delete-path 404's tail, under the delete ctx throughout: a
+    /// relocated card is deleted once at its fresh stack (any failure
+    /// there — including a second 404, the write path outranking a
+    /// lagging listing — classifies as itself); absence from both
+    /// listings stays `NotFound` → `RemoteMissing`, which for a delete
+    /// converges rather than loses (ADR 0007's amendment).
+    async fn delete_after_re_resolve(
+        &mut self,
+        group: &PushGroup,
+        task: taskboard_domain::TaskId,
+        card_ref: RemoteCardRef,
+    ) -> GroupOutcome {
+        let ctx = PushCtx {
+            existing: true,
+            delete: true,
+        };
+        let fresh_stack = match self.relocate_card(group, task, &card_ref, ctx).await {
+            Ok(Some(fresh_stack)) => fresh_stack,
+            Ok(None) => return classify(group, &DeckError::NotFound, ctx),
+            Err(outcome) => return outcome,
+        };
+        match self
+            .client
+            .delete_card(card_ref.board.get(), fresh_stack.get(), card_ref.card.get())
+            .await
+        {
+            Ok(deleted) => GroupOutcome::Outcomes(primary_outcome(
+                group,
+                PushResult::Applied {
+                    echo: Some(RemoteEcho::Task(mapping::map_card(
+                        &deleted,
+                        card_ref.board,
+                    ))),
+                },
+            )),
+            Err(err) => classify(group, &err, ctx),
         }
     }
     /// One subsumed label op's result after the delta phase. `None`

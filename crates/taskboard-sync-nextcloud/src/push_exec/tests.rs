@@ -3017,3 +3017,267 @@ fn serve_one_card(mut stream: std::net::TcpStream) {
     );
     let _ = stream.flush();
 }
+
+/// An active-listing variant carrying one card under a different stack
+/// than the binding (the #258 moved-card shape).
+fn relocated_listing(stack: u64, card_stack: u64) -> String {
+    serde_json::json!([{
+        "id": stack, "title": "moved-here", "boardId": 42, "order": 1,
+        "lastModified": 1_700_000_000, "deletedAt": 0, "archived": false,
+        "cards": [{ "id": 55, "title": "old", "stackId": card_stack,
+                    "type": "plain", "order": 3, "labels": [],
+                    "archived": false, "duedate": null, "done": null }]
+    }])
+    .to_string()
+}
+
+fn delete_group() -> (PushGroup, Vec<PendingOp>) {
+    (
+        group(
+            100,
+            MaterializedOp::DeleteTask { task: task_id(10) },
+            taskboard_domain::PushTarget::Task(task_id(10)),
+            &[],
+        ),
+        Vec::new(),
+    )
+}
+
+/// D1t: a delete-path 404 re-resolves the card against the fresh
+/// listings once, rebinds, and deletes at the fresh stack — exactly one
+/// listing pair and one retried delete, no retry storm (issue #319).
+#[tokio::test]
+async fn delete_404_re_resolves_and_deletes_at_the_fresh_binding() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(relocated_listing(8, 8)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Only consulted when the active listing misses.
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/archived",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/8/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 8, 3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let (grp, outbox) = delete_group();
+    let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        matches!(
+            &outcomes[0].result,
+            PushResult::Applied {
+                echo: Some(RemoteEcho::Task(view))
+            } if view.id.stack == taskboard_domain::RemoteStackId(8)
+                && view.id.card == taskboard_domain::RemoteCardId(55)
+        ),
+        "the delete lands at the fresh stack-8 binding: {:?}",
+        outcomes[0].result
+    );
+}
+
+/// D2t: a delete-path 404 whose re-resolve finds the card in neither
+/// listing stays `RemoteMissing` — the card is genuinely gone from
+/// every stack, so the tombstone converges (issue #319, D2).
+#[tokio::test]
+async fn delete_404_with_the_card_absent_from_both_listings_stays_remote_missing() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/archived",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let (grp, outbox) = delete_group();
+    let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    assert_eq!(outcomes.len(), 1, "primary-only, subsumed stay queued");
+    assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+}
+
+/// D3t: a card located in the listing but 404 again on the retried
+/// delete converges `RemoteMissing` — the write path outranks a lagging
+/// listing (issue #319, D7).
+#[tokio::test]
+async fn delete_404_located_but_gone_on_the_wire_converges_remote_missing() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(relocated_listing(8, 8)))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/archived",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/8/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let (grp, outbox) = delete_group();
+    let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    assert_eq!(outcomes.len(), 1, "primary-only, subsumed stay queued");
+    assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+}
+
+/// D4t: the re-resolve consults the *archived* listing too — a card
+/// moved to an archived stack is found there and deleted (same presence
+/// truth as the pull).
+#[tokio::test]
+async fn delete_re_resolve_consults_the_archived_listing() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/archived",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(relocated_listing(9, 9)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/9/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 9, 3)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let (grp, outbox) = delete_group();
+    let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    assert!(
+        matches!(
+            &outcomes[0].result,
+            PushResult::Applied {
+                echo: Some(RemoteEcho::Task(view))
+            } if view.id.stack == taskboard_domain::RemoteStackId(9)
+        ),
+        "the archived listing located the card: {:?}",
+        outcomes[0].result
+    );
+}
+
+/// D5t: a forbidden listing during a delete re-resolve classifies
+/// `RemoteMissing` — the delete ctx treats forbidden as gone (the
+/// deliberate divergence from the update path's `Rejected
+/// { Forbidden }`).
+#[tokio::test]
+async fn delete_re_resolve_with_a_forbidden_listing_converges_remote_missing() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards/42/stacks"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let (grp, outbox) = delete_group();
+    let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes, got {outcome:?}");
+    };
+    assert_eq!(outcomes.len(), 1, "primary-only, subsumed stay queued");
+    assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+}

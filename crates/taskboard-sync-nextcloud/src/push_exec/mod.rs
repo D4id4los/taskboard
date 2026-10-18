@@ -10,7 +10,12 @@
 //! fetched card, and a fetch 404 re-resolves the card once against the
 //! fresh listings before classifying — a stale binding (the card moved
 //! remotely) rebinds and pushes at the fresh location instead of being
-//! misread as `RemoteMissing` (issue #258).
+//! misread as `RemoteMissing` (issue #258). The delete path re-resolves
+//! the same way: a delete 404 is retried once at the fresh binding, and
+//! only a 404 that survives the re-resolve converges `RemoteMissing`
+//! (issue #319). The label-delta and delete arms emit one outcome per
+//! subsumed op, so a partially-failed update no longer reports lies
+//! (issue #314).
 
 mod execute;
 mod outcomes;
