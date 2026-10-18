@@ -11,7 +11,11 @@
 //! The engine owns its command inbox, its signal broadcaster, and the
 //! `Arc<ArcSwap<AppState>>`. Construction *takes* the external channel
 //! halves (sync reports, system events, sync commands) — the app
-//! bootstrap owns the channel graph and keeps the matching halves.
+//! bootstrap owns the channel graph and keeps the matching halves. The
+//! one exception is the system-event emission seam: the engine holds it
+//! only as a `broadcast::WeakSender`, so the external producers own that
+//! channel's lifetime — when the last of them dies, the engine's final
+//! input closes and the all-sources-closed exit becomes reachable.
 
 use std::sync::Arc;
 
@@ -226,6 +230,11 @@ impl SyncStateReader for EngineHandle {
 /// into the `ArcSwap` *before* the loop starts (the UI paints instantly
 /// from cache; no boot signal — subscribers cannot have existed yet).
 ///
+/// The engine holds the system-event seam only as a
+/// [`broadcast::WeakSender`]: the caller's (and any other external
+/// producer's) strong sender owns that channel's lifetime, and when the
+/// last of them drops, the engine exits.
+///
 /// # Errors
 ///
 /// [`EngineStartupError::Load`] when the boot hydration failed; the
@@ -270,7 +279,11 @@ pub async fn spawn_state_engine(
             ids,
             clock,
             sync_out,
-            system_out,
+            // Weak by design (#316): the engine must not pin its own
+            // system channel open — external producers own its lifetime,
+            // and their death is what makes the all-sources exit
+            // reachable.
+            system_out: system_out.downgrade(),
             notifier,
             reminders: reminder_cfg,
         },
@@ -290,7 +303,7 @@ struct EngineParts {
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
     sync_out: mpsc::Sender<SyncCommand>,
-    system_out: broadcast::Sender<SystemEvent>,
+    system_out: broadcast::WeakSender<SystemEvent>,
     notifier: mpsc::Sender<Notification>,
     reminders: ReminderEngineConfig,
 }
@@ -494,7 +507,7 @@ type Seams<'a> = (
     &'a dyn IdGenerator,
     &'a dyn Clock,
     &'a mut Vec<mpsc::Sender<SyncCommand>>,
-    &'a broadcast::Sender<SystemEvent>,
+    &'a broadcast::WeakSender<SystemEvent>,
 );
 
 async fn execute_command(
@@ -756,9 +769,19 @@ async fn go_offline(
 /// event fires on the ok->fail transition only, and any successful
 /// persistence resets the edge. Both write paths — commands and reminder
 /// ticks — surface a dying disk as the same banner signal.
-fn note_storage_failure(storage_failing: &mut bool, system_out: &broadcast::Sender<SystemEvent>) {
+fn note_storage_failure(
+    storage_failing: &mut bool,
+    system_out: &broadcast::WeakSender<SystemEvent>,
+) {
     if !*storage_failing {
-        let _ = system_out.send(SystemEvent::StorageFailed); // no receivers: fine
+        // Weak by design (#316): upgrade failure means every external
+        // producer died and the channel is closed — no receiver can ever
+        // appear (a WeakSender cannot subscribe), so the skipped
+        // emission is unobservable, the same silent no-op as
+        // send-to-zero-receivers.
+        if let Some(system_out) = system_out.upgrade() {
+            let _ = system_out.send(SystemEvent::StorageFailed);
+        }
     }
     *storage_failing = true;
 }
@@ -767,7 +790,7 @@ fn note_storage_failure(storage_failing: &mut bool, system_out: &broadcast::Send
 type TickSeams<'a> = (
     &'a Arc<dyn TaskRepository>,
     &'a dyn Clock,
-    &'a broadcast::Sender<SystemEvent>,
+    &'a broadcast::WeakSender<SystemEvent>,
     &'a mpsc::Sender<Notification>,
 );
 
