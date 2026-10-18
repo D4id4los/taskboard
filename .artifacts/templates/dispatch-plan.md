@@ -80,17 +80,28 @@ no PR ever stacked.
    every commit standalone (rebase-merge hygiene), full AGENTS §10
    gate suite green | research: the experiments and the deliverable
    report>. Does **not** push or open a PR. Reports deviations.
-3. **Stage 3 — review agent**: reviews the entire branch diff versus
-   its base against the chunk's acceptance criteria + AGENTS rules
-   **plus the mandate below**, re-runs whatever gates apply,
-   implements fixes for every finding on the branch (amend/reword,
-   never duplicate-subject fixups). Its last task is shipping: push
-   the branch, open the PR to `main` with `gh`, watch
-   `gh pr checks --watch` to completion — any failing check is a
-   finding; diagnose, fix, push `--force-with-lease`, repeat until
-   green. Reports a verdict. Never merges; never touches `main`.
-   (<`main` is branch-protected — merges happen on GitHub by the
-   user, after the required checks pass.>)
+3. **Stage 3 — review agent** *(protocol amended 2026-10-18)*:
+   **begins by rebasing onto `main`** — `git fetch origin --prune`,
+   rebase the branch onto `origin/main` (AGENTS §8's rebase dance:
+   drop already-merged duplicate commits; resolve only real
+   conflicts), push `--force-with-lease` if the rebase rewrote
+   history — then reviews the entire branch diff versus the
+   **post-rebase** base against the chunk's acceptance criteria +
+   AGENTS rules **plus the mandate below**, re-runs whatever gates
+   apply, implements fixes for every finding on the branch
+   (amend/reword, never duplicate-subject fixups). Its last tasks
+   are shipping: push the branch, open the PR to `main` with `gh`,
+   watch `gh pr checks --watch` to completion — any failing check is
+   a finding; diagnose, fix, push `--force-with-lease`, repeat until
+   green — **then verify the PR's merge state**: `gh pr view --json
+   mergeStateStatus` must report `CLEAN`; `BEHIND`/`DIRTY` ⇒ rebase
+   onto `origin/main`, push `--force-with-lease`, let the checks
+   re-run, repeat; any other state ⇒ diagnose before handing off.
+   The handoff contract is "PR open + checks green + merge state
+   `CLEAN`" so the user's merge needs no additional rebase. Reports
+   a verdict. Never merges; never touches `main`. (<`main` is
+   branch-protected — merges happen on GitHub by the user, after
+   the required checks pass.>)
 
 **<Code-quality | Evidence & artefact> mandate** (stage 3, every
 chunk — pick per chunk kind):
