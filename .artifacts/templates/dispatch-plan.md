@@ -62,7 +62,11 @@ which merges or on a human gate, and the default dispatch order.>
 concurrently as separate sessions; never two agents share a
 worktree. Every chunk works in `../taskboard-WT-<branch>` next to
 the project root (AGENTS §8), branched off the then-current `main`,
-no PR ever stacked.
+no PR ever stacked. Disk hygiene (AGENTS §8 worktree lifecycle): any
+agent creating or recreating a worktree runs
+`scripts/worktree-doctor.sh` from the main checkout first — nonzero
+exit (free disk below the floor) stops the chunk; stage 3 removes
+the worktree as its final handoff task.
 
 **Shared execution model** (binding for every chunk):
 
@@ -97,9 +101,14 @@ no PR ever stacked.
    mergeStateStatus` must report `CLEAN`; `BEHIND`/`DIRTY` ⇒ rebase
    onto `origin/main`, push `--force-with-lease`, let the checks
    re-run, repeat; any other state ⇒ diagnose before handing off.
-   The handoff contract is "PR open + checks green + merge state
-   `CLEAN`" so the user's merge needs no additional rebase. Reports
-   a verdict. Never merges; never touches `main`. (<`main` is
+   **Then teardown**: remove the now-disposable worktree — from the
+   project root, `git worktree remove --force ../taskboard-WT-<branch>`
+   (everything precious is pushed; a later round that resumes the chunk
+   recreates it on the branch). The handoff contract is "PR open +
+   checks green + merge state `CLEAN` + worktree removed" so the
+   user's merge needs no additional rebase and the chunk leaves no
+   36–55G of build output behind. Reports a verdict. Never merges;
+   never touches `main`. (<`main` is
    branch-protected — merges happen on GitHub by the user, after
    the required checks pass.>)
 
@@ -149,7 +158,7 @@ You are the stage-1 PLANNING agent for chunk <N> of <dispatch-plan short name> (
 
 1. Read AGENTS.md, then <origin docs with their normative section numbers> and the dispatch plan <path> §1/§<n>.
 2. Read the current seams you will extend: <files + what to look for in each>, plus the tests you must not break: <paths>.
-3. Create the worktree ../taskboard-WT-<branch> on a new branch <branch> off main.
+3. Run scripts/worktree-doctor.sh from the project root /home/viktoria/src/taskboard first (nonzero exit = free disk below the floor: STOP and report instead of planning), then create the worktree ../taskboard-WT-<branch> on a new branch <branch> off main.
 4. Write a detailed TDD-first plan at .artifacts/plans/<today>-<topic>-plan.md: <enumerate the concrete decisions this plan must settle — shapes, semantics, seams, test catalogue>. Resolve every open question with a recorded decision; deviations from the origin need a recorded reason.
 5. Commit it as: docs(plan): <subject>. Do not implement; do not push.
 
@@ -180,9 +189,10 @@ You are the stage-3 REVIEW agent for chunk <N> of <dispatch-plan short name> (br
 3. <Code-quality | Evidence & artefact> mandate: <spell out the applicable one in full — copy verbatim from §1 of this dispatch plan.>
 4. Re-run the full gate suite yourself (AGENTS §10); any failure is a finding.
 5. Fix every issue directly on the branch (amend/reword — no duplicate-subject fixups).
-6. Last task — ship: push the branch, open the PR to main with gh, then gh pr checks --watch; any failing check is a finding — diagnose, fix, push --force-with-lease, repeat until all checks are green. <main is protected: never merge; the user merges on GitHub.>
+6. Ship: push the branch, open the PR to main with gh, then gh pr checks --watch; any failing check is a finding — diagnose, fix, push --force-with-lease, repeat until all checks are green. <main is protected: never merge; the user merges on GitHub.>
+7. Teardown: from the project root, git worktree remove --force ../taskboard-WT-<branch> (everything is pushed; a resuming round recreates the worktree on the branch via git worktree add).
 
-Report: verdict, findings (functional + mandate), what you fixed, PR URL, green-checks confirmation. Never merge; never touch main.
+Report: verdict, findings (functional + mandate), what you fixed, PR URL, green-checks confirmation, worktree-removed confirmation. Never merge; never touch main.
 ```
 
 ## 3. Chunk 2 — <name> (`<branch>`)
