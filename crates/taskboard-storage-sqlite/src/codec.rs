@@ -359,6 +359,7 @@ mod tests {
             LocalOp::AssignLabel(task, label),
             LocalOp::UnassignLabel(task, label),
             LocalOp::UpdateBoard(taskboard_domain::ids::BoardId::from(id(9))),
+            LocalOp::DeleteBoard(taskboard_domain::ids::BoardId::from(id(9))),
         ];
         for op in ops {
             let cols = op_to_columns(&op);
@@ -397,10 +398,15 @@ mod tests {
             op_from_columns("assign_label", Some(&uuid_to_text(id(1))), None, None, None),
             Err(CodecError)
         );
-        // rename_board needs the board column; the cast-era shape (the
-        // board id riding stack_id) is a rejection, not a silent cast.
+        // The legacy `rename_board` tag is unknown after the 0005 tag
+        // rename (one representation, no alias drift) — a rejection, not
+        // a silent alias.
         assert_eq!(
             op_from_columns("rename_board", None, Some(&uuid_to_text(id(2))), None, None),
+            Err(CodecError)
+        );
+        assert_eq!(
+            op_from_columns("rename_board", None, None, None, Some(&uuid_to_text(id(2)))),
             Err(CodecError)
         );
         // Unparseable id text counts as missing.
