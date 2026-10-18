@@ -6,7 +6,7 @@ lcov.info
 *.profraw
 
 # Mutation testing output
-mutants-out*/
+mutants.out/
 
 # Local environment / secrets (Nextcloud app passwords etc.)
 .env

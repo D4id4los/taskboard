@@ -36,11 +36,16 @@ jobs:
 
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants,nextest
+          # Pinned: the mutants version is the output-dir/report-name
+          # contract this workflow's Collect/Upload steps depend on.
+          # nextest stays floating — no artifact contract here.
+          tool: cargo-mutants@27.1.0,nextest
 
       - name: Run Mutation Testing
         # Surviving mutants are an expected *report* outcome, not an infra
         # failure: collect & upload them instead of failing the job.
+        # cargo-mutants always writes `mutants.out/` in the workspace
+        # root — the output dir name is fixed; do not pass -d/-o here.
         continue-on-error: true
         run: |
           cargo mutants \
@@ -50,19 +55,22 @@ jobs:
       - name: Collect Surviving Mutants
         if: always()
         run: |
-          if [ -d mutants-out ]; then
-            cat mutants-out/mutants-out.log || true
-            if [ -s mutants-out/survivors.txt ] || compgen -G "mutants-out/survivors*" > /dev/null; then
+          if [ -d mutants.out ]; then
+            # The log filename varies across versions: glob, don't pin.
+            cat mutants.out/*.log || true
+            if [ -s mutants.out/missed.txt ]; then
               echo "Surviving mutants found — see artifacts."
             fi
           fi
 
       - name: Upload Mutation Report
+        # fail on empty: a silent no-artifact run must never read green.
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: mutation-testing-report-${{ github.run_id }}
-          path: mutants-out/
+          path: mutants.out/
+          if-no-files-found: error
           retention-days: 30
 
       # Record surviving mutants into
