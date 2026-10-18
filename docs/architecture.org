@@ -135,6 +135,7 @@ avoiding central runtime bottlenecks.
 | *Sync Actor → State Engine* | =tokio::sync::mpsc= | =SyncReport::{Completed, Failed}= ingestion through the conflict pipeline (ADR 0007's evidence-then-verdict: =Completed= carries snapshot + validators + pushes + =read_at=; =Failed= carries the pushes that landed before the abort). |
 | *Sync Actor → Everyone* | =tokio::sync::broadcast= | Produces =SystemEvent::NetworkLost= / =NetworkRestored= (this actor is the network authority) and consumes only =Shutdown= from the same channel. |
 | *Sync Actor → State Engine (reads)* | domain port =SyncStateReader= | =EngineEnvelope::ReadState= envelope behind the port: the cycle reads outbox, bindings, and validators via the engine, never direct SQL (ADR 0005/0007). |
+| *State Engine → Notifier* | =tokio::sync::mpsc= | =Notification= payloads (capacity 64, =NOTIFIER_CAPACITY=) consumed by the notifier task (=spawn_notifier=), which delivers them through the =NotificationSink= port (=LogSink= v1 — ADR 0013). Delivery is durable-then-notify: delivery markers persist before any send and a failed batch fires nothing; =send= (not =try_send=) backpressures the tick; the consumer exits when the engine's exit closes the channel. Derived edge: =docs/flow_model.org= E-20 / actor NTF. |
 | *Actors ↔ Actors* | =tokio::sync::mpsc= | Direct point-to-point command delivery between backend actors (e.g., State Engine → Storage via the =TaskRepository= port adapter). |
 | *System Notifications* | =tokio::sync::broadcast= | Broadcasts global status changes (=SystemEvent::NetworkLost=) to all interested actors. |
 | *CLI ⇄ Daemon (local socket)* | =interprocess= local sockets + length-framed JSON | Transport-only reuse of =dispatch_line= (ADR 0012): the daemon serves the per-database socket (<db>.sock sidecar); a CLI invocation relays raw argv and prints the daemon's rendered ={code, out, err}= verbatim — byte-identical to the in-process dispatch. Versioned envelopes (v1); one request per connection; serial execution on one dispatcher task. |
@@ -189,7 +190,12 @@ dependency hierarchies.
    =ArcSwap<AppState>= and broadcasts =EngineSignal::StateUpdated=.
    Inbox: =EngineEnvelope::{Execute (oneshot receipt), Flush (durability
    barrier)}=; it also ingests =SyncReport=s and =SystemEvent=s, and
-   forwards =SyncNow= nudges to the sync actor. Command *semantics*
+   forwards =SyncNow= nudges to the sync actor. Scheduling rides a
+   =sleep_until= select *tick arm* (first tick immediate, so reminders
+   left undelivered before a shutdown fire on the next boot; disarmed
+   while the engine drains) that runs the pure reminder evaluator over
+   =EngineCore=, persists delivery markers, interprets, publishes, and
+   only then notifies (ADR 0013). Command *semantics*
    (rejections, no-ops, cascades) live in the domain; this crate owns
    channels, publishing, and sequencing only. Dependencies:
    =taskboard-domain=, =arc-swap=, =chrono=, =tokio=.
@@ -212,7 +218,10 @@ dependency hierarchies.
 4. *taskboard-storage-sqlite* — Manages local SQLite disk persistence.
    Ensures the app boots immediately with cached data if network
    connectivity is lost. Normalized schema (boards/stacks/tasks/labels,
-   =task_labels= join, =outbox=, =sync_metadata=, =sync_status= singleton)
+   =task_labels= join, =outbox=, =sync_metadata=, =sync_status= singleton,
+   plus the four reminder tables of migration 0004: =reminder_rules= /
+   =reminder_deliveries= / =reminder_snoozes= / =reminder_muted=,
+   ADR 0013)
    applied at boot from embedded migrations; WAL + =synchronous=NORMAL= on
    a single connection; =SqliteTaskRepository= implements the domain's
    =TaskRepository= port (one transaction per batch) behind the
@@ -253,7 +262,9 @@ dependency hierarchies.
    secrets in TOML cannot decode; the config *file* resolution order is
    =--config= > =TASKBOARD_CONFIG= > the XDG candidate
    =$XDG_CONFIG_HOME/taskboard/taskboard.toml= when it exists >
-   =./taskboard.toml=, absent files tolerated), =secrets= (the =CredentialStore=
+   =./taskboard.toml=, absent files tolerated; the =[reminders]=
+   table — =enabled= / =tick_secs= / =default_before= — is validated
+   with typed =invalid-duration= rejections, ADR 0013), =secrets= (the =CredentialStore=
    port with the keyring and env stores, config-selected, no silent
    fallback; redacting =AppPassword=), =bootstrap=: one async fn
    that wires the whole channel graph (the system broadcast, both sync
@@ -265,11 +276,16 @@ dependency hierarchies.
    the engine sees the closed-channel world it already handles, ADR
    0010) and returns the =App= handle shared by every frontend, =lockfile= (the per-database instance lock — an
    OS-released advisory lock on a =<db>.lock= sidecar acquired before
-   the db open, ADR 0009), and =commands= (ADR 0009): the operator
+   the db open, ADR 0009), =notifications= (the =NotificationSink=
+   port with =LogSink= v1 — one log line per delivery; desktop toasts
+   are a follow-up behind the same port, ADR 0013), and =commands=
+   (ADR 0009): the operator
    CLI's typed handlers — =connect= (introduces a connection; =login=
    is its deprecated alias, ADR 0014), =logout=, =boards= (list/select/
    create/publish/rename), =stacks= (add/rename/delete/move), =tasks=
-   (list/add/done/move/edit/delete/label/unlabel), =labels=
+   (list/add/done/move/edit/delete/label/unlabel/remind — the
+   =remind= mode flags =--before=/=--list=/=--clear=/=--off=/=--on=,
+   ADR 0013), =labels=
    (list/add/edit/delete), =sync=, =config print= — with the =--json=
    output contract (typed projections on stdout, kebab-case error
    envelopes on stderr). Task selectors cascade exact uuid → unique
