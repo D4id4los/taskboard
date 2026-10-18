@@ -1,7 +1,7 @@
 # [Plan] Multi-board Wave — Detailed Design (Stage-0 round)
 
 - **Date**: 2026-10-18
-- **Kind**: detailed design of record (draft, status PROPOSED) for the
+- **Kind**: detailed design of record (status ACCEPTED) for the
   `wave-multi-board` milestone. Resolves framing plan §5 Q1–Q9 as one
   coherent design: per question — re-verified anchors, option space,
   trade-offs, exactly one recommendation, consequences for later work,
@@ -17,9 +17,10 @@
   §1/§2 (binding constraints, acceptance); stage-1 work plan
   `.artifacts/plans/2026-10-18-multi-board-design-round-workplan-plan.md`
   (method decisions MD-1…MD-10).
-- **Status**: PROPOSED — awaiting the user's decision session. Zero
-  production code, zero tracker edits (this file and the work plan are
-  the chunk's entire diff).
+- **Status**: ACCEPTED — the user's decision session (2026-10-18)
+  accepted all nine recommendations verbatim, no deviations; record
+  in §5. Zero production code, zero tracker edits (this file and the
+  work plan are the chunk's entire diff).
 
 ---
 
@@ -1264,19 +1265,32 @@ the exit criterion constructible); D-W4 (trait promoted, ADR draft
 steps, §3.9); D-W7 (counted authority, §3.7); D-W8 (this round is
 docs-only); D-W9 **posed** (§3.2/§5 — open for the user).
 
-## 5. Decision record (PROPOSED — the user's session rules)
+## 5. Decision record (ACCEPTED 2026-10-18)
+
+**Acceptance note (2026-10-18).** The user's decision session ruled:
+
+> "I accept all your recommendations." — user ruling on chunk 1's
+> stage-2 report, decision session 2026-10-18.
+
+All nine recommendations are thereby accepted — **no deviations from
+any recommendation**. D-W9 (Q2) is thereby **ruled option (a)**,
+per-board status keying; the framing plan §4 records the same ruling
+(appended, dated 2026-10-18). Fidelity check (repeated at acceptance
+recording): each ruling matches this table's Recommendation column
+verbatim in substance — none overruled, none modified, nothing adopted
+beyond the rulings.
 
 | Q | Subject | Recommendation | Status |
 |---|---|---|---|
-| Q1 | Board parameter shape | Option 3: explicit `board: BoardId` on all board-scoped commands; caller-owned selection (CLI flag default / REPL session / `ViewState.board`) | PROPOSED |
-| Q2 | SyncStatus keying (D-W9) | Option (a): per-board map, attribution derived from bindings; global `last_updated` unchanged | **OPEN — user rules** |
-| Q3 | Connector addressing home | Option (b): app-layer named routing over tagged bindings; domain `ConnectorId` from config names; `SetBoard` retired | PROPOSED |
-| Q4 | Trait promotion shape | Split ports: domain vocabulary + app `ConnectorModule` (`dyn`); no new crate | PROPOSED |
-| Q5 | Ceremony redesign | Typed multi-binding variants; `UnbindBoard` (keep content, strand ops honestly, bind-wipe rule); `ReconcileByTitle` engine command; `destruct_on` parameterised | PROPOSED |
-| Q6 | Config shape | `[[sync.connectors]]` named entries; legacy scalar + `[nextcloud]` synthesize the default connector; mixes are typed errors; shape-aware ceremony writer | PROPOSED |
-| Q7 | Network authority mechanics | Option (a): per-connector `ConnectorLost/Restored(id)` events + app-layer all-down authority emitting the existing global events | PROPOSED |
-| Q8 | UI board dimension | `ViewState.board` + `board.next/previous/select` actions mirroring the stack switcher; IdTables unchanged; compact hides the strip | PROPOSED |
-| Q9 | Migration & compat | 0006 rebuild per §3.9; config additive; one deliberate insta pass per widening chunk; zero breaking steps | PROPOSED |
+| Q1 | Board parameter shape | Option 3: explicit `board: BoardId` on all board-scoped commands; caller-owned selection (CLI flag default / REPL session / `ViewState.board`) | **ACCEPTED (2026-10-18)** |
+| Q2 | SyncStatus keying (D-W9) | Option (a): per-board map, attribution derived from bindings; global `last_updated` unchanged | **RULED (a) — ACCEPTED (2026-10-18)** |
+| Q3 | Connector addressing home | Option (b): app-layer named routing over tagged bindings; domain `ConnectorId` from config names; `SetBoard` retired | **ACCEPTED (2026-10-18)** |
+| Q4 | Trait promotion shape | Split ports: domain vocabulary + app `ConnectorModule` (`dyn`); no new crate | **ACCEPTED (2026-10-18)** |
+| Q5 | Ceremony redesign | Typed multi-binding variants; `UnbindBoard` (keep content, strand ops honestly, bind-wipe rule); `ReconcileByTitle` engine command; `destruct_on` parameterised | **ACCEPTED (2026-10-18)** |
+| Q6 | Config shape | `[[sync.connectors]]` named entries; legacy scalar + `[nextcloud]` synthesize the default connector; mixes are typed errors; shape-aware ceremony writer | **ACCEPTED (2026-10-18)** |
+| Q7 | Network authority mechanics | Option (a): per-connector `ConnectorLost/Restored(id)` events + app-layer all-down authority emitting the existing global events | **ACCEPTED (2026-10-18)** |
+| Q8 | UI board dimension | `ViewState.board` + `board.next/previous/select` actions mirroring the stack switcher; IdTables unchanged; compact hides the strip | **ACCEPTED (2026-10-18)** |
+| Q9 | Migration & compat | 0006 rebuild per §3.9; config additive; one deliberate insta pass per widening chunk; zero breaking steps | **ACCEPTED (2026-10-18)** |
 
 ## 6. Draft ADR 0010 amendment (MD-9 — *draft; lands with the
 trait-promotion implementation chunk, not this PR*)
