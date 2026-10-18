@@ -43,10 +43,15 @@ frameworks.
   implement the =TaskRepository= trait on a simple =HashMap= wrapped in
   =Arc<Mutex<T>>=. This simulates true data persistence across multiple
   operations — far more robust than pre-programmed mock return values.
-- *Using =mockall=:* For simple behavior verification, =mockall= is the
-  standard choice. When mocking async traits via the =async-trait= crate,
-  place the =#[automock]= macro /before/ =#[async_trait]= so the compiler
-  generates mockable futures.
+- *No mocking crate:* the workspace deliberately wires no mocking
+  library (=mockall= appears in no manifest). Async ports are
+  hand-rolled =BoxFuture= traits
+  (=crates/taskboard-domain/src/persistence.rs=) precisely so a fake
+  is just an =impl= of the trait — see
+  =taskboard_domain::test_support::InMemoryRepository= for the
+  repository fake, and the UI suite's =fake_engine= for a fake at a
+  module boundary. Behavior is asserted through the port's typed
+  results, never through recorded calls.
 
 * 4. The Functional Core & Property Testing
 
