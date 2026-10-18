@@ -491,7 +491,7 @@ fn build_outbox(state: &AppState, op_rows: Vec<OutboxRow>) -> Vec<PendingOp> {
             10 => t.zip(l).map(|(t, l)| LocalOp::AssignLabel(t, l)),
             11 => t.zip(l).map(|(t, l)| LocalOp::UnassignLabel(t, l)),
             12 => s.map(LocalOp::MoveStack),
-            13 => b.map(LocalOp::RenameBoard),
+            13 => b.map(LocalOp::UpdateBoard),
             // All 14 variants are named above; unreachable, defensive only.
             _ => None,
         };

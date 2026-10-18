@@ -1854,7 +1854,7 @@ async fn rename_board_puts_the_full_changeset_and_applies_the_echo() {
         .execute(
             &group(
                 100,
-                MaterializedOp::RenameBoard { board: board_id(1) },
+                MaterializedOp::UpdateBoard { board: board_id(1) },
                 taskboard_domain::PushTarget::Board(board_id(1)),
                 &[],
             ),
@@ -1896,7 +1896,7 @@ async fn rename_board_falls_back_on_an_invalid_stored_color() {
         .execute(
             &group(
                 100,
-                MaterializedOp::RenameBoard { board: board_id(1) },
+                MaterializedOp::UpdateBoard { board: board_id(1) },
                 taskboard_domain::PushTarget::Board(board_id(1)),
                 &[],
             ),
@@ -1930,7 +1930,7 @@ async fn rename_board_404_maps_to_remote_missing() {
         .execute(
             &group(
                 100,
-                MaterializedOp::RenameBoard { board: board_id(1) },
+                MaterializedOp::UpdateBoard { board: board_id(1) },
                 taskboard_domain::PushTarget::Board(board_id(1)),
                 &[],
             ),
@@ -1959,7 +1959,7 @@ async fn rename_board_transport_failure_aborts_the_cycle() {
         .execute(
             &group(
                 100,
-                MaterializedOp::RenameBoard { board: board_id(1) },
+                MaterializedOp::UpdateBoard { board: board_id(1) },
                 taskboard_domain::PushTarget::Board(board_id(1)),
                 &[],
             ),

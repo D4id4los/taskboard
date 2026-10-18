@@ -40,7 +40,7 @@ pub(super) fn cannot_ride_a_task_group(op: &LocalOp) -> bool {
             | LocalOp::CreateLabel(_)
             | LocalOp::UpdateLabel(_)
             | LocalOp::DeleteLabel(_)
-            | LocalOp::RenameBoard(_)
+            | LocalOp::UpdateBoard(_)
     )
 }
 
