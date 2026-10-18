@@ -21,8 +21,9 @@
   multi-connector contract), and growth-roadmap Phase 6.
 - **Status**: PROPOSED — scope and wave-level decisions **accepted**
   (§5); Stage-0 design questions (§6) open. All code anchors verified
-  on `main` @ `47b2cba` (post remediation chunks 1/11; chunk 15 is in
-  flight and §4 notes what it changes).
+  on `main` @ `878bb12` (post remediation-wave-1 code chunks; PR #334
+  board/stack structure editing landed and folded into §3/§5 on
+  2026-10-18).
 
 ---
 
@@ -61,43 +62,70 @@ server; CRDT collaboration.
 
 ## 3. Why the data plane is ready and the control plane is not
 
-Verified on `main` @ `47b2cba` (audit chunk 16 W2/W8, re-checked):
+Verified on `main` @ `878bb12` (audit chunk 16 W2/W8, re-checked and
+extended post-PR #334):
 
 - **Ready by design** (F16-25, F16-07): `AppState` entity maps
-  (`state.rs:25-33`), the outbox `board_id` column (migration 0003),
+  (`state.rs:24-43`), the outbox `board_id` column (migration 0003),
   per-board validator keys, engine fan-out registry + permanent
   fan-in reports inbox (connect-flow §4.2, ADR 0014),
   `App.connectors: Mutex<Vec<SyncActor>>` with the ≤1 guard purely
   app-layer (`bootstrap.rs:141`, `ensure_vacant` →
-  `AttachError::AlreadyAttached` at `bootstrap.rs:254-266`),
+  `AttachError::AlreadyAttached` at `bootstrap.rs:266/443`),
   `CredentialStore` keyed per-(server, username). Hierarchy and
   user-identity shapes are absent everywhere — clean slate (F16-07).
 - **The singletons to widen** (F3-04, F16-22): `AppState.sync:
-  SyncStatus` (`state.rs:47-56`) and the global `last_updated`
-  (`state.rs:52-54`); engine mutators (`core.rs:72/113` and the
-  status setter cluster); storage `sync_status` table with
+  SyncStatus` (`state.rs:39`, struct at `:47-56`) and the global
+  `last_updated` (`state.rs:42`); engine mutators (`core.rs:72/113`
+  and the status setter cluster); storage `sync_status` table with
   `CHECK (id = 1)` (`0001_init.sql:103`) — the wave's **only
   non-additive schema migration** (table rebuild; the additive lane
   does not cover it).
-- **The implicit "the bound board"** (F16-06): `live_board` resolves
-  it silently at five command sites (`command.rs:134`, used at
-  `:364/:465/:575/:598/:615`); the sync actor's resume path picks the
-  first bound board (`actor.rs:327-333`); the UI takes the first
-  live non-archived board (`presentation.rs:248-252`,
-  `view_state.rs:177-193`).
+- **The implicit "the bound board"** (F16-06, grown by #334):
+  `live_board` resolves it silently at **nine** command sites now
+  (`command.rs:134`, used at `:364/:465/:575/:603/:620/:637/:656/
+  :754/:824` — the four board-edit verbs added four); the sync
+  actor's resume path picks the first bound board (`actor.rs:362`);
+  the UI takes the first live non-archived board
+  (`presentation.rs:250-254`, consumed at `view_state.rs:198`).
 - **Compiler-forced extension points** (F8-06): `CommandError`'s
-  single-board variants (`command.rs:56`, board-refusing arms) widen
-  mechanically once the vocabulary decision is made.
+  single-board variants (`command.rs:56`; `NoBoard`, `BoardExists`,
+  `BoardAlreadyBound(RemoteBoardId)`) widen mechanically once the
+  vocabulary decision is made — `BoardAlreadyBound` is the seed of
+  the multi-binding refusal vocabulary.
 - **Trait-promotion precedent**: `SyncStateReader` is already a
   domain trait (`persistence.rs:68`, `BoxFuture` port pattern) —
   promoting the connector vocabulary follows an established shape
   and respects AGENTS §2 domain purity.
-- **In flight**: remediation-wave-1 chunk 15
-  (`feat/board-stack-structure-editing`, #132/#171/#177/#304) lands
-  `Board` clocks, board-edit verbs, and the reset/delete ceremony —
-  exactly the board-lifecycle machinery this wave generalises to N.
-  **The design round must read that branch's shapes before
-  finalising** (user will signal when it reaches review).
+- **Landed with PR #334** (chunk 15, #132/#171/#177/#304 — the
+  board-lifecycle machinery this wave generalises to N):
+  - `BoardClocks` is complete (title/color/archived/deleted,
+    `entities.rs:95`); migration 0005 adds the clock columns with
+    epoch defaults so pre-migration rows keep remote-wins merge
+    behavior bit-for-bit.
+  - Four new verbs: `SetBoardColor`/`SetBoardArchived`/
+    `ResetBoard`/`DeleteBoard` (`messages.rs:142/149/158/164`).
+  - Outbox: `LocalOp::UpdateBoard(BoardId)` (re-tagged from
+    `RenameBoard`; the push full-sends title+color+archived per Deck
+    PUT semantics) and `LocalOp::DeleteBoard` (tombstone finalizes
+    on push success) — **the ops are already board-addressed**, so
+    the outbox half of F16-23's four vocabularies is closer than the
+    audit snapshot suggested.
+  - Migration 0005 re-tags `rename_board` → `update_board` in-place
+    with decode rejecting the legacy tag afterwards — the
+    in-migration re-representation precedent the F16-22 rebuild can
+    reuse for status/op re-shaping.
+  - ADR 0004 amendment (2026-10-18): boards complete the per-field
+    merge; `merge_board`'s field-wise defense now covers
+    color/archived/deleted.
+  - CLI ceremony: `destruct_on` — typed `--confirm` refusal stating
+    what would go, else dispatch with a pre-count receipt
+    (`commands/boards.rs:233-299`). The N-board generalisation keeps
+    this shape (the loud-flag pattern mirrors `connect
+    --switch-backend`/`--force`).
+  - GUI stack-create landed (`view_state.rs`, `actions.rs`,
+    `board-layout.slint`) — the first structure-editing action; the
+    board switcher (Q8) joins this registry.
 
 ## 4. Wave-level decision record (user review, 2026-10-18)
 
@@ -120,12 +148,15 @@ constraints from §4/§5. The round resolves each with one recorded
 decision and a recommendation; D-W9's answer goes back to the user.
 
 1. **Board parameter shape** (F16-06 + F16-23, one motion): how the
-   five `live_board` sites become an explicit board parameter —
-   selected-board state + explicit override vs fully explicit
-   scoping; what replaces `CreateBoard`'s single-live-board refusal
-   and the first-live-board implicit selection; the chosen shape
-   applied to **all four vocabularies** (commands, outbox ops,
-   `CommandError` variants, status payloads).
+   nine `live_board` sites (`command.rs` — four more since the audit
+   snapshot, one per #334 board-edit verb) become an explicit board
+   parameter — selected-board state + explicit override vs fully
+   explicit scoping; what replaces `CreateBoard`'s single-live-board
+   refusal and the first-live-board implicit selection; the chosen
+   shape applied to **all four vocabularies** (commands, outbox ops,
+   `CommandError` variants, status payloads). The outbox ops are
+   already board-addressed post-#334 (`UpdateBoard(BoardId)`,
+   `DeleteBoard`) — the command surface is the laggard.
 2. **SyncStatus keying** (F16-22, the P1): per-board status with
    connector attribution vs per-connector vs (connector, board)
    pair; decides the one table-rebuild migration; the global
@@ -142,9 +173,13 @@ decision and a recommendation; D-W9's answer goes back to the user.
    spawns against; the ADR 0010 amendment text. Keep it the narrow
    vocabulary seam ADR 0010 anticipated, not a plugin system.
 5. **Ceremony redesign** (F16-24): select/refuse/adopt/resume at N
-   boards and multi-binding; unbind (#179); title-match attach
-   (#170); reset/delete of one board among N (generalising chunk
-   15's ceremony); interplay with the stale-binding re-resolve that
+   boards and multi-binding (the `BoardAlreadyBound(RemoteBoardId)`
+   variant is the refusal seed); unbind (#179); title-match attach
+   (#170); reset/delete of **one board among N** — generalising
+   #334's landed `ResetBoard`/`DeleteBoard` verbs, their
+   tombstone-finalizing push, and the `destruct_on` `--confirm`
+   ceremony (board restore stays a separate later round per #334's
+   non-goals); interplay with the stale-binding re-resolve that
    remediation chunk 5 landed.
 6. **Config shape**: `[[sync.connectors]]` array-of-tables + the
    legacy `[sync] backend` scalar resolution rule (scalar = the
@@ -163,7 +198,10 @@ decision and a recommendation; D-W9's answer goes back to the user.
    written against 0001's conventions; the config additive path; the
    `insta` snapshot regeneration strategy for the widened
    `AppState` (deliberate regeneration, never bitrot); any breaking
-   change argued on concrete benefit.
+   change argued on concrete benefit. Migration 0005 sets two
+   reusable precedents: epoch-default columns that keep old rows'
+   merge behavior bit-for-bit, and in-migration op re-tagging with
+   decode rejecting the legacy tag.
 
 ## 6. Implementation chunk sketch (post-acceptance input)
 
@@ -175,7 +213,7 @@ re-chunk, not re-scope.
 |---|---|---|---|
 | 1 | SyncStatus three-layer widening + table-rebuild migration | #298 · F16-22/F3-04 — **first, alone** (standing decision P1-1) | M |
 | 2 | Domain vocabulary: board-scoped commands/outbox/errors/status payloads + the connector trait port | F16-23/F16-06/F8-06 + D-W4 | L |
-| 3 | Engine: single-live-board lift + N-board ceremonies (unbind #179, title-match #170) | F16-24 | M |
+| 3 | Engine: single-live-board lift + N-board ceremonies (unbind #179, title-match #170; generalises #334's reset/delete verbs) | F16-24 | M |
 | 4 | Sync crate: implement the trait, per-connector routing keys, explicit resume target, `Board.remote` connector tag | F16-05 + connect-flow §4.5 routing/ownership | M |
 | 5 | App/config/bootstrap: `[[sync.connectors]]`, guard lift, N-actor spawn, board→connector routing table, all-down authority | §4.5 config/authority + D-W7 | L |
 | 6 | CLI/REPL verb growth (`connect <name>/list/remove`, multi-board `boards` verbs, per-connector `status`) | §4.5 verb growth | M |
@@ -198,11 +236,11 @@ the new trait port.
 1. **Now**: this framing plan's PR (docs-only, parallel-safe with
    the remediation tail).
 2. **Stage-0 design round**: next round of work — dispatched or
-   session-run per the user's call; must incorporate the landed
-   shapes of `feat/board-stack-structure-editing` (user signals when
-   it reaches review) and re-verify anchors (remediation chunks
-   landing meanwhile may shift line numbers; the findings IDs are
-   the stable keys).
+   session-run per the user's call. The `feat/board-stack-structure-
+   editing` shapes are **incorporated** (PR #334, folded in
+   2026-10-18, §3); the round re-verifies anchors at its start
+   (chunks landing meanwhile may shift line numbers; the findings
+   IDs are the stable keys).
 3. **Then**: wave implementation plan (kiosk-exemplar style) →
    dispatch plan (template) → chunks, after remediation-wave-1
    closes.
@@ -246,8 +284,15 @@ the new trait port.
 - Pattern exemplars: `2026-10-16-kiosk-daemon-gui-control-plan.md`
   (design round + decision record), `2026-10-16-kiosk-mode-wave1-plan.md`
   (wave implementation plan), `.artifacts/templates/dispatch-plan.md`.
-- Code anchors @ `47b2cba`: `state.rs:25-56`, `core.rs:72/113`,
-  `0001_init.sql:103`, `command.rs:56/134/364/465/575/598/615`,
-  `bootstrap.rs:141/181/254-266`, `actor.rs:327-333`,
-  `presentation.rs:248-252`, `view_state.rs:177-193`,
-  `messages.rs:247/267`, `persistence.rs:68`.
+- Board-lifecycle input: PR #334 and its plan
+  `.artifacts/plans/2026-10-18-board-stack-structure-editing-plan.md`
+  (§3.4 already cross-references this wave's F3-04/F7-05 folds); ADR
+  0004 amendment 2026-10-18; migration `0005_board_edit_verbs.sql`.
+- Code anchors @ `878bb12`: `state.rs:24-56`, `core.rs:72/113`,
+  `0001_init.sql:103`, `command.rs:56/134` + nine live_board sites
+  `:364/:465/:575/:603/:620/:637/:656/:754/:824`,
+  `bootstrap.rs:141/181/266/443`, `actor.rs:362`,
+  `presentation.rs:250-254`, `view_state.rs:198`,
+  `messages.rs:142/149/158/164/272/292`, `persistence.rs:68`,
+  `entities.rs:95`, `outbox.rs` (`UpdateBoard`/`DeleteBoard`),
+  `commands/boards.rs:233-299`.
