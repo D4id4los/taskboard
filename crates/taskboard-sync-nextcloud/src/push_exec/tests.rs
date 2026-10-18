@@ -3281,3 +3281,141 @@ async fn delete_re_resolve_with_a_forbidden_listing_converges_remote_missing() {
     assert_eq!(outcomes.len(), 1, "primary-only, subsumed stay queued");
     assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
 }
+
+/// F6-24: a 503 on the *post-create* archive sub-call is transport-class
+/// — the group aborts carrying the create as landed evidence (the
+/// re-POST hazard the `landed` field exists to prevent). `is_transport →
+/// false` would swallow the failure into a plain `Outcomes`.
+#[tokio::test]
+async fn post_create_archive_transport_failure_aborts_with_the_create_as_landed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 0)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/archive",
+        ))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t")
+        .unwrap()
+        .with_sleeper(std::sync::Arc::new(InstantSleeper));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let shape = taskboard_domain::NewCardShape {
+        title: "created".into(),
+        order: 0,
+        description: String::new(),
+        duedate: None,
+        done: None,
+        archived: true,
+        labels: std::collections::BTreeSet::new(),
+    };
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::CreateTask {
+                    task: task_id(10),
+                    stack: stack_id(5),
+                    new_card: shape,
+                },
+                taskboard_domain::PushTarget::Task(task_id(10)),
+                &[],
+            ),
+            &[op(100, LocalOp::CreateTask(task_id(10)))],
+            empty_tables(),
+        )
+        .await;
+
+    let GroupOutcome::Aborted { landed } = outcome else {
+        panic!("a transport failure on the post-create archive aborts the group");
+    };
+    assert_eq!(landed.len(), 1, "the create's evidence rides the abort");
+    assert_eq!(landed[0].op, taskboard_domain::OpId(uid(100)));
+    assert!(
+        matches!(
+            &landed[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
+                if view.id.card == taskboard_domain::RemoteCardId(55)
+        ),
+        "the landed create carries its echo so the next cycle never re-POSTs"
+    );
+    let () = server.verify().await;
+}
+
+/// F6-24: a *classified* rejection (403) on the post-create archive
+/// sub-call is tolerated — the flag repairs on a later cycle, so the
+/// group completes with exactly the create's `Applied` outcome and no
+/// `Rejected` entry (the sub-call has no op of its own). `is_transport →
+/// true` would turn the 403 into an abort.
+#[tokio::test]
+async fn post_create_archive_rejection_is_tolerated_without_aborting() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 0)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55/archive",
+        ))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t")
+        .unwrap()
+        .with_sleeper(std::sync::Arc::new(InstantSleeper));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let shape = taskboard_domain::NewCardShape {
+        title: "created".into(),
+        order: 0,
+        description: String::new(),
+        duedate: None,
+        done: None,
+        archived: true,
+        labels: std::collections::BTreeSet::new(),
+    };
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::CreateTask {
+                    task: task_id(10),
+                    stack: stack_id(5),
+                    new_card: shape,
+                },
+                taskboard_domain::PushTarget::Task(task_id(10)),
+                &[],
+            ),
+            &[op(100, LocalOp::CreateTask(task_id(10)))],
+            empty_tables(),
+        )
+        .await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("a classified archive rejection must not abort the group");
+    };
+    assert_eq!(outcomes.len(), 1, "the sub-call adds no outcome of its own");
+    assert_eq!(outcomes[0].op, taskboard_domain::OpId(uid(100)));
+    assert!(matches!(
+        &outcomes[0].result,
+        PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
+            if view.id.card == taskboard_domain::RemoteCardId(55)
+    ));
+    let () = server.verify().await;
+}
