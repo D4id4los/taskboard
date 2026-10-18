@@ -16,7 +16,12 @@
   protocol amendment**: review agents rebase onto `origin/main`
   *first* and hand off only at merge-state `CLEAN` (§1; the
   dispatch-plan template is amended in the same PR so all future
-  dispatch plans inherit it).
+  dispatch plans inherit it). Amended same-day with the
+  **disk-hygiene protocol** (origin:
+  `.artifacts/reports/2026-10-18-agent-worktree-disk-usage-report.md`;
+  AGENTS §8/§10 and the template amended in the same PR): doctor
+  pre-flight before (re)creating a worktree, coverage-dir cleanup on
+  every full-gate run, and stage-3 worktree teardown at handoff.
 - **Status**: READY for chunk 1 once the framing plan's PR (#333)
   merges; chunk 2 is **gated on a human decision session** — the
   user's rulings on chunk 1's recommendations (D-W9 SyncStatus
@@ -42,7 +47,11 @@ session on chunk 1's PR) → chunk 2. Strictly serial; no stacked PRs.
 (N.1 → N.2 → N.3 within a chunk); the two chunks never run
 concurrently. Every chunk works in `../taskboard-WT-<branch>` next
 to the project root (AGENTS §8), branched off the then-current
-`main`, no PR ever stacked.
+`main`, no PR ever stacked. Disk hygiene (AGENTS §8 worktree
+lifecycle, amended 2026-10-18): any agent creating or recreating a
+worktree runs `scripts/worktree-doctor.sh` from the main checkout
+first — nonzero exit (free disk below the floor) stops the chunk;
+stage 3 removes the worktree as its final handoff task.
 
 **Shared execution model** (binding for every chunk):
 
@@ -79,10 +88,15 @@ to the project root (AGENTS §8), branched off the then-current
    PR's merge state**: `gh pr view --json mergeStateStatus` must
    report `CLEAN`; `BEHIND` or `DIRTY` ⇒ rebase onto `origin/main`,
    push `--force-with-lease`, let the checks re-run, and repeat;
-   any other state ⇒ diagnose before handing off. The handoff
-   contract is **"PR open + checks green + merge state `CLEAN`"** so
-   the user's merge on GitHub needs no additional rebase. Reports a
-   verdict. Never merges; never touches `main`.
+   any other state ⇒ diagnose before handing off. **Then teardown**:
+   remove the now-disposable worktree — from the project root,
+   `git worktree remove --force ../taskboard-WT-<branch>` (everything
+   precious is pushed; a later round that resumes the chunk recreates
+   it on the branch). The handoff contract is **"PR open + checks
+   green + merge state `CLEAN` + worktree removed"** so the user's
+   merge on GitHub needs no additional rebase and the chunk leaves no
+   36–55G of build output behind. Reports a verdict. Never merges;
+   never touches `main`.
 
 **Evidence & artefact mandate** (stage 3, every chunk — research
 flavour, per the dispatch-plan template):
@@ -266,9 +280,10 @@ You are the stage-3 REVIEW agent for chunk 2 of the multi-board design-round dis
 3. Functional focus — this chunk's specific traps: (a) the decision record must reproduce the user's rulings faithfully — no silently adopted recommendations the user overruled; (b) the implementation plan must not re-open accepted decisions or smuggle in new ones; (c) every implementation chunk needs normative origin references, a valid branch name, and explicit non-goals — a chunk whose boundary must be re-derived is a finding; (d) the framing-plan edit must leave the historical decision record (§4) intact — it records, it does not rewrite; (e) scope leakage (code, tracker edits, speculative chunks beyond the accepted design).
 4. Re-run the full gate suite yourself (AGENTS §10); any failure is a finding.
 5. Fix every issue directly on the branch (amend/reword — no duplicate-subject fixups).
-6. Last tasks — ship: push the branch, open the PR to main with gh, then gh pr checks --watch to green; any failing check is a finding — diagnose, fix, push --force-with-lease, repeat. Then verify gh pr view --json mergeStateStatus reports CLEAN; BEHIND/DIRTY ⇒ rebase onto origin/main, push --force-with-lease, let checks re-run, repeat; any other state ⇒ diagnose. Handoff contract: PR open + checks green + merge state CLEAN — the user's merge must need no additional rebase. Never merge; never touch main.
+6. Ship: push the branch, open the PR to main with gh, then gh pr checks --watch to green; any failing check is a finding — diagnose, fix, push --force-with-lease, repeat. Then verify gh pr view --json mergeStateStatus reports CLEAN; BEHIND/DIRTY ⇒ rebase onto origin/main, push --force-with-lease, let checks re-run, repeat; any other state ⇒ diagnose. Handoff contract: PR open + checks green + merge state CLEAN + worktree removed — the user's merge must need no additional rebase. Never merge; never touch main.
+7. Teardown: from the project root, git worktree remove --force ../taskboard-WT-docs-multi-board-impl-plan (everything is pushed; a resuming round recreates the worktree on the branch via git worktree add).
 
-Report: verdict, findings (functional + mandate), what you fixed, PR URL, green-checks + CLEAN confirmation.
+Report: verdict, findings (functional + mandate), what you fixed, PR URL, green-checks + CLEAN confirmation, worktree-removed confirmation.
 ```
 
 ## 4. Completion bookkeeping

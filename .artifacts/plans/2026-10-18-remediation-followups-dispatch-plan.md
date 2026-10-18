@@ -23,7 +23,13 @@
   (ii) **all fixes land as ONE PR** — the ~10-minute Performance
   Benchmarking job runs on every PR, so N small PRs are no longer
   economical, (iii) milestone hygiene: #256 was verified implemented
-  (PR #328, twin #296) and closed 2026-10-18 with evidence.
+  (PR #328, twin #296) and closed 2026-10-18 with evidence. Amended
+  same-day with the **disk-hygiene protocol** (origin:
+  `.artifacts/reports/2026-10-18-agent-worktree-disk-usage-report.md`;
+  AGENTS §8/§10 amended in the same PR): doctor pre-flight before
+  (re)creating the round's worktree, coverage-dir cleanup on every
+  full-gate run, and chunk 5's stage-3 tearing the worktree down
+  after the CLEAN handoff.
 - **Status**: READY — all 5 chunks are dispatchable now, off the current
   `main` (62dd839), strictly serially on one shared branch. Nothing is
   gated on a human decision; the two open design micro-decisions are
@@ -87,6 +93,17 @@ this round only):
 - Commit hygiene is unchanged and load-bearing: every commit standalone
   (`<type>(<scope>): <subject>`), fixes amended in place — the PR is
   rebase-merged, so all commits land on `main` verbatim.
+- **Disk hygiene (protocol amended 2026-10-18; AGENTS §8/§10 carry
+  the rules)**: any agent that creates or recreates the round's
+  worktree runs `scripts/worktree-doctor.sh` from the main checkout
+  first (nonzero exit ⇒ free disk below the floor ⇒ STOP and report).
+  Every full-gate run deletes `target/llvm-cov-target` after
+  `lcov.info` is written (AGENTS §10's trailing step — 13–25G per
+  run otherwise). Chunk 5's stage-3 removes the round's worktree as
+  its final act, after the CLEAN handoff: from the project root,
+  `git worktree remove --force ../taskboard-WT-fix-remediation-wave1-followups`
+  — the round's single worktree must not outlive its PR (a future
+  fix round recreates it on the branch).
 
 **Shared execution model** (binding for every chunk):
 
@@ -192,9 +209,7 @@ in the taskboard repo at /home/viktoria/src/taskboard.
    the #258 re-resolve seam in the update/move paths, and the tests you
    must not break: tests/actor_wiremock.rs (stale-binding + pinning
    suites), src/push_exec/tests.rs.
-3. Create the worktree ../taskboard-WT-fix-remediation-wave1-followups on
-   a new branch fix/remediation-wave1-followups off main. (You are the
-   first agent of the round; later chunks reuse this worktree.)
+3. Run scripts/worktree-doctor.sh from the project root /home/viktoria/src/taskboard first (nonzero exit = free disk below the floor: STOP and report instead of planning). Then create the worktree ../taskboard-WT-fix-remediation-wave1-followups on a new branch fix/remediation-wave1-followups off main. (You are the first agent of the round; later chunks reuse this worktree.)
 4. Write a detailed TDD-first plan at .artifacts/plans/<today>-sync-push-semantics-plan.md:
    the exact per-op outcome emission for every subsumed-op class in the
    two classified-rejection arms (D1), the op→label→remote-number
@@ -803,9 +818,14 @@ agent: yours is the only push of the round.
    CLEAN; BEHIND/DIRTY ⇒ rebase onto origin/main, push
    --force-with-lease, let checks re-run, repeat. main is protected:
    never merge; the user merges on GitHub.
+6. Round teardown — your final act: cd /home/viktoria/src/taskboard and
+   git worktree remove --force ../taskboard-WT-fix-remediation-wave1-followups
+   (everything is pushed; a future fix round recreates the worktree on
+   the branch).
 
 Report: verdict, findings (functional + mandate), what you fixed, PR
-URL, green-checks + CLEAN confirmation. Never merge; never touch main.
+URL, green-checks + CLEAN confirmation, worktree-removed confirmation.
+Never merge; never touch main.
 ```
 
 ## 7. Completion bookkeeping
