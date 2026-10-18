@@ -663,7 +663,12 @@ mod tests {
                 color: taskboard_domain::Color::new(""),
                 archived: false,
                 deleted: false,
-                clocks: BoardClocks { title: epoch() },
+                clocks: BoardClocks {
+                    title: epoch(),
+                    color: epoch(),
+                    archived: epoch(),
+                    deleted: epoch(),
+                },
                 remote_seen: None,
             },
         );

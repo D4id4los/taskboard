@@ -172,7 +172,12 @@ fn seeded_state() -> taskboard_domain::PersistedState {
         color: taskboard_domain::Color::new("00ff00"),
         archived: false,
         deleted: false,
-        clocks: taskboard_domain::BoardClocks { title: ts(T) },
+        clocks: taskboard_domain::BoardClocks {
+            title: ts(T),
+            color: taskboard_domain::BoardClocks::epoch(),
+            archived: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
         remote_seen: Some(ts(T)),
     };
     let stack = taskboard_domain::Stack {

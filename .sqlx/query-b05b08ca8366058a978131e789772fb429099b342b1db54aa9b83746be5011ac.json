@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM outbox\n               WHERE (op_kind IN ('update_board', 'delete_board') AND board_id = ?1)\n                  OR (op_kind IN ('create_task', 'update_task', 'move_task', 'delete_task',\n                                  'assign_label', 'unassign_label')\n                      AND task_id IN (SELECT t.id FROM tasks t\n                                      JOIN stacks s ON t.stack = s.id\n                                      WHERE s.board = ?1))\n                  OR (op_kind IN ('create_stack', 'rename_stack', 'move_stack', 'delete_stack')\n                      AND stack_id IN (SELECT id FROM stacks WHERE board = ?1))\n                  OR (op_kind IN ('create_label', 'update_label', 'delete_label')\n                      AND label_id IN (SELECT id FROM labels WHERE board = ?1))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "b05b08ca8366058a978131e789772fb429099b342b1db54aa9b83746be5011ac"
+}

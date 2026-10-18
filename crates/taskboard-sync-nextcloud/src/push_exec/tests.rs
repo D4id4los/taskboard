@@ -155,7 +155,12 @@ fn board_row(raw: u128, title: &str) -> taskboard_domain::Board {
         color: taskboard_domain::Color::new("00c2e0"),
         archived: false,
         deleted: false,
-        clocks: taskboard_domain::BoardClocks { title: now },
+        clocks: taskboard_domain::BoardClocks {
+            title: now,
+            color: now,
+            archived: now,
+            deleted: now,
+        },
         remote_seen: None,
     }
 }

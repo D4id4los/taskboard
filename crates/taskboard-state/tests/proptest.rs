@@ -58,6 +58,9 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
             archived: false,
             deleted: false,
             clocks: BoardClocks {
+                color: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
                 title: BoardClocks::epoch(),
             },
             remote_seen: None,
@@ -404,6 +407,9 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
             archived: false,
             deleted: false,
             clocks: BoardClocks {
+                color: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
                 title: BoardClocks::epoch(),
             },
             remote_seen: None,
@@ -623,7 +629,9 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                     disk.labels.contains_key(&id)
                 }
-                LocalOp::UpdateBoard(id) => disk.boards.contains_key(&id),
+                LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => {
+                    disk.boards.contains_key(&id)
+                }
                 LocalOp::AssignLabel(task, label) | LocalOp::UnassignLabel(task, label) => {
                     disk.tasks.contains_key(&task) && disk.labels.contains_key(&label)
                 }

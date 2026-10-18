@@ -83,6 +83,11 @@ pub enum MaterializedOp {
         /// The bound board to update.
         board: BoardId,
     },
+    /// DELETE the board.
+    DeleteBoard {
+        /// The bound board to delete.
+        board: BoardId,
+    },
     /// POST a new stack.
     CreateStack {
         /// The (unbound) stack to create.
@@ -332,7 +337,9 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
             LocalOp::CreateLabel(id) | LocalOp::UpdateLabel(id) | LocalOp::DeleteLabel(id) => {
                 label_ops.push((id, idx, entry));
             }
-            LocalOp::UpdateBoard(id) => board_ops.push((id, idx, entry)),
+            LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => {
+                board_ops.push((id, idx, entry));
+            }
         }
     }
 
@@ -446,17 +453,38 @@ fn plan_board_groups(
         .into_iter()
         .map(|(board, members)| {
             let first_idx = members[0].0;
-            let group = match boards.get(&board) {
-                Some(row) if row.remote.is_some() && !row.deleted => {
-                    let (_, first) = members[0];
-                    PushGroup {
-                        target: PushTarget::Board(board),
-                        materialized: MaterializedOp::UpdateBoard { board },
-                        primary: first.op_id,
-                        subsumed: others(&members, first.op_id),
-                    }
+            let group = if let Some((_, del)) = members
+                .iter()
+                .find(|(_, op)| matches!(op.op, LocalOp::DeleteBoard(id) if id == board))
+            {
+                // Delete dominance (the stacks rule): one DELETE subsumes
+                // the board's other ops — but only a *bound* board
+                // materializes (the tombstone keeps its binding until the
+                // push confirms, R9c); an unbound board's group is a
+                // synthetic completion.
+                let materialized = match boards.get(&board) {
+                    Some(row) if row.remote.is_some() => MaterializedOp::DeleteBoard { board },
+                    _ => MaterializedOp::Noop,
+                };
+                PushGroup {
+                    target: PushTarget::Board(board),
+                    materialized,
+                    primary: del.op_id,
+                    subsumed: others(&members, del.op_id),
                 }
-                _ => noop_group(PushTarget::Board(board), &members),
+            } else {
+                match boards.get(&board) {
+                    Some(row) if row.remote.is_some() && !row.deleted => {
+                        let (_, first) = members[0];
+                        PushGroup {
+                            target: PushTarget::Board(board),
+                            materialized: MaterializedOp::UpdateBoard { board },
+                            primary: first.op_id,
+                            subsumed: others(&members, first.op_id),
+                        }
+                    }
+                    _ => noop_group(PushTarget::Board(board), &members),
+                }
             };
             (first_idx, group)
         })
@@ -743,7 +771,12 @@ mod tests {
             color: crate::entities::Color::new("00ff00"),
             archived: false,
             deleted: false,
-            clocks: crate::entities::BoardClocks { title: ts(100) },
+            clocks: crate::entities::BoardClocks {
+                title: ts(100),
+                color: ts(100),
+                archived: ts(100),
+                deleted: ts(100),
+            },
             remote_seen: None,
         }
     }
@@ -1174,7 +1207,65 @@ mod tests {
     }
 
     #[test]
-    fn board_rename_materializes_only_for_a_bound_board() {
+    fn board_delete_dominates_and_subsumes_the_other_board_ops() {
+        let mut bound = board_row(1);
+        bound.remote = Some(crate::ids::RemoteBoardId(42));
+        let bound_id = bound.id;
+        let mut boards = BTreeMap::new();
+        boards.insert(bound_id, bound);
+        let tasks = BTreeMap::new();
+        let stacks = BTreeMap::new();
+        let labels = BTreeMap::new();
+
+        let outbox = vec![
+            op(100, LocalOp::UpdateBoard(bound_id)),
+            op(101, LocalOp::DeleteBoard(bound_id)),
+        ];
+        let groups = plan_pushes(
+            &outbox,
+            EntityTables {
+                tasks: &tasks,
+                stacks: &stacks,
+                labels: &labels,
+                boards: &boards,
+            },
+        );
+        assert_eq!(groups.len(), 1, "one DELETE subsumes the board's ops");
+        let group = &groups[0];
+        assert_eq!(
+            group.materialized,
+            MaterializedOp::DeleteBoard { board: bound_id }
+        );
+        assert_eq!(group.primary, OpId(uuid(101)));
+        assert_eq!(group.subsumed, vec![OpId(uuid(100))]);
+    }
+
+    #[test]
+    fn board_delete_on_an_unbound_board_is_a_noop_group() {
+        let unbound = board_row(2);
+        let unbound_id = unbound.id;
+        let mut boards = BTreeMap::new();
+        boards.insert(unbound_id, unbound);
+        let tasks = BTreeMap::new();
+        let stacks = BTreeMap::new();
+        let labels = BTreeMap::new();
+
+        let outbox = vec![op(110, LocalOp::DeleteBoard(unbound_id))];
+        let groups = plan_pushes(
+            &outbox,
+            EntityTables {
+                tasks: &tasks,
+                stacks: &stacks,
+                labels: &labels,
+                boards: &boards,
+            },
+        );
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].materialized.is_noop(), "synthetic completion");
+    }
+
+    #[test]
+    fn board_update_materializes_only_for_a_bound_live_board() {
         let mut bound = board_row(1);
         bound.remote = Some(crate::ids::RemoteBoardId(42));
         let unbound = board_row(2);

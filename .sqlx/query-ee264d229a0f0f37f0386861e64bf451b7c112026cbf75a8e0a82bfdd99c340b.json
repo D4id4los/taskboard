@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reminder_deliveries\n               WHERE reminder IN (SELECT 'rule:' || r.rule_id FROM reminder_rules r\n                                  WHERE r.task_id IN (SELECT t.id FROM tasks t\n                                                      JOIN stacks s ON t.stack = s.id\n                                                      WHERE s.board = ?1))\n                  OR reminder IN (SELECT 'default:' || t.id FROM tasks t\n                                  JOIN stacks s ON t.stack = s.id\n                                  WHERE s.board = ?1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "ee264d229a0f0f37f0386861e64bf451b7c112026cbf75a8e0a82bfdd99c340b"
+}

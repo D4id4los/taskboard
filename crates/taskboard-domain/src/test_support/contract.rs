@@ -42,6 +42,9 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         archived: false,
         deleted: false,
         clocks: crate::entities::BoardClocks {
+            color: crate::entities::BoardClocks::epoch(),
+            archived: crate::entities::BoardClocks::epoch(),
+            deleted: crate::entities::BoardClocks::epoch(),
             title: crate::entities::BoardClocks::epoch(),
         },
         remote_seen: None,
@@ -381,6 +384,44 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
     assert!(
         !after.reminders.snoozes.contains_key(&snooze_key),
         "the deleted rule's snooze link is pruned"
+    );
+
+    // ---- ClearBoardContent: the scoped bulk repair ---------------------
+    //
+    // The board's content (stack, task, label), its children's queued ops,
+    // its validators, and its tasks' reminder facts go; the board row and
+    // the sync status survive.
+    let pre = repo.load().await.expect("load before clear");
+    assert!(pre.stacks.contains_key(&stack.id) && pre.tasks.contains_key(&task.id));
+    repo.apply(vec![PersistenceAction::ClearBoardContent(board.id)])
+        .await
+        .expect("clear board content");
+    let after = repo.load().await.expect("reload after clear");
+    assert!(
+        !after.stacks.contains_key(&stack.id)
+            && !after.tasks.contains_key(&task.id)
+            && !after.labels.contains_key(&label.id),
+        "the board's content rows are gone"
+    );
+    assert!(
+        after.boards.contains_key(&board.id),
+        "the board row survives"
+    );
+    assert!(
+        after.outbox.is_empty(),
+        "the board's queued ops are cancelled with its content"
+    );
+    assert!(
+        after.validators.is_empty(),
+        "the board's validators are cleared (the 304 re-materialization trap)"
+    );
+    assert!(
+        after.reminders.deliveries.is_empty() && after.reminders.rules.is_empty(),
+        "the board's tasks' reminder facts are pruned"
+    );
+    assert_eq!(
+        after.sync.pending_ops, 0,
+        "pending_ops stays derived after the clear"
     );
 }
 

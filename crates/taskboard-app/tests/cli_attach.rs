@@ -93,6 +93,9 @@ pub async fn seed_local_board(db_path: &std::path::Path, local_id: u128, run: &s
                 deleted: false,
                 clocks: taskboard_domain::BoardClocks {
                     title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
                 },
                 remote_seen: None,
             }),

@@ -49,6 +49,8 @@ pub enum LocalOp {
     /// Board edit (title/color/archived — every Deck board write is a
     /// full-send, like [`LocalOp::RenameStack`]).
     UpdateBoard(crate::ids::BoardId),
+    /// Board delete; the tombstone finalizes on success (R9c).
+    DeleteBoard(crate::ids::BoardId),
 }
 
 /// An outbox entry: which operation, when it was queued.
@@ -81,7 +83,8 @@ pub fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
         | LocalOp::CreateLabel(_)
         | LocalOp::UpdateLabel(_)
         | LocalOp::DeleteLabel(_)
-        | LocalOp::UpdateBoard(_) => false,
+        | LocalOp::UpdateBoard(_)
+        | LocalOp::DeleteBoard(_) => false,
     }
 }
 

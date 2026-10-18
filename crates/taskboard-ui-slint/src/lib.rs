@@ -597,6 +597,9 @@ mod keymap_adapter_tests {
                     deleted: false,
                     clocks: taskboard_domain::BoardClocks {
                         title: taskboard_domain::BoardClocks::epoch(),
+                        color: taskboard_domain::BoardClocks::epoch(),
+                        archived: taskboard_domain::BoardClocks::epoch(),
+                        deleted: taskboard_domain::BoardClocks::epoch(),
                     },
                     remote_seen: None,
                 },
@@ -714,7 +717,12 @@ mod view_component_tests {
             color: taskboard_domain::Color::new(""),
             archived: false,
             deleted: false,
-            clocks: taskboard_domain::BoardClocks { title: epoch() },
+            clocks: taskboard_domain::BoardClocks {
+                title: epoch(),
+                color: epoch(),
+                archived: epoch(),
+                deleted: epoch(),
+            },
             remote_seen: None,
         }
     }

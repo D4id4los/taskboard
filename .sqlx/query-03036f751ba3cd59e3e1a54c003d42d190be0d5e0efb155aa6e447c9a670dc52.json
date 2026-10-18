@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, remote_board_id, title, color,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title as \"ck_title: DateTime<Utc>\",\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM boards ORDER BY id",
+  "query": "SELECT id, remote_board_id, title, color,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title as \"ck_title: DateTime<Utc>\",\n                      ck_color as \"ck_color: DateTime<Utc>\",\n                      ck_archived as \"ck_archived: DateTime<Utc>\",\n                      ck_deleted as \"ck_deleted: DateTime<Utc>\",\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM boards ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -81,8 +81,41 @@
         }
       },
       {
-        "name": "remote_seen: DateTime<Utc>",
+        "name": "ck_color: DateTime<Utc>",
         "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "boards",
+            "name": "ck_color"
+          }
+        }
+      },
+      {
+        "name": "ck_archived: DateTime<Utc>",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "boards",
+            "name": "ck_archived"
+          }
+        }
+      },
+      {
+        "name": "ck_deleted: DateTime<Utc>",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "boards",
+            "name": "ck_deleted"
+          }
+        }
+      },
+      {
+        "name": "remote_seen: DateTime<Utc>",
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -103,8 +136,11 @@
       false,
       false,
       false,
+      false,
+      false,
+      false,
       true
     ]
   },
-  "hash": "3a79d9adbb173f26eb3d9e68f13d14037a98950b240fea50007db838d5039be6"
+  "hash": "03036f751ba3cd59e3e1a54c003d42d190be0d5e0efb155aa6e447c9a670dc52"
 }

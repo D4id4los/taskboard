@@ -87,7 +87,12 @@ fn fixture_board() -> Board {
         color: Color::new("3366ff"),
         archived: false,
         deleted: false,
-        clocks: BoardClocks { title: ts(0) },
+        clocks: BoardClocks {
+            title: ts(0),
+            color: ts(0),
+            archived: ts(0),
+            deleted: ts(0),
+        },
         remote_seen: Some(ts(0)),
     }
 }

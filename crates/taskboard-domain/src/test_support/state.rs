@@ -280,6 +280,9 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                     archived: board.archived,
                     deleted: board.deleted,
                     clocks: crate::entities::BoardClocks {
+                        color: crate::entities::BoardClocks::epoch(),
+                        archived: crate::entities::BoardClocks::epoch(),
+                        deleted: crate::entities::BoardClocks::epoch(),
                         title: crate::entities::BoardClocks::epoch(),
                     },
                     remote_seen: board.remote_seen,
@@ -397,7 +400,7 @@ pub fn app_state_strategy() -> impl Strategy<Value = AppState> {
 pub struct OutboxRow {
     /// Operation id.
     pub op_id: crate::outbox::OpId,
-    /// Operation kind (index into all 14 `LocalOp` variants; resolved
+    /// Operation kind (index into all 15 `LocalOp` variants; resolved
     /// against the generated entity lists, rows without a matching entity
     /// are dropped).
     pub kind: usize,
@@ -406,7 +409,7 @@ pub struct OutboxRow {
 }
 
 fn outbox_rows() -> impl Strategy<Value = Vec<OutboxRow>> {
-    prop::collection::vec((op_id_strategy(), 0_usize..14, timestamp_strategy()), 0..6).prop_map(
+    prop::collection::vec((op_id_strategy(), 0_usize..15, timestamp_strategy()), 0..6).prop_map(
         |rows| {
             rows.into_iter()
                 .map(|(op_id, kind, queued_at)| OutboxRow {
@@ -492,7 +495,8 @@ fn build_outbox(state: &AppState, op_rows: Vec<OutboxRow>) -> Vec<PendingOp> {
             11 => t.zip(l).map(|(t, l)| LocalOp::UnassignLabel(t, l)),
             12 => s.map(LocalOp::MoveStack),
             13 => b.map(LocalOp::UpdateBoard),
-            // All 14 variants are named above; unreachable, defensive only.
+            14 => b.map(LocalOp::DeleteBoard),
+            // All 15 variants are named above; unreachable, defensive only.
             _ => None,
         };
         if let Some(op) = op {

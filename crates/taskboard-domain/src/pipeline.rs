@@ -32,11 +32,11 @@ use crate::ids::{
     BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 use crate::merge::{
-    RULE_R1, RULE_R3, RULE_R4, RULE_R5, RULE_R6, RULE_R9, adopt_board_after_push,
-    adopt_label_after_push, adopt_remote_board, adopt_remote_label, adopt_remote_stack,
-    adopt_remote_task, adopt_stack_after_push, adopt_task_after_push, finalize_pushed_task_delete,
-    merge_board, merge_label, merge_stack, merge_task, remote_wins, tombstone_board,
-    tombstone_label, tombstone_stack, tombstone_task, utc_min,
+    RULE_R1, RULE_R3, RULE_R4, RULE_R5, RULE_R6, RULE_R9, adopt_board_after_delete_push,
+    adopt_board_after_push, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
+    adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, adopt_task_after_push,
+    finalize_pushed_task_delete, merge_board, merge_label, merge_stack, merge_task, remote_wins,
+    tombstone_board, tombstone_label, tombstone_stack, tombstone_task, utc_min,
 };
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
@@ -74,7 +74,7 @@ fn op_label_id(op: &LocalOp) -> Option<LabelId> {
 
 fn op_board_id(op: &LocalOp) -> Option<BoardId> {
     match op {
-        LocalOp::UpdateBoard(id) => Some(*id),
+        LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => Some(*id),
         _ => None,
     }
 }
@@ -124,7 +124,8 @@ fn pending_task_intents(
             | LocalOp::CreateLabel(_)
             | LocalOp::UpdateLabel(_)
             | LocalOp::DeleteLabel(_)
-            | LocalOp::UpdateBoard(_) => continue,
+            | LocalOp::UpdateBoard(_)
+            | LocalOp::DeleteBoard(_) => continue,
         });
         match op.op {
             LocalOp::UpdateTask(_) => {
@@ -254,25 +255,55 @@ fn keep_stack_intent(
     }
 }
 
-/// Whether a post-read `UpdateBoard` op is queued for the board.
-fn pending_board_intent(outbox: &[PendingOp], board: BoardId, read_at: DateTime<Utc>) -> bool {
-    outbox
-        .iter()
-        .any(|op| op.queued_at > read_at && matches!(op.op, LocalOp::UpdateBoard(b) if b == board))
+/// The board fields a post-read `UpdateBoard`/`DeleteBoard` op protects
+/// (`(update, delete)`).
+fn pending_board_intent(
+    outbox: &[PendingOp],
+    board: BoardId,
+    read_at: DateTime<Utc>,
+) -> (bool, bool) {
+    let mut update = false;
+    let mut delete = false;
+    for op in outbox {
+        if op.queued_at <= read_at {
+            continue;
+        }
+        match op.op {
+            LocalOp::UpdateBoard(b) if b == board => update = true,
+            LocalOp::DeleteBoard(b) if b == board => delete = true,
+            _ => {}
+        }
+    }
+    (update, delete)
 }
 
-/// Restores the board's protected title from the local state.
-fn keep_board_title(merged: &mut Board, local: &Board, board_id: BoardId, rename: bool) {
-    if rename {
+/// Restores the board's protected fields from the local state.
+fn keep_board_intent(
+    merged: &mut Board,
+    local: &Board,
+    board_id: BoardId,
+    update: bool,
+    delete: bool,
+) {
+    if update || delete {
         tracing::debug!(
             board_id = ?board_id,
-            rename,
-            "self-clobber guard protected board title"
+            update,
+            delete,
+            "self-clobber guard protected board fields"
         );
     }
-    if rename {
+    if update {
         merged.title.clone_from(&local.title);
+        merged.color = local.color.clone();
+        merged.archived = local.archived;
         merged.clocks.title = local.clocks.title;
+        merged.clocks.color = local.clocks.color;
+        merged.clocks.archived = local.clocks.archived;
+    }
+    if delete {
+        merged.deleted = local.deleted;
+        merged.clocks.deleted = local.clocks.deleted;
     }
 }
 
@@ -407,8 +438,8 @@ pub fn apply_sync_report(
     let board_id = if let Some(id) = board_ids_by_remote.get(&remote_board.id).copied() {
         let local = &boards[&id];
         let mut merged = merge_board(local, remote_board);
-        let rename = pending_board_intent(outbox, id, read_at);
-        keep_board_title(&mut merged, local, id, rename);
+        let (update, delete) = pending_board_intent(outbox, id, read_at);
+        keep_board_intent(&mut merged, local, id, update, delete);
         boards.insert(id, merged);
         tracing::debug!(rule = RULE_R6, board_id = ?id, "board merged");
         id
@@ -945,7 +976,8 @@ fn apply_push_outcomes(
                     | LocalOp::UpdateLabel(_)
                     | LocalOp::AssignLabel(..)
                     | LocalOp::UnassignLabel(..)
-                    | LocalOp::UpdateBoard(_) => {}
+                    | LocalOp::UpdateBoard(_)
+                    | LocalOp::DeleteBoard(_) => {}
                 }
                 match echo {
                     Some(RemoteEcho::Task(echo)) => {
@@ -996,10 +1028,20 @@ fn apply_push_outcomes(
                             && let Some(local) = boards.get(&id)
                         {
                             let mut merged = adopt_board_after_push(local, echo);
-                            let rename = pending_board_intent(outbox, id, read_at);
-                            keep_board_title(&mut merged, local, id, rename);
+                            let (update, delete) = pending_board_intent(outbox, id, read_at);
+                            keep_board_intent(&mut merged, local, id, update, delete);
                             boards.insert(id, merged);
                             ctx.board_by_ref.insert(echo.id, id);
+                        }
+                        if let LocalOp::DeleteBoard(id) = op.op
+                            && let Some(local) = boards.get(&id)
+                        {
+                            // The delete echo finalizes the tombstone and
+                            // clears the binding (never
+                            // `adopt_board_after_push`, which hard-codes
+                            // `deleted: false`).
+                            let finalized = adopt_board_after_delete_push(local, echo);
+                            boards.insert(id, finalized);
                         }
                         op_results.insert(outcome.op, true);
                         tracing::debug!(
@@ -1081,7 +1123,7 @@ fn apply_push_outcomes(
                     op_results.insert(outcome.op, true);
                     tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, stack_id = ?id, "remote missing, stack tombstoned");
                 }
-                LocalOp::UpdateBoard(id) => {
+                LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => {
                     if let Some(local) = boards.get(&id) {
                         boards.insert(id, tombstone_board(local, now));
                     }
@@ -3015,6 +3057,9 @@ mod tests {
             deleted: false,
             clocks: crate::entities::BoardClocks {
                 title: crate::entities::BoardClocks::epoch(),
+                color: crate::entities::BoardClocks::epoch(),
+                archived: crate::entities::BoardClocks::epoch(),
+                deleted: crate::entities::BoardClocks::epoch(),
             },
             remote_seen: None,
         };
@@ -3541,6 +3586,82 @@ mod tests {
         );
         assert_eq!(merged.remote, Some(expected_ref));
         assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::CompleteOp(id) if *id == op_id)),
+        );
+    }
+
+    #[test]
+    fn board_delete_push_echo_finalizes_the_tombstone_and_clears_the_binding() {
+        // The delete echo must never adopt `deleted: false`
+        // (`adopt_board_after_push` is off-limits for deletes).
+        let mut board = crate::merge_testutil::base_board();
+        board.deleted = true;
+        board.clocks.deleted = ts(BASE + 120);
+        let state = base_state(bound_task(1));
+        let board_id = board.id;
+        let mut state = state;
+        state.boards.insert(board_id, board);
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(72));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::DeleteBoard(board_id),
+            queued_at: ts(BASE),
+        };
+        let echo = remote_board(REMOTE_BOARD_NUM, BASE + 300);
+
+        let app = apply_push_report(
+            &state,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Board(echo)),
+                },
+            }],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        let merged = &app.0.boards[&board_id];
+        assert!(merged.deleted, "the tombstone is preserved");
+        assert_eq!(merged.clocks.deleted, ts(BASE + 300));
+        assert!(merged.remote.is_none(), "the binding clears");
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::CompleteOp(id) if *id == op_id)),
+        );
+    }
+
+    #[test]
+    fn remote_missing_on_a_board_delete_push_tombstones_the_board() {
+        let state = base_state(bound_task(1));
+        let board_id = *state.boards.keys().next().unwrap();
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(73));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::DeleteBoard(board_id),
+            queued_at: ts(BASE),
+        };
+
+        let app = apply_push_report(
+            &state,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: PushResult::RemoteMissing,
+            }],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 360),
+        );
+
+        assert!(app.0.boards[&board_id].deleted);
         assert!(
             app.1
                 .iter()

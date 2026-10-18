@@ -630,11 +630,9 @@ pub fn adopt_label_after_push(local: &Label, echo: &RemoteLabel) -> Label {
 }
 
 /// R6 for boards, whole-entity: adopt changed remote board content
-/// whenever it is strictly newer than `remote_seen`. The *title* half
-/// now defends a local write through [`merge_board`]; color and archive
-/// still have no local-edit commands, so the remote content stays
-/// authoritative for them and all-or-nothing adoption is exactly
-/// equivalent.
+/// whenever it is strictly newer than `remote_seen`. Every editable
+/// field then defends its local write through [`merge_board`]'s
+/// per-field verdicts (ADR 0004, 2026-10-18 amendment).
 ///
 /// Callers of board pulls go through [`merge_board`], which wraps this
 /// result with the field-wise title defense (`BoardClocks.title`); this
@@ -667,6 +665,9 @@ pub fn adopt_board_if_newer(local: &Board, remote: &RemoteBoard) -> Board {
         deleted: remote.deleted_at.is_some(),
         clocks: crate::entities::BoardClocks {
             title: remote.last_modified,
+            color: remote.last_modified,
+            archived: remote.last_modified,
+            deleted: remote.last_modified,
         },
         remote_seen: Some(remote.last_modified),
     }
@@ -679,20 +680,55 @@ pub fn adopt_board_if_newer(local: &Board, remote: &RemoteBoard) -> Board {
 /// carry the epoch clock, so they behave exactly as before).
 #[must_use]
 pub fn merge_board(local: &Board, remote: &RemoteBoard) -> Board {
+    let ts_r = remote.last_modified;
     tracing::trace!(
         board_id = ?local.id,
         remote_board = ?remote.id,
-        remote_ts = ?remote.last_modified,
+        remote_ts = ?ts_r,
         title = %local.title,
         "board merge entry"
     );
     let mut merged = adopt_board_if_newer(local, remote);
-    let title_wins = remote_wins(remote.last_modified, local.clocks.title);
+
+    // Per-field LWW verdicts (the 2026-10-18 amendment): each editable
+    // field keeps its local value unless the remote stamp is strictly
+    // newer. Epoch clocks (never locally written) always lose — pre-clock
+    // rows keep the remote-wins behavior bit-for-bit.
+    let title_wins = remote_wins(ts_r, local.clocks.title);
     if !title_wins {
         merged.title.clone_from(&local.title);
         merged.clocks.title = local.clocks.title;
     }
-    tracing::debug!(rule = RULE_R6, board_id = ?local.id, title_wins, "board title verdict");
+    let color_wins = remote_wins(ts_r, local.clocks.color);
+    if !color_wins {
+        merged.color = local.color.clone();
+        merged.clocks.color = local.clocks.color;
+    }
+    let archived_wins = remote_wins(ts_r, local.clocks.archived);
+    if !archived_wins {
+        merged.archived = local.archived;
+        merged.clocks.archived = local.clocks.archived;
+    }
+
+    // The tombstone defense: a locally-deleted board is never resurrected
+    // by pulled live content (no restore verb exists); a strictly newer
+    // remote delete stamp only advances the tombstone's clock.
+    if local.deleted {
+        let remote_deleted_at = remote.deleted_at.unwrap_or(ts_r);
+        merged.deleted = true;
+        merged.clocks.deleted = max_ts(local.clocks.deleted, remote_deleted_at);
+    }
+
+    tracing::debug!(
+        rule = RULE_R6,
+        board_id = ?local.id,
+        remote_ts = ?ts_r,
+        title_wins,
+        color_wins,
+        archived_wins,
+        local_tombstone_stands = local.deleted,
+        "board field verdicts"
+    );
     merged
 }
 
@@ -718,6 +754,41 @@ pub fn adopt_board_after_push(local: &Board, echo: &RemoteBoard) -> Board {
         deleted: false,
         clocks: crate::entities::BoardClocks {
             title: max_ts(local.clocks.title, lm),
+            color: max_ts(local.clocks.color, lm),
+            archived: max_ts(local.clocks.archived, lm),
+            deleted: max_ts(local.clocks.deleted, lm),
+        },
+        remote_seen: Some(lm),
+    }
+}
+
+/// R9c for boards: the delete push was accepted — the tombstone stands
+/// (a delete echo must never adopt `deleted: false`), the deleted clock
+/// advances to `max(local, echo.last_modified)`, and the binding clears.
+/// The next pull cannot resurrect (the deleted-clock defense, D7/R1
+/// guard). Never reuse [`adopt_board_after_push`] for a delete.
+#[must_use]
+pub fn adopt_board_after_delete_push(local: &Board, echo: &RemoteBoard) -> Board {
+    let lm = echo.last_modified;
+    tracing::trace!(
+        board_id = ?local.id,
+        remote_board = ?echo.id,
+        echo_ts = ?lm,
+        "board delete echo entry"
+    );
+    tracing::debug!(rule = RULE_R9, board_id = ?local.id, "board delete echo adopted");
+    Board {
+        id: local.id,
+        remote: None,
+        title: echo.title.clone(),
+        color: crate::entities::Color::new(echo.color.clone()),
+        archived: echo.archived,
+        deleted: true,
+        clocks: crate::entities::BoardClocks {
+            title: max_ts(local.clocks.title, lm),
+            color: max_ts(local.clocks.color, lm),
+            archived: max_ts(local.clocks.archived, lm),
+            deleted: max_ts(local.clocks.deleted, lm),
         },
         remote_seen: Some(lm),
     }
@@ -743,6 +814,9 @@ pub fn adopt_remote_board(remote: &RemoteBoard, id: crate::ids::BoardId) -> Boar
         deleted: remote.deleted_at.is_some(),
         clocks: crate::entities::BoardClocks {
             title: remote.last_modified,
+            color: remote.last_modified,
+            archived: remote.last_modified,
+            deleted: remote.last_modified,
         },
         remote_seen: Some(remote.last_modified),
     }
@@ -1221,6 +1295,98 @@ mod tests {
         let kept = merge_task(&local, &remote, &unmapped);
         assert_eq!(kept.stack, local.stack);
         assert_eq!(kept.order, 42, "unmapped stack keeps the whole position");
+    }
+
+    #[test]
+    fn merge_board_field_verdicts_are_independent() {
+        // A newer remote write on the title must not lose a newer local
+        // color/archived edit, and vice versa (the 2026-10-18 amendment:
+        // boards complete the per-field merge).
+        let mut local = local_board();
+        local.color = crate::entities::Color::new("123456");
+        local.clocks.color = ts(BASE + 480); // local color edit at 10:08
+        local.archived = true;
+        local.clocks.archived = ts(BASE + 490);
+        // The title clock is older than the remote stamp below.
+        local.clocks.title = ts(BASE + 60);
+        let mut remote = remote_board(REMOTE_BOARD_NUM, BASE + 420); // 10:07
+        remote.title = "remote title".into();
+
+        let merged = merge_board(&local, &remote);
+        assert_eq!(merged.title, "remote title", "older local title loses");
+        assert_eq!(merged.clocks.title, ts(BASE + 420));
+        assert_eq!(merged.color.as_str(), "123456", "newer local color stands");
+        assert_eq!(merged.clocks.color, ts(BASE + 480));
+        assert!(merged.archived, "newer local archived stands");
+        assert_eq!(merged.clocks.archived, ts(BASE + 490));
+    }
+
+    #[test]
+    fn merge_board_epoch_clocks_lose_to_any_remote_stamp() {
+        let local = local_board(); // every clock at BASE
+        let mut remote = remote_board(REMOTE_BOARD_NUM, BASE + 1);
+        remote.color = "00ff00".into();
+        remote.archived = true;
+        let merged = merge_board(&local, &remote);
+        assert_eq!(merged.color.as_str(), "00ff00");
+        assert!(merged.archived);
+        assert_eq!(merged.clocks.color, ts(BASE + 1));
+    }
+
+    #[test]
+    fn merge_board_tombstone_stands_against_a_pulled_live_board() {
+        // The D7 resurrection guard: a locally-deleted board is never
+        // resurrected by pulled live content (no restore verb exists).
+        let mut local = local_board();
+        local.deleted = true;
+        local.clocks.deleted = ts(BASE + 300);
+        let remote = remote_board(REMOTE_BOARD_NUM, BASE + 360); // strictly newer live pull
+        let merged = merge_board(&local, &remote);
+        assert!(merged.deleted, "the tombstone stands");
+        assert_eq!(merged.clocks.deleted, ts(BASE + 360), "the stamp advances");
+
+        let older = remote_board(REMOTE_BOARD_NUM, BASE + 120);
+        let kept = merge_board(&local, &older);
+        assert!(kept.deleted);
+        assert_eq!(
+            kept.clocks.deleted,
+            ts(BASE + 300),
+            "an older remote write cannot move the tombstone"
+        );
+    }
+
+    #[test]
+    fn adopt_board_after_push_advances_all_four_clocks() {
+        let mut local = local_board();
+        local.clocks = crate::entities::BoardClocks {
+            title: ts(BASE + 60),
+            color: ts(BASE + 60),
+            archived: ts(BASE + 60),
+            deleted: ts(BASE + 60),
+        };
+        let echo = remote_board(REMOTE_BOARD_NUM, BASE + 120);
+        let merged = adopt_board_after_push(&local, &echo);
+        assert_eq!(merged.clocks.title, ts(BASE + 120));
+        assert_eq!(merged.clocks.color, ts(BASE + 120));
+        assert_eq!(merged.clocks.archived, ts(BASE + 120));
+        assert_eq!(merged.clocks.deleted, ts(BASE + 120));
+    }
+
+    #[test]
+    fn adopt_board_after_delete_push_keeps_the_tombstone_and_clears_the_binding() {
+        let mut local = local_board();
+        local.deleted = true;
+        local.clocks.deleted = ts(BASE + 60);
+        local.remote = Some(board(REMOTE_BOARD_NUM));
+        let echo = remote_board(REMOTE_BOARD_NUM, BASE + 120);
+        let finalized = adopt_board_after_delete_push(&local, &echo);
+        assert!(finalized.deleted, "a delete echo must never un-delete");
+        assert_eq!(finalized.clocks.deleted, ts(BASE + 120));
+        assert!(
+            finalized.remote.is_none(),
+            "the binding clears on confirmation"
+        );
+        assert_eq!(finalized.remote_seen, Some(ts(BASE + 120)));
     }
 
     proptest! {

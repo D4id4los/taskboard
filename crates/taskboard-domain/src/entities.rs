@@ -87,13 +87,20 @@ pub struct LabelClocks {
     pub deleted: DateTime<Utc>,
 }
 
-/// Per-field write timestamps of a [`Board`]. Room for the color/deleted
-/// clocks the board color/archive verbs will grow (the remainder of the
-/// board-edit backlog entry); today only `title` is locally writable.
+/// Per-field write timestamps of a [`Board`] (per-field LWW, ADR 0004).
+///
+/// Local verbs stamp only their touched field; remote adoption stamps
+/// every clock with the remote `lastModified`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardClocks {
     /// Write time of `title`.
     pub title: DateTime<Utc>,
+    /// Write time of `color`.
+    pub color: DateTime<Utc>,
+    /// Write time of `archived`.
+    pub archived: DateTime<Utc>,
+    /// Write time of the tombstone (`deleted`).
+    pub deleted: DateTime<Utc>,
 }
 
 impl BoardClocks {
@@ -106,8 +113,9 @@ impl BoardClocks {
     }
 }
 
-/// A board. Title is locally editable (`boards rename`); color and
-/// archive still arrive only via remote adoption.
+/// A board. Title, color, and the archived flag are locally editable
+/// (`boards rename`/`color`/`archive`/`unarchive`); deletion is the
+/// `boards delete` tombstone ceremony.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Board {
     /// Local identity.

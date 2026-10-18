@@ -212,6 +212,12 @@ pub enum PersistenceAction {
     /// overdue banner is unaffected by construction (it never reads the
     /// muted set).
     SetTaskRemindersMuted(crate::ids::TaskId, bool),
+    /// Clear the local content of one board: stacks, tasks, labels,
+    /// outbox entries, sync validators, and reminder facts (rules,
+    /// deliveries, snooze links, mutes) of its tasks. The board row
+    /// itself (identity, binding, clocks, `remote_seen`) and the sync
+    /// status survive. The `ResetBoard` repair's single bulk action.
+    ClearBoardContent(crate::ids::BoardId),
 }
 
 /// Applies a batch of [`PersistenceAction`]s to a [`PersistedState`] —
@@ -232,6 +238,7 @@ pub enum PersistenceAction {
 /// `sync.pending_ops` from the outbox depth, and fully-delivered snooze
 /// links are compacted — both derivations run unconditionally after
 /// every batch (both this function and `load()` derive them).
+#[allow(clippy::too_many_lines)] // one exhaustive semantics table; the arms ARE the contract
 pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) {
     for action in actions {
         match action {
@@ -303,6 +310,114 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 } else {
                     state.reminders.muted.remove(task);
                 }
+            }
+            PersistenceAction::ClearBoardContent(board) => {
+                // Scoped to the one board: collect its entity ids first,
+                // then drop rows by membership. The board row and the sync
+                // status are never touched.
+                let board_stacks: Vec<crate::ids::StackId> = state
+                    .stacks
+                    .iter()
+                    .filter(|(_, s)| s.board == *board)
+                    .map(|(id, _)| *id)
+                    .collect();
+                let board_tasks: Vec<crate::ids::TaskId> = state
+                    .tasks
+                    .iter()
+                    .filter(|(_, t)| {
+                        state
+                            .stacks
+                            .get(&t.stack)
+                            .is_some_and(|s| s.board == *board)
+                    })
+                    .map(|(id, _)| *id)
+                    .collect();
+                let board_labels: Vec<crate::ids::LabelId> = state
+                    .labels
+                    .iter()
+                    .filter(|(_, l)| l.board == *board)
+                    .map(|(id, _)| *id)
+                    .collect();
+
+                // Reminder facts of the board's tasks: rules prune their
+                // deliveries and snooze links (the DeleteReminderRule
+                // parity); default-reminder facts and mutes go by task.
+                let rule_ids: Vec<crate::ids::ReminderRuleId> = state
+                    .reminders
+                    .rules
+                    .values()
+                    .filter(|r| board_tasks.contains(&r.task))
+                    .map(|r| r.id)
+                    .collect();
+                for rule_id in rule_ids {
+                    state.reminders.rules.remove(&rule_id);
+                    let reminder = crate::reminders::ReminderRef::Rule(rule_id);
+                    state
+                        .reminders
+                        .deliveries
+                        .retain(|d| d.reminder != reminder);
+                    state
+                        .reminders
+                        .snoozes
+                        .retain(|key, _| key.reminder != reminder);
+                }
+                for task in &board_tasks {
+                    state.reminders.muted.remove(task);
+                    let reminder = crate::reminders::ReminderRef::Default(*task);
+                    state
+                        .reminders
+                        .deliveries
+                        .retain(|d| d.reminder != reminder);
+                    state
+                        .reminders
+                        .snoozes
+                        .retain(|key, _| key.reminder != reminder);
+                }
+
+                for task in &board_tasks {
+                    state.tasks.remove(task);
+                }
+                for stack in &board_stacks {
+                    state.stacks.remove(stack);
+                }
+                for label in &board_labels {
+                    state.labels.remove(label);
+                }
+                let board_stacks: std::collections::BTreeSet<crate::ids::StackId> =
+                    board_stacks.into_iter().collect();
+                let board_labels: std::collections::BTreeSet<crate::ids::LabelId> =
+                    board_labels.into_iter().collect();
+                let board_tasks: std::collections::BTreeSet<crate::ids::TaskId> =
+                    board_tasks.into_iter().collect();
+                state.outbox.retain(|entry| {
+                    let doomed = match entry.op {
+                        crate::outbox::LocalOp::UpdateBoard(id)
+                        | crate::outbox::LocalOp::DeleteBoard(id) => id == *board,
+                        crate::outbox::LocalOp::CreateTask(id)
+                        | crate::outbox::LocalOp::UpdateTask(id)
+                        | crate::outbox::LocalOp::MoveTask(id)
+                        | crate::outbox::LocalOp::DeleteTask(id)
+                        | crate::outbox::LocalOp::AssignLabel(id, _)
+                        | crate::outbox::LocalOp::UnassignLabel(id, _) => board_tasks.contains(&id),
+                        crate::outbox::LocalOp::CreateStack(id)
+                        | crate::outbox::LocalOp::RenameStack(id)
+                        | crate::outbox::LocalOp::MoveStack(id)
+                        | crate::outbox::LocalOp::DeleteStack(id) => board_stacks.contains(&id),
+                        crate::outbox::LocalOp::CreateLabel(id)
+                        | crate::outbox::LocalOp::UpdateLabel(id)
+                        | crate::outbox::LocalOp::DeleteLabel(id) => board_labels.contains(&id),
+                    };
+                    !doomed
+                });
+                state.validators.retain(|key, _| match key {
+                    ValidatorKey::Boards => false,
+                    // Another board's stack validators are none of this
+                    // action's business (multi-board safety; the MVP holds
+                    // 0..1 boards, so the bound remote board is the one).
+                    ValidatorKey::Stacks(b) | ValidatorKey::ArchivedStacks(b) => {
+                        Some(*b) != state.boards.get(board).and_then(|row| row.remote)
+                    }
+                });
             }
         }
     }
@@ -488,6 +603,220 @@ mod tests {
             &[PersistenceAction::CompleteOp(OpId(uuid::Uuid::from_u128(
                 10,
             )))],
+        );
+        assert_eq!(state.sync.pending_ops, 1);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // the fixture IS the scope proof
+    fn clear_board_content_clears_exactly_the_board_scope() {
+        use crate::entities::{Board, Label, Stack};
+        use crate::ids::{BoardId, LabelId, StackId};
+        let board = BoardId::from(uuid::Uuid::from_u128(11));
+        let other = BoardId::from(uuid::Uuid::from_u128(12));
+        let stack = StackId::from(uuid::Uuid::from_u128(21));
+        let other_stack = StackId::from(uuid::Uuid::from_u128(22));
+        let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(31));
+        let other_task = crate::ids::TaskId::from(uuid::Uuid::from_u128(32));
+        let label = LabelId::from(uuid::Uuid::from_u128(41));
+        let clocks = crate::entities::BoardClocks {
+            title: ts(100),
+            color: ts(100),
+            archived: ts(100),
+            deleted: ts(100),
+        };
+        let board_row = |id, remote| Board {
+            id,
+            remote,
+            title: format!("board {id:?}"),
+            color: crate::entities::Color::new("0000ff"),
+            archived: false,
+            deleted: false,
+            clocks,
+            remote_seen: None,
+        };
+        let stack_row = |id, b| Stack {
+            id,
+            remote: None,
+            board: b,
+            title: format!("stack {id:?}"),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::StackClocks {
+                title: ts(100),
+                order: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        };
+        let task_row = |id, s| crate::entities::Task {
+            id,
+            remote: None,
+            title: format!("task {id:?}"),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            stack: s,
+            order: 0,
+            labels: BTreeSet::new(),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::TaskClocks {
+                title: ts(100),
+                description: ts(100),
+                duedate: ts(100),
+                done: ts(100),
+                position: ts(100),
+                labels: ts(100),
+                archived: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        };
+        let label_row = |id, b| Label {
+            id,
+            remote: None,
+            board: b,
+            title: format!("label {id:?}"),
+            color: crate::entities::Color::new("00ff00"),
+            deleted: false,
+            clocks: crate::entities::LabelClocks {
+                title: ts(100),
+                color: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        };
+        let rule = crate::reminders::ReminderRule {
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(51)),
+            task,
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: ts(100),
+        };
+        let mut state = PersistedState::default();
+        apply_actions(
+            &mut state,
+            &[
+                // The doomed board (bound), a second (untouched) board.
+                PersistenceAction::UpsertBoard(board_row(
+                    board,
+                    Some(crate::ids::RemoteBoardId(7)),
+                )),
+                PersistenceAction::UpsertBoard(board_row(
+                    other,
+                    Some(crate::ids::RemoteBoardId(8)),
+                )),
+                PersistenceAction::UpsertStack(stack_row(stack, board)),
+                PersistenceAction::UpsertStack(stack_row(other_stack, other)),
+                PersistenceAction::UpsertTask(task_row(task, stack)),
+                PersistenceAction::UpsertTask(task_row(other_task, other_stack)),
+                PersistenceAction::UpsertLabel(label_row(label, board)),
+                PersistenceAction::UpsertReminderRule(rule.clone()),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: crate::reminders::ReminderRef::Rule(rule.id),
+                    occurrence: ts(1_000),
+                    delivered_at: ts(1_001),
+                }),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: crate::reminders::ReminderRef::Default(task),
+                    occurrence: ts(2_000),
+                    delivered_at: ts(2_001),
+                }),
+                PersistenceAction::SetTaskRemindersMuted(task, true),
+                // Ops: the board's own, its children's, and the other
+                // board's (untouched).
+                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                    op_id: OpId(uuid::Uuid::from_u128(61)),
+                    op: crate::outbox::LocalOp::UpdateBoard(board),
+                    queued_at: ts(200),
+                }),
+                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                    op_id: OpId(uuid::Uuid::from_u128(62)),
+                    op: crate::outbox::LocalOp::UpdateTask(task),
+                    queued_at: ts(200),
+                }),
+                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                    op_id: OpId(uuid::Uuid::from_u128(63)),
+                    op: crate::outbox::LocalOp::DeleteStack(stack),
+                    queued_at: ts(200),
+                }),
+                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                    op_id: OpId(uuid::Uuid::from_u128(64)),
+                    op: crate::outbox::LocalOp::DeleteLabel(label),
+                    queued_at: ts(200),
+                }),
+                PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+                    op_id: OpId(uuid::Uuid::from_u128(65)),
+                    op: crate::outbox::LocalOp::UpdateTask(other_task),
+                    queued_at: ts(200),
+                }),
+                PersistenceAction::UpsertValidators(
+                    ValidatorKey::Boards,
+                    SyncValidators::default(),
+                ),
+                PersistenceAction::UpsertValidators(
+                    ValidatorKey::Stacks(crate::ids::RemoteBoardId(7)),
+                    SyncValidators::default(),
+                ),
+                PersistenceAction::UpsertValidators(
+                    ValidatorKey::Stacks(crate::ids::RemoteBoardId(8)),
+                    SyncValidators::default(),
+                ),
+                PersistenceAction::UpsertSyncStatus(SyncStatus {
+                    phase: crate::state::SyncPhase::Idle,
+                    last_success: Some(ts(300)),
+                    pending_ops: 0,
+                }),
+            ],
+        );
+
+        apply_actions(&mut state, &[PersistenceAction::ClearBoardContent(board)]);
+
+        assert!(
+            state.stacks.contains_key(&other_stack),
+            "the other board's stack survives"
+        );
+        assert!(
+            state.tasks.contains_key(&other_task),
+            "the other board's task survives"
+        );
+        assert!(
+            !state.stacks.contains_key(&stack)
+                && !state.tasks.contains_key(&task)
+                && !state.labels.contains_key(&label),
+            "the board's content rows are gone"
+        );
+        assert!(
+            state.boards.contains_key(&board),
+            "the board row (identity, binding, clocks) survives"
+        );
+        let remaining_ops: Vec<_> = state.outbox.iter().map(|o| o.op_id.0).collect();
+        assert_eq!(
+            remaining_ops,
+            vec![uuid::Uuid::from_u128(65)],
+            "only the other board's op survives"
+        );
+        assert!(
+            !state.validators.contains_key(&ValidatorKey::Boards)
+                && !state
+                    .validators
+                    .contains_key(&ValidatorKey::Stacks(crate::ids::RemoteBoardId(7))),
+            "the board's validators are cleared"
+        );
+        assert!(
+            state
+                .validators
+                .contains_key(&ValidatorKey::Stacks(crate::ids::RemoteBoardId(8))),
+            "the other board's validators survive"
+        );
+        assert!(state.reminders.rules.is_empty());
+        assert!(state.reminders.deliveries.is_empty());
+        assert!(!state.reminders.muted.contains(&task));
+        assert_eq!(
+            state.sync.last_success,
+            Some(ts(300)),
+            "sync status survives"
         );
         assert_eq!(state.sync.pending_ops, 1);
     }

@@ -99,6 +99,34 @@ impl<'a> PushExecutor<'a> {
                     ),
                 }
             }
+            MaterializedOp::DeleteBoard { .. } => {
+                // The planner only materializes a delete for the bound
+                // board; the overlay's board *is* that binding, so the
+                // unbound case cannot reach here (the `all_applied` guard
+                // mirrors `DeleteStack`'s defensive shape regardless).
+                let MaterializedOp::DeleteBoard { board } = group.materialized else {
+                    unreachable!("matched arm");
+                };
+                if !tables.boards.contains_key(&board) {
+                    return GroupOutcome::Outcomes(all_applied(group));
+                }
+                match self.client.delete_board(self.overlay.board.get()).await {
+                    Ok(deleted) => GroupOutcome::Outcomes(primary_outcome(
+                        group,
+                        PushResult::Applied {
+                            echo: Some(RemoteEcho::Board(mapping::map_board(&deleted))),
+                        },
+                    )),
+                    Err(err) => classify(
+                        group,
+                        &err,
+                        PushCtx {
+                            existing: true,
+                            delete: true,
+                        },
+                    ),
+                }
+            }
             MaterializedOp::UpdateBoard { board } => {
                 let Some(row) = tables.boards.get(&board) else {
                     return GroupOutcome::Outcomes(all_applied(group));

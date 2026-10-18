@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM labels WHERE board = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "afc980d5e7781503a5aae207ab8641db479792b06e0c31ee66ac8f9b6433839c"
+}

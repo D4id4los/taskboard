@@ -174,7 +174,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 4, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 5, "each shipped migration recorded exactly once");
     }
 
     /// A pre-0002 database (no `ck_title`) upgrades cleanly: the epoch
@@ -231,8 +231,11 @@ mod tests {
     /// A pre-0003 database (no outbox `board_id`) upgrades cleanly: the
     /// legacy `rename_board` wire shape (the board id riding `stack_id`)
     /// is backfilled into the board column and `stack_id` is cleared,
-    /// while unrelated op rows keep their columns untouched.
+    /// while unrelated op rows keep their columns untouched. The 0005
+    /// tag rename lands on top, so the row decodes (and is stored) as
+    /// `update_board`.
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // the era simulation needs its strips
     async fn migration_0003_backfills_legacy_rename_board_rows() {
         let board_uuid = uuid::Uuid::from_u128(0xa1);
         let stack_uuid = uuid::Uuid::from_u128(0xa2);
@@ -242,7 +245,9 @@ mod tests {
             .await
             .expect("raw connect");
         // Simulate a 0002-era database: run the shipped migrations, then
-        // strip the 0003 column and its bookkeeping row.
+        // strip the 0003 column and the 0005 effects (its columns and its
+        // tag rename), plus their bookkeeping rows, so the reopening
+        // open() replays the real 0003 → 0005 upgrade path.
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
@@ -251,7 +256,19 @@ mod tests {
             .execute(&raw)
             .await
             .expect("strip board_id");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 3")
+        sqlx::query("ALTER TABLE boards DROP COLUMN ck_color")
+            .execute(&raw)
+            .await
+            .expect("strip ck_color");
+        sqlx::query("ALTER TABLE boards DROP COLUMN ck_archived")
+            .execute(&raw)
+            .await
+            .expect("strip ck_archived");
+        sqlx::query("ALTER TABLE boards DROP COLUMN ck_deleted")
+            .execute(&raw)
+            .await
+            .expect("strip ck_deleted");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (3, 5)")
             .execute(&raw)
             .await
             .expect("strip bookkeeping");
@@ -311,10 +328,10 @@ mod tests {
             .await
             .expect("raw connect");
         let (board_id, stack_id): (Option<String>, Option<String>) =
-            sqlx::query_as("SELECT board_id, stack_id FROM outbox WHERE op_kind = 'rename_board'")
+            sqlx::query_as("SELECT board_id, stack_id FROM outbox WHERE op_kind = 'update_board'")
                 .fetch_one(&raw)
                 .await
-                .expect("rename_board row");
+                .expect("update_board row");
         assert_eq!(board_id.as_deref(), Some(board_uuid.to_string().as_str()));
         assert_eq!(stack_id, None, "the legacy stack_id copy must be cleared");
         let (board_id, stack_id): (Option<String>, Option<String>) =
@@ -507,6 +524,9 @@ mod tests {
             deleted: false,
             clocks: taskboard_domain::BoardClocks {
                 title: taskboard_domain::BoardClocks::epoch(),
+                color: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
             },
             remote_seen: None,
         }

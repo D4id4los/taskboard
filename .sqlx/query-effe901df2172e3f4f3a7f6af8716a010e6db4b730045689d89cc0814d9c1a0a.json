@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reminder_rules\n               WHERE task_id IN (SELECT t.id FROM tasks t\n                                 JOIN stacks s ON t.stack = s.id\n                                 WHERE s.board = ?1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "effe901df2172e3f4f3a7f6af8716a010e6db4b730045689d89cc0814d9c1a0a"
+}
