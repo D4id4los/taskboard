@@ -131,10 +131,23 @@ jobs:
       # whose anonymous pull-rate limit (shared across all GitHub-hosted
       # runners) intermittently 429s the whole job.
       - uses: taiki-e/install-action@v2
+        # Pinned: the boundary probes (report §3.1) and the local
+        # validation runs are version-identical to this pin. Bump
+        # deliberately.
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.20.2
 
       - run: cargo deny check
+
+      - name: Domain Purity Boundary
+        # The layering root stays pure: no async runtime, net, UI,
+        # persistence, arc-swap, or sibling members (AGENTS §2).
+        run: cargo deny --config .config/deny/deny-domain.toml --manifest-path crates/taskboard-domain/Cargo.toml check bans
+
+      - name: Dumb-UI Boundary
+        # The presentation layer does no IO: no net, persistence, or
+        # credential crates (AGENTS §2).
+        run: cargo deny --config .config/deny/deny-ui-slint.toml --manifest-path crates/taskboard-ui-slint/Cargo.toml check bans
 
   test:
     name: Test Execution

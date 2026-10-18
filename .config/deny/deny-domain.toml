@@ -1,0 +1,41 @@
+# Boundary config: taskboard-domain crate purity (issue #252, audit
+# F7-01). Yardstick: AGENTS §2 — the domain is the pure layering root:
+# zero network, UI, persistence, or async-runtime dependencies, and no
+# sibling workspace members. Run with:
+#   cargo deny --config .config/deny/deny-domain.toml \
+#     --manifest-path crates/taskboard-domain/Cargo.toml check bans
+# Deliberately minimal ([graph] + [bans] only): the CI step runs
+# `check bans` exclusively; the canonical full check (licenses,
+# advisories) remains the root `cargo deny check` (AGENTS §10).
+
+[graph]
+exclude-dev = true   # dev-deps stay unjudged; bans target shipped edges
+
+[bans]
+deny = [
+    # Async runtime must not enter the pure domain.
+    "tokio",
+    "tokio-util",
+    "tokio-stream",
+    # Net stack.
+    "reqwest",
+    "hyper",
+    "hyper-util",
+    "tonic",
+    # UI framework, including its codegen face.
+    "slint",
+    "slint-build",
+    "i-slint-core",
+    # Persistence.
+    "sqlx",
+    "rusqlite",
+    "libsqlite3-sys",
+    # ArcSwap<AppState> is state-engine-owned (AGENTS §2/§3).
+    "arc-swap",
+    # Sibling workspace members: the domain depends on no other member.
+    "taskboard-state",
+    "taskboard-storage-sqlite",
+    "taskboard-sync-nextcloud",
+    "taskboard-ui-slint",
+    "taskboard-app",
+]
