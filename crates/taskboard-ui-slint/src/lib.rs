@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+#![deny(unsafe_code)]
 //! Slint presentation layer for `taskboard`.
 //!
 //! The UI is a "dumb presentation client": it reads state via lock-free
@@ -6,10 +7,13 @@
 //! non-blocking [`tokio::sync::mpsc`] commands on user interaction.
 //! Business logic and persistence are forbidden here.
 //!
-//! NOTE: `#![forbid(unsafe_code)]` is intentionally *not* set in this crate:
-//! Slint's generated rendering code requires `unsafe`. This is the only
-//! workspace crate with that exception (see `AGENTS.md` and the ADR on
-//! toolchain & quality gates).
+//! NOTE: `deny`, not `forbid`: the Slint-generated code carries internal
+//! `allow(unsafe_code)` scopes that a `forbid` would overrule (E0453 ×36,
+//! audit chunk 7 §2.3). The crate-level deny coexists with those internal
+//! allows and fires exactly on hand-written `unsafe` — a future
+//! hand-written block fails the build unless a local, grep-visible
+//! `#[allow(unsafe_code)]` is added at the site. This remains the only
+//! workspace crate without `#![forbid(unsafe_code)]`.
 
 slint::include_modules!();
 
