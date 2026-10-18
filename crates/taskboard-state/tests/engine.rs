@@ -1345,6 +1345,88 @@ async fn engine_stays_a_daemon_when_commands_and_reports_close() {
     .expect("the live engine ingests the network event after its other sources closed");
 }
 
+/// #316 / #240: with every source closed — commands, reports, and (the
+/// #316 fix) the system channel's external producers — the engine task
+/// joins cleanly. The mid-test execute pins that the engine serves
+/// while any source lives: the exit is all-sources-closed, not
+/// any-source-closed.
+#[tokio::test(start_paused = true)]
+async fn engine_exits_when_all_sources_close() {
+    let Harness {
+        handle,
+        report_tx,
+        system_tx,
+        join,
+        ..
+    } = harness().await;
+
+    drop(report_tx);
+    drop(system_tx); // the last external strong sender: the channel closes
+
+    // Commands are still open: the engine must still be serving.
+    let outcome = handle
+        .execute(StateCommand::CreateStack {
+            title: "alive".into(),
+            order: 1,
+        })
+        .await
+        .expect("the engine serves while its command inbox is open");
+    assert!(matches!(outcome, CommandOutcome::CreatedStack(_)));
+
+    drop(handle); // all sources closed
+
+    tokio::time::timeout(Duration::from_secs(60), join)
+        .await
+        .expect("the engine exits once every source closed")
+        .expect("clean exit");
+}
+
+/// #316 (upgrade-on-send semantics): once every external producer of the
+/// system channel has died, a storage failure emits nothing — the channel
+/// is closed, no receiver can appear — and the loop is unaffected: the
+/// engine answers the failure with `Storage`, then recovers.
+#[tokio::test]
+async fn storage_failed_is_silent_after_the_last_external_producer_dies() {
+    let repo = Arc::new(FlakyRepository::new(1));
+    let h = spawn(Spawner {
+        repo: repo.clone() as Arc<dyn TaskRepository>,
+        ..Spawner::default()
+    })
+    .await;
+    let mut events = h.system_tx.subscribe();
+    drop(h.system_tx); // the last external strong sender
+
+    let failed = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            title: "doomed".into(),
+            order: 1,
+        })
+        .await;
+    assert!(matches!(
+        failed,
+        Err(ExecuteError::Storage(RepositoryError::Unavailable))
+    ));
+    h.handle.flush().await;
+    // Typed: nothing was ever delivered, and the channel is observably
+    // closed (try_recv surfaces Closed only on a closed, drained
+    // buffer — an arriving StorageFailed would surface Ok(..)).
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+    ));
+
+    // The loop survived the upgrade failure: recovery still serves.
+    let recovered = h
+        .handle
+        .execute(StateCommand::CreateStack {
+            title: "after".into(),
+            order: 1,
+        })
+        .await;
+    assert!(matches!(recovered, Ok(CommandOutcome::CreatedStack(_))));
+}
+
 /// A `Completed` report's validator triple with etag-bearing keys —
 /// non-default, so the first report has something to store.
 fn etag_validators() -> taskboard_domain::BoardPullValidators {
