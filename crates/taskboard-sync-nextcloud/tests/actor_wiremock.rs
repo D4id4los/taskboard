@@ -1589,3 +1589,162 @@ async fn a23_pulled_board_labels_reach_the_snapshot() {
     assert_eq!(label.title, "todo");
     assert_eq!(label.color, "ff0000");
 }
+
+/// The two-board conditional pull (boards 42 "alpha board" and 43
+/// "beta board", stacks pairwise distinct): 304 iff the request re-emits
+/// the `ETag`, else fresh data. Shared by A24 and A25; the shared
+/// hermetic helpers are single-board by design, so this stays in-file.
+async fn mount_two_board_pull(server: &MockServer) {
+    let responder = move |req: &wiremock::Request| {
+        let warm = req
+            .headers
+            .get("If-None-Match")
+            .is_some_and(|v| v.to_str().unwrap_or("").contains("gen-1"));
+        if warm {
+            return ResponseTemplate::new(304).insert_header("ETag", "\"gen-1\"");
+        }
+        let p = req.url.path().to_string();
+        let beta = p.contains("/boards/43");
+        let body = if p.ends_with("/stacks/archived") {
+            "[]".to_string()
+        } else if p.ends_with("/stacks") {
+            serde_json::json!([{
+                "id": if beta { 70 } else { 7 },
+                "title": if beta { "beta col" } else { "alpha col" },
+                "boardId": if beta { 43 } else { BOARD },
+                "order": 0, "lastModified": T, "deletedAt": 0,
+                "archived": false, "cards": []
+            }])
+            .to_string()
+        } else if p.ends_with("/boards") {
+            serde_json::json!([
+                { "id": BOARD, "title": "alpha board", "color": "00ff00",
+                  "lastModified": T, "deletedAt": 0, "archived": false,
+                  "labels": [] },
+                { "id": 43, "title": "beta board", "color": "0000ff",
+                  "lastModified": T, "deletedAt": 0, "archived": false,
+                  "labels": [] }
+            ])
+            .to_string()
+        } else {
+            // Board detail (42 or 43).
+            serde_json::json!({
+                "id": if beta { 43 } else { BOARD },
+                "title": if beta { "beta board" } else { "alpha board" },
+                "color": if beta { "0000ff" } else { "00ff00" },
+                "lastModified": T, "deletedAt": 0,
+                "archived": false, "labels": []
+            })
+            .to_string()
+        };
+        ResponseTemplate::new(200)
+            .insert_header("ETag", "\"gen-1\"")
+            .set_body_string(body)
+    };
+    for p in [
+        "/index.php/apps/deck/api/v1.0/boards".to_string(),
+        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}"),
+        "/index.php/apps/deck/api/v1.0/boards/43".to_string(),
+        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
+        "/index.php/apps/deck/api/v1.0/boards/43/stacks".to_string(),
+        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"),
+        "/index.php/apps/deck/api/v1.0/boards/43/stacks/archived".to_string(),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(responder)
+            .mount(server)
+            .await;
+    }
+}
+
+/// A24 (F6-05): switching A→B→A serves A again — the `SetBoard` cache
+/// clear must not leave board B's cached listings in the slots for board
+/// A's 304s. Validators are pinned warm exactly like A10, so every cycle
+/// 304s; with the clear, board A's re-bind forces unconditional
+/// refetches (7 requests in the final cycle) and the snapshot carries
+/// alpha's stack, never beta's.
+#[tokio::test(start_paused = true)]
+async fn a24_board_switch_serves_the_new_board_after_the_cache_clear() {
+    let server = start_server().await;
+    mount_two_board_pull(&server).await;
+    let repo = repo_with(&[(2, STACK)], &[]);
+    for key in [
+        taskboard_domain::ValidatorKey::Boards,
+        taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(BOARD)),
+        taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(BOARD)),
+    ] {
+        InMemoryRepository::apply(
+            repo.as_ref(),
+            vec![taskboard_domain::PersistenceAction::UpsertValidators(
+                key,
+                taskboard_domain::SyncValidators {
+                    etag: Some("\"gen-1\"".into()),
+                    last_modified: None,
+                },
+            )],
+        )
+        .await
+        .expect("apply");
+    }
+
+    let mut actor = spawn(&server, repo);
+    actor
+        .commands
+        .send(SyncCommand::SetBoard(RemoteBoardId(BOARD)))
+        .await
+        .unwrap();
+    let first = next_report(&mut actor).await;
+    let SyncReport::Completed {
+        snapshot: first, ..
+    } = first
+    else {
+        panic!("expected a Completed report");
+    };
+    assert_eq!(first.board.id, RemoteBoardId(BOARD));
+
+    actor
+        .commands
+        .send(SyncCommand::SetBoard(RemoteBoardId(43)))
+        .await
+        .unwrap();
+    let second = next_report(&mut actor).await;
+    let SyncReport::Completed {
+        snapshot: second, ..
+    } = second
+    else {
+        panic!("expected a Completed report");
+    };
+    assert_eq!(second.board.id, RemoteBoardId(43));
+    assert!(
+        second.stacks.iter().all(|s| s.title == "beta col"),
+        "board 43 serves beta: {:?}",
+        second.stacks
+    );
+
+    let before_switch = server.received_requests().await.unwrap().len();
+    actor
+        .commands
+        .send(SyncCommand::SetBoard(RemoteBoardId(BOARD)))
+        .await
+        .unwrap();
+    let third = next_report(&mut actor).await;
+    let SyncReport::Completed { snapshot, .. } = third else {
+        panic!("expected a Completed report");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    assert_eq!(
+        snapshot
+            .stacks
+            .iter()
+            .map(|s| s.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha col"],
+        "board 42's snapshot after the switch back is alpha's — no beta bleed"
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap().len() - before_switch,
+        7,
+        "the clear emptied the cache: 3 conditional 304s + 3 refetches + the detail"
+    );
+}
