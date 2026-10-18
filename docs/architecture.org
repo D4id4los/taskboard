@@ -15,14 +15,21 @@ support.
 * Executive Summary
 
 The =taskboard= application is a cross-platform task management and
-reminder system designed to operate in two distinct operational modes:
+reminder system. It ships three process modes (=AppMode=,
+=config.rs=): *Daemon* (the default — a headless core serving the CLI,
+the interactive REPL, and remote clients over IPC), *Desktop* (the
+shipped Slint GUI, ADR 0015), and *Kiosk* — planned for the kiosk wave
+(the accepted kiosk-wave decisions of 2026-10-16) and refused at the
+daemon mode gate until it lands; no frontend routes
+to it today. The two-mode product vision behind the mode axis remains:
 
-1. *Passive Kiosk Mode:* Running on low-power hardware attached to an
-   office display, providing continuous, resilient visual output with
-   minimal user interaction.
+1. *Passive Kiosk Mode (vision):* running on low-power hardware
+   attached to an office display, providing continuous, resilient
+   visual output with minimal user interaction.
 
-2. *Interactive Desktop Mode:* Running on standard desktop PCs to actively
-   manage tasks, workflows, and visual display preferences.
+2. *Interactive Desktop Mode (shipped):* running on standard desktop
+   PCs to actively manage tasks, workflows, and visual display
+   preferences.
 
 To guarantee zero frame-drops, non-blocking rendering, high system
 resilience, and maximum flexibility across different GUI frameworks and
