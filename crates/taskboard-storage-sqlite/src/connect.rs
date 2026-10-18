@@ -163,7 +163,7 @@ mod tests {
     async fn reopening_applies_no_new_migrations() {
         let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
         let first = open(file.path()).await.expect("first open");
-        drop(first);
+        first.close().await;
 
         let second = open(file.path()).await.expect("second open");
         second.load().await.expect("load");
@@ -175,6 +175,8 @@ mod tests {
             .await
             .expect("migration bookkeeping");
         assert_eq!(applied, 5, "each shipped migration recorded exactly once");
+        raw.close().await;
+        second.close().await;
     }
 
     /// A pre-0002 database (no `ck_title`) upgrades cleanly: the epoch
@@ -218,6 +220,7 @@ mod tests {
             taskboard_domain::BoardClocks::epoch(),
             "the epoch default means never-locally-written"
         );
+        repo.close().await;
     }
 
     /// A pre-0005 database (no board edit-verb clocks, `rename_board`
@@ -296,6 +299,7 @@ mod tests {
                 ))),
             "the backfilled rename_board row decodes as update_board"
         );
+        repo.close().await;
     }
 
     type LegacyRow = (
@@ -400,7 +404,7 @@ mod tests {
                 .any(|o| o.op == LocalOp::UpdateBoard(BoardId::from(board_uuid))),
             "the backfilled rename_board row must still decode to its op"
         );
-        drop(repo);
+        repo.close().await;
 
         let raw = SqlitePool::connect(&format!("sqlite://{}", file.path().display()))
             .await
@@ -499,6 +503,7 @@ mod tests {
             taskboard_domain::reminders::ReminderState::default(),
             "a pre-0004 dataset hydrates as the empty reminder section"
         );
+        repo.close().await;
     }
 
     /// The durability pragmas are actually in force: `journal_mode` is WAL.
@@ -511,6 +516,7 @@ mod tests {
             .await
             .expect("pragma");
         assert_eq!(mode, "wal");
+        repo.close().await;
     }
 
     // -- owner-only file modes (F12-01) --------------------------------------
