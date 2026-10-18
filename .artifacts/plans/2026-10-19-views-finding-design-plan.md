@@ -30,17 +30,17 @@
   day_window`, the D-F5 phrase/decoration seams), consumes doc 1 §7's
   ruled anchor-task hiding as a binding input, and stays clear of
   doc 3's banner/toast surfaces (D-R4: banner unchanged).
-- **Status**: decision session **in progress** (2026-10-19): D-V1,
-  D-V2, D-V3, D-V4 (re-commit in-wave, confirmation-free), D-V6,
-  D-V7, and D-V10 **ACCEPTED**; D-V8 **ACCEPTED with an amendment**
-  (find.rs architectured so a fuzzy-matcher crate can land later
-  touching only that file); D-V9 **AMENDED and accepted** (top-level
-  `find`, not `tasks find`); **D-V5 RE-OPENED** — v1's per-board
-  Inbox rejected; the session requires an app-global Inbox plus a
-  per-board Backlog, and §3.5 now carries the re-stated
-  requirements, the option space, and a v2 recommendation awaiting
-  the ruling (§5's record). D-V6's capture-landing target and
-  D-V7's singular-inbox reading are corrected to follow the D-V5
+- **Status**: recommendations **ACCEPTED** — the user's decision
+  session (2026-10-19) ruled on every point: D-V1–D-V4, D-V6,
+  D-V7, and D-V10 accepted (D-V4 ridden in-wave +
+  confirmation-free); D-V8 accepted with the crate-swap-firewall
+  amendment; D-V9 amended to a top-level `find` verb and accepted;
+  D-V5 re-opened (v1's per-board Inbox rejected) and **v2
+  accepted** — the app-global Inbox as a designated real board
+  plus per-board Backlog stacks, with the recommendation's
+  sub-levers (unbound at creation; the flat cross-board move ring)
+  standing as proposed. D-V6's capture-landing target and D-V7's
+  singular-inbox reading were corrected to follow the D-V5
   direction. Zero production code; this file is the chunk's entire
   diff.
 
@@ -522,6 +522,15 @@ CaptureTask { title: String, board: Option<BoardId> },
   adopted, not duplicated; two `Backlog` stacks → canonical-first;
   the kiosk/no-UI paths are untouched (a board among boards).
 
+**Ruled (2026-10-19): ACCEPTED — option 1.** The designated-board
+global Inbox + per-board Backlog, `CaptureTask { title, board:
+Option<BoardId> }`, and the derived consequences (the cross-board
+move ring; `view.inbox` and the chip on the one Inbox board) stand
+as written. The recommendation's two sub-levers were not separately
+overridden and stand as proposed: the Inbox board is created
+**unbound** (binding stays the user's ceremony, never auto-done),
+and the move ring is the **flat** cross-board stack ring.
+
 **Constraints conformance**: one `StateCommand` variant (an
 `Option<BoardId>` payload — DF-1-shaped); no schema, no config, no
 document keys; board creation reuses the existing verb.
@@ -876,7 +885,7 @@ in the domain; no new channels or state homes.
 | D-V2 | Today placement | `ViewId::Today` in the cycle `Today → Board → StackDetail → TaskDetail`; **default Desktop start view**; `view.today` global action; `ContextId::Today`; rows are `task-card` + decorations slot; journey leg added | **ACCEPTED (2026-10-19)** |
 | D-V3 | Today scope + kiosk | Cross-board on desktop (stack title always, board badge when >1 live board; selection-follows-focus retargets `ViewState.board`); kiosk = focused-board subset, compact, passive, rotation-ready | **ACCEPTED (2026-10-19)** |
 | D-V4 | Now + missed day | Rollover rides the existing minute-boundary repaint (no new timer); `task.due-today` re-commit action (`EditTask`-shaped `UpdateTask { duedate: Some(Some(window_end)) }`) via `DispatchCtx.day_window`; done-today count caption | **ACCEPTED (2026-10-19)** — in-wave, confirmation-free (the session's explicit riders) |
-| D-V5 | Inbox convention + verb | **v2 (re-opened)**: one app-global Inbox as a **designated real board** (exact title, created unbound on first capture, canonical-first resolution) + per-board **`Backlog`** stacks as the board-directed default landing; **`StateCommand::CaptureTask { title, board: Option<BoardId> }`** (None = global Inbox, Some = Backlog); triage files via the cross-board move ring; native-lane sync throughout | **PROPOSED (v2)** — v1 rejected; awaiting the session's ruling |
+| D-V5 | Inbox convention + verb | **v2 (re-opened)**: one app-global Inbox as a **designated real board** (exact title, created unbound on first capture, canonical-first resolution) + per-board **`Backlog`** stacks as the board-directed default landing; **`StateCommand::CaptureTask { title, board: Option<BoardId> }`** (None = global Inbox, Some = Backlog); triage files via the cross-board move ring; native-lane sync throughout | **ACCEPTED (2026-10-19, v2)** — option 1 ruled in; sub-levers stand as proposed (unbound creation; flat ring) |
 | D-V6 | Capture surfaces | Flip `capture.quick`; `Flow::Capture` + `capture-overlay.slint` (Enter commits-and-continues, Esc closes, empty Enter closes; **commits to the global Inbox** per D-V5 v2); CLI/REPL `capture <TITLE> [--board]` (`--board` = Backlog variant); **at-create scheduling ruled out** (answers doc 2 §7); no kiosk surface | **ACCEPTED (2026-10-19)** — landing target corrected to follow the D-V5 ruling |
 | D-V7 | Triage UX | No new view: `StackDetail` on the global Inbox board + `view.inbox` jump action + toolbar inbox-count chip (desktop, global count); the triage loop is existing verbs + the cross-board move ring; journey leg | **ACCEPTED (2026-10-19)** — singular-inbox reading confirmed |
 | D-V8 | Ranking core | Domain `find.rs`: case-folded subsequence matcher with ordered `MatchQuality` classes, key `(quality, title_len, id)` — no numeric score; title-only, live+done tasks, no anchor filtering (presentation-side per doc 1 §7); the proptest suite is the issue's named target; **the crate-swap firewall** (public surface = contract, internals + properties in-module) | **ACCEPTED (2026-10-19)** — amended: architecture must confine a future fuzzy-matcher crate to `find.rs` |
@@ -896,8 +905,9 @@ on every point:
    **Backlog**, with **Inbox** reserved for the app-global
    collection. §3.5 was rewritten (v2) with the re-stated
    requirements, the four-option analysis, and the designated-board
-   recommendation — **the v2 ruling is the session's one open
-   item**.
+   recommendation — **v2 then accepted (option 1)**; the
+   sub-levers stand as proposed (unbound at creation; the flat
+   cross-board move ring).
 3. **D-V6, D-V7, D-V10**: accept; D-V6's capture landing and D-V7's
    singular-inbox reading corrected to follow the D-V5 direction.
 4. **D-V8**: accept, **amended** — `find.rs` must be architected so
