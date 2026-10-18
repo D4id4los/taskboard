@@ -193,3 +193,21 @@ suites inject fixed or stepping clocks, making every
 LWW-participating stamp deterministic. Skew mitigation itself remains
 unimplemented — the backlog entry's conditional trigger stands; this
 seam is its prerequisite.
+
+* Amendment (2026-10-18): delete-path 404s re-resolve once before classification (#319)
+
+The stale-binding re-resolve above now covers the delete path. A
+local DeleteTask pushes at the overlay's ref, whose stack component
+may be stale when another client moved the card: the DELETE 404s at
+the stale location. On a delete-path 404 the executor re-resolves the
+card once against the fresh active+archived listings (the same
+presence truth the pull and the pre-write fetch trust); found → the
+overlay binding is refreshed and the delete retried once at the fresh
+location; absent from both listings, or a 404 on that retried delete
+(the write path outranks a lagging listing), → =RemoteMissing= — for
+a delete this converges rather than loses: the card is genuinely gone
+from every stack, the tombstone is the correct end state, and the
+same-cycle pull adopts no twin. A listing failure classifies through
+the normative write table's delete column (a listing 403 is "gone"
+there). The residual lagging-listing window rides the #258
+amendment's accepted risk unchanged. There is no configuration knob.
