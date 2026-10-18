@@ -1748,3 +1748,159 @@ async fn a24_board_switch_serves_the_new_board_after_the_cache_clear() {
         "the clear emptied the cache: 3 conditional 304s + 3 refetches + the detail"
     );
 }
+
+/// A25 (F6-06a): a `SetBoard` queued while a cycle runs is absorbed by the
+/// ADR 0006 drain loop into exactly one switch — one rerun targeting the
+/// new board, then silence. Mutating the `st.target != Some(id)` guard or
+/// dropping the rerun flag strands the switch and report 3 never arrives.
+#[tokio::test(start_paused = true)]
+async fn a25_set_board_during_a_cycle_is_absorbed_into_one_switch() {
+    let server = start_server().await;
+    mount_two_board_pull(&server).await;
+
+    let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
+    actor
+        .commands
+        .send(SyncCommand::SetBoard(RemoteBoardId(BOARD)))
+        .await
+        .unwrap();
+    let first = next_report(&mut actor).await;
+    let SyncReport::Completed {
+        snapshot: first, ..
+    } = first
+    else {
+        panic!("expected a Completed report");
+    };
+    assert_eq!(first.board.id, RemoteBoardId(BOARD));
+
+    // Both commands land in the inbox before the actor is polled again
+    // (capacity-backed sends complete without yielding), so the `SetBoard`
+    // arrives exactly as the `SyncNow`-driven cycle runs.
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    actor
+        .commands
+        .send(SyncCommand::SetBoard(RemoteBoardId(43)))
+        .await
+        .unwrap();
+    let second = next_report(&mut actor).await;
+    let SyncReport::Completed {
+        snapshot: second, ..
+    } = second
+    else {
+        panic!("expected a Completed report");
+    };
+    assert_eq!(
+        second.board.id,
+        RemoteBoardId(BOARD),
+        "the nudged cycle still targets the old board"
+    );
+    let third = next_report(&mut actor).await;
+    let SyncReport::Completed {
+        snapshot: third, ..
+    } = third
+    else {
+        panic!("expected the absorbed switch's rerun report");
+    };
+    assert_eq!(
+        third.board.id,
+        RemoteBoardId(43),
+        "exactly one rerun serves the switched-to board"
+    );
+
+    // And then silence: the switch produced no fourth cycle.
+    for _ in 0..500 {
+        assert!(
+            actor.reports.try_recv().is_err(),
+            "the switch absorbed into exactly one rerun"
+        );
+        tokio::time::advance(Duration::from_millis(10)).await;
+    }
+}
+
+/// A26 (F6-06b): an unreadable engine state backs off without a report,
+/// a broadcast, or any HTTP — and the first cycle after the store
+/// recovers completes. The fail-reads seam is the only path to the
+/// read-failure arm; deleting the streak increment schedules the
+/// success-cycle `poll_interval` (3 600 s) instead of the backoff and
+/// the recovering report never arrives inside the horizon.
+#[tokio::test(start_paused = true)]
+async fn a26_unreadable_state_backs_off_then_recovers() {
+    let server = start_server().await;
+    mount_conditional_pull(&server, &serde_json::json!([])).await;
+    let repo = repo_with(&[(2, STACK)], &[]);
+    let mut actor = spawn(&server, repo.clone());
+
+    repo.set_read_failure(true);
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let failure_window_start = tokio::time::Instant::now();
+    for _ in 0..30 {
+        assert!(
+            actor.reports.try_recv().is_err(),
+            "a read failure produces no report"
+        );
+        tokio::time::advance(Duration::from_millis(10)).await;
+    }
+    assert!(
+        failure_window_start.elapsed() >= cfg().backoff_initial,
+        "the failing cycle consumed the backoff window"
+    );
+    assert!(
+        server.received_requests().await.unwrap().is_empty(),
+        "the read precedes every wire call: a storage failure is not network traffic"
+    );
+    assert!(
+        actor.system_rx.try_recv().is_err(),
+        "a storage failure is not a lost network"
+    );
+
+    repo.set_read_failure(false);
+    let recovered = next_report(&mut actor).await;
+    assert!(
+        matches!(recovered, SyncReport::Completed { .. }),
+        "the backoff-scheduled cycle completes once the store reads again"
+    );
+}
+
+/// A27 (F6-06c): the unlisted+404 tombstone keeps the *local* bound
+/// board's title and color — the `bound_board` lookup feeding the
+/// synthesized identity, not an empty fallback.
+#[tokio::test(start_paused = true)]
+async fn a27_unlisted_board_tombstone_keeps_the_local_title() {
+    let server = start_server().await;
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(serde_json::json!([]).to_string()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}"
+        )))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Distinctively titled local board: the stock helper's "board" is
+    // indistinguishable from a fixture fallback (the A18/A22 inline seed
+    // precedent).
+    let mut state = PersistedState::default();
+    let mut board = bound_board();
+    board.title = "the local name".into();
+    state.boards.insert(board.id, board);
+    let stack = bound_stack(2, STACK);
+    state.stacks.insert(stack.id, stack);
+
+    let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
+    let report = set_board_and_report(&mut actor).await;
+    let SyncReport::Completed { snapshot, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    assert!(
+        snapshot.board.deleted_at.is_some(),
+        "the synthesized board carries the delete-wins tombstone"
+    );
+    assert_eq!(snapshot.board.title, "the local name");
+    assert_eq!(snapshot.board.color, "00ff00");
+}
