@@ -92,6 +92,39 @@ remote_id!(
     RemoteLabelId
 );
 
+/// Config-minted connector name (the `[[sync.connectors]]` key; the
+/// legacy scalar backend synthesizes `"nextcloud"`) — a human-meaningful
+/// name, not a UUID. Kebab-case and uniqueness are validated at config
+/// load; this constructor cannot fail, so `From` stays total.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ConnectorId(String);
+
+impl ConnectorId {
+    /// The connector name as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for ConnectorId {
+    fn from(name: &str) -> Self {
+        Self(name.to_owned())
+    }
+}
+
+impl From<String> for ConnectorId {
+    fn from(name: String) -> Self {
+        Self(name)
+    }
+}
+
+impl std::fmt::Display for ConnectorId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Location of a card on the remote: Deck card ids are only unique per
 /// board, so the full ref carries board and stack context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
