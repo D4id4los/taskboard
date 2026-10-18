@@ -192,6 +192,24 @@ branch-protected, so after the human merges the PR, tag the merged
 =main= commit and push =v<major>.<minor>.<patch>= — that triggers the
 Release workflow (the script prints these steps).
 
+Before cutting, sweep the range since the last tag for changelog
+misses: a user-visible commit with no =[Unreleased]= entry ships
+silently — the promotion step copies the section verbatim and never
+invents entries.
+
+#+begin_src sh
+LAST="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+git log --oneline "$LAST"..origin/main | grep -E '\b(feat|fix)\('
+#+end_src
+
+Check every listed commit against the =[Unreleased]= section by its
+=#<issue>= reference; =chore= or =refactor= commits that change
+shipped behavior (profile flags, dependency bumps — e.g. the
+release-profile overflow-checks) are judged the same way, while
+docs-, test-, and CI-only commits are exempt. A miss is fixed by
+adding the entry to =[Unreleased]= before running the bump, so
+promotion picks it up verbatim.
+
 * 8. Artefact Management
 
 AI-generated plans and reports live under =.artifacts/plans/= and
