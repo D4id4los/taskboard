@@ -233,8 +233,15 @@ implementation specs into the root directory or source folders.
 Single global semver across all crates, defined in
 `[workspace.package] version` in the root `Cargo.toml` and inherited by
 every member. Bump releases exclusively via `./scripts/bump_version.sh
-<major|minor|patch>`, which verifies a clean tree, bumps the version,
-stages and commits all changes, and tags `vX.Y.Z`.
+<major|minor|patch> [--no-push]`, which verifies a clean tree, creates
+`chore/release-v<X.Y.Z>` off the fetched `origin/main`, bumps the
+version, refreshes `Cargo.lock`, promotes the `CHANGELOG.md` release
+entry, commits on the branch, and — unless `--no-push` — pushes the
+branch and opens the release PR (`chore(release): v<X.Y.Z>`). The tag
+is never created by the script: `main` is branch-protected, so after
+the human merges the PR they tag the merged `main` commit and push
+`vX.Y.Z`, which triggers the Release workflow (the script prints those
+steps). Agents run the script only in `--no-push` mode.
 
 ## 10. Code Quality Gates (non-negotiable)
 

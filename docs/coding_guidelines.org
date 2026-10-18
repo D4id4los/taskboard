@@ -179,13 +179,18 @@ Single global semver in =[workspace.package] version=, inherited by all
 crates. Cut releases exclusively with:
 
 #+begin_src sh
-./scripts/bump_version.sh <major|minor|patch>
+./scripts/bump_version.sh <major|minor|patch> [--no-push]
 #+end_src
 
-The script (1) aborts on an unclean git tree, (2) increments the version,
-(3) refreshes =Cargo.lock= and the =CHANGELOG.md= release entry, (4) stages
-& commits all changed files, (5) tags =v<major>.<minor>.<patch>= in a
-GitHub-parseable format.
+The script (1) aborts on an unclean git tree, (2) cuts
+=chore/release-v<X.Y.Z>= off the fetched =origin/main=, (3) increments
+the version, (4) refreshes =Cargo.lock= and promotes the =CHANGELOG.md=
+release entry, (5) stages & commits all changed files on the release
+branch, and (6) unless =--no-push=, pushes the branch and opens the
+release PR with =gh=. The tag is never created by the script: =main= is
+branch-protected, so after the human merges the PR, tag the merged
+=main= commit and push =v<major>.<minor>.<patch>= — that triggers the
+Release workflow (the script prints these steps).
 
 * 8. Artefact Management
 
