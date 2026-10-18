@@ -408,6 +408,16 @@ impl TaskRepository for SqliteTaskRepository {
 }
 
 impl SqliteTaskRepository {
+    /// Disposes the pool deterministically: awaits the closure of every
+    /// connection, letting sqlite checkpoint and remove the `-wal`/`-shm`
+    /// siblings. `Drop` alone only marks the pool closed (sqlx 0.9), so a
+    /// WAL database whose owner is dropped without `close()` leaves the
+    /// sidecar files behind — callers that care about teardown (tests,
+    /// embedders) must await this before dropping the database handle.
+    pub async fn close(&self) {
+        self.pool.close().await;
+    }
+
     #[tracing::instrument(skip(self), err)]
     #[allow(clippy::too_many_lines)] // eight SELECTs; the length is the schema's
     async fn load_inner(&self) -> Result<PersistedState, RepositoryError> {
