@@ -163,7 +163,11 @@ jobs:
 
       - name: Run Tests
         # --no-tests=warn: green while the workspace has no tests yet.
-        run: cargo nextest run --workspace --all-targets --no-tests=warn
+        # Default target set (lib+bins+tests): bench targets are the
+        # benchmark job's lane (every PR); clippy --all-targets keeps
+        # them compiling here. tests/bench_fixtures.rs stays — it is a
+        # regular integration test, not a bench target.
+        run: cargo nextest run --workspace --no-tests=warn
 
       - name: Run Doc Tests
         run: cargo test --doc --workspace
