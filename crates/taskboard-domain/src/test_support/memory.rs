@@ -19,6 +19,7 @@ use crate::persistence::{
 #[derive(Debug, Default)]
 pub struct InMemoryRepository {
     state: Mutex<PersistedState>,
+    fail_reads: std::sync::atomic::AtomicBool,
 }
 
 impl InMemoryRepository {
@@ -33,7 +34,24 @@ impl InMemoryRepository {
     pub fn with_state(state: PersistedState) -> Self {
         Self {
             state: Mutex::new(state),
+            fail_reads: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Test seam: while set, every read (`load` and `read_state`) fails
+    /// with [`RepositoryError::Unavailable`]; `apply` still succeeds.
+    /// Exists to reach the sync actor's read-failure arm, which a healthy
+    /// fake can never take.
+    pub fn set_read_failure(&self, failing: bool) {
+        self.fail_reads
+            .store(failing, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn read(&self) -> Result<PersistedState, RepositoryError> {
+        if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RepositoryError::Unavailable);
+        }
+        Ok(self.snapshot())
     }
 
     /// Snapshot of the current fake contents (test assertion helper).
@@ -50,7 +68,7 @@ impl InMemoryRepository {
 impl TaskRepository for InMemoryRepository {
     fn load(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>> {
         Box::pin(async {
-            let mut state = self.snapshot();
+            let mut state = self.read()?;
             // `pending_ops` is derived, never stored (parity with the sqlite
             // implementation): the outbox is the single source of truth.
             state.sync.pending_ops = u32::try_from(state.outbox.len()).unwrap_or(u32::MAX);
@@ -72,7 +90,7 @@ impl TaskRepository for InMemoryRepository {
 /// same post-apply snapshot `load` would.
 impl SyncStateReader for InMemoryRepository {
     fn read_state(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>> {
-        Box::pin(async { Ok(self.snapshot()) })
+        Box::pin(async { self.read() })
     }
 }
 
@@ -99,5 +117,27 @@ mod read_port_tests {
         let read = block_on(repo.read_state()).expect("read_state");
         assert_eq!(read, repo.snapshot());
         assert_eq!(read.outbox.len(), 1);
+    }
+
+    /// Routing contract extension: with the fail-reads flag set, both read
+    /// paths fail `Unavailable` while `apply` keeps succeeding; clearing
+    /// the flag restores the reads.
+    #[test]
+    fn in_memory_read_state_fails_while_the_read_failure_flag_is_set() {
+        use crate::persistence::RepositoryError;
+        let repo = InMemoryRepository::new();
+        repo.set_read_failure(true);
+        assert!(matches!(
+            block_on(repo.read_state()),
+            Err(RepositoryError::Unavailable)
+        ));
+        assert!(matches!(
+            block_on(repo.load()),
+            Err(RepositoryError::Unavailable)
+        ));
+        block_on(repo.apply(vec![])).expect("apply still succeeds");
+        repo.set_read_failure(false);
+        assert!(block_on(repo.read_state()).is_ok());
+        assert!(block_on(repo.load()).is_ok());
     }
 }
