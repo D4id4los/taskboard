@@ -3,8 +3,9 @@
 
 use std::time::Duration;
 
-/// Reminder scheduler knobs; chunk 3 wires them from figment's
-/// `[reminders]` table. Tests inject tiny/paused values.
+/// Reminder scheduler knobs; `taskboard-app` maps figment's
+/// `[reminders]` table onto them (`AppConfig::reminder_engine_config`).
+/// Tests inject tiny/paused values.
 #[derive(Debug, Clone)]
 pub struct ReminderEngineConfig {
     /// `false` ⇒ the tick arm is never armed (the default-off
@@ -17,11 +18,14 @@ pub struct ReminderEngineConfig {
 }
 
 impl ReminderEngineConfig {
-    /// The off state used by every pre-existing test helper and the
-    /// interim bootstrap wiring. The `defaults` value is irrelevant
-    /// while disabled; production defaults (5 m before due) are
-    /// figment's to encode in chunk 3 — deliberately not encoded here
-    /// so this type carries no hidden production policy.
+    /// The off state used by the state crate's test suites and doc
+    /// example; the production wiring never calls it — it builds the
+    /// config from figment's `[reminders]` table
+    /// (`AppConfig::reminder_engine_config`). The `defaults` value is
+    /// irrelevant while disabled; the production defaults (5 m before
+    /// due, 30 s tick) live in the app's figment defaults —
+    /// deliberately not encoded here so this type carries no hidden
+    /// production policy.
     #[must_use]
     pub fn disabled() -> Self {
         Self {
