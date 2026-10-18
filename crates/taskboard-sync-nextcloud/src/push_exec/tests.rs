@@ -2069,6 +2069,74 @@ async fn delete_stack_404_maps_to_remote_missing() {
     assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
 }
 
+// ---- board delete push path ----------------------------------------
+
+#[tokio::test]
+async fn delete_board_sends_the_delete_and_applies_the_board_echo() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards/42"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(board_json(42, "doomed")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::DeleteBoard { board: board_id(1) },
+                taskboard_domain::PushTarget::Board(board_id(1)),
+                &[],
+            ),
+            &[],
+            tables_with_boards(&[board_row(1, "doomed")]),
+        )
+        .await;
+    server.verify().await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes");
+    };
+    assert!(matches!(
+        &outcomes[0].result,
+        PushResult::Applied { echo: Some(RemoteEcho::Board(view)) }
+            if view.id == RemoteBoardId(42)
+    ));
+}
+
+#[tokio::test]
+async fn delete_board_404_maps_to_remote_missing() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards/42"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::DeleteBoard { board: board_id(1) },
+                taskboard_domain::PushTarget::Board(board_id(1)),
+                &[],
+            ),
+            &[],
+            tables_with_boards(&[board_row(1, "doomed")]),
+        )
+        .await;
+
+    let GroupOutcome::Outcomes(outcomes) = outcome else {
+        panic!("expected outcomes");
+    };
+    assert!(matches!(outcomes[0].result, PushResult::RemoteMissing));
+}
+
 // ---- label push paths --------------------------------------------
 
 #[tokio::test]
