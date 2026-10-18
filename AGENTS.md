@@ -197,6 +197,17 @@ implementation specs into the root directory or source folders.
   `fix`, `refactor`, `test`, `docs`, `ci`, `chore`.
 - Parallel worktrees are created next to the project root as
   `<project-root>-WT-<branch-name>`.
+- **Worktree lifecycle (disk hygiene)**: worktrees are disposable — a
+  left-behind `target/` dir costs 36–55G each (measured 2026-10-18,
+  `.artifacts/reports/2026-10-18-agent-worktree-disk-usage-report.md`).
+  Any agent creating (or recreating) a worktree first runs
+  `scripts/worktree-doctor.sh` from the main checkout — a nonzero exit
+  means free disk is below the floor: STOP and report. The agent that
+  hands off at PR-green removes its worktree:
+  `git worktree remove --force ../<project-root>-WT-<branch-name>`
+  (everything precious is pushed; `--force` only discards regenerable
+  build output); a later round that resumes the chunk recreates it
+  (`git worktree add ../<project-root>-WT-<branch-name> <branch>`).
 - `gh` is available for CI triage (`gh run list/watch/view --log-failed`,
   `gh pr checks`).
 - **PR granularity**: default to **one branch/PR per plan** when the plan is
@@ -256,12 +267,18 @@ cargo deny check
 cargo llvm-cov nextest --workspace --all-features --no-tests=warn --no-report
 scripts/coverage-quarantine-profraw.sh target/llvm-cov-target
 cargo llvm-cov report --lcov --output-path lcov.info
+rm -rf target/llvm-cov-target   # local hygiene; the tree is spent
 ```
 
 The coverage gate is the CI-identical three-command sequence (not the
 monolithic `cargo llvm-cov --workspace`): the quarantine step drops torn
 profraws from legitimately SIGKILLed instrumented children before the
 merge, so a killed test binary cannot abort the whole report — the
-2026-10-13 coverage-flake fix, applied on both sides.
+2026-10-13 coverage-flake fix, applied on both sides. The trailing
+`rm` is local-only hygiene — CI runners are ephemeral:
+`target/llvm-cov-target` (13–25G per worktree when left behind) is a
+separate dir from the incremental cache, so deleting it after
+`lcov.info` is written invalidates nothing; the next coverage run
+rebuilds it, as it would anyway.
 
 Do not offer a result containing `clippy` warnings or formatting drift.
