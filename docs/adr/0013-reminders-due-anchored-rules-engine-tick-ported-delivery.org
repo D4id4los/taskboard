@@ -1,0 +1,102 @@
+#+title: ADR 0013: Reminders — Local Due-Anchored Rules, Engine-Tick Evaluation, Ported Delivery
+#+options: toc:nil
+
+- *Date:* 2026-10-12
+- *Status:* Accepted (decided 2026-10-12, design round WI-I;
+  formalised 2026-10-18 — the late landing is an execution accident,
+  not a withdrawal: the design round's stage-2 checklist marked the
+  formalisation done without the file landing; see
+  =.artifacts/reports/2026-10-16-v0.1.0-audit-theme-docs-drift-report.md=
+  §6)
+- *Deciders:* Viktoria Pogrzebacz
+- *Depends on:* ADR 0001 (multi-actor headless core), ADR 0005
+  (persistence port precedent), ADR 0006 (state-engine interpret loop)
+
+* Context
+
+Taskboard's identity includes "reminder system" (AGENTS §1) but no
+reminder design existed when this round ran: tasks carry a synced
+=duedate= (per-field LWW, ADR 0004), the state engine owns all state
+transitions (ADR 0006), Deck exposes no native reminder field, and the
+kiosk reboots at arbitrary moments on unreliable networks. The design
+round is recorded in
+=.artifacts/plans/2026-10-12-reminders-design-plan.md= (§12 draft ADR,
+§13 user-resolved decisions of 2026-10-12); this record formalises
+both, with each deviation from the draft carrying its recorded reason.
+The subsystem shipped across the follow-up implementation rounds
+(domain model, engine tick, storage migration 0004, app wiring) and is
+described in =docs/architecture.org= and =docs/flow_model.org=.
+
+* Decision
+
+0. *V1 rule catalog is offset-before-due only* (§13 D1): rules fire at
+   a fixed offset before the task's due instant. Fixed-time
+   (calendar-style) rules and per-board defaults stay deferred.
+1. Reminder *rules* are domain entities anchored on =Task.duedate=
+   (=offset ≤ 0=). V1 keeps them local (no Deck counterpart), but the
+   model is sync-ready — portable ids, occurrence-keyed *additive*
+   delivery proofs (set-union merge, conflict-free by construction),
+   per-field write clocks as the additive upgrade path. *Amendment
+   (§13 round 2):* syncing rules/proofs is desired-but-deferred with
+   that sync-ready model — recorded as a design commitment, not a v1
+   feature.
+2. Suppression is *occurrence-keyed*: a =ReminderDelivery=
+   (reminder, occurrence) row is the single at-most-once guard,
+   persisted before any notification is sent. Moving a due date
+   re-arms by derivation; *snooze reschedules the occurrence* through
+   the same pure evaluator — no imperative reset hooks, and
+   "delivered" never means "done forever". *Confirmed by §13 D4:*
+   single fire per occurrence, the overdue banner stays persistent,
+   and snooze is the sanctioned re-surface mechanism; repeating/daily
+   nags stay deferred.
+3. Scheduling is an engine *tick arm* (=sleep_until=), not a second
+   actor: on each tick the engine runs the pure evaluator over
+   =EngineCore=, persists delivery markers, interprets, publishes, and
+   only then hands payloads to the notifier. A failed batch fires
+   nothing. *Confirmed by §13 D2* (Option A of the design plan's §5.1).
+4. Notification delivery is a port (=NotificationSink=, the
+   =CredentialStore= precedent): v1 ships a =tracing= log impl
+   (=LogSink=); desktop toasts (with the interactive dismiss/snooze
+   surface) are follow-ups behind the same port. *Confirmed by §13 D3.*
+5. The kiosk overdue banner is scheduler-free: a pure derived view
+   (=overdue_tasks=) evaluated by the UI at read time with its own
+   clock; passing time never mutates =AppState=, and the banner ignores
+   rules, deliveries, snoozes, and mute — it is board truth.
+6. =AppState= grows persisted reminder facts only (=ReminderState=);
+   =EngineSignal::StateUpdated= remains the sole repaint signal; no
+   new =SystemEvent= variant.
+7. Every duedated task carries an *implicit default reminder* at a
+   user-configurable offset (=[reminders] default_before=, default
+   5 minutes before due), per-device; explicit rules replace the
+   default; mute (=--off=) silences all firings for the task without
+   touching the banner. *Amendment (§13 D5):* the knob ships as a
+   config item from day one rather than "easily made configurable
+   later" — figment already carries the hierarchy and the evaluator
+   takes the offset as a pure parameter, so the knob costs nothing at
+   design time and avoids a retrofit.
+8. N rules per task and insistence levels (notification vs alarm) are
+   additive future extensions the model already admits: no surface
+   assumes one-reminder-per-task, and urgency is a future rule/payload
+   field the evaluator never reads. *Confirmed by §13 round 2* (the
+   backlog entries for both were added that round).
+
+* Consequences
+
+- As shipped (verified against HEAD at formalisation time): the
+  reminder tick is a =sleep_until= select arm of the engine loop
+  (first tick immediate, so reminders left undelivered before a
+  shutdown fire on the next boot; disarmed while the engine drains),
+  delivery is durable-then-notify (markers persist before any send; a
+  failed batch fires nothing) with =send= backpressuring the tick, four
+  reminder tables land in migration 0004, the =[reminders]= config
+  table carries =enabled= / =tick_secs= / =default_before= (validated),
+  the =tasks remind= verb family exposes rules
+  (=--before=/=--list=/=--clear=) and mute (=--off=/=--on=), and the
+  GUI overdue banner's snooze/mute actions ride the same command path.
+- Deferred, behind the seams above: the =DesktopSink= toast
+  implementation, reminder rule/delivery sync, N rules per task, and
+  insistence levels — named as deferred, not promised.
+- Cross-references: =docs/architecture.org= carries the notifier row in
+  the communication table and the reminders surface in the
+  crate descriptions; =docs/flow_model.org= carries the derived
+  E-20 edge and the NTF actor.

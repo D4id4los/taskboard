@@ -23,6 +23,10 @@ formalised — the formalisation debt is tracked in the improvements
 backlog). It is not a withdrawn or accidental number, and it was not
 reused here to keep the reservation honest.
 
+*Amendment 2026-10-18:* ADR 0013 is now formalised from the reminders
+design plan (§12/§13); the reservation is retired exactly as
+intended, so the note above is historical record only.
+
 * Decision
 
 1. *The UI crate stays a dumb presentation client* (ADR 0001):
