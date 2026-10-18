@@ -564,3 +564,209 @@ async fn s7_standalone_first_run_and_bind() {
     s.snap("s7");
     drop(s);
 }
+
+/// Warm validator bundles (non-empty: the engine ignores empty bundles
+/// by design — nothing reusable to store).
+fn warm_validators() -> taskboard_domain::BoardPullValidators {
+    let warm = taskboard_domain::SyncValidators {
+        etag: Some("\"w1\"".into()),
+        last_modified: Some("warm".into()),
+    };
+    taskboard_domain::BoardPullValidators {
+        boards: warm.clone(),
+        stacks: warm.clone(),
+        archived_stacks: warm,
+    }
+}
+
+/// S8 — board color/archive edits: each verb stamps its own field clock
+/// only and converges on the single full-send `update_board` op.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
+#[tokio::test]
+async fn s8_boards_color_archive() {
+    let mut s = Scenario::start_empty().await;
+    let CommandOutcome::CreatedBoard(_board) = s
+        .run(StateCommand::CreateBoard {
+            title: "personal".into(),
+            color: Color::new("3366cc"),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.run(StateCommand::SetBoardColor {
+        color: Color::new("00c2e0"),
+    })
+    .await;
+    // A same-color repeat is the accepted no-op (nothing persisted).
+    s.run(StateCommand::SetBoardColor {
+        color: Color::new("00c2e0"),
+    })
+    .await;
+    s.run(StateCommand::SetBoardArchived { archived: true })
+        .await;
+    s.snap("s8");
+    drop(s);
+}
+
+/// S9 — board delete ceremony: the tombstone cascades to the live
+/// stacks/tasks/label, cancels the doomed entities' queued ops, and
+/// queues exactly one `delete_board` op.
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
+#[tokio::test]
+async fn s9_boards_delete_cascade() {
+    let mut s = Scenario::start_empty().await;
+    let CommandOutcome::CreatedBoard(_board) = s
+        .run(StateCommand::CreateBoard {
+            title: "doomed".into(),
+            color: Color::new("3366cc"),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::CreatedStack(first) = s
+        .run(StateCommand::CreateStack {
+            title: "todo".into(),
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::CreatedStack(second) = s
+        .run(StateCommand::CreateStack {
+            title: "doing".into(),
+            order: 2,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    for n in 0..3 {
+        s.run(StateCommand::CreateTask {
+            title: format!("task {n}"),
+            stack: if n == 2 { second } else { first },
+            order: n,
+        })
+        .await;
+    }
+    s.run(StateCommand::CreateLabel {
+        title: "urgent".into(),
+        color: Color::new("ff0000"),
+    })
+    .await;
+    // A queued op of a doomed task: the delete must cancel it.
+    let outbox = s.repo.snapshot().outbox;
+    let task_op = outbox
+        .iter()
+        .find(|o| matches!(o.op, LocalOp::CreateTask(_)))
+        .expect("a queued create op");
+
+    s.run(StateCommand::DeleteBoard).await;
+    // Repeat: the accepted terminal no-op.
+    s.run(StateCommand::DeleteBoard).await;
+    let after = s.repo.snapshot();
+    assert!(
+        !after.outbox.iter().any(|o| o.op_id == task_op.op_id),
+        "the doomed task's queued op is cancelled"
+    );
+    s.snap("s9");
+    drop(s);
+}
+
+/// S10 — board reset: content, queued ops, validators, and reminder
+/// facts clear in one bulk action; the board row and the sync status
+/// survive (a bound board re-materializes from the next pull).
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
+#[tokio::test]
+async fn s10_boards_reset() {
+    let mut s = Scenario::start_empty().await;
+    let CommandOutcome::CreatedBoard(_board) = s
+        .run(StateCommand::CreateBoard {
+            title: "repair".into(),
+            color: Color::new("3366cc"),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::CreatedStack(stack) = s
+        .run(StateCommand::CreateStack {
+            title: "todo".into(),
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::CreatedTask(task) = s
+        .run(StateCommand::CreateTask {
+            title: "doomed".into(),
+            stack,
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.run(StateCommand::SetReminderRule {
+        task,
+        offset: taskboard_domain::ReminderOffset::at_due(),
+    })
+    .await;
+    s.run(StateCommand::BindBoard {
+        remote: taskboard_domain::RemoteBoardId(77),
+    })
+    .await;
+    // Warm validators: the reset must clear them (the 304 trap).
+    s.clock.advance(60);
+    s.report_tx
+        .send(SyncReport::Completed {
+            snapshot: Box::new(RemoteBoardSnapshot {
+                board: RemoteBoard {
+                    id: taskboard_domain::RemoteBoardId(77),
+                    title: "repair".into(),
+                    color: "3366cc".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0),
+                },
+                stacks: vec![],
+                tasks: vec![],
+                labels: vec![],
+            }),
+            validators: warm_validators(),
+            pushes: vec![],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+        })
+        .await
+        .expect("report channel open");
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            if !s.repo.snapshot().validators.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("validators settle");
+
+    s.run(StateCommand::ResetBoard).await;
+    // Repeat: the accepted already-empty no-op.
+    s.run(StateCommand::ResetBoard).await;
+    let after = s.repo.snapshot();
+    assert!(
+        after.stacks.is_empty()
+            && after.tasks.is_empty()
+            && after.labels.is_empty()
+            && after.outbox.is_empty()
+            && after.validators.is_empty()
+            && after.reminders.rules.is_empty(),
+        "the reset clears content, ops, validators, and reminder facts"
+    );
+    assert_eq!(after.boards.len(), 1, "the board row survives");
+    s.snap("s10");
+    drop(s);
+}
