@@ -271,6 +271,45 @@ Mechanics that make the binary tests safe to run in a shared suite:
   the coverage duty for the command logic, and the journeys prove
   wiring.
 
+** Keyring round trip (local, manual only)
+
+The app-level counterpart to tier 3's live Nextcloud runs:
+=it_keyring_local_round_trip=
+(=crates/taskboard-app/tests/secrets.rs=) drives the production
+=KeyringStore= (ADR 0008) against the /developer's own/ OS credential
+store — the only executed proof of the credential store's real OS
+I/O. It is manual-only for the same reason tier 3 is: it dirties a
+real user keyring by design, and no CI runner sets its gate
+(=TASKBOARD_IT_KEYRING= appears in no workflow). The hermetic halves
+(password redaction, error mapping, fake-store round trip: S1–S6 in
+the same file) run in every CI pass.
+
+- *Prerequisite:* a running OS credential store in your session —
+  Linux: a Secret Service such as gnome-keyring on the session D-Bus
+  (the app links the =sync-secret-service= backend), macOS: Keychain,
+  Windows: Credential Manager. A headless box fails typed
+  (=CredentialError::Backend=) — by design; that failure is the signal
+  to configure =credential_store = "env"= instead (ADR 0008).
+- *Invocation:*
+
+#+begin_src sh
+TASKBOARD_IT_KEYRING=1 cargo nextest run -p taskboard-app \
+  --run-ignored only -E 'test(it_keyring_local_round_trip)'
+#+end_src
+
+- *The vacuous-pass footgun:* the test is =#[ignore]=d /and/
+  internally guarded — without =TASKBOARD_IT_KEYRING=1= exported it
+  returns early and /passes having done nothing/. A green run without
+  the gate proves nothing; always run the command exactly as above.
+- *What it writes:* one throwaway entry into your own store — service
+  =taskboard=, account =roundtrip@keyring-test.example.com=, value the
+  literal =local-secret=. The test deletes the entry /before/
+  asserting, so any in-test failure still self-cleans; only a process
+  killed between store and delete can leave the entry behind — remove
+  it with your desktop's credential manager (e.g. Seahorse on GNOME),
+  looking up service =taskboard= / account
+  =roundtrip@keyring-test.example.com=.
+
 * 9. Test Suite Discipline (Hard Rules)
 
 From =AGENTS.md= §5, restated because they matter:
