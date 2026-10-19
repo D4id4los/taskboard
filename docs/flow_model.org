@@ -320,9 +320,13 @@ Presence of actors/edges per process mode. "core" = ENG+STO+NTF
 (spawned unconditionally by =bootstrap=, bootstrap.rs:589-600); SYN
 only when a connector client resolves (bootstrap.rs:631ff, standalone
 drops =sync_rx= :652). The mode *gate* for explicit =daemon= refuses
-Desktop/Kiosk (main.rs:250-257); bare-invocation routing maps
-Desktop→GUI regardless of TTY, Daemon+TTY→REPL, else daemon lifecycle
-(ui.rs:79-87).
+Desktop only (main.rs, =daemon_lifecycle= — kiosk passes: the explicit
+verb is the headless maintenance entry under a kiosk config, ADR
+0016); bare-invocation routing (=bare_invocation_route=) maps
+Desktop→GUI regardless of TTY, Daemon+TTY→REPL, non-TTY Daemon with a
+display→GUI (#236), bare kiosk→the appliance (display-gated with a
+loud headless fallback, TTY-independent — ADR 0016), else daemon
+lifecycle.
 
 | Mode (entry) | ENG | STO | SYN | NTF | SYSLOG | IPCA+IPCD | UIF | UI | EXITW | RPL | EDT | Notable edges absent |
 |---+---+---+---+---+---+---+---+---+---+---+---+---|
@@ -331,7 +335,7 @@ Desktop→GUI regardless of TTY, Daemon+TTY→REPL, else daemon lifecycle
 | Daemon (=daemon= subcommand, or bare non-TTY Daemon) | ✓ | ✓ | backend | ✓ | ✓ | ✓ | — | — | — | — | — | E-16/17 (SIG may have zero subscribers), E-21, E-26..28 |
 | REPL session (bare TTY Daemon) | ✓ | ✓ | backend | ✓ | — | — | — | — | — | ✓ | ✓ | E-13/14, E-21..25 |
 | Desktop GUI (bare Desktop) | ✓ | ✓ | backend | ✓ | — | — | ✓ | ✓ | ✓ | — | — | E-13, E-22..28 |
-| Kiosk (bare or explicit) | refused — mode gate main.rs:250-257 | | | | | | | | | | | all |
+| Kiosk appliance (bare kiosk, ADR 0016; headless fallback = the daemon row's tail) | ✓ | ✓ | backend | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | E-13, E-22..28 (as the desktop row; the UI also subscribes to the system broadcast, so E-16/17 always have a live subscriber) |
 
 Notes: (a) in a plain daemon the SIG bus (E-15) can have *zero live
 subscribers* — =publish='s send is =let _ == (state/actor.rs:488);

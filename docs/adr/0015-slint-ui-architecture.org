@@ -140,6 +140,11 @@ window mount (exit non-zero, visible stderr) rather than hanging
 silently; the gate→mount race (display vanishing in between) is
 tolerated, mirroring the kiosk wave's identical tolerance.
 
+/Update 2026-10-19 (ADR 0016)/: this amendment's bare-kiosk routing
+row is superseded — bare =kiosk= now boots the kiosk appliance
+(display-gated with a loud headless fallback, TTY-independent), and
+the daemon mode gate refuses =Desktop= only. See ADR 0016.
+
 *Limitation*: Windows double-clicks spawn a fresh conhost, so stdin
 *is* a TTY and the REPL opens in a visible console window — not the
 silent-daemon trap, but not the GUI; the env-based signal has no
