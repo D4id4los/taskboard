@@ -473,11 +473,21 @@ async fn run_loop(
                     }
                 }
                 Ok(SystemEvent::NetworkLost) if !draining => {
-                    go_offline(&mut core, &shared, &signals, &repo, clock.as_ref()).await;
+                    go_offline(&mut core, &shared, &signals, &repo, clock.as_ref(), None).await;
                 }
                 Ok(SystemEvent::NetworkRestored) if !draining => {
                     // No phase change: the next report is the evidence; a
                     // self-declared "idle" would be a guess.
+                    forward_sync_now(&mut sync_outs);
+                }
+                Ok(SystemEvent::ConnectorLost(c)) if !draining => {
+                    // One connector's episode: only its boards flip.
+                    // Idempotent per board, so the authority's global
+                    // follow-up (N=1) is a no-op second pass.
+                    go_offline(&mut core, &shared, &signals, &repo, clock.as_ref(), Some(&c))
+                        .await;
+                }
+                Ok(SystemEvent::ConnectorRestored(_)) if !draining => {
                     forward_sync_now(&mut sync_outs);
                 }
                 Ok(
@@ -816,13 +826,19 @@ async fn go_offline(
     signals: &broadcast::Sender<EngineSignal>,
     repo: &Arc<dyn TaskRepository>,
     clock: &dyn Clock,
+    scope: Option<&taskboard_domain::ConnectorId>,
 ) {
     // Per-board idempotence: one Offline write per bound board not
     // already offline; the batch is empty (a no-action no-op) iff every
-    // bound board is already offline — or none is bound.
-    let targets: Vec<taskboard_domain::BoardId> = core
-        .app()
-        .bound_boards()
+    // bound board is already offline — or none is bound. `scope` narrows
+    // the target set to the boards bound to one connector (the
+    // per-connector episode edge, derived from the binding tags);
+    // `None` is the global all-down write.
+    let bound: Vec<taskboard_domain::BoardId> = match scope {
+        Some(connector) => core.app().bound_boards_of(connector),
+        None => core.app().bound_boards(),
+    };
+    let targets: Vec<taskboard_domain::BoardId> = bound
         .into_iter()
         .filter(|board| {
             !core
