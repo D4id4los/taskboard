@@ -1,0 +1,161 @@
+#+title: ADR 0016: Kiosk Appliance Mode
+- *Date:* 2026-10-19
+- *Status:* Accepted (implemented by the kiosk wave chunks 1–3; deployment profile, ambient view, and on-device verdicts are later waves)
+- *Depends on:* ADR 0008 (bootstrap & modes), ADR 0009 as amended 2026-10-19 (the =gui= verb), ADR 0012 (daemon IPC), ADR 0015 incl. the 2026-10-18 #236 amendment
+
+* Context
+
+The kiosk requirement (#237) is an unattended seat: low-power hardware
+driving an office display, no operator keyboard, an =ssh= maintainer
+instead, and offline resilience. Remote CLI control over the daemon's
+IPC socket is solved (ADR 0012); what v0.1.0 lacks is the =mode =
+"kiosk"= frontend itself — the mode was refused at the daemon mode
+gate ("not implemented yet", ADR 0008's Phase-7 placeholder).
+
+The 2026-10-16 design round compared three shapes for that frontend
+and accepted **Option A — the appliance**: one process boots the
+daemon core *and* mounts the kiosk window over it. Option B
+(attachable GUI, a second process joining the running daemon over the
+socket) was rejected for this wave: it adds a whole IPC surface whose
+only purpose is GUI transport, and the appliance gets the same
+off-box-GUI capability later by sequencing B after C. Option C (web
+dashboard) is a separate frontend with its own stack, sequenced
+separately; it never gated the appliance. Option A wins on: no new
+IPC surface, same-process GUI over the existing ADR 0015 hand-over, a
+native renderer-selectable window (the on-device spike picks the
+backend), and effort S relative to either alternative.
+
+* Decision — routing
+
+The bare-invocation table (#236 amendment's table, kiosk row now
+shipped):
+
+| invocation                 | TTY  | display | lifecycle            |
+|----------------------------+------+---------+----------------------|
+| bare =kiosk= mode          | any  | any     | *the appliance*      |
+| bare =desktop= mode        | any  | any     | desktop GUI (D4)     |
+| bare =daemon=, TTY         | ✓    | any     | REPL (ADR 0011)      |
+| bare =daemon=, no TTY, display | — | ✓      | desktop GUI (#236)   |
+| bare =daemon=, no TTY, no display | — | —     | daemon lifecycle     |
+| explicit =daemon=          | any  | any     | *daemon lifecycle, headless always* |
+| explicit =gui=             | any  | any     | desktop GUI (ADR 0009 amendment) |
+
+- Bare =kiosk= is **TTY-independent**: a seat has no operator TTY, and
+  =ssh -t= booting the appliance into a pty is acceptable. The
+  display gate lives *inside* the appliance lifecycle, not in the
+  routing — routing only picks the lifecycle.
+- The explicit =daemon= verb stays **headless always** (the ssh and
+  systemd maintenance entry; ADR 0015 #236's unit rule): the daemon
+  mode gate narrows to refusing =Desktop= only. A kiosk machine's
+  maintenance session gets the identical daemon.
+- =taskboard gui= is the desktop frontend regardless of =mode=
+  (ADR 0009 amendment) — unchanged.
+
+* Decision — the appliance lifecycle
+
+One process = the daemon core (storage, engine, system-event logger,
+per-database IPC server — the exact =daemon_lifecycle= head) + the
+ADR 0015 hand-over with =UiSettings.kiosk = true= (the chunk-2
+window-profile flag's consumer): =mount= applies fullscreen.
+
+** Close-exits (Q2)
+
+Closing the window ends the appliance through the same graceful drain
++ shutdown as a shutdown signal or =daemon stop=. The exit watcher
+selects exactly two arms (signal ∥ IPC stop) and calls
+=slint::quit=; window close is the third exit and needs no arm — it
+returns from the event loop directly. Richer close semantics
+(persist-on-close prompts, minimize-to-headless) are deferred until a
+need appears.
+
+** The shared shutdown tail
+
+The serve→drain→shutdown choreography exists **once**:
+=serve_and_shutdown= (first-exit wait → bounded drain with the
+second-signal force exit armed throughout) and =drain_and_shutdown=
+(the drain without the wait) are shared by the daemon lifecycle, the
+appliance's headless fallback, and the appliance's post-event-loop
+drain — three entries, one choreography. A GUI crash or clean close
+therefore shuts the core down exactly as =daemon stop= does; the
+whole-appliance restart story (a GUI crash takes the core with it) is
+the deployment profile's =Restart=always= unit (the kiosk wave's
+deployment chunk).
+
+* Decision — the display gate + loud fallback (Q3)
+
+The gate runs **before any slint-touching call**. The verified
+evidence (2026-10-16, release artifact): slint 1.18.1 **panics**
+during backend init without a display (exit 101, panic in
+=slint-1.18.1/lib.rs:784=) instead of surfacing the typed
+=UiMountError=. Hence the =KioskStart= decision
+(=taskboard_app::ui::kiosk_start=) on =WAYLAND_DISPLAY= / =DISPLAY=
+(set-and-non-empty) decides first:
+
+- =Appliance=: mount the fullscreen window and run the event loop on
+  the process main thread.
+- =Headless=: log =error!= ("no display available; continuing as
+  headless daemon") and serve the shared daemon tail. The fallback is
+  deliberate and serving, not a failure exit: the same binary serves
+  both the seat and the ssh session, and =status= / =daemon stop=
+  work identically.
+
+** Race tolerance
+
+A display vanishing between the gate and the mount — and a display
+variable outliving its server — fail loud and typed *at mount*
+(the verified KDF-2 behaviour). This gate→mount race is **tolerated,
+not hardened**: no =catch_unwind=, no re-check (a re-check cannot
+close the TOCTOU window anyway). A mount failure on the appliance
+drains the already-spawned server through the shared tail (no socket
+sidecar or actor leak) and reports the typed error. This mirrors
+ADR 0015 #236's identical tolerance for the desktop path;
+=catch_unwind= around mount remains a review-time option only.
+
+* Decision — IPC on the seat
+
+The appliance serves the per-database socket exactly as the daemon;
+=daemon stop= and =status= are the operator surface over ssh. **No
+kiosk-management verb exists** — the protocol v1 verb set
+(=Exec=/=Status=/=Shutdown=/=DetachConnector=/=AttachConnector=) is
+unchanged (the F16-28 extraction fence stays unfired). The watcher's
+IPC stop rides a handle-side receiver clone, not a wire change.
+
+* Decision — the window profile
+
+Chunk 2's caveat, verbatim:
+
+> **Kiosk window profile (chunk 2).** The profile is
+> =slint::Window::set_fullscreen(true)= applied at mount when
+> =UiSettings.kiosk= is set. Slint 1.18.1 exposes no public runtime
+> API for decoration control — =no-frame= is a declaration-time
+> =.slint= binding — but on the winit backend, the only backend
+> compiled into the release (ADR 0015 decision 6), decorations are
+> suppressed by construction while fullscreen is active
+> (=set_decorations(!no_frame || fullscreen)=,
+> =i-slint-backend-winit= 1.18.1 =winitwindowadapter.rs=). The
+> profile is complete as shipped. A hypothetical windowed-but-
+> undecorated variant would need a static =no-frame= binding (a
+> second window declaration) or a backend change; fullscreen
+> semantics under any future backend switch (=renderer-software=/
+> =backend-fb=, the spike's question) are the spike's to verify
+> on-device.
+
+* Consequences
+
+- A GUI crash takes the core with it (one process): recovery is the
+  deployment profile's =Restart=always= system unit (kiosk wave,
+  deployment chunk), not in-process GUI supervision.
+- The GUI must run on the core's machine. Off-box GUIs are Option B's
+  attachable path, sequenced after the dashboard (C) per the 2026-10-16
+  Q7 ruling.
+- The renderer/backend choice and the on-device performance-budget
+  verdicts ride the phase-B spike; the ambient view and display
+  rotation are the ambient chunk (K13).
+- The kiosk milestone (#237) completes with the packaging chunk's
+  =.desktop= launcher and launch docs.
+- Testability note: the GUI branch is unverifiable on CI by
+  construction (mounting headless panics — the reason the gate
+  exists); CI pins the routing cells, the =KioskStart= decision, the
+  headless fallback lifecycle end to end, and the daemon tail
+  (unmodified through the extraction), and review walks the
+  mount/watcher choreography.

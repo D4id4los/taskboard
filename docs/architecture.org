@@ -18,10 +18,10 @@ The =taskboard= application is a cross-platform task management and
 reminder system. It ships three process modes (=AppMode=,
 =config.rs=): *Daemon* (the default — a headless core serving the CLI,
 the interactive REPL, and remote clients over IPC), *Desktop* (the
-shipped Slint GUI, ADR 0015), and *Kiosk* — planned for the kiosk wave
-(the accepted kiosk-wave decisions of 2026-10-16) and refused at the
-daemon mode gate until it lands; no frontend routes
-to it today. The two-mode product vision behind the mode axis remains:
+shipped Slint GUI, ADR 0015), and *Kiosk* — the appliance (ADR 0016): the daemon core plus the
+display-gated fullscreen window, with a loud headless fallback that
+keeps serving over IPC; the passive ambient view remains the kiosk
+wave's later ambition. The two-mode product vision behind the mode axis remains:
 
 1. *Passive Kiosk Mode (vision):* running on low-power hardware
    attached to an office display, providing continuous, resilient
@@ -317,12 +317,14 @@ dependency hierarchies.
    =NoDaemon=/=IpcTransport=/=IpcVersion= failures; =route_for_ipc=
    picks each verb's transport lane (Local / IpcOrLocal / IpcOnly) and
    =status=/=daemon stop= are the operator verbs over the wire.
-   =ui= (ADR 0015): the GUI lifecycle — D4 bare-invocation routing
-   (=mode = "desktop"= boots the Slint GUI regardless of TTY;
+   =ui= (ADR 0015, ADR 0016): the GUI lifecycle — D4 bare-invocation
+   routing (=mode = "desktop"= boots the Slint GUI regardless of TTY;
    =AppMode= is frontend selection, so only =Daemon=+TTY falls to
    the REPL; a non-TTY =Daemon= launch inside a graphical session
    (display env present — ADR 0015 amendment) boots the GUI instead
-   of a silent headless daemon; otherwise the daemon lifecycle), the
+   of a silent headless daemon; bare =kiosk= boots the appliance
+   (display-gated with a loud headless fallback, TTY-independent —
+   ADR 0016); otherwise the daemon lifecycle), the
    UI-command
    forwarder (=spawn_ui_command_forwarder= over the =CommandSink=
    trait), and =resolve_ui_settings= (the figment =[ui]= table into

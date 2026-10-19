@@ -10,6 +10,12 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- `mode = "kiosk"` boots the kiosk appliance (ADR 0016): the daemon
+  core plus the display-gated fullscreen window — TTY-independent
+  bare routing, a loud headless fallback that keeps serving over
+  IPC, window-close/signal/`daemon stop` all converging on one
+  graceful shutdown; the explicit `daemon` verb stays headless under
+  any mode (#237).
 - Kiosk window profile flag: `UiSettings.kiosk` (default `false`)
   makes the UI mount apply fullscreen to the shared desktop window
   when set (on the winit backend fullscreen also suppresses
