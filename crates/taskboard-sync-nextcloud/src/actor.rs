@@ -276,6 +276,23 @@ async fn run(
     }
 }
 
+/// The cycle's pull target: the sticky target kept only while some
+/// persisted board (tombstoned included — R9c) still holds it, else the
+/// first persisted binding in board-id order, else `None` (the pure
+/// core of the D3-2 guard; the eviction side-effect lives in `cycle`).
+fn resolve_target(
+    sticky: Option<RemoteBoardId>,
+    boards: &std::collections::BTreeMap<taskboard_domain::BoardId, taskboard_domain::Board>,
+) -> Option<RemoteBoardId> {
+    match sticky {
+        Some(held) if boards.values().any(|b| b.remote == Some(held)) => Some(held),
+        _ => boards
+            .values()
+            .find(|b| b.remote.is_some())
+            .and_then(|b| b.remote),
+    }
+}
+
 /// The next wake-up: `poll_interval` after success, the failure backoff
 /// after a failure streak.
 fn reschedule(st: &LoopState, cfg: &SyncActorConfig) -> tokio::time::Instant {
@@ -325,18 +342,23 @@ async fn cycle(
         }
     };
 
-    // The pull target: the commanded one, else the persisted board binding
-    // (a restarted actor resumes its target from `read_state` — decision
-    // 13's durability consequence; a fresh install with no binding keeps
-    // the decision 10 `NoBoard` reporting).
-    let target = st.target.or_else(|| {
-        persisted
-            .boards
-            .values()
-            .find(|b| b.remote.is_some())
-            .and_then(|b| b.remote)
-    });
-    let Some(target) = target else {
+    // The pull target: the sticky one when a persisted board still holds
+    // it, else the persisted board binding (decision 13's durability
+    // consequence; a fresh install with no binding keeps the decision 10
+    // `NoBoard` reporting). The liveness guard (chunk 3, D3-2): a sticky
+    // target no persisted binding holds is evicted — tombstoned boards
+    // count as holding (R9c: the delete's binding survives until the
+    // tombstone push finalizes, which is exactly its drain path) — and
+    // the single-board pull cache clears with it. Chunk 4 replaces both
+    // with the derived per-board set and per-board cache keys.
+    let sticky = st.target.take();
+    let resolved = resolve_target(sticky, &persisted.boards);
+    if sticky.is_some() && resolved != sticky {
+        tracing::debug!(evicted = ?sticky, "stale sync target evicted: no persisted binding holds it");
+        st.cache.clear();
+    }
+    st.target = resolved;
+    let Some(target) = resolved else {
         if commanded {
             tracing::debug!("cycle skipped: no board bound");
             send_report(
@@ -351,7 +373,6 @@ async fn cycle(
         }
         return;
     };
-    st.target = Some(target);
     tracing::info!(board = target.get(), "sync cycle started");
     let tables = EntityTables {
         tasks: &persisted.tasks,
@@ -812,5 +833,78 @@ fn to_sync(validators: &Validators) -> SyncValidators {
     SyncValidators {
         etag: validators.etag.clone(),
         last_modified: validators.last_modified.clone(),
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn board(id: u128, remote: Option<u64>, deleted: bool) -> taskboard_domain::Board {
+        taskboard_domain::Board {
+            id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(id)),
+            remote: remote.map(RemoteBoardId),
+            title: "board".into(),
+            color: taskboard_domain::entities::Color::new("0000ff"),
+            archived: false,
+            deleted,
+            clocks: taskboard_domain::entities::BoardClocks {
+                title: taskboard_domain::entities::BoardClocks::epoch(),
+                color: taskboard_domain::entities::BoardClocks::epoch(),
+                archived: taskboard_domain::entities::BoardClocks::epoch(),
+                deleted: taskboard_domain::entities::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn boards(
+        rows: &[taskboard_domain::Board],
+    ) -> BTreeMap<taskboard_domain::BoardId, taskboard_domain::Board> {
+        rows.iter().map(|b| (b.id, b.clone())).collect()
+    }
+
+    #[test]
+    fn stale_target_evicted_when_no_binding_remains() {
+        // The unbind shape: the sticky target's binding is gone and no
+        // other board holds one — the guard evicts (the cycle clears the
+        // cache and reports/skips instead of resurrecting the board).
+        let empty = boards(&[]);
+        assert_eq!(resolve_target(Some(RemoteBoardId(1)), &empty), None);
+    }
+
+    #[test]
+    fn tombstoned_board_keeps_the_target() {
+        // R9c drain: a deleting board's binding survives until its
+        // tombstone push finalizes — the guard treats it as live so the
+        // delete drains through the owning target.
+        let draining = boards(&[board(1, Some(7), true)]);
+        assert_eq!(
+            resolve_target(Some(RemoteBoardId(7)), &draining),
+            Some(RemoteBoardId(7))
+        );
+    }
+
+    #[test]
+    fn finalized_tombstone_evicts_target_next_cycle() {
+        // After the finalize (binding cleared), the sticky target no
+        // longer resolves: evicted, falling back to another binding.
+        let finalized = boards(&[board(1, None, true), board(2, Some(9), false)]);
+        assert_eq!(
+            resolve_target(Some(RemoteBoardId(7)), &finalized),
+            Some(RemoteBoardId(9)),
+            "fallback picks the persisted binding in board-id order"
+        );
+        let alone = boards(&[board(1, None, true)]);
+        assert_eq!(resolve_target(Some(RemoteBoardId(7)), &alone), None);
+    }
+
+    #[test]
+    fn fresh_actor_resumes_target_from_persisted_binding() {
+        // Decision 13: a restarted actor with no sticky target still
+        // targets the persisted binding.
+        let persisted = boards(&[board(1, Some(3), false)]);
+        assert_eq!(resolve_target(None, &persisted), Some(RemoteBoardId(3)));
     }
 }

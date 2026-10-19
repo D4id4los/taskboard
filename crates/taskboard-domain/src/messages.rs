@@ -216,6 +216,25 @@ pub enum StateCommand {
         /// The task whose rules are removed.
         task: TaskId,
     },
+    /// Detach the named board's remote binding: the board row, its
+    /// content, and its queued ops survive (the ops strand honestly and
+    /// drain on a re-bind); only the binding and the board's sync-status
+    /// row go. Tombstoned boards refuse (the R9c tombstone push needs
+    /// the binding until it finalizes); an already-unbound board is an
+    /// accepted no-op.
+    UnbindBoard {
+        /// The board to unbind.
+        board: BoardId,
+    },
+    /// Deterministically merge same-title duplicate entities the bind
+    /// ceremony's pull adopted alongside pre-existing local-only rows
+    /// (survivor keeps the local id and gains the remote ref; the
+    /// duplicate row is neutralized as a ref-less tombstone). Idempotent:
+    /// a second pass over settled state is an accepted no-op.
+    ReconcileByTitle {
+        /// The board whose entities reconcile.
+        board: BoardId,
+    },
     /// User-visible refresh request; the engine forwards it to the sync
     /// actor.
     RequestSync,

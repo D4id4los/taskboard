@@ -541,3 +541,45 @@ async fn per_board_validators_roundtrip() {
     let loaded = repo.load().await.expect("load");
     assert_eq!(loaded.validators.get(&key), Some(&validators));
 }
+
+/// `DeleteSyncStatus` drops exactly the named board's row; the other
+/// board's stored phase/last-success survives (the unbind cleanup).
+#[tokio::test]
+async fn delete_sync_status_roundtrip() {
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    let first = board(71);
+    let second = board(72);
+    let status = |phase: SyncPhase| taskboard_domain::SyncStatus {
+        phase,
+        last_success: Some(ts(400)),
+        pending_ops: 0, // derived, never stored
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(first.clone()),
+        PersistenceAction::UpsertBoard(second.clone()),
+        PersistenceAction::UpsertSyncStatus(first.id, status(SyncPhase::Syncing)),
+        PersistenceAction::UpsertSyncStatus(second.id, status(SyncPhase::Idle)),
+    ])
+    .await
+    .expect("seed boards and status rows");
+
+    repo.apply(vec![PersistenceAction::DeleteSyncStatus(first.id)])
+        .await
+        .expect("delete one row");
+    let loaded = repo.load().await.expect("load");
+    // The projection re-derives a default row for every board row; the
+    // *stored* part (phase, last success) is what the delete dropped.
+    let deleted_view = loaded.sync.get(first.id).expect("derived row present");
+    assert_eq!(deleted_view.phase, SyncPhase::Idle);
+    assert_eq!(deleted_view.last_success, None);
+    let survivor = loaded.sync.get(second.id).expect("the other board's row");
+    assert_eq!(survivor.phase, SyncPhase::Idle);
+    assert_eq!(survivor.last_success, Some(ts(400)));
+
+    // Absent row = no-op (idempotent repeat).
+    repo.apply(vec![PersistenceAction::DeleteSyncStatus(first.id)])
+        .await
+        .expect("repeat delete is a no-op");
+}

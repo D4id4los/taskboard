@@ -38,6 +38,7 @@ pub mod outbox;
 pub mod persistence;
 pub mod pipeline;
 pub mod push;
+pub mod reconcile;
 pub mod reminders;
 pub mod remote;
 pub mod state;
@@ -51,7 +52,9 @@ pub mod test_support;
 pub(crate) mod merge_testutil;
 
 pub use clock::{Clock, SystemClock};
-pub use command::{CommandError, CommandOutcome, CommandPlan, plan_command};
+pub use command::{
+    CommandError, CommandOutcome, CommandPlan, bind_wipe_count, bind_wipe_forecast, plan_command,
+};
 pub use entities::{
     Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
 };
@@ -78,6 +81,7 @@ pub use pipeline::{apply_push_report, apply_sync_report};
 pub use push::{
     CardShape, EntityTables, MaterializedOp, NewCardShape, PushGroup, PushTarget, plan_pushes,
 };
+pub use reconcile::{ReconcileCounts, normalized_title, plan_reconcile};
 pub use reminders::{
     InvalidReminderOffset, Notification, ReminderDefaults, ReminderDelivery, ReminderFiring,
     ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState,

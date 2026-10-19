@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM sync_status WHERE board = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "c3b7c199ca2de56bffadb2066a00114df546d89e0f9df44ddd33e5e5d55a5b88"
+}
