@@ -480,7 +480,12 @@ async fn run_loop(
                     // self-declared "idle" would be a guess.
                     forward_sync_now(&mut sync_outs);
                 }
-                Ok(SystemEvent::NetworkLost | SystemEvent::NetworkRestored) => {
+                Ok(
+                    SystemEvent::NetworkLost
+                        | SystemEvent::NetworkRestored
+                        | SystemEvent::ConnectorLost(_)
+                        | SystemEvent::ConnectorRestored(_),
+                ) => {
                     tracing::debug!("network event ignored: engine draining");
                 }
                 // The engine never acts on its own StorageFailed: it is

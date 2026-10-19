@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::entities::{Board, Label, Stack, Task};
-use crate::ids::{BoardId, LabelId, StackId, TaskId};
+use crate::ids::{BoardId, ConnectorId, LabelId, StackId, TaskId};
 use crate::outbox::{LocalOp, PendingOp};
 
 /// The complete, immutable UI-facing application state.
@@ -268,6 +268,23 @@ impl AppState {
         self.boards
             .values()
             .filter(|b| b.remote.is_some())
+            .map(|b| b.id)
+            .collect()
+    }
+
+    /// Boards bound to one specific connector — live and tombstoned
+    /// alike, in deterministic board-id order (the per-connector
+    /// analogue of [`Self::bound_boards`]; the engine's scoped
+    /// offline write derives its target set from this).
+    #[must_use]
+    pub fn bound_boards_of(&self, connector: &ConnectorId) -> Vec<BoardId> {
+        self.boards
+            .values()
+            .filter(|b| {
+                b.remote
+                    .as_ref()
+                    .is_some_and(|binding| &binding.connector == connector)
+            })
             .map(|b| b.id)
             .collect()
     }
@@ -681,6 +698,56 @@ mod sync_states_tests {
         state.boards.insert(unbound.id, unbound);
         state.boards.insert(bound.id, bound);
         assert_eq!(state.bound_boards(), vec![board_id(2), board_id(5)]);
+    }
+
+    #[test]
+    fn bound_boards_of_filters_by_connector_tag() {
+        let mut state = AppState::default();
+        let make_board = |id: u64, connector: Option<crate::ids::ConnectorId>| {
+            let remote = connector.map(|connector| crate::ids::RemoteBoardBinding {
+                connector,
+                board: crate::ids::RemoteBoardId(id * 10),
+            });
+            let mut board = crate::entities::Board {
+                id: board_id(id.into()),
+                remote,
+                title: "b".into(),
+                color: Color::new("0000ff"),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: ts(100),
+                    color: ts(100),
+                    archived: ts(100),
+                    deleted: ts(100),
+                },
+                remote_seen: None,
+            };
+            if id == 6 {
+                board.deleted = true; // a tombstone stays in the scoped set
+            }
+            board
+        };
+        state.boards.insert(
+            board_id(2),
+            make_board(2, Some(crate::test_support::test_connector())),
+        );
+        state
+            .boards
+            .insert(board_id(5), make_board(5, Some(ConnectorId::from("beta"))));
+        state.boards.insert(
+            board_id(6),
+            make_board(6, Some(crate::test_support::test_connector())),
+        );
+        state.boards.insert(board_id(7), make_board(7, None));
+
+        let work = crate::test_support::test_connector();
+        assert_eq!(state.bound_boards_of(&work), vec![board_id(2), board_id(6)]);
+        assert_eq!(
+            state.bound_boards_of(&ConnectorId::from("beta")),
+            vec![board_id(5)]
+        );
+        assert_eq!(state.bound_boards_of(&ConnectorId::from("gamma")), []);
     }
 }
 
