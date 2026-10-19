@@ -77,7 +77,8 @@ on-device experience.
 
 ### 2.2 In — proposed additions (the §4 rulings apply these)
 
-- **New issue: kiosk ambient view + display-mode rotation** — the
+- **New issue: kiosk ambient view + display-mode rotation**
+  (**#363**, created 2026-10-19) — the
   future-directions §3.7 row ("kiosk kanban ⇄ upcoming-list
   switching: a display-mode state machine + rotation policy", S–M)
   plus the multi-board design's deferred "config-pinned fixed-board
@@ -152,7 +153,30 @@ features (winit + femtovg with software fallback) —
 `renderer-software`/`backend-fb` are not compiled in (ADR 0015
 deferral; the spike decides).
 
-## 4. Wave-level decision record (user session — PROPOSED, one recommendation each)
+**Post-acceptance bring-up finding (2026-10-19, spike phase B
+under way)**: the D250-0Dk's CPU does **not** implement x86_64 —
+#233's i686 fallback is the wall-display unit's reality (Debian
+12.12 i386 installed, kernel 6.1.0-39-686-pae; networking/ssh
+bring-up under way; finding recorded on the issue). The NF310's
+64-bit boot still needs on-device verification. Consequences: the
+D250 spike leg rides an **i686 cross-build** (toolchain/target
+prep added to the K9 runbook); the i686 release-target decision
+(release-matrix leg vs documented self-build) is taken at **spike
+exit** with measurement evidence; the budget envelope is
+unchanged.
+
+## 4. Wave-level decision record (user session 2026-10-19 — **ACCEPTED**)
+
+**All ten ruled 2026-10-19**: D-K1–D-K6, D-K9, D-K10 accepted as
+recommended; **D-K8 ruled option (a)** — the generated 0600 key
+file + AEAD envelope, with the passphrase/argon2 variant held as a
+possible additive port impl if a desktop need appears later
+("option (c)'s sequencing, starting from (a)"). Consequences
+applied: §9's bookkeeping is **applied** (the ambient-view issue is
+#363); K12's design gate is closed (dispatchable in phase A per
+its note); the D-K7 stack approval rides the K10 round as planned.
+The table below is the session's agenda, retained as the record of
+what each ruling answered.
 
 | ID | Question | Recommendation |
 |---|---|---|
@@ -222,7 +246,7 @@ are the implementation plan's §3; this table is the effort answer.
 | — | On-device bring-up spike (user-executed) | #233 | user days | B |
 | K11 | Dashboard implementation | #234 | M | C |
 | K12 | Encrypted-file credential store | #126, #159 | M | C |
-| K13 | Kiosk ambient view + display rotation | new (D-K2) | M | C |
+| K13 | Kiosk ambient view + display rotation | #363 | M | C |
 | K14 | Docs + wave exit verification | — | S | C |
 
 \* K8's dispatch window is sequencing-sensitive (parallelism report
@@ -289,28 +313,22 @@ calendar)**, of which the design-complete, dispatch-today subset
 - **Scope creep**: Option B, brightness/fleet management, and the
   matrix/organiser views keep knocking; §2.3 is the fence.
 
-## 9. Tracker bookkeeping (PROPOSED — applies at the §4 ruling, not before)
+## 9. Tracker bookkeeping (APPLIED 2026-10-19, per the §4 ruling)
 
-- **Create + assign**: `backlog: Kiosk ambient view + display-mode
-  rotation (board-pinned per D-V3; kanban ⇄ today/upcoming)` —
-  labels `ui` + `performance`, body cites future-directions §3.7
-  :173, the multi-board detailed design's config-pinned-fixed-board
-  deferral, and D-V3's "the kiosk surface is the kiosk wave's to
-  own"; permalink to this plan.
-- **Assign to `wave-kiosk`**: #159, #145 (scope note on #145: the
-  handle-side counter shape per D-K6).
+- **Created + assigned**: **#363** — kiosk ambient view +
+  display-mode rotation (labels `ui` + `performance`, milestone
+  `wave-kiosk`); body cites future-directions §3.7 :173, the
+  multi-board detailed design's config-pinned-fixed-board
+  deferral, D-V3, and permalinks to this plan + chunk K13.
+- **Assigned to `wave-kiosk`**: #159, #145 (scope comment on #145:
+  the D-K6 handle-side counter shape).
 - **Scope comment on #126**: remainder = #159's scope; both close
-  together in chunk K12.
-- **Close as completed**: #123 (pointer to WI-5/ADR 0012; follow-ups
-  #193/#194/#195/#196 stay open, unscheduled).
-- **Milestone description** for `wave-kiosk` (currently empty):
-  one-liner mirroring `wave-daily-driver`'s style — "Option-A kiosk
-  appliance (gui verb, appliance lifecycle, window profile,
-  packaging), audit perf instrumentation (RSS, repaint, cold start,
-  sync CPU), kiosk deployment profile + on-device bring-up spike,
-  sync/engine metrics, tablet-path web dashboard, encrypted-file
-  credential store, and the passive ambient view with display
-  rotation."
+  together in chunk K12 (ruled D-K8 option (a)).
+- **Closed as completed**: **#123** (pointer to WI-5/ADR 0012;
+  follow-ups #193/#194/#195/#196 stay open, unscheduled).
+- **Milestone description** set on `wave-kiosk`.
+- **Bring-up annotation on #233**: the D250 i686 finding + its
+  consequences (§3's post-acceptance note).
 - No other tracker edits; no issues closed beyond #123; nothing
   unassigned from the milestone.
 

@@ -23,10 +23,14 @@
   rulings that add/assign their issues; they do **not** wait for the
   multi-board round (verified disjointness: framing §3, parallelism
   report). Phase C (K11–K13) **GATED**: K11 on the K10 design
-  round's acceptance (+ stack approval), K12 on the D-K8 key-
-  management ruling, K13 on **daily-driver chunk 10** (`feat/
+  round's acceptance (+ stack approval), K13 on **daily-driver
+  chunk 10** (`feat/
   ui-today-inbox` — `ViewId::Today` + the rotation-ready today view;
-  a dependency and a file-set collision both). K14 last. The on-
+  a dependency and a file-set collision both). **K12's D-K8 gate is
+  closed by the 2026-10-19 ruling (option (a) — generated 0600 key
+  file + AEAD envelope): dispatchable in phase A** (per the D-K1
+  note; the default sequencing below keeps it with phase C). K14
+  last. The on-
   device spike (phase B) is user-executed and gates the milestone's
   closure, not the code chunks.
 
@@ -403,8 +407,12 @@ actions in §6.
   install path); `contrib/` or `docs/` bring-up runbook (image
   checklist: no desktop environment, `SLINT_BACKEND`/software-
   renderer selection, SSD/USB boot note for the spinning disks,
-  harness invocation on-device, the four budget verdicts to record);
-  CHANGELOG.
+  harness invocation on-device, the four budget verdicts to record,
+  and **the i686 cross-build lane for the D250** — target +
+  toolchain setup for the wall-display unit whose CPU has no
+  x86_64 (bring-up finding 2026-10-19, recorded on #233; the
+  NF310's 64-bit boot is verified on-device; the i686
+  release-target decision itself rides spike exit); CHANGELOG.
 - **Behaviours**: a pinned board resolves or the boot fails typed;
   the unit never launches via env-var mode (ADR 0015's #236 rule);
   the runbook names the spike's measurement plan (audit axis J).
@@ -447,10 +455,12 @@ actions in §6.
 - **Non-goals**: no write surface, no WebSocket/SSE (polling),
   no auth beyond the ruling.
 
-### K12 — encrypted-file credential store (M; branch `feat/app-file-credential-store`; #126 + #159; GATED on D-K8)
+### K12 — encrypted-file credential store (M; branch `feat/app-file-credential-store`; #126 + #159)
 
-- **Origin**: KDF-9; D-K8's default (generated 0600 key file;
-  passphrase variant only with argon2 + stack approval).
+- **Origin**: KDF-9; D-K8 **ruled option (a)** 2026-10-19 — the
+  generated 0600 key file + AEAD envelope. The passphrase/argon2
+  variant is **out of scope** unless a desktop need appears later
+  (then as an additive port impl with stack approval).
 - **Files**: app `secrets.rs` (the third `CredentialStore` impl;
   AEAD envelope or age-style format per stage-1's
   new-dependency audit — any new crate needs stack approval);
@@ -530,10 +540,13 @@ before DD chunk 3 dispatches — the gap exists by DD's own MD-1
 gate); never concurrent with either. `K9` after K3 and after the
 multi-board config chunk (`feat/app-connector-registry`) merges
 (same `config.rs`, rebase-scale otherwise). `K10` anytime (docs-
-only; earliest is best — it gates K11). **Phase B** (user): the
-spike after phase A, per the K9 runbook. **Phase C**: `K11` after
-K10's acceptance (+ K8 merged — content); `K12` after D-K8 (any
-time otherwise — `secrets.rs` is untouched by the other rounds);
+only; earliest is best — it gates K11); `K12`'s design gate is
+**ruled closed** (D-K8 option (a)) — dispatchable in phase A if
+desired (`secrets.rs` is untouched by the other rounds). **Phase B**
+(user): the spike after phase A, per the K9 runbook — the D250 leg
+rides the i686 cross-build lane, the NF310 leg the first-class
+x86_64 binary. **Phase C**: `K11` after
+K10's acceptance (+ K8 merged — content);
 `K13` **strictly after daily-driver chunk 10** (dependency +
 file-set collision); `K14` last, serialised with the other waves'
 exit chunks. Parallel groups never share worktrees; per-host
@@ -582,7 +595,7 @@ progress comment per mapped issue per chunk. Per-chunk map:
 | K10 | annotates #234 (design landed, awaiting ruling) |
 | K11 | **closes #234** |
 | K12 | **closes #159**; **closes #126** (remainder complete) |
-| K13 | **closes** the D-K2 ambient-view issue |
+| K13 | **closes #363** (the D-K2 ambient-view issue) |
 | K14 | the spike-evidence exit report; #233 **closes on the recorded on-device verdicts** (the user's spike report is the evidence); milestone closure review; the Q6 input recorded |
 
 The wave creates, labels, or closes nothing beyond this map plus
