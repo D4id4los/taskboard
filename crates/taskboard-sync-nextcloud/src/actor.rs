@@ -459,6 +459,7 @@ async fn cycle(
                         // fires once and the cycle ends (D-12).
                         pushes.extend(landed);
                         fail_cycle(
+                            id,
                             st,
                             reports,
                             system,
@@ -495,6 +496,7 @@ async fn cycle(
                 let kind = classify_read(&err);
                 let network = matches!(kind, SyncErrorKind::Network);
                 fail_cycle(
+                    id,
                     st,
                     reports,
                     system,
@@ -537,8 +539,11 @@ async fn cycle(
         // the report (the engine nudge lands on this actor's absorber).
         st.failure_streak = 0;
         if was_offline {
-            let _ = system.send(SystemEvent::NetworkRestored);
-            tracing::info!("network restored");
+            // Report-then-restore: the Completed reports landed inside the
+            // board loop above; the per-connector restore edge fires once,
+            // in the cycle's closing block.
+            let _ = system.send(SystemEvent::ConnectorRestored(id.clone()));
+            tracing::info!(connector = %id, "connector restored");
         }
         st.offline = false;
     }
@@ -558,9 +563,12 @@ fn advertised_floor(err: &DeckError) -> Duration {
     }
 }
 
-/// Transport-classified failures broadcast `NetworkLost` exactly once per
-/// offline episode and advance the backoff; other kinds only back off.
+/// Transport-classified failures broadcast `ConnectorLost` for this
+/// actor's own connector exactly once per offline episode and advance
+/// the backoff; other kinds only back off.
+#[allow(clippy::too_many_arguments)] // the cycle context is the argument list
 async fn fail_cycle(
+    id: &taskboard_domain::ConnectorId,
     st: &mut LoopState,
     reports: &mpsc::Sender<SyncReport>,
     system: &broadcast::Sender<SystemEvent>,
@@ -570,9 +578,9 @@ async fn fail_cycle(
     read_at: chrono::DateTime<chrono::Utc>,
 ) {
     if matches!(kind, SyncErrorKind::Network) && !st.offline {
-        let _ = system.send(SystemEvent::NetworkLost);
+        let _ = system.send(SystemEvent::ConnectorLost(id.clone()));
         st.offline = true;
-        tracing::warn!("network lost");
+        tracing::warn!(connector = %id, "connector lost");
     }
     st.failure_streak = st.failure_streak.saturating_add(1);
     // Freshest hint wins: a stale advertisement never outlives the next
