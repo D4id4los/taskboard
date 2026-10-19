@@ -173,8 +173,20 @@ pub enum SyncBackend {
 pub struct SyncSection {
     /// Which connector drives sync; `None` = auto — `nextcloud` iff
     /// `nextcloud.server_url` is present, else `standalone` (ADR 0010).
+    /// The scalar is the legacy single-connector world: an array
+    /// present alongside it is the typed [`ConfigError::
+    /// ConnectorShapeMixed`] rejection (the two representations never
+    /// mix; validation is loud because figment decodes the mix
+    /// silently).
     #[serde(default)]
     pub backend: Option<SyncBackend>,
+    /// The `[[sync.connectors]]` plural world. The `Option` is
+    /// load-bearing: `None` (array absent) vs `Some(_)` (array present,
+    /// including `Some(vec![])`) is the presence fact the resolution
+    /// rule and every shape rejection key on. Env cannot set the array
+    /// (figment limitation), so the decoded shape is the file's shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<Vec<ConnectorCfg>>,
     /// Idle wait between cycles after a success.
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
@@ -190,11 +202,32 @@ impl Default for SyncSection {
     fn default() -> Self {
         Self {
             backend: None,
+            connectors: None,
             poll_interval_secs: default_poll_interval(),
             backoff_initial_secs: default_backoff_initial(),
             backoff_max_secs: default_backoff_max(),
         }
     }
+}
+
+/// One `[[sync.connectors]]` entry: a named connector with its own
+/// identity. Every field is required — a missing field is a decode
+/// failure (structure), not a semantic check. The entry's semantic
+/// loudness (kebab + unique name, usable URL, non-empty username, a
+/// real backend) lives in [`AppConfig::validate`]'s typed rejections.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectorCfg {
+    /// Kebab-case, unique — the `ConnectorId` mint (DF-3's chain head).
+    pub name: String,
+    /// The connector kind (the module selector). A `standalone` *entry*
+    /// is a config error: the array lists connectors; `standalone` is
+    /// the absence of one.
+    pub backend: SyncBackend,
+    /// The connector's Nextcloud root URL.
+    pub server_url: String,
+    /// The connector's login name.
+    pub username: String,
 }
 
 fn default_poll_interval() -> u64 {
@@ -424,6 +457,46 @@ pub enum ConfigError {
         /// The dotted config key that is invalid.
         field: &'static str,
     },
+    /// The scalar sync representation (`sync.backend`) and the array
+    /// representation (`sync.connectors`) are both present — any mix of
+    /// the two shapes is rejected (figment decodes the mix silently,
+    /// including via `TASKBOARD_SYNC__BACKEND`; loudness lives here).
+    #[error("sync.backend and sync.connectors are mutually exclusive shapes")]
+    ConnectorShapeMixed,
+    /// The `[nextcloud]` table carries identity keys
+    /// (`server_url`/`username`) while `sync.connectors` is present —
+    /// the array owns those keys. `credential_store` alone stays valid
+    /// (process-global, not per-connector identity).
+    #[error("nextcloud identity keys and sync.connectors are mutually exclusive shapes")]
+    NextcloudTableWithConnectors,
+    /// Two `[[sync.connectors]]` entries share a name; the payload
+    /// names the offender.
+    #[error("duplicate connector name")]
+    DuplicateConnectorName {
+        /// The duplicated connector name.
+        name: String,
+    },
+    /// A `[[sync.connectors]]` entry's name is not kebab-case
+    /// (`[a-z0-9-]`, no leading/trailing `-`, no `--`); the payload
+    /// names the offender.
+    #[error("connector name invalid")]
+    InvalidConnectorName {
+        /// The offending connector name.
+        name: String,
+    },
+    /// A `[[sync.connectors]]` entry carries an unusable field value;
+    /// the payload names which entry and which field (the per-entry
+    /// analogue of `InvalidServerUrl`/`EmptyUsername` — without it a
+    /// garbage entry URL surfaces only at boot, losing which entry
+    /// offended).
+    #[error("connector entry invalid")]
+    InvalidConnectorEntry {
+        /// The offending entry's name.
+        name: String,
+        /// The offending field within the entry (`server_url`,
+        /// `username`, or `backend`).
+        field: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -442,6 +515,11 @@ impl ConfigError {
             Self::InvalidDuration { .. } => "invalid-duration",
             Self::EmptyDbPath => "empty-db-path",
             Self::InvalidScale { .. } => "invalid-scale",
+            Self::ConnectorShapeMixed => "connector-shape-mixed",
+            Self::NextcloudTableWithConnectors => "nextcloud-table-with-connectors",
+            Self::DuplicateConnectorName { .. } => "duplicate-connector-name",
+            Self::InvalidConnectorName { .. } => "invalid-connector-name",
+            Self::InvalidConnectorEntry { .. } => "invalid-connector-entry",
         }
     }
 }
@@ -539,6 +617,20 @@ impl AppConfig {
         })
     }
 
+    /// The backend word a surface displays for the *default* connector
+    /// (D5-9): under the array world it is the first entry's kind; the
+    /// legacy scalar world resolves through [`Self::sync_backend`].
+    /// Legacy files produce byte-identical output.
+    #[must_use]
+    pub fn resolved_default_backend(&self) -> SyncBackend {
+        match &self.sync.connectors {
+            Some(entries) => entries
+                .first()
+                .map_or(SyncBackend::Standalone, |entry| entry.backend),
+            None => self.sync_backend(),
+        }
+    }
+
     /// Structural validation of the decoded values. `load` runs this
     /// last; hand-built configs (tests, embedders) can call it directly.
     ///
@@ -546,7 +638,53 @@ impl AppConfig {
     ///
     /// The first failing check, as a typed variant.
     #[allow(clippy::result_large_err)] // the figment source, once at boot
+    #[allow(clippy::too_many_lines)] // one flat rejection ladder, in order
     pub fn validate(&self) -> Result<(), ConfigError> {
+        // The shape rejections come first: with an array present *and*
+        // garbage legacy `[nextcloud]` keys, the shape error must fire,
+        // not `InvalidServerUrl` — the mix is the primary offense.
+        if self.sync.backend.is_some() && self.sync.connectors.is_some() {
+            return Err(ConfigError::ConnectorShapeMixed);
+        }
+        let nextcloud_identity_present =
+            self.nextcloud.server_url.is_some() || self.nextcloud.username.is_some();
+        if nextcloud_identity_present && self.sync.connectors.is_some() {
+            return Err(ConfigError::NextcloudTableWithConnectors);
+        }
+        if let Some(entries) = &self.sync.connectors {
+            let mut seen: Vec<&str> = Vec::with_capacity(entries.len());
+            for entry in entries {
+                if !is_kebab_name(&entry.name) {
+                    return Err(ConfigError::InvalidConnectorName {
+                        name: entry.name.clone(),
+                    });
+                }
+                if seen.contains(&entry.name.as_str()) {
+                    return Err(ConfigError::DuplicateConnectorName {
+                        name: entry.name.clone(),
+                    });
+                }
+                seen.push(&entry.name);
+                if entry.backend == SyncBackend::Standalone {
+                    return Err(ConfigError::InvalidConnectorEntry {
+                        name: entry.name.clone(),
+                        field: "backend",
+                    });
+                }
+                if !reqwest_host_ok(&entry.server_url) {
+                    return Err(ConfigError::InvalidConnectorEntry {
+                        name: entry.name.clone(),
+                        field: "server_url",
+                    });
+                }
+                if entry.username.trim().is_empty() {
+                    return Err(ConfigError::InvalidConnectorEntry {
+                        name: entry.name.clone(),
+                        field: "username",
+                    });
+                }
+            }
+        }
         // Same normalization rules as `DeckClient::new`: a *present* URL
         // must survive client construction (typo guard, both backends).
         if let Some(raw) = self.nextcloud.server_url.as_deref()
@@ -697,6 +835,21 @@ impl AppConfig {
             .as_deref()
             .expect("username validated")
     }
+}
+
+/// The connector-name predicate (DF-3's config-half filter): non-empty,
+/// every char in `[a-z0-9-]`, no leading or trailing `-`, no `--`. This
+/// is `validate`'s input filter for the `ConnectorId` mint; the domain
+/// newtype itself stays unfiltered (config validates, domain trusts).
+#[must_use]
+pub(crate) fn is_kebab_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && !name.contains("--")
 }
 
 /// F12-03 (#261): pure cleartext classifier — true iff the scheme is
@@ -1113,6 +1266,293 @@ mod tests {
             cwd_default,
             "no platform config dir: today's CWD fallback (row 6)"
         );
+    }
+
+    // ---- the [[sync.connectors]] plural world (chunk 5) --------------
+
+    fn two_entry_toml() -> &'static str {
+        "[[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+         server_url = \"https://nc.work.example\"\nusername = \"viktor\"\n\
+         [[sync.connectors]]\nname = \"personal\"\nbackend = \"nextcloud\"\n\
+         server_url = \"https://nc.home.example\"\nusername = \"vp\"\n"
+    }
+
+    /// Decodes a TOML literal through the same provider chain shape as
+    /// `extract_raw` (defaults → toml), without touching the filesystem.
+    #[allow(clippy::result_large_err)] // mirrors the production decoder
+    fn decode(toml: &str) -> Result<AppConfig, ConfigError> {
+        Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string(toml))
+            .extract::<AppConfig>()
+            .map_err(ConfigError::Decode)
+    }
+
+    #[test]
+    fn connector_array_decodes_in_file_order_first_is_default() {
+        let config = decode(two_entry_toml()).expect("decodes");
+        let entries = config.sync.connectors.as_deref().expect("array present");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "work");
+        assert_eq!(entries[1].name, "personal");
+        assert_eq!(config.resolved_default_backend(), SyncBackend::Nextcloud);
+        // The whole array config validates (db path is defaulted by the
+        // Serialized defaults' absence — fill it explicitly).
+        let mut config = config;
+        config.storage.db_path = Some(PathBuf::from("/tmp/taskboard.db"));
+        config.validate().expect("the array world validates");
+    }
+
+    #[test]
+    fn unknown_key_in_a_connector_entry_is_a_decode_error() {
+        let err = decode(
+            "[[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://nc.work.example\"\nusername = \"v\"\n\
+             pol_interval = 5\n",
+        )
+        .expect_err("typo guard");
+        assert!(matches!(err, ConfigError::Decode(_)));
+    }
+
+    #[test]
+    fn empty_connector_array_alone_is_valid() {
+        let config = decode("[sync]\nconnectors = []\n").expect("empty array decodes");
+        assert_eq!(
+            config.sync.connectors.as_deref(),
+            Some(&[][..]),
+            "Some(vec![]) — the array door to standalone"
+        );
+        let mut config = config;
+        config.storage.db_path = Some(PathBuf::from("/tmp/taskboard.db"));
+        config.validate().expect("zero connectors is a valid world");
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // the decode closure mirrors production
+    fn scalar_backend_with_an_array_is_the_typed_mix_rejection() {
+        for backend in ["nextcloud", "standalone"] {
+            let toml = format!("[sync]\nbackend = \"{backend}\"\n{}", two_entry_toml());
+            assert!(
+                matches!(
+                    decode(&toml).and_then(|c| {
+                        let mut c = c;
+                        c.storage.db_path = Some(PathBuf::from("/tmp/t.db"));
+                        c.validate()
+                    }),
+                    Err(ConfigError::ConnectorShapeMixed)
+                ),
+                "backend {backend} + array must mix-reject"
+            );
+        }
+    }
+
+    #[test]
+    fn backend_nextcloud_with_an_empty_array_is_the_mix_rejection() {
+        // Design rejection #6 (subsumed by #1's presence scope): the
+        // scalar names a connector the empty array does not provide.
+        let mut config = valid();
+        config.nextcloud = NextcloudSection::default();
+        config.sync.backend = Some(SyncBackend::Nextcloud);
+        config.sync.connectors = Some(Vec::new());
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ConnectorShapeMixed)
+        ));
+    }
+
+    #[test]
+    fn nextcloud_identity_keys_with_an_array_are_the_table_rejection() {
+        for toml in [
+            format!(
+                "[nextcloud]\nserver_url = \"https://x.example\"\n{}",
+                two_entry_toml()
+            ),
+            format!("[nextcloud]\nusername = \"alice\"\n{}", two_entry_toml()),
+        ] {
+            let mut config = decode(&toml).expect("decodes");
+            config.storage.db_path = Some(PathBuf::from("/tmp/t.db"));
+            assert!(matches!(
+                config.validate(),
+                Err(ConfigError::NextcloudTableWithConnectors)
+            ));
+        }
+    }
+
+    #[test]
+    fn nextcloud_credential_store_alone_with_an_array_is_valid() {
+        let toml = format!(
+            "[nextcloud]\ncredential_store = \"env\"\n{}",
+            two_entry_toml()
+        );
+        let mut config = decode(&toml).expect("decodes");
+        config.storage.db_path = Some(PathBuf::from("/tmp/t.db"));
+        config
+            .validate()
+            .expect("store-kind selection is process-global");
+    }
+
+    #[test]
+    fn duplicate_connector_names_are_rejected_with_the_offender() {
+        let toml = "[[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://nc.work.example\"\nusername = \"v\"\n\
+             [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://nc.other.example\"\nusername = \"w\"\n";
+        let mut config = decode(toml).expect("decodes");
+        config.storage.db_path = Some(PathBuf::from("/tmp/t.db"));
+        match config.validate() {
+            Err(ConfigError::DuplicateConnectorName { name }) => {
+                assert_eq!(name, "work", "the payload names the offender");
+            }
+            other => panic!("expected DuplicateConnectorName, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_kebab_connector_names_are_rejected_with_the_offender() {
+        for name in ["Work", "a_b", "-a", "a-", "a--b", "", "a b"] {
+            // Hand-built: the predicate is shape-agnostic, and a quoted
+            // TOML key round-trips every shape here anyway.
+            let mut config = valid();
+            config.nextcloud = NextcloudSection::default();
+            config.sync.connectors = Some(vec![ConnectorCfg {
+                name: name.to_owned(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://nc.work.example".into(),
+                username: "v".into(),
+            }]);
+            match config.validate() {
+                Err(ConfigError::InvalidConnectorName { name: offender }) => {
+                    assert_eq!(offender, name, "the payload names the offender");
+                }
+                other => panic!("expected InvalidConnectorName for {name:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn kebab_predicate_pins_both_lists() {
+        for name in ["work", "nc-2", "personal", "a0"] {
+            assert!(is_kebab_name(name), "{name} must pass");
+        }
+        for name in ["Work", "a_b", "-a", "a-", "a--b", "", "a b", "Ärger"] {
+            assert!(!is_kebab_name(name), "{name} must fail");
+        }
+    }
+
+    #[test]
+    fn invalid_entry_fields_are_typed_with_the_entry_and_field() {
+        let entry = |server_url: &str, username: &str, backend: SyncBackend| {
+            let mut config = valid();
+            config.nextcloud = NextcloudSection::default();
+            config.sync.connectors = Some(vec![ConnectorCfg {
+                name: "work".into(),
+                backend,
+                server_url: server_url.into(),
+                username: username.into(),
+            }]);
+            config
+        };
+        match entry("no-scheme.example", "v", SyncBackend::Nextcloud).validate() {
+            Err(ConfigError::InvalidConnectorEntry { name, field }) => {
+                assert_eq!((name.as_str(), field), ("work", "server_url"));
+            }
+            other => panic!("expected InvalidConnectorEntry(server_url), got {other:?}"),
+        }
+        match entry("https://nc.example", "  ", SyncBackend::Nextcloud).validate() {
+            Err(ConfigError::InvalidConnectorEntry { name, field }) => {
+                assert_eq!((name.as_str(), field), ("work", "username"));
+            }
+            other => panic!("expected InvalidConnectorEntry(username), got {other:?}"),
+        }
+        match entry("https://nc.example", "v", SyncBackend::Standalone).validate() {
+            Err(ConfigError::InvalidConnectorEntry { name, field }) => {
+                assert_eq!((name.as_str(), field), ("work", "backend"));
+            }
+            other => panic!("expected InvalidConnectorEntry(backend), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shape_rejections_fire_before_the_legacy_url_check() {
+        // Array + scalar + garbage legacy URL: the mix is the primary
+        // offense, not InvalidServerUrl.
+        let mut config = valid();
+        config.nextcloud.server_url = Some("garbage".into());
+        config.sync.backend = Some(SyncBackend::Nextcloud);
+        config.sync.connectors = Some(vec![ConnectorCfg {
+            name: "work".into(),
+            backend: SyncBackend::Nextcloud,
+            server_url: "https://nc.work.example".into(),
+            username: "v".into(),
+        }]);
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ConnectorShapeMixed)
+        ));
+
+        // Array + `[nextcloud]` garbage URL: the table rejection, not
+        // InvalidServerUrl.
+        let mut config = valid();
+        config.nextcloud.server_url = Some("garbage".into());
+        config.sync.connectors = Some(vec![ConnectorCfg {
+            name: "work".into(),
+            backend: SyncBackend::Nextcloud,
+            server_url: "https://nc.work.example".into(),
+            username: "v".into(),
+        }]);
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::NextcloudTableWithConnectors)
+        ));
+    }
+
+    /// Probe case 6's composition: a scalar from a *later provider* over
+    /// an array file is the same merge-order shape as the env override
+    /// (`TASKBOARD_SYNC__BACKEND` composes identically — env cannot set
+    /// the array, probe case 7), and it must decode-then-mix-reject:
+    /// the env scripting seam stays loud, not silently ignored.
+    #[test]
+    fn later_provider_scalar_over_an_array_file_mix_rejects() {
+        let toml = format!("[sync]\nbackend = \"standalone\"\n{}", two_entry_toml());
+        let config = decode(&toml).expect("figment decodes the mix silently");
+        assert!(config.sync.connectors.is_some() && config.sync.backend.is_some());
+        let mut config = config;
+        config.storage.db_path = Some(PathBuf::from("/tmp/t.db"));
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::ConnectorShapeMixed)
+        ));
+    }
+
+    #[test]
+    fn the_new_kinds_extend_the_stable_discriminants() {
+        for (err, kind) in [
+            (ConfigError::ConnectorShapeMixed, "connector-shape-mixed"),
+            (
+                ConfigError::NextcloudTableWithConnectors,
+                "nextcloud-table-with-connectors",
+            ),
+            (
+                ConfigError::DuplicateConnectorName {
+                    name: "work".into(),
+                },
+                "duplicate-connector-name",
+            ),
+            (
+                ConfigError::InvalidConnectorName {
+                    name: "work".into(),
+                },
+                "invalid-connector-name",
+            ),
+            (
+                ConfigError::InvalidConnectorEntry {
+                    name: "work".into(),
+                    field: "server_url",
+                },
+                "invalid-connector-entry",
+            ),
+        ] {
+            assert_eq!(err.kind(), kind);
+        }
     }
 
     #[test]

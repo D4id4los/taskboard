@@ -6,11 +6,13 @@
 //! dynamic loading, no plugin registry, no versioning — config names a
 //! module, the app constructs it.
 //!
-//! This chunk keeps the legacy scalar config world (design §3.6's
-//! synthesis-of-one subset): a resolved `nextcloud` backend synthesizes
-//! exactly one connector named `nextcloud`; a resolved `standalone`
-//! synthesizes none. The `[[sync.connectors]]` plural decode is chunk 5's;
-//! the loop over [`configured_connectors`] *is* the seam it needs.
+//! Resolution (D5-2): `sync.connectors = Some(entries)` means exactly the
+//! array, in file order, the first entry the default connector
+//! (`Some(vec![])` is the array door to standalone); the array absent
+//! means the legacy scalar world verbatim — a resolved `nextcloud`
+//! synthesizes one connector named `nextcloud` from the `[nextcloud]`
+//! table, a resolved `standalone` synthesizes none. The loop over
+//! [`configured_connectors`] is the N-actor seam.
 
 use std::sync::Arc;
 
@@ -139,27 +141,49 @@ impl ConnectorModule for NextcloudModule {
     }
 }
 
-/// One entry of the configured connector set (the synthesis-of-one
-/// subset; chunk 5 replaces the internals with `[[sync.connectors]]`
-/// decode, the shape stays).
+/// One entry of the configured connector set: the config-minted name,
+/// the module selector, and the identity the module builds its client
+/// from (per-connector — never the legacy single-connector accessors).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConnectorSpec {
     /// The config-minted connector name.
     pub name: ConnectorId,
     /// The connector kind (the module selector).
     pub backend: SyncBackend,
+    /// The connector's server URL.
+    pub server_url: String,
+    /// The connector's login name.
+    pub username: String,
 }
 
-/// The configured connector set from the legacy scalar world: resolved
-/// `nextcloud` synthesizes exactly one connector named `nextcloud`;
-/// resolved `standalone` synthesizes none. Config reading stays entirely
-/// legacy (`sync_backend()`'s auto rule, the `[nextcloud]` table) — no
-/// array decode exists in this chunk.
+/// The configured connector set — the single source of truth for "how
+/// many connectors exist" (D5-2):
+///
+/// - `sync.connectors = Some(entries)` ⇒ exactly the array, in file
+///   order; the first entry is the default connector. `Some(vec![])` is
+///   a valid zero-connector world (the array door to standalone).
+/// - `sync.connectors = None` ⇒ the legacy world verbatim:
+///   `sync_backend()`'s auto rule stands; a resolved `nextcloud`
+///   synthesizes exactly one connector named `nextcloud` with the
+///   `[nextcloud]` identity; a resolved `standalone` synthesizes none.
 pub(crate) fn configured_connectors(config: &AppConfig) -> Vec<ConnectorSpec> {
+    if let Some(entries) = &config.sync.connectors {
+        return entries
+            .iter()
+            .map(|entry| ConnectorSpec {
+                name: ConnectorId::from(entry.name.clone()),
+                backend: entry.backend,
+                server_url: entry.server_url.clone(),
+                username: entry.username.clone(),
+            })
+            .collect();
+    }
     match config.sync_backend() {
         SyncBackend::Nextcloud => vec![ConnectorSpec {
             name: ConnectorId::from(DEFAULT_CONNECTOR_NAME),
             backend: SyncBackend::Nextcloud,
+            server_url: config.server_url().to_owned(),
+            username: config.username().to_owned(),
         }],
         SyncBackend::Standalone => Vec::new(),
     }
@@ -168,6 +192,7 @@ pub(crate) fn configured_connectors(config: &AppConfig) -> Vec<ConnectorSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ConnectorCfg;
 
     fn config_with_backend(backend: SyncBackend) -> AppConfig {
         let mut config = AppConfig::default();
@@ -199,5 +224,48 @@ mod tests {
     fn resolved_standalone_synthesizes_none() {
         let specs = configured_connectors(&config_with_backend(SyncBackend::Standalone));
         assert_eq!(specs, Vec::new(), "standalone synthesizes no connector");
+    }
+
+    fn config_with_array(entries: &[(&str, &str, &str, &str)]) -> AppConfig {
+        let mut config = AppConfig::default();
+        config.sync.connectors = Some(
+            entries
+                .iter()
+                .map(|(name, backend, url, user)| ConnectorCfg {
+                    name: (*name).into(),
+                    backend: if *backend == "standalone" {
+                        SyncBackend::Standalone
+                    } else {
+                        SyncBackend::Nextcloud
+                    },
+                    server_url: (*url).into(),
+                    username: (*user).into(),
+                })
+                .collect(),
+        );
+        config
+    }
+
+    #[test]
+    fn array_world_specs_are_exactly_the_array_in_file_order() {
+        let config = config_with_array(&[
+            ("alpha", "nextcloud", "https://a.example", "ua"),
+            ("beta", "nextcloud", "https://b.example", "ub"),
+        ]);
+        let specs = configured_connectors(&config);
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].name.as_str(), "alpha", "first entry = default");
+        assert_eq!(specs[0].server_url, "https://a.example");
+        assert_eq!(specs[0].username, "ua");
+        assert_eq!(specs[1].name.as_str(), "beta");
+        assert_eq!(specs[1].server_url, "https://b.example");
+    }
+
+    #[test]
+    fn empty_array_world_resolves_zero_connectors() {
+        let mut config = config_with_array(&[]);
+        config.storage.db_path = Some(std::path::PathBuf::from("/tmp/t.db"));
+        config.validate().expect("valid world");
+        assert_eq!(configured_connectors(&config), Vec::new());
     }
 }
