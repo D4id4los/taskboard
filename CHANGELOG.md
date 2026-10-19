@@ -10,6 +10,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Release archives ship a `taskboard.desktop` launcher
+  (`Exec=taskboard gui`, `TryExec` PATH guard, theme-fallback icon)
+  and the repo carries the installable copy in `contrib/`; the
+  double-click story completes with the `gui` verb and the #236
+  display-aware routing (#237).
 - `mode = "kiosk"` boots the kiosk appliance (ADR 0016): the daemon
   core plus the display-gated fullscreen window — TTY-independent
   bare routing, a loud headless fallback that keeps serving over
