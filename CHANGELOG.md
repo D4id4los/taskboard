@@ -10,6 +10,23 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Board ceremonies at N (multi-board wave chunk 3): `boards unbind
+  [--board <uuid>] [--confirm]` detaches a board's remote binding
+  (content and queued ops stay — they strand honestly and drain on a
+  re-bind; the sync-status row goes), and `boards reconcile
+  [--board <uuid>] [--confirm]` deterministically merges same-title
+  duplicates the bind ceremony's pull adopted (survivors keep the
+  local ids; duplicate rows neutralize; duplicate create-ops cancel).
+  Both verbs refuse without `--confirm`, stating the scope (unbind:
+  the bound remote, the ops that will strand, the kept refs;
+  reconcile: the match counts). `boards select` gained `--local-board
+  <uuid>` (pin the local board), binds a board-less install by
+  minting a shell from the remote's title, no longer needs `SetBoard`
+  (the engine nudge drives the adoption wait, now scoped to that
+  board's own sync row), runs the reconcile automatically after
+  adoption, and surfaces the count of stale remote refs the bind
+  wiped in its receipt; `boards publish` rides the same per-board
+  wait.
 - Local board editing: `boards color <hex>`, `boards archive`,
   `boards unarchive`, `boards delete [--confirm]`, and
   `boards reset [--confirm]` (#132, #171, #177). Edits stamp per-field

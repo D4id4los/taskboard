@@ -9,13 +9,11 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use taskboard_domain::{
-    CommandOutcome, RemoteBoardId, StateCommand, SyncCommand, SyncPhase, SyncStatus,
-};
+use taskboard_domain::{CommandOutcome, RemoteBoardId, StateCommand, SyncPhase, SyncStatus};
 
 use crate::commands::output::{
-    BoardDestructReceipt, BoardReceipt, BoardsListEntry, PublishReceipt, SelectReceipt,
-    SyncStatusView,
+    BoardDestructReceipt, BoardReceipt, BoardsListEntry, PublishReceipt, ReconcileReceipt,
+    SelectReceipt, SyncStatusView, UnbindReceipt,
 };
 use crate::commands::{CommandError, map_deck_error};
 use crate::config::AppConfig;
@@ -168,6 +166,9 @@ struct BoardScope {
     labels: usize,
     pending_ops: usize,
     bound_remote: Option<u64>,
+    /// Live descendant refs (the rows a future different-remote rebind
+    /// wipes; a same-remote rebind re-adopts them).
+    descendant_refs: usize,
 }
 
 /// Snapshots the scope from the booted core: the published state's live
@@ -188,7 +189,7 @@ async fn read_scope(
             )),
         )));
     };
-    let (board_id, bound_remote, stacks, tasks, board_labels) = {
+    let (board_id, bound_remote, stacks, tasks, board_labels, descendant_refs) = {
         let stacks: BTreeSet<taskboard_domain::StackId> = state
             .stacks
             .values()
@@ -207,7 +208,29 @@ async fn read_scope(
             .filter(|(_, l)| l.board == board.id && !l.deleted)
             .map(|(id, _)| *id)
             .collect();
-        (board.id, board.remote.map(|r| r.0), stacks, tasks, labels)
+        let descendant_refs = state
+            .stacks
+            .values()
+            .filter(|s| s.board == board.id && !s.deleted && s.remote.is_some())
+            .count()
+            + state
+                .tasks
+                .values()
+                .filter(|t| t.is_live() && stacks.contains(&t.stack) && t.remote.is_some())
+                .count()
+            + state
+                .labels
+                .iter()
+                .filter(|(_, l)| l.board == board.id && !l.deleted && l.remote.is_some())
+                .count();
+        (
+            board.id,
+            board.remote.map(|r| r.0),
+            stacks,
+            tasks,
+            labels,
+            descendant_refs,
+        )
     };
     let labels = board_labels.len();
     drop(state);
@@ -241,6 +264,7 @@ async fn read_scope(
         labels,
         pending_ops,
         bound_remote,
+        descendant_refs,
     })
 }
 
@@ -274,6 +298,92 @@ async fn destruct_on(
         labels: scope.labels,
         pending_ops: scope.pending_ops,
         bound_remote: scope.bound_remote,
+    })
+}
+
+/// The `boards unbind` steps on a booted core: refuse without
+/// `--confirm` (typed, stating the scope), else dispatch `UnbindBoard`
+/// and report the landed receipt.
+pub(crate) async fn unbind_on(
+    app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
+    confirm: bool,
+) -> Result<UnbindReceipt, CommandError> {
+    let board_id = crate::commands::resolve_board(app, board)?;
+    let scope = read_scope(app, board_id).await?;
+    if !confirm {
+        return Err(CommandError::UnbindConfirmationRequired {
+            board: board_id.as_uuid().to_string(),
+            bound_remote: scope.bound_remote,
+            pending_ops: scope.pending_ops,
+            descendant_refs: scope.descendant_refs,
+        });
+    }
+    let outcome = app
+        .engine
+        .execute(StateCommand::UnbindBoard { board: board_id })
+        .await?;
+    let stranded_ops = match outcome {
+        CommandOutcome::Unbound { stranded_ops } => stranded_ops,
+        // Already unbound: the idempotent no-op receipt.
+        CommandOutcome::NoOp => 0,
+        other => unreachable!("UnbindBoard answers Unbound or NoOp, got {other:?}"),
+    };
+    Ok(UnbindReceipt {
+        board: board_id.as_uuid().to_string(),
+        bound_remote: scope.bound_remote,
+        stranded_ops,
+        kept_refs: scope.descendant_refs,
+    })
+}
+
+/// The `boards reconcile` steps on a booted core: without `--confirm`,
+/// the pure planner's counts ride the typed refusal (a count, not a
+/// dry-run mode); with it, the pass lands and its counts are reported.
+pub(crate) async fn reconcile_on(
+    app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
+    confirm: bool,
+) -> Result<ReconcileReceipt, CommandError> {
+    let board_id = crate::commands::resolve_board(app, board)?;
+    if !confirm {
+        let state = app.engine.shared_state().load_full();
+        let persisted = taskboard_domain::SyncStateReader::read_state(&app.engine)
+            .await
+            .map_err(|_| {
+                CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone))
+            })?;
+        let (_, counts) = taskboard_domain::plan_reconcile(&state, &persisted.outbox, board_id);
+        drop(state);
+        return Err(CommandError::ReconcileConfirmationRequired {
+            board: board_id.as_uuid().to_string(),
+            stacks: counts.stacks,
+            labels: counts.labels,
+            tasks: counts.tasks,
+            cancelled_ops: counts.cancelled_ops,
+        });
+    }
+    let outcome = app
+        .engine
+        .execute(StateCommand::ReconcileByTitle { board: board_id })
+        .await?;
+    let (stacks, labels, tasks, cancelled_ops) = match outcome {
+        CommandOutcome::Reconciled {
+            stacks,
+            labels,
+            tasks,
+            cancelled_ops,
+        } => (stacks, labels, tasks, cancelled_ops),
+        // Nothing to match: the idempotent zero-count receipt.
+        CommandOutcome::NoOp => (0, 0, 0, 0),
+        other => unreachable!("ReconcileByTitle answers Reconciled or NoOp, got {other:?}"),
+    };
+    Ok(ReconcileReceipt {
+        board: board_id.as_uuid().to_string(),
+        stacks,
+        labels,
+        tasks,
+        cancelled_ops,
     })
 }
 
@@ -435,6 +545,44 @@ pub async fn reset(
     .await
 }
 
+/// Unbinds the board (both backends). The `--confirm` ceremony lives
+/// here and in the session dispatcher; the domain command stays pure.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed: [`CommandError::UnbindConfirmationRequired`]
+/// without `--confirm`, engine classes otherwise.
+pub async fn unbind(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
+    confirm: bool,
+) -> Result<UnbindReceipt, CommandError> {
+    crate::commands::tasks::with_core(config, store, async move |app| {
+        unbind_on(app, board, confirm).await
+    })
+    .await
+}
+
+/// Reconciles the board's same-title duplicates (both backends); same
+/// ceremony as [`unbind`].
+///
+/// # Errors
+///
+/// [`CommandError`] — typed: [`CommandError::ReconcileConfirmationRequired`]
+/// without `--confirm`, engine classes otherwise.
+pub async fn reconcile(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
+    confirm: bool,
+) -> Result<ReconcileReceipt, CommandError> {
+    crate::commands::tasks::with_core(config, store, async move |app| {
+        reconcile_on(app, board, confirm).await
+    })
+    .await
+}
+
 /// The publish ceremony: create a fresh Deck board from the local one
 /// and bind to it, letting the first cycle drain the outbox onto the
 /// new board. A transport failure mid-ceremony is safe-but-messy: the
@@ -500,11 +648,20 @@ pub(crate) async fn publish_on(
             )),
         )));
     };
+    // The bound-board guard folds into the engine's typed refusal
+    // *shape* (one rule, one shape): the remote create must not run for
+    // an already-bound board (that would publish a duplicate), and the
+    // engine cannot see it until after the create. The bind below
+    // remains the rule's only enforcer for the racy case.
     if let Some(current) = local.remote {
-        return Err(CommandError::BoardAlreadyBound {
-            board: board_id.as_uuid().to_string(),
-            current: current.0,
-        });
+        return Err(CommandError::Engine(Box::new(
+            taskboard_state::ExecuteError::Rejected(
+                taskboard_domain::CommandError::BoardAlreadyBound {
+                    board: board_id,
+                    bound: current,
+                },
+            ),
+        )));
     }
     let title = local.title.clone();
     // Defensive color mapping: the stored value is lenient, Deck's is
@@ -519,9 +676,10 @@ pub(crate) async fn publish_on(
         .await
         .map_err(map_deck_error)?;
 
-    // Bind locally, then hand the binding to the connector: the next
-    // cycle's pull matches by `remote` (merge, not duplicate) and the
-    // outbox drains onto the fresh board.
+    // Bind locally, then nudge the engine: the next cycle's pull
+    // matches by binding (merge, not duplicate) and the outbox drains
+    // onto the fresh board. (A concurrent bind loses here as
+    // `BoardAlreadyBound` / `RemoteBoardInUse` — the engine's rule.)
     let outcome = app
         .engine
         .execute(StateCommand::BindBoard {
@@ -529,23 +687,21 @@ pub(crate) async fn publish_on(
             remote: RemoteBoardId(created.id),
         })
         .await?;
-    debug_assert!(matches!(
-        outcome,
-        CommandOutcome::Applied | CommandOutcome::NoOp
-    ));
-    send_set_board(app, created.id).await?;
-
-    let startup = app.engine.shared_state().load_full().sync.aggregate();
-    let receipt = match crate::commands::sync::wait_for_sync_result(app, &startup, timeout).await {
-        crate::commands::sync::SyncOutcome::Succeeded(view)
-        | crate::commands::sync::SyncOutcome::NoWait(view) => view,
-        crate::commands::sync::SyncOutcome::Failed(kind, _) => {
-            return Err(CommandError::SyncFailed(kind));
-        }
-        crate::commands::sync::SyncOutcome::TimedOut(_) => {
-            return Err(CommandError::SyncTimedOut);
-        }
+    let wiped_refs = match outcome {
+        CommandOutcome::Bound { wiped_refs } => (wiped_refs > 0).then_some(wiped_refs),
+        CommandOutcome::NoOp => None,
+        other => unreachable!("BindBoard answers Bound or NoOp, got {other:?}"),
     };
+    bind_nudge_wait_reconcile(
+        app,
+        board_id,
+        RemoteBoardId(created.id),
+        wiped_refs,
+        timeout,
+    )
+    .await?;
+    let state = app.engine.shared_state().load_full();
+    let settled = state.boards[&board_id].clone();
     Ok(PublishReceipt {
         board: BoardsListEntry {
             id: created.id,
@@ -553,52 +709,62 @@ pub(crate) async fn publish_on(
             archived: created.archived,
             deleted: !created.is_live(),
         },
-        sync: receipt,
+        sync: SyncStatusView::new(state.sync.get(board_id).unwrap_or(&SyncStatus::default())),
+        wiped_refs,
     })
+    .map(|receipt| receipt_with_board(receipt, &settled))
 }
 
-/// Sends `SetBoard` through the sync seam; a closed channel (a
-/// standalone-configured core reaching here despite the gate) is the
-/// engine-gone class, not a panic.
-async fn send_set_board(app: &crate::App, board: u64) -> Result<(), CommandError> {
-    app.sync_commands()
-        .send(SyncCommand::SetBoard(RemoteBoardId(board)))
-        .await
-        .map_err(|_| CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone)))
+/// Overlays the settled local board's title/flags onto the receipt (the
+/// pull's field-wise merge may have adjusted the minted shell).
+fn receipt_with_board(
+    mut receipt: PublishReceipt,
+    board: &taskboard_domain::Board,
+) -> PublishReceipt {
+    receipt.board.title.clone_from(&board.title);
+    receipt.board.archived = board.archived;
+    receipt.board.deleted = board.deleted;
+    receipt
 }
 
-/// The binding ceremony: pre-validate → boot → (migrate or refuse) →
-/// bind/select → `SetBoard` → wait for adoption → receipt. With a live
-/// local-only board present, plain select refuses (`LocalBoardExists`)
-/// and `--bind-local-board` migrates: `BindBoard` sets the binding, the
-/// next cycle merges remote content alongside the queued local ops.
+/// The binding ceremony: pre-validate (fresh listing, the validated
+/// entry feeds the mint) → boot → resolve-or-mint the local board →
+/// `BindBoard` → nudge → wait for that board's adoption → automatic
+/// reconcile → receipt. With a live unbound local board and no
+/// `--bind-local-board`, plain select refuses (`LocalBoardExists`); the
+/// fresh-install path mints a shell board from the remote's title and
+/// binds it (D3-1).
 ///
 /// # Errors
 ///
 /// [`CommandError`] — typed: [`CommandError::UnknownBoard`] before any
-/// core boot, [`CommandError::LocalBoardExists`] /
-/// [`CommandError::BoardAlreadyBound`] for the board invariants,
+/// core boot, [`CommandError::LocalBoardExists`] for the ceremony gate,
+/// the engine's typed refusals in pass-through
+/// ([`CommandError::Engine`] wrapping `UnknownBoard` / `BoardDeleted` /
+/// `BoardAlreadyBound` / `RemoteBoardInUse`),
 /// [`CommandError::SyncFailed`]/[`CommandError::SyncTimedOut`] while
 /// waiting for adoption.
 pub async fn select(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
     board: u64,
+    local_board: Option<taskboard_domain::BoardId>,
     timeout: Duration,
     bind_local_board: bool,
 ) -> Result<SelectReceipt, CommandError> {
-    select_prelude(&config, &store, board).await?;
+    let entry = select_prelude(&config, &store, board).await?;
 
     let app =
         crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
-    let result = select_on(&app, board, timeout, bind_local_board).await;
+    let result = select_on(&app, entry, timeout, bind_local_board, local_board).await;
     let _ = app.shutdown().await;
     result
 }
 
 /// The pre-boot half of `boards select` (the standalone gate + the
 /// fresh-listing pre-validation): shared verbatim by the one-shot
-/// wrapper and the session dispatcher.
+/// wrapper and the session dispatcher. Returns the validated listing
+/// entry — its real title feeds the fresh path's mint (D3-1).
 ///
 /// # Errors
 ///
@@ -608,135 +774,220 @@ pub(crate) async fn select_prelude(
     config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
     board: u64,
-) -> Result<(), CommandError> {
+) -> Result<BoardsListEntry, CommandError> {
     crate::commands::require_connector(config)?;
     // Pre-validation: a bogus id inside a sync cycle would only surface
     // as the generic `Failed { Server }` — check the fresh listing
     // first, before anything boots.
     let client = client_for(config, store)?;
     let listing = client.boards().await.map_err(map_deck_error)?;
-    if !listing
+    let entry = listing
         .iter()
-        .any(|b| b.id == board && !b.archived && b.is_live())
-    {
-        return Err(CommandError::UnknownBoard(board));
+        .find(|b| b.id == board && !b.archived && b.is_live())
+        .map(|b| BoardsListEntry {
+            id: b.id,
+            title: b.title.clone(),
+            archived: b.archived,
+            deleted: !b.is_live(),
+        });
+    entry.ok_or(CommandError::UnknownBoard(board))
+}
+
+/// The bind ceremony's shared tail (D3-7): nudge the engine
+/// (`RequestSync` — no targeted send exists anymore), wait for *this*
+/// board's adoption, then run the ungated automatic reconcile (D3-8).
+/// `wiped_refs` rides the receipt only when the bind actually cleared
+/// some.
+async fn bind_nudge_wait_reconcile(
+    app: &crate::App,
+    board_id: taskboard_domain::BoardId,
+    remote: RemoteBoardId,
+    wiped_refs: Option<usize>,
+    timeout: Duration,
+) -> Result<SelectReceipt, CommandError> {
+    // The board-row snapshot for the freshness decision, taken before
+    // the nudge (the S0 guard: a stale persisted phase must not mask
+    // the fresh cycle).
+    let startup_row = app
+        .engine
+        .shared_state()
+        .load_full()
+        .sync
+        .get(board_id)
+        .cloned();
+    // The nudge: the engine fans `SyncNow` to every registered connector
+    // and marks the bound boards `Syncing`. A connector-less core
+    // answers `NoOp` — the honest `sync-unavailable` class.
+    let outcome = app.engine.execute(StateCommand::RequestSync).await?;
+    if outcome == CommandOutcome::NoOp {
+        return Err(CommandError::SyncUnavailable);
     }
-    Ok(())
+    let view = wait_for_adoption(app, board_id, remote, startup_row.as_ref(), timeout).await?;
+    // The automatic post-adoption reconcile (ungated: the operator's
+    // consent was the ceremony itself). A settled same-title sibling
+    // merges here; a `NoOp` is the common shape.
+    let _reconciled = app
+        .engine
+        .execute(StateCommand::ReconcileByTitle { board: board_id })
+        .await?;
+    Ok(SelectReceipt {
+        board: view.board,
+        sync: view.sync,
+        wiped_refs,
+    })
 }
 
 /// Runs the binding steps on a booted core; the caller owns the
 /// shutdown (the session dispatcher calls this directly against the
-/// session core).
+/// session core). `entry` is the pre-validated listing entry; `flag`
+/// (`--board`) names the local board when the operator pinned one.
+///
 /// # Errors
 ///
-/// [`CommandError`] — typed, see the variant docs.
+/// [`CommandError`] — typed, see [`select`].
 pub async fn select_on(
     app: &crate::App,
-    board: u64,
+    entry: BoardsListEntry,
     timeout: Duration,
     bind_local_board: bool,
+    flag: Option<taskboard_domain::BoardId>,
 ) -> Result<SelectReceipt, CommandError> {
-    let state = app.engine.shared_state().load_full();
-    // INTERIM(multi-board-2 → chunk-3): inline first-live-board resolve
-    // (deterministic board-id order) for the migration-path `BindBoard`
-    // until the ceremony redesign folds the pre-check into engine-refusal
-    // pass-through. A board-less db takes the fresh adoption path below —
-    // no local board exists to refuse about.
-    let bound = state
-        .boards
-        .values()
-        .filter(|b| !b.deleted)
-        .min_by_key(|b| b.id);
-    let local_board_id = bound.map(|b| b.id);
-    if let Some(bound) = bound
-        && let Some(remote) = bound.remote
-    {
-        if remote.0 == board {
-            // Re-selecting the bound id is an idempotent success.
-            return Ok(SelectReceipt {
-                board: BoardsListEntry {
-                    id: remote.0,
-                    title: bound.title.clone(),
-                    archived: bound.archived,
-                    deleted: bound.deleted,
-                },
-                sync: SyncStatusView::new(&state.sync.aggregate()),
-            });
-        }
-        let current = remote.0;
-        return Err(CommandError::BoardAlreadyBound {
-            board: bound.id.as_uuid().to_string(),
-            current,
-        });
-    }
-    drop(state);
-
-    if let Some(local_board_id) = local_board_id {
-        if !bind_local_board {
+    let remote = RemoteBoardId(entry.id);
+    // Resolution (D3-7): the `--board` flag wins; else the single live
+    // board; else — and only for a board-less install — the fresh path
+    // mints a shell from the remote's real title (D3-1).
+    let resolved = match flag {
+        Some(id) => Some(id),
+        None => crate::commands::resolve_board_or_none_for_bind(app)?,
+    };
+    // The ceremony gate (`LocalBoardExists`): a live *unbound* local
+    // board needs `--bind-local-board` before a bind merges remote
+    // content alongside it. The engine cannot know the operator's
+    // intent; the flag gate is UX policy, caller-owned (DF-2).
+    if let Some(board_id) = resolved {
+        let state = app.engine.shared_state().load_full();
+        let unbound_live = state
+            .boards
+            .get(&board_id)
+            .is_some_and(|b| !b.deleted && b.remote.is_none());
+        drop(state);
+        if unbound_live && !bind_local_board {
             return Err(CommandError::LocalBoardExists);
         }
-        // Migration: attach the local board onto the remote one. The
-        // next pull matches by `remote` and merges instead of adopting
-        // a duplicate; the outbox then drains onto the remote board.
-        let outcome = app
-            .engine
-            .execute(StateCommand::BindBoard {
-                board: local_board_id,
-                remote: RemoteBoardId(board),
-            })
-            .await?;
-        debug_assert!(matches!(
-            outcome,
-            CommandOutcome::Applied | CommandOutcome::NoOp
-        ));
     }
+    let board_id = match resolved {
+        Some(board_id) => board_id,
+        None => mint_fresh_board(app, &entry).await?,
+    };
 
-    // Snapshot the hydrated status before the send: a *stale* persisted
-    // `Failed` (e.g. from a `sync` run before any binding) must not mask
-    // the fresh adoption cycle — the same S0 guard `wait_for_sync_result`
-    // applies.
-    let startup = app.engine.shared_state().load_full().sync.aggregate();
-    send_set_board(app, board).await?;
-
-    wait_for_adoption(app, board, &startup, timeout).await
+    // Resolve-or-mint is done; the engine's typed refusals are the only
+    // board-state rule from here (one rule, one home).
+    let outcome = app
+        .engine
+        .execute(StateCommand::BindBoard {
+            board: board_id,
+            remote,
+        })
+        .await?;
+    match outcome {
+        // Same-remote re-select: the row is already settled — immediate
+        // receipt from current state, no wait.
+        CommandOutcome::NoOp => {
+            let state = app.engine.shared_state().load_full();
+            let settled = &state.boards[&board_id];
+            Ok(SelectReceipt {
+                board: BoardsListEntry {
+                    id: entry.id,
+                    title: settled.title.clone(),
+                    archived: settled.archived,
+                    deleted: settled.deleted,
+                },
+                sync: SyncStatusView::new(
+                    state.sync.get(board_id).unwrap_or(&SyncStatus::default()),
+                ),
+                wiped_refs: None,
+            })
+        }
+        CommandOutcome::Bound { wiped_refs } => {
+            let receipt = bind_nudge_wait_reconcile(
+                app,
+                board_id,
+                remote,
+                (wiped_refs > 0).then_some(wiped_refs),
+                timeout,
+            )
+            .await?;
+            Ok(receipt)
+        }
+        other => unreachable!("BindBoard answers Bound or NoOp, got {other:?}"),
+    }
 }
 
-/// Predicate-polls (event-driven with a polling fallback) until the
-/// remote board is adopted locally, a *fresh* sync failure lands, or the
-/// deadline expires. Freshness is decided against the pre-`SetBoard`
-/// snapshot `startup` (the sync status is persisted and hydrated at
-/// boot, so a board-less db can boot carrying an old `Failed` phase that
-/// nothing clears until a cycle settles).
+/// The fresh-install path (D3-1): mint a shell board from the
+/// remote's real title and bind it — the pull then merges by binding
+/// (`RULE_R6`) and the epoch-clock shell adopts the remote's
+/// title/color/archived.
+async fn mint_fresh_board(
+    app: &crate::App,
+    entry: &BoardsListEntry,
+) -> Result<taskboard_domain::BoardId, CommandError> {
+    let outcome = app
+        .engine
+        .execute(StateCommand::CreateBoard {
+            title: entry.title.clone(),
+            color: taskboard_domain::Color::new(DEFAULT_BOARD_COLOR),
+        })
+        .await?;
+    let CommandOutcome::CreatedBoard(board_id) = outcome else {
+        // CreateBoard always mints (the planner's arm is total over its
+        // inputs); unreachable from user input.
+        unreachable!("CreateBoard always returns CreatedBoard");
+    };
+    Ok(board_id)
+}
+
+/// Predicate-polls (event-driven with a polling fallback) until *this
+/// board's* sync row settles fresh (D3-11), a fresh sync failure lands,
+/// or the deadline expires. Freshness is decided against the pre-nudge
+/// snapshot of that board's row (the status is persisted and hydrated
+/// at boot, so a board can boot carrying an old phase that nothing
+/// clears until a cycle settles). Binding-present stays a conjunct of
+/// success (the receipt promises both).
 async fn wait_for_adoption(
     app: &crate::App,
-    board: u64,
-    startup: &SyncStatus,
+    board: taskboard_domain::BoardId,
+    remote: RemoteBoardId,
+    startup_row: Option<&SyncStatus>,
     timeout: Duration,
 ) -> Result<SelectReceipt, CommandError> {
     let mut signals = app.engine.subscribe();
-    let mut seen_change = false;
+    let mut seen_signal = false;
     let deadline = Instant::now() + timeout;
     loop {
         let state = app.engine.shared_state().load_full();
-        if let Some(adopted) = state
+        let row = state.sync.get(board);
+        let phase = row.map_or(SyncPhase::Idle, |r| r.phase);
+        let fresh_settled = phase != SyncPhase::Syncing && (seen_signal || row != startup_row);
+        let binding_present = state
             .boards
-            .values()
-            .find(|b| !b.deleted && b.remote.is_some_and(|r| r.0 == board))
-        {
+            .get(&board)
+            .is_some_and(|b| !b.deleted && b.remote == Some(remote));
+        if fresh_settled && phase == SyncPhase::Idle && binding_present {
+            let adopted = &state.boards[&board];
             return Ok(SelectReceipt {
                 board: BoardsListEntry {
-                    id: board,
+                    id: remote.0,
                     title: adopted.title.clone(),
                     archived: adopted.archived,
                     deleted: adopted.deleted,
                 },
-                sync: SyncStatusView::new(&state.sync.aggregate()),
+                sync: SyncStatusView::new(row.unwrap_or(&SyncStatus::default())),
+                wiped_refs: None,
             });
         }
-        let fresh_failure = matches!(state.sync.aggregate().phase, SyncPhase::Failed { .. })
-            && (seen_change || state.sync.aggregate() != *startup);
+        let fresh_failure = fresh_settled && matches!(phase, SyncPhase::Failed { .. });
         if fresh_failure {
-            let SyncPhase::Failed { last_error } = state.sync.aggregate().phase else {
+            let SyncPhase::Failed { last_error } = phase else {
                 unreachable!("checked by fresh_failure");
             };
             return Err(CommandError::SyncFailed(last_error));
@@ -751,7 +1002,7 @@ async fn wait_for_adoption(
             .await
             .is_ok()
         {
-            seen_change = true;
+            seen_signal = true;
         }
     }
 }
@@ -776,12 +1027,45 @@ pub fn render_text_list(entries: &[BoardsListEntry]) -> String {
     lines.join("\n")
 }
 
-/// The human-readable select/publish receipt.
+/// The human-readable select/publish receipt (the wipe count surfaces
+/// only when the bind actually cleared refs).
 #[must_use]
 pub fn render_text_select(receipt: &SelectReceipt) -> String {
-    format!(
+    let base = format!(
         "bound to board {} ({}) — sync: {}",
         receipt.board.id, receipt.board.title, receipt.sync.phase
+    );
+    match receipt.wiped_refs {
+        Some(count) => format!(
+            "{base} — {count} stale remote ref(s) wiped; stranded updates dead-letter on the next cycle if they cannot re-match"
+        ),
+        None => base,
+    }
+}
+
+/// The human-readable unbind receipt.
+#[must_use]
+pub fn render_text_unbind(receipt: &UnbindReceipt) -> String {
+    let mut line = format!(
+        "unbound board {} — {} pending op(s) now wait for a re-bind",
+        receipt.board, receipt.stranded_ops
+    );
+    if let Some(remote) = receipt.bound_remote {
+        line.push_str("; was bound to remote board ");
+        line.push_str(&remote.to_string());
+    }
+    line.push_str("; ");
+    line.push_str(&receipt.kept_refs.to_string());
+    line.push_str(" remote ref(s) kept (a same-remote re-bind re-adopts them)");
+    line
+}
+
+/// The human-readable reconcile receipt.
+#[must_use]
+pub fn render_text_reconcile(receipt: &ReconcileReceipt) -> String {
+    format!(
+        "reconciled board {} — {} stacks, {} labels, {} tasks merged, {} duplicate create-op(s) cancelled",
+        receipt.board, receipt.stacks, receipt.labels, receipt.tasks, receipt.cancelled_ops
     )
 }
 

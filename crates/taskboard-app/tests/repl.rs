@@ -346,6 +346,7 @@ async fn r7_dispatch_line_routes_every_verb_family() {
             Command::Boards {
                 cmd: BoardsCmd::Select {
                     board: 3,
+                    local_board: None,
                     timeout_secs: 1,
                     bind_local_board: false,
                 },
@@ -500,12 +501,11 @@ async fn r10_a_connector_sync_failure_is_typed_and_survivable() {
     assert_eq!(errors[0]["error"]["kind"], "sync-failed");
 }
 
-/// R11: a session on a *booted* core with a dead connector refuses a
-/// `SetBoard`-carrying ceremony typed at the sync seam (the
-/// `EngineGone` class) — the dispatcher maps it, the session survives.
-/// Proven via `publish`'s post-prelude half under standalone config
-/// surfaced through the loop's `sync-disabled` gate instead: here the
-/// engine-gone mapping is pinned directly.
+/// R11: a session on a *booted* standalone core refuses the binding
+/// ceremony's migration gate typed — a live local board without
+/// `--bind-local-board` surfaces `LocalBoardExists` — and the session
+/// survives the failed line. (The ceremony's sync seam is now the
+/// engine nudge; the standalone case is gated at the prelude, R7.)
 #[tokio::test]
 async fn r11_select_on_a_standalone_core_surfaces_the_typed_gate() {
     let dir = tempdir();
@@ -517,6 +517,15 @@ async fn r11_select_on_a_standalone_core_surfaces_the_typed_gate() {
     )
     .await
     .expect("session core boots");
+    // The live local board the ceremony must not silently merge past.
+    let _ = app
+        .engine
+        .execute(taskboard_domain::StateCommand::CreateBoard {
+            title: "local".into(),
+            color: taskboard_domain::Color::new("0082c9"),
+        })
+        .await
+        .expect("minted");
     let session = ReplSession::headless(app.config.clone(), forbidden_store(), true);
     let mut err = Vec::new();
     let mut sink = Vec::new();
@@ -525,17 +534,20 @@ async fn r11_select_on_a_standalone_core_surfaces_the_typed_gate() {
         err: &mut err,
         json: true,
     };
-    // `select_on` on a connector-less core: the standalone session never
-    // reaches it through the loop (prelude gate, R7); the direct seam
-    // call maps the dead `sync_commands` channel to the engine-gone
-    // class, and the session's shutdown stays graceful.
-    let outcome = boards::select_on(&app, 3, Duration::from_secs(1), false).await;
+    let entry = taskboard_app::commands::output::BoardsListEntry {
+        id: 3,
+        title: "remote".into(),
+        archived: false,
+        deleted: false,
+    };
+    let outcome = boards::select_on(&app, entry, Duration::from_secs(1), false, None).await;
     let _ = dispatch_line(
         &session,
         &app,
         Command::Boards {
             cmd: BoardsCmd::Select {
                 board: 3,
+                local_board: None,
                 timeout_secs: 1,
                 bind_local_board: false,
             },
@@ -543,11 +555,13 @@ async fn r11_select_on_a_standalone_core_surfaces_the_typed_gate() {
         &mut io,
     )
     .await;
-    assert!(matches!(
-        outcome,
-        Err(taskboard_app::commands::CommandError::Engine(boxed))
-            if matches!(*boxed, taskboard_state::ExecuteError::EngineGone)
-    ));
+    assert!(
+        matches!(
+            outcome,
+            Err(taskboard_app::commands::CommandError::LocalBoardExists)
+        ),
+        "the migration gate refuses typed: {outcome:?}"
+    );
     app.shutdown().await;
 }
 
