@@ -15,6 +15,10 @@ The workspace carries a single global version (see `docs/architecture.org`);
   and the repo carries the installable copy in `contrib/`; the
   double-click story completes with the `gui` verb and the #236
   display-aware routing (#237).
+- README "Launching" section: the bare-invocation routing table
+  (mode × TTY × display, plus the `gui`/`daemon` verbs and the
+  `TASKBOARD_APP__MODE` escape hatch) verified against the shipped
+  routing.
 - `mode = "kiosk"` boots the kiosk appliance (ADR 0016): the daemon
   core plus the display-gated fullscreen window — TTY-independent
   bare routing, a loud headless fallback that keeps serving over
