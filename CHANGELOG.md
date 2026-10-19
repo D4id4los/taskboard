@@ -15,6 +15,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
   when set (on the winit backend fullscreen also suppresses
   decorations); derived from the run mode, not a config key, and no
   consumer yet — the kiosk appliance lifecycle hands it over (#237).
+- Connector identity end-to-end on the wire (multi-board wave chunk
+  4): board bindings carry their owning connector
+  (`RemoteBoardBinding { connector, board }` — a v0.1.x database
+  upgrades in place, its NULL tags decoding as the synthesized
+  `nextcloud` connector), and a connector syncs *every* board bound
+  to it, derived from the persisted bindings each cycle with
+  per-board pull caches — no cache-clear on rebind, unchanged boards
+  stay cheap via per-board validators. The new `ConnectorModule`
+  seam (ADR 0010 amended) is how a connector kind plugs in; still
+  one connector per install until the plural config lands.
 - Board ceremonies at N (multi-board wave chunk 3): `boards unbind
   [--board <uuid>] [--confirm]` detaches a board's remote binding
   (content and queued ops stay — they strand honestly and drain on a
@@ -50,6 +60,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- `boards select` and the sync actor no longer exchange a targeted
+  `SetBoard` command: the binding tags + per-cycle derived board sets
+  replace it entirely (the broadcast `SyncNow` nudge remains the only
+  sync signal). Internal vocabulary change; no user-visible flag or
+  output changed.
 - Board-scoped commands carry their target (multi-board wave chunk
   2): the nine board-scoped verbs gained a leading `board: BoardId`
   (inter-actor `StateCommand` wire), and the CLI gained `--board

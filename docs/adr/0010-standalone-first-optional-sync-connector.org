@@ -137,12 +137,22 @@ construction. =pending_ops= keeps climbing honestly; the human =tasks
 list= carries one presentation-only stand-alone footer (the JSON
 contract is untouched).
 
-** The connector port stays vocabulary, not a trait
+** The connector port: shared vocabulary + an app-layer module trait
 
-=SyncCommand= / =SyncReport= / =SyncStateReader= already are the
-connector contract (ADR 0007). The app selects which actor to spawn
-(today: nextcloud or none) with a plain match. A second connector may
-promote this to a domain trait — not built speculatively.
+=SyncCommand= / =SyncReport= / =SyncStateReader= remain the connector
+contract (ADR 0007) and stay in =taskboard-domain= — the data half of
+the port, where the multi-board wave added =ConnectorId= and the
+connector-tagged board binding. The spawn half is =taskboard-app='s
+=ConnectorModule= trait: one implementation per connector (today:
+nextcloud), =dyn=-dispatched in bootstrap's registry loop over the
+configured =[[sync.connectors]]= entries. A second connector
+implements the module trait against the shared vocabulary — no
+discovery, no dynamic loading, no plugin registry; the app still
+selects what to construct, now by config name instead of a backend
+word. Decided in the multi-board design round (D-W4); recorded here
+because this ADR previously kept the vocabulary traitless pending a
+second concrete connector — the wave needs the seam (two connectors
+live simultaneously) and the vocabulary had already stopped moving.
 
 ** Wire word
 
@@ -160,6 +170,6 @@ config file), not the backlog sketch's "none".
   exit condition, =NoOp= sync requests, connector-blind outbox).
 - =stacks add= is the minimum verb that makes stand-alone usable; the
   full stack/label verb surface is WI-3.
-- =logout='s interaction with =backend= is WI-3's question; a second
-  connector, board reset/delete, and title-match reconciliation are
-  backlog.
+- Board reset/delete landed with PR #334's verbs; title-match
+  reconciliation (#170) lands with the multi-board wave; =logout='s
+  interaction with =backend= is WI-3's question.
