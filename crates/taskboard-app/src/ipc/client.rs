@@ -258,6 +258,9 @@ impl Connection {
             v: PROTOCOL_VERSION,
             server_url: server_url.to_owned(),
             username: username.to_owned(),
+            // The client ceremony always targets the default (it
+            // rewrote entry 0); a named target is chunk 6's flag.
+            name: None,
         };
         match tokio::time::timeout(
             ATTACH_BUDGET,

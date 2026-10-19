@@ -401,28 +401,38 @@ async fn handle(app: &App, session: &BasicSession, req: Request) -> Response {
             username,
             ..
         } => {
-            // Identity matching (WI-H decision D3): the daemon detaches
-            // only the connector whose credential is exactly the one the
-            // client just revoked. A standalone daemon has no connector
-            // to drop regardless of the identity.
-            use crate::config::SyncBackend;
+            // Identity matching (WI-H decision D3), set-aware (D5-15):
+            // the daemon detaches only the connector whose credential is
+            // exactly the one the client just revoked — matched against
+            // the resolved connector set (the array world's entries, or
+            // the legacy `[nextcloud]` synthesis; under the legacy shape
+            // the comparison is byte-for-byte the old one). An empty set
+            // (standalone) has no connector to drop regardless of the
+            // identity.
             use crate::ipc::protocol::DetachWireOutcome;
-            let outcome = if app.config.sync_backend() == SyncBackend::Standalone {
-                DetachWireOutcome::NoConnector
-            } else if app.config.nextcloud.server_url.as_deref() == Some(server_url.as_str())
-                && app.config.nextcloud.username.as_deref() == Some(username.as_str())
-            {
-                match app.detach_connector().await {
-                    crate::bootstrap::DetachOutcome::Detached => DetachWireOutcome::Detached,
-                    crate::bootstrap::DetachOutcome::NoConnector => DetachWireOutcome::NoConnector,
-                    crate::bootstrap::DetachOutcome::TimedOut => DetachWireOutcome::TimedOut,
+            let specs = crate::connectors::configured_connectors(&app.config);
+            let target = specs
+                .iter()
+                .find(|spec| spec.server_url == server_url && spec.username == username);
+            let outcome = match target {
+                None if specs.is_empty() => DetachWireOutcome::NoConnector,
+                None => {
+                    tracing::warn!(
+                        requested = %server_url,
+                        "detach requested for a foreign identity; refusing"
+                    );
+                    DetachWireOutcome::IdentityMismatch
                 }
-            } else {
-                tracing::warn!(
-                    requested = %server_url,
-                    "detach requested for a foreign identity; refusing"
-                );
-                DetachWireOutcome::IdentityMismatch
+                Some(spec) => {
+                    let id = spec.name.clone();
+                    match app.detach_connector_named(&id).await {
+                        crate::bootstrap::DetachOutcome::Detached => DetachWireOutcome::Detached,
+                        crate::bootstrap::DetachOutcome::NoConnector => {
+                            DetachWireOutcome::NoConnector
+                        }
+                        crate::bootstrap::DetachOutcome::TimedOut => DetachWireOutcome::TimedOut,
+                    }
+                }
             };
             Response::DetachConnector {
                 v: PROTOCOL_VERSION,
@@ -432,18 +442,22 @@ async fn handle(app: &App, session: &BasicSession, req: Request) -> Response {
         Request::AttachConnector {
             server_url,
             username,
+            name,
             ..
         } => {
             // The daemon-side attach (ADR 0014 decision 7): a two-line
             // relay into the frontend-agnostic ceremony — the body
-            // (re-read, identity match, store load, swap-first, attach,
-            // settle) lives in `session_ceremonies`, not on the wire.
+            // (re-read, resolve the target entry, identity match, store
+            // load, swap-first, attach, settle) lives in
+            // `session_ceremonies`, not on the wire. `name = None`
+            // targets the default connector.
             let outcome = crate::session_ceremonies::attach_from_persisted(
                 app,
                 session.config_path.as_deref(),
                 &session.store,
                 &server_url,
                 &username,
+                name.as_deref(),
             )
             .await;
             Response::AttachConnector {

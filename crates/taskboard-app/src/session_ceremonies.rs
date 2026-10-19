@@ -99,21 +99,27 @@ async fn connect_session(
     //    honest-and-stale and refuses the attach.
     refresh_session_config(session, io)?;
 
-    // 3. Detach-first when a connector is live (D3): a same-identity
-    //    re-connect stores a *new* secret, and only detach + re-attach
-    //    rebuilds the client; a re-point needs the swap anyway.
-    //    `AttachError::AlreadyAttached` stays the primitive's guard for
-    //    non-session callers — unreachable from here by construction.
-    if app.connector_attached() {
-        let outcome = app.detach_connector().await;
-        tracing::info!(?outcome, "connect: swapped out the live connector");
+    // 3. Detach-first when the default connector is live (D3, D5-16):
+    //    a same-identity re-connect stores a *new* secret, and only
+    //    detach + re-attach rebuilds the client; a re-point needs the
+    //    swap anyway. The named swap detaches only the default — a
+    //    second live connector survives the rewrite of entry 0.
+    let default_id = default_connector_id(&session.config);
+    if let Some(id) = &default_id
+        && app.connector_attached()
+    {
+        let outcome = app.detach_connector_named(id).await;
+        tracing::info!(?outcome, connector = %id, "connect: swapped out the default connector");
     }
 
-    // 4. Attach: build the client from the *refreshed* config + the
-    //    session store; a typed attach refusal is recoverable (another
-    //    `connect` line; the config is already refreshed).
-    let client = build_client(session)?;
-    app.attach_connector(client)
+    // 4. Attach under the refreshed config's default id: the client is
+    //    built from the default spec + the session store; a typed
+    //    attach refusal is recoverable (another `connect` line; the
+    //    config is already refreshed).
+    let spec = default_spec(&session.config)?;
+    let client = deck_client_from_spec(&spec, &session.store)?;
+    let id = spec.name.clone();
+    app.attach_connector(id, client)
         .await
         .map_err(CommandError::from)?;
 
@@ -183,29 +189,35 @@ fn refresh_session_config(
     }
 }
 
-/// Builds the `DeckClient` for the attach from the refreshed config and
-/// the session's credential store (the secret the ceremony just stored).
-fn build_client(session: &ReplSession) -> Result<DeckClient, CommandError> {
-    deck_client_from(&session.config, &session.store)
+/// The session's default connector id off the refreshed config (the
+/// first spec; `None` in a zero-connector world — a `connect` that left
+/// the core standalone has nothing to swap).
+fn default_connector_id(config: &AppConfig) -> Option<taskboard_domain::ConnectorId> {
+    crate::connectors::configured_connectors(config)
+        .first()
+        .map(|spec| spec.name.clone())
 }
 
-/// The frontend-agnostic client construction (identity off the config,
-/// secret off the credential store): the REPL builder's core, shared
-/// with the daemon-side attach — one behavior, one home.
-fn deck_client_from(
+/// The refreshed config's default connector spec (D5-14: the session's
+/// `build_client` and the daemon-side attach share it).
+pub(crate) fn default_spec(
     config: &AppConfig,
+) -> Result<crate::connectors::ConnectorSpec, CommandError> {
+    crate::connectors::configured_connectors(config)
+        .into_iter()
+        .next()
+        .ok_or(CommandError::NotConfigured)
+}
+
+/// The frontend-agnostic client construction (identity off the
+/// connector spec, secret off the credential store): the REPL builder's
+/// core, shared with the daemon-side attach — one behavior, one home.
+pub(crate) fn deck_client_from_spec(
+    spec: &crate::connectors::ConnectorSpec,
     store: &Arc<dyn crate::secrets::CredentialStore>,
 ) -> Result<DeckClient, CommandError> {
-    let server = config
-        .nextcloud
-        .server_url
-        .clone()
-        .ok_or(CommandError::NotConfigured)?;
-    let user = config
-        .nextcloud
-        .username
-        .clone()
-        .ok_or(CommandError::NotConfigured)?;
+    let server = spec.server_url.clone();
+    let user = spec.username.clone();
     let password = store
         .load(&server, &user)
         .map_err(CommandError::Credential)?;
@@ -226,6 +238,7 @@ pub(crate) async fn attach_from_persisted(
     store: &Arc<dyn crate::secrets::CredentialStore>,
     server_url: &str,
     username: &str,
+    name: Option<&str>,
 ) -> crate::ipc::protocol::AttachWireOutcome {
     use crate::bootstrap::AttachError;
     use crate::ipc::protocol::AttachWireOutcome as W;
@@ -240,26 +253,36 @@ pub(crate) async fn attach_from_persisted(
         }
     };
 
-    // 2. Identity: absent keys are the merged unconfigured bucket; a
-    //    different pair is refused — the client is about to claim
-    //    "connected + daemon attached" *for its* identity, so attaching
-    //    the persisted Y under that claim would be dishonest.
-    let Some(persisted_server) = config.nextcloud.server_url.as_deref() else {
-        tracing::warn!("attach: the daemon's config names no identity");
+    // 2. Target resolution (D5-14): the entry named `name`, else the
+    //    first (the default connector). No such name ⇒ `NotConfigured`.
+    //    The request's identity must equal the target entry's pair —
+    //    the identity check survives as the guard that the client
+    //    connected *that* connector.
+    let specs = crate::connectors::configured_connectors(&config);
+    let target = match name {
+        Some(name) => specs
+            .iter()
+            .find(|spec| spec.name.as_str() == name)
+            .or_else(|| {
+                tracing::warn!(connector = %name, "attach: the config names no such connector");
+                None
+            }),
+        None => specs.first(),
+    };
+    let Some(target) = target else {
+        tracing::warn!("attach: the daemon's config resolves no connector");
         return W::NotConfigured;
     };
-    let Some(persisted_user) = config.nextcloud.username.as_deref() else {
-        tracing::warn!("attach: the daemon's config names no username");
-        return W::NotConfigured;
-    };
-    if persisted_server != server_url || persisted_user != username {
+    if target.server_url != server_url || target.username != username {
         tracing::warn!(
             requested = %server_url,
-            persisted = %persisted_server,
+            persisted = %target.server_url,
             "attach requested for a foreign identity; refusing"
         );
         return W::IdentityMismatch;
     }
+    let target_id = target.name.clone();
+    let target = target.clone();
 
     // 3. Build before any swap: the only post-swap failures are a raced
     //    shutdown — a failure the daemon's own state could have
@@ -267,7 +290,7 @@ pub(crate) async fn attach_from_persisted(
     //    env-store caveat's typed surface; every other construction
     //    failure is malformed persisted state (the identity was already
     //    extracted), logged for diagnosis.
-    let client = match deck_client_from(&config, store) {
+    let client = match deck_client_from_spec(&target, store) {
         Ok(client) => client,
         Err(CommandError::Credential(err)) => {
             tracing::warn!(
@@ -282,19 +305,22 @@ pub(crate) async fn attach_from_persisted(
         }
     };
 
-    // 4. Swap-first (the detach-first session rule, applied daemon-side).
+    // 4. Swap-first (the detach-first session rule, applied daemon-side,
+    //    named): only the target connector stops — a second live
+    //    connector survives the swap.
     if app.connector_attached() {
-        let outcome = app.detach_connector().await;
-        tracing::info!(?outcome, "attach: swapped out the live connector");
+        let outcome = app.detach_connector_named(&target_id).await;
+        tracing::info!(?outcome, connector = %target_id, "attach: swapped out the target connector");
     }
 
-    // 5. Attach: the primitive's guard is unreachable here by
-    //    construction (the dispatcher is serial and this handler just
-    //    swapped); carried for wire honesty if dispatch ever widens.
-    if let Err(err) = app.attach_connector(client).await {
+    // 5. Attach under the target's id: the name-in-use guard is
+    //    unreachable here by construction (the dispatcher is serial and
+    //    this handler just swapped); carried for wire honesty if
+    //    dispatch ever widens.
+    if let Err(err) = app.attach_connector(target_id.clone(), client).await {
         tracing::warn!(?err, "attach: the primitive refused the connector");
         return match err {
-            AttachError::AlreadyAttached => W::AlreadyAttached,
+            AttachError::ConnectorNameInUse(_) => W::AlreadyAttached,
             AttachError::Engine(_) => W::Engine,
             AttachError::Draining => W::Draining,
             // The attach primitive builds no client (D-7): the module
