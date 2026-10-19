@@ -127,10 +127,15 @@ pub enum BoardsCmd {
     /// List the server's boards (remote ids feed `boards select`).
     List,
     /// Bind this installation to one board (refuses a rebind; migrates a
-    /// local board with `--bind-local-board`).
+    /// local board with `--bind-local-board`; pins the local board with
+    /// `--board` when several are live).
     Select {
         /// The remote Deck board id (from `boards list`).
         board: u64,
+        /// The local board (uuid) to bind; the single live board when
+        /// omitted, a freshly minted one on a board-less install.
+        #[arg(long, value_parser = parse_board_id)]
+        local_board: Option<taskboard_domain::BoardId>,
         /// Adoption wait budget, in seconds (default 60).
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
@@ -215,6 +220,32 @@ pub enum BoardsCmd {
         board: Option<taskboard_domain::BoardId>,
         /// Confirm the repair (the refusal without it is typed and
         /// states what would be cleared).
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Detach the board's remote binding: content and queued ops stay
+    /// (the ops strand honestly and drain on a re-bind); the binding
+    /// and the board's sync-status row go. Repeat is an idempotent
+    /// no-op.
+    Unbind {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
+        /// Confirm the unbind (the refusal without it is typed and
+        /// states what will strand).
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Deterministically merge same-title duplicate entities the bind
+    /// ceremony's pull adopted alongside pre-existing local rows
+    /// (survivors keep the local ids; duplicate rows neutralize).
+    /// Idempotent.
+    Reconcile {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
+        /// Confirm the merge (the refusal without it is typed and
+        /// states the match counts).
         #[arg(long)]
         confirm: bool,
     },

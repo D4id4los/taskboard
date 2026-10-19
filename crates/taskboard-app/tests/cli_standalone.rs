@@ -190,6 +190,7 @@ async fn st4_connector_verbs_refuse_sync_disabled() {
         config.clone(),
         forbidden_store(),
         3,
+        None,
         std::time::Duration::from_secs(1),
         false,
     )

@@ -143,6 +143,7 @@ fn o1b_receipt_payloads_expose_documented_fields() {
     let select = SelectReceipt {
         board: entry,
         sync: SyncStatusView::new(&taskboard_domain::SyncStatus::default()),
+        wiped_refs: None,
     };
     let v = serde_json::to_value(&select).unwrap();
     assert_eq!(v["board"]["id"], 3);
@@ -251,6 +252,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::BackendExplicitStandalone => "backend-explicit-standalone",
             CommandError::ConnectionExists => "connection-exists",
             CommandError::ConfirmationRequired { .. } => "confirmation-required",
+            CommandError::UnbindConfirmationRequired { .. } => "unbind-confirmation-required",
+            CommandError::ReconcileConfirmationRequired { .. } => "reconcile-confirmation-required",
             CommandError::IpcTransport => "ipc-transport",
             CommandError::IpcVersion { .. } => "ipc-version",
         }

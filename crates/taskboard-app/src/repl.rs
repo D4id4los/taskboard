@@ -1049,6 +1049,25 @@ mod tests {
                 cmd: BoardsCmd::Create { .. }
             }
         ));
+
+        // The chunk-3 ceremony verbs parse as line verbs with their
+        // loud flags intact (routing rides `boards_line`'s shared
+        // `*_on` seam; the single-live default is the INTERIM
+        // multi-board-6 resolve).
+        let (command, _) = execute(resolve_line("boards unbind --confirm", false));
+        assert!(matches!(
+            command,
+            Command::Boards {
+                cmd: BoardsCmd::Unbind { confirm: true, .. }
+            }
+        ));
+        let (command, _) = execute(resolve_line("boards reconcile", false));
+        assert!(matches!(
+            command,
+            Command::Boards {
+                cmd: BoardsCmd::Reconcile { confirm: false, .. }
+            }
+        ));
     }
 }
 

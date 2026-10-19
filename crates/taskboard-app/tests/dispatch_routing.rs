@@ -108,6 +108,7 @@ async fn boards_select_routes_a_failed_credential_load_to_exit_one() {
         Command::Boards {
             cmd: BoardsCmd::Select {
                 board: 3,
+                local_board: None,
                 timeout_secs: 1,
                 bind_local_board: false,
             },

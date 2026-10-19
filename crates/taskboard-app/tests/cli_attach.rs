@@ -159,6 +159,7 @@ async fn v15_select_bind_local_board_migrates_and_refuses_without_the_flag() {
         config.clone(),
         store_for(&server.uri()),
         common::BOARD,
+        None,
         Duration::from_secs(10),
         false,
     )
@@ -171,6 +172,7 @@ async fn v15_select_bind_local_board_migrates_and_refuses_without_the_flag() {
         config.clone(),
         store_for(&server.uri()),
         common::BOARD,
+        None,
         Duration::from_secs(60),
         true,
     )

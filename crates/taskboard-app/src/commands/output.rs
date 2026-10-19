@@ -472,6 +472,12 @@ pub struct SelectReceipt {
     pub board: BoardsListEntry,
     /// Sync status at adoption.
     pub sync: SyncStatusView,
+    /// Descendant remote refs the bind wiped, surfaced only when the
+    /// bind actually cleared some (the no-wipe receipt stays
+    /// byte-identical; `Some` rides the forecast note — the exact
+    /// stranded-op count lands push-side).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wiped_refs: Option<usize>,
 }
 
 /// The `boards publish` receipt: the created remote board plus the
@@ -510,6 +516,38 @@ pub struct BoardDestructReceipt {
     /// The remote board id when the board is bound (delete only: the
     /// remote content is destroyed server-side by the push).
     pub bound_remote: Option<u64>,
+}
+
+/// The `boards unbind` receipt: the landed ceremony — the ex-bound
+/// remote, the ops that now strand honestly, and the refs a future
+/// same-remote re-bind re-adopts.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct UnbindReceipt {
+    /// The unbound local board's uuid.
+    pub board: String,
+    /// The remote board id the binding was dropped from; `None` when
+    /// the board was already unbound (the idempotent no-op receipt).
+    pub bound_remote: Option<u64>,
+    /// Outbox ops attributed to the board that now wait for a re-bind.
+    pub stranded_ops: usize,
+    /// Live descendant refs kept (a same-remote re-bind re-adopts them).
+    pub kept_refs: usize,
+}
+
+/// The `boards reconcile` receipt: the merged same-title duplicates and
+/// the cancelled duplicate create-ops.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReconcileReceipt {
+    /// The reconciled local board's uuid.
+    pub board: String,
+    /// Merged stack pairs.
+    pub stacks: usize,
+    /// Merged label pairs.
+    pub labels: usize,
+    /// Merged task pairs.
+    pub tasks: usize,
+    /// Create-ops cancelled on survivors that just adopted a ref.
+    pub cancelled_ops: usize,
 }
 
 /// The `stacks add` receipt: the new stack projection.

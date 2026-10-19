@@ -232,6 +232,51 @@ pub enum CommandError {
         /// Whether the board is bound (delete destroys remote content).
         bound: bool,
     },
+    /// `boards unbind` ran without `--confirm`; the payload states the
+    /// scope so the refusal is actionable (the bound remote, the ops
+    /// that will strand, the refs a future different-remote rebind
+    /// would wipe). Confirmation is CLI-layer policy only.
+    #[error(
+        "pass --confirm to unbind board {}: bound remote {:?}, {} pending op(s) would strand, {} descendant ref(s) kept",
+        board,
+        bound_remote,
+        pending_ops,
+        descendant_refs
+    )]
+    UnbindConfirmationRequired {
+        /// The board's uuid (receipt-side rendering format).
+        board: String,
+        /// The currently bound remote board id, if any.
+        bound_remote: Option<u64>,
+        /// Outbox ops that would strand.
+        pending_ops: usize,
+        /// Live descendant refs kept (wiped by a future different-remote
+        /// rebind).
+        descendant_refs: usize,
+    },
+    /// `boards reconcile` ran without `--confirm`; the payload states
+    /// the match counts the pass would land (computed by the pure
+    /// planner — a count, not a dry-run mode).
+    #[error(
+        "pass --confirm to reconcile board {}: {} stack(s), {} label(s), {} task(s) would merge, {} duplicate create-op(s) would be cancelled",
+        board,
+        stacks,
+        labels,
+        tasks,
+        cancelled_ops
+    )]
+    ReconcileConfirmationRequired {
+        /// The board's uuid (receipt-side rendering format).
+        board: String,
+        /// Merged stack pairs.
+        stacks: usize,
+        /// Merged label pairs.
+        labels: usize,
+        /// Merged task pairs.
+        tasks: usize,
+        /// Cancelled duplicate create-ops.
+        cancelled_ops: usize,
+    },
     /// The daemon speaks a different wire-protocol version.
     #[error("daemon ipc protocol version mismatch")]
     IpcVersion {
@@ -306,6 +351,8 @@ impl CommandError {
             Self::Attach(_) => "attach-failed",
             Self::ConnectionExists => "connection-exists",
             Self::ConfirmationRequired { .. } => "confirmation-required",
+            Self::UnbindConfirmationRequired { .. } => "unbind-confirmation-required",
+            Self::ReconcileConfirmationRequired { .. } => "reconcile-confirmation-required",
             Self::IpcTransport => "ipc-transport",
             Self::IpcVersion { .. } => "ipc-version",
         }
@@ -316,6 +363,22 @@ impl CommandError {
     #[must_use]
     pub fn error_detail(&self) -> Option<String> {
         match self {
+            Self::Engine(err)
+                if matches!(
+                    &**err,
+                    taskboard_state::ExecuteError::Rejected(
+                        taskboard_domain::CommandError::BoardAlreadyBound { .. }
+                    )
+                ) =>
+            {
+                let taskboard_state::ExecuteError::Rejected(
+                    taskboard_domain::CommandError::BoardAlreadyBound { board, bound },
+                ) = &**err
+                else {
+                    unreachable!("guarded above")
+                };
+                Some(format!("{} (bound remote {})", board.as_uuid(), bound.0))
+            }
             Self::UnknownBoard(id) => Some(id.to_string()),
             Self::BoardAlreadyBound { board, current } => {
                 Some(format!("{board} (bound remote {current})"))
@@ -330,6 +393,8 @@ impl CommandError {
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
             Self::IpcVersion { server_v } => Some(server_v.to_string()),
             Self::ConfirmationRequired { verb, .. } => Some(verb.clone()),
+            Self::UnbindConfirmationRequired { board, .. }
+            | Self::ReconcileConfirmationRequired { board, .. } => Some(board.clone()),
             _ => None,
         }
     }
@@ -419,6 +484,35 @@ pub(crate) fn resolve_board(
     }
 }
 
+/// [`resolve_board`]'s bind-ceremony sibling (D3-7): zero live boards is
+/// the *fresh path* (`Ok(None)`) — a board-less install mints and binds,
+/// it is not ambiguous. `--board` rides the typed lookup refusals; ≥2
+/// live boards without a flag still refuse [`CommandError::AmbiguousBoard`].
+///
+/// # Errors
+///
+/// [`CommandError::AmbiguousBoard`] for ≥2 live boards without a flag,
+/// the engine's named-id rejection kinds for a flag that does not
+/// resolve.
+pub(crate) fn resolve_board_or_none_for_bind(
+    app: &crate::App,
+) -> Result<Option<taskboard_domain::BoardId>, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let mut live: Vec<taskboard_domain::BoardId> = state
+        .boards
+        .values()
+        .filter(|b| !b.deleted)
+        .map(|b| b.id)
+        .collect();
+    match live.len() {
+        0 => Ok(None),
+        1 => Ok(Some(live.remove(0))),
+        _ => Err(CommandError::AmbiguousBoard {
+            candidates: live.iter().map(|id| id.as_uuid().to_string()).collect(),
+        }),
+    }
+}
+
 /// One subcommand run to completion. Returns the process exit code:
 /// `0` success (including idempotent `NoOp` repeats), `1` runtime
 /// failure. Exit `2` (clap usage errors) and `130` (second-signal force
@@ -466,6 +560,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             cmd:
                 BoardsCmd::Select {
                     board,
+                    local_board,
                     timeout_secs,
                     bind_local_board,
                 },
@@ -479,6 +574,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                         config,
                         store,
                         board,
+                        local_board,
                         Duration::from_secs(timeout_secs),
                         bind_local_board,
                     )
@@ -575,6 +671,28 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             move |config, store| async move { boards::reset(config, store, board, confirm).await },
         )
         .await,
+        Command::Boards {
+            cmd: BoardsCmd::Unbind { board, confirm },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            boards::render_text_unbind,
+            move |config, store| async move { boards::unbind(config, store, board, confirm).await },
+        )
+        .await,
+        Command::Boards {
+            cmd: BoardsCmd::Reconcile { board, confirm },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                boards::render_text_reconcile,
+                move |config, store| async move {
+                    boards::reconcile(config, store, board, confirm).await
+                },
+            )
+            .await
+        }
         Command::Stacks {
             cmd:
                 StacksCmd::Add {
@@ -1119,19 +1237,21 @@ async fn boards_line(
         ),
         BoardsCmd::Select {
             board,
+            local_board,
             timeout_secs,
             bind_local_board,
         } => {
             match boards::select_prelude(session.session_config(), session.session_store(), board)
                 .await
             {
-                Ok(()) => emit_result(
+                Ok(entry) => emit_result(
                     io,
                     boards::select_on(
                         app,
-                        board,
+                        entry,
                         Duration::from_secs(timeout_secs),
                         bind_local_board,
+                        local_board,
                     )
                     .await,
                     boards::render_text_select,
@@ -1188,6 +1308,16 @@ async fn boards_line(
             io,
             boards::reset_on(app, board, confirm).await,
             boards::render_text_destruct,
+        ),
+        BoardsCmd::Unbind { board, confirm } => emit_result(
+            io,
+            boards::unbind_on(app, board, confirm).await,
+            boards::render_text_unbind,
+        ),
+        BoardsCmd::Reconcile { board, confirm } => emit_result(
+            io,
+            boards::reconcile_on(app, board, confirm).await,
+            boards::render_text_reconcile,
         ),
     }
 }
@@ -1558,6 +1688,7 @@ mod ipc_routing_tests {
             Command::Boards {
                 cmd: BoardsCmd::Select {
                     board: 3,
+                    local_board: None,
                     timeout_secs: 1,
                     bind_local_board: false,
                 },

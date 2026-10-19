@@ -350,6 +350,7 @@ async fn v7_select_binds_and_adopts() {
         config.clone(),
         Arc::clone(&store),
         common::BOARD,
+        None,
         Duration::from_secs(30),
         false,
     )
@@ -377,6 +378,7 @@ async fn v8_select_unknown_board_never_boots() {
         config,
         store_for(&server.uri()),
         999,
+        None,
         Duration::from_secs(5),
         false,
     )
@@ -407,6 +409,7 @@ async fn v9_select_refuses_rebind_and_accepts_same_id() {
         config,
         store_for(&server.uri()),
         common::BOARD,
+        None,
         Duration::from_secs(5),
         false,
     )
@@ -430,6 +433,7 @@ async fn v9_select_refuses_rebind_and_accepts_same_id() {
         config,
         store_for(&server.uri()),
         common::BOARD,
+        None,
         Duration::from_secs(15),
         false,
     )
@@ -539,17 +543,28 @@ async fn v11_select_ignores_a_stale_persisted_failure() {
     let config = config_for(&server.uri(), dir.path(), "v11.db");
     let store = store_for(&server.uri());
 
-    let receipt = boards::select(config, store, common::BOARD, Duration::from_secs(30), true)
-        .await
-        .expect("stale failure must not block the adoption");
+    let receipt = boards::select(
+        config,
+        store,
+        common::BOARD,
+        None,
+        Duration::from_secs(30),
+        true,
+    )
+    .await
+    .expect("stale failure must not block the adoption");
     assert_eq!(receipt.board.id, common::BOARD);
 }
 
 /// V12: selecting against an all-500 server with a seeded local board —
 /// the bind adopts locally (no pull can run first), and the receipt
-/// reports the hydrated failed status instead of pretending success.
+/// V12 (multi-board chunk 3): a binding-cycle failure surfaces typed —
+/// the ceremony's per-board decision table (D3-11) turns a fresh
+/// `Failed { Server }` into the `sync-failed` refusal carrying the
+/// sync kind (the old hydrate-and-succeed receipt shape pinned a
+/// limitation; the stale persisted phase itself is still ignored).
 #[tokio::test]
-async fn v12_select_reports_the_hydrated_failure_status() {
+async fn v12_select_surfaces_a_fresh_failure_typed() {
     let dir = tempdir();
     let server = wiremock::MockServer::start().await;
     // Only the pre-validation listing succeeds; the binding cycle's
@@ -574,17 +589,18 @@ async fn v12_select_reports_the_hydrated_failure_status() {
     let config = config_for(&server.uri(), dir.path(), "v12.db");
     let store = store_for(&server.uri());
 
-    // With a local board present, the bind adopts it before any pull can
-    // run, so the cold-adoption fresh failure of the singleton world is
-    // unreachable: the receipt surfaces honestly with the hydrated
-    // failed status (the fresh-failure path itself stays pinned by the
-    // v6 sync-verb pair on a bound board).
-    let receipt = boards::select(config, store, common::BOARD, Duration::from_secs(30), true)
-        .await
-        .expect("the local adoption succeeds without a pull");
-    assert_eq!(receipt.board.id, common::BOARD);
-    assert_eq!(receipt.sync.phase, "failed");
-    assert_eq!(receipt.sync.error_kind.as_deref(), Some("no-board"));
+    let err = boards::select(
+        config,
+        store,
+        common::BOARD,
+        None,
+        Duration::from_secs(30),
+        true,
+    )
+    .await
+    .expect_err("the cycle's failure surfaces typed");
+    assert_eq!(err.error_kind(), "sync-failed");
+    assert_eq!(err.error_detail().as_deref(), Some("server"));
 }
 
 /// V13: `sync --no-wait` nudges and reports the current status without
@@ -1137,5 +1153,539 @@ fn v18_board_flag_parses_uuids_and_rejects_garbage() {
         let err = Cli::try_parse_from(["taskboard", "boards", "rename", "--board", bad, "t"])
             .expect_err("malformed uuid");
         assert_eq!(err.exit_code(), 2, "{bad} is a usage error");
+    }
+}
+
+// ---- multi-board chunk 3: unbind / reconcile ceremonies --------------
+
+mod ceremonies {
+    use super::*;
+
+    /// `boards unbind` without `--confirm` refuses typed, stating the
+    /// scope; with it the pass lands and the receipt names the board,
+    /// the ex-bound remote, and the stranded ops. A repeat is the
+    /// idempotent zero-strand receipt.
+    #[tokio::test]
+    async fn unbind_confirmation_gate_then_receipt_then_idempotent_repeat() {
+        let dir = tempdir();
+        let server = wiremock::MockServer::start().await;
+        mount_pull(&server, common::stacks_json(&json!([]))).await;
+        let db = dir.path().join("unbind.db");
+        common::seed_board_binding(&db, 0x00DA_0042, common::BOARD, "unbind").await;
+        let config = config_for(&server.uri(), dir.path(), "unbind.db");
+        let store = store_for(&server.uri());
+
+        let err = boards::unbind(config.clone(), Arc::clone(&store), None, false)
+            .await
+            .expect_err("gate refuses");
+        assert_eq!(err.error_kind(), "unbind-confirmation-required");
+        let local = uuid::Uuid::from_u128(0x00DA_0042).to_string();
+        assert_eq!(err.error_detail().as_deref(), Some(local.as_str()));
+
+        let receipt = boards::unbind(config.clone(), Arc::clone(&store), None, true)
+            .await
+            .expect("unbind lands");
+        assert_eq!(receipt.board, local);
+        assert_eq!(receipt.bound_remote, Some(common::BOARD));
+        assert_eq!(receipt.stranded_ops, 0, "nothing queued in this fixture");
+
+        let receipt = boards::unbind(config, store, None, true)
+            .await
+            .expect("repeat lands");
+        assert_eq!(receipt.bound_remote, None, "already unbound");
+        assert_eq!(receipt.stranded_ops, 0);
+    }
+
+    /// `boards reconcile` without `--confirm` refuses with the match
+    /// counts (computed by the pure planner); with it the counts land.
+    /// A second run is the idempotent zero-count receipt.
+    #[tokio::test]
+    async fn reconcile_confirmation_gate_then_counts_then_idempotent_rerun() {
+        let dir = tempdir();
+        let server = wiremock::MockServer::start().await;
+        // The pull carries a stack whose title collides with the local
+        // draft's stack: post-bind the adopt leaves a same-title pair.
+        mount_pull(&server, common::stacks_json(&json!([]))).await;
+        let db = dir.path().join("reconcile.db");
+        common::seed_board_binding(&db, 0x00DA_0043, common::BOARD, "reconcile").await;
+        let config = config_for(&server.uri(), dir.path(), "reconcile.db");
+        let store = store_for(&server.uri());
+
+        let err = boards::reconcile(config.clone(), Arc::clone(&store), None, false)
+            .await
+            .expect_err("gate refuses");
+        assert_eq!(err.error_kind(), "reconcile-confirmation-required");
+
+        let receipt = boards::reconcile(config.clone(), Arc::clone(&store), None, true)
+            .await
+            .expect("reconcile lands");
+        assert_eq!(
+            (
+                receipt.stacks,
+                receipt.labels,
+                receipt.tasks,
+                receipt.cancelled_ops
+            ),
+            (0, 0, 0, 0),
+            "a settled single-board state has no candidates"
+        );
+
+        let receipt = boards::reconcile(config, store, None, true)
+            .await
+            .expect("rerun lands");
+        assert_eq!(receipt.stacks, 0, "idempotent rerun");
+    }
+
+    /// The fresh-install select path (D3-1): a board-less db mints a
+    /// shell from the remote's real title, binds, and adopts — the
+    /// receipt names the remote board with the merged title.
+    #[tokio::test]
+    async fn fresh_install_select_mints_binds_and_adopts() {
+        let dir = tempdir();
+        let server = wiremock::MockServer::start().await;
+        mount_pull(&server, common::stacks_json(&json!([]))).await;
+        let config = config_for(&server.uri(), dir.path(), "fresh.db");
+        let store = store_for(&server.uri());
+
+        let receipt = boards::select(
+            config,
+            store,
+            common::BOARD,
+            None,
+            Duration::from_secs(30),
+            false,
+        )
+        .await
+        .expect("fresh select binds");
+        assert_eq!(receipt.board.id, common::BOARD);
+        assert_eq!(receipt.board.title, "board", "the remote's real title");
+        assert_eq!(receipt.wiped_refs, None, "nothing wiped on a mint");
+    }
+
+    /// The same-remote re-select is the immediate no-op receipt — no
+    /// adoption wait: a zero wait budget would time out if the ceremony
+    /// tried to wait, so the receipt proves the short-circuit.
+    #[tokio::test]
+    async fn reselect_same_remote_is_immediate_noop() {
+        let dir = tempdir();
+        let server = wiremock::MockServer::start().await;
+        mount_pull(&server, common::stacks_json(&json!([]))).await;
+        let db = dir.path().join("reselect.db");
+        common::seed_board_binding(&db, 0x00DA_0044, common::BOARD, "reselect").await;
+        let config = config_for(&server.uri(), dir.path(), "reselect.db");
+        let store = store_for(&server.uri());
+
+        let receipt = boards::select(
+            config,
+            store,
+            common::BOARD,
+            None,
+            Duration::from_secs(0),
+            false,
+        )
+        .await
+        .expect("immediate receipt");
+        assert_eq!(receipt.board.id, common::BOARD);
+        assert_eq!(receipt.wiped_refs, None);
+    }
+
+    /// The engine's multi-binding rule surfaces typed through the
+    /// ceremony: binding a second local board onto a remote another
+    /// board already holds refuses `RemoteBoardInUse`, naming the
+    /// holding board (one rule, one home — the engine's).
+    #[tokio::test]
+    async fn select_remote_held_by_other_board_passes_through() {
+        use taskboard_app::commands::CommandError;
+        use taskboard_domain::CommandError as D;
+        use taskboard_state::ExecuteError;
+
+        let dir = tempdir();
+        let server = wiremock::MockServer::start().await;
+        mount_pull(&server, common::stacks_json(&json!([]))).await;
+        let db = dir.path().join("inuse.db");
+        common::seed_board_binding(&db, 0x00DA_00A1, common::BOARD, "inuse").await;
+        let config = config_for(&server.uri(), dir.path(), "inuse.db");
+        let store = store_for(&server.uri());
+        let second = boards::create(config.clone(), Arc::clone(&store), "second", None)
+            .await
+            .expect("second live board")
+            .id;
+        let second = taskboard_domain::BoardId::from_uuid(uuid::Uuid::parse_str(&second).unwrap());
+
+        let err = boards::select(
+            config,
+            store,
+            common::BOARD,
+            Some(second),
+            Duration::from_secs(5),
+            true,
+        )
+        .await
+        .expect_err("the held remote refuses");
+        assert_eq!(err.error_kind(), "remote-board-in-use");
+        assert!(matches!(
+            err,
+            CommandError::Engine(ref boxed)
+                if matches!(&**boxed, ExecuteError::Rejected(D::RemoteBoardInUse { remote, board })
+                    if remote.0 == common::BOARD
+                        && *board == taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x00DA_00A1)))
+        ));
+    }
+
+    /// Two live boards and no `--local-board`: the resolution half of
+    /// D3-7's split — zero live boards takes the fresh path, ≥2 refuses
+    /// the typed ambiguity.
+    #[tokio::test]
+    async fn select_two_live_boards_without_flag_is_ambiguous() {
+        let dir = tempdir();
+        let server = wiremock::MockServer::start().await;
+        mount_pull(&server, common::stacks_json(&json!([]))).await;
+        let (config, _a, _b) = two_boards(&server, dir.path(), "selambig.db").await;
+
+        let err = boards::select(
+            config,
+            store_for(&server.uri()),
+            common::BOARD,
+            None,
+            Duration::from_secs(5),
+            false,
+        )
+        .await
+        .expect_err("two live boards");
+        assert_eq!(err.error_kind(), "ambiguous-board");
+    }
+
+    /// The unbind receipt's kept-refs count and the rebind's wiped-refs
+    /// receipt round-trip the seeded fixture: unbind keeps the stale
+    /// refs (a same-remote rebind re-adopts them), and a different-
+    /// remote bind wipes exactly those refs and says so.
+    #[tokio::test]
+    async fn select_bind_wipe_receipt_counts() {
+        let dir = tempdir();
+        let server = wiremock::MockServer::start().await;
+        // The listing serves both remotes: board 3 (the stale binding)
+        // and board 77 (the rebind target the actor pulls after the
+        // ceremony's bind).
+        mount_get(
+            &server,
+            BOARDS_PATH,
+            json!([
+                {"id": common::BOARD, "title": "board", "color": "00ff00",
+                 "lastModified": common::T, "deletedAt": 0, "archived": false, "labels": []},
+                {"id": 77, "title": "seventy-seven", "color": "00ff00",
+                 "lastModified": common::T, "deletedAt": 0, "archived": false, "labels": []}
+            ])
+            .to_string(),
+        )
+        .await;
+        mount_get(&server, BOARD_PATH, common::board_json()).await;
+        // The seeded descendants' remote counterparts: without them the
+        // boot pull's absence rule would tombstone the refs before the
+        // ceremony ever runs.
+        mount_get(
+            &server,
+            STACKS_PATH,
+            json!([{
+                "id": 5, "title": "col", "boardId": common::BOARD, "order": 0,
+                "lastModified": common::T, "deletedAt": 0, "archived": false,
+                "cards": [{
+                    "id": 6, "title": "card", "stackId": 5, "type": "plain",
+                    "order": 0, "lastModified": common::T, "labels": [],
+                    "archived": false, "duedate": null, "done": null
+                }]
+            }])
+            .to_string(),
+        )
+        .await;
+        mount_get(&server, STACKS_ARCHIVED_PATH, "[]".to_owned()).await;
+        mount_get(
+            &server,
+            "/index.php/apps/deck/api/v1.0/boards/77",
+            json!({"id": 77, "title": "seventy-seven", "color": "00ff00",
+                   "lastModified": common::T, "deletedAt": 0, "archived": false, "labels": []})
+            .to_string(),
+        )
+        .await;
+        mount_get(
+            &server,
+            "/index.php/apps/deck/api/v1.0/boards/77/stacks",
+            "[]".to_owned(),
+        )
+        .await;
+        mount_get(
+            &server,
+            "/index.php/apps/deck/api/v1.0/boards/77/stacks/archived",
+            "[]".to_owned(),
+        )
+        .await;
+
+        let db = dir.path().join("wipe.db");
+        common::seed_board_binding(&db, 0x00DA_00B1, common::BOARD, "wipe").await;
+        seed_ref_descendants(&db, common::BOARD, 0x00DA_00B1).await;
+        let config = config_for(&server.uri(), dir.path(), "wipe.db");
+        let store = store_for(&server.uri());
+        let local = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x00DA_00B1));
+
+        // Unbind: the stale refs stay (kept), the ops would strand.
+        let receipt = boards::unbind(config.clone(), Arc::clone(&store), Some(local), true)
+            .await
+            .expect("unbind lands");
+        assert_eq!(receipt.bound_remote, Some(common::BOARD));
+        assert_eq!(receipt.kept_refs, 2, "the stale refs are kept");
+
+        // Rebind onto a different remote: exactly the kept refs wipe.
+        let receipt = boards::select(
+            config,
+            store,
+            77,
+            Some(local),
+            Duration::from_secs(30),
+            true,
+        )
+        .await
+        .expect("rebind lands");
+        assert_eq!(receipt.board.id, 77);
+        assert_eq!(
+            receipt.wiped_refs,
+            Some(2),
+            "one stack ref + one task ref wiped"
+        );
+    }
+
+    /// The bind ceremony's automatic post-adoption reconcile (D3-8):
+    /// a pull-adopted stack colliding with the local draft merges —
+    /// the local row survives carrying the ref, the adopted duplicate
+    /// neutralizes, its create-op cancels — and a manual rerun is the
+    /// accepted no-op.
+    #[tokio::test]
+    async fn bind_ceremony_runs_reconcile_automatically() {
+        use taskboard_domain::{CommandOutcome, LocalOp, StateCommand, SyncStateReader};
+
+        let dir = tempdir();
+        let server = wiremock::MockServer::start().await;
+        mount_pull(&server, common::stacks_json(&json!([]))).await;
+        let db = dir.path().join("autorecon.db");
+        common::seed_board_binding(&db, 0x00DA_00C1, common::BOARD, "autorecon").await;
+        let config = config_for(&server.uri(), dir.path(), "autorecon.db");
+        let store = store_for(&server.uri());
+        let local = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x00DA_00C1));
+
+        // A bound board re-selects as the immediate no-op (which skips
+        // adoption), so the ceremony must take the fresh bind: unbind.
+        boards::unbind(config.clone(), Arc::clone(&store), Some(local), true)
+            .await
+            .expect("unbound");
+
+        let app = taskboard_app::bootstrap::bootstrap(
+            config.clone(),
+            Arc::clone(&store),
+            Arc::new(taskboard_app::notifications::LogSink),
+        )
+        .await
+        .expect("booted");
+        let outcome = app
+            .engine
+            .execute(StateCommand::CreateStack {
+                board: local,
+                title: "col".into(),
+                order: 0,
+            })
+            .await
+            .expect("local draft stack");
+        let taskboard_domain::CommandOutcome::CreatedStack(stack_id) = outcome else {
+            unreachable!("CreateStack answers CreatedStack");
+        };
+
+        let entry = taskboard_app::commands::output::BoardsListEntry {
+            id: common::BOARD,
+            title: "board".into(),
+            archived: false,
+            deleted: false,
+        };
+        boards::select_on(&app, entry, Duration::from_secs(30), true, Some(local))
+            .await
+            .expect("binds, adopts, reconciles");
+
+        let state = app.engine.shared_state().load_full();
+        let live: Vec<_> = state.stacks.values().filter(|s| !s.deleted).collect();
+        assert_eq!(live.len(), 1, "the duplicate pair merged to one row");
+        assert_eq!(live[0].id, stack_id, "the local row survives");
+        assert!(live[0].remote.is_some(), "the survivor carries the ref");
+        assert!(
+            state
+                .stacks
+                .values()
+                .any(|s| s.deleted && s.remote.is_none()),
+            "the pull-adopted duplicate neutralized ref-less"
+        );
+        drop(state);
+        let persisted = SyncStateReader::read_state(&app.engine)
+            .await
+            .expect("persisted state");
+        assert!(
+            !persisted
+                .outbox
+                .iter()
+                .any(|p| matches!(p.op, LocalOp::CreateStack(id) if id == stack_id)),
+            "the duplicate's create-op cancelled"
+        );
+        let rerun = app
+            .engine
+            .execute(StateCommand::ReconcileByTitle { board: local })
+            .await
+            .expect("accepted");
+        assert_eq!(rerun, CommandOutcome::NoOp, "idempotent after the pass");
+        let _ = app.shutdown().await;
+    }
+
+    /// Destruct at N: the unconfirmed refusal states *that* board's
+    /// counts (two boards with differing scopes get different
+    /// numbers), and the confirmed receipt names the board id.
+    #[tokio::test]
+    async fn destruct_refusal_states_that_boards_counts_and_receipt_names_it() {
+        use taskboard_app::commands::{CommandError, stacks, tasks};
+
+        let dir = tempdir();
+        let server = wiremock::MockServer::start().await;
+        mount_pull(&server, common::stacks_json(&json!([]))).await;
+        let config = config_for(&server.uri(), dir.path(), "destructn.db");
+        let store = store_for(&server.uri());
+        let full = boards::create(config.clone(), Arc::clone(&store), "full", None)
+            .await
+            .expect("board with content")
+            .id;
+        let full = taskboard_domain::BoardId::from_uuid(uuid::Uuid::parse_str(&full).unwrap());
+        stacks::add(config.clone(), Arc::clone(&store), None, "col", None)
+            .await
+            .expect("stack");
+        tasks::add(config.clone(), Arc::clone(&store), "task", Some("col"))
+            .await
+            .expect("task");
+        let empty = boards::create(config.clone(), Arc::clone(&store), "empty", None)
+            .await
+            .expect("empty board")
+            .id;
+        let empty = taskboard_domain::BoardId::from_uuid(uuid::Uuid::parse_str(&empty).unwrap());
+
+        let err = boards::delete(config.clone(), Arc::clone(&store), Some(empty), false)
+            .await
+            .expect_err("the empty board's refusal");
+        let CommandError::ConfirmationRequired {
+            stacks: s,
+            tasks: t,
+            labels: l,
+            pending_ops,
+            bound,
+            ..
+        } = &err
+        else {
+            panic!("typed refusal");
+        };
+        assert_eq!((s, t, l), (&0, &0, &0), "the empty board's own zeros");
+        assert_eq!(pending_ops, &0);
+        assert!(!bound);
+
+        let err = boards::delete(config.clone(), Arc::clone(&store), Some(full), false)
+            .await
+            .expect_err("the full board's refusal");
+        let CommandError::ConfirmationRequired {
+            stacks: s,
+            tasks: t,
+            labels: l,
+            pending_ops,
+            bound,
+            ..
+        } = &err
+        else {
+            panic!("typed refusal");
+        };
+        assert_eq!((s, t, l), (&1, &1, &0), "the full board's own counts");
+        assert!(pending_ops >= &1, "the doomed entities' ops are counted");
+        assert!(!bound, "locally created board");
+
+        let receipt = boards::delete(config, store, Some(full), true)
+            .await
+            .expect("confirmed delete");
+        assert_eq!(
+            receipt.board,
+            full.as_uuid().to_string(),
+            "the receipt names the board"
+        );
+        assert_eq!((receipt.stacks, receipt.tasks), (1, 1));
+    }
+
+    /// Seeds a stack and a task carrying remote refs naming the seeded
+    /// board's remote — the stale-ref shape a different-remote rebind
+    /// wipes (commands cannot set refs; the storage API can).
+    async fn seed_ref_descendants(db: &std::path::Path, remote: u64, board: u128) {
+        use std::collections::BTreeSet;
+        use taskboard_domain::{
+            PersistenceAction, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteStackId,
+            RemoteStackRef, Stack, StackClocks, StackId, Task, TaskClocks, TaskId,
+        };
+
+        let stamp = chrono::TimeZone::timestamp_opt(&chrono::Utc, common::T, 0).unwrap();
+        let stack_id = StackId::from_uuid(uuid::Uuid::from_u128(0x00DA_0501));
+        let stack = Stack {
+            id: stack_id,
+            remote: Some(RemoteStackRef {
+                board: RemoteBoardId(remote),
+                stack: RemoteStackId(5),
+            }),
+            board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(board)),
+            title: "col".to_owned(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: stamp,
+                order: stamp,
+                deleted: stamp,
+            },
+            remote_seen: None,
+        };
+        let task = Task {
+            id: TaskId::from_uuid(uuid::Uuid::from_u128(0x00DA_0601)),
+            remote: Some(RemoteCardRef {
+                board: RemoteBoardId(remote),
+                stack: RemoteStackId(5),
+                card: RemoteCardId(6),
+            }),
+            title: "card".to_owned(),
+            description: String::new(),
+            duedate: None,
+            done: None,
+            stack: stack_id,
+            order: 0,
+            labels: BTreeSet::new(),
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: stamp,
+                description: stamp,
+                duedate: stamp,
+                done: stamp,
+                position: stamp,
+                labels: stamp,
+                archived: stamp,
+                deleted: stamp,
+            },
+            remote_seen: None,
+        };
+        let repo = std::sync::Arc::new(
+            taskboard_storage_sqlite::open(db, taskboard_domain::ConnectorId::from("nextcloud"))
+                .await
+                .expect("seed db"),
+        );
+        let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
+        handle
+            .apply(vec![
+                PersistenceAction::UpsertStack(stack),
+                PersistenceAction::UpsertTask(task),
+            ])
+            .await
+            .expect("seed applies");
+        drop(handle);
+        join.await.expect("seed actor exits");
     }
 }
