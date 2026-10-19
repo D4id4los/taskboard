@@ -10,10 +10,13 @@
 //! rebuildable optimization. Its board set is *derived*: every cycle the
 //! actor syncs exactly the persisted bindings tagged with its own
 //! connector id — a newly bound board is picked up by the next read with
-//! no message at all (the `SetBoard` era is over). Network events are *produced* here
-//! (`SystemEvent::NetworkLost`/`NetworkRestored` on the injected
-//! broadcast) and `Shutdown` is the only event consumed from it — this
-//! actor is the network authority.
+//! no message at all (the `SetBoard` era is over). This actor reports
+//! only *its own* connector's network episodes on the injected broadcast
+//! (`SystemEvent::ConnectorLost`/`ConnectorRestored`, exactly once per
+//! offline episode); counting those episodes into the global
+//! `NetworkLost`/`NetworkRestored` is the app-layer authority's job
+//! (`taskboard-app/src/authority.rs`) — no actor is the network
+//! authority. `Shutdown` is the only event consumed from the broadcast.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -232,10 +235,15 @@ async fn run(
                 Ok(
                     SystemEvent::StorageFailed
                         | SystemEvent::NetworkLost
-                        | SystemEvent::NetworkRestored,
+                        | SystemEvent::NetworkRestored
+                        | SystemEvent::ConnectorLost(_)
+                        | SystemEvent::ConnectorRestored(_),
                 ) => {
                     // The engine's persistence signal is no sync concern;
-                    // and this actor *is* the network authority anyway.
+                    // the whole network vocabulary belongs to the app-layer
+                    // authority — this actor reports only its own
+                    // connector's episodes and counts nothing, not even
+                    // its own events.
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     tracing::warn!("system broadcast closed; continuing without shutdown watch");

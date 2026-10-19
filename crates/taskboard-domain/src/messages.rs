@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::entities::Color;
-use crate::ids::{BoardId, LabelId, RemoteBoardId, StackId, TaskId};
+use crate::ids::{BoardId, ConnectorId, LabelId, RemoteBoardId, StackId, TaskId};
 use crate::reminders::ReminderRef;
 use crate::remote::{PushOutcome, RemoteBoardSnapshot};
 use crate::state::SyncErrorKind;
@@ -281,13 +281,22 @@ pub struct LabelChanges {
     pub color: Option<Color>,
 }
 
-/// Global system notification (broadcast payload).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Global system notification (broadcast payload). `NetworkLost`/
+/// `NetworkRestored` are the all-down authority's vocabulary (the
+/// app-layer counting task); the per-connector variants are each sync
+/// actor's own episode report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SystemEvent {
-    /// Network connectivity lost.
+    /// Network connectivity lost (every configured connector down —
+    /// emitted by the app-layer authority).
     NetworkLost,
-    /// Network connectivity restored.
+    /// Network connectivity restored (the first connector back —
+    /// emitted by the app-layer authority).
     NetworkRestored,
+    /// One connector's transport failed (its offline episode began).
+    ConnectorLost(ConnectorId),
+    /// One connector's transport recovered (its episode ended).
+    ConnectorRestored(ConnectorId),
     /// Graceful shutdown requested.
     Shutdown,
     /// A persistence write failed and was rejected (memory unchanged);
@@ -390,13 +399,39 @@ mod tests {
     }
 
     #[test]
-    fn copy_enums_travel_by_value() {
-        let events = [SystemEvent::Shutdown, SystemEvent::NetworkLost];
-        for _event in events {}
+    fn enums_travel_by_clone() {
+        let events = [
+            SystemEvent::Shutdown,
+            SystemEvent::NetworkLost,
+            SystemEvent::ConnectorLost(ConnectorId::from("work")),
+            SystemEvent::ConnectorRestored(ConnectorId::from("work")),
+        ];
+        for event in events.clone() {
+            let _moved = event.clone();
+        }
         let commands = [SyncCommand::SyncNow, SyncCommand::Detach];
         for _command in commands {}
         let signals = [EngineSignal::StateUpdated; 2];
         assert_eq!(signals[0], signals[1]);
+    }
+
+    /// The per-connector system variants travel the wire like their
+    /// siblings (lossless serde round trips carrying the id).
+    #[test]
+    fn connector_system_events_round_trip_through_serde() {
+        let lost = SystemEvent::ConnectorLost(ConnectorId::from("work"));
+        let json = serde_json::to_string(&lost).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<SystemEvent>(&json).expect("deserialize"),
+            lost
+        );
+
+        let restored = SystemEvent::ConnectorRestored(ConnectorId::from("nc-2"));
+        let json = serde_json::to_string(&restored).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<SystemEvent>(&json).expect("deserialize"),
+            restored
+        );
     }
 
     /// The detach variant travels the wire like its siblings (lossless
