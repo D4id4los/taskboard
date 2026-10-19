@@ -286,17 +286,55 @@ impl UiHandle {
 ///
 /// [`UiRunError`] — typed, see the variant docs.
 pub fn run(handle: UiHandle) -> Result<(), UiRunError> {
+    // A quit requested before the loop existed (a shutdown signal
+    // racing the boot) is honored here: skip the loop entirely — the
+    // caller's shutdown tail runs and the window is never shown.
+    if QUIT_REQUESTED_BEFORE_LOOP.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        tracing::info!("quit was requested before the event loop started; skipping run");
+        return Ok(());
+    }
     // Consumes the handle: the window lives for the loop's duration
     // and drops with it when the loop returns.
     let UiHandle { window, .. } = handle;
     window.show().map_err(UiRunError::WindowShow)?;
+    EVENT_LOOP_RUNNING.store(true, std::sync::atomic::Ordering::SeqCst);
     slint::run_event_loop().map_err(UiRunError::EventLoop)
 }
 
-/// Requests the event loop to quit (the exit watcher's surface; a
-/// no-op when no loop is running).
-pub fn quit() {
-    let _ = slint::quit_event_loop();
+/// A quit requested before [`run`] started the event loop. The winit
+/// backend's proxy `quit_event_loop` reports `Ok` even when the loop
+/// does not exist yet and silently drops the request — a shutdown
+/// signal racing the boot (hydrate + mount) left the process running
+/// forever. [`quit`] parks the request here; [`run`] honors it.
+static QUIT_REQUESTED_BEFORE_LOOP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether [`run`] has started the slint event loop (one loop per
+/// process; never unset). See [`event_loop_running`].
+static EVENT_LOOP_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True once [`run`] has started the slint event loop — the only state
+/// in which a [`quit`] is guaranteed to be delivered by the backend.
+#[must_use]
+pub fn event_loop_running() -> bool {
+    EVENT_LOOP_RUNNING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Requests the event loop to quit. Also parks the request on
+/// [`QUIT_REQUESTED_BEFORE_LOOP`]: a quit landing before [`run`] started
+/// the loop is not reliably delivered by the backend, so [`run`] skips
+/// straight to shutdown when the parked flag is set. Harmless when the
+/// loop is already running (one loop per process).
+///
+/// # Errors
+///
+/// [`slint::EventLoopError`] — as reported by the backend (the loop
+/// already terminated); the pre-loop parking path returns the backend's
+/// own result unchanged.
+pub fn quit() -> Result<(), slint::EventLoopError> {
+    QUIT_REQUESTED_BEFORE_LOOP.store(true, std::sync::atomic::Ordering::SeqCst);
+    slint::quit_event_loop()
 }
 
 #[cfg(test)]

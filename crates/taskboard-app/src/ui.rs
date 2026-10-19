@@ -237,11 +237,38 @@ pub fn observe_scale_escape_hatch() {
 /// The desktop UI lifecycle (D4/D5): boot the core exactly like the
 /// daemon path (same store selection, `LogSink` notifier), build the
 /// UI hand-over, spawn the command forwarder, mount the window, then
-/// run the slint event loop **on the process main thread** (we are
-/// inside `block_on`; the multi-thread runtime's workers keep driving
-/// every actor). Exit paths: window close ends the loop; `ctrl_c`/SIGTERM
-/// land via the exit watcher calling [`taskboard_ui_slint::quit`] —
-/// both reach the same graceful shutdown.
+/// run the slint event loop on the process main thread — see
+/// [`run_desktop`].
+///
+/// Quits the slint event loop reliably from outside the loop thread.
+/// A bare `quit()` before the loop exists is dropped by the backend
+/// (`Ok` with no delivery), so: a quit landing pre-boot is parked by
+/// [`taskboard_ui_slint::quit`] on the pre-loop flag ([`run`] honors
+/// it), and here we additionally wait for the loop to actually run —
+/// bounded at ~10 s — before delivering the quit through the live
+/// proxy. Giving up is logged; `run`'s own result decides the outcome.
+pub async fn quit_until_accepted() {
+    let mut waited_ms = 0u32;
+    while !taskboard_ui_slint::event_loop_running() {
+        if waited_ms >= 10_000 {
+            tracing::warn!("event loop never started; quit not delivered through the proxy");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        waited_ms += 50;
+    }
+    if let Err(err) = taskboard_ui_slint::quit() {
+        tracing::warn!(error = %err, "event loop refused the quit");
+    }
+}
+
+/// The desktop entry (`taskboard gui`): boots the core, mounts the
+/// window, and run the slint event loop **on the process main thread**
+/// (we are inside `block_on`; the multi-thread runtime's workers keep
+/// driving every actor). Exit paths: window close ends the loop;
+/// `ctrl_c`/SIGTERM land via the exit watcher calling
+/// [`taskboard_ui_slint::quit`] — both reach the same graceful
+/// shutdown.
 ///
 /// # Errors
 ///
@@ -276,7 +303,7 @@ pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result
     let exit_watcher = tokio::spawn(async {
         crate::bootstrap::wait_for_signal().await;
         tracing::info!("shutdown signal received");
-        taskboard_ui_slint::quit();
+        quit_until_accepted().await;
     });
 
     let run_result = taskboard_ui_slint::run(handle);
