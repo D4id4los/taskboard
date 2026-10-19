@@ -44,15 +44,27 @@ fn init_tracing() {
 
     {
         use tracing_subscriber::EnvFilter;
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                // Sensible default: info from our crates, warnings from deps.
-                "info,tower=warn,hyper=warn,reqwest=warn".to_owned().into()
-            }))
-            // Logs go to stderr: stdout carries the `--json` payloads
-            // (and human output) — a scripting surface, not a log sink.
-            .with_writer(std::io::stderr)
-            .init();
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            // Sensible default: info from our crates, warnings from deps.
+            "info,tower=warn,hyper=warn,reqwest=warn".to_owned().into()
+        });
+        // `TASKBOARD_LOG_FORMAT=json` swaps the same fmt builder to
+        // one-line JSON events on the same stderr writer — the
+        // machine-readable log stream the process smoke harnesses
+        // select structured fields on. Unset (or any other value)
+        // keeps the human-pretty default byte-identical. Unrelated to
+        // the CLI `--json` payload flag: logs vs command payloads.
+        let format_json = std::env::var("TASKBOARD_LOG_FORMAT")
+            .as_deref()
+            .is_ok_and(|v| v.eq_ignore_ascii_case("json"));
+        let builder = tracing_subscriber::fmt().with_env_filter(filter);
+        // Logs go to stderr: stdout carries the `--json` payloads
+        // (and human output) — a scripting surface, not a log sink.
+        if format_json {
+            builder.json().with_writer(std::io::stderr).init();
+        } else {
+            builder.with_writer(std::io::stderr).init();
+        }
     }
 }
 
