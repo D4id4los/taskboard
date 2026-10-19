@@ -139,8 +139,8 @@ pub enum BoardsCmd {
         #[arg(long)]
         bind_local_board: bool,
     },
-    /// Create the local board (stand-alone first-run command; refuses
-    /// when a board already exists).
+    /// Create a local board (stand-alone first-run command; always
+    /// mints — titles are not uniqueness keys).
     Create {
         /// The board title.
         title: String,
@@ -149,47 +149,70 @@ pub enum BoardsCmd {
         #[arg(long)]
         color: Option<String>,
     },
-    /// Rename the local board's title (both backends; the rename pushes
+    /// Rename a local board's title (both backends; the rename pushes
     /// when the board is bound, and rides the next `publish` otherwise).
     Rename {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
         /// The new board title.
         title: String,
     },
-    /// Publish the local board as a new Nextcloud board and bind it
+    /// Publish a local board as a new Nextcloud board and bind it
     /// (the migration path for stand-alone data; sync-only).
     Publish {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
         /// Wait budget for the settling first sync cycle, in seconds
         /// (default 60).
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
     },
-    /// Set the board color (pushes as a full-send when the board is
+    /// Set a board's color (pushes as a full-send when the board is
     /// bound).
     Color {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
         /// Board color as six hex digits (no `#`).
         #[arg(value_parser = parse_color)]
         color: String,
     },
-    /// Archive the board (archived boards stay commandable; the GUI
+    /// Archive a board (archived boards stay commandable; the GUI
     /// stops listing them).
-    Archive,
-    /// Unarchive the board.
-    Unarchive,
-    /// Delete the board: tombstone-cascades its stacks, tasks, and
+    Archive {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
+    },
+    /// Unarchive a board.
+    Unarchive {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
+    },
+    /// Delete a board: tombstone-cascades its stacks, tasks, and
     /// labels, cancels the pending ops of the doomed entities, and
     /// queues the remote delete (a bound board's remote content is
     /// destroyed server-side on the next cycle).
     Delete {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
         /// Confirm the destruction (the refusal without it is typed and
         /// states what would be destroyed).
         #[arg(long)]
         confirm: bool,
     },
-    /// Reset the board's local content (stacks, tasks, labels, outbox,
+    /// Reset a board's local content (stacks, tasks, labels, outbox,
     /// validators, reminder facts) in one local-only repair; the board
     /// row and binding survive. A bound board re-materializes from the
     /// next pull.
     Reset {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
         /// Confirm the repair (the refusal without it is typed and
         /// states what would be cleared).
         #[arg(long)]
@@ -201,8 +224,11 @@ pub enum BoardsCmd {
 /// live title (prefixes are a task-only affordance).
 #[derive(Debug, Subcommand)]
 pub enum StacksCmd {
-    /// Create a stack on the board (appended by default).
+    /// Create a stack on a board (appended by default).
     Add {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
         /// The stack title.
         title: String,
         /// Explicit sort order; default appends to the end of the board.
@@ -246,6 +272,29 @@ fn parse_color(raw: &str) -> Result<String, String> {
         return Ok(lower);
     }
     Err("expected exactly six hex digits (e.g. 31cc7c, no '#')".to_owned())
+}
+
+/// A local board uuid or a usage error — the `--board` flag of the
+/// board-scoped verbs. A malformed value is a clap usage error (exit 2),
+/// the `parse_color` precedent.
+fn parse_board_id(raw: &str) -> Result<taskboard_domain::BoardId, String> {
+    uuid::Uuid::parse_str(raw)
+        .map(taskboard_domain::BoardId::from_uuid)
+        .map_err(|_| "expected a board uuid".to_owned())
+}
+
+#[test]
+fn parse_board_id_accepts_uuids_and_rejects_garbage() {
+    let good = "00000000-0000-0000-0000-000000000001";
+    assert_eq!(
+        parse_board_id(good),
+        Ok(taskboard_domain::BoardId::from_uuid(
+            uuid::Uuid::parse_str(good).unwrap()
+        ))
+    );
+    for bad in ["", "not-a-uuid", "3"] {
+        assert!(parse_board_id(bad).is_err(), "{bad} must be rejected");
+    }
 }
 
 #[test]
@@ -314,10 +363,17 @@ pub enum ConfigCmd {
 /// `labels` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum LabelsCmd {
-    /// List the board's labels (with live-task assignment counts).
-    List,
+    /// List a board's labels (with live-task assignment counts).
+    List {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
+    },
     /// Create a label (color defaults to the Deck default when omitted).
     Add {
+        /// Target board (uuid); the single live board when omitted.
+        #[arg(long, value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
         /// The label title.
         title: String,
         /// Six hex digits (no `#`); a default applies when omitted.

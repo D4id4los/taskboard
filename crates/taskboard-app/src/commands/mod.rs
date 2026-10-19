@@ -103,9 +103,11 @@ pub enum CommandError {
     /// No such (live, non-archived) board on the server.
     #[error("no such board")]
     UnknownBoard(u64),
-    /// A different board is already bound (single-board invariant).
-    #[error("a different board is already bound")]
+    /// A different board is already bound (single-binding invariant).
+    #[error("board {} is already bound to a different remote board", board)]
     BoardAlreadyBound {
+        /// The local board's uuid (receipt-side rendering format).
+        board: String,
         /// The currently bound remote board id.
         current: u64,
     },
@@ -142,11 +144,16 @@ pub enum CommandError {
     /// There is no stack to target.
     #[error("no stacks to target")]
     NoStacks,
-    /// No live board exists (the single-board MVP's precondition failed
-    /// in a CLI handler before any command reached the engine; the
-    /// engine's own rejection keeps the same kind via `domain_error_kind`).
-    #[error("no board")]
-    NoBoard,
+    /// The board-scoped default resolution failed: zero live boards (no
+    /// candidates) or ≥2 (all live candidates listed, `--board` picks
+    /// one). The CLI-layer typed ambiguity refusal — the engine's own
+    /// named-id refusals keep their kinds via `domain_error_kind`.
+    #[error("no single live board to target — pass --board <uuid> (live boards: {})", candidates.join(", "))]
+    AmbiguousBoard {
+        /// The live boards' uuids (deterministic board-id order; empty
+        /// when zero boards are live).
+        candidates: Vec<String>,
+    },
     /// The sync cycle failed with the given classification.
     #[error("sync cycle failed")]
     SyncFailed(SyncErrorKind),
@@ -284,7 +291,7 @@ impl CommandError {
             Self::UnknownLabel(_) => "unknown-label",
             Self::AmbiguousLabel { .. } => "ambiguous-label",
             Self::NoStacks => "no-stacks",
-            Self::NoBoard => "no-board",
+            Self::AmbiguousBoard { .. } => "ambiguous-board",
             Self::SyncFailed(_) => "sync-failed",
             Self::SyncTimedOut => "sync-timed-out",
             Self::ConfigWrite(_) => "config-write",
@@ -310,13 +317,16 @@ impl CommandError {
     pub fn error_detail(&self) -> Option<String> {
         match self {
             Self::UnknownBoard(id) => Some(id.to_string()),
-            Self::BoardAlreadyBound { current } => Some(current.to_string()),
+            Self::BoardAlreadyBound { board, current } => {
+                Some(format!("{board} (bound remote {current})"))
+            }
             Self::UnknownTask(sel) | Self::UnknownStack(sel) | Self::UnknownLabel(sel) => {
                 Some(sel.clone())
             }
             Self::AmbiguousTask { candidates } | Self::AmbiguousStack { candidates } => {
                 Some(candidates.join(", "))
             }
+            Self::AmbiguousBoard { candidates } => Some(candidates.join(", ")),
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
             Self::IpcVersion { server_v } => Some(server_v.to_string()),
             Self::ConfirmationRequired { verb, .. } => Some(verb.clone()),
@@ -326,17 +336,16 @@ impl CommandError {
 }
 
 /// The engine's semantic rejections keep their own kinds in the JSON
-/// error shape (`no-board`, `unknown-task`, …); everything else is the
-/// generic `engine`.
+/// error shape (`unknown-board`, `unknown-task`, …); everything else is
+/// the generic `engine`.
 fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
     use taskboard_domain::CommandError as D;
     match err {
-        D::NoBoard => "no-board",
+        D::UnknownBoard(_) | D::BoardDeleted(_) => "unknown-board",
         D::UnknownTask(_) | D::TaskDeleted(_) => "unknown-task",
         D::UnknownStack(_) | D::StackDeleted(_) => "unknown-stack",
         D::UnknownLabel(_) | D::LabelDeleted(_) => "unknown-label",
-        D::BoardExists => "board-exists",
-        D::BoardAlreadyBound(_) => "board-already-bound",
+        D::BoardAlreadyBound { .. } => "board-already-bound",
         D::UnknownReminderRule(_) => "unknown-reminder-rule",
         D::InvalidSnoozePostpone => "invalid-snooze-postpone",
     }
@@ -361,6 +370,51 @@ pub(crate) fn map_deck_error(err: DeckError) -> CommandError {
         DeckError::Unauthorized | DeckError::Forbidden => CommandError::InvalidCredentials,
         DeckError::Transport(_) => CommandError::Unreachable,
         other => CommandError::Deck(Box::new(other)),
+    }
+}
+
+/// Resolves the board a board-scoped verb targets: the `--board` flag
+/// when given (typed lookup refusals when the id names nothing / a
+/// tombstone — the same kinds the engine would refuse with, surfaced
+/// before construction), else the single-live-board default (typed
+/// refusal when zero or ≥2 live boards make it ambiguous).
+///
+/// # Errors
+///
+/// [`CommandError::AmbiguousBoard`] for the zero/≥2 default, the
+/// engine's named-id rejection kinds for a flag that does not resolve.
+pub(crate) fn resolve_board(
+    app: &crate::App,
+    flag: Option<taskboard_domain::BoardId>,
+) -> Result<taskboard_domain::BoardId, CommandError> {
+    use taskboard_domain::CommandError as D;
+    let state = app.engine.shared_state().load_full();
+    if let Some(id) = flag {
+        return match state.boards.get(&id) {
+            None => Err(CommandError::Engine(Box::new(
+                taskboard_state::ExecuteError::Rejected(D::UnknownBoard(id)),
+            ))),
+            Some(b) if b.deleted => Err(CommandError::Engine(Box::new(
+                taskboard_state::ExecuteError::Rejected(D::BoardDeleted(id)),
+            ))),
+            Some(_) => Ok(id),
+        };
+    }
+    let mut live: Vec<(taskboard_domain::BoardId, String)> = state
+        .boards
+        .values()
+        .filter(|b| !b.deleted)
+        .map(|b| (b.id, b.id.as_uuid().to_string()))
+        .collect();
+    if live.len() == 1 {
+        Ok(live.remove(0).0)
+    } else {
+        // Zero and ≥2 share the ambiguity refusal; candidates stay in
+        // board-id order (BTreeMap iteration order) — the tokens `--board`
+        // accepts.
+        Err(CommandError::AmbiguousBoard {
+            candidates: live.into_iter().map(|(_, uuid)| uuid).collect(),
+        })
     }
 }
 
@@ -446,94 +500,95 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             .await
         }
         Command::Boards {
-            cmd: BoardsCmd::Rename { title },
-        } => {
-            run_core(
-                &mut ctx.io,
-                ctx.config_path.clone(),
-                boards::render_text_rename,
-                move |config, store| async move { boards::rename(config, store, &title).await },
-            )
-            .await
-        }
+            cmd: BoardsCmd::Rename { board, title },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            boards::render_text_rename,
+            move |config, store| async move { boards::rename(config, store, board, &title).await },
+        )
+        .await,
         Command::Boards {
-            cmd: BoardsCmd::Publish { timeout_secs },
+            cmd:
+                BoardsCmd::Publish {
+                    board,
+                    timeout_secs,
+                },
         } => {
             run_core(
                 &mut ctx.io,
                 ctx.config_path.clone(),
                 boards::render_text_select,
                 move |config, store| async move {
-                    boards::publish(config, store, Duration::from_secs(timeout_secs)).await
+                    boards::publish(config, store, board, Duration::from_secs(timeout_secs)).await
                 },
             )
             .await
         }
         Command::Boards {
-            cmd: BoardsCmd::Color { color },
+            cmd: BoardsCmd::Color { board, color },
         } => {
             run_core(
                 &mut ctx.io,
                 ctx.config_path.clone(),
                 boards::render_text_board_edit,
                 move |config, store| async move {
-                    boards::color(config, store, taskboard_domain::Color::new(&color)).await
+                    boards::color(config, store, board, taskboard_domain::Color::new(&color)).await
                 },
             )
             .await
         }
         Command::Boards {
-            cmd: BoardsCmd::Archive,
-        } => {
-            run_core(
-                &mut ctx.io,
-                ctx.config_path.clone(),
-                boards::render_text_board_edit,
-                move |config, store| async move { boards::archive(config, store, true).await },
-            )
-            .await
-        }
+            cmd: BoardsCmd::Archive { board },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            boards::render_text_board_edit,
+            move |config, store| async move { boards::archive(config, store, board, true).await },
+        )
+        .await,
         Command::Boards {
-            cmd: BoardsCmd::Unarchive,
-        } => {
-            run_core(
-                &mut ctx.io,
-                ctx.config_path.clone(),
-                boards::render_text_board_edit,
-                move |config, store| async move { boards::archive(config, store, false).await },
-            )
-            .await
-        }
+            cmd: BoardsCmd::Unarchive { board },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            boards::render_text_board_edit,
+            move |config, store| async move { boards::archive(config, store, board, false).await },
+        )
+        .await,
         Command::Boards {
-            cmd: BoardsCmd::Delete { confirm },
-        } => {
-            run_core(
-                &mut ctx.io,
-                ctx.config_path.clone(),
-                boards::render_text_destruct,
-                move |config, store| async move { boards::delete(config, store, confirm).await },
-            )
-            .await
-        }
+            cmd: BoardsCmd::Delete { board, confirm },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            boards::render_text_destruct,
+            move |config, store| async move { boards::delete(config, store, board, confirm).await },
+        )
+        .await,
         Command::Boards {
-            cmd: BoardsCmd::Reset { confirm },
-        } => {
-            run_core(
-                &mut ctx.io,
-                ctx.config_path.clone(),
-                boards::render_text_destruct,
-                move |config, store| async move { boards::reset(config, store, confirm).await },
-            )
-            .await
-        }
+            cmd: BoardsCmd::Reset { board, confirm },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            boards::render_text_destruct,
+            move |config, store| async move { boards::reset(config, store, board, confirm).await },
+        )
+        .await,
         Command::Stacks {
-            cmd: StacksCmd::Add { title, order },
+            cmd:
+                StacksCmd::Add {
+                    board,
+                    title,
+                    order,
+                },
         } => {
             run_core(
                 &mut ctx.io,
                 ctx.config_path.clone(),
                 stacks::render_text_add,
-                move |config, store| async move { stacks::add(config, store, &title, order).await },
+                move |config, store| async move {
+                    stacks::add(config, store, board, &title, order).await
+                },
             )
             .await
         }
@@ -567,25 +622,30 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         )
         .await,
         Command::Labels {
-            cmd: LabelsCmd::List,
+            cmd: LabelsCmd::List { board },
         } => {
             run_core(
                 &mut ctx.io,
                 ctx.config_path.clone(),
                 |rows: &Vec<_>| labels::render_text_list(rows),
-                |config, store| async move { labels::list(config, store).await },
+                |config, store| async move { labels::list(config, store, board).await },
             )
             .await
         }
         Command::Labels {
-            cmd: LabelsCmd::Add { title, color },
+            cmd:
+                LabelsCmd::Add {
+                    board,
+                    title,
+                    color,
+                },
         } => {
             run_core(
                 &mut ctx.io,
                 ctx.config_path.clone(),
                 labels::render_text_receipt,
                 move |config, store| async move {
-                    labels::add(config, store, &title, color.as_deref()).await
+                    labels::add(config, store, board, &title, color.as_deref()).await
                 },
             )
             .await
@@ -1087,44 +1147,45 @@ async fn boards_line(
                 boards::render_text_create,
             )
         }
-        BoardsCmd::Rename { title } => emit_result(
+        BoardsCmd::Rename { board, title } => emit_result(
             io,
-            boards::rename_on(app, title).await,
+            boards::rename_on(app, board, title).await,
             boards::render_text_rename,
         ),
-        BoardsCmd::Publish { timeout_secs } => {
-            match boards::publish_prelude(session.session_config(), session.session_store()) {
-                Ok(client) => emit_result(
-                    io,
-                    boards::publish_on(app, &client, Duration::from_secs(timeout_secs)).await,
-                    boards::render_text_select,
-                ),
-                Err(err) => report_to(io, &err),
-            }
-        }
-        BoardsCmd::Color { color } => emit_result(
+        BoardsCmd::Publish {
+            board,
+            timeout_secs,
+        } => match boards::publish_prelude(session.session_config(), session.session_store()) {
+            Ok(client) => emit_result(
+                io,
+                boards::publish_on(app, &client, board, Duration::from_secs(timeout_secs)).await,
+                boards::render_text_select,
+            ),
+            Err(err) => report_to(io, &err),
+        },
+        BoardsCmd::Color { board, color } => emit_result(
             io,
-            boards::color_on(app, taskboard_domain::Color::new(&color)).await,
+            boards::color_on(app, board, taskboard_domain::Color::new(&color)).await,
             boards::render_text_board_edit,
         ),
-        BoardsCmd::Archive => emit_result(
+        BoardsCmd::Archive { board } => emit_result(
             io,
-            boards::archive_on(app, true).await,
+            boards::archive_on(app, board, true).await,
             boards::render_text_board_edit,
         ),
-        BoardsCmd::Unarchive => emit_result(
+        BoardsCmd::Unarchive { board } => emit_result(
             io,
-            boards::archive_on(app, false).await,
+            boards::archive_on(app, board, false).await,
             boards::render_text_board_edit,
         ),
-        BoardsCmd::Delete { confirm } => emit_result(
+        BoardsCmd::Delete { board, confirm } => emit_result(
             io,
-            boards::delete_on(app, confirm).await,
+            boards::delete_on(app, board, confirm).await,
             boards::render_text_destruct,
         ),
-        BoardsCmd::Reset { confirm } => emit_result(
+        BoardsCmd::Reset { board, confirm } => emit_result(
             io,
-            boards::reset_on(app, confirm).await,
+            boards::reset_on(app, board, confirm).await,
             boards::render_text_destruct,
         ),
     }
@@ -1134,9 +1195,13 @@ async fn boards_line(
 /// prelude.
 async fn stacks_line(app: &crate::App, cmd: StacksCmd, io: &mut CommandIo<'_>) -> u8 {
     match cmd {
-        StacksCmd::Add { title, order } => emit_result(
+        StacksCmd::Add {
+            board,
+            title,
+            order,
+        } => emit_result(
             io,
-            stacks::add_on(app, title, order).await,
+            stacks::add_on(app, board, title, order).await,
             stacks::render_text_add,
         ),
         StacksCmd::Rename { stack, title } => emit_result(
@@ -1161,10 +1226,16 @@ async fn stacks_line(app: &crate::App, cmd: StacksCmd, io: &mut CommandIo<'_>) -
 /// published state; the rest are core mutations.
 async fn labels_line(app: &crate::App, cmd: LabelsCmd, io: &mut CommandIo<'_>) -> u8 {
     match cmd {
-        LabelsCmd::List => emit_result(io, labels::list_on(app), |rows: &Vec<_>| {
-            labels::render_text_list(rows)
-        }),
-        LabelsCmd::Add { title, color } => {
+        LabelsCmd::List { board } => {
+            emit_result(io, labels::list_on(app, board), |rows: &Vec<_>| {
+                labels::render_text_list(rows)
+            })
+        }
+        LabelsCmd::Add {
+            board,
+            title,
+            color,
+        } => {
             // The clap value parser normalizes to lowercase; the
             // session arm normalizes like the one-shot wrapper does.
             let color = color.map_or_else(
@@ -1173,7 +1244,7 @@ async fn labels_line(app: &crate::App, cmd: LabelsCmd, io: &mut CommandIo<'_>) -
             );
             emit_result(
                 io,
-                labels::add_on(app, title, color).await,
+                labels::add_on(app, board, title, color).await,
                 labels::render_text_receipt,
             )
         }
@@ -1492,12 +1563,13 @@ mod ipc_routing_tests {
             },
             Command::Stacks {
                 cmd: crate::cli::StacksCmd::Add {
+                    board: None,
                     title: "t".to_owned(),
                     order: None,
                 },
             },
             Command::Labels {
-                cmd: crate::cli::LabelsCmd::List,
+                cmd: crate::cli::LabelsCmd::List { board: None },
             },
             Command::Tasks {
                 cmd: TasksCmd::Add {

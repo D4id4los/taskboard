@@ -47,7 +47,7 @@ fn forbidden_store() -> Arc<dyn CredentialStore> {
 /// typed `board-exists` refusal; the receipt survives the invocation
 /// (durable across processes).
 #[tokio::test]
-async fn st1_boards_create_and_single_board_refusal() {
+async fn st1_boards_create_always_mints() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "st1.db");
 
@@ -63,47 +63,57 @@ async fn st1_boards_create_and_single_board_refusal() {
     assert_eq!(receipt.title, "Personal");
     assert_eq!(receipt.color, "3366cc");
 
-    let err = boards::create(config.clone(), forbidden_store(), "Second", None)
-        .await
-        .expect_err("second create refused");
-    assert_eq!(err.error_kind(), "board-exists");
-
-    // Durability: a fresh invocation still sees exactly one board.
+    // The refusal lift: a second create mints too, with a distinct id —
+    // and durability holds (a fresh invocation still sees the boards).
     let config2 = standalone_config(dir.path(), "st1.db");
-    let receipt2 = boards::create(config2, forbidden_store(), "Third", None)
+    let second = boards::create(config2.clone(), forbidden_store(), "Second", None)
         .await
-        .expect_err("the board survives the restart");
-    assert_eq!(receipt2.error_kind(), "board-exists");
+        .expect("second create mints");
+    assert_ne!(second.id, receipt.id);
+
+    // Titles are not uniqueness keys: a same-titled board coexists.
+    let third = boards::create(config2, forbidden_store(), "Second", None)
+        .await
+        .expect("same-titled create mints");
+    assert_ne!(third.id, second.id);
 }
 
 /// ST2: `stacks add` appends by default and honors `--order`; a
-/// board-less db surfaces the engine's own `no-board` kind.
+/// board-less db surfaces the typed `ambiguous-board` refusal (empty
+/// candidates).
 #[tokio::test]
 async fn st2_stacks_add_appends_and_requires_a_board() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "st2.db");
 
-    let err = stacks::add(config.clone(), forbidden_store(), "no board yet", None)
-        .await
-        .expect_err("no board");
-    assert_eq!(err.error_kind(), "no-board");
+    let err = stacks::add(
+        config.clone(),
+        forbidden_store(),
+        None,
+        "no board yet",
+        None,
+    )
+    .await
+    .expect_err("no board");
+    assert_eq!(err.error_kind(), "ambiguous-board");
+    assert_eq!(err.error_detail().as_deref(), Some(""), "zero candidates");
 
     boards::create(config.clone(), forbidden_store(), "Personal", None)
         .await
         .expect("board");
-    let first = stacks::add(config.clone(), forbidden_store(), "Todo", None)
+    let first = stacks::add(config.clone(), forbidden_store(), None, "Todo", None)
         .await
         .expect("first stack");
     assert_eq!(first.order, 0, "empty board appends at 0");
-    let second = stacks::add(config.clone(), forbidden_store(), "Doing", None)
+    let second = stacks::add(config.clone(), forbidden_store(), None, "Doing", None)
         .await
         .expect("second stack");
     assert_eq!(second.order, 1, "append = max(order) + 1");
-    let explicit = stacks::add(config.clone(), forbidden_store(), "Later", Some(5))
+    let explicit = stacks::add(config.clone(), forbidden_store(), None, "Later", Some(5))
         .await
         .expect("explicit order");
     assert_eq!(explicit.order, 5);
-    let appended = stacks::add(config, forbidden_store(), "Last", None)
+    let appended = stacks::add(config, forbidden_store(), None, "Last", None)
         .await
         .expect("append after explicit");
     assert_eq!(appended.order, 6);
@@ -120,7 +130,7 @@ async fn st3_tasks_over_a_standalone_db() {
     boards::create(config.clone(), forbidden_store(), "Personal", None)
         .await
         .expect("board");
-    let stack = stacks::add(config.clone(), forbidden_store(), "Todo", None)
+    let stack = stacks::add(config.clone(), forbidden_store(), None, "Todo", None)
         .await
         .expect("stack");
 
@@ -189,6 +199,7 @@ async fn st4_connector_verbs_refuse_sync_disabled() {
     let err = boards::publish(
         config.clone(),
         forbidden_store(),
+        None,
         std::time::Duration::from_secs(1),
     )
     .await
@@ -208,7 +219,7 @@ async fn st5_human_list_carries_the_standalone_note() {
     boards::create(config.clone(), forbidden_store(), "Personal", None)
         .await
         .expect("board");
-    let _stack = stacks::add(config.clone(), forbidden_store(), "Todo", None)
+    let _stack = stacks::add(config.clone(), forbidden_store(), None, "Todo", None)
         .await
         .expect("stack");
     let _ = tasks::add(config, forbidden_store(), "a task", Some("Todo"))

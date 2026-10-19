@@ -140,8 +140,9 @@ struct Spawner {
 
 impl Default for Spawner {
     fn default() -> Self {
-        // Every scenario is seeded with one live board: the domain
-        // catalogue rejects board-scoped creates (`NoBoard`) otherwise.
+        // Every scenario is seeded with one live board: board-scoped
+        // commands name their target, and `Harness::board_id` expects
+        // exactly one.
         Self {
             repo: Arc::new(InMemoryRepository::with_state(seed_board_state("board"))),
             ids: Arc::new(CountingIds::new()),
@@ -192,6 +193,21 @@ async fn spawn(spawner: Spawner) -> Harness {
 
 async fn harness() -> Harness {
     spawn(Spawner::default()).await
+}
+
+impl Harness {
+    /// The harness's single seeded board id (`seed_board_state` mints
+    /// exactly one).
+    fn board_id(&self) -> taskboard_domain::BoardId {
+        *self
+            .handle
+            .shared_state()
+            .load()
+            .boards
+            .keys()
+            .next()
+            .expect("the fixture has exactly one board")
+    }
 }
 
 /// Polls `predicate` against the shared state with a (paused-time)
@@ -252,6 +268,7 @@ async fn a1_execute_reply_carries_receipt_and_state_is_queryable() {
     let stack = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "backlog".into(),
             order: 1,
         })
@@ -287,6 +304,7 @@ async fn a2_dispatch_persists_and_signals() {
     let stack = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "backlog".into(),
             order: 1,
         })
@@ -322,6 +340,7 @@ async fn a3_flush_barrier_settles_dispatches() {
     let stack = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "backlog".into(),
             order: 1,
         })
@@ -353,6 +372,7 @@ async fn a4_nudge_forwarded_iff_ops_enqueued() {
     let stack = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "backlog".into(),
             order: 1,
         })
@@ -534,6 +554,7 @@ async fn a9_storage_failure_reverts_nothing_and_recovers() {
     let failed = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "doomed".into(),
             order: 1,
         })
@@ -560,6 +581,7 @@ async fn a9_storage_failure_reverts_nothing_and_recovers() {
     let retried = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "doomed".into(),
             order: 1,
         })
@@ -598,6 +620,7 @@ async fn a17_storage_failed_is_edge_triggered_per_epoch() {
     let failed = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "doomed".into(),
             order: 1,
         })
@@ -614,6 +637,7 @@ async fn a17_storage_failed_is_edge_triggered_per_epoch() {
     let _ = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "doomed again".into(),
             order: 2,
         })
@@ -625,6 +649,7 @@ async fn a17_storage_failed_is_edge_triggered_per_epoch() {
     let retried = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "survivor".into(),
             order: 1,
         })
@@ -636,6 +661,7 @@ async fn a17_storage_failed_is_edge_triggered_per_epoch() {
     let _ = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "doomed once more".into(),
             order: 3,
         })
@@ -657,6 +683,7 @@ async fn a10_execute_after_shutdown_is_engine_gone() {
     let result = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "late".into(),
             order: 1,
         })
@@ -757,6 +784,7 @@ async fn read_state_returns_the_post_apply_persisted_shape() {
     let h = spawn(Spawner::default()).await;
     h.handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "backlog".into(),
             order: 1,
         })
@@ -1050,6 +1078,7 @@ async fn g2_drain_declines_execute_and_answers_flush() {
     let declined = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "late".into(),
             order: 1,
         })
@@ -1192,22 +1221,26 @@ async fn a13_create_board_persists_and_publishes() {
     drop(h);
 }
 
-/// A14: `CreateBoard` while a live board exists is a typed rejection.
+/// A14: `CreateBoard` always mints — a second create lands a distinct
+/// board (the refusal lift; titles are not uniqueness keys).
 #[tokio::test]
-async fn a14_create_board_refuses_a_second_live_board() {
+async fn a14_create_board_always_mints_a_distinct_board() {
     let h = harness().await;
-    let err = h
+    let outcome = h
         .handle
         .execute(StateCommand::CreateBoard {
             title: "second".into(),
             color: taskboard_domain::Color::new("000000"),
         })
         .await
-        .expect_err("rejected");
-    assert!(matches!(
-        err,
-        ExecuteError::Rejected(taskboard_domain::CommandError::BoardExists)
-    ));
+        .expect("accepted");
+    let CommandOutcome::CreatedBoard(second) = outcome else {
+        panic!("wrong receipt: {outcome:?}");
+    };
+    assert!(
+        h.handle.shared_state().load().boards.contains_key(&second),
+        "the second board is live in the published state"
+    );
     drop(h);
 }
 
@@ -1228,6 +1261,7 @@ async fn a15_bind_board_sets_the_remote_binding() {
     let outcome = h
         .handle
         .execute(StateCommand::BindBoard {
+            board: h.board_id(),
             remote: RemoteBoardId(42),
         })
         .await
@@ -1251,6 +1285,7 @@ async fn a16_move_stack_routes_applies_and_nudges_iff_changed() {
     let created = h
         .handle
         .execute(StateCommand::CreateStack {
+            board: h.board_id(),
             title: "todo".into(),
             order: 0,
         })
@@ -1305,6 +1340,7 @@ async fn a16_move_stack_routes_applies_and_nudges_iff_changed() {
 #[tokio::test]
 async fn h1_engine_continues_without_sync_after_the_reports_channel_closes() {
     let h = harness().await;
+    let board = h.board_id();
     // The actor is gone: its inbox receiver is gone with it.
     drop(h.sync_in);
 
@@ -1315,6 +1351,7 @@ async fn h1_engine_continues_without_sync_after_the_reports_channel_closes() {
     let stack = h
         .handle
         .execute(StateCommand::CreateStack {
+            board,
             title: "backlog".into(),
             order: 1,
         })
@@ -1414,6 +1451,13 @@ async fn engine_exits_when_all_sources_close() {
     // Commands are still open: the engine must still be serving.
     let outcome = handle
         .execute(StateCommand::CreateStack {
+            board: *handle
+                .shared_state()
+                .load()
+                .boards
+                .keys()
+                .next()
+                .expect("one board"),
             title: "alive".into(),
             order: 1,
         })
@@ -1442,11 +1486,13 @@ async fn storage_failed_is_silent_after_the_last_external_producer_dies() {
     })
     .await;
     let mut events = h.system_tx.subscribe();
+    let board = h.board_id();
     drop(h.system_tx); // the last external strong sender
 
     let failed = h
         .handle
         .execute(StateCommand::CreateStack {
+            board,
             title: "doomed".into(),
             order: 1,
         })
@@ -1468,6 +1514,7 @@ async fn storage_failed_is_silent_after_the_last_external_producer_dies() {
     let recovered = h
         .handle
         .execute(StateCommand::CreateStack {
+            board,
             title: "after".into(),
             order: 1,
         })

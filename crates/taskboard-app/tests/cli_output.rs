@@ -207,7 +207,10 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::Bootstrap(_) => "bootstrap",
             CommandError::Credential(_) => "credential",
             CommandError::Engine(e) => match &**e {
-                ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard) => "no-board",
+                ExecuteError::Rejected(
+                    taskboard_domain::CommandError::UnknownBoard(_)
+                    | taskboard_domain::CommandError::BoardDeleted(_),
+                ) => "unknown-board",
                 ExecuteError::Rejected(
                     taskboard_domain::CommandError::UnknownTask(_)
                     | taskboard_domain::CommandError::TaskDeleted(_),
@@ -233,7 +236,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::UnknownLabel(_) => "unknown-label",
             CommandError::AmbiguousLabel { .. } => "ambiguous-label",
             CommandError::NoStacks => "no-stacks",
-            CommandError::NoBoard => "no-board",
+            CommandError::AmbiguousBoard { .. } => "ambiguous-board",
             CommandError::SyncFailed(_) => "sync-failed",
             CommandError::SyncTimedOut => "sync-timed-out",
             CommandError::ConfigWrite(_) => "config-write",
@@ -262,14 +265,21 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::from(BootstrapError::StorageDir(std::io::Error::other("x"))),
         CommandError::from(CredentialError::NotFound),
         CommandError::from(ExecuteError::Rejected(
-            taskboard_domain::CommandError::NoBoard,
+            taskboard_domain::CommandError::UnknownBoard(taskboard_domain::BoardId::from_uuid(
+                uuid::Uuid::from_u128(0xB0A0),
+            )),
         )),
         CommandError::from(ExecuteError::EngineGone),
-        CommandError::NoBoard,
+        CommandError::AmbiguousBoard {
+            candidates: vec!["b".to_owned()],
+        },
         CommandError::InvalidCredentials,
         CommandError::Unreachable,
         CommandError::UnknownBoard(7),
-        CommandError::BoardAlreadyBound { current: 7 },
+        CommandError::BoardAlreadyBound {
+            board: "b".to_owned(),
+            current: 7,
+        },
         CommandError::UnknownTask("abc".to_owned()),
         CommandError::AmbiguousTask {
             candidates: vec!["x".to_owned(), "y".to_owned()],
@@ -300,17 +310,19 @@ fn o3_error_kinds_cover_every_variant() {
         assert_eq!(err.error_kind(), expected(err), "{err}");
     }
     // Structural details on the stderr envelope.
+    let bound = CommandError::BoardAlreadyBound {
+        board: "local-board".to_owned(),
+        current: 9,
+    };
     let envelope = ErrorEnvelope {
         error: taskboard_app::commands::output::ErrorBody {
-            kind: CommandError::BoardAlreadyBound { current: 9 }
-                .error_kind()
-                .to_owned(),
-            detail: CommandError::BoardAlreadyBound { current: 9 }.error_detail(),
+            kind: bound.error_kind().to_owned(),
+            detail: bound.error_detail(),
         },
     };
     let v = serde_json::to_value(&envelope).unwrap();
     assert_eq!(v["error"]["kind"], "board-already-bound");
-    assert_eq!(v["error"]["detail"], "9");
+    assert_eq!(v["error"]["detail"], "local-board (bound remote 9)");
     let version_err = CommandError::IpcVersion { server_v: 2 };
     assert_eq!(
         version_err.error_detail().as_deref(),

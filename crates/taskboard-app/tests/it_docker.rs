@@ -317,6 +317,7 @@ async fn it_nextcloud_docker_cli_standalone_publish() {
         let stack_receipt = stacks::add(
             standalone.clone(),
             Arc::clone(&no_store),
+            None,
             &format!("{run}-col"),
             None,
         )
@@ -358,6 +359,7 @@ async fn it_nextcloud_docker_cli_standalone_publish() {
         let publish = boards::publish(
             attached.clone(),
             Arc::clone(&store),
+            None,
             Duration::from_secs(120),
         )
         .await
@@ -436,7 +438,7 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     boards::create(standalone.clone(), Arc::clone(&no_store), &run, None)
         .await
         .expect("board");
-    let stack_receipt = stacks::add(standalone.clone(), Arc::clone(&no_store), "col", None)
+    let stack_receipt = stacks::add(standalone.clone(), Arc::clone(&no_store), None, "col", None)
         .await
         .expect("stack");
     let survivor = tasks::add(standalone.clone(), Arc::clone(&no_store), "survivor", None)
@@ -471,6 +473,7 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     let publish = boards::publish(
         attached.clone(),
         Arc::clone(&store),
+        None,
         Duration::from_secs(120),
     )
     .await
@@ -481,6 +484,7 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     let renamed = boards::rename(
         attached.clone(),
         Arc::clone(&store),
+        None,
         &format!("{run}-renamed"),
     )
     .await
@@ -507,6 +511,7 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     let _urgent = labels::add(
         attached.clone(),
         Arc::clone(&store),
+        None,
         "urgent",
         Some("ff0000"),
     )

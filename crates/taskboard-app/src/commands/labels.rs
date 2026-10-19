@@ -49,21 +49,23 @@ pub(crate) fn resolve_label(state: &AppState, selector: &str) -> Result<LabelId,
 pub async fn list(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
 ) -> Result<Vec<LabelRow>, CommandError> {
-    crate::commands::tasks::with_core(config, store, async |app| list_on(app)).await
+    crate::commands::tasks::with_core(config, store, async |app| list_on(app, board)).await
 }
 
 /// The `labels list` steps on a booted core (the REPL/session seam).
-pub(crate) fn list_on(app: &crate::App) -> Result<Vec<LabelRow>, CommandError> {
+pub(crate) fn list_on(
+    app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
+) -> Result<Vec<LabelRow>, CommandError> {
     {
         let state = app.engine.shared_state().load_full();
-        if !state.boards.values().any(|b| !b.deleted) {
-            return Err(CommandError::NoBoard);
-        }
+        let board_id = crate::commands::resolve_board(app, board)?;
         let mut rows: Vec<LabelRow> = state
             .labels
             .values()
-            .filter(|l| !l.deleted)
+            .filter(|l| !l.deleted && l.board == board_id)
             .map(|l| LabelRow {
                 id: l.id.as_uuid().to_string(),
                 title: l.title.clone(),
@@ -89,6 +91,7 @@ pub(crate) fn list_on(app: &crate::App) -> Result<Vec<LabelRow>, CommandError> {
 pub async fn add(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
     title: &str,
     color: Option<&str>,
 ) -> Result<LabelReceipt, CommandError> {
@@ -96,31 +99,39 @@ pub async fn add(
     // The clap value parser normalizes to lowercase; the direct-call
     // path (this crate's tests) normalizes here too.
     let color = color.map_or_else(|| DEFAULT_LABEL_COLOR.to_owned(), str::to_lowercase);
-    crate::commands::tasks::with_core(config, store, async |app| add_on(app, title, color).await)
-        .await
+    crate::commands::tasks::with_core(config, store, async |app| {
+        add_on(app, board, title, color).await
+    })
+    .await
 }
 
 /// The `labels add` steps on a booted core (the REPL/session seam);
 /// `color` arrives normalized (lowercase hex, default applied).
 pub(crate) async fn add_on(
     app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
     title: String,
     color: String,
 ) -> Result<LabelReceipt, CommandError> {
     {
+        let board_id = crate::commands::resolve_board(app, board)?;
         let outcome = app
             .engine
             .execute(StateCommand::CreateLabel {
+                board: board_id,
                 title: title.clone(),
                 color: taskboard_domain::Color::new(color.clone()),
             })
             .await?;
         let CommandOutcome::CreatedLabel(id) = outcome else {
-            // The engine's own rejection (e.g. `NoBoard`) already
-            // surfaced via `?` above; a different accepted outcome would
-            // be an engine contract break, reported as the missing
-            // board's kind.
-            return Err(CommandError::NoBoard);
+            // The board resolved a moment ago; the only surviving
+            // mismatch is the board dying between resolve and execute
+            // (an engine contract break class, not user input).
+            return Err(CommandError::Engine(Box::new(
+                taskboard_state::ExecuteError::Rejected(
+                    taskboard_domain::CommandError::UnknownBoard(board_id),
+                ),
+            )));
         };
         Ok(LabelReceipt {
             id: id.as_uuid().to_string(),

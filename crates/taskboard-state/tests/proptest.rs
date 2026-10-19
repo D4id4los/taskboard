@@ -448,6 +448,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
 
     rt.block_on(async {
         let (state, seed_stack, seed_task, seed_label) = coherent_seed();
+        let board_id = *state.boards.keys().next().expect("one seeded board");
         let repo = Arc::new(InMemoryRepository::with_state(state));
         // The sync receiver is dropped immediately: nudges fail, so the
         // memory-only `Syncing` transient never appears and memory ≡ disk
@@ -508,6 +509,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                     id: tasks[idx % tasks.len()],
                 },
                 Step::CreateStack(order) => StateCommand::CreateStack {
+                    board: board_id,
                     title: format!("s{n}"),
                     order: *order,
                 },
@@ -519,6 +521,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                     id: stacks[idx % stacks.len()],
                 },
                 Step::CreateLabel(variant) => StateCommand::CreateLabel {
+                    board: board_id,
                     title: format!("l{n}-{variant}"),
                     color: Color::new("00ff00"),
                 },

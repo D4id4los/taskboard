@@ -45,10 +45,18 @@ fn forbidden_store() -> Arc<dyn CredentialStore> {
 
 /// Seeds board → stack → task through one-shot verbs (each test gets a
 /// fresh db; re-seeds on one db tolerate the already-existing prefixes).
+/// Create always mints now, so the board is minted only when the db has
+/// none (the empty-candidates ambiguity refusal is the zero-board
+/// signal) — a second live board would break the default resolution.
 async fn seed(config: &AppConfig, stack: &str, title: &str) {
     use taskboard_app::commands::{boards, stacks, tasks};
-    let _ = boards::create(config.clone(), forbidden_store(), "Personal", None).await;
-    let _ = stacks::add(config.clone(), forbidden_store(), stack, None).await;
+    if let Err(taskboard_app::commands::CommandError::AmbiguousBoard { candidates }) =
+        stacks::add(config.clone(), forbidden_store(), None, stack, None).await
+        && candidates.is_empty()
+    {
+        let _ = boards::create(config.clone(), forbidden_store(), "Personal", None).await;
+        let _ = stacks::add(config.clone(), forbidden_store(), None, stack, None).await;
+    }
     let _ = tasks::add(config.clone(), forbidden_store(), title, Some(stack)).await;
 }
 

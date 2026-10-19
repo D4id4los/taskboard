@@ -75,9 +75,8 @@ pub(crate) fn resolved_color(color: Option<&str>) -> taskboard_domain::Color {
     )
 }
 
-/// Creates the local board (the stand-alone first-run command; works
-/// under both backends). The single-board refusal is the engine's own
-/// `BoardExists` rejection, surfaced with the `board-exists` kind.
+/// Creates a local board (the stand-alone first-run command; works
+/// under both backends, always mints — titles are not uniqueness keys).
 ///
 /// # Errors
 ///
@@ -97,9 +96,9 @@ pub async fn create(
     .await
 }
 
-/// Renames the single live board (both backends). The engine stamps the
-/// title clock and enqueues the push op when the board is bound; a
-/// same-title repeat is an accepted no-op (exit 0).
+/// Renames a local board (both backends). The engine stamps the title
+/// clock and enqueues the push op when the board is bound; a same-title
+/// repeat is an accepted no-op (exit 0).
 ///
 /// # Errors
 ///
@@ -107,10 +106,14 @@ pub async fn create(
 pub async fn rename(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
     title: &str,
 ) -> Result<BoardReceipt, CommandError> {
     let title = title.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| rename_on(app, title).await).await
+    crate::commands::tasks::with_core(config, store, async |app| {
+        rename_on(app, board, title).await
+    })
+    .await
 }
 
 /// The `boards create` steps on a booted core (the REPL/session seam).
@@ -128,9 +131,10 @@ pub(crate) async fn create_on(
         })
         .await?;
     let CommandOutcome::CreatedBoard(board_id) = outcome else {
-        return Err(CommandError::Engine(Box::new(
-            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::BoardExists),
-        )));
+        // CreateBoard always mints (the planner's arm is total over its
+        // inputs); any other accepted outcome is an engine contract
+        // break, unreachable from user input.
+        unreachable!("CreateBoard always returns CreatedBoard");
     };
     Ok(BoardReceipt {
         id: board_id.as_uuid().to_string(),
@@ -142,21 +146,23 @@ pub(crate) async fn create_on(
 /// The `boards rename` steps on a booted core (the REPL/session seam).
 pub(crate) async fn rename_on(
     app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
     title: String,
 ) -> Result<BoardReceipt, CommandError> {
+    let board_id = crate::commands::resolve_board(app, board)?;
     app.engine
         .execute(StateCommand::RenameBoard {
+            board: board_id,
             title: title.clone(),
         })
         .await?;
-    board_receipt(app)
+    board_receipt(app, board_id)
 }
 
 /// The live board's content and queued-op scope — the shared input of
 /// the confirmation refusal and the landed receipt (one pre-count, one
 /// truth).
 struct BoardScope {
-    board_id: taskboard_domain::BoardId,
     stacks: usize,
     tasks: usize,
     labels: usize,
@@ -167,10 +173,20 @@ struct BoardScope {
 /// Snapshots the scope from the booted core: the published state's live
 /// content plus the engine's persisted outbox (the queue the delete
 /// would cancel / the reset would clear).
-async fn read_scope(app: &crate::App) -> Result<BoardScope, CommandError> {
+async fn read_scope(
+    app: &crate::App,
+    board_id: taskboard_domain::BoardId,
+) -> Result<BoardScope, CommandError> {
     let state = app.engine.shared_state().load_full();
-    let Some(board) = state.boards.values().find(|b| !b.deleted) else {
-        return Err(CommandError::NoBoard);
+    // The id resolved a moment ago; a miss means the board died between
+    // resolve and scope-read (an engine contract break class, not user
+    // input).
+    let Some(board) = state.boards.get(&board_id) else {
+        return Err(CommandError::Engine(Box::new(
+            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::UnknownBoard(
+                board_id,
+            )),
+        )));
     };
     let (board_id, bound_remote, stacks, tasks, board_labels) = {
         let stacks: BTreeSet<taskboard_domain::StackId> = state
@@ -220,7 +236,6 @@ async fn read_scope(app: &crate::App) -> Result<BoardScope, CommandError> {
         })
         .count();
     Ok(BoardScope {
-        board_id,
         stacks: stacks.len(),
         tasks: tasks.len(),
         labels,
@@ -234,11 +249,12 @@ async fn read_scope(app: &crate::App) -> Result<BoardScope, CommandError> {
 /// report the landed counts.
 async fn destruct_on(
     app: &crate::App,
+    board_id: taskboard_domain::BoardId,
     verb: &'static str,
     confirm: bool,
     command: StateCommand,
 ) -> Result<BoardDestructReceipt, CommandError> {
-    let scope = read_scope(app).await?;
+    let scope = read_scope(app, board_id).await?;
     if !confirm {
         return Err(CommandError::ConfirmationRequired {
             verb: verb.to_owned(),
@@ -251,7 +267,7 @@ async fn destruct_on(
     }
     app.engine.execute(command).await?;
     Ok(BoardDestructReceipt {
-        board: scope.board_id.as_uuid().to_string(),
+        board: board_id.as_uuid().to_string(),
         verb: verb.to_owned(),
         stacks: scope.stacks,
         tasks: scope.tasks,
@@ -264,49 +280,81 @@ async fn destruct_on(
 /// The `boards color` steps on a booted core (the REPL/session seam).
 pub(crate) async fn color_on(
     app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
     color: taskboard_domain::Color,
 ) -> Result<BoardReceipt, CommandError> {
+    let board_id = crate::commands::resolve_board(app, board)?;
     app.engine
-        .execute(StateCommand::SetBoardColor { color })
+        .execute(StateCommand::SetBoardColor {
+            board: board_id,
+            color,
+        })
         .await?;
-    board_receipt(app)
+    board_receipt(app, board_id)
 }
 
 /// The `boards archive`/`boards unarchive` steps on a booted core.
 pub(crate) async fn archive_on(
     app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
     archived: bool,
 ) -> Result<BoardReceipt, CommandError> {
+    let board_id = crate::commands::resolve_board(app, board)?;
     app.engine
-        .execute(StateCommand::SetBoardArchived { archived })
+        .execute(StateCommand::SetBoardArchived {
+            board: board_id,
+            archived,
+        })
         .await?;
-    board_receipt(app)
+    board_receipt(app, board_id)
 }
 
 /// The `boards delete` steps on a booted core.
 pub(crate) async fn delete_on(
     app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
     confirm: bool,
 ) -> Result<BoardDestructReceipt, CommandError> {
-    destruct_on(app, "delete", confirm, StateCommand::DeleteBoard).await
+    let board_id = crate::commands::resolve_board(app, board)?;
+    destruct_on(
+        app,
+        board_id,
+        "delete",
+        confirm,
+        StateCommand::DeleteBoard { board: board_id },
+    )
+    .await
 }
 
 /// The `boards reset` steps on a booted core.
 pub(crate) async fn reset_on(
     app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
     confirm: bool,
 ) -> Result<BoardDestructReceipt, CommandError> {
-    destruct_on(app, "reset", confirm, StateCommand::ResetBoard).await
+    let board_id = crate::commands::resolve_board(app, board)?;
+    destruct_on(
+        app,
+        board_id,
+        "reset",
+        confirm,
+        StateCommand::ResetBoard { board: board_id },
+    )
+    .await
 }
 
-/// The post-edit board projection shared by the edit-verb receipts.
-fn board_receipt(app: &crate::App) -> Result<BoardReceipt, CommandError> {
+/// The post-edit board projection shared by the edit-verb receipts,
+/// rendered from the named board.
+fn board_receipt(
+    app: &crate::App,
+    board_id: taskboard_domain::BoardId,
+) -> Result<BoardReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
-    let board = state
-        .boards
-        .values()
-        .find(|b| !b.deleted)
-        .ok_or(CommandError::NoBoard)?;
+    let board = state.boards.get(&board_id).ok_or_else(|| {
+        CommandError::Engine(Box::new(taskboard_state::ExecuteError::Rejected(
+            taskboard_domain::CommandError::UnknownBoard(board_id),
+        )))
+    })?;
     Ok(BoardReceipt {
         id: board.id.as_uuid().to_string(),
         title: board.title.clone(),
@@ -323,10 +371,13 @@ fn board_receipt(app: &crate::App) -> Result<BoardReceipt, CommandError> {
 pub async fn color(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
     color: taskboard_domain::Color,
 ) -> Result<BoardReceipt, CommandError> {
-    crate::commands::tasks::with_core(config, store, async move |app| color_on(app, color).await)
-        .await
+    crate::commands::tasks::with_core(config, store, async move |app| {
+        color_on(app, board, color).await
+    })
+    .await
 }
 
 /// Archives (`true`) or unarchives (`false`) the board (both backends).
@@ -337,10 +388,11 @@ pub async fn color(
 pub async fn archive(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
     archived: bool,
 ) -> Result<BoardReceipt, CommandError> {
     crate::commands::tasks::with_core(config, store, async move |app| {
-        archive_on(app, archived).await
+        archive_on(app, board, archived).await
     })
     .await
 }
@@ -355,10 +407,11 @@ pub async fn archive(
 pub async fn delete(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
     confirm: bool,
 ) -> Result<BoardDestructReceipt, CommandError> {
     crate::commands::tasks::with_core(config, store, async move |app| {
-        delete_on(app, confirm).await
+        delete_on(app, board, confirm).await
     })
     .await
 }
@@ -373,10 +426,13 @@ pub async fn delete(
 pub async fn reset(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
     confirm: bool,
 ) -> Result<BoardDestructReceipt, CommandError> {
-    crate::commands::tasks::with_core(config, store, async move |app| reset_on(app, confirm).await)
-        .await
+    crate::commands::tasks::with_core(config, store, async move |app| {
+        reset_on(app, board, confirm).await
+    })
+    .await
 }
 
 /// The publish ceremony: create a fresh Deck board from the local one
@@ -388,18 +444,20 @@ pub async fn reset(
 ///
 /// # Errors
 ///
-/// [`CommandError`] — typed: `NoBoard`/`BoardAlreadyBound` from the
-/// engine, sync classes while the first cycle settles.
+/// [`CommandError`] — typed: the named-id board refusals /
+/// `BoardAlreadyBound` (CLI-mapped), sync classes while the first cycle
+/// settles.
 pub async fn publish(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
     timeout: Duration,
 ) -> Result<PublishReceipt, CommandError> {
     let client = publish_prelude(&config, &store)?;
 
     let app =
         crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
-    let result = publish_on(&app, &client, timeout).await;
+    let result = publish_on(&app, &client, board, timeout).await;
     let _ = app.shutdown().await;
     result
 }
@@ -428,17 +486,25 @@ pub(crate) fn publish_prelude(
 pub(crate) async fn publish_on(
     app: &crate::App,
     client: &DeckClient,
+    board: Option<taskboard_domain::BoardId>,
     timeout: Duration,
 ) -> Result<PublishReceipt, CommandError> {
+    let board_id = crate::commands::resolve_board(app, board)?;
     let state = app.engine.shared_state().load_full();
-    let local = state.boards.values().find(|b| !b.deleted);
-    let Some(local) = local else {
+    // The id resolved a moment ago; a miss means the board died between
+    // resolve and read (an engine contract break class, not user input).
+    let Some(local) = state.boards.get(&board_id) else {
         return Err(CommandError::Engine(Box::new(
-            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard),
+            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::UnknownBoard(
+                board_id,
+            )),
         )));
     };
     if let Some(current) = local.remote {
-        return Err(CommandError::BoardAlreadyBound { current: current.0 });
+        return Err(CommandError::BoardAlreadyBound {
+            board: board_id.as_uuid().to_string(),
+            current: current.0,
+        });
     }
     let title = local.title.clone();
     // Defensive color mapping: the stored value is lenient, Deck's is
@@ -459,6 +525,7 @@ pub(crate) async fn publish_on(
     let outcome = app
         .engine
         .execute(StateCommand::BindBoard {
+            board: board_id,
             remote: RemoteBoardId(created.id),
         })
         .await?;
@@ -570,7 +637,17 @@ pub async fn select_on(
     bind_local_board: bool,
 ) -> Result<SelectReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
-    let bound = state.boards.values().find(|b| !b.deleted);
+    // INTERIM(multi-board-2 → chunk-3): inline first-live-board resolve
+    // (deterministic board-id order) for the migration-path `BindBoard`
+    // until the ceremony redesign folds the pre-check into engine-refusal
+    // pass-through. A board-less db takes the fresh adoption path below —
+    // no local board exists to refuse about.
+    let bound = state
+        .boards
+        .values()
+        .filter(|b| !b.deleted)
+        .min_by_key(|b| b.id);
+    let local_board_id = bound.map(|b| b.id);
     if let Some(bound) = bound
         && let Some(remote) = bound.remote
     {
@@ -587,12 +664,14 @@ pub async fn select_on(
             });
         }
         let current = remote.0;
-        return Err(CommandError::BoardAlreadyBound { current });
+        return Err(CommandError::BoardAlreadyBound {
+            board: bound.id.as_uuid().to_string(),
+            current,
+        });
     }
-    let has_local_board = bound.is_some();
     drop(state);
 
-    if has_local_board {
+    if let Some(local_board_id) = local_board_id {
         if !bind_local_board {
             return Err(CommandError::LocalBoardExists);
         }
@@ -602,6 +681,7 @@ pub async fn select_on(
         let outcome = app
             .engine
             .execute(StateCommand::BindBoard {
+                board: local_board_id,
                 remote: RemoteBoardId(board),
             })
             .await?;

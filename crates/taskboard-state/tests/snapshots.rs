@@ -80,6 +80,18 @@ impl Scenario {
         }
     }
 
+    /// The scenario's single board id (the seed or the minted one).
+    fn board_id(&self) -> taskboard_domain::BoardId {
+        *self
+            .handle
+            .shared_state()
+            .load()
+            .boards
+            .keys()
+            .next()
+            .expect("the scenario has exactly one board")
+    }
+
     async fn run(&mut self, command: StateCommand) -> CommandOutcome {
         self.clock.advance(60);
         self.handle.execute(command).await.expect("accepted")
@@ -112,6 +124,7 @@ async fn s1_fresh_boot_authoring() {
     let mut s = Scenario::start().await;
     let CommandOutcome::CreatedStack(stack) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "todo".into(),
             order: 1,
         })
@@ -146,6 +159,7 @@ async fn s1_fresh_boot_authoring() {
     .await;
     let CommandOutcome::CreatedLabel(label) = s
         .run(StateCommand::CreateLabel {
+            board: s.board_id(),
             title: "urgent".into(),
             color: Color::new("ff0000"),
         })
@@ -156,6 +170,7 @@ async fn s1_fresh_boot_authoring() {
     s.run(StateCommand::AssignLabel { task, label }).await;
     let CommandOutcome::CreatedStack(later) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "doing".into(),
             order: 2,
         })
@@ -182,6 +197,7 @@ async fn s2_offline_queue_accumulation() {
     let mut s = Scenario::start().await;
     let CommandOutcome::CreatedStack(stack) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "inbox".into(),
             order: 1,
         })
@@ -302,6 +318,7 @@ async fn s4_sync_resolution_drains_outbox() {
     let mut s = Scenario::start().await;
     let CommandOutcome::CreatedStack(stack) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "todo".into(),
             order: 1,
         })
@@ -318,6 +335,7 @@ async fn s4_sync_resolution_drains_outbox() {
         .await;
     let _label = s
         .run(StateCommand::CreateLabel {
+            board: s.board_id(),
             title: "dead-lettered".into(),
             color: Color::new("000000"),
         })
@@ -387,6 +405,7 @@ async fn s5_rejections_leave_state_untouched() {
     let mut s = Scenario::start().await;
     let CommandOutcome::CreatedStack(stack) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "todo".into(),
             order: 1,
         })
@@ -450,6 +469,7 @@ async fn s6_network_lost_restored_cycle() {
     let mut s = Scenario::start_with(common::seed_bound_board_state("kiosk")).await;
     let CommandOutcome::CreatedStack(_stack) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "todo".into(),
             order: 1,
         })
@@ -522,19 +542,21 @@ async fn s7_standalone_first_run_and_bind() {
     else {
         panic!("wrong receipt");
     };
-    // A second create hits the single-board guard.
-    assert!(matches!(
-        s.run_raw(StateCommand::CreateBoard {
+    // The refusal lift: a second create mints a distinct board.
+    let CommandOutcome::CreatedBoard(second_board) = s
+        .run_raw(StateCommand::CreateBoard {
             title: "second".into(),
             color: Color::new("000000"),
         })
-        .await,
-        Err(taskboard_state::ExecuteError::Rejected(
-            taskboard_domain::CommandError::BoardExists
-        ))
-    ));
+        .await
+        .expect("the lift mints")
+    else {
+        panic!("wrong receipt");
+    };
+    assert_ne!(second_board, board);
     let CommandOutcome::CreatedStack(stack) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "todo".into(),
             order: 1,
         })
@@ -549,12 +571,14 @@ async fn s7_standalone_first_run_and_bind() {
     })
     .await;
     s.run(StateCommand::BindBoard {
+        board: s.board_id(),
         remote: taskboard_domain::RemoteBoardId(77),
     })
     .await;
     // Rebinding to the same remote is the accepted no-op.
     let _ = s
         .run_raw(StateCommand::BindBoard {
+            board: s.board_id(),
             remote: taskboard_domain::RemoteBoardId(77),
         })
         .await
@@ -598,16 +622,21 @@ async fn s8_boards_color_archive() {
         panic!("wrong receipt");
     };
     s.run(StateCommand::SetBoardColor {
+        board: s.board_id(),
         color: Color::new("00c2e0"),
     })
     .await;
     // A same-color repeat is the accepted no-op (nothing persisted).
     s.run(StateCommand::SetBoardColor {
+        board: s.board_id(),
         color: Color::new("00c2e0"),
     })
     .await;
-    s.run(StateCommand::SetBoardArchived { archived: true })
-        .await;
+    s.run(StateCommand::SetBoardArchived {
+        board: s.board_id(),
+        archived: true,
+    })
+    .await;
     s.snap("s8");
     drop(s);
 }
@@ -619,7 +648,7 @@ async fn s8_boards_color_archive() {
 #[tokio::test]
 async fn s9_boards_delete_cascade() {
     let mut s = Scenario::start_empty().await;
-    let CommandOutcome::CreatedBoard(_board) = s
+    let CommandOutcome::CreatedBoard(board) = s
         .run(StateCommand::CreateBoard {
             title: "doomed".into(),
             color: Color::new("3366cc"),
@@ -630,6 +659,7 @@ async fn s9_boards_delete_cascade() {
     };
     let CommandOutcome::CreatedStack(first) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "todo".into(),
             order: 1,
         })
@@ -639,6 +669,7 @@ async fn s9_boards_delete_cascade() {
     };
     let CommandOutcome::CreatedStack(second) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "doing".into(),
             order: 2,
         })
@@ -655,6 +686,7 @@ async fn s9_boards_delete_cascade() {
         .await;
     }
     s.run(StateCommand::CreateLabel {
+        board,
         title: "urgent".into(),
         color: Color::new("ff0000"),
     })
@@ -666,9 +698,9 @@ async fn s9_boards_delete_cascade() {
         .find(|o| matches!(o.op, LocalOp::CreateTask(_)))
         .expect("a queued create op");
 
-    s.run(StateCommand::DeleteBoard).await;
+    s.run(StateCommand::DeleteBoard { board }).await;
     // Repeat: the accepted terminal no-op.
-    s.run(StateCommand::DeleteBoard).await;
+    s.run(StateCommand::DeleteBoard { board }).await;
     let after = s.repo.snapshot();
     assert!(
         !after.outbox.iter().any(|o| o.op_id == task_op.op_id),
@@ -685,7 +717,7 @@ async fn s9_boards_delete_cascade() {
 #[tokio::test]
 async fn s10_boards_reset() {
     let mut s = Scenario::start_empty().await;
-    let CommandOutcome::CreatedBoard(_board) = s
+    let CommandOutcome::CreatedBoard(board) = s
         .run(StateCommand::CreateBoard {
             title: "repair".into(),
             color: Color::new("3366cc"),
@@ -696,6 +728,7 @@ async fn s10_boards_reset() {
     };
     let CommandOutcome::CreatedStack(stack) = s
         .run(StateCommand::CreateStack {
+            board: s.board_id(),
             title: "todo".into(),
             order: 1,
         })
@@ -719,6 +752,7 @@ async fn s10_boards_reset() {
     })
     .await;
     s.run(StateCommand::BindBoard {
+        board: s.board_id(),
         remote: taskboard_domain::RemoteBoardId(77),
     })
     .await;
@@ -756,9 +790,9 @@ async fn s10_boards_reset() {
     .await
     .expect("validators settle");
 
-    s.run(StateCommand::ResetBoard).await;
+    s.run(StateCommand::ResetBoard { board }).await;
     // Repeat: the accepted already-empty no-op.
-    s.run(StateCommand::ResetBoard).await;
+    s.run(StateCommand::ResetBoard { board }).await;
     let after = s.repo.snapshot();
     assert!(
         after.stacks.is_empty()

@@ -72,16 +72,21 @@ pub enum CommandError {
     /// The label is tombstoned; edit-style intents cannot target it.
     #[error("label is deleted")]
     LabelDeleted(LabelId),
-    /// No live board is bound, so board-scoped creates are impossible.
-    #[error("no live board is bound")]
-    NoBoard,
-    /// A live board already exists; the single-board MVP refuses a second.
-    #[error("a live board already exists")]
-    BoardExists,
-    /// The live board is already bound to a remote board (differing from
-    /// the bind target).
+    /// No board with this id exists.
+    #[error("unknown board")]
+    UnknownBoard(BoardId),
+    /// The board is tombstoned; edit-style intents cannot target it.
+    #[error("board is deleted")]
+    BoardDeleted(BoardId),
+    /// The named board is already bound to a remote board (differing
+    /// from the bind target).
     #[error("the board is already bound to a remote board")]
-    BoardAlreadyBound(RemoteBoardId),
+    BoardAlreadyBound {
+        /// The named board.
+        board: BoardId,
+        /// The remote board it is bound to.
+        bound: RemoteBoardId,
+    },
     /// No reminder rule with this id exists.
     #[error("unknown reminder rule")]
     UnknownReminderRule(ReminderRuleId),
@@ -128,15 +133,24 @@ pub enum CommandOutcome {
     SyncRequested,
 }
 
-/// The smallest live board id, deterministically (documented totality for
-/// the pre-multi-board window when several could coexist; the MVP holds
-/// 0..1).
-fn live_board(app: &AppState) -> Option<BoardId> {
+/// The named board, refusing typed when the id names nothing or a
+/// tombstone (the parameterised replacement of the implicit
+/// first-live-board pick; edit-style intents target live boards).
+/// Archived boards stay commandable — the lookup checks `deleted` only.
+fn live_board_of(app: &AppState, board: BoardId) -> Result<BoardId, CommandError> {
+    match app.boards.get(&board) {
+        None => Err(CommandError::UnknownBoard(board)),
+        Some(b) if b.deleted => Err(CommandError::BoardDeleted(board)),
+        Some(_) => Ok(board),
+    }
+}
+
+/// An existing board for a *terminal* intent: tombstoned is not an error
+/// here (the repeat is an accepted no-op), only absence is.
+fn existing_board(app: &AppState, board: BoardId) -> Result<&crate::entities::Board, CommandError> {
     app.boards
-        .values()
-        .filter(|b| !b.deleted)
-        .map(|b| b.id)
-        .min()
+        .get(&board)
+        .ok_or(CommandError::UnknownBoard(board))
 }
 
 fn live_task(app: &AppState, id: TaskId) -> Result<&Task, CommandError> {
@@ -230,7 +244,7 @@ fn task_rule_deletes(app: &AppState, task: TaskId) -> impl Iterator<Item = Persi
 /// # Errors
 ///
 /// The [`CommandError`] variant matching the violated precondition
-/// (unknown/deleted task, stack, or label; no live board). Transport and
+/// (unknown/deleted task, stack, label, or board). Transport and
 /// lifecycle failures are not representable here.
 ///
 /// `outbox` is the engine's current queue slice: the delete paths cancel
@@ -360,8 +374,12 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        StateCommand::CreateStack { title, order } => {
-            let board = live_board(app).ok_or(CommandError::NoBoard)?;
+        StateCommand::CreateStack {
+            board,
+            title,
+            order,
+        } => {
+            let board = live_board_of(app, *board)?;
             let id = ids.new_stack_id();
             let stack = Stack {
                 id,
@@ -461,8 +479,12 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        StateCommand::CreateLabel { title, color } => {
-            let board = live_board(app).ok_or(CommandError::NoBoard)?;
+        StateCommand::CreateLabel {
+            board,
+            title,
+            color,
+        } => {
+            let board = live_board_of(app, *board)?;
             let id = ids.new_label_id();
             let label = Label {
                 id,
@@ -571,10 +593,6 @@ pub fn plan_command(
             })
         }
         StateCommand::CreateBoard { title, color } => {
-            // Single-board invariant, create-side guard.
-            if live_board(app).is_some() {
-                return Err(CommandError::BoardExists);
-            }
             let id = ids.new_board_id();
             let board = crate::entities::Board {
                 id,
@@ -599,8 +617,8 @@ pub fn plan_command(
                 outcome: CommandOutcome::CreatedBoard(id),
             })
         }
-        StateCommand::RenameBoard { title } => {
-            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+        StateCommand::RenameBoard { board, title } => {
+            let board_id = live_board_of(app, *board)?;
             let board = &app.boards[&board_id];
             if board.title == *title {
                 return Ok(no_op());
@@ -616,8 +634,8 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        StateCommand::SetBoardColor { color } => {
-            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+        StateCommand::SetBoardColor { board, color } => {
+            let board_id = live_board_of(app, *board)?;
             let board = &app.boards[&board_id];
             if board.color == *color {
                 return Ok(no_op());
@@ -633,8 +651,8 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        StateCommand::SetBoardArchived { archived } => {
-            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+        StateCommand::SetBoardArchived { board, archived } => {
+            let board_id = live_board_of(app, *board)?;
             let board = &app.boards[&board_id];
             if board.archived == *archived {
                 return Ok(no_op());
@@ -650,15 +668,13 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        StateCommand::DeleteBoard => {
+        StateCommand::DeleteBoard { board } => {
             // Terminal intent: a repeat (a tombstoned board still exists)
-            // is an accepted no-op; only total absence is a rejection.
-            let Some(board_id) = live_board(app) else {
-                if app.boards.is_empty() {
-                    return Err(CommandError::NoBoard);
-                }
+            // is an accepted no-op; only absence is a rejection, typed.
+            let board_id = existing_board(app, *board)?.id;
+            if app.boards[&board_id].deleted {
                 return Ok(no_op());
-            };
+            }
             let mut actions = Vec::new();
 
             // Tombstone with binding kept (R9c: the push clears it).
@@ -750,8 +766,8 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        StateCommand::ResetBoard => {
-            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+        StateCommand::ResetBoard { board } => {
+            let board_id = live_board_of(app, *board)?;
             // The already-empty probe: content, the board's queued ops,
             // and its tasks' reminder facts. (Validators ride the bulk
             // action unconditionally; with zero content there is nothing
@@ -820,12 +836,17 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        StateCommand::BindBoard { remote } => {
-            let board_id = live_board(app).ok_or(CommandError::NoBoard)?;
+        StateCommand::BindBoard { board, remote } => {
+            let board_id = live_board_of(app, *board)?;
             let board = &app.boards[&board_id];
             match board.remote {
                 Some(bound) if bound == *remote => return Ok(no_op()),
-                Some(bound) => return Err(CommandError::BoardAlreadyBound(bound)),
+                Some(bound) => {
+                    return Err(CommandError::BoardAlreadyBound {
+                        board: board_id,
+                        bound,
+                    });
+                }
                 None => {}
             }
             let mut updated = board.clone();
@@ -1111,6 +1132,76 @@ mod tests {
 
     fn stack_id() -> StackId {
         StackId::from(uuid::Uuid::from_u128(u128::from(STACK)))
+    }
+
+    fn board_id() -> BoardId {
+        BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)))
+    }
+
+    fn board(raw: u64, live: bool) -> crate::entities::Board {
+        crate::entities::Board {
+            id: BoardId::from(uuid::Uuid::from_u128(u128::from(raw))),
+            remote: None,
+            title: format!("board {raw}"),
+            color: crate::entities::Color::new("00ccff"),
+            archived: false,
+            deleted: !live,
+            clocks: crate::entities::BoardClocks {
+                title: crate::entities::BoardClocks::epoch(),
+                color: crate::entities::BoardClocks::epoch(),
+                archived: crate::entities::BoardClocks::epoch(),
+                deleted: crate::entities::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        }
+    }
+
+    // ---- Board resolvers -----------------------------------------------
+
+    #[test]
+    fn live_board_of_maps_absent_tombstoned_and_live_ids_typed() {
+        let (app, _outbox) = base();
+        let stranger = BoardId::from(uuid::Uuid::from_u128(4242));
+        assert_eq!(
+            live_board_of(&app, stranger),
+            Err(CommandError::UnknownBoard(stranger))
+        );
+
+        let mut dead = app.clone();
+        dead.boards.insert(
+            stranger,
+            crate::entities::Board {
+                id: stranger,
+                deleted: true,
+                ..dead.boards[&board_id()].clone()
+            },
+        );
+        assert_eq!(
+            live_board_of(&dead, stranger),
+            Err(CommandError::BoardDeleted(stranger))
+        );
+        assert_eq!(live_board_of(&dead, board_id()), Ok(board_id()));
+    }
+
+    #[test]
+    fn existing_board_admits_a_tombstone_and_refuses_only_absence() {
+        let (app, _outbox) = base();
+        let stranger = BoardId::from(uuid::Uuid::from_u128(4242));
+        assert_eq!(
+            existing_board(&app, stranger).map(|b| b.id),
+            Err(CommandError::UnknownBoard(stranger))
+        );
+
+        let mut dead = app.clone();
+        dead.boards.insert(
+            stranger,
+            crate::entities::Board {
+                id: stranger,
+                deleted: true,
+                ..dead.boards[&board_id()].clone()
+            },
+        );
+        assert_eq!(existing_board(&dead, stranger).map(|b| b.id), Ok(stranger));
     }
 
     fn task_id() -> TaskId {
@@ -1632,12 +1723,13 @@ mod tests {
     // ---- Stacks -------------------------------------------------------
 
     #[test]
-    fn create_stack_lands_on_the_live_board() {
+    fn create_stack_lands_on_the_named_board() {
         let (app, outbox) = base();
         let plan = run(
             &app,
             &outbox,
             &StateCommand::CreateStack {
+                board: board_id(),
                 title: "column".into(),
                 order: 3,
             },
@@ -1669,35 +1761,42 @@ mod tests {
     }
 
     #[test]
-    fn create_stack_without_a_live_board_is_rejected() {
-        let (mut app, outbox) = base();
-        for board in app.boards.values_mut() {
-            board.deleted = true;
-        }
+    fn create_stack_refuses_unknown_and_deleted_boards_with_the_named_id() {
+        let (app, outbox) = base();
+        let stranger = BoardId::from(uuid::Uuid::from_u128(4242));
         assert_eq!(
             run(
                 &app,
                 &outbox,
                 &StateCommand::CreateStack {
+                    board: stranger,
                     title: "x".into(),
                     order: 1,
                 }
             ),
-            Err(CommandError::NoBoard)
+            Err(CommandError::UnknownBoard(stranger))
         );
-        // No board at all is the same class.
-        let mut empty = base().0;
-        empty.boards.clear();
+
+        let mut dead = app.clone();
+        dead.boards.insert(
+            stranger,
+            crate::entities::Board {
+                id: stranger,
+                deleted: true,
+                ..dead.boards[&board_id()].clone()
+            },
+        );
         assert_eq!(
             run(
-                &empty,
+                &dead,
                 &outbox,
                 &StateCommand::CreateStack {
+                    board: stranger,
                     title: "x".into(),
                     order: 1,
                 }
             ),
-            Err(CommandError::NoBoard)
+            Err(CommandError::BoardDeleted(stranger))
         );
     }
 
@@ -1739,6 +1838,7 @@ mod tests {
             &app,
             &outbox,
             &StateCommand::RenameBoard {
+                board: board_id(),
                 title: "renamed".into(),
             },
         )
@@ -1764,21 +1864,53 @@ mod tests {
         let title = app.boards[&BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)))]
             .title
             .clone();
-        let plan = run(&app, &outbox, &StateCommand::RenameBoard { title }).unwrap();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::RenameBoard {
+                board: board_id(),
+                title,
+            },
+        )
+        .unwrap();
         assert_eq!(plan, no_op());
     }
 
     #[test]
-    fn rename_board_without_a_live_board_is_no_board() {
-        let (mut app, outbox) = base();
-        app.boards.clear();
+    fn rename_board_refuses_unknown_and_deleted_boards_with_the_named_id() {
+        let (app, outbox) = base();
+        let stranger = BoardId::from(uuid::Uuid::from_u128(4242));
         assert_eq!(
             run(
                 &app,
                 &outbox,
-                &StateCommand::RenameBoard { title: "x".into() }
+                &StateCommand::RenameBoard {
+                    board: stranger,
+                    title: "x".into(),
+                }
             ),
-            Err(CommandError::NoBoard)
+            Err(CommandError::UnknownBoard(stranger))
+        );
+
+        let mut dead = app.clone();
+        dead.boards.insert(
+            stranger,
+            crate::entities::Board {
+                id: stranger,
+                deleted: true,
+                ..dead.boards[&board_id()].clone()
+            },
+        );
+        assert_eq!(
+            run(
+                &dead,
+                &outbox,
+                &StateCommand::RenameBoard {
+                    board: stranger,
+                    title: "x".into(),
+                }
+            ),
+            Err(CommandError::BoardDeleted(stranger))
         );
     }
 
@@ -1973,6 +2105,7 @@ mod tests {
             &app,
             &outbox,
             &StateCommand::CreateLabel {
+                board: board_id(),
                 title: "urgent".into(),
                 color: crate::entities::Color::new("00ff00"),
             },
@@ -2249,18 +2382,38 @@ mod tests {
     }
 
     #[test]
-    fn create_board_refuses_when_a_live_board_exists() {
+    fn create_board_always_mints_and_titles_are_not_unique_keys() {
+        // The refusal lift: with a live board present a second CreateBoard
+        // still mints a distinct id — even for an identical title.
         let (app, outbox) = base();
+        let ids = CountingIds::default();
+        let command = StateCommand::CreateBoard {
+            title: "second".into(),
+            color: crate::entities::Color::new("000000"),
+        };
+        let first = plan_command(&app, &outbox, &command, &ids, now()).unwrap();
+        let CommandOutcome::CreatedBoard(first_id) = first.outcome else {
+            panic!("wrong outcome");
+        };
+
+        let mut grown = app.clone();
+        grown.boards.insert(
+            first_id,
+            crate::entities::Board {
+                id: first_id,
+                deleted: false,
+                ..grown.boards[&board_id()].clone()
+            },
+        );
+        let second = plan_command(&grown, &outbox, &command, &ids, now()).unwrap();
+        let CommandOutcome::CreatedBoard(second_id) = second.outcome else {
+            panic!("wrong outcome");
+        };
+        assert_ne!(second_id, first_id, "always mints a distinct board");
         assert_eq!(
-            run(
-                &app,
-                &outbox,
-                &StateCommand::CreateBoard {
-                    title: "second".into(),
-                    color: crate::entities::Color::new("000000"),
-                }
-            ),
-            Err(CommandError::BoardExists)
+            second.actions.len(),
+            1,
+            "still no outbox op for a local board creation"
         );
     }
 
@@ -2272,6 +2425,7 @@ mod tests {
             &app,
             &outbox,
             &StateCommand::BindBoard {
+                board: board_id(),
                 remote: crate::ids::RemoteBoardId(42),
             },
         )
@@ -2285,18 +2439,20 @@ mod tests {
     }
 
     #[test]
-    fn bind_board_without_a_live_board_is_rejected() {
+    fn bind_board_refuses_an_unknown_board_with_the_named_id() {
         let empty = AppState::default();
         let outbox: Vec<PendingOp> = Vec::new();
+        let stranger = BoardId::from(uuid::Uuid::from_u128(4242));
         assert_eq!(
             run(
                 &empty,
                 &outbox,
                 &StateCommand::BindBoard {
+                    board: stranger,
                     remote: crate::ids::RemoteBoardId(1)
                 }
             ),
-            Err(CommandError::NoBoard)
+            Err(CommandError::UnknownBoard(stranger))
         );
     }
 
@@ -2305,14 +2461,14 @@ mod tests {
         let outbox: Vec<PendingOp> = Vec::new();
         let bound = {
             let mut app = unbound_board_state();
-            let board_id = live_board(&app).unwrap();
-            app.boards.get_mut(&board_id).unwrap().remote = Some(crate::ids::RemoteBoardId(42));
+            app.boards.get_mut(&board_id()).unwrap().remote = Some(crate::ids::RemoteBoardId(42));
             app
         };
         let plan = run(
             &bound,
             &outbox,
             &StateCommand::BindBoard {
+                board: board_id(),
                 remote: crate::ids::RemoteBoardId(42),
             },
         )
@@ -2323,16 +2479,73 @@ mod tests {
                 &bound,
                 &outbox,
                 &StateCommand::BindBoard {
+                    board: board_id(),
                     remote: crate::ids::RemoteBoardId(43)
                 }
             ),
-            Err(CommandError::BoardAlreadyBound(crate::ids::RemoteBoardId(
-                42
-            )))
+            Err(CommandError::BoardAlreadyBound {
+                board: board_id(),
+                bound: crate::ids::RemoteBoardId(42)
+            })
         );
     }
 
     // ---- Board color / archive / delete / reset -------------------------
+
+    #[test]
+    fn board_scoped_intents_touch_only_the_named_board() {
+        // The multi-board pin: with two live boards seeded, a board-scoped
+        // command lands its effect on the named board and leaves the other
+        // byte-untouched.
+        let (mut app, outbox) = base();
+        let other = board(801, true);
+        let other_id = other.id;
+        app.boards.insert(other_id, other);
+
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CreateStack {
+                board: other_id,
+                title: "other column".into(),
+                order: 1,
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertStack(created) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(created.board, other_id);
+
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::RenameBoard {
+                board: other_id,
+                title: "renamed".into(),
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.id, other_id);
+
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetBoardColor {
+                board: board_id(),
+                color: crate::entities::Color::new("123456"),
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.id, board_id());
+        assert_eq!(app.boards[&other_id].title, "board 801", "untouched");
+    }
 
     #[test]
     fn set_board_color_stamps_only_the_color_clock_and_enqueues() {
@@ -2341,6 +2554,7 @@ mod tests {
             &app,
             &outbox,
             &StateCommand::SetBoardColor {
+                board: board_id(),
                 color: crate::entities::Color::new("00ff00"),
             },
         )
@@ -2373,43 +2587,56 @@ mod tests {
     #[test]
     fn set_board_color_same_color_is_a_no_op() {
         let (app, outbox) = base();
-        let color = app.boards.values().next().unwrap().color.clone();
-        let plan = run(&app, &outbox, &StateCommand::SetBoardColor { color }).unwrap();
+        let color = app.boards[&board_id()].color.clone();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetBoardColor {
+                board: board_id(),
+                color,
+            },
+        )
+        .unwrap();
         assert_eq!(plan, no_op());
     }
 
     #[test]
-    fn set_board_color_without_a_live_board_is_no_board() {
-        let (mut app, outbox) = base();
-        app.boards.clear();
+    fn set_board_color_refuses_unknown_and_deleted_boards_with_the_named_id() {
+        let (app, outbox) = base();
+        let stranger = BoardId::from(uuid::Uuid::from_u128(4242));
         assert_eq!(
             run(
                 &app,
                 &outbox,
                 &StateCommand::SetBoardColor {
+                    board: stranger,
                     color: crate::entities::Color::new("00ff00"),
                 }
             ),
-            Err(CommandError::NoBoard)
+            Err(CommandError::UnknownBoard(stranger))
         );
 
-        // A tombstoned board is not commandable either (the live-board
-        // guard filters deleted only — the edit-against-tombstone class).
-        let mut dead = base().0;
-        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
-        let mut board = dead.boards[&board_id].clone();
-        board.deleted = true;
-        board.clocks.deleted = ts(T0 - 60);
-        dead.boards.insert(board_id, board);
+        // A tombstoned board is not commandable either (the
+        // edit-against-tombstone class).
+        let mut dead = app.clone();
+        dead.boards.insert(
+            stranger,
+            crate::entities::Board {
+                id: stranger,
+                deleted: true,
+                ..dead.boards[&board_id()].clone()
+            },
+        );
         assert_eq!(
             run(
                 &dead,
                 &outbox,
                 &StateCommand::SetBoardColor {
+                    board: stranger,
                     color: crate::entities::Color::new("00ff00"),
                 }
             ),
-            Err(CommandError::NoBoard)
+            Err(CommandError::BoardDeleted(stranger))
         );
     }
 
@@ -2419,7 +2646,10 @@ mod tests {
         let plan = run(
             &app,
             &outbox,
-            &StateCommand::SetBoardArchived { archived: true },
+            &StateCommand::SetBoardArchived {
+                board: board_id(),
+                archived: true,
+            },
         )
         .unwrap();
         assert_eq!(plan.outcome, CommandOutcome::Applied);
@@ -2437,7 +2667,7 @@ mod tests {
         // Unarchive on an archived board (archived boards stay
         // commandable — `live_board` filters `deleted` only).
         let mut archived = app;
-        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let board_id = board_id();
         let mut board = archived.boards[&board_id].clone();
         board.archived = true;
         board.clocks.archived = ts(T0 - 60);
@@ -2445,7 +2675,10 @@ mod tests {
         let plan = run(
             &archived,
             &outbox,
-            &StateCommand::SetBoardArchived { archived: false },
+            &StateCommand::SetBoardArchived {
+                board: board_id,
+                archived: false,
+            },
         )
         .unwrap();
         let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
@@ -2459,7 +2692,10 @@ mod tests {
             run(
                 &archived,
                 &outbox,
-                &StateCommand::SetBoardArchived { archived: true }
+                &StateCommand::SetBoardArchived {
+                    board: board_id,
+                    archived: true
+                }
             ),
             Ok(no_op())
         );
@@ -2477,6 +2713,7 @@ mod tests {
             &app,
             &outbox,
             &StateCommand::SetBoardColor {
+                board: board_id,
                 color: crate::entities::Color::new("123456"),
             },
         )
@@ -2485,6 +2722,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one cascade table; splitting hides the shape
     fn delete_board_cascades_tombstones_and_cancels_pending_ops() {
         let (app, _outbox) = base();
         let second = stack(901, true);
@@ -2505,7 +2743,12 @@ mod tests {
             ),
         ];
 
-        let plan = run(&state, &outbox, &StateCommand::DeleteBoard).unwrap();
+        let plan = run(
+            &state,
+            &outbox,
+            &StateCommand::DeleteBoard { board: board_id() },
+        )
+        .unwrap();
         assert_eq!(plan.outcome, CommandOutcome::Applied);
 
         let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
@@ -2593,31 +2836,47 @@ mod tests {
     }
 
     #[test]
-    fn delete_board_repeat_is_a_no_op_and_absence_is_no_board() {
+    fn delete_board_repeat_is_a_no_op_and_absence_is_unknown_board() {
         let (mut app, outbox) = base();
-        let plan = run(&app, &outbox, &StateCommand::DeleteBoard).unwrap();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DeleteBoard { board: board_id() },
+        )
+        .unwrap();
         assert_eq!(plan.outcome, CommandOutcome::Applied);
 
-        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        let board_id = board_id();
         let mut board = app.boards[&board_id].clone();
         board.deleted = true;
         board.clocks.deleted = ts(T0 - 30);
         app.boards.insert(board_id, board);
-        assert_eq!(run(&app, &outbox, &StateCommand::DeleteBoard), Ok(no_op()));
+        assert_eq!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::DeleteBoard { board: board_id }
+            ),
+            Ok(no_op())
+        );
 
         let mut empty = app;
         empty.boards.clear();
         assert_eq!(
-            run(&empty, &outbox, &StateCommand::DeleteBoard),
-            Err(CommandError::NoBoard)
+            run(
+                &empty,
+                &outbox,
+                &StateCommand::DeleteBoard { board: board_id }
+            ),
+            Err(CommandError::UnknownBoard(board_id))
         );
     }
 
     #[test]
     fn delete_board_on_an_unbound_board_still_queues_the_op() {
         let app = unbound_board_state();
-        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
-        let plan = run(&app, &[], &StateCommand::DeleteBoard).unwrap();
+        let board_id = board_id();
+        let plan = run(&app, &[], &StateCommand::DeleteBoard { board: board_id }).unwrap();
         assert_eq!(plan.outcome, CommandOutcome::Applied);
         assert!(
             plan.actions
@@ -2639,7 +2898,12 @@ mod tests {
             op_for(51, LocalOp::UpdateTask(task_id())),
             op_for(52, LocalOp::UpdateBoard(board_id)),
         ];
-        let plan = run(&state, &outbox, &StateCommand::ResetBoard).unwrap();
+        let plan = run(
+            &state,
+            &outbox,
+            &StateCommand::ResetBoard { board: board_id },
+        )
+        .unwrap();
         assert_eq!(plan.outcome, CommandOutcome::Applied);
         assert_eq!(
             plan.actions,
@@ -2682,16 +2946,37 @@ mod tests {
             sync: crate::state::SyncStates::new(),
             last_updated: None,
         };
-        assert_eq!(run(&app, &[], &StateCommand::ResetBoard), Ok(no_op()));
+        assert_eq!(
+            run(&app, &[], &StateCommand::ResetBoard { board: board_id }),
+            Ok(no_op())
+        );
     }
 
     #[test]
-    fn reset_board_without_a_live_board_is_no_board() {
-        let (mut app, outbox) = base();
-        app.boards.clear();
+    fn reset_board_refuses_unknown_and_deleted_boards_with_the_named_id() {
+        let (app, outbox) = base();
+        let stranger = BoardId::from(uuid::Uuid::from_u128(4242));
         assert_eq!(
-            run(&app, &outbox, &StateCommand::ResetBoard),
-            Err(CommandError::NoBoard)
+            run(&app, &outbox, &StateCommand::ResetBoard { board: stranger }),
+            Err(CommandError::UnknownBoard(stranger))
+        );
+
+        let mut dead = app.clone();
+        dead.boards.insert(
+            stranger,
+            crate::entities::Board {
+                id: stranger,
+                deleted: true,
+                ..dead.boards[&board_id()].clone()
+            },
+        );
+        assert_eq!(
+            run(
+                &dead,
+                &outbox,
+                &StateCommand::ResetBoard { board: stranger }
+            ),
+            Err(CommandError::BoardDeleted(stranger))
         );
     }
 
@@ -3354,6 +3639,30 @@ mod proptests {
                         "acceptance must not depend on the outbox: {baseline:?} vs {variant:?}"
                     );
                 }
+            }
+        }
+
+        #[test]
+        fn live_board_of_is_ok_exactly_for_live_boards_and_typed_otherwise(
+            persisted in persisted_state_strategy(),
+            board in crate::test_support::board_id_strategy(),
+        ) {
+            let app: AppState = AppState {
+                boards: persisted.boards.clone(),
+                stacks: persisted.stacks.clone(),
+                tasks: persisted.tasks.clone(),
+                labels: persisted.labels.clone(),
+                reminders: persisted.reminders.clone(),
+                sync: persisted.sync,
+                last_updated: None,
+            };
+            let result = live_board_of(&app, board);
+            match app.boards.get(&board) {
+                None => prop_assert_eq!(result, Err(CommandError::UnknownBoard(board))),
+                Some(b) if b.deleted => {
+                    prop_assert_eq!(result, Err(CommandError::BoardDeleted(board)));
+                }
+                Some(_) => prop_assert_eq!(result, Ok(board)),
             }
         }
     }

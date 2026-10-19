@@ -315,6 +315,7 @@ async fn r7_dispatch_line_routes_every_verb_family() {
             &app,
             Command::Stacks {
                 cmd: StacksCmd::Add {
+                    board: None,
                     title: "Todo".to_owned(),
                     order: None,
                 },
@@ -350,7 +351,10 @@ async fn r7_dispatch_line_routes_every_verb_family() {
                 },
             },
             Command::Boards {
-                cmd: BoardsCmd::Publish { timeout_secs: 1 },
+                cmd: BoardsCmd::Publish {
+                    board: None,
+                    timeout_secs: 1,
+                },
             },
             Command::Sync {
                 no_wait: false,
@@ -425,14 +429,18 @@ async fn r8_quoted_titles_and_flag_composition_survive_the_loop() {
 /// engine's typed `board-exists`, and the session continues after it.
 #[tokio::test]
 async fn r9_single_board_refusal_is_typed_inside_a_session() {
+    // The re-vehicled typed-refusal test (the `board-exists` refusal the
+    // CreateBoard lift retired): a typed engine rejection is a line
+    // failure, and the session continues serving lines.
     let dir = tempdir();
     let db = dir.path().join("r9.db");
+    let stranger = uuid::Uuid::new_v4().to_string();
     let (code, _out, err) = run_session(
         &db,
         true,
         vec![
             line("boards create \"Personal\""),
-            line("boards create \"Second\""),
+            line(&format!("tasks done {stranger}")),
             line("exit"),
         ],
     )
@@ -440,7 +448,7 @@ async fn r9_single_board_refusal_is_typed_inside_a_session() {
     assert_eq!(code, 0);
     let errors = json_lines(&err);
     assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0]["error"]["kind"], "board-exists");
+    assert_eq!(errors[0]["error"]["kind"], "unknown-task");
 }
 
 /// R10: `sync` under a *connector* session is the sync actor's own path
@@ -687,6 +695,7 @@ async fn r12_session_arms_route_success_end_to_end() {
                 &app,
                 Command::Stacks {
                     cmd: StacksCmd::Add {
+                        board: None,
                         title: "Todo".to_owned(),
                         order: None,
                     },
@@ -704,6 +713,7 @@ async fn r12_session_arms_route_success_end_to_end() {
                 &app,
                 Command::Boards {
                     cmd: BoardsCmd::Rename {
+                        board: None,
                         title: "Work".to_owned(),
                     },
                 },
@@ -718,6 +728,7 @@ async fn r12_session_arms_route_success_end_to_end() {
                 &app,
                 Command::Stacks {
                     cmd: StacksCmd::Add {
+                        board: None,
                         title: "Scratch".to_owned(),
                         order: None,
                     },
@@ -779,6 +790,7 @@ async fn r12_session_arms_route_success_end_to_end() {
                 &app,
                 Command::Labels {
                     cmd: taskboard_app::cli::LabelsCmd::Add {
+                        board: None,
                         title: "urgent".to_owned(),
                         color: Some("ff0000".to_owned()),
                     },
@@ -793,7 +805,7 @@ async fn r12_session_arms_route_success_end_to_end() {
                 &session,
                 &app,
                 Command::Labels {
-                    cmd: taskboard_app::cli::LabelsCmd::List,
+                    cmd: taskboard_app::cli::LabelsCmd::List { board: None },
                 },
                 &mut io,
             )

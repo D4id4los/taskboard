@@ -99,13 +99,11 @@ pub(crate) fn resolve_stack(
 
 /// Resolves the *target* stack of a mutation: a board-less db has no
 /// stacks by construction, and the honest typed answer there is the
-/// engine's own `NoBoard` rejection, not `NoStacks`.
+/// sanctioned zero-live-boards refusal, not `NoStacks`.
 fn resolve_target(state: &AppState, selector: Option<&str>) -> Result<StackId, CommandError> {
     let no_board = !state.boards.values().any(|b| !b.deleted);
     resolve_stack(state, selector).map_err(|err| match (err, no_board) {
-        (CommandError::NoStacks, true) => CommandError::Engine(Box::new(
-            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard),
-        )),
+        (CommandError::NoStacks, true) => CommandError::AmbiguousBoard { candidates: vec![] },
         (err, _) => err,
     })
 }

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `taskboard stacks` (ADR 0009): the minimum stack verb that makes
 //! stand-alone usable (`stacks add`); WI-3 owns the rest of the
-//! stack/label verbs. Board-less dbs surface the engine's own `NoBoard`
-//! rejection (the `no-board` kind).
+//! stack/label verbs. A board-less or ambiguous default surfaces the
+//! typed `ambiguous-board` refusal at resolution.
 
 use std::sync::Arc;
 
@@ -22,26 +22,31 @@ use crate::secrets::CredentialStore;
 pub async fn add(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
     title: &str,
     order: Option<i64>,
 ) -> Result<StackReceipt, CommandError> {
     let title = title.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| add_on(app, title, order).await)
-        .await
+    crate::commands::tasks::with_core(config, store, async |app| {
+        add_on(app, board, title, order).await
+    })
+    .await
 }
 
 /// The `stacks add` steps on a booted core (the REPL/session seam).
 pub(crate) async fn add_on(
     app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
     title: String,
     order: Option<i64>,
 ) -> Result<StackReceipt, CommandError> {
+    let board_id = crate::commands::resolve_board(app, board)?;
     let state = app.engine.shared_state().load_full();
     let order = order.unwrap_or_else(|| {
         state
             .stacks
             .values()
-            .filter(|s| !s.deleted)
+            .filter(|s| !s.deleted && s.board == board_id)
             .map(|s| s.order)
             .max()
             .map_or(0, |max| max + 1)
@@ -50,13 +55,19 @@ pub(crate) async fn add_on(
     let outcome = app
         .engine
         .execute(StateCommand::CreateStack {
+            board: board_id,
             title: title.clone(),
             order,
         })
         .await?;
     let CommandOutcome::CreatedStack(stack_id) = outcome else {
+        // The board resolved a moment ago; the only surviving mismatch is
+        // the board dying between resolve and execute (an engine contract
+        // break class, not user input).
         return Err(CommandError::Engine(Box::new(
-            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::NoBoard),
+            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::UnknownBoard(
+                board_id,
+            )),
         )));
     };
     Ok(StackReceipt {

@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::entities::Color;
-use crate::ids::{LabelId, RemoteBoardId, StackId, TaskId};
+use crate::ids::{BoardId, LabelId, RemoteBoardId, StackId, TaskId};
 use crate::reminders::ReminderRef;
 use crate::remote::{PushOutcome, RemoteBoardSnapshot};
 use crate::state::SyncErrorKind;
@@ -55,8 +55,10 @@ pub enum StateCommand {
         /// Task to delete.
         id: TaskId,
     },
-    /// Create a stack at the given order on the bound board.
+    /// Create a stack at the given order on the named board.
     CreateStack {
+        /// Target board.
+        board: BoardId,
         /// Stack title.
         title: String,
         /// Requested sort order.
@@ -82,8 +84,10 @@ pub enum StateCommand {
         /// Requested sort order within the board.
         order: i64,
     },
-    /// Create a label on the bound board.
+    /// Create a label on the named board.
     CreateLabel {
+        /// Target board.
+        board: BoardId,
         /// Label title.
         title: String,
         /// Label color.
@@ -115,53 +119,67 @@ pub enum StateCommand {
         /// Label.
         label: LabelId,
     },
-    /// Create the single local board (refuses when a live board exists).
-    /// The stand-alone first-run command; carries no outbox op — server-side
-    /// creation is the `publish` ceremony's job.
+    /// Create a local board (always mints; titles are not uniqueness
+    /// keys). The stand-alone first-run command; carries no outbox op —
+    /// server-side creation is the `publish` ceremony's job.
     CreateBoard {
         /// Board title.
         title: String,
         /// Board color (lenient; validated at the CLI boundary).
         color: Color,
     },
-    /// Attach the local board to an existing remote board. The next pull
-    /// matches by this binding and merges instead of adopting a duplicate;
-    /// the outbox then drains onto the remote board.
+    /// Attach the named local board to an existing remote board. The next
+    /// pull matches by this binding and merges instead of adopting a
+    /// duplicate; the outbox then drains onto the remote board.
     BindBoard {
+        /// The local board to bind.
+        board: BoardId,
         /// The remote board to bind to.
         remote: RemoteBoardId,
     },
-    /// Rename the single live board's title (accepted no-op when
-    /// unchanged; pushes as a full-send when the board is bound).
+    /// Rename the named board's title (accepted no-op when unchanged;
+    /// pushes as a full-send when the board is bound).
     RenameBoard {
+        /// Target board.
+        board: BoardId,
         /// New title.
         title: String,
     },
-    /// Set the single live board's color (accepted no-op when unchanged;
-    /// pushes as a full-send when the board is bound).
+    /// Set the named board's color (accepted no-op when unchanged; pushes
+    /// as a full-send when the board is bound).
     SetBoardColor {
+        /// Target board.
+        board: BoardId,
         /// The new color (lenient domain value; boundary layers validate).
         color: Color,
     },
-    /// Archive or unarchive the single live board (one verb, both
-    /// directions; accepted no-op when unchanged). Archived boards stay
-    /// commandable. Pushes as a full-send when the board is bound.
+    /// Archive or unarchive the named board (one verb, both directions;
+    /// accepted no-op when unchanged). Archived boards stay commandable.
+    /// Pushes as a full-send when the board is bound.
     SetBoardArchived {
+        /// Target board.
+        board: BoardId,
         /// `true` = archive, `false` = unarchive.
         archived: bool,
     },
-    /// Delete the single live board: a local tombstone ceremony that
+    /// Delete the named board: a local tombstone ceremony that
     /// cascades to its live stacks, tasks, and labels, cancels the
     /// pending ops of the doomed entities, and queues one board-delete
     /// op (uniformly, bound or not — the planner noop-completes an
     /// unbound board's group). Repeat is an accepted no-op.
-    DeleteBoard,
-    /// Clear the single live board's local content (stacks, tasks,
-    /// labels, outbox entries, sync validators, reminder facts) in one
+    DeleteBoard {
+        /// The board to delete.
+        board: BoardId,
+    },
+    /// Clear the named board's local content (stacks, tasks, labels,
+    /// outbox entries, sync validators, reminder facts) in one
     /// local-only repair action; the board row and the connect session
     /// survive. A bound board re-materializes from the next pull under
     /// fresh local ids. Already-empty is an accepted no-op.
-    ResetBoard,
+    ResetBoard {
+        /// The board to reset.
+        board: BoardId,
+    },
     /// Snooze a fired reminder occurrence: reschedule it to
     /// `now + postpone` (engine-stamped via the injected clock). The
     /// occurrence is opaque link data — a stale link is inert by map
