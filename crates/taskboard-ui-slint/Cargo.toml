@@ -47,3 +47,6 @@ png.workspace = true
 # The journey/golden harness (design §8.1/Q8): the exact-pin testing
 # backend, dev-only — the shipped feature set gains nothing.
 i-slint-backend-testing.workspace = true
+# The first-frame contract test: a handwritten capturing Layer over
+# Registry — dev-only, never a shipped dependency.
+tracing-subscriber.workspace = true

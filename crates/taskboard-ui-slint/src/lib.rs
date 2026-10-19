@@ -173,6 +173,17 @@ pub fn mount(
     // The first paint is a refresh, not a timer wait (D1's
     // first-refresh flag, collapsed into an immediate pass).
     handle.refresh();
+    // The cold-start harness's moment (chunk-5 plan D5): the mount
+    // seam's proxy for "first rendered frame" — after this initial
+    // refresh the window's models hold the full first-frame content;
+    // the show→presented delta has no public slint 1.18.1 API.
+    // Consumed by structured-field selection on a JSON log stream,
+    // never by message-text parsing.
+    tracing::info!(
+        target: "taskboard_perf",
+        moment = "first-frame",
+        "first-frame moment: initial refresh pushed models to the window"
+    );
     Ok(handle)
 }
 
@@ -293,7 +304,7 @@ mod mount_tests {
     use super::*;
     use crate::test_platform::on_slint_thread;
 
-    fn handover() -> (
+    pub(super) fn handover() -> (
         Arc<ArcSwap<AppState>>,
         broadcast::Receiver<EngineSignal>,
         broadcast::Receiver<SystemEvent>,
@@ -416,6 +427,95 @@ mod mount_tests {
                 .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_fullscreen());
         });
+    }
+}
+
+/// The cold-start harness's contract (chunk-5 plan §2/D5): `mount`
+/// emits exactly one `taskboard_perf` event carrying the structured
+/// field `moment = "first-frame"` — selected by the field, never by
+/// message prose. Captured through a handwritten capturing `Layer`
+/// over `Registry` (fakes over mocks); no message text is asserted.
+#[cfg(test)]
+mod first_frame_tests {
+    use super::mount_tests::handover;
+    use crate::test_platform::on_slint_thread;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::prelude::*;
+
+    type Captured = Arc<Mutex<Vec<(String, BTreeMap<String, String>)>>>;
+
+    /// A capturing layer: every event lands as (target, field map),
+    /// stringified via `Debug` — the typed field survives verbatim.
+    struct FieldCapture(Captured);
+
+    struct FieldVisitor<'a>(&'a mut BTreeMap<String, String>);
+
+    impl tracing::field::Visit for FieldVisitor<'_> {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.insert(field.name().to_owned(), value.to_owned());
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().to_owned(), format!("{value:?}"));
+        }
+    }
+
+    impl<S> tracing_subscriber::Layer<S> for FieldCapture
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = BTreeMap::new();
+            event.record(&mut FieldVisitor(&mut fields));
+            self.0
+                .lock()
+                .expect("capture lock")
+                .push((event.metadata().target().to_owned(), fields));
+        }
+    }
+
+    #[test]
+    fn mount_emits_exactly_one_structured_first_frame_event() {
+        let captured: Captured = Arc::new(Mutex::new(Vec::new()));
+        let reader: Captured = Arc::clone(&captured);
+        on_slint_thread(move || {
+            let subscriber =
+                tracing_subscriber::Registry::default().with(FieldCapture(Arc::clone(&captured)));
+            // Thread-local default on the slint thread; `mount` runs
+            // there, so its event is captured. The guard is dropped at
+            // closure end.
+            let guard = tracing::subscriber::set_default(subscriber);
+            let (state, signals, system, commands) = handover();
+            crate::mount(
+                state,
+                signals,
+                system,
+                commands,
+                crate::UiSettings::default(),
+            )
+            .expect("mount succeeds on the null platform");
+            drop(guard);
+        });
+        let events = reader.lock().expect("capture lock");
+        let perf_events: Vec<_> = events
+            .iter()
+            .filter(|(target, _)| target == "taskboard_perf")
+            .collect();
+        assert_eq!(
+            perf_events.len(),
+            1,
+            "exactly one taskboard_perf event per mount, got: {events:?}"
+        );
+        let moment = perf_events[0]
+            .1
+            .get("moment")
+            .expect("the first-frame event carries a `moment` field");
+        assert_eq!(moment, "first-frame");
     }
 }
 
