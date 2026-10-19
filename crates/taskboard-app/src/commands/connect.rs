@@ -286,6 +286,12 @@ async fn decide_backend_switch<P: PromptReader>(
     args: &ConnectArgs,
     prompts: &mut P,
 ) -> Result<bool, CommandError> {
+    // Array world (D5-6): the entries carry their own backend words and
+    // the ceremony rewrites entry 0's identity only — nothing to flip,
+    // no prompt.
+    if raw.sync.connectors.is_some() {
+        return Ok(false);
+    }
     if raw.sync.backend != Some(SyncBackend::Standalone) {
         return Ok(false);
     }
@@ -349,9 +355,19 @@ async fn decide_repoint<P: PromptReader>(
     args: &ConnectArgs,
     prompts: &mut P,
 ) -> Result<Option<(String, String)>, CommandError> {
-    let (Some(old_server), Some(old_user)) = (&raw.nextcloud.server_url, &raw.nextcloud.username)
-    else {
-        return Ok(None);
+    // The configured default identity (D5-6): entry 0 under the array
+    // world, the `[nextcloud]` pair under the scalar world
+    // (half-configured stays "unconfigured", D8).
+    let (old_server, old_user) = match (&raw.sync.connectors, &raw.nextcloud.server_url) {
+        (Some(entries), _) => match entries.first() {
+            Some(entry) => (&entry.server_url, &entry.username),
+            None => return Ok(None),
+        },
+        (None, Some(server)) => match &raw.nextcloud.username {
+            Some(user) => (server, user),
+            None => return Ok(None),
+        },
+        (None, None) => return Ok(None),
     };
     if *old_server == identity.server && *old_user == identity.user {
         return Ok(None);
@@ -397,10 +413,25 @@ fn persist(
     backend_switched: bool,
 ) -> Result<(), CommandError> {
     let mut merged = raw;
-    merged.nextcloud.server_url = Some(identity.server.clone());
-    merged.nextcloud.username = Some(identity.user.clone());
-    if backend_switched {
-        merged.sync.backend = Some(SyncBackend::Nextcloud);
+    let array_world = merged.sync.connectors.is_some();
+    if array_world {
+        // Mirror the shape the file is about to have (D5-5): entry 0's
+        // identity is rewritten; nothing else moves. `switch_backend`
+        // is structurally false here (the D5-6 guard).
+        let entry = merged
+            .sync
+            .connectors
+            .as_mut()
+            .and_then(|entries| entries.first_mut())
+            .expect("array world has a default entry");
+        entry.server_url.clone_from(&identity.server);
+        entry.username.clone_from(&identity.user);
+    } else {
+        merged.nextcloud.server_url = Some(identity.server.clone());
+        merged.nextcloud.username = Some(identity.user.clone());
+        if backend_switched {
+            merged.sync.backend = Some(SyncBackend::Nextcloud);
+        }
     }
     merged.validate().map_err(CommandError::from)?;
     write_config_overlay(
@@ -503,10 +534,54 @@ fn write_config_overlay(
     let mut doc = text
         .parse::<toml_edit::DocumentMut>()
         .map_err(|err| std::io::Error::new(IoErrorKind::InvalidData, err))?;
-    doc["nextcloud"]["server_url"] = toml_edit::value(server);
-    doc["nextcloud"]["username"] = toml_edit::value(user);
-    if switch_backend {
-        doc["sync"]["backend"] = toml_edit::value("nextcloud");
+    let scalar_world = doc
+        .get("sync")
+        .and_then(|sync| sync.get("connectors"))
+        .is_none();
+    if scalar_world {
+        // Path A — the scalar world: today's writes verbatim.
+        doc["nextcloud"]["server_url"] = toml_edit::value(server);
+        doc["nextcloud"]["username"] = toml_edit::value(user);
+        if switch_backend {
+            doc["sync"]["backend"] = toml_edit::value("nextcloud");
+        }
+    } else {
+        // Path B — the array world: rewrite the first entry's identity
+        // keys only; never a `backend` key (neither `[sync]`'s nor an
+        // entry's), never `[nextcloud]`, never other entries. The array
+        // may render as an array-of-tables (`[[sync.connectors]]`) or a
+        // plain array of inline tables — navigate generically.
+        let connectors = &mut doc["sync"]["connectors"];
+        let wrote = if let Some(aot) = connectors.as_array_of_tables_mut() {
+            if let Some(entry) = aot.iter_mut().next() {
+                entry["server_url"] = toml_edit::value(server);
+                entry["username"] = toml_edit::value(user);
+                true
+            } else {
+                false
+            }
+        } else if let Some(array) = connectors.as_array_mut() {
+            match array.iter_mut().next() {
+                Some(item) if item.is_inline_table() => {
+                    if let Some(entry) = item.as_inline_table_mut() {
+                        entry.insert("server_url", toml_edit::Value::from(server));
+                        entry.insert("username", toml_edit::Value::from(user));
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+        if !wrote {
+            return Err(std::io::Error::new(
+                IoErrorKind::InvalidData,
+                "sync.connectors present but carries no entries",
+            ));
+        }
     }
 
     crate::config::write_owner_only_atomic(path, doc.to_string().as_str())
@@ -613,7 +688,8 @@ fn deck_variant(err: &DeckError) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{PromptReader as _, StdinPrompts, parse_confirm};
+    use super::{AppConfig, ConnectArgs, PromptReader, StdinPrompts, parse_confirm};
+    use crate::config::{ConnectorCfg, SyncBackend};
 
     // -- owner-only config modes (F12-01) ------------------------------------
 
@@ -730,6 +806,225 @@ mod tests {
         assert!(attach_nudge_warning(S::Mismatch).is_some());
         assert!(attach_nudge_warning(S::Unreachable).is_some());
         assert!(attach_nudge_warning(S::Unknown).is_some());
+    }
+
+    // ---- the shape-aware ceremony guards (D5-6) ------------------------
+
+    /// A fake prompt reader that fails the test if anything is asked:
+    /// the shape guards must decide without escalating (fakes over
+    /// mocks; the scripted answer is "nothing was prompted").
+    struct NeverPrompts;
+    impl PromptReader for NeverPrompts {
+        fn read_line(
+            &mut self,
+            _prompt: &str,
+        ) -> impl std::future::Future<Output = Result<String, std::io::Error>> + Send {
+            std::future::ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no line prompt expected",
+            )))
+        }
+        fn read_secret(
+            &mut self,
+            _prompt: &str,
+        ) -> impl std::future::Future<Output = Result<String, std::io::Error>> + Send {
+            std::future::ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no secret prompt expected",
+            )))
+        }
+        fn read_confirm(
+            &mut self,
+            _prompt: &str,
+        ) -> impl std::future::Future<Output = Result<bool, std::io::Error>> + Send {
+            std::future::ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no confirm prompt expected",
+            )))
+        }
+    }
+
+    fn array_raw() -> AppConfig {
+        let mut raw = AppConfig::default();
+        raw.sync.connectors = Some(vec![
+            ConnectorCfg {
+                name: "work".into(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://old.example".into(),
+                username: "old-user".into(),
+            },
+            ConnectorCfg {
+                name: "personal".into(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://home.example".into(),
+                username: "home-user".into(),
+            },
+        ]);
+        raw
+    }
+
+    #[tokio::test]
+    async fn the_backend_switch_guard_stays_silent_in_the_array_world() {
+        let mut prompts = NeverPrompts;
+        // Even an explicit `--switch-backend` finds nothing to flip:
+        // the entries carry their own backend words.
+        let args = ConnectArgs {
+            switch_backend: true,
+            confirmable: true,
+            ..ConnectArgs::default()
+        };
+        let switched = super::decide_backend_switch(&array_raw(), &args, &mut prompts)
+            .await
+            .expect("no refusal");
+        assert!(!switched, "the array world offers no flip");
+    }
+
+    #[tokio::test]
+    async fn the_repoint_guard_compares_entry_0s_identity() {
+        let mut prompts = NeverPrompts;
+        let identity = super::Identity {
+            server: "https://other.example".into(),
+            user: "other-user".into(),
+            password: "pw".into(),
+        };
+        // Same identity as entry 0: the idempotent re-verify, no prompt.
+        let same = super::Identity {
+            server: "https://old.example".into(),
+            user: "old-user".into(),
+            password: "pw".into(),
+        };
+        let args = ConnectArgs {
+            confirmable: true,
+            ..ConnectArgs::default()
+        };
+        assert_eq!(
+            super::decide_repoint(&array_raw(), &same, &args, &mut prompts)
+                .await
+                .expect("no refusal"),
+            None
+        );
+        // Different: the replaced identity is entry 0's — never entry 1's.
+        let args = ConnectArgs {
+            force: true,
+            ..ConnectArgs::default()
+        };
+        assert_eq!(
+            super::decide_repoint(&array_raw(), &identity, &args, &mut prompts)
+                .await
+                .expect("no refusal"),
+            Some(("https://old.example".into(), "old-user".into()))
+        );
+    }
+
+    // ---- the shape-aware overlay writer, path B (D5-5) ------------------
+
+    /// Seeds an array-world config file in the `[[sync.connectors]]`
+    /// array-of-tables rendering (the common hand-written shape).
+    fn seed_aot_array_config(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &path,
+            "# hand-tuned\n\
+             [storage]\ndb_path = '/tmp/t.db'\n\
+             [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://old.example\"\nusername = \"old-user\"\n\
+             [[sync.connectors]]\nname = \"personal\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://home.example\"\nusername = \"home-user\"\n",
+        )
+        .expect("seed config");
+        path
+    }
+
+    /// Path B's full contract (D5-5): entry 0's identity is rewritten,
+    /// entry 1 is untouched, no `backend` key materializes anywhere
+    /// (even with `switch_backend` demanded — the guard makes it
+    /// structurally false), no `[nextcloud]` keys are created, and a
+    /// pre-existing comment survives. The written file round-trips:
+    /// `AppConfig::load` decodes and validates it with the identity in
+    /// the right home.
+    #[test]
+    fn the_overlay_rewrites_entry_0_of_an_array_file_and_round_trips() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = seed_aot_array_config(&dir);
+
+        super::write_config_overlay(&config, "https://new.example", "new-user", true)
+            .expect("overlay written");
+
+        let written = std::fs::read_to_string(&config).expect("read back");
+        assert!(written.contains("# hand-tuned"), "comment survives");
+        assert!(
+            !written.contains("[nextcloud]"),
+            "no [nextcloud] table is created"
+        );
+        assert_eq!(
+            written.matches("backend").count(),
+            2,
+            "only the entries' own backend words; no scalar key written"
+        );
+        let loaded = AppConfig::load(Some(config)).expect("round-trips and validates");
+        let entries = loaded.sync.connectors.as_deref().expect("array survives");
+        assert_eq!(entries[0].server_url, "https://new.example");
+        assert_eq!(entries[0].username, "new-user");
+        assert_eq!(entries[0].name, "work");
+        assert_eq!(entries[1].server_url, "https://home.example");
+        assert_eq!(entries[1].username, "home-user");
+        assert!(
+            loaded.sync.backend.is_none(),
+            "no backend key written in the array world"
+        );
+        assert!(
+            loaded.nextcloud.server_url.is_none() && loaded.nextcloud.username.is_none(),
+            "no [nextcloud] identity keys written"
+        );
+    }
+
+    /// The same contract over the inline-table rendering
+    /// (`connectors = [{ … }, { … }]` — it decodes through figment too,
+    /// so the writer must navigate it generically, not assume an
+    /// array-of-tables).
+    #[test]
+    fn the_overlay_rewrites_entry_0_of_an_inline_table_array() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &config,
+            "[storage]\ndb_path = '/tmp/t.db'\n\
+             [sync]\n\
+             connectors = [\
+             { name = \"work\", backend = \"nextcloud\", \
+             server_url = \"https://old.example\", username = \"old-user\" }, \
+             { name = \"personal\", backend = \"nextcloud\", \
+             server_url = \"https://home.example\", username = \"home-user\" }]\n",
+        )
+        .expect("seed config");
+
+        super::write_config_overlay(&config, "https://new.example", "new-user", false)
+            .expect("overlay written");
+
+        let loaded = AppConfig::load(Some(config)).expect("round-trips and validates");
+        let entries = loaded.sync.connectors.as_deref().expect("array survives");
+        assert_eq!(entries[0].server_url, "https://new.example");
+        assert_eq!(entries[0].username, "new-user");
+        assert_eq!(entries[1].server_url, "https://home.example");
+        assert_eq!(entries[1].username, "home-user");
+    }
+
+    /// An array key with no entries cannot take an identity rewrite:
+    /// the overlay refuses loudly instead of writing a scalar-shaped
+    /// file the decoder would mix-reject.
+    #[test]
+    fn the_overlay_refuses_an_empty_connectors_array() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &config,
+            "[storage]\ndb_path = '/tmp/t.db'\n[sync]\nconnectors = []\n",
+        )
+        .expect("seed config");
+
+        let err = super::write_config_overlay(&config, "https://new.example", "new-user", false)
+            .expect_err("nothing to rewrite");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
     /// The receipt's `daemon_connector` field serializes kebab-case and
