@@ -526,6 +526,151 @@ async fn a7_network_lost_persists_offline_and_restored_only_nudges() {
     );
 }
 
+/// A7's per-connector sibling: `ConnectorLost(c)` flips only c's bound
+/// boards to `Offline`; the board bound to another connector keeps its
+/// phase (the scoped write derives its target set from the binding tags).
+#[tokio::test]
+async fn a7c_connector_lost_flips_only_that_connectors_boards() {
+    let mut state = common::seed_bound_board_state("alpha-board");
+    let alpha_board = *state.boards.keys().next().expect("seeded board");
+    // The second board is a re-tagged clone of the seeded shape with a
+    // distinct id (`common::board` mints the same deterministic id).
+    let beta_board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
+    let mut beta = state.boards[&alpha_board].clone();
+    beta.id = beta_board;
+    beta.title = "beta-board".into();
+    beta.remote = Some(taskboard_domain::RemoteBoardBinding {
+        connector: taskboard_domain::ConnectorId::from("beta"),
+        board: taskboard_domain::RemoteBoardId(43),
+    });
+    state.boards.insert(beta_board, beta);
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(state)),
+        ..Spawner::default()
+    })
+    .await;
+
+    h.system_tx
+        .send(SystemEvent::ConnectorLost(
+            taskboard_domain::ConnectorId::from("nextcloud"),
+        ))
+        .expect("broadcast");
+    eventually(&h.handle, |app| {
+        app.sync
+            .get(alpha_board)
+            .is_some_and(|row| row.phase == SyncPhase::Offline)
+    })
+    .await;
+    assert_eq!(
+        h.handle
+            .shared_state()
+            .load_full()
+            .sync
+            .get(beta_board)
+            .map(|row| row.phase),
+        Some(SyncPhase::Idle),
+        "the other connector's board keeps its phase"
+    );
+}
+
+/// A7's empty-target sibling: a `ConnectorLost` for a connector with no
+/// bound boards writes nothing anywhere.
+#[tokio::test]
+async fn a7d_connector_lost_without_bound_boards_writes_nothing() {
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    })
+    .await;
+    let mut signals = h.handle.subscribe();
+
+    h.system_tx
+        .send(SystemEvent::ConnectorLost(
+            taskboard_domain::ConnectorId::from("beta"),
+        ))
+        .expect("broadcast");
+    h.handle.flush().await;
+    assert_eq!(drain_signals(&mut signals), 0, "no write, no repaint");
+    assert_eq!(
+        h.handle.shared_state().load_full().sync.aggregate().phase,
+        SyncPhase::Idle,
+        "no board flipped"
+    );
+}
+
+/// A7's per-connector restore sibling: `ConnectorRestored(c)` forwards
+/// the sync nudge and changes no phase.
+#[tokio::test]
+async fn a7e_connector_restored_forwards_the_nudge_only() {
+    let mut h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    })
+    .await;
+
+    h.system_tx
+        .send(SystemEvent::ConnectorRestored(
+            taskboard_domain::ConnectorId::from("nextcloud"),
+        ))
+        .expect("broadcast");
+    let nudge = tokio::time::timeout(Duration::from_secs(60), h.sync_in.recv()).await;
+    assert!(
+        matches!(nudge, Ok(Some(SyncCommand::SyncNow))),
+        "ConnectorRestored must forward a sync nudge, got {nudge:?}"
+    );
+    assert_eq!(
+        h.handle.shared_state().load_full().sync.aggregate().phase,
+        SyncPhase::Idle,
+        "restoration alone is no evidence; the phase stays until a report"
+    );
+}
+
+/// A7's draining sibling: per-connector network events arriving during
+/// the shutdown drain are ignored — no offline write, no nudge.
+#[tokio::test]
+async fn a7f_draining_engine_ignores_connector_events() {
+    let mut h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    })
+    .await;
+    h.system_tx.send(SystemEvent::Shutdown).expect("broadcast");
+
+    h.system_tx
+        .send(SystemEvent::ConnectorLost(
+            taskboard_domain::ConnectorId::from("nextcloud"),
+        ))
+        .expect("broadcast");
+    h.system_tx
+        .send(SystemEvent::ConnectorRestored(
+            taskboard_domain::ConnectorId::from("nextcloud"),
+        ))
+        .expect("broadcast");
+    h.handle.flush().await;
+    while h.sync_in.try_recv().is_ok() {}
+    assert_eq!(
+        h.handle.shared_state().load_full().sync.aggregate().phase,
+        SyncPhase::Idle,
+        "draining: no offline write"
+    );
+    assert!(
+        h.sync_in.try_recv().is_err(),
+        "draining: no nudge forwarded"
+    );
+
+    drop(h.report_tx);
+    tokio::time::timeout(Duration::from_secs(60), h.join)
+        .await
+        .expect("engine exits after drain")
+        .expect("clean exit");
+}
+
 /// A8: `Shutdown` starts the shutdown drain; the loop exits once the
 /// reports channel closes (timeout guard, not a sleep).
 #[tokio::test]
