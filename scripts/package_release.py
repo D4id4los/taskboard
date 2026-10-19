@@ -28,7 +28,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "target" / "dist"
 
-STAGED_FILES = ["LICENSE-MIT", "LICENSE-APACHE", "README.org", "CHANGELOG.md"]
+# (repo path, archive member name) pairs — the .desktop launcher is
+# flattened out of contrib/ into the archive root, beside the binary.
+STAGED_FILES = [
+    ("LICENSE-MIT", "LICENSE-MIT"),
+    ("LICENSE-APACHE", "LICENSE-APACHE"),
+    ("README.org", "README.org"),
+    ("CHANGELOG.md", "CHANGELOG.md"),
+    ("contrib/taskboard.desktop", "taskboard.desktop"),
+]
 BINARY_NAME = "taskboard"
 
 
@@ -82,8 +90,8 @@ def stage_and_archive(version, target, fmt):
 
     binary = built_binary(target)
     shutil.copy2(binary, build_dir / binary.name)
-    for name in STAGED_FILES:
-        shutil.copy2(ROOT / name, build_dir / name)
+    for src, name in STAGED_FILES:
+        shutil.copy2(ROOT / src, build_dir / name)
 
     archive = archive_path(version, target, fmt)
     if archive.exists():
@@ -115,7 +123,7 @@ def expected_members(version, target):
     is_windows = "windows" in target
     binary = BINARY_NAME + (".exe" if is_windows else "")
     prefix = f"taskboard-{version}-{target}"
-    return [f"{prefix}/{binary}"] + [f"{prefix}/{name}" for name in STAGED_FILES]
+    return [f"{prefix}/{binary}"] + [f"{prefix}/{name}" for _, name in STAGED_FILES]
 
 
 def check_archive(version, target, fmt):

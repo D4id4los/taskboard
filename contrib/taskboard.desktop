@@ -1,0 +1,22 @@
+# taskboard desktop launcher (freedesktop Desktop Entry Specification).
+#
+# Install (per user, no root; the binary must be on PATH for Exec to
+# resolve — e.g. ~/.local/bin):
+#   mkdir -p ~/.local/share/applications
+#   cp taskboard.desktop ~/.local/share/applications/
+#   # some sessions cache: log out/in or re-run kbuildsycoca6 if needed.
+#
+# Direct double-click also works once the file is executable and
+# marked trusted in the file manager.
+
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Taskboard
+Comment=Task management and reminders for desktop and kiosk displays
+Exec=taskboard gui
+TryExec=taskboard
+Icon=taskboard
+Terminal=false
+Categories=Office;ProjectManagement;
+Keywords=task;kanban;board;todo;reminder;
