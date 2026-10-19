@@ -10,6 +10,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Kiosk window profile flag: `UiSettings.kiosk` (default `false`)
+  makes the UI mount apply fullscreen to the shared desktop window
+  when set (on the winit backend fullscreen also suppresses
+  decorations); derived from the run mode, not a config key, and no
+  consumer yet — the kiosk appliance lifecycle hands it over (#237).
 - Board ceremonies at N (multi-board wave chunk 3): `boards unbind
   [--board <uuid>] [--confirm]` detaches a board's remote binding
   (content and queued ops stay — they strand honestly and drain on a

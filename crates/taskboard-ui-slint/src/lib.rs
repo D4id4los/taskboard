@@ -59,6 +59,10 @@ pub struct UiSettings {
     /// The Q15 startup-warning state (count of dropped/lossy keymap
     /// findings), rendered by chunk 3's status bar.
     pub startup: adapter::StartupWarnings,
+    /// The kiosk window profile (Q5): mount applies fullscreen to the
+    /// shared `AppWindow`. Derives from the run mode — never a config
+    /// key; the desktop hand-over leaves it `false`.
+    pub kiosk: bool,
 }
 
 impl Default for UiSettings {
@@ -67,6 +71,7 @@ impl Default for UiSettings {
             scale: 1.0,
             keymap: keymap::Keymap::from_preset(keymap::Preset::Standard),
             startup: adapter::StartupWarnings::default(),
+            kiosk: false,
         }
     }
 }
@@ -142,6 +147,13 @@ pub fn mount(
     window
         .global::<Theme>()
         .set_base_scale(settings.scale as f32);
+    // The kiosk window profile (Q5): fullscreen on the shared desktop
+    // window. Slint 1.18.1 has no independent decoration control; on
+    // the winit backend fullscreen suppresses decorations by
+    // construction, so fullscreen alone is the complete profile.
+    if settings.kiosk {
+        window.window().set_fullscreen(true);
+    }
     // The keymap is applied one-way at UI start (§5.6): install the
     // root-scope interception over the validated keymap.
     let adapter = adapter::install(
@@ -369,6 +381,40 @@ mod mount_tests {
             let handle = mount(state, signals, system, commands, UiSettings::default())
                 .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_visible());
+        });
+    }
+
+    /// The kiosk window profile (Q5): mount applies fullscreen to the
+    /// shared desktop window when the flag is handed over.
+    #[test]
+    fn mount_applies_the_kiosk_fullscreen_profile() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+            )
+            .expect("mount succeeds on the null platform");
+            assert!(handle.window.window().is_fullscreen());
+        });
+    }
+
+    /// The flag defaults off and the guarded application is a no-op:
+    /// the desktop mount stays windowed (covers both the `Default`
+    /// arm and the guard's off-path in one observable behavior).
+    #[test]
+    fn mount_without_the_kiosk_flag_stays_windowed() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands) = handover();
+            let handle = mount(state, signals, system, commands, UiSettings::default())
+                .expect("mount succeeds on the null platform");
+            assert!(!handle.window.window().is_fullscreen());
         });
     }
 }

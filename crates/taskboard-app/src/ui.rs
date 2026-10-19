@@ -153,6 +153,7 @@ pub fn resolve_ui_settings(
             keymap_findings: built.findings.len().try_into().unwrap_or(u32::MAX),
         },
         keymap: built.keymap,
+        kiosk: false, // the desktop hand-over; the kiosk appliance (K3) sets this
     };
     (settings, built.findings)
 }
