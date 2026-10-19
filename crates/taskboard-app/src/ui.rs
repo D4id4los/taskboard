@@ -38,6 +38,30 @@ impl CommandSink for EngineHandle {
 /// already an unresponsive-UI pathology rather than a throughput need.
 pub(crate) const UI_COMMAND_CAPACITY: usize = 64;
 
+/// The UI → app command channel at its house capacity — one
+/// construction site for both UI lifecycles (desktop and kiosk
+/// appliance).
+#[must_use]
+pub fn ui_command_channel() -> (mpsc::Sender<StateCommand>, mpsc::Receiver<StateCommand>) {
+    mpsc::channel(UI_COMMAND_CAPACITY)
+}
+
+/// The Q15 startup-warning surfacing: typed keymap findings logged
+/// with structured fields — the keymap still applied (drops fall back
+/// to preset bindings). Part of the UI hand-over contract, shared by
+/// the desktop and kiosk-appliance lifecycles.
+pub fn surface_keymap_findings(findings: &[taskboard_ui_slint::keymap::Finding]) {
+    for finding in findings {
+        tracing::warn!(
+            kind = ?finding.kind,
+            action = ?finding.action,
+            context = %finding.context,
+            stroke = %finding.stroke,
+            "keymap override finding (preset binding wins)"
+        );
+    }
+}
+
 /// Spawns the UI-command forwarder: drains `commands` into `sink` in
 /// arrival order until the channel closes (the UI side dropped — the
 /// forwarder's own exit, logged). The caller owns the handle's
@@ -71,6 +95,39 @@ pub enum BareRoute {
     /// — or the TTY-less REPL refusal, resolved by `repl::entry_point`):
     /// the daemon lifecycle.
     DaemonLifecycle,
+    /// `mode = "kiosk"`: the appliance lifecycle (ADR 0016) — the daemon
+    /// core plus the display-gated on-seat window. TTY-independent: a
+    /// seat has no operator TTY (`ssh -t` booting the appliance is
+    /// acceptable); the headless fallback is decided inside the
+    /// lifecycle, not by this routing.
+    KioskAppliance,
+}
+
+/// The kiosk appliance's start decision (Q3): whether a display
+/// context gates the window mount. Decided *before* any
+/// slint-touching call — without a display, slint 1.18.1 panics
+/// during backend init (exit 101) instead of surfacing the typed
+/// mount error, so the appliance falls back to the headless daemon
+/// lifecycle, loudly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KioskStart {
+    /// A display context exists: mount the fullscreen appliance
+    /// window over the booted core.
+    Appliance,
+    /// No display: keep serving headless (the loud fallback —
+    /// `tracing::error!` then the shared daemon tail).
+    Headless,
+}
+
+/// Pure decision over the display facts ([`display_env_available`]
+/// is the untested env glue, per the main-glue convention).
+#[must_use]
+pub fn kiosk_start(display: bool) -> KioskStart {
+    if display {
+        KioskStart::Appliance
+    } else {
+        KioskStart::Headless
+    }
 }
 
 /// Whether a graphical session context exists, from the two session
@@ -114,9 +171,8 @@ pub fn bare_invocation_route(mode: crate::config::AppMode, tty: bool, display: b
         crate::config::AppMode::Desktop => BareRoute::DesktopUi,
         crate::config::AppMode::Daemon if tty => BareRoute::Repl,
         crate::config::AppMode::Daemon if display => BareRoute::DesktopUi,
-        crate::config::AppMode::Kiosk | crate::config::AppMode::Daemon => {
-            BareRoute::DaemonLifecycle
-        }
+        crate::config::AppMode::Kiosk => BareRoute::KioskAppliance,
+        crate::config::AppMode::Daemon => BareRoute::DaemonLifecycle,
     }
 }
 
@@ -163,8 +219,9 @@ pub fn resolve_ui_settings(
 /// never sets it programmatically — the user's env is the input;
 /// observability is the app's whole duty toward it. The winit backend
 /// honours the variable at window creation; it composes with
-/// `[ui] scale` (OS-DPI alignment × token multiplier).
-fn observe_scale_escape_hatch() {
+/// `[ui] scale` (OS-DPI alignment × token multiplier). Pub because the
+/// kiosk appliance's mount path observes the same hatch (ADR 0016).
+pub fn observe_scale_escape_hatch() {
     match std::env::var("SLINT_SCALE_FACTOR") {
         Ok(value) => tracing::info!(
             value = %value,
@@ -194,24 +251,14 @@ pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result
     observe_scale_escape_hatch();
 
     let (ui_settings, keymap_findings) = resolve_ui_settings(&config.ui);
-    // Q15 surfacing: typed findings logged with structured fields —
-    // the keymap still applied (drops fall back to preset bindings).
-    for finding in &keymap_findings {
-        tracing::warn!(
-            kind = ?finding.kind,
-            action = ?finding.action,
-            context = %finding.context,
-            stroke = %finding.stroke,
-            "keymap override finding (preset binding wins)"
-        );
-    }
+    surface_keymap_findings(&keymap_findings);
     let store = crate::secrets::resolve_credential_store(config.nextcloud.credential_store);
     let app =
         crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
 
     // The hand-over (D6): the app keeps the receiver half of the
     // command channel and forwards; the UI never sees an EngineHandle.
-    let (commands_tx, commands_rx) = mpsc::channel(UI_COMMAND_CAPACITY);
+    let (commands_tx, commands_rx) = ui_command_channel();
     let forwarder = spawn_ui_command_forwarder(commands_rx, app.engine.clone());
 
     let handle = taskboard_ui_slint::mount(
@@ -306,8 +353,8 @@ mod tests {
     /// regardless of TTY; `daemon` keeps the TTY-sensitive REPL rule
     /// and splits the non-TTY cell by display presence (#236 — a
     /// file-manager launch boots the GUI, ssh/systemd/cron stay
-    /// headless); `kiosk` stays refused downstream (the
-    /// daemon-lifecycle gate).
+    /// headless); `kiosk` is the appliance lifecycle in every cell
+    /// (ADR 0016).
     #[test]
     fn bare_invocation_routing_maps_modes_per_d4() {
         use crate::config::AppMode;
@@ -339,16 +386,26 @@ mod tests {
             bare_invocation_route(AppMode::Daemon, false, false),
             BareRoute::DaemonLifecycle
         );
-        // Kiosk never routes to the UI in v0.1.0; the daemon
-        // lifecycle's own mode gate refuses it.
+        // Kiosk is the appliance lifecycle in every cell: TTY-
+        // and display-independent (ADR 0016) — the headless fallback
+        // is decided inside the appliance, not by this routing.
         for tty in [true, false] {
             for display in [true, false] {
                 assert_eq!(
                     bare_invocation_route(AppMode::Kiosk, tty, display),
-                    BareRoute::DaemonLifecycle
+                    BareRoute::KioskAppliance
                 );
             }
         }
+    }
+
+    /// The Q3 start decision: a display context gates the window
+    /// mount; without one the appliance falls back to the headless
+    /// daemon lifecycle (loudly, at the caller).
+    #[test]
+    fn kiosk_start_splits_the_display_gate() {
+        assert_eq!(kiosk_start(true), KioskStart::Appliance);
+        assert_eq!(kiosk_start(false), KioskStart::Headless);
     }
 
     /// The #236 detection rule: a graphical session exists when either

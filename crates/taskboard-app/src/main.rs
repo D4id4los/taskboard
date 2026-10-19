@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use clap::Parser as _;
 
+use taskboard_app::App;
 use taskboard_app::bootstrap::{bootstrap, wait_for_signal};
 use taskboard_app::cli::{Cli, Command, DaemonCmd};
 use taskboard_app::commands::{
@@ -157,11 +158,10 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
     // `AppMode` is frontend selection (ADR 0008), and launching from a
     // terminal is how desktop apps start. The REPL stays the TTY
     // front-end of `daemon` mode (ADR 0011); a non-TTY daemon inside a
-    // graphical session boots the GUI (#236), and a daemon with
-    // neither TTY nor display keeps the daemon lifecycle (as `kiosk`
-    // does in every cell — refused by the lifecycle's mode gate). An
-    // explicit `daemon` subcommand is `Some` above and skips this
-    // routing entirely.
+    // graphical session boots the GUI (#236), a daemon with neither
+    // TTY nor display keeps the daemon lifecycle, and a bare `kiosk`
+    // boots the appliance (ADR 0016). An explicit `daemon` subcommand
+    // is `Some` above and skips this routing entirely.
     if bare_invocation {
         let config = match AppConfig::load(cli.config.clone()) {
             Ok(config) => config,
@@ -177,9 +177,15 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
             taskboard_app::ui::BareRoute::DesktopUi => {
                 return taskboard_app::ui::run_desktop(config).await;
             }
+            taskboard_app::ui::BareRoute::KioskAppliance => {
+                // The appliance owns its own mode handling — the display
+                // gate and the loud headless fallback live inside
+                // `run_kiosk` (ADR 0016), not in this routing.
+                return run_kiosk(config, cli.config, cli.json).await;
+            }
             taskboard_app::ui::BareRoute::DaemonLifecycle => {
-                // `kiosk` is refused by the daemon lifecycle's own mode
-                // gate (no kiosk frontend until wave W1+).
+                // The daemon lifecycle's mode gate refuses `Desktop`
+                // (no daemon-side desktop frontend).
                 return daemon_lifecycle(config, cli.config, cli.json).await;
             }
             taskboard_app::ui::BareRoute::Repl => {
@@ -264,20 +270,38 @@ async fn daemon_lifecycle(
     config_path: Option<std::path::PathBuf>,
     json: bool,
 ) -> color_eyre::Result<()> {
-    // The daemon's entry owns the `[app] mode` gate (the core itself is
-    // mode-agnostic — the REPL serves any mode's console, ADR 0011):
-    // `Desktop`/`Kiosk` have no daemon-side frontend until Phase 7.
-    if let mode
-    @ (taskboard_app::config::AppMode::Desktop | taskboard_app::config::AppMode::Kiosk) =
-        config.app.mode
-    {
-        tracing::error!(?mode, "this mode is not implemented yet");
-        color_eyre::eyre::bail!("app mode {mode:?} is not implemented yet (Phase 7)");
+    // The daemon's entry owns the `[app] mode` gate (the core is
+    // mode-agnostic): `Desktop` has no daemon-side frontend — its
+    // frontend is the GUI (`taskboard` bare or `taskboard gui`). `Kiosk`
+    // passes: the explicit `daemon` verb is the headless maintenance
+    // entry under a kiosk config too (ADR 0015 #236's unit rule; the
+    // bare kiosk entry is the appliance, ADR 0016).
+    if let mode @ taskboard_app::config::AppMode::Desktop = config.app.mode {
+        tracing::error!(?mode, "desktop mode has no daemon-side frontend");
+        color_eyre::eyre::bail!("app mode {mode:?} has no daemon-side frontend");
     }
     // Backend-agnostic (ADR 0010 decision 9, amended 2026-10-11): with
     // IPC the daemon's purpose is "own the core, serve commands" — a
     // `standalone` daemon gives scripters the same no-boot-per-command
     // latency the connector profile gets, and idling is over.
+    let (app, server) = boot_and_serve(config, config_path, json, "daemon").await?;
+    serve_and_shutdown(app, server).await
+}
+
+/// The shared headless boot (ADR 0016): resolve the credential store,
+/// bootstrap the core (boot failures reported typed, the `--json`
+/// envelope on stderr — `instance-locked` included), start the
+/// system-event logger, and spawn the per-database IPC socket. One
+/// core, N frontends (ADR 0008): the socket serves every core verb
+/// while the lifecycle runs. `what` names the lifecycle in the
+/// serving log line. The daemon lifecycle and the kiosk appliance
+/// both enter here.
+async fn boot_and_serve(
+    config: AppConfig,
+    config_path: Option<std::path::PathBuf>,
+    json: bool,
+    what: &'static str,
+) -> color_eyre::Result<(Arc<App>, taskboard_app::ipc::server::IpcServerHandle)> {
     let store = taskboard_app::secrets::resolve_credential_store(config.nextcloud.credential_store);
 
     let app = match bootstrap(
@@ -290,16 +314,13 @@ async fn daemon_lifecycle(
         Ok(app) => Arc::new(app),
         // Boot failures are reported typed (the `--json` envelope on
         // stderr), exactly like every other command — `instance-locked`
-        // included: the daemon is a core boot, not a special failure.
+        // included: the lifecycle is a core boot, not a special
+        // failure.
         Err(err) => std::process::exit(i32::from(report(json, &CommandError::from(err)))),
     };
 
-    // The daemon logs system events (StorageFailed et al.) until exit.
     let _logger = taskboard_app::bootstrap::spawn_system_event_logger(&app.system);
 
-    // One core, N frontends (ADR 0008): while the daemon runs, the
-    // socket serves every core verb — CLI invocations stop paying the
-    // per-command boot cost and stop fighting the instance lock.
     let session = Arc::new(BasicSession {
         config: app.config.clone(),
         store,
@@ -314,9 +335,21 @@ async fn daemon_lifecycle(
         };
     tracing::info!(
         db = %app.config.db_path().display(),
-        "daemon serving commands over ipc"
+        "{what} serving commands over ipc"
     );
+    Ok((app, server))
+}
 
+/// The shared serve→drain→shutdown tail (ADR 0016): wait for the first
+/// exit — shutdown signal or `daemon stop` over IPC — then the bounded
+/// drain with the second-signal force exit armed throughout. The daemon
+/// lifecycle and the kiosk appliance's headless fallback both enter
+/// here; the appliance's GUI branch enters [`drain_and_shutdown`]
+/// directly (its serve phase already ended with the window).
+async fn serve_and_shutdown(
+    app: Arc<App>,
+    server: taskboard_app::ipc::server::IpcServerHandle,
+) -> color_eyre::Result<()> {
     // The first-signal wait happens here — *before* arming the
     // force-exit watcher — because `ctrl_c` and SIGTERM notify every
     // listener: an early watcher would catch the first signal instead
@@ -329,6 +362,17 @@ async fn daemon_lifecycle(
             tracing::info!("shutdown requested over ipc");
         }
     }
+    drain_and_shutdown(app, server).await
+}
+
+/// The drain half of the shared tail, without the serve wait: bounded
+/// server join and graceful core shutdown via `shutdown_from_arc`, the
+/// second-signal force exit armed throughout. A core still shared at
+/// the tail is the typed F9-01 runtime failure.
+async fn drain_and_shutdown(
+    app: Arc<App>,
+    server: taskboard_app::ipc::server::IpcServerHandle,
+) -> color_eyre::Result<()> {
     let shutdown_timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs);
     let drain = async {
         // Bounded: past the budget the server aborts its tasks (a
@@ -351,4 +395,90 @@ async fn daemon_lifecycle(
         tracing::warn!("sync actor did not stop in time and was aborted");
     }
     Ok(())
+}
+
+/// The kiosk appliance lifecycle (ADR 0016, Q1/Q2/Q3): boot the daemon
+/// core through the shared [`boot_and_serve`] (exactly the daemon
+/// lifecycle's boot), then decide on the display context *before* any
+/// slint-touching call (KDF-2: slint panics headless during backend
+/// init). With a display: mount the fullscreen appliance window (the
+/// ADR 0015 hand-over with `UiSettings.kiosk = true`) and watch three
+/// exits — signal, `daemon stop`, window close — all converging on the
+/// shared drain. Without one: fall back loudly to the headless daemon
+/// tail, so the same binary serves both the seat and the ssh session.
+async fn run_kiosk(
+    config: AppConfig,
+    config_path: Option<std::path::PathBuf>,
+    json: bool,
+) -> color_eyre::Result<()> {
+    let (app, server) = boot_and_serve(config, config_path, json, "kiosk appliance").await?;
+
+    match taskboard_app::ui::kiosk_start(taskboard_app::ui::display_env_available()) {
+        taskboard_app::ui::KioskStart::Headless => {
+            // The loud fallback (Q3): no display, no window — but the
+            // socket is already serving, so keep serving the shared
+            // daemon tail.
+            tracing::error!("no display available; continuing as headless daemon");
+            serve_and_shutdown(app, server).await
+        }
+        taskboard_app::ui::KioskStart::Appliance => {
+            // The hand-over, in `run_desktop`'s order: the escape hatch
+            // and findings before anything slint-side, then mount with
+            // the kiosk window profile set (chunk 2's consumer site).
+            taskboard_app::ui::observe_scale_escape_hatch();
+            let (mut ui_settings, keymap_findings) =
+                taskboard_app::ui::resolve_ui_settings(&app.config.ui);
+            ui_settings.kiosk = true;
+            taskboard_app::ui::surface_keymap_findings(&keymap_findings);
+            let (commands_tx, commands_rx) = taskboard_app::ui::ui_command_channel();
+            let forwarder =
+                taskboard_app::ui::spawn_ui_command_forwarder(commands_rx, app.engine.clone());
+
+            let handle = match taskboard_ui_slint::mount(
+                app.engine.shared_state(),
+                app.engine.subscribe(),
+                app.system.subscribe(),
+                commands_tx,
+                ui_settings,
+            ) {
+                Ok(handle) => handle,
+                // Mount failure (the display-var-outlives-its-server
+                // class, typed `UiMountError`): the server is already
+                // spawned, so drain through the shared tail instead of
+                // dropping the socket sidecar and actors silently; the
+                // mount error is the reported outcome.
+                Err(err) => {
+                    forwarder.abort();
+                    let _ = drain_and_shutdown(app, server).await;
+                    return Err(err.into());
+                }
+            };
+
+            // The exit watcher (Q2): signal and `daemon stop` both quit
+            // the event loop; window close is the third exit and needs
+            // no arm — it ends `run` directly.
+            let stop_rx = server.stopped_receiver();
+            let watcher = tokio::spawn(async move {
+                tokio::select! {
+                    () = wait_for_signal() => {
+                        tracing::info!("shutdown signal received");
+                    }
+                    () = taskboard_app::ipc::server::IpcServerHandle::stopped_from(stop_rx) => {
+                        tracing::info!("shutdown requested over ipc");
+                    }
+                }
+                taskboard_ui_slint::quit();
+            });
+
+            let run_result = taskboard_ui_slint::run(handle);
+
+            watcher.abort();
+            forwarder.abort();
+            // The shutdown-tail error (a still-shared core) outranks
+            // the loop result, mirroring `run_desktop`'s order.
+            drain_and_shutdown(app, server).await?;
+            run_result?;
+            Ok(())
+        }
+    }
 }

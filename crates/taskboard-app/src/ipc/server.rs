@@ -77,7 +77,21 @@ impl IpcServerHandle {
     /// Resolves once a shutdown was requested (remotely via a
     /// `Shutdown` request, or locally via [`Self::request_shutdown`]).
     pub async fn stopped(&self) {
-        let mut rx = self.stop_rx.clone();
+        Self::stopped_from(self.stop_rx.clone()).await;
+    }
+
+    /// The stop notification's receiver half: spawned watcher tasks
+    /// own their wait without owning the handle (whose [`Self::join`]
+    /// half is consumed by the shutdown tail) — the kiosk appliance's
+    /// exit watcher (ADR 0016).
+    #[must_use]
+    pub fn stopped_receiver(&self) -> watch::Receiver<bool> {
+        self.stop_rx.clone()
+    }
+
+    /// Resolves once a shutdown was requested — the owned-receiver
+    /// form of [`Self::stopped`].
+    pub async fn stopped_from(mut rx: watch::Receiver<bool>) {
         while !*rx.borrow_and_update() {
             if rx.changed().await.is_err() {
                 return;
