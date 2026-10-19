@@ -24,6 +24,19 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- Board-scoped commands carry their target (multi-board wave chunk
+  2): the nine board-scoped verbs gained a leading `board: BoardId`
+  (inter-actor `StateCommand` wire), and the CLI gained `--board
+  <uuid>` on `boards rename/publish/color/archive/unarchive/delete/
+  reset`, `stacks add`, and `labels list/add`. Omitting the flag
+  resolves the single live board; zero or several live boards refuse
+  with the new typed `ambiguous-board` kind (candidates listed). The
+  engine's refusals are typed per id now (`unknown-board` replaces
+  `no-board`; `board-exists` is gone — `boards create` always mints,
+  titles are not uniqueness keys), so the `no-board` and
+  `board-exists` JSON error kinds no longer exist (breaking for
+  external scripts pinning them). `boards create` also no longer
+  refuses a second board.
 - Sync status is tracked per board (multi-board wave chunk 1): the
   storage schema's singleton `sync_status` row becomes a per-board
   table (migration 0006, which also tags board bindings with their
