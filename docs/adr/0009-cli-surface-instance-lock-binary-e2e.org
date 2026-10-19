@@ -240,3 +240,38 @@ once per failure epoch, not once per command. The command reply already
 carries the typed repository error; this event is the Phase 7 UI
 banner's input, and the daemon logs it. Report-apply-path persistence
 failures still only log (Phase 7 follow-up).
+
+* Amendment 2026-10-19 — the =gui= lifecycle verb
+
+** The verb
+
+=taskboard gui= is explicit desktop-frontend selection, the =daemon=
+verb's mirror: it boots the core and runs the desktop UI lifecycle
+*in this process*, regardless of =[app] mode= and of TTY — mode is
+the *default* frontend, the verb the *override* (ADR 0008's model).
+Under =--json=, only the config-failure envelope is JSON (the
+"=daemon= ignores =--json=" line's parallel); the success path is a
+window, not a payload stream. A running instance on the same database
+fails typed =instance-locked= unchanged (this ADR's lock rules;
+CLI verbs never contend).
+
+** A third command class — lifecycle arms
+
+Like the daemon run arm, =gui= is main-owned: handled before transport
+routing, never dispatched (=dispatch='s unreachable arm), pinned
+=IpcRoute::Local= — **never relayed** (a relay would open the window
+in the daemon's process) — and refused in-session (REPL line and
+daemon socket alike: =LineRefusal::Gui=, wire code 2; tab completion
+never offers it).
+
+** Interplay with #236 routing
+
+The verb is the escape hatch that makes bare-invocation routing
+mode-dependent *safely* (ADR 0015's display-gate amendment): an
+explicit frontend needs no display-gate heuristic. The future
+=.desktop= launcher's =Exec= line lands on it.
+
+** Non-goals
+
+Kiosk routing and the kiosk window profile are the kiosk wave's later
+chunks; the default-mode question (design round Q6) is untouched.
