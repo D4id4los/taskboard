@@ -916,6 +916,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             0
         }
         Command::Daemon { .. } => unreachable!("main handles the daemon arms itself"),
+        Command::Gui => unreachable!("main handles the gui lifecycle arm itself"),
     }
 }
 
@@ -1186,13 +1187,14 @@ pub async fn dispatch_line(
         | Command::Login { .. }
         | Command::Logout
         | Command::Config { .. }
-        | Command::Daemon { .. } => {
+        | Command::Daemon { .. }
+        | Command::Gui => {
             // The session loop runs connect/login/logout as ceremonies
-            // and refuses daemon/config; the IPC server refuses all
-            // five before dispatch (ADR 0014). This arm only documents
+            // and refuses daemon/config/gui; the IPC server refuses all
+            // six before dispatch (ADR 0014). This arm only documents
             // the routing invariant.
             unreachable!(
-                "the session loop intercepts connect/login/logout (ceremonies) and daemon/config (refusals); the IPC server refuses all five before dispatch"
+                "the session loop intercepts connect/login/logout (ceremonies) and daemon/config/gui (refusals); the IPC server refuses all six before dispatch"
             )
         }
         Command::Status => {
@@ -1536,6 +1538,12 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         | Command::Login { .. }
         | Command::Logout
         | Command::Config { .. }
+        // The gui verb is a lifecycle arm main intercepts before
+        // routing ever sees it; pinning it `Local` keeps the
+        // never-relayed rule compiler- and test-enforced — any
+        // refactor that routes it onto the wire changes this pinned
+        // lane.
+        | Command::Gui
         | Command::Boards {
             cmd: BoardsCmd::List,
         } => IpcRoute::Local,
@@ -1667,6 +1675,11 @@ mod ipc_routing_tests {
         for command in &local {
             assert_eq!(route_for_ipc(command), IpcRoute::Local, "{command:?}");
         }
+
+        // The gui verb is a lifecycle arm main intercepts before
+        // routing: its lane is pinned `Local` — it never takes an IPC
+        // lane, i.e. it is never relayed onto the wire.
+        assert_eq!(route_for_ipc(&Command::Gui), IpcRoute::Local);
 
         let ipc_only = [
             Command::Status,

@@ -27,6 +27,10 @@ The workspace carries a single global version (see `docs/architecture.org`);
   adoption, and surfaces the count of stale remote refs the bind
   wiped in its receipt; `boards publish` rides the same per-board
   wait.
+- `taskboard gui`: explicit desktop-frontend verb — boots the core
+  and opens the desktop window in this process regardless of
+  `[app] mode` and TTY; never relayed over IPC and refused as a
+  REPL/daemon-socket line (a process entry, like `daemon`) (#237).
 - Local board editing: `boards color <hex>`, `boards archive`,
   `boards unarchive`, `boards delete [--confirm]`, and
   `boards reset [--confirm]` (#132, #171, #177). Edits stamp per-field

@@ -408,6 +408,8 @@ pub(crate) enum LineRefusal {
     /// config is fixed at boot and `config print` is the one-shot
     /// diagnostic.
     ConfigCommand,
+    /// The desktop UI is a process entry, not a session line.
+    Gui,
 }
 
 impl std::fmt::Display for LineRefusal {
@@ -421,6 +423,9 @@ impl std::fmt::Display for LineRefusal {
             Self::ConfigCommand => f.write_str(
                 "config commands act on the config file; run them one-shot outside the session",
             ),
+            Self::Gui => {
+                f.write_str("the desktop UI runs as its own process; exit and run `taskboard gui`")
+            }
         }
     }
 }
@@ -489,6 +494,7 @@ pub(crate) fn resolve_words(words: &[String], json_default: bool) -> LineAction 
         None => LineAction::Reprompt,
         Some(Command::Daemon { .. }) => LineAction::Refuse(LineRefusal::Daemon),
         Some(Command::Config { .. }) => LineAction::Refuse(LineRefusal::ConfigCommand),
+        Some(Command::Gui) => LineAction::Refuse(LineRefusal::Gui),
         // `connect`/`login`/`logout` parse with their flags intact: the
         // session loop runs them as ceremonies (ADR 0014); the daemon
         // IPC server refuses them as terminal-bound before dispatch.
@@ -1007,6 +1013,7 @@ mod tests {
         };
         assert_eq!(refuse("daemon"), LineRefusal::Daemon);
         assert_eq!(refuse("config print"), LineRefusal::ConfigCommand);
+        assert_eq!(refuse("gui"), LineRefusal::Gui);
         assert_eq!(
             refuse("tasks list --config other.toml"),
             LineRefusal::ConfigFlag
@@ -1024,7 +1031,7 @@ mod tests {
         ));
 
         // The ceremony verbs parse with their flags intact (the session
-        // loop intercepts them; the refusal set is exactly the four).
+        // loop intercepts them; the refusal set is exactly the five).
         let (command, _) = execute(resolve_line("connect --server http://x", false));
         assert!(matches!(command, Command::Connect { .. }));
         let (command, _) = execute(resolve_line("login --server http://x", false));
@@ -1111,6 +1118,8 @@ mod argv_tests {
             refuse(&["config", "print"]),
             crate::repl::LineRefusal::ConfigCommand
         );
+        // The gui verb is refused over the wire too — never relayed.
+        assert_eq!(refuse(&["gui"]), crate::repl::LineRefusal::Gui);
         // The ceremony verbs parse to Execute over the argv path too;
         // the IPC server refuses them as terminal-bound (U5 pins the
         // wire code there).

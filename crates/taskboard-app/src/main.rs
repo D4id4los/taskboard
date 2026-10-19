@@ -89,6 +89,20 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
     if let Some(command) = cli.command.take()
         && !daemon_run
     {
+        // The explicit `gui` verb is a process-lifecycle arm (the daemon
+        // run arm's mirror): frontend selection, not a command to relay
+        // or dispatch — a relay would try to open the window in the
+        // daemon's process. Handled before the transport routing; the
+        // lane table pins it `Local` (never relayed).
+        if matches!(command, Command::Gui) {
+            let config = match AppConfig::load(cli.config.clone()) {
+                Ok(config) => config,
+                Err(err) => {
+                    std::process::exit(i32::from(report(cli.json, &CommandError::from(err))))
+                }
+            };
+            return taskboard_app::ui::run_desktop(config).await;
+        }
         // Transport auto-routing (ADR 0012): silent in both human and
         // JSON modes — the observable contract (exit code, stdout
         // payload, stderr envelope) is byte-identical on both paths.

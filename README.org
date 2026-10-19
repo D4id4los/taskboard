@@ -108,7 +108,12 @@ cargo build --workspace
 
 #+begin_src sh
 cargo run -p taskboard-app
+cargo run -p taskboard-app -- gui
 #+end_src
+
+The =gui= verb opens the desktop window in this process regardless of
+the =[app] mode= setting — the explicit counterpart to the mode-based
+bare routing.
 
 Release artifacts can be built and verified locally with
 =python3 scripts/package_release.py= (see [[Download][Download]]).
@@ -212,7 +217,7 @@ Line grammar: every line is one CLI invocation (quoting with
 prompt cancels the line; an empty line re-prompts. Mutations are
 durable the moment the line replies; the outbox drains on the sync
 actor's cadence or a =sync= line. Refused in-session: =daemon=,
-=login=, =logout=, =config=, and per-line =--config= (the session's
+=gui=, =login=, =logout=, =config=, and per-line =--config= (the session's
 config, connector, and credential store are fixed for the lock
 epoch). Tab completion is on: verbs, subverbs, long flags, and the
 live stack/task/label titles complete at the cursor (the offered
