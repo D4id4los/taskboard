@@ -622,3 +622,218 @@ pub(crate) async fn write_v01x_db(
     raw.close().await;
     ids
 }
+
+// ---- the two-connector tier (chunk 5) ----------------------------------
+
+/// One test-owned throwaway Nextcloud instance: brought up through the
+/// harness script (the same compose file, Deck install, user, and
+/// app-password flow as the shared instance — suffixed project, port,
+/// and export names), stopped/started and torn down by the owning test.
+/// Owning both instances is what makes `docker stop` mid-test safe: the
+/// sibling tier tests keep the shared singleton untouched.
+#[derive(Debug, Clone)]
+pub struct OwnedInstance {
+    pub url: String,
+    pub user: String,
+    pub token: String,
+    /// The compose project (`taskboard-it<suffix>`) — the `down` target.
+    pub suffix: String,
+}
+
+/// Brings up one instance via `scripts/nextcloud_it_setup.sh up`
+/// (blocking; call from `spawn_blocking`). The export block on stdout is
+/// parsed into the instance's credentials.
+pub fn spawn_instance_sync(suffix: &str, port: u16) -> Result<OwnedInstance, String> {
+    let script = format!(
+        "{}/../../scripts/nextcloud_it_setup.sh",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    // A previous run's panic can have leaked the project (its cleanup
+    // never ran); a stale stopped container poisons this run — always
+    // start from a clean project.
+    teardown_instance_sync(suffix);
+    let output = std::process::Command::new(&script)
+        .arg("up")
+        .env("TASKBOARD_IT_SUFFIX", suffix)
+        .env("TASKBOARD_IT_PORT", port.to_string())
+        .env("EXPORT_PREFIX", "TASKBOARD_IT_OWNED")
+        .output()
+        .map_err(|err| format!("harness script failed to run: {err:?}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "instance {suffix} did not come up: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let mut url = None;
+    let mut user = None;
+    let mut token = None;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some(line) = line.strip_prefix("export ") else {
+            continue;
+        };
+        if let Some(value) = line.strip_prefix("TASKBOARD_IT_OWNED_URL=") {
+            url = Some(value.to_owned());
+        }
+        if let Some(value) = line.strip_prefix("TASKBOARD_IT_OWNED_USER=") {
+            user = Some(value.to_owned());
+        }
+        if let Some(value) = line.strip_prefix("TASKBOARD_IT_OWNED_TOKEN=") {
+            token = Some(value.to_owned());
+        }
+    }
+    match (url, user, token) {
+        (Some(url), Some(user), Some(token)) => Ok(OwnedInstance {
+            url,
+            user,
+            token,
+            suffix: suffix.to_owned(),
+        }),
+        other => Err(format!("harness export block incomplete: {other:?}")),
+    }
+}
+
+/// Tears one instance down (volumes included; throwaway by contract).
+/// Belt-and-braces: a broken project network can make `compose down`
+/// fail partway and leave the container running (a zombie poisons the
+/// next run), so the container is force-removed afterwards regardless.
+pub fn teardown_instance_sync(suffix: &str) {
+    let script = format!(
+        "{}/../../scripts/nextcloud_it_setup.sh",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let _ = std::process::Command::new(&script)
+        .arg("down")
+        .env("TASKBOARD_IT_SUFFIX", suffix)
+        .output();
+    let _ = std::process::Command::new("docker")
+        .args(["rm", "-f", &format!("taskboard-it-nextcloud{suffix}")])
+        .output();
+}
+
+/// A `docker` CLI invocation (`stop`/`start`); the two-connector test's
+/// outage orchestration. Sync; call from `spawn_blocking`.
+pub fn docker_cli(args: &[&str]) -> Result<(), String> {
+    let output = std::process::Command::new("docker")
+        .args(args)
+        .output()
+        .map_err(|err| format!("docker {args:?} failed to run: {err:?}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "docker {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+/// A test-owned keyed credential store: two `(server, username)` pairs,
+/// one app password each — `EnvCredentialStore` is single-secret by
+/// construction, and the two-connector world needs N identities.
+#[derive(Debug, Default)]
+pub struct KeyedFixedStore {
+    pub passwords: std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
+}
+
+impl KeyedFixedStore {
+    pub fn with(server: &str, user: &str, token: &str) -> Self {
+        let mut passwords = std::collections::HashMap::new();
+        passwords.insert((server.to_owned(), user.to_owned()), token.to_owned());
+        Self {
+            passwords: std::sync::Mutex::new(passwords),
+        }
+    }
+
+    pub fn add(&mut self, server: &str, user: &str, token: &str) {
+        self.passwords
+            .lock()
+            .expect("store lock")
+            .insert((server.to_owned(), user.to_owned()), token.to_owned());
+    }
+}
+
+impl taskboard_app::secrets::CredentialStore for KeyedFixedStore {
+    fn load(
+        &self,
+        server: &str,
+        username: &str,
+    ) -> Result<taskboard_app::secrets::AppPassword, taskboard_app::secrets::CredentialError> {
+        self.passwords
+            .lock()
+            .expect("store lock")
+            .get(&(server.to_owned(), username.to_owned()))
+            .map(|token| taskboard_app::secrets::AppPassword::new(token.clone()))
+            .ok_or(taskboard_app::secrets::CredentialError::NotFound)
+    }
+
+    fn store(
+        &self,
+        server: &str,
+        username: &str,
+        secret: taskboard_app::secrets::AppPassword,
+    ) -> Result<(), taskboard_app::secrets::CredentialError> {
+        self.passwords.lock().expect("store lock").insert(
+            (server.to_owned(), username.to_owned()),
+            secret.expose().to_owned(),
+        );
+        Ok(())
+    }
+
+    fn delete(
+        &self,
+        server: &str,
+        username: &str,
+    ) -> Result<(), taskboard_app::secrets::CredentialError> {
+        self.passwords
+            .lock()
+            .expect("store lock")
+            .remove(&(server.to_owned(), username.to_owned()))
+            .map(|_| ())
+            .ok_or(taskboard_app::secrets::CredentialError::NotFound)
+    }
+}
+
+/// Seeds one board binding with an explicit connector tag through the
+/// storage API (current schema, no rollback — the per-board *tagged*
+/// fixture the adoption path cannot mint: `BindBoard` tags the engine's
+/// default connector only).
+pub async fn seed_tagged_board_binding(
+    db_path: &Path,
+    local_id: u128,
+    remote_id: u64,
+    connector: &str,
+    run: &str,
+) {
+    let repo = std::sync::Arc::new(
+        taskboard_storage_sqlite::open(db_path, taskboard_domain::ConnectorId::from(connector))
+            .await
+            .expect("seed db"),
+    );
+    let (handle, join) = taskboard_storage_sqlite::spawn_storage_actor(repo);
+    handle
+        .apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
+            taskboard_domain::Board {
+                id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(local_id)),
+                remote: Some(taskboard_domain::RemoteBoardBinding {
+                    connector: taskboard_domain::ConnectorId::from(connector),
+                    board: taskboard_domain::RemoteBoardId(remote_id),
+                }),
+                title: run.to_owned(),
+                color: taskboard_domain::Color::new("00c2e0"),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        )])
+        .await
+        .expect("seed applies");
+    drop(handle);
+    join.await.expect("seed actor exits");
+}

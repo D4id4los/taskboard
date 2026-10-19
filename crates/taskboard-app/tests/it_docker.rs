@@ -29,7 +29,9 @@ use taskboard_sync_nextcloud::{DeckClient, NewCard, StackFilter, Validators};
 
 mod common;
 
-use common::{EnvOverride, create_board_and_stack, env_lock, live_config, seed_board_binding};
+use common::{
+    EnvOverride, create_board_and_stack, env_lock, live_config, retry, seed_board_binding,
+};
 
 /// The outer wall-clock deadline for one tier test.
 const LIVE_DEADLINE: Duration = Duration::from_secs(300);
@@ -932,4 +934,309 @@ async fn v0_1_x_additive_upgrade(cfg: &common::LiveCfg) {
 
     let outcome = app.shutdown().await;
     assert!(!outcome.actor_aborted);
+}
+
+/// The two-connector tier-2 exit criterion (D5-18): two Nextcloud
+/// instances live simultaneously, one board bound to each, per-connector
+/// health visible in the per-board rows — one connector down flips only
+/// its own boards `Offline` while the other keeps cycling (no global
+/// `NetworkLost`), and the second `docker stop` crosses the all-down
+/// boundary (the global fires).
+///
+/// Both instances are test-owned (suffixed compose projects on private
+/// ports) so the outage orchestration cannot disturb the sibling tier
+/// tests sharing the singleton instance.
+#[tokio::test]
+#[ignore = "requires docker and the tier context (TASKBOARD_IT_DOCKER_URL)"]
+async fn it_nextcloud_docker_two_connectors_live_and_partial_outage() {
+    // Tier gate: the tier context marker (the shared harness's export
+    // block). This test owns its two instances, so only intent and a
+    // docker host are required.
+    if std::env::var("TASKBOARD_IT_DOCKER_URL").is_err() {
+        eprintln!(
+            "SKIP (honest, MD-5): the two-connector tier test needs the tier context \
+             (eval \"scripts/nextcloud_it_setup.sh up\"); the hermetic N=2 pins in \
+             bootstrap::connector_module_tests cover the registry and authority \
+             plumbing, the dockerized journeys here are the live-server half"
+        );
+        return;
+    }
+    // The shared LIVE_DEADLINE budgets one journey; this test adds two
+    // instance spawns to it, so it carries its own larger budget.
+    // `two_connectors_live_and_partial_outage` panics on any assertion;
+    // only the budget needs guarding here.
+    if tokio::time::timeout(
+        Duration::from_mins(15),
+        two_connectors_live_and_partial_outage(),
+    )
+    .await
+    .is_err()
+    {
+        panic!("the two-connector journey exceeded its 15-minute budget");
+    }
+}
+
+// All exits — assertion panics included — tear the instances down
+// (Drop runs on unwind; leaked containers poison the next run).
+struct Cleanup(common::OwnedInstance);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        // Best-effort container restore, then the volume teardown.
+        let _ = common::docker_cli(&["start", &format!("taskboard-it-nextcloud{}", self.0.suffix)]);
+        common::teardown_instance_sync(&self.0.suffix);
+    }
+}
+
+async fn two_connectors_live_and_partial_outage() {
+    // Two test-owned instances, brought up concurrently (~1 min each).
+    let up = |suffix: &'static str, port: u16| {
+        tokio::task::spawn_blocking(move || common::spawn_instance_sync(suffix, port))
+    };
+    let (a_res, b_res) = tokio::join!(up("-c5a", 8390), up("-c5b", 8391));
+    let a = a_res.expect("instance A join");
+    let b = b_res.expect("instance B join");
+    let (a, b) = match (a, b) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(err), _) | (_, Err(err)) => {
+            common::teardown_instance_sync("-c5a");
+            common::teardown_instance_sync("-c5b");
+            panic!("the two-connector tier could not come up: {err}");
+        }
+    };
+
+    // (Drop runs on unwind; the guard above is defined at module scope.)
+    let _cleanup_a = Cleanup(a.clone());
+    let _cleanup_b = Cleanup(b.clone());
+    two_connector_body(&a, &b)
+        .await
+        .expect("the two-connector journey");
+}
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+async fn two_connector_body(
+    a: &common::OwnedInstance,
+    b: &common::OwnedInstance,
+) -> Result<(), BoxError> {
+    use taskboard_app::config::{AppConfig, ConnectorCfg, CredentialStoreKind, SyncBackend};
+    use taskboard_domain::SyncPhase;
+
+    let client_a = DeckClient::new(&a.url, &a.user, &a.token)?;
+    let client_b = DeckClient::new(&b.url, &b.user, &b.token)?;
+    let run = common::run_id();
+    let dir = tempfile::tempdir()?;
+    let db_path = dir.path().join("taskboard.db");
+
+    // One board + stack + card per server: the pull has content on both
+    // connectors from the first cycle.
+    let (board_a, stack_a) = create_board_and_stack(&client_a, &run).await;
+    let (board_b, stack_b) = create_board_and_stack(&client_b, &run).await;
+    let _ = retry(|| async {
+        client_a
+            .create_card(
+                board_a.id,
+                stack_a.id,
+                &NewCard {
+                    title: format!("{run}-a"),
+                    order: Some(0),
+                    description: None,
+                    duedate: None,
+                    kind: None,
+                },
+            )
+            .await
+    })
+    .await?;
+    let _ = retry(|| async {
+        client_b
+            .create_card(
+                board_b.id,
+                stack_b.id,
+                &NewCard {
+                    title: format!("{run}-b"),
+                    order: Some(0),
+                    description: None,
+                    duedate: None,
+                    kind: None,
+                },
+            )
+            .await
+    })
+    .await?;
+
+    // The cross-connector world, fixtured in the db (chunk 5 has no
+    // ceremony verb that mints a non-default tag; chunk 6's move-board
+    // surface does): alpha owns A's board, beta owns B's.
+    common::seed_tagged_board_binding(&db_path, 0x00C5_000A, board_a.id, "alpha", &run).await;
+    common::seed_tagged_board_binding(&db_path, 0x00C5_000B, board_b.id, "beta", &run).await;
+
+    // A real [[sync.connectors]] config, both entries nextcloud, short
+    // poll so cycles are observable; credentials via the keyed fixed
+    // store (two identities).
+    let mut config = AppConfig::default();
+    config.sync.connectors = Some(vec![
+        ConnectorCfg {
+            name: "alpha".into(),
+            backend: SyncBackend::Nextcloud,
+            server_url: a.url.clone(),
+            username: a.user.clone(),
+        },
+        ConnectorCfg {
+            name: "beta".into(),
+            backend: SyncBackend::Nextcloud,
+            server_url: b.url.clone(),
+            username: b.user.clone(),
+        },
+    ]);
+    config.nextcloud.credential_store = CredentialStoreKind::Env;
+    config.sync.poll_interval_secs = 1;
+    config.sync.backoff_initial_secs = 1;
+    config.sync.backoff_max_secs = 5;
+    config.app.shutdown_timeout_secs = 5;
+    config.storage.db_path = Some(db_path.clone());
+    config.validate()?;
+
+    let mut store = common::KeyedFixedStore::with(&a.url, &a.user, &a.token);
+    store.add(&b.url, &b.user, &b.token);
+    let app = bootstrap(
+        config,
+        std::sync::Arc::new(store),
+        std::sync::Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await?;
+    let mut events = app.system.subscribe();
+
+    let board_id = |raw: u128| taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(raw));
+    let alpha_board = board_id(0x00C5_000A);
+    let beta_board = board_id(0x00C5_000B);
+
+    eprintln!("tier: both instances up; boards + cards created; db fixtured");
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(true)
+        .try_init();
+    // (1) Two connectors live: both boards' rows settle Idle with a
+    // last_success, each binding tagged with its own connector, and the
+    // server-side cards landed through each connector's own actor.
+    eventually(&app, |state| {
+        let settled = state.sync.iter().count() == 2
+            && state
+                .sync
+                .iter()
+                .all(|(_, row)| matches!(row.phase, SyncPhase::Idle) && row.last_success.is_some());
+        if !settled {
+            eprintln!(
+                "tier-debug: boards={:?} sync={:?}",
+                state
+                    .boards
+                    .values()
+                    .map(|b| (format!("{:?}", b.id), b.remote.clone()))
+                    .collect::<Vec<_>>(),
+                state.sync
+            );
+        }
+        settled
+    })
+    .await;
+    let state = app.engine.shared_state().load_full();
+    for (board, tag, remote) in [
+        (alpha_board, "alpha", board_a.id),
+        (beta_board, "beta", board_b.id),
+    ] {
+        let bound = &state.boards[&board];
+        let binding = bound.remote.as_ref().expect("seeded binding");
+        assert_eq!(binding.connector.as_str(), tag, "{tag}'s binding tag");
+        assert_eq!(binding.board.get(), remote, "{tag}'s remote board");
+    }
+    let pulled_both = state.tasks.values().filter(|t| t.remote.is_some()).count();
+    drop(state);
+    assert_eq!(pulled_both, 2, "each connector pulled its own board's card");
+
+    // `docker stop` is the new tier-only orchestration step (D5-18):
+    // bounded by the spawn_blocking join, recorded done via the flag.
+    let stop = |suffix: &str| {
+        let container = format!("taskboard-it-nextcloud{suffix}");
+        tokio::task::spawn_blocking(move || common::docker_cli(&["stop", &container]))
+    };
+
+    // (2) One down: alpha's container stops — its boards flip Offline
+    // while beta keeps cycling (its last_success advances) and the
+    // global banner stays silent.
+    let stop_a = stop(&a.suffix);
+    stop_a.await.expect("stop join").expect("docker stop alpha");
+    let beta_before = app
+        .engine
+        .shared_state()
+        .load_full()
+        .sync
+        .get(beta_board)
+        .and_then(|row| row.last_success)
+        .expect("beta settled before the outage");
+    eventually(&app, |state| {
+        state
+            .sync
+            .get(alpha_board)
+            .is_some_and(|row| matches!(row.phase, SyncPhase::Offline))
+    })
+    .await;
+    eventually(&app, |state| {
+        state
+            .sync
+            .get(beta_board)
+            .and_then(|row| row.last_success)
+            .is_some_and(|at| at > beta_before)
+    })
+    .await;
+    eprintln!("tier: alpha down, its boards Offline, beta cycling, global silent");
+    drain_no_global(&mut events, "while beta responds").await?;
+
+    eprintln!("tier: stopping beta; awaiting the global NetworkLost");
+    // (3) All down: stopping beta crosses the boundary — the authority
+    // emits the global NetworkLost.
+    let stop_b = stop(&b.suffix);
+    stop_b.await.expect("stop join").expect("docker stop beta");
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), events.recv()).await {
+            Ok(Ok(taskboard_domain::SystemEvent::NetworkLost)) => break,
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_elapsed) => assert!(
+                std::time::Instant::now() <= deadline,
+                "NetworkLost never arrived after both connectors stopped",
+            ),
+        }
+    }
+
+    Ok(())
+}
+
+/// Bounded drain asserting no global network event arrives (the
+/// partial-outage half of the D-W7 bar).
+async fn drain_no_global(
+    events: &mut tokio::sync::broadcast::Receiver<taskboard_domain::SystemEvent>,
+    while_: &str,
+) -> Result<(), BoxError> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
+            Ok(Ok(taskboard_domain::SystemEvent::NetworkLost)) => {
+                panic!("NetworkLost fired {while_}")
+            }
+            Ok(Ok(taskboard_domain::SystemEvent::NetworkRestored)) => {
+                panic!("NetworkRestored fired {while_}")
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                eprintln!("drain_no_global: lagged; {n} events skipped");
+            }
+            Err(_elapsed) => {
+                if std::time::Instant::now() > deadline {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
 }

@@ -45,6 +45,34 @@ The workspace carries a single global version (see `docs/architecture.org`);
   (mode × TTY × display, plus the `gui`/`daemon` verbs and the
   `TASKBOARD_APP__MODE` escape hatch) verified against the shipped
   routing.
+- Multiple active connectors (multi-board wave chunk 5): a
+  `[[sync.connectors]]` array of named entries — `name` (kebab-case,
+  unique; the connector id everywhere), `backend`, `server_url`,
+  `username` — whose first entry is the default connector; the legacy
+  scalar shape loads unchanged (a resolved `nextcloud` backend still
+  synthesizes one connector named `nextcloud`), and any mix of the two
+  representations is a typed config rejection (`connector-shape-mixed`,
+  `nextcloud-table-with-connectors`, `duplicate-connector-name`,
+  `invalid-connector-name`, `invalid-connector-entry`) naming the
+  offending key. Note: setting `TASKBOARD_SYNC__BACKEND` over an array
+  config is now a loud error where it was previously meaningless-but-
+  decodable.
+- Named connector registry: attach/detach are per-name
+  (`ConnectorNameInUse` names the offender; `connector_commands(id)`
+  is the named lookup; the daemon attach verb carries an additive
+  `name` field whose absent form is byte-identical on the wire), and
+  the daemon detach matches against the resolved connector set.
+- Per-connector network events with an all-down authority: sync actors
+  emit `ConnectorLost`/`ConnectorRestored` for their own connector
+  (exactly once per offline episode, report-then-restore order); an
+  app-layer counting task emits the global `NetworkLost` when the
+  last configured connector flips down and `NetworkRestored` when the
+  first comes back. One connector down is normal operation: only its
+  own boards flip `Offline` (the engine scopes the write by binding
+  tags) while the global banner stays silent. Single-connector
+  installs behave exactly as before. `require_connector` verbs now
+  refuse with `sync-disabled` when *no* connector is configured
+  (including an explicit empty `[[sync.connectors]]` array).
 - `mode = "kiosk"` boots the kiosk appliance (ADR 0016): the daemon
   core plus the display-gated fullscreen window — TTY-independent
   bare routing, a loud headless fallback that keeps serving over
