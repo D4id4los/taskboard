@@ -10,6 +10,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Process smoke harnesses (`scripts/process_smoke.py`, local manual
+  only): the S1 RSS steady-state run (spawns the standalone daemon on
+  the N = 10 000 bench fixture, polls readiness over `status --json`,
+  soaks /proc VmRSS to a bounded plateau, reports steady/peak kB
+  against the 200 MB budget reference) and the S3 cold-start
+  stopwatch (spawns `taskboard gui`, times spawn → the
+  `moment = "first-frame"` structured tracing event on the child's
+  JSON log stream, against the 5 s reference). References, never
+  gates: no CI wiring, exit codes never encode budget comparisons;
+  the fixture example `build-bench-fixture` reuses the hot-path bench
+  builder verbatim. Runbook: `docs/testing_strategy.org` §14.
+- `TASKBOARD_LOG_FORMAT=json`: one-line JSON log events on stderr
+  (same writer, same EnvFilter default; output byte-identical when
+  unset) — the machine-readable stream the cold-start harness
+  selects structured fields on.
 - Release archives ship a `taskboard.desktop` launcher
   (`Exec=taskboard gui`, `TryExec` PATH guard, theme-fallback icon)
   and the repo carries the installable copy in `contrib/`; the
@@ -120,6 +135,12 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- A shutdown signal (or `daemon stop`) landing while the desktop
+  window is still booting no longer strands the process: the winit
+  backend drops a quit sent before the event loop runs, so the exit
+  watchers now park pre-loop quits (`run` skips the loop and the
+  graceful tail runs) and deliver the quit through the live proxy
+  once it runs. Found by the cold-start smoke harness.
 - A push raced by another client's move no longer loses the local
   intent or re-adopts the card as a twin: a 404 at the stale stack
   binding re-resolves the card once against the fresh listings and
