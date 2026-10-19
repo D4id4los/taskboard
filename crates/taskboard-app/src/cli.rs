@@ -111,6 +111,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: Option<DaemonCmd>,
     },
+    /// Run the desktop UI in this process: explicit frontend selection
+    /// (the `daemon` verb's mirror) — boots the core and opens the
+    /// desktop window regardless of `[app] mode` and of TTY. A running
+    /// instance on the same database fails typed `instance-locked`.
+    Gui,
 }
 
 /// `daemon` subcommands.
@@ -540,6 +545,7 @@ pub enum TasksCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser as _;
 
     #[test]
     fn parse_due_accepts_rfc3339_bare_date_and_none() {
@@ -573,5 +579,24 @@ mod tests {
             Ok(chrono::TimeDelta::try_minutes(10).expect("10m"))
         );
         assert!(parse_before_flag("5min").is_err());
+    }
+
+    #[test]
+    fn gui_parses_as_a_first_class_subcommand_with_no_arguments() {
+        let cli = Cli::try_parse_from(["taskboard", "gui"]).expect("gui parses");
+        assert!(matches!(cli.command, Some(Command::Gui)));
+
+        // Global flags compose with the verb in both orders.
+        let cli = Cli::try_parse_from(["taskboard", "--json", "gui"]).expect("--json gui");
+        assert!(cli.json);
+        assert!(matches!(cli.command, Some(Command::Gui)));
+        let config: &str = "some.toml";
+        let cli =
+            Cli::try_parse_from(["taskboard", "--config", config, "gui"]).expect("--config gui");
+        assert_eq!(cli.config.as_deref(), Some(std::path::Path::new(config)));
+        assert!(matches!(cli.command, Some(Command::Gui)));
+
+        // The verb takes no arguments of its own.
+        assert!(Cli::try_parse_from(["taskboard", "gui", "extra"]).is_err());
     }
 }

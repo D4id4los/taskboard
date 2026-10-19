@@ -30,7 +30,8 @@
 //!   honest menu offers the escape instead. Titles are the identifier
 //!   humans parse: the uuid is the distinguisher column, never the
 //!   leading text. Unambiguous titles keep exactly the plain row.
-//! - **Session-refused surface is not offered**: `daemon`, `config`
+//! - **Session-refused surface is not offered**: `daemon`, `config`,
+//!   `gui`
 //!   and `--config` never appear as candidates — completing them would
 //!   manufacture a guaranteed in-session refusal
 //!   (`repl::LineRefusal`). The ceremony verbs are offered instead
@@ -235,8 +236,10 @@ pub(crate) struct CompletionSpec {
 /// Verbs whose lines `repl::resolve_words` refuses in-session; nothing
 /// about them is offered, and any line starting with one completes
 /// nothing. The ceremony verbs (connect/login/logout, ADR 0014) are
-/// offered like any other verb since chunk 3.
-const REFUSED_VERBS: [&str; 2] = ["daemon", "config"];
+/// offered like any other verb since chunk 3. `gui` is a lifecycle
+/// arm (a process entry): completing it would manufacture a
+/// guaranteed in-session refusal.
+const REFUSED_VERBS: [&str; 3] = ["daemon", "config", "gui"];
 
 /// Flags never offered as candidates: a per-line `--config` is refused
 /// in-session (`LineRefusal::ConfigFlag`). The spec keeps the flag in
@@ -1050,7 +1053,7 @@ mod tests {
                 "{verb} must be offered"
             );
         }
-        for refused in ["daemon", "config"] {
+        for refused in ["daemon", "config", "gui"] {
             assert!(
                 !spec.offered_verbs.iter().any(|v| v == refused),
                 "{refused} must not be offered"
@@ -1251,6 +1254,11 @@ mod tests {
         );
         assert_eq!(routed(&spec, "config pr", 9), Kind::None);
         assert_eq!(
+            routed(&spec, "gui ", 4),
+            Kind::None,
+            "the lifecycle verb completes nothing in-session"
+        );
+        assert_eq!(
             routed(&spec, "exit ", 5),
             Kind::None,
             "the REPL exit has no arguments"
@@ -1448,10 +1456,9 @@ mod tests {
         assert!(all.contains(&"boards "));
         // The refused verbs are absent; the ceremony verbs are offered
         // like any other (ADR 0014).
-        assert!(
-            all.iter()
-                .all(|r| !r.starts_with("daemon") && !r.starts_with("config"))
-        );
+        assert!(all.iter().all(|r| !r.starts_with("daemon")
+            && !r.starts_with("config")
+            && !r.starts_with("gui")));
         assert!(all.contains(&"connect "));
         assert!(all.contains(&"login "));
         assert!(all.contains(&"logout "));

@@ -506,3 +506,23 @@ fn j4_connect_pipe_journey(cfg: &LiveCfg) {
     );
     expect_exit(&output, 0, "boards list after the flip");
 }
+
+/// J5 — the `gui` lifecycle verb (ADR 0009 amendment): the binary
+/// recognises it as a first-class subcommand and reaches the config
+/// load **without a TTY** (plain pipes — no pty, no display, no
+/// docker): an undecodable config fails typed `decode`, exit 1, the
+/// same envelope contract the one-shot verbs use under `--json`. The
+/// success path is a window (a foreign, display-gated contract) and is
+/// deliberately not pinned here.
+#[test]
+fn j5_gui_verb_reaches_config_load_without_a_tty() {
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(&config, "= not toml =").expect("write garbage config");
+
+    let output = run_cli(&config, ["--json", "gui"].as_slice(), None, None);
+    expect_exit(&output, 1, "gui with an undecodable config exits 1");
+    let envelope: serde_json::Value = serde_json::from_str(&last_stderr_line(&output))
+        .expect("stderr ends with one JSON error object");
+    assert_eq!(envelope["error"]["kind"], "decode");
+}
