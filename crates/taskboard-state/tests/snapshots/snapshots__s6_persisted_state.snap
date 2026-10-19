@@ -5,7 +5,9 @@ expression: "&persisted"
 boards:
   00000000-0000-0000-0000-000000000001:
     id: 00000000-0000-0000-0000-000000000001
-    remote: 42
+    remote:
+      connector: nextcloud
+      board: 42
     title: kiosk
     color: 0000ff
     archived: false

@@ -64,7 +64,10 @@ fn label_clocks(secs: i64) -> LabelClocks {
 fn board(id: u128) -> Board {
     Board {
         id: BoardId::from(uuid::Uuid::from_u128(id)),
-        remote: Some(RemoteBoardId(77)),
+        remote: Some(taskboard_domain::RemoteBoardBinding {
+            connector: taskboard_domain::ConnectorId::from("nextcloud"),
+            board: RemoteBoardId(77),
+        }),
         title: "board".into(),
         color: Color::new("ff0000"),
         archived: false,

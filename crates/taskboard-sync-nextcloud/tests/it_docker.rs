@@ -119,10 +119,14 @@ mod d {
 
         let pair = boot_pair(client.clone()).await;
         pair.set_board(board.id).await;
+        // The binding persists the instant `BindBoard` lands; the cycle's
+        // *merge* is what adopts the remote stacks — wait for that.
         eventually(&pair, |app| {
-            app.boards
-                .values()
-                .any(|b| b.remote == Some(taskboard_domain::RemoteBoardId(board.id)))
+            !app.stacks.is_empty()
+                && app.boards.values().any(|b| {
+                    b.remote.as_ref().map(|r| r.board)
+                        == Some(taskboard_domain::RemoteBoardId(board.id))
+                })
         })
         .await;
 

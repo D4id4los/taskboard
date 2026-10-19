@@ -196,6 +196,24 @@ pub fn remote_board_id_strategy() -> impl Strategy<Value = crate::ids::RemoteBoa
     remote_number().prop_map(crate::ids::RemoteBoardId)
 }
 
+/// The connector tag the test corpus's engine default carries (the legacy
+/// scalar world's one synthesized name). Purely a fixture constant.
+#[must_use]
+pub fn test_connector() -> crate::ids::ConnectorId {
+    crate::ids::ConnectorId::from("nextcloud")
+}
+
+/// A connector-tagged board binding for fixtures: `test_connector`'s tag
+/// on the given remote board. Fixtures that prove tag *preservation*
+/// build their own non-default tag instead.
+#[must_use]
+pub fn test_binding(board: crate::ids::RemoteBoardId) -> Option<crate::ids::RemoteBoardBinding> {
+    Some(crate::ids::RemoteBoardBinding {
+        connector: test_connector(),
+        board,
+    })
+}
+
 /// A random op id.
 pub fn op_id_strategy() -> impl Strategy<Value = OpId> {
     any::<u128>().prop_map(|raw| OpId(Uuid::from_u128(raw)))

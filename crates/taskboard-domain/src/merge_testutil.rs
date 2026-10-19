@@ -129,7 +129,7 @@ pub(crate) fn base_board() -> Board {
     let board_id = BoardId::from(uuid::Uuid::from_u128(800));
     Board {
         id: board_id,
-        remote: Some(board(REMOTE_BOARD_NUM)),
+        remote: crate::test_support::test_binding(board(REMOTE_BOARD_NUM)),
         title: "board".into(),
         color: Color::new("ff0000"),
         archived: false,
@@ -151,7 +151,7 @@ pub(crate) fn base_state(task: Task) -> AppState {
         board_id,
         Board {
             id: board_id,
-            remote: Some(board(REMOTE_BOARD_NUM)),
+            remote: crate::test_support::test_binding(board(REMOTE_BOARD_NUM)),
             title: "board".into(),
             color: Color::new("ff0000"),
             archived: false,

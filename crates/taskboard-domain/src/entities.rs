@@ -12,7 +12,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{
-    BoardId, LabelId, RemoteBoardId, RemoteCardRef, RemoteLabelRef, RemoteStackRef, StackId, TaskId,
+    BoardId, LabelId, RemoteBoardBinding, RemoteCardRef, RemoteLabelRef, RemoteStackRef, StackId,
+    TaskId,
 };
 
 /// Lenient color value: construction passes anything through and `Display`
@@ -120,8 +121,9 @@ impl BoardClocks {
 pub struct Board {
     /// Local identity.
     pub id: BoardId,
-    /// Remote binding; `None` until bound to a Deck board.
-    pub remote: Option<RemoteBoardId>,
+    /// Remote binding: the remote board *and* the connector that owns it
+    /// (config-minted tag, DF-3); `None` until bound to a Deck board.
+    pub remote: Option<RemoteBoardBinding>,
     /// Board title.
     pub title: String,
     /// Board color (lenient).

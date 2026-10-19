@@ -173,7 +173,7 @@ impl RemoteIndex {
         index.board_by_ref = state
             .boards
             .iter()
-            .filter_map(|(id, b)| Some((b.remote?, *id)))
+            .filter_map(|(id, b)| Some((b.remote.as_ref()?.board, *id)))
             .collect();
         index
     }

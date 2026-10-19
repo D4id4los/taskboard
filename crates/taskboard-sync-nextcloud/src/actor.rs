@@ -7,7 +7,10 @@
 //!
 //! The actor is stateless across restarts except the injected client: all
 //! durable facts arrive via `read_state`; the in-memory pull cache is a
-//! rebuildable optimization. Network events are *produced* here
+//! rebuildable optimization. Its board set is *derived*: every cycle the
+//! actor syncs exactly the persisted bindings tagged with its own
+//! connector id — a newly bound board is picked up by the next read with
+//! no message at all (the `SetBoard` era is over). Network events are *produced* here
 //! (`SystemEvent::NetworkLost`/`NetworkRestored` on the injected
 //! broadcast) and `Shutdown` is the only event consumed from it — this
 //! actor is the network authority.
@@ -56,9 +59,11 @@ pub struct SyncActorConfig {
 ///
 /// All channel halves are injected (the bootstrap owns the graph, mirroring
 /// [`taskboard_domain::TaskRepository`]-style seams): `commands` is the
-/// engine's nudge/SetBoard inbox, `reports` carries cycle reports to the
-/// engine, `system` is the broadcast this actor publishes network events
-/// on (and subscribes to for `Shutdown`).
+/// engine's nudge inbox (`SyncNow`/`Detach`), `reports` carries cycle
+/// reports to the engine, `system` is the broadcast this actor publishes
+/// network events on (and subscribes to for `Shutdown`). `id` is the
+/// config-minted connector name: the actor syncs every persisted binding
+/// tagged with it, and nothing else.
 ///
 /// # Examples
 ///
@@ -104,6 +109,7 @@ pub struct SyncActorConfig {
 ///     clock: Arc::new(SystemClock),
 /// };
 /// let actor = spawn_sync_actor(
+///     taskboard_domain::ConnectorId::from("nextcloud"),
 ///     client,
 ///     Arc::new(EngineView),
 ///     nudges_rx,
@@ -111,13 +117,14 @@ pub struct SyncActorConfig {
 ///     system_tx,
 ///     cfg,
 /// );
-/// // The engine consumes `report_rx`, sends `SyncNow`/`SetBoard` over
-/// // `nudges_tx`, and `actor` is aborted last at shutdown.
+/// // The engine consumes `report_rx`, sends `SyncNow` over `nudges_tx`,
+/// // and `actor` is aborted last at shutdown.
 /// # let _ = (nudges_tx, report_rx, _system_rx, actor);
 /// # }
 #[allow(clippy::too_many_arguments)] // the injected seams ARE the constructor
 #[must_use]
 pub fn spawn_sync_actor(
+    id: taskboard_domain::ConnectorId,
     client: DeckClient,
     state: Arc<dyn SyncStateReader>,
     commands: mpsc::Receiver<SyncCommand>,
@@ -125,7 +132,7 @@ pub fn spawn_sync_actor(
     system: broadcast::Sender<SystemEvent>,
     cfg: SyncActorConfig,
 ) -> JoinHandle<()> {
-    tokio::spawn(run(client, state, commands, reports, system, cfg))
+    tokio::spawn(run(id, client, state, commands, reports, system, cfg))
 }
 
 /// Local stamps of the bound cards (archived flag + `remote_seen`), the
@@ -135,25 +142,24 @@ type LocalCardStamps = std::collections::HashMap<
     (bool, Option<chrono::DateTime<chrono::Utc>>),
 >;
 
-/// In-memory cache of the last decoded listings, fill for `304`s and
-/// cleared on `SetBoard`. A cold cache with warm validators forces one
-/// unconditional refetch — never a partial snapshot (decision 9).
+/// In-memory cache of the last decoded listings, fill for `304`s. The
+/// boards listing is shared across the connector's boards; the stack
+/// listings key per remote board, so a rebind is a non-event — a newly
+/// bound board has (or lacks) its own slot, and boards *in* the derived
+/// set never lose their slot to set changes (no cache-clear-on-retarget;
+/// slots for boards that left the set are pruned at cycle start). A cold
+/// cache with warm validators forces one unconditional refetch — never a
+/// partial snapshot (decision 9).
 #[derive(Debug, Default)]
 struct PullCache {
     boards: Option<Vec<Board>>,
-    stacks_active: Option<Vec<Stack>>,
-    stacks_archived: Option<Vec<Stack>>,
+    stacks_active: std::collections::BTreeMap<RemoteBoardId, Option<Vec<Stack>>>,
+    stacks_archived: std::collections::BTreeMap<RemoteBoardId, Option<Vec<Stack>>>,
 }
 
-impl PullCache {
-    fn clear(&mut self) {
-        *self = Self::default();
-    }
-}
-
-/// The loop's mutable state (ADR 0007 decision 12).
+/// The loop's mutable state (ADR 0007 decision 12). No sticky target
+/// exists: the board set derives from the persisted bindings every cycle.
 struct LoopState {
-    target: Option<RemoteBoardId>,
     cache: PullCache,
     rerun_requested: bool,
     failure_streak: u32,
@@ -169,6 +175,7 @@ struct LoopState {
     clippy::too_many_lines // one biased loop; the arms ARE the design
 )]
 async fn run(
+    id: taskboard_domain::ConnectorId,
     client: DeckClient,
     state: Arc<dyn SyncStateReader>,
     mut commands: mpsc::Receiver<SyncCommand>,
@@ -176,19 +183,18 @@ async fn run(
     system: broadcast::Sender<SystemEvent>,
     cfg: SyncActorConfig,
 ) {
-    tracing::info!("sync actor started");
+    tracing::info!(connector = %id, "sync actor started");
     let mut sys_rx = system.subscribe();
     let mut sys_open = true;
     let mut st = LoopState {
-        target: None,
         cache: PullCache::default(),
         rerun_requested: false,
         failure_streak: 0,
         offline: false,
         retry_after_floor: Duration::ZERO,
     };
-    // First cycle fires immediately; without a bound target it is a
-    // silent skip (no `NoBoard` report on poll ticks — decision 10).
+    // First cycle fires immediately; an empty derived set is a silent
+    // skip on poll ticks (no `NoBoard` report — decision 10).
     let mut deadline = tokio::time::Instant::now();
 
     loop {
@@ -196,17 +202,8 @@ async fn run(
             biased;
 
             cmd = commands.recv() => match cmd {
-                Some(SyncCommand::SetBoard(id)) => {
-                    if st.target == Some(id) {
-                        continue; // re-SetBoard to the same id: no-op
-                    }
-                    st.target = Some(id);
-                    st.cache.clear();
-                    cycle(&client, &state, &reports, &system, &mut st, &cfg, true).await;
-                    deadline = reschedule(&st, &cfg);
-                }
                 Some(SyncCommand::SyncNow) => {
-                    cycle(&client, &state, &reports, &system, &mut st, &cfg, true).await;
+                    cycle(&id, &client, &state, &reports, &system, &mut st, &cfg, true).await;
                     deadline = reschedule(&st, &cfg);
                 }
                 Some(SyncCommand::Detach) => {
@@ -223,7 +220,7 @@ async fn run(
             },
 
             () = tokio::time::sleep_until(deadline) => {
-                cycle(&client, &state, &reports, &system, &mut st, &cfg, false).await;
+                cycle(&id, &client, &state, &reports, &system, &mut st, &cfg, false).await;
                 deadline = reschedule(&st, &cfg);
             },
 
@@ -255,12 +252,6 @@ async fn run(
         while let Ok(cmd) = commands.try_recv() {
             match cmd {
                 SyncCommand::SyncNow => st.rerun_requested = true,
-                SyncCommand::SetBoard(id) if st.target != Some(id) => {
-                    st.target = Some(id);
-                    st.cache.clear();
-                    st.rerun_requested = true;
-                }
-                SyncCommand::SetBoard(_) => {}
                 SyncCommand::Detach => {
                     // Queued while a cycle ran: still a detach — processed
                     // right after the cycle, never absorbed.
@@ -273,23 +264,6 @@ async fn run(
             st.rerun_requested = false;
             deadline = tokio::time::Instant::now();
         }
-    }
-}
-
-/// The cycle's pull target: the sticky target kept only while some
-/// persisted board (tombstoned included — R9c) still holds it, else the
-/// first persisted binding in board-id order, else `None` (the pure
-/// core of the D3-2 guard; the eviction side-effect lives in `cycle`).
-fn resolve_target(
-    sticky: Option<RemoteBoardId>,
-    boards: &std::collections::BTreeMap<taskboard_domain::BoardId, taskboard_domain::Board>,
-) -> Option<RemoteBoardId> {
-    match sticky {
-        Some(held) if boards.values().any(|b| b.remote == Some(held)) => Some(held),
-        _ => boards
-            .values()
-            .find(|b| b.remote.is_some())
-            .and_then(|b| b.remote),
     }
 }
 
@@ -309,10 +283,39 @@ fn reschedule(st: &LoopState, cfg: &SyncActorConfig) -> tokio::time::Instant {
     tokio::time::Instant::now() + delay
 }
 
-/// One cycle. `commanded` distinguishes nudges/`SetBoard` (which report
-/// `NoBoard`) from poll ticks (which silently skip without one).
-#[allow(clippy::too_many_lines)] // the cycle IS the design; splitting hides the order
+/// The boards this connector's actor owns: persisted bindings tagged
+/// with this actor's id, live and tombstoned alike (R9c: a deleting
+/// board's finalizing push is a sync fact), in board-id order. Recomputed
+/// from the persisted state every cycle — the derived set is the only
+/// target source (D3-2's semantics live here now: a finalized tombstone's
+/// cleared binding drops the board; a fresh actor derives from persisted
+/// bindings; boards tagged with *another* connector are excluded).
+fn owned_boards(
+    id: &taskboard_domain::ConnectorId,
+    boards: &std::collections::BTreeMap<taskboard_domain::BoardId, taskboard_domain::Board>,
+) -> Vec<(
+    taskboard_domain::BoardId,
+    taskboard_domain::RemoteBoardBinding,
+)> {
+    boards
+        .iter()
+        .filter_map(|(board_id, board)| {
+            let binding = board.remote.as_ref()?;
+            (binding.connector == *id).then(|| (*board_id, binding.clone()))
+        })
+        .collect()
+}
+
+/// One cycle. `commanded` distinguishes nudges (which report `NoBoard` on
+/// an empty derived set) from poll ticks (which silently skip). One read,
+/// then a per-board loop: push (that board's ops only) → pull (its own
+/// cache slots) → one report per board. A board's failure continues the
+/// loop; a Network-classified failure ends the cycle early (the transport
+/// is shared and down; `go_offline` stamps the unattempted boards' rows
+/// anyway — D-12). Backoff stays actor-global.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // the cycle IS the design; the seams ARE the constructor
 async fn cycle(
+    id: &taskboard_domain::ConnectorId,
     client: &DeckClient,
     state: &Arc<dyn SyncStateReader>,
     reports: &mpsc::Sender<SyncReport>,
@@ -342,25 +345,11 @@ async fn cycle(
         }
     };
 
-    // The pull target: the sticky one when a persisted board still holds
-    // it, else the persisted board binding (decision 13's durability
-    // consequence; a fresh install with no binding keeps the decision 10
-    // `NoBoard` reporting). The liveness guard (chunk 3, D3-2): a sticky
-    // target no persisted binding holds is evicted — tombstoned boards
-    // count as holding (R9c: the delete's binding survives until the
-    // tombstone push finalizes, which is exactly its drain path) — and
-    // the single-board pull cache clears with it. Chunk 4 replaces both
-    // with the derived per-board set and per-board cache keys.
-    let sticky = st.target.take();
-    let resolved = resolve_target(sticky, &persisted.boards);
-    if sticky.is_some() && resolved != sticky {
-        tracing::debug!(evicted = ?sticky, "stale sync target evicted: no persisted binding holds it");
-        st.cache.clear();
-    }
-    st.target = resolved;
-    let Some(target) = resolved else {
+    // ---- derive --------------------------------------------------------
+    let owned = owned_boards(id, &persisted.boards);
+    if owned.is_empty() {
         if commanded {
-            tracing::debug!("cycle skipped: no board bound");
+            tracing::debug!("cycle skipped: no board bound for this connector");
             send_report(
                 reports,
                 SyncReport::Failed {
@@ -372,62 +361,25 @@ async fn cycle(
             .await;
         }
         return;
-    };
-    tracing::info!(board = target.get(), "sync cycle started");
+    }
+    // Memory proportional to the live set: slots for remote ids that left
+    // the derived set are pruned (D-10); boards in the set never lose
+    // their slot to set changes.
+    let live: std::collections::BTreeSet<RemoteBoardId> =
+        owned.iter().map(|(_, binding)| binding.board).collect();
+    st.cache
+        .stacks_active
+        .retain(|board, _| live.contains(board));
+    st.cache
+        .stacks_archived
+        .retain(|board, _| live.contains(board));
+
     let tables = EntityTables {
         tasks: &persisted.tasks,
         stacks: &persisted.stacks,
         labels: &persisted.labels,
         boards: &persisted.boards,
     };
-    let bound_board = persisted.boards.values().find(|b| b.remote == Some(target));
-
-    // ---- push (before pull: the R3 hazard, ADR 0007) -------------------
-    let mut pushes: Vec<PushOutcome> = Vec::new();
-    if !persisted.outbox.is_empty() {
-        let index = taskboard_domain::RemoteIndex::from_bindings(
-            persisted
-                .tasks
-                .iter()
-                .filter_map(|(id, t)| Some((t.remote?, *id))),
-            persisted
-                .stacks
-                .iter()
-                .filter_map(|(id, s)| Some((s.remote?, *id))),
-            persisted
-                .labels
-                .iter()
-                .filter_map(|(id, l)| Some((l.remote?, *id))),
-        );
-        let overlay = BindingOverlay::from_index(target, &index);
-        let mut executor = PushExecutor::new(client, overlay);
-        for group in plan_pushes(&persisted.outbox, tables) {
-            match executor.execute(&group, &persisted.outbox, tables).await {
-                GroupOutcome::Outcomes(mut outcomes) => pushes.append(&mut outcomes),
-                GroupOutcome::Aborted { landed } => {
-                    // Transport failure: no pull — the snapshot would
-                    // predate the unfinished pushes anyway. The landed
-                    // outcomes (e.g. a create whose post-create sub-call
-                    // failed) travel as evidence so they are never re-POSTed.
-                    pushes.extend(landed);
-                    fail_cycle(
-                        st,
-                        reports,
-                        system,
-                        SyncErrorKind::Network,
-                        Duration::ZERO,
-                        pushes,
-                        read_at,
-                    )
-                    .await;
-                    return;
-                }
-            }
-        }
-    }
-
-    // ---- pull ----------------------------------------------------------
-    let local_board = bound_board.map(|b| (b.title.clone(), b.color.as_str().to_owned()));
     // Bound cards' (archived, remote_seen), for the listing-lag detail
     // refresh (tier-2 verified: Deck's listings lag its cache, so an
     // archive/unarchive can carry a stale version stamp that LWW would
@@ -440,55 +392,148 @@ async fn cycle(
             Some(((r.board, r.card), (t.archived, t.remote_seen)))
         })
         .collect();
-    let pull = pull_snapshot(
-        client,
-        target,
-        &persisted.validators,
-        &mut st.cache,
-        local_board,
-        &local_cards,
-        cfg.clock.as_ref(),
-    )
-    .await;
-    let (snapshot, validators) = match pull {
-        Ok(pulled) => pulled,
-        Err(err) => {
-            let kind = classify_read(&err);
-            fail_cycle(
-                st,
-                reports,
-                system,
-                kind,
-                advertised_floor(&err),
+
+    // The board-less outbox ops (owning entity rows wiped) are cycle-level
+    // bookkeeping: they ride the *first* owned board's planning pass, once
+    // per cycle — the planner synthetically completes no-ops for missing
+    // entities (D-13). Empty set ⇒ they strand unattempted.
+    let orphan_ops: Vec<taskboard_domain::PendingOp> = persisted
+        .outbox
+        .iter()
+        .filter(|entry| entry.op.owning_board(&tables).is_none())
+        .cloned()
+        .collect();
+
+    let was_offline = st.offline;
+    let mut any_completed = false;
+    for (index, (board_id, binding)) in owned.iter().enumerate() {
+        let target = binding.board;
+        tracing::info!(board = target.get(), connector = %id, "board sync started");
+        let mut board_ops: Vec<taskboard_domain::PendingOp> = persisted
+            .outbox
+            .iter()
+            .filter(|entry| entry.op.owning_board(&tables) == Some(*board_id))
+            .cloned()
+            .collect();
+        if index == 0 {
+            board_ops.extend(orphan_ops.iter().cloned());
+        }
+
+        // ---- push (before pull: the R3 hazard, ADR 0007) ---------------
+        let mut pushes: Vec<PushOutcome> = Vec::new();
+        if !board_ops.is_empty() {
+            let index = taskboard_domain::RemoteIndex::from_bindings(
+                persisted
+                    .tasks
+                    .iter()
+                    .filter_map(|(id, t)| Some((t.remote?, *id))),
+                persisted
+                    .stacks
+                    .iter()
+                    .filter_map(|(id, s)| Some((s.remote?, *id))),
+                persisted
+                    .labels
+                    .iter()
+                    .filter_map(|(id, l)| Some((l.remote?, *id))),
+            );
+            // Board-scoped overlay: refs of *other* boards must never be
+            // visible here — `card_of` stamps the cycle's board id, and an
+            // unfiltered overlay would mis-tag foreign refs.
+            let overlay = BindingOverlay::from_index(target, &index);
+            let mut executor = PushExecutor::new(client, overlay);
+            for group in plan_pushes(&board_ops, tables) {
+                match executor.execute(&group, &board_ops, tables).await {
+                    GroupOutcome::Outcomes(mut outcomes) => pushes.append(&mut outcomes),
+                    GroupOutcome::Aborted { landed } => {
+                        // Transport failure: no pull — the snapshot would
+                        // predate the unfinished pushes anyway. The landed
+                        // outcomes travel as evidence; the episode edge
+                        // fires once and the cycle ends (D-12).
+                        pushes.extend(landed);
+                        fail_cycle(
+                            st,
+                            reports,
+                            system,
+                            SyncErrorKind::Network,
+                            Duration::ZERO,
+                            pushes,
+                            read_at,
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // ---- pull -------------------------------------------------------
+        let local_board = persisted
+            .boards
+            .get(board_id)
+            .map(|b| (b.title.clone(), b.color.as_str().to_owned()));
+        let pull = pull_snapshot(
+            client,
+            target,
+            &persisted.validators,
+            &mut st.cache,
+            local_board,
+            &local_cards,
+            cfg.clock.as_ref(),
+        )
+        .await;
+        let (snapshot, validators) = match pull {
+            Ok(pulled) => pulled,
+            Err(err) => {
+                let kind = classify_read(&err);
+                let network = matches!(kind, SyncErrorKind::Network);
+                fail_cycle(
+                    st,
+                    reports,
+                    system,
+                    kind,
+                    advertised_floor(&err),
+                    pushes,
+                    read_at,
+                )
+                .await;
+                if network {
+                    // Shared transport down: remaining boards unattempted,
+                    // no reports for them (go_offline stamps their rows).
+                    return;
+                }
+                continue;
+            }
+        };
+
+        // ---- report (one per board; `SyncReport` is unchanged — DF-1) ---
+        any_completed = true;
+        let sent = send_report(
+            reports,
+            SyncReport::Completed {
+                snapshot: Box::new(snapshot),
+                validators,
                 pushes,
                 read_at,
-            )
-            .await;
-            return;
+            },
+        )
+        .await;
+        if !sent {
+            tracing::warn!("report dropped: engine report channel closed");
         }
-    };
-
-    // ---- report --------------------------------------------------------
-    let was_offline = st.offline;
-    st.failure_streak = 0;
-    let sent = send_report(
-        reports,
-        SyncReport::Completed {
-            snapshot: Box::new(snapshot),
-            validators,
-            pushes,
-            read_at,
-        },
-    )
-    .await;
-    if sent && was_offline {
-        // Report first, then the restore broadcast: the resulting engine
-        // nudge lands on this actor's dedupe absorber (one benign
-        // coalesced rerun, ADR 0007).
-        let _ = system.send(SystemEvent::NetworkRestored);
-        tracing::info!("network restored");
+        tracing::info!(board = target.get(), "board sync completed");
     }
-    st.offline = false;
+
+    if any_completed {
+        // Cycle-level success bookkeeping: the backoff resets only when at
+        // least one board completed; the restore edge fires once, after
+        // the report (the engine nudge lands on this actor's absorber).
+        st.failure_streak = 0;
+        if was_offline {
+            let _ = system.send(SystemEvent::NetworkRestored);
+            tracing::info!("network restored");
+        }
+        st.offline = false;
+    }
     tracing::info!("sync cycle completed");
 }
 
@@ -667,7 +712,7 @@ async fn pull_snapshot(
         target,
         StackFilter::Active,
         stacks_v(&ValidatorKey::Stacks(target)),
-        &mut cache.stacks_active,
+        cache.stacks_active.entry(target).or_default(),
         dead_board,
     )
     .await?;
@@ -676,7 +721,7 @@ async fn pull_snapshot(
         target,
         StackFilter::Archived,
         stacks_v(&ValidatorKey::ArchivedStacks(target)),
-        &mut cache.stacks_archived,
+        cache.stacks_archived.entry(target).or_default(),
         dead_board,
     )
     .await?;
@@ -841,10 +886,18 @@ mod guard_tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn board(id: u128, remote: Option<u64>, deleted: bool) -> taskboard_domain::Board {
+    fn board(
+        id: u128,
+        connector: Option<&str>,
+        remote: Option<u64>,
+        deleted: bool,
+    ) -> taskboard_domain::Board {
         taskboard_domain::Board {
             id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(id)),
-            remote: remote.map(RemoteBoardId),
+            remote: remote.map(|board| taskboard_domain::RemoteBoardBinding {
+                connector: taskboard_domain::ConnectorId::from(connector.unwrap_or("nextcloud")),
+                board: RemoteBoardId(board),
+            }),
             title: "board".into(),
             color: taskboard_domain::entities::Color::new("0000ff"),
             archived: false,
@@ -865,46 +918,58 @@ mod guard_tests {
         rows.iter().map(|b| (b.id, b.clone())).collect()
     }
 
-    #[test]
-    fn stale_target_evicted_when_no_binding_remains() {
-        // The unbind shape: the sticky target's binding is gone and no
-        // other board holds one — the guard evicts (the cycle clears the
-        // cache and reports/skips instead of resurrecting the board).
-        let empty = boards(&[]);
-        assert_eq!(resolve_target(Some(RemoteBoardId(1)), &empty), None);
+    fn owned_remote(rows: &[taskboard_domain::Board]) -> Vec<u64> {
+        owned_boards(
+            &taskboard_domain::ConnectorId::from("nextcloud"),
+            &boards(rows),
+        )
+        .into_iter()
+        .map(|(_, binding)| binding.board.get())
+        .collect()
     }
 
     #[test]
-    fn tombstoned_board_keeps_the_target() {
+    fn finalized_tombstone_drops_out_of_the_set() {
+        // After the finalize (binding cleared), the tombstone no longer
+        // holds a binding: the derived set drops it next cycle.
+        assert!(
+            owned_remote(&[board(1, None, None, true)]).is_empty(),
+            "a finalized tombstone has no binding to derive from"
+        );
+    }
+
+    #[test]
+    fn tombstoned_board_stays_in_the_set() {
         // R9c drain: a deleting board's binding survives until its
-        // tombstone push finalizes — the guard treats it as live so the
-        // delete drains through the owning target.
-        let draining = boards(&[board(1, Some(7), true)]);
-        assert_eq!(
-            resolve_target(Some(RemoteBoardId(7)), &draining),
-            Some(RemoteBoardId(7))
-        );
+        // tombstone push finalizes — the derived set keeps it so the
+        // delete drains through the owning connector.
+        assert_eq!(owned_remote(&[board(1, None, Some(7), true)]), vec![7]);
     }
 
     #[test]
-    fn finalized_tombstone_evicts_target_next_cycle() {
-        // After the finalize (binding cleared), the sticky target no
-        // longer resolves: evicted, falling back to another binding.
-        let finalized = boards(&[board(1, None, true), board(2, Some(9), false)]);
-        assert_eq!(
-            resolve_target(Some(RemoteBoardId(7)), &finalized),
-            Some(RemoteBoardId(9)),
-            "fallback picks the persisted binding in board-id order"
-        );
-        let alone = boards(&[board(1, None, true)]);
-        assert_eq!(resolve_target(Some(RemoteBoardId(7)), &alone), None);
+    fn fresh_actor_derives_the_set_from_persisted_bindings() {
+        // Decision 13: a restarted actor targets the persisted binding
+        // with no message at all.
+        assert_eq!(owned_remote(&[board(1, None, Some(3), false)]), vec![3]);
     }
 
     #[test]
-    fn fresh_actor_resumes_target_from_persisted_binding() {
-        // Decision 13: a restarted actor with no sticky target still
-        // targets the persisted binding.
-        let persisted = boards(&[board(1, Some(3), false)]);
-        assert_eq!(resolve_target(None, &persisted), Some(RemoteBoardId(3)));
+    fn foreign_tagged_boards_are_excluded() {
+        // The N=2 predicate, testable at N=1 with a hand-tagged fixture:
+        // another connector's board is not this actor's to sync.
+        let rows = [
+            board(1, None, Some(3), false),
+            board(2, Some("other"), Some(9), false),
+        ];
+        assert_eq!(owned_remote(&rows), vec![3]);
+    }
+
+    #[test]
+    fn the_set_is_in_board_id_order() {
+        let first = board(1, None, Some(30), false);
+        let second = board(2, None, Some(10), false);
+        // Board ids in insertion (ordered-map) order, remote ids reversed:
+        // the cycle walks board-id order, not remote-id order.
+        assert_eq!(owned_remote(&[first, second]), vec![30, 10]);
     }
 }

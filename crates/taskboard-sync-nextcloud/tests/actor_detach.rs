@@ -46,6 +46,7 @@ async fn d1_detach_stops_the_actor_after_the_queued_cycle() {
         clock: Arc::new(FixedClock(ts(T + 1000))),
     };
     let join = spawn_sync_actor(
+        taskboard_domain::ConnectorId::from("nextcloud"),
         client,
         Arc::new(BoardlessView),
         command_rx,

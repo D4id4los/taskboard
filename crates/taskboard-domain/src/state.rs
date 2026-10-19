@@ -88,7 +88,8 @@ pub enum SyncErrorKind {
     BadRequest,
     /// Local data problem (e.g. repository unavailable during sync).
     LocalData,
-    /// No sync target is bound yet — a cycle fired before `SetBoard`.
+    /// No sync target is bound yet — a cycle fired against an empty
+    /// derived board set.
     NoBoard,
 }
 
@@ -495,7 +496,9 @@ mod sync_states_tests {
         };
         let board = |raw: u128| Board {
             id: board_id(raw),
-            remote: Some(crate::ids::RemoteBoardId(u64::try_from(raw).unwrap())),
+            remote: crate::test_support::test_binding(crate::ids::RemoteBoardId(
+                u64::try_from(raw).unwrap(),
+            )),
             title: format!("board {raw}"),
             color: Color::new("0000ff"),
             archived: false,
@@ -651,7 +654,7 @@ mod sync_states_tests {
         let mut state = AppState::default();
         let mut tombstoned = crate::entities::Board {
             id: board_id(5),
-            remote: Some(crate::ids::RemoteBoardId(50)),
+            remote: crate::test_support::test_binding(crate::ids::RemoteBoardId(50)),
             title: "old".into(),
             color: Color::new("0000ff"),
             archived: false,

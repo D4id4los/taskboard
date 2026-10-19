@@ -293,6 +293,7 @@ pub fn plan_command(
     command: &StateCommand,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
+    default_connector: &crate::ids::ConnectorId,
 ) -> Result<CommandPlan, CommandError> {
     match command {
         StateCommand::CreateTask {
@@ -875,7 +876,9 @@ pub fn plan_command(
         StateCommand::BindBoard { board, remote } => {
             let board_id = live_board_of(app, *board)?;
             let board = &app.boards[&board_id];
-            match board.remote {
+            // Board-id equality: at N=1 the connector tag is constant, so
+            // comparing the remote board identifies the same-remote rebind.
+            match board.remote.as_ref().map(|r| r.board) {
                 Some(bound) if bound == *remote => return Ok(no_op()),
                 Some(bound) => {
                     return Err(CommandError::BoardAlreadyBound {
@@ -889,7 +892,7 @@ pub fn plan_command(
             if let Some(holder) = app
                 .boards
                 .values()
-                .find(|b| b.id != board_id && b.remote == Some(*remote))
+                .find(|b| b.id != board_id && b.remote.as_ref().map(|r| r.board) == Some(*remote))
             {
                 return Err(CommandError::RemoteBoardInUse {
                     remote: *remote,
@@ -949,7 +952,10 @@ pub fn plan_command(
                 }
             }
             let mut updated = board.clone();
-            updated.remote = Some(*remote);
+            updated.remote = Some(crate::ids::RemoteBoardBinding {
+                connector: default_connector.clone(),
+                board: *remote,
+            });
             actions.push(PersistenceAction::UpsertBoard(updated));
             Ok(CommandPlan {
                 actions,
@@ -1328,7 +1334,7 @@ mod tests {
                 board_id,
                 crate::entities::Board {
                     id: board_id,
-                    remote: Some(crate::ids::RemoteBoardId(77)),
+                    remote: crate::test_support::test_binding(crate::ids::RemoteBoardId(77)),
                     title: "board".into(),
                     color: crate::entities::Color::new("0000ff"),
                     archived: false,
@@ -1451,7 +1457,14 @@ mod tests {
         outbox: &[PendingOp],
         command: &StateCommand,
     ) -> Result<CommandPlan, CommandError> {
-        plan_command(app, outbox, command, &CountingIds::default(), now())
+        plan_command(
+            app,
+            outbox,
+            command,
+            &CountingIds::default(),
+            now(),
+            &crate::test_support::test_connector(),
+        )
     }
 
     fn op_for(raw: u128, op: LocalOp) -> PendingOp {
@@ -2625,7 +2638,15 @@ mod tests {
             title: "second".into(),
             color: crate::entities::Color::new("000000"),
         };
-        let first = plan_command(&app, &outbox, &command, &ids, now()).unwrap();
+        let first = plan_command(
+            &app,
+            &outbox,
+            &command,
+            &ids,
+            now(),
+            &crate::test_support::test_connector(),
+        )
+        .unwrap();
         let CommandOutcome::CreatedBoard(first_id) = first.outcome else {
             panic!("wrong outcome");
         };
@@ -2639,7 +2660,15 @@ mod tests {
                 ..grown.boards[&board_id()].clone()
             },
         );
-        let second = plan_command(&grown, &outbox, &command, &ids, now()).unwrap();
+        let second = plan_command(
+            &grown,
+            &outbox,
+            &command,
+            &ids,
+            now(),
+            &crate::test_support::test_connector(),
+        )
+        .unwrap();
         let CommandOutcome::CreatedBoard(second_id) = second.outcome else {
             panic!("wrong outcome");
         };
@@ -2668,8 +2697,85 @@ mod tests {
         let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
             panic!("first action must be the board upsert");
         };
-        assert_eq!(updated.remote, Some(crate::ids::RemoteBoardId(42)));
+        assert_eq!(
+            updated.remote,
+            crate::test_support::test_binding(crate::ids::RemoteBoardId(42))
+        );
         assert_eq!(plan.actions.len(), 1, "bind carries no outbox op");
+    }
+
+    #[test]
+    fn bind_board_mints_the_binding_with_the_default_connector_tag() {
+        let app = unbound_board_state();
+        let plan = run(
+            &app,
+            &[],
+            &StateCommand::BindBoard {
+                board: board_id(),
+                remote: crate::ids::RemoteBoardId(42),
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
+            panic!("first action must be the board upsert");
+        };
+        let binding = updated.remote.as_ref().expect("bind mints the binding");
+        assert_eq!(binding.board, crate::ids::RemoteBoardId(42));
+        assert_eq!(
+            binding.connector.as_str(),
+            "nextcloud",
+            "the tag is the engine's config-minted default"
+        );
+    }
+
+    #[test]
+    fn bind_board_mints_the_binding_with_a_custom_default_connector_tag() {
+        // A non-default engine tag is threaded through unchanged (D-5: the
+        // mint is the caller's default, not a constant).
+        let app = unbound_board_state();
+        let custom = crate::ids::ConnectorId::from("work");
+        let plan = plan_command(
+            &app,
+            &[],
+            &StateCommand::BindBoard {
+                board: board_id(),
+                remote: crate::ids::RemoteBoardId(42),
+            },
+            &CountingIds::default(),
+            now(),
+            &custom,
+        )
+        .unwrap();
+        let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
+            panic!("first action must be the board upsert");
+        };
+        assert_eq!(
+            updated.remote,
+            Some(crate::ids::RemoteBoardBinding {
+                connector: custom,
+                board: crate::ids::RemoteBoardId(42),
+            })
+        );
+    }
+
+    #[test]
+    fn same_remote_rebind_is_an_accepted_no_op_under_the_binding_type() {
+        let mut app = unbound_board_state();
+        app.boards.get_mut(&board_id()).unwrap().remote =
+            crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        assert_eq!(
+            run(
+                &app,
+                &[],
+                &StateCommand::BindBoard {
+                    board: board_id(),
+                    remote: crate::ids::RemoteBoardId(42),
+                },
+            )
+            .unwrap()
+            .outcome,
+            CommandOutcome::NoOp
+        );
     }
 
     #[test]
@@ -2679,7 +2785,7 @@ mod tests {
         let other = BoardId::from(uuid::Uuid::from_u128(u128::from(other_raw)));
         let mut holder = app.boards[&board_id()].clone();
         holder.id = other;
-        holder.remote = Some(crate::ids::RemoteBoardId(42));
+        holder.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
         app.boards.insert(other, holder);
         assert_eq!(
             run(
@@ -2779,7 +2885,10 @@ mod tests {
         else {
             unreachable!("filtered above");
         };
-        assert_eq!(board_row.remote, Some(crate::ids::RemoteBoardId(2)));
+        assert_eq!(
+            board_row.remote,
+            crate::test_support::test_binding(crate::ids::RemoteBoardId(2))
+        );
     }
 
     #[test]
@@ -2863,7 +2972,8 @@ mod tests {
         let outbox: Vec<PendingOp> = Vec::new();
         let bound = {
             let mut app = unbound_board_state();
-            app.boards.get_mut(&board_id()).unwrap().remote = Some(crate::ids::RemoteBoardId(42));
+            app.boards.get_mut(&board_id()).unwrap().remote =
+                crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
             app
         };
         let plan = run(
@@ -2941,7 +3051,8 @@ mod tests {
     #[test]
     fn unbind_clears_binding_and_drops_status_row() {
         let mut app = unbound_board_state();
-        app.boards.get_mut(&board_id()).unwrap().remote = Some(crate::ids::RemoteBoardId(42));
+        app.boards.get_mut(&board_id()).unwrap().remote =
+            crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
         // Two ops attributed to the board (stack op + board op), one
         // other entity op that attributes nowhere near it.
         let stack = app.stacks.values().next().unwrap().id;
@@ -2975,7 +3086,8 @@ mod tests {
     #[test]
     fn unbind_leaves_outbox_and_descendant_refs_untouched() {
         let mut app = unbound_board_state();
-        app.boards.get_mut(&board_id()).unwrap().remote = Some(crate::ids::RemoteBoardId(42));
+        app.boards.get_mut(&board_id()).unwrap().remote =
+            crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
         let stack = app.stacks.values().next().unwrap().id;
         let outbox = vec![op_for(11, LocalOp::RenameStack(stack))];
         let plan = run(
@@ -3435,7 +3547,7 @@ mod tests {
                 board_id,
                 crate::entities::Board {
                     id: board_id,
-                    remote: Some(crate::ids::RemoteBoardId(77)),
+                    remote: crate::test_support::test_binding(crate::ids::RemoteBoardId(77)),
                     title: "board".into(),
                     color: crate::entities::Color::new("0000ff"),
                     archived: false,
@@ -4056,126 +4168,129 @@ mod proptests {
     }
 
     proptest! {
-        #![proptest_config(proptest_config(256))]
+            #![proptest_config(proptest_config(256))]
 
-        #[test]
-        fn plan_command_is_total_and_ok_plans_are_self_consistent(
-            persisted in persisted_state_strategy(),
-            command in state_command_strategy(),
-        ) {
-            let app: AppState = AppState {
-                boards: persisted.boards.clone(),
-                stacks: persisted.stacks.clone(),
-                tasks: persisted.tasks.clone(),
-                labels: persisted.labels.clone(),
-                reminders: persisted.reminders.clone(),
-                sync: persisted.sync,
-                last_updated: None,
-            };
-            let outbox = persisted.outbox.clone();
-            let result = plan_command(&app, &outbox, &command, &CountingIds::default(),
-                chrono::Utc.timestamp_opt(36_000, 0).unwrap());
+            #[test]
+            fn plan_command_is_total_and_ok_plans_are_self_consistent(
+                persisted in persisted_state_strategy(),
+                command in state_command_strategy(),
+            ) {
+                let app: AppState = AppState {
+                    boards: persisted.boards.clone(),
+                    stacks: persisted.stacks.clone(),
+                    tasks: persisted.tasks.clone(),
+                    labels: persisted.labels.clone(),
+                    reminders: persisted.reminders.clone(),
+                    sync: persisted.sync,
+                    last_updated: None,
+                };
+                let outbox = persisted.outbox.clone();
+                let result = plan_command(&app, &outbox, &command, &CountingIds::default(),
+                    chrono::Utc.timestamp_opt(36_000, 0).unwrap(),
+                &crate::test_support::test_connector());
 
-            // Totality: never a panic — always a plan or a typed error.
-            let Ok(plan) = result else {
-                return Ok(());
-            };
+                // Totality: never a panic — always a plan or a typed error.
+                let Ok(plan) = result else {
+                    return Ok(());
+                };
 
-            // No-op and rejection outcomes carry no actions.
-            if plan.outcome == CommandOutcome::NoOp {
-                prop_assert!(plan.actions.is_empty(), "no-op must carry zero actions");
-            }
+                // No-op and rejection outcomes carry no actions.
+                if plan.outcome == CommandOutcome::NoOp {
+                    prop_assert!(plan.actions.is_empty(), "no-op must carry zero actions");
+                }
 
-            // Self-consistency: every enqueued op's target exists in the
-            // post-batch state.
-            let mut post = app;
-            for action in &plan.actions {
-                match action {
-                    PersistenceAction::UpsertBoard(b) => { post.boards.insert(b.id, b.clone()); }
-                    PersistenceAction::UpsertStack(s) => { post.stacks.insert(s.id, s.clone()); }
-                    PersistenceAction::UpsertTask(t) => { post.tasks.insert(t.id, t.clone()); }
-                    PersistenceAction::UpsertLabel(l) => { post.labels.insert(l.id, l.clone()); }
-                    _ => {}
+                // Self-consistency: every enqueued op's target exists in the
+                // post-batch state.
+                let mut post = app;
+                for action in &plan.actions {
+                    match action {
+                        PersistenceAction::UpsertBoard(b) => { post.boards.insert(b.id, b.clone()); }
+                        PersistenceAction::UpsertStack(s) => { post.stacks.insert(s.id, s.clone()); }
+                        PersistenceAction::UpsertTask(t) => { post.tasks.insert(t.id, t.clone()); }
+                        PersistenceAction::UpsertLabel(l) => { post.labels.insert(l.id, l.clone()); }
+                        _ => {}
+                    }
+                }
+                for action in &plan.actions {
+                    if let PersistenceAction::EnqueueOp(pending) = action {
+                        prop_assert!(
+                            op_target_exists(&pending.op, &post.boards, &post.stacks, &post.tasks, &post.labels),
+                            "enqueued op {:?} must target an existing entity",
+                            pending.op
+                        );
+                    }
                 }
             }
-            for action in &plan.actions {
-                if let PersistenceAction::EnqueueOp(pending) = action {
-                    prop_assert!(
-                        op_target_exists(&pending.op, &post.boards, &post.stacks, &post.tasks, &post.labels),
-                        "enqueued op {:?} must target an existing entity",
-                        pending.op
-                    );
+
+            #[test]
+            fn plan_command_outcome_is_independent_of_the_outbox(
+                state in app_state_strategy(),
+                outbox_state in persisted_state_strategy(),
+                command in state_command_strategy(),
+            ) {
+                // The outbox never influences the outcome: identical
+                // rejections and identical no-ops for any queue contents; an
+                // accepted plan differs only in the FailOps the delete paths
+                // derive from the outbox. Fresh `CountingIds` on both sides
+                // keep the fresh ids (entity and op) comparable.
+                let empty: Vec<PendingOp> = Vec::new();
+                let now = chrono::Utc.timestamp_opt(36_000, 0).unwrap();
+                let baseline = plan_command(&state, &empty, &command, &CountingIds::default(), now,
+                &crate::test_support::test_connector());
+                let variant = plan_command(
+                    &state,
+                    &outbox_state.outbox,
+                    &command,
+                    &CountingIds::default(),
+                    now,
+                            &crate::test_support::test_connector()
+    );
+
+                match (&baseline, &variant) {
+                    (Err(a), Err(b)) => prop_assert_eq!(a, b),
+                    (Ok(p), Ok(q)) if p.outcome == CommandOutcome::NoOp => prop_assert_eq!(p, q),
+                    (Ok(p), Ok(q)) => {
+                        let without_fails = |plan: &CommandPlan| {
+                            plan.actions
+                                .iter()
+                                .filter(|action| !matches!(action, PersistenceAction::FailOp(_)))
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        };
+                        prop_assert_eq!(&p.outcome, &q.outcome);
+                        prop_assert_eq!(without_fails(p), without_fails(q));
+                    }
+                    (Err(_), Ok(_)) | (Ok(_), Err(_)) => {
+                        prop_assert!(
+                            false,
+                            "acceptance must not depend on the outbox: {baseline:?} vs {variant:?}"
+                        );
+                    }
+                }
+            }
+
+            #[test]
+            fn live_board_of_is_ok_exactly_for_live_boards_and_typed_otherwise(
+                persisted in persisted_state_strategy(),
+                board in crate::test_support::board_id_strategy(),
+            ) {
+                let app: AppState = AppState {
+                    boards: persisted.boards.clone(),
+                    stacks: persisted.stacks.clone(),
+                    tasks: persisted.tasks.clone(),
+                    labels: persisted.labels.clone(),
+                    reminders: persisted.reminders.clone(),
+                    sync: persisted.sync,
+                    last_updated: None,
+                };
+                let result = live_board_of(&app, board);
+                match app.boards.get(&board) {
+                    None => prop_assert_eq!(result, Err(CommandError::UnknownBoard(board))),
+                    Some(b) if b.deleted => {
+                        prop_assert_eq!(result, Err(CommandError::BoardDeleted(board)));
+                    }
+                    Some(_) => prop_assert_eq!(result, Ok(board)),
                 }
             }
         }
-
-        #[test]
-        fn plan_command_outcome_is_independent_of_the_outbox(
-            state in app_state_strategy(),
-            outbox_state in persisted_state_strategy(),
-            command in state_command_strategy(),
-        ) {
-            // The outbox never influences the outcome: identical
-            // rejections and identical no-ops for any queue contents; an
-            // accepted plan differs only in the FailOps the delete paths
-            // derive from the outbox. Fresh `CountingIds` on both sides
-            // keep the fresh ids (entity and op) comparable.
-            let empty: Vec<PendingOp> = Vec::new();
-            let now = chrono::Utc.timestamp_opt(36_000, 0).unwrap();
-            let baseline = plan_command(&state, &empty, &command, &CountingIds::default(), now);
-            let variant = plan_command(
-                &state,
-                &outbox_state.outbox,
-                &command,
-                &CountingIds::default(),
-                now,
-            );
-
-            match (&baseline, &variant) {
-                (Err(a), Err(b)) => prop_assert_eq!(a, b),
-                (Ok(p), Ok(q)) if p.outcome == CommandOutcome::NoOp => prop_assert_eq!(p, q),
-                (Ok(p), Ok(q)) => {
-                    let without_fails = |plan: &CommandPlan| {
-                        plan.actions
-                            .iter()
-                            .filter(|action| !matches!(action, PersistenceAction::FailOp(_)))
-                            .cloned()
-                            .collect::<Vec<_>>()
-                    };
-                    prop_assert_eq!(&p.outcome, &q.outcome);
-                    prop_assert_eq!(without_fails(p), without_fails(q));
-                }
-                (Err(_), Ok(_)) | (Ok(_), Err(_)) => {
-                    prop_assert!(
-                        false,
-                        "acceptance must not depend on the outbox: {baseline:?} vs {variant:?}"
-                    );
-                }
-            }
-        }
-
-        #[test]
-        fn live_board_of_is_ok_exactly_for_live_boards_and_typed_otherwise(
-            persisted in persisted_state_strategy(),
-            board in crate::test_support::board_id_strategy(),
-        ) {
-            let app: AppState = AppState {
-                boards: persisted.boards.clone(),
-                stacks: persisted.stacks.clone(),
-                tasks: persisted.tasks.clone(),
-                labels: persisted.labels.clone(),
-                reminders: persisted.reminders.clone(),
-                sync: persisted.sync,
-                last_updated: None,
-            };
-            let result = live_board_of(&app, board);
-            match app.boards.get(&board) {
-                None => prop_assert_eq!(result, Err(CommandError::UnknownBoard(board))),
-                Some(b) if b.deleted => {
-                    prop_assert_eq!(result, Err(CommandError::BoardDeleted(board)));
-                }
-                Some(_) => prop_assert_eq!(result, Ok(board)),
-            }
-        }
-    }
 }

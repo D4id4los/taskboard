@@ -10,8 +10,8 @@ use taskboard_domain::entities::{
     Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
 };
 use taskboard_domain::ids::{
-    BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardId, RemoteCardId, RemoteCardRef,
-    RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
+    BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId, RemoteCardId,
+    RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 use taskboard_domain::outbox::{OpId, PendingOp};
 use taskboard_domain::persistence::{
@@ -42,6 +42,7 @@ pub struct SqliteTaskRepository {
 struct BoardRow {
     id: String,
     remote_board_id: Option<i64>,
+    connector: Option<String>,
     title: String,
     color: String,
     archived: bool,
@@ -183,9 +184,17 @@ fn stmt_error(err: &sqlx::Error) -> RepositoryError {
     crate::error::repo_error(err)
 }
 
-fn decode_board(row: BoardRow) -> Result<Board, RepositoryError> {
+fn decode_board(row: BoardRow, default_connector: &ConnectorId) -> Result<Board, RepositoryError> {
     let id = decode::uuid(&row.id)?;
-    let remote = decode::remote_opt(&[row.remote_board_id])?.map(|nums| RemoteBoardId(nums[0]));
+    let remote = decode::remote_opt(&[row.remote_board_id])?.map(|nums| RemoteBoardBinding {
+        // NULL tag ⇒ the spawn-time default (DF-4's resolution home); a
+        // non-NULL tag naming an unconfigured connector decodes as-is
+        // (D-3) — the owning actor simply never finds the board.
+        connector: row
+            .connector
+            .map_or_else(|| default_connector.clone(), ConnectorId::from),
+        board: RemoteBoardId(nums[0]),
+    });
     Ok(Board {
         id: BoardId::from(id),
         remote,
@@ -436,7 +445,7 @@ impl SqliteTaskRepository {
 
         let board_rows = sqlx::query_as!(
             BoardRow,
-            r#"SELECT id, remote_board_id, title, color,
+            r#"SELECT id, remote_board_id, connector, title, color,
                       archived as "archived: bool", deleted as "deleted: bool",
                       ck_title as "ck_title: DateTime<Utc>",
                       ck_color as "ck_color: DateTime<Utc>",
@@ -564,7 +573,7 @@ impl SqliteTaskRepository {
 
         let mut boards = BTreeMap::new();
         for row in board_rows {
-            let board = decode_board(row)?;
+            let board = decode_board(row, &self.default_connector)?;
             boards.insert(board.id, board);
         }
 
@@ -770,10 +779,17 @@ async fn execute_batch(
     }
 
     for board in boards {
-        let remote = board.remote.map(|b| codec::remote_col(b.get()));
-        // The binding's connector tag is repo policy, not domain data
-        // (the domain binding widening is chunk 4's): every upsert
-        // writes the config-derived default, non-NULL.
+        let remote = board
+            .remote
+            .as_ref()
+            .map(|b| codec::remote_col(b.board.get()));
+        // The tag source is the domain binding (DF-4): a bound row carries
+        // its binding's connector, an unbound row the default (non-NULL on
+        // every upsert; the tag on an unbound row is inert).
+        let connector = board
+            .remote
+            .as_ref()
+            .map_or(default_connector.as_str(), |b| b.connector.as_str());
         sqlx::query!(
             r#"INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, connector, ck_title, ck_color, ck_archived, ck_deleted, remote_seen)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -795,7 +811,7 @@ async fn execute_batch(
             board.color.as_str(),
             board.archived,
             board.deleted,
-            default_connector.as_str(),
+            connector,
             board.clocks.title.to_rfc3339(),
             board.clocks.color.to_rfc3339(),
             board.clocks.archived.to_rfc3339(),

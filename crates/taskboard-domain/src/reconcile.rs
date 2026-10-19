@@ -466,7 +466,7 @@ mod tests {
             },
             remote_seen: None,
         };
-        row.remote = Some(crate::ids::RemoteBoardId(42));
+        row.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
         app.boards.insert(board(), row);
         app
     }
@@ -907,7 +907,7 @@ mod proptests {
             board,
             crate::entities::Board {
                 id: board,
-                remote: Some(RemoteBoardId(42)),
+                remote: crate::test_support::test_binding(RemoteBoardId(42)),
                 title: "board".into(),
                 color: crate::entities::Color::new("0000ff"),
                 archived: false,

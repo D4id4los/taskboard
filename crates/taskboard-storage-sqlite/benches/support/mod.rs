@@ -82,7 +82,10 @@ fn ux(i: usize) -> u64 {
 fn fixture_board() -> Board {
     Board {
         id: BoardId::from(id(BOARD_BASE, 0)),
-        remote: Some(RemoteBoardId(77)),
+        remote: Some(taskboard_domain::ids::RemoteBoardBinding {
+            connector: taskboard_domain::ConnectorId::from("nextcloud"),
+            board: RemoteBoardId(77),
+        }),
         title: "Bench board".into(),
         color: Color::new("3366ff"),
         archived: false,

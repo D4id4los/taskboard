@@ -274,7 +274,10 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                 board.id,
                 Board {
                     id: board.id,
-                    remote: board.remote,
+                    remote: board.remote.map(|board| crate::ids::RemoteBoardBinding {
+                        connector: crate::test_support::test_connector(),
+                        board,
+                    }),
                     title: board.title,
                     color: Color::new(board.color),
                     archived: board.archived,

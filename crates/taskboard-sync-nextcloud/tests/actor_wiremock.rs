@@ -12,7 +12,7 @@
 //! assertions. The wait helpers' deadline is wall-clock
 //! (`std::time::Instant`): the stepping is virtual, but the actor's
 //! progress depends on real wiremock I/O. `cfg().poll_interval` sits far beyond every test horizon, so
-//! cycles are nudge/`SetBoard`/backoff-driven only and wiremock request
+//! cycles are nudge/backoff-driven only and wiremock request
 //! counts stay an exact observable of how many cycles ran.
 
 use std::sync::Arc;
@@ -39,7 +39,7 @@ use common::hermetic::{
 fn cfg() -> SyncActorConfig {
     SyncActorConfig {
         // No poll ticks inside a test horizon: cycles fire only on nudges,
-        // `SetBoard`, and backoff deadlines (all test-driven), keeping the
+        // nudges, and backoff deadlines (all test-driven), keeping the
         // request-count observables exact.
         poll_interval: Duration::from_secs(3_600),
         backoff_initial: Duration::from_millis(100),
@@ -109,7 +109,10 @@ fn stack_clocks() -> StackClocks {
 fn bound_board() -> Board {
     Board {
         id: taskboard_domain::BoardId::from(uuid(1)),
-        remote: Some(RemoteBoardId(BOARD)),
+        remote: Some(taskboard_domain::RemoteBoardBinding {
+            connector: taskboard_domain::ConnectorId::from("nextcloud"),
+            board: RemoteBoardId(BOARD),
+        }),
         title: "board".into(),
         color: taskboard_domain::Color::new("00ff00"),
         archived: false,
@@ -234,6 +237,7 @@ fn spawn_with_cfg(
     let (report_tx, report_rx) = mpsc::channel(16);
     let (system_tx, system_rx) = broadcast::channel(16);
     let join = spawn_sync_actor(
+        taskboard_domain::ConnectorId::from("nextcloud"),
         client,
         repo.clone(),
         command_rx,
@@ -251,11 +255,12 @@ fn spawn_with_cfg(
     }
 }
 
-/// Arms the pull target and awaits the triggered cycle's report.
-async fn set_board_and_report(actor: &mut Actor) -> SyncReport {
+/// Nudges a cycle (the ceremony's post-bind nudge) and awaits its report;
+/// the cycle's board set derives from the persisted bindings.
+async fn nudge_and_report(actor: &mut Actor) -> SyncReport {
     actor
         .commands
-        .send(SyncCommand::SetBoard(RemoteBoardId(BOARD)))
+        .send(SyncCommand::SyncNow)
         .await
         .expect("commands channel open");
     next_report(actor).await
@@ -317,7 +322,7 @@ async fn a2_unchanged_poll_ticks_on_304s_from_the_cache() {
     mount_conditional_pull(&server, &serde_json::json!([])).await;
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let first = set_board_and_report(&mut actor).await;
+    let first = nudge_and_report(&mut actor).await;
     let SyncReport::Completed {
         snapshot: first_snap,
         ..
@@ -357,7 +362,7 @@ async fn a3_nudge_storm_collapse_into_one_rerun() {
     mount_standard_pull(&server, serde_json::json!([])).await;
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let _ = set_board_and_report(&mut actor).await; // cycle 1
+    let _ = nudge_and_report(&mut actor).await; // cycle 1
 
     for _ in 0..5 {
         actor.commands.send(SyncCommand::SyncNow).await.unwrap();
@@ -416,7 +421,7 @@ async fn a4_transport_failure_mid_push_keeps_evidence_and_queue() {
             &[(100, 2, STACK), (110, 3, 8), (120, 4, 9)],
         ),
     );
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Failed { kind, pushes, .. } = report else {
         panic!("expected a Failed report");
     };
@@ -473,7 +478,7 @@ async fn a7_offline_episode_broadcasts_lost_once_then_restored() {
         .await;
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let first = set_board_and_report(&mut actor).await;
+    let first = nudge_and_report(&mut actor).await;
     assert!(matches!(first, SyncReport::Completed { .. }));
 
     // Go down: the nudged cycle fails transport-class and broadcasts once.
@@ -523,11 +528,10 @@ async fn a7_offline_episode_broadcasts_lost_once_then_restored() {
     );
 }
 
-/// A8 (multi-board chunk 3): with nothing bound, cycles report
-/// `Failed { NoBoard }` — and a commanded target no persisted binding
-/// holds does NOT resurrect a cycle: the target-liveness guard evicts
-/// it (the ceremonies bind before they nudge; a binding-less `SetBoard`
-/// is the operator-error shape and reports honestly).
+/// A8 (decision 10): with an empty derived set, a commanded cycle
+/// reports `Failed { NoBoard }` and a poll tick reports nothing —
+/// the ceremonies bind before they nudge; a binding-less cycle is the
+/// operator-error shape and reports honestly.
 #[tokio::test(start_paused = true)]
 async fn a8_no_board_reported_without_a_persisted_binding() {
     let server = start_server().await;
@@ -544,7 +548,7 @@ async fn a8_no_board_reported_without_a_persisted_binding() {
     ));
 
     mount_standard_pull(&server, serde_json::json!([])).await;
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     assert!(matches!(
         report,
         SyncReport::Failed {
@@ -615,7 +619,7 @@ async fn a9_archived_listing_merges_without_tombstoning() {
         .await;
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
@@ -656,7 +660,7 @@ async fn a10_304_with_a_cold_cache_refetches_unconditionally() {
     }
 
     let mut actor = spawn(&server, repo);
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed {
         snapshot,
         validators,
@@ -695,7 +699,7 @@ async fn a11_absent_board_is_confirmed_then_tombstoned() {
         .await;
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
@@ -785,7 +789,7 @@ async fn a13_stack_create_precedes_card_create() {
     mount_standard_pull(&server, serde_json::json!([])).await;
 
     let mut actor = spawn(&server, repo);
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { pushes, .. } = report else {
         panic!("expected a Completed report");
     };
@@ -861,7 +865,7 @@ async fn a5_a6_rejection_outcomes_travel_in_the_report() {
     mount_standard_pull(&server, serde_json::json!([])).await;
 
     let mut actor = spawn(&server, repo);
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { pushes, .. } = report else {
         panic!("expected a Completed report");
     };
@@ -924,7 +928,7 @@ async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
         .await;
 
     let mut actor = spawn_with_cfg(&server, repo_with(&[(2, STACK)], &[]), cfg_rate);
-    let first = set_board_and_report(&mut actor).await;
+    let first = nudge_and_report(&mut actor).await;
     assert!(matches!(first, SyncReport::Completed { .. }));
 
     limited.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1002,7 +1006,7 @@ async fn a15_detail_500_fails_the_cycle_without_a_tombstone() {
         .await;
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     assert!(
         matches!(
             report,
@@ -1062,7 +1066,7 @@ async fn a16_forbidden_detail_while_listed_synthesizes_the_tombstone() {
         .await;
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report: the tombstone snapshot is valid");
     };
@@ -1111,7 +1115,7 @@ async fn a17_stacks_404_on_a_live_board_fails_the_cycle() {
         .await;
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     assert!(
         matches!(
             report,
@@ -1322,7 +1326,7 @@ async fn a19_dead_board_tombstone_stamps_come_from_the_injected_clock() {
     }
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report: the tombstone snapshot is valid");
     };
@@ -1392,7 +1396,7 @@ async fn a21_archive_mismatch_stamp_uses_the_injected_clock() {
     state.tasks.insert(task.id, task);
 
     let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
@@ -1587,7 +1591,7 @@ async fn a23_pulled_board_labels_reach_the_snapshot() {
     mount_conditional_pull(&server, &labels).await;
 
     let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
@@ -1667,22 +1671,23 @@ async fn mount_two_board_pull(server: &MockServer) {
     }
 }
 
-/// A24 (F6-05): switching A→B→A serves A again — the `SetBoard` cache
-/// clear must not leave board B's cached listings in the slots for board
-/// A's 304s. Validators are pinned warm exactly like A10, so every cycle
-/// 304s; with the clear, board A's re-bind forces unconditional
-/// refetches (7 requests in the final cycle) and the snapshot carries
-/// alpha's stack, never beta's.
+/// A24 (F6-05, chunk-4 shape): two boards on one connector cycle in one
+/// pass, each served from its *own* cache slots — no bleed in either
+/// direction — and the follow-up cycle 304-fills both boards from the
+/// surviving slots: per-board cache keys make a set change a non-event
+/// (no cache-clear-on-retarget exists to burn the warm slots).
 #[tokio::test(start_paused = true)]
-async fn a24_board_switch_serves_the_new_board_after_the_cache_clear() {
+async fn a24_two_boards_cycle_from_their_own_cache_slots() {
     let server = start_server().await;
     mount_two_board_pull(&server).await;
     let repo = repo_with(&[(2, STACK)], &[]);
-    // The guard (chunk 3) validates targets against persisted bindings:
-    // board 43 needs its own board row to be switchable.
+    // Board 43's own row: the derived set needs its persisted binding.
     let mut second = bound_board();
     second.id = taskboard_domain::BoardId::from(uuid(9));
-    second.remote = Some(RemoteBoardId(43));
+    second.remote = Some(taskboard_domain::RemoteBoardBinding {
+        connector: taskboard_domain::ConnectorId::from("nextcloud"),
+        board: RemoteBoardId(43),
+    });
     InMemoryRepository::apply(
         repo.as_ref(),
         vec![taskboard_domain::PersistenceAction::UpsertBoard(second)],
@@ -1693,6 +1698,8 @@ async fn a24_board_switch_serves_the_new_board_after_the_cache_clear() {
         taskboard_domain::ValidatorKey::Boards,
         taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(BOARD)),
         taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(BOARD)),
+        taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(43)),
+        taskboard_domain::ValidatorKey::ArchivedStacks(RemoteBoardId(43)),
     ] {
         InMemoryRepository::apply(
             repo.as_ref(),
@@ -1709,141 +1716,101 @@ async fn a24_board_switch_serves_the_new_board_after_the_cache_clear() {
     }
 
     let mut actor = spawn(&server, repo);
-    actor
-        .commands
-        .send(SyncCommand::SetBoard(RemoteBoardId(BOARD)))
-        .await
-        .unwrap();
-    let first = next_report(&mut actor).await;
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
     let SyncReport::Completed {
         snapshot: first, ..
-    } = first
+    } = next_report(&mut actor).await
     else {
         panic!("expected a Completed report");
     };
     assert_eq!(first.board.id, RemoteBoardId(BOARD));
-
-    actor
-        .commands
-        .send(SyncCommand::SetBoard(RemoteBoardId(43)))
-        .await
-        .unwrap();
-    let second = next_report(&mut actor).await;
+    assert!(
+        first.stacks.iter().all(|s| s.title == "alpha col"),
+        "board 42 serves alpha: {:?}",
+        first.stacks
+    );
     let SyncReport::Completed {
         snapshot: second, ..
-    } = second
+    } = next_report(&mut actor).await
     else {
-        panic!("expected a Completed report");
+        panic!("expected the second board's Completed report");
     };
     assert_eq!(second.board.id, RemoteBoardId(43));
     assert!(
         second.stacks.iter().all(|s| s.title == "beta col"),
-        "board 43 serves beta: {:?}",
+        "board 43 serves beta — no alpha bleed: {:?}",
         second.stacks
     );
 
-    let before_switch = server.received_requests().await.unwrap().len();
-    actor
-        .commands
-        .send(SyncCommand::SetBoard(RemoteBoardId(BOARD)))
-        .await
-        .unwrap();
-    let third = next_report(&mut actor).await;
-    let SyncReport::Completed { snapshot, .. } = third else {
+    // The follow-up cycle: every conditional read 304s and fills from the
+    // per-board slots that survived the set being unchanged — 4 wire calls
+    // per board (3 cached listings + the detail), no unconditional
+    // refetch anywhere.
+    let before = server.received_requests().await.unwrap().len();
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let SyncReport::Completed {
+        snapshot: third, ..
+    } = next_report(&mut actor).await
+    else {
         panic!("expected a Completed report");
     };
-    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
-    assert_eq!(
-        snapshot
-            .stacks
-            .iter()
-            .map(|s| s.title.as_str())
-            .collect::<Vec<_>>(),
-        vec!["alpha col"],
-        "board 42's snapshot after the switch back is alpha's — no beta bleed"
+    assert_eq!(third.board.id, RemoteBoardId(BOARD));
+    assert!(
+        third.stacks.iter().all(|s| s.title == "alpha col"),
+        "board 42's slot survived: still alpha"
+    );
+    let SyncReport::Completed {
+        snapshot: fourth, ..
+    } = next_report(&mut actor).await
+    else {
+        panic!("expected the second board's Completed report");
+    };
+    assert_eq!(fourth.board.id, RemoteBoardId(43));
+    assert!(
+        fourth.stacks.iter().all(|s| s.title == "beta col"),
+        "board 43's slot survived: still beta"
     );
     assert_eq!(
-        server.received_requests().await.unwrap().len() - before_switch,
-        7,
-        "the clear emptied the cache: 3 conditional 304s + 3 refetches + the detail"
+        server.received_requests().await.unwrap().len() - before,
+        8,
+        "both boards 304-fill from their own surviving slots"
     );
 }
 
-/// A25 (F6-06a): a `SetBoard` queued while a cycle runs is absorbed by the
-/// ADR 0006 drain loop into exactly one switch — one rerun targeting the
-/// new board, then silence. Mutating the `st.target != Some(id)` guard or
-/// dropping the rerun flag strands the switch and report 3 never arrives.
+/// A25 (ADR 0006 absorber, chunk-4 shape): a `SyncNow` burst that lands
+/// while a cycle runs collapses into exactly one rerun — the ceremony's
+/// broadcast nudge semantics; dropping the rerun flag strands the burst
+/// and report 3 never arrives.
 #[tokio::test(start_paused = true)]
-async fn a25_set_board_during_a_cycle_is_absorbed_into_one_switch() {
+async fn a25_sync_now_burst_during_a_cycle_is_absorbed_into_one_rerun() {
     let server = start_server().await;
     mount_two_board_pull(&server).await;
-
     let repo = repo_with(&[(2, STACK)], &[]);
-    // The guard (chunk 3) validates targets against persisted bindings:
-    // board 43 needs its own board row to be switchable.
-    let mut second = bound_board();
-    second.id = taskboard_domain::BoardId::from(uuid(9));
-    second.remote = Some(RemoteBoardId(43));
-    InMemoryRepository::apply(
-        repo.as_ref(),
-        vec![taskboard_domain::PersistenceAction::UpsertBoard(second)],
-    )
-    .await
-    .expect("seed board 43");
     let mut actor = spawn(&server, repo);
-    actor
-        .commands
-        .send(SyncCommand::SetBoard(RemoteBoardId(BOARD)))
-        .await
-        .unwrap();
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
     let first = next_report(&mut actor).await;
-    let SyncReport::Completed {
-        snapshot: first, ..
-    } = first
-    else {
-        panic!("expected a Completed report");
-    };
-    assert_eq!(first.board.id, RemoteBoardId(BOARD));
+    assert!(matches!(first, SyncReport::Completed { .. }));
 
     // Both commands land in the inbox before the actor is polled again
-    // (capacity-backed sends complete without yielding), so the `SetBoard`
-    // arrives exactly as the `SyncNow`-driven cycle runs.
+    // (capacity-backed sends complete without yielding): the first
+    // triggers a cycle, the second queues behind it — the absorber
+    // collapses them into one immediate rerun, so exactly two more
+    // reports arrive (the burst's cycle + the single rerun).
     actor.commands.send(SyncCommand::SyncNow).await.unwrap();
-    actor
-        .commands
-        .send(SyncCommand::SetBoard(RemoteBoardId(43)))
-        .await
-        .unwrap();
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
     let second = next_report(&mut actor).await;
-    let SyncReport::Completed {
-        snapshot: second, ..
-    } = second
-    else {
-        panic!("expected a Completed report");
-    };
-    assert_eq!(
-        second.board.id,
-        RemoteBoardId(BOARD),
-        "the nudged cycle still targets the old board"
-    );
+    assert!(matches!(second, SyncReport::Completed { .. }));
     let third = next_report(&mut actor).await;
-    let SyncReport::Completed {
-        snapshot: third, ..
-    } = third
-    else {
-        panic!("expected the absorbed switch's rerun report");
-    };
-    assert_eq!(
-        third.board.id,
-        RemoteBoardId(43),
-        "exactly one rerun serves the switched-to board"
+    assert!(
+        matches!(third, SyncReport::Completed { .. }),
+        "the queued twin collapsed into exactly one rerun"
     );
 
-    // And then silence: the switch produced no fourth cycle.
+    // And then silence: the burst produced no fourth cycle.
     for _ in 0..500 {
         assert!(
             actor.reports.try_recv().is_err(),
-            "the switch absorbed into exactly one rerun"
+            "the burst absorbed into exactly one rerun"
         );
         tokio::time::advance(Duration::from_millis(10)).await;
     }
@@ -1924,7 +1891,7 @@ async fn a27_unlisted_board_tombstone_keeps_the_local_title() {
     state.stacks.insert(stack.id, stack);
 
     let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
@@ -2036,7 +2003,7 @@ async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_sta
     state.tasks.insert(task.id, task);
 
     let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
-    let report = set_board_and_report(&mut actor).await;
+    let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { snapshot, .. } = report else {
         panic!("expected a Completed report");
     };
@@ -2073,5 +2040,405 @@ async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_sta
             taskboard_domain::RemoteStackId(99)
         ],
         "the stack twin dedupes: exactly stacks 7 and 99"
+    );
+}
+
+// ---- chunk-4 derived-set scenarios ------------------------------------
+// The second owned board (remote 43) fixtures: its own row, stack, and
+// offline draft, built by hand because `repo_with` seeds one board only.
+
+/// The second board: bound to remote 43 for *this* connector unless a
+/// test re-tags it (A31's foreign-tag shape).
+fn second_board(connector: &str) -> Board {
+    Board {
+        id: taskboard_domain::BoardId::from(uuid(9)),
+        remote: Some(taskboard_domain::RemoteBoardBinding {
+            connector: taskboard_domain::ConnectorId::from(connector),
+            board: RemoteBoardId(43),
+        }),
+        title: "beta board".into(),
+        color: taskboard_domain::Color::new("0000ff"),
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::BoardClocks {
+            title: ts(T),
+            color: taskboard_domain::BoardClocks::epoch(),
+            archived: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
+        remote_seen: Some(ts(T)),
+    }
+}
+
+/// A bound stack under the second board (remote stack 70).
+fn second_board_stack() -> taskboard_domain::Stack {
+    taskboard_domain::Stack {
+        id: taskboard_domain::StackId::from(uuid(6)),
+        remote: Some(taskboard_domain::RemoteStackRef {
+            board: RemoteBoardId(43),
+            stack: taskboard_domain::RemoteStackId(70),
+        }),
+        board: taskboard_domain::BoardId::from(uuid(9)),
+        title: "beta col".into(),
+        order: 0,
+        archived: false,
+        deleted: false,
+        clocks: stack_clocks(),
+        remote_seen: Some(ts(T)),
+    }
+}
+
+/// Mounts the card-create POST for one board (the echo names the card id
+/// the test asserts on).
+async fn mount_card_create(server: &MockServer, board: u64, stack: u64, card: u64) {
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{board}/stacks/{stack}/cards"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": card, "title": "created offline", "stackId": stack,
+            "type": "plain", "order": 0, "lastModified": T, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        })))
+        .mount(server)
+        .await;
+}
+
+/// A29 (chunk-4 shape): a binding seeded *between* cycles joins the
+/// derived set by the next cycle with no targeting message — the only
+/// command sent is the broadcast `SyncNow`; board 43's endpoints getting
+/// read is the derivation evidence.
+#[tokio::test(start_paused = true)]
+async fn a29_newly_bound_board_joins_the_set_by_the_next_cycle() {
+    let server = start_server().await;
+    mount_two_board_pull(&server).await;
+    let repo = repo_with(&[(2, STACK)], &[]);
+    let mut actor = spawn(&server, repo.clone());
+
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let SyncReport::Completed { snapshot, .. } = next_report(&mut actor).await else {
+        panic!("expected the first board's Completed report");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+
+    // The engine's BindBoard world: the binding lands in the persisted
+    // state between cycles — no message reaches the actor.
+    InMemoryRepository::apply(
+        repo.as_ref(),
+        vec![taskboard_domain::PersistenceAction::UpsertBoard(
+            second_board("nextcloud"),
+        )],
+    )
+    .await
+    .expect("seed board 43");
+
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let SyncReport::Completed {
+        snapshot: first, ..
+    } = next_report(&mut actor).await
+    else {
+        panic!("expected board 42's Completed report");
+    };
+    assert_eq!(first.board.id, RemoteBoardId(BOARD));
+    let SyncReport::Completed {
+        snapshot: second, ..
+    } = next_report(&mut actor).await
+    else {
+        panic!("expected board 43's Completed report");
+    };
+    assert_eq!(second.board.id, RemoteBoardId(43));
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.iter().any(|r| r.url.path().contains("/boards/43")),
+        "the new board's endpoints were read by the derivation, not by a message"
+    );
+}
+
+/// A30: two owned boards with an offline draft on each — each board's
+/// pass plans only its own op (the per-report push sets are disjoint and
+/// every POST stays under its own board), and each pull serves its own
+/// snapshot.
+#[tokio::test(start_paused = true)]
+async fn a30_per_board_passes_plan_only_their_own_ops() {
+    let server = start_server().await;
+    mount_two_board_pull(&server).await;
+    mount_card_create(&server, BOARD, STACK, 66).await;
+    mount_card_create(&server, 43, 70, 67).await;
+
+    let mut state = PersistedState::default();
+    let board = bound_board();
+    state.boards.insert(board.id, board);
+    let stack = bound_stack(2, STACK);
+    state.stacks.insert(stack.id, stack);
+    let (task, op) = draft(100, 2, "created offline");
+    state.tasks.insert(task.id, task);
+    state.outbox.push(op);
+    let beta = second_board("nextcloud");
+    let beta_stack = second_board_stack();
+    let (beta_task, beta_op) = draft(200, 6, "beta draft");
+    state.boards.insert(beta.id, beta);
+    state.stacks.insert(beta_stack.id, beta_stack);
+    state.tasks.insert(beta_task.id, beta_task);
+    state.outbox.push(beta_op);
+    let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
+
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let SyncReport::Completed { pushes, .. } = next_report(&mut actor).await else {
+        panic!("expected board 42's Completed report");
+    };
+    assert_eq!(pushes.len(), 1, "board 42's pass plans only board 42's op");
+    assert!(
+        matches!(
+            &pushes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
+                if view.id.card == taskboard_domain::RemoteCardId(66)
+        ),
+        "the pushed card is board 42's draft"
+    );
+    let SyncReport::Completed {
+        pushes: beta_pushes,
+        snapshot,
+        ..
+    } = next_report(&mut actor).await
+    else {
+        panic!("expected board 43's Completed report");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+    assert_eq!(beta_pushes.len(), 1, "board 43's pass plans only its op");
+    assert!(
+        matches!(
+            &beta_pushes[0].result,
+            PushResult::Applied { echo: Some(RemoteEcho::Task(view)) }
+                if view.id.card == taskboard_domain::RemoteCardId(67)
+        ),
+        "the pushed card is board 43's draft"
+    );
+    let posts: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .collect();
+    assert_eq!(posts.len(), 2, "one create POST per board");
+    assert!(
+        posts
+            .iter()
+            .all(|r| r.url.path().contains("/boards/42") != r.url.path().contains("/boards/43")),
+        "no POST crosses boards"
+    );
+}
+
+/// A31: an op owned by a board tagged for *another* connector is never
+/// planned — no request touches its board, the owned board's cycle
+/// completes with only its own op, and the foreign op strands (its
+/// owning actor will pick it up; this one never plans it).
+#[tokio::test(start_paused = true)]
+async fn a31_foreign_tagged_board_ops_are_never_planned() {
+    let server = start_server().await;
+    mount_two_board_pull(&server).await;
+    mount_card_create(&server, BOARD, STACK, 66).await;
+
+    let mut state = PersistedState::default();
+    let board = bound_board();
+    state.boards.insert(board.id, board);
+    let stack = bound_stack(2, STACK);
+    state.stacks.insert(stack.id, stack);
+    let (task, op) = draft(100, 2, "created offline");
+    state.tasks.insert(task.id, task);
+    state.outbox.push(op);
+    let foreign = second_board("other");
+    let foreign_stack = second_board_stack();
+    let (foreign_task, foreign_op) = draft(200, 6, "beta draft");
+    state.boards.insert(foreign.id, foreign);
+    state.stacks.insert(foreign_stack.id, foreign_stack);
+    state.tasks.insert(foreign_task.id, foreign_task);
+    state.outbox.push(foreign_op);
+    let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
+
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let SyncReport::Completed {
+        pushes, snapshot, ..
+    } = next_report(&mut actor).await
+    else {
+        panic!("expected the one owned board's Completed report");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
+    assert_eq!(pushes.len(), 1, "only the owned board's op planned");
+    let posts: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .collect();
+    assert_eq!(posts.len(), 1);
+    assert!(
+        posts[0].url.path().contains("/boards/42"),
+        "no wiremock hit for the foreign board's op"
+    );
+    assert!(
+        actor.system_rx.try_recv().is_err(),
+        "no network events: an unowned board is not a failure"
+    );
+}
+
+/// A32 (D-12): a per-board failure continues the loop — board 42's
+/// failing pull reports board 42's `Failed` and board 43 still cycles
+/// with no network event.
+#[tokio::test(start_paused = true)]
+async fn a32_per_board_failure_continues_the_loop() {
+    // Server-class failure on board 42's stacks read: the loop continues.
+    let server = start_server().await;
+    let responder = move |req: &wiremock::Request| {
+        if req.url.path().contains("/boards/42/stacks") {
+            return ResponseTemplate::new(404);
+        }
+        let p = req.url.path().to_string();
+        let beta = p.contains("/boards/43");
+        let body = if p.ends_with("/stacks/archived") {
+            "[]".to_string()
+        } else if p.ends_with("/stacks") {
+            serde_json::json!([{
+                "id": if beta { 70 } else { 7 },
+                "title": "col", "boardId": if beta { 43 } else { BOARD },
+                "order": 0, "lastModified": T, "deletedAt": 0,
+                "archived": false, "cards": []
+            }])
+            .to_string()
+        } else if p.ends_with("/boards") {
+            boards_json(false, &serde_json::json!([]))
+        } else {
+            // Board detail (42 or 43): the id must match the requested
+            // board — the fixtures' `board_json` pins BOARD.
+            serde_json::json!({
+                "id": if beta { 43 } else { BOARD },
+                "title": if beta { "beta board" } else { "board" },
+                "color": if beta { "0000ff" } else { "00ff00" },
+                "lastModified": T, "deletedAt": 0,
+                "archived": false, "labels": []
+            })
+            .to_string()
+        };
+        ResponseTemplate::new(200)
+            .insert_header("ETag", "\"gen-1\"")
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .respond_with(responder)
+        .mount(&server)
+        .await;
+
+    let repo = repo_with(&[(2, STACK)], &[]);
+    InMemoryRepository::apply(
+        repo.as_ref(),
+        vec![taskboard_domain::PersistenceAction::UpsertBoard(
+            second_board("nextcloud"),
+        )],
+    )
+    .await
+    .expect("seed board 43");
+    let mut actor = spawn(&server, repo);
+
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let failed = next_report(&mut actor).await;
+    assert!(
+        matches!(
+            failed,
+            SyncReport::Failed {
+                kind: SyncErrorKind::Server,
+                ..
+            }
+        ),
+        "board 42's failure reports board 42's Failed"
+    );
+    let SyncReport::Completed { snapshot, .. } = next_report(&mut actor).await else {
+        panic!("board 43 must still cycle past board 42's failure");
+    };
+    assert_eq!(snapshot.board.id, RemoteBoardId(43));
+    assert!(
+        actor.system_rx.try_recv().is_err(),
+        "a per-board failure is not a lost network"
+    );
+}
+
+/// A32b (D-12's other half): a Network-classified failure ends the cycle
+/// early — board 43 is never attempted (no report of its own; the
+/// engine's `go_offline` stamps its row on the broadcast), and the
+/// transport edge fires exactly once.
+#[tokio::test(start_paused = true)]
+async fn a32b_network_failure_ends_the_cycle_before_the_next_board() {
+    // Network-class failure on board 42's detail read: the cycle ends —
+    // board 43 is unattempted (its endpoints never read), and the
+    // transport edge broadcasts once.
+    let server = start_server().await;
+    let responder = move |req: &wiremock::Request| {
+        if req.url.path().contains("/boards/42") && !req.url.path().ends_with("/boards") {
+            return ResponseTemplate::new(503);
+        }
+        let p = req.url.path().to_string();
+        let body = if p.ends_with("/stacks/archived") {
+            "[]".to_string()
+        } else if p.ends_with("/stacks") {
+            serde_json::json!([{
+                "id": 70, "title": "col", "boardId": 43,
+                "order": 0, "lastModified": T, "deletedAt": 0,
+                "archived": false, "cards": []
+            }])
+            .to_string()
+        } else if p.ends_with("/boards/43") {
+            serde_json::json!({
+                "id": 43, "title": "beta board", "color": "0000ff",
+                "lastModified": T, "deletedAt": 0,
+                "archived": false, "labels": []
+            })
+            .to_string()
+        } else {
+            boards_json(false, &serde_json::json!([]))
+        };
+        ResponseTemplate::new(200)
+            .insert_header("ETag", "\"gen-1\"")
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .respond_with(responder)
+        .mount(&server)
+        .await;
+
+    let repo = repo_with(&[(2, STACK)], &[]);
+    InMemoryRepository::apply(
+        repo.as_ref(),
+        vec![taskboard_domain::PersistenceAction::UpsertBoard(
+            second_board("nextcloud"),
+        )],
+    )
+    .await
+    .expect("seed board 43");
+    let mut actor = spawn(&server, repo);
+
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let failed = next_report(&mut actor).await;
+    assert!(matches!(
+        failed,
+        SyncReport::Failed {
+            kind: SyncErrorKind::Network,
+            ..
+        }
+    ));
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|r| !r.url.path().contains("/boards/43")),
+        "board 43 is unattempted: no report of its own, go_offline stamps its row"
+    );
+    assert!(
+        requests.iter().all(|r| !r.url.path().contains("/stacks")),
+        "every cycle (retries included) stops at the transport failure: no stacks read"
+    );
+    assert_eq!(
+        actor.system_rx.recv().await.expect("broadcast open"),
+        SystemEvent::NetworkLost,
+        "the shared-down transport fires the episode edge once"
     );
 }
