@@ -13,8 +13,19 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="$ROOT/docker/nextcloud-test/compose.yaml"
-CONTAINER="taskboard-it-nextcloud"
+# Instance suffix: an empty default (the original single instance) or
+# e.g. "-c5a" — scopes the compose project and the container name so
+# several throwaway instances coexist (the two-connector tier test
+# owns two); the exported variable names follow the export prefix.
+SUFFIX="${TASKBOARD_IT_SUFFIX:-}"
+PROJECT="taskboard-it${SUFFIX}"
+CONTAINER="taskboard-it-nextcloud${SUFFIX}"
 PORT="${TASKBOARD_IT_PORT:-8370}"
+# The compose file interpolates the bare names; re-export the
+# taskboard-prefixed overrides under them (empty SUFFIX = the
+# singleton's original names, byte-for-byte).
+export SUFFIX
+export PORT
 BASE_URL="http://127.0.0.1:$PORT"
 IT_USER="taskboard-it"
 # Throwaway by design; only used inside the ephemeral container.
@@ -27,7 +38,7 @@ occ() {
     # docker compose exec does not inherit the host environment, so the
     # user-creation password must be forwarded explicitly (NC_PASS/OC_PASS
     # is what `occ user:add --password-from-env` reads inside the container).
-    docker compose -f "$COMPOSE_FILE" exec -T -u www-data \
+    docker compose -p "$PROJECT" -f "$COMPOSE_FILE" exec -T -u www-data \
         -e NC_PASS="$OC_PASS" -e OC_PASS="$OC_PASS" \
         nextcloud php occ "$@"
 }
@@ -95,17 +106,17 @@ mint_app_password() {
 }
 
 emit_exports() {
-    local token="$1" ci="$2"
+    local token="$1" ci="$2" prefix="${EXPORT_PREFIX:-TASKBOARD_IT_DOCKER}"
     cat <<EOF
-export TASKBOARD_IT_DOCKER_URL=$BASE_URL
-export TASKBOARD_IT_DOCKER_USER=$IT_USER
-export TASKBOARD_IT_DOCKER_TOKEN=$token
+export ${prefix}_URL=$BASE_URL
+export ${prefix}_USER=$IT_USER
+export ${prefix}_TOKEN=$token
 EOF
     if [ "$ci" = "--ci" ]; then
         {
-            echo "TASKBOARD_IT_DOCKER_URL=$BASE_URL"
-            echo "TASKBOARD_IT_DOCKER_USER=$IT_USER"
-            echo "TASKBOARD_IT_DOCKER_TOKEN=$token"
+            echo "${prefix}_URL=$BASE_URL"
+            echo "${prefix}_USER=$IT_USER"
+            echo "${prefix}_TOKEN=$token"
         } >>"${GITHUB_ENV:?GITHUB_ENV must be set in CI}"
     fi
 }
@@ -116,8 +127,8 @@ cmd_up() {
     # Everything noisy goes to stderr: stdout is eval'd as an export block.
     # --wait needs a compose version with healthcheck support; fall back to
     # plain up + host-side poll otherwise.
-    docker compose -f "$COMPOSE_FILE" up -d --wait >&2 \
-        || { docker compose -f "$COMPOSE_FILE" up -d >&2; poll_ready >&2; }
+    docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d --wait >&2 \
+        || { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d >&2; poll_ready >&2; }
     poll_ready >&2
     install_deck >&2
     create_it_user >&2
@@ -126,7 +137,7 @@ cmd_up() {
 }
 
 cmd_down() {
-    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans
+    docker compose -p "$PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans
 }
 
 case "${1:-up}" in

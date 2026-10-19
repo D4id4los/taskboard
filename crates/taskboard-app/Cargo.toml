@@ -84,6 +84,9 @@ tempfile.workspace = true
 base64.workspace = true
 # The MCP smoke's screenshot decode (design §8.2; dev-only).
 png.workspace = true
+# The two-connector tier test's actor-log capture (live-server journeys
+# need the actors' own tracing on failure).
+tracing-subscriber.workspace = true
 # The MCP smoke's SIGTERM exit check (dev-only; the "signal" feature
 # unions into test builds only — the release profile keeps term).
 nix = { workspace = true, features = ["signal"] }

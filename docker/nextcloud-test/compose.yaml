@@ -4,14 +4,16 @@
 services:
   nextcloud:
     image: nextcloud:35-apache
-    container_name: taskboard-it-nextcloud
+    # Suffix-scoped so several throwaway instances coexist (set
+    # TASKBOARD_IT_SUFFIX per instance; empty = the original singleton).
+    container_name: taskboard-it-nextcloud${SUFFIX:-}
     ports:
       # Non-default port; loopback-only bind.
-      - "127.0.0.1:8370:80"
+      - "127.0.0.1:${PORT:-8370}:80"
     environment:
       NEXTCLOUD_ADMIN_USER: taskboard-admin
       NEXTCLOUD_ADMIN_PASSWORD: taskboard-it-admin-pw
-      SQLITE_DATABASE: taskboard-it
+      SQLITE_DATABASE: taskboard-it${SUFFIX:-}
       NEXTCLOUD_TRUSTED_DOMAINS: localhost 127.0.0.1
     healthcheck:
       test:
