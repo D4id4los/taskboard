@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use taskboard_domain::test_support::InMemoryRepository;
 use taskboard_domain::{
-    Board, LocalOp, OpId, PendingOp, PersistedState, PushResult, RemoteBoardId, RemoteEcho,
-    StackClocks, SyncCommand, SyncErrorKind, SyncReport, SystemEvent, Task, TaskClocks,
+    Board, ConnectorId, LocalOp, OpId, PendingOp, PersistedState, PushResult, RemoteBoardId,
+    RemoteEcho, StackClocks, SyncCommand, SyncErrorKind, SyncReport, SystemEvent, Task, TaskClocks,
     TaskRepository as _,
 };
 use taskboard_sync_nextcloud::{DeckClient, SyncActorConfig, spawn_sync_actor};
@@ -444,11 +444,11 @@ async fn a4_transport_failure_mid_push_keeps_evidence_and_queue() {
     let () = server.verify().await;
 }
 
-/// A7: a transport-class failure broadcasts `NetworkLost` exactly once,
-/// failures back off with doubling (the second cycle fires no earlier than
-/// the initial backoff — a *simulated*-time fact under the paused clock),
-/// and the first success reports `Completed` *before* broadcasting
-/// `NetworkRestored`.
+/// A7: a transport-class failure broadcasts `ConnectorLost` for the
+/// actor's own connector exactly once, failures back off with doubling
+/// (the second cycle fires no earlier than the initial backoff — a
+/// *simulated*-time fact under the paused clock), and the first success
+/// reports `Completed` *before* broadcasting `ConnectorRestored`.
 #[tokio::test(start_paused = true)]
 async fn a7_offline_episode_broadcasts_lost_once_then_restored() {
     let server = start_server().await;
@@ -495,7 +495,7 @@ async fn a7_offline_episode_broadcasts_lost_once_then_restored() {
     ));
     assert_eq!(
         actor.system_rx.recv().await.expect("broadcast open"),
-        SystemEvent::NetworkLost
+        SystemEvent::ConnectorLost(ConnectorId::from("nextcloud"))
     );
 
     // Still down: the backoff cycle fails again WITHOUT re-broadcasting,
@@ -514,17 +514,62 @@ async fn a7_offline_episode_broadcasts_lost_once_then_restored() {
     );
     assert!(
         actor.system_rx.try_recv().is_err(),
-        "exactly one NetworkLost per offline episode"
+        "exactly one ConnectorLost per offline episode"
     );
 
     // Recover: the next backoff cycle succeeds, reports Completed first,
-    // then broadcasts `NetworkRestored`.
+    // then broadcasts `ConnectorRestored`.
     down.store(false, std::sync::atomic::Ordering::SeqCst);
     let ok = next_report(&mut actor).await;
     assert!(matches!(ok, SyncReport::Completed { .. }));
     assert_eq!(
         actor.system_rx.recv().await.expect("broadcast open"),
-        SystemEvent::NetworkRestored
+        SystemEvent::ConnectorRestored(ConnectorId::from("nextcloud"))
+    );
+}
+
+/// A7's sibling: a *foreign* network event — the global authority names
+/// and another connector's episode — leaves the loop unaffected (the
+/// actor counts nothing, not even events about the network).
+#[tokio::test(start_paused = true)]
+async fn a7b_foreign_network_events_leave_the_loop_unaffected() {
+    let server = start_server().await;
+    mount_standard_pull(&server, serde_json::json!([])).await;
+    let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
+
+    actor
+        .system_tx
+        .send(SystemEvent::ConnectorLost(ConnectorId::from("beta")))
+        .expect("broadcast open");
+    actor
+        .system_tx
+        .send(SystemEvent::NetworkLost)
+        .expect("broadcast open");
+    actor
+        .system_tx
+        .send(SystemEvent::ConnectorRestored(ConnectorId::from("beta")))
+        .expect("broadcast open");
+
+    let report = nudge_and_report(&mut actor).await;
+    assert!(matches!(report, SyncReport::Completed { .. }));
+    // The broadcast echoes the test's own sends back to this receiver;
+    // draining them leaves only an actor-originated event, of which
+    // there must be none.
+    assert_eq!(
+        actor.system_rx.recv().await.expect("broadcast open"),
+        SystemEvent::ConnectorLost(ConnectorId::from("beta"))
+    );
+    assert_eq!(
+        actor.system_rx.recv().await.expect("broadcast open"),
+        SystemEvent::NetworkLost
+    );
+    assert_eq!(
+        actor.system_rx.recv().await.expect("broadcast open"),
+        SystemEvent::ConnectorRestored(ConnectorId::from("beta"))
+    );
+    assert!(
+        actor.system_rx.try_recv().is_err(),
+        "the actor emits nothing for foreign events"
     );
 }
 
@@ -943,7 +988,7 @@ async fn a14_rate_limited_poll_waits_the_advertised_retry_after() {
     ));
     assert_eq!(
         actor.system_rx.recv().await.expect("broadcast open"),
-        SystemEvent::NetworkLost
+        SystemEvent::ConnectorLost(ConnectorId::from("nextcloud"))
     );
     let first_failure_at = tokio::time::Instant::now();
     let retries_exhausted = limited_hits.load(std::sync::atomic::Ordering::SeqCst);
@@ -2438,7 +2483,7 @@ async fn a32b_network_failure_ends_the_cycle_before_the_next_board() {
     );
     assert_eq!(
         actor.system_rx.recv().await.expect("broadcast open"),
-        SystemEvent::NetworkLost,
+        SystemEvent::ConnectorLost(ConnectorId::from("nextcloud")),
         "the shared-down transport fires the episode edge once"
     );
 }
