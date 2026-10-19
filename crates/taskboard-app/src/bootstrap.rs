@@ -116,9 +116,12 @@ pub enum BootstrapError {
     },
 }
 
-/// One registry entry: the connector's inbox sender (the pair-mate of
-/// the receiver its module spawned with) and its join handle.
+/// One registry entry: the connector's config-minted id (the registry
+/// key — named routing and the authority's membership), its inbox
+/// sender (the pair-mate of the receiver its module spawned with), and
+/// its join handle.
 struct SyncActor {
+    id: taskboard_domain::ConnectorId,
     commands: mpsc::Sender<SyncCommand>,
     join: JoinHandle<()>,
 }
@@ -154,6 +157,11 @@ pub struct App {
     storage_join: JoinHandle<()>,
     engine_join: JoinHandle<()>,
     notifier_join: JoinHandle<()>,
+    /// The all-down network authority's hooks (DF-7): the attach/
+    /// detach registry hooks and the broadcast sender for its global
+    /// emissions. The task itself is `authority_join`.
+    authority: crate::authority::AuthorityHandle,
+    authority_join: JoinHandle<()>,
     /// The per-database instance lock, held for the process lifetime.
     _lock: InstanceLock,
 }
@@ -210,7 +218,11 @@ impl App {
         let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
         let mut aborted = false;
         for actor in actors {
+            let id = actor.id.clone();
             aborted |= stop_actor(actor, timeout).await;
+            // Registry hook: the membership shrinks; a drain to an
+            // empty set (the standalone world) stays silent.
+            self.authority.detach(&id);
         }
         if aborted {
             DetachOutcome::TimedOut
@@ -287,11 +299,19 @@ impl App {
         //    actor is unwound outside the lock (the engine's now-dead
         //    entry self-prunes on the next fan-out).
         let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
-        if let Some(unwound) = try_register(&self.connectors, SyncActor { commands, join }) {
+        let actor = SyncActor {
+            id: self.default_connector.clone(),
+            commands,
+            join,
+        };
+        if let Some(unwound) = try_register(&self.connectors, actor) {
             tracing::info!("attach: vacancy lost to a concurrent attach; unwinding");
             stop_actor(unwound, timeout).await;
             return Err(AttachError::AlreadyAttached);
         }
+        // Registry hook: membership grows. The v1 attach path mints the
+        // default id; a set that was all-down-nonempty closes loudly.
+        self.authority.attach(&self.default_connector);
         tracing::info!("attach: connector attached");
         Ok(())
     }
@@ -325,6 +345,8 @@ impl App {
             storage_join,
             engine_join,
             notifier_join,
+            authority_join,
+            authority: _,
             _lock,
         } = self;
         let timeout = Duration::from_secs(config.app.shutdown_timeout_secs);
@@ -345,6 +367,11 @@ impl App {
         for actor in actors {
             actor_aborted |= stop_actor(actor, timeout).await;
         }
+
+        // The authority exited on the Shutdown broadcast long before;
+        // the bounded join only bounds a wedged task. Ordering: actors
+        // → authority → reports drop → engine (D5-13).
+        join_bounded(authority_join, timeout, "authority").await;
 
         // THE ordering contract: App is the last holder of the reports
         // inbox's parked sender — every actor's clone died with its join
@@ -590,6 +617,15 @@ async fn bootstrap_with_modules(
     let (reports, report_rx) = mpsc::channel::<SyncReport>(SYNC_REPORT_CAPACITY);
     let (notifier, notifications) =
         mpsc::channel::<taskboard_domain::Notification>(NOTIFIER_CAPACITY);
+
+    // The all-down authority (DF-7): seeded from the module set (all
+    // up) and subscribed *before any module spawns*, so a first-cycle
+    // failure cannot race the subscription.
+    let authority_state = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::authority::AuthorityState::new(modules.iter().map(|m| m.id().clone())),
+    ));
+    let authority = crate::authority::AuthorityHandle::new(authority_state, system.clone());
+    let authority_join = crate::authority::spawn_authority(authority.clone(), system.subscribe());
     // Spawned before the engine: the immediate first tick can notify
     // during hydration-heavy boots, and ordering the consumer first is
     // free. The consumer exits when the engine's exit closes the
@@ -650,6 +686,7 @@ async fn bootstrap_with_modules(
         ) {
             Ok(spawned) => {
                 connectors.push(SyncActor {
+                    id: spawned.id,
                     commands,
                     join: spawned.join,
                 });
@@ -661,6 +698,7 @@ async fn bootstrap_with_modules(
                     system,
                     reports,
                     engine_join,
+                    authority_join,
                     timeout,
                     storage,
                     storage_join,
@@ -692,6 +730,8 @@ async fn bootstrap_with_modules(
         storage_join,
         engine_join,
         notifier_join,
+        authority,
+        authority_join,
         _lock: lock,
     })
 }
@@ -710,6 +750,7 @@ async fn unwind_after_module_failure(
     system: broadcast::Sender<SystemEvent>,
     reports: mpsc::Sender<SyncReport>,
     engine_join: JoinHandle<()>,
+    authority_join: JoinHandle<()>,
     timeout: Duration,
     storage: StorageHandle,
     storage_join: JoinHandle<()>,
@@ -721,6 +762,7 @@ async fn unwind_after_module_failure(
     let _ = system.send(SystemEvent::Shutdown);
     drop(system);
     drop(reports);
+    join_bounded(authority_join, timeout, "authority").await;
     join_bounded(engine_join, timeout, "state engine").await;
     drop(storage);
     if let Err(join_err) = storage_join.await {

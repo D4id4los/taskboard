@@ -29,6 +29,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod authority;
 pub mod bootstrap;
 pub mod cli;
 pub mod commands;
