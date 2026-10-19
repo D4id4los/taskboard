@@ -31,9 +31,9 @@ synchronization is an optional connector (ADR 0010).
 Pre-built binaries for the first-class platforms (x86_64 Linux & Windows)
 are attached to every [[https://github.com/D4id4los/taskboard/releases][GitHub Release]]. Each release ships a
 =taskboard-<version>-<target-triple>.tar.gz= (Linux) or =.zip= (Windows)
-containing the =taskboard= binary, both licenses, the README, and the
-changelog, plus a matching =.sha256= checksum file and a combined
-=SHA256SUMS=.
+containing the =taskboard= binary, both licenses, the README, the
+changelog, and a =taskboard.desktop= launcher, plus a matching
+=.sha256= checksum file and a combined =SHA256SUMS=.
 
 To test release packaging locally (byte-identical to a CI leg):
 
@@ -197,6 +197,41 @@ titles; destructive verbs cascade what the server would cascade
 (=stacks delete= takes its tasks with it). =labels list= shows
 assignment counts, and =config print= dumps the effective
 (secret-free) configuration with its validity diagnosis.
+** Launching taskboard
+
+What a bare =taskboard= invocation runs depends on the =[app] mode=
+setting (default =daemon=), whether stdin is a terminal (TTY), and
+whether a display is available; an explicit verb (=gui=, =daemon=)
+bypasses the resolution. The shipped routing, one row per case:
+
+| invocation                             | TTY | display | lifecycle                         |
+|----------------------------------------+-----+---------+-----------------------------------|
+| bare =kiosk= mode                      | any | any     | the fullscreen appliance (ADR 0016) |
+| bare =desktop= mode                    | any | any     | desktop GUI                       |
+| bare =daemon= mode, TTY                | ✓   | any     | interactive REPL (ADR 0011)       |
+| bare =daemon= mode, no TTY, display    | —   | ✓       | desktop GUI (#236)                |
+| bare =daemon= mode, no TTY, no display | —   | —       | headless daemon lifecycle         |
+| explicit =taskboard daemon=            | any | any     | headless daemon lifecycle, always |
+| explicit =taskboard gui=               | any | any     | desktop GUI (ADR 0009 amendment)  |
+
+The kiosk row is TTY-independent by design: the display gate lives
+inside the appliance lifecycle, so with no display the same
+invocation falls back loudly to headless serving over IPC (ADR 0016).
+
+The mode resolution is overridable without a verb:
+=TASKBOARD_APP__MODE=desktop taskboard …= forces the mode for one
+invocation (figment's =__= nesting), or set =[app] mode =
+"desktop"= in =taskboard.toml=; the same environment form takes any
+mode value.
+
+Release archives ship a =taskboard.desktop= launcher (the repo copy
+lives in =contrib/=): put the =taskboard= binary on =PATH= (e.g.
+=~/.local/bin=) and copy the file to
+=~/.local/share/applications/=, or mark it executable and trusted in
+the file manager and double-click it straight from the extracted
+archive. Its =Exec= is =taskboard gui= — the double-click path is
+the =gui= verb row above.
+
 ** Interactive shell (no arguments on a terminal)
 
 Bare =taskboard= with a terminal on stdin opens a =parted=-style REPL
@@ -235,8 +270,8 @@ makes bare =taskboard= (a *second* core boot) fail with
 =instance-locked=: stop the daemon first. Core *verbs* typed while a
 daemon runs do not contend — they route over the daemon's socket (see
 [[*The daemon and IPC][The daemon and IPC]]). Without a TTY (systemd
-units, pipes), bare =taskboard= keeps the old behavior: the =[app]
-mode= resolution (daemon default).
+units, pipes) the bare-invocation routing of
+[[*Launching taskboard][Launching taskboard]] applies unchanged.
 
 ** Attaching a server (optional)
 
