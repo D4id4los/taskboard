@@ -479,7 +479,10 @@ async fn run_kiosk(
                         tracing::info!("shutdown requested over ipc");
                     }
                 }
-                taskboard_ui_slint::quit();
+                // The retry matters here exactly as in `run_desktop`:
+                // a stop racing the boot window (before `run` starts
+                // the loop) is otherwise silently lost.
+                taskboard_app::ui::quit_until_accepted().await;
             });
 
             let run_result = taskboard_ui_slint::run(handle);

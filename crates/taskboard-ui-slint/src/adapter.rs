@@ -295,7 +295,7 @@ impl Adapter {
         match effect {
             UiEffect::Exit => {
                 self.quit_requests += 1;
-                crate::quit();
+                let _ = crate::quit();
             }
             UiEffect::OpenMenu => {
                 // The projection is computed for the pre-menu chain
