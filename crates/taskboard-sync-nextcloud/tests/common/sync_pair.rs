@@ -79,7 +79,7 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
         engine_join,
         repo,
         // The actor's command inlet: engine nudges and test-driven
-        // SetBoard/nudges share it (the production graph).
+        // nudges share it (the production graph).
         commands: nudges_tx,
         _system_tx: system_tx,
     }
