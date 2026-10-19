@@ -83,6 +83,27 @@ fn expect_exit(output: &Output, code: i32, what: &str) {
     );
 }
 
+/// Runs `tasks list --json` and returns the listed row for `task_id`
+/// (panics when the task is absent from any stack group).
+fn listed_task_row(config: &Path, task_id: &str, token: &str, what: &str) -> serde_json::Value {
+    let output = run_cli(
+        config,
+        ["tasks", "list", "--json"].as_slice(),
+        None,
+        Some(token),
+    );
+    expect_exit(&output, 0, what);
+    let list = stdout_json(&output);
+    list["stacks"]
+        .as_array()
+        .expect("stack groups")
+        .iter()
+        .flat_map(|s| s["tasks"].as_array().expect("tasks").iter())
+        .find(|t| t["id"] == task_id)
+        .cloned()
+        .unwrap_or_else(|| panic!("{what}: task {task_id} listed: {list}"))
+}
+
 async fn teardown_board(client: &DeckClient, board: u64) {
     let _ = common::retry(|| async { client.delete_board(board).await }).await;
 }
@@ -191,21 +212,7 @@ async fn j1_login_select_add_verify(cfg: &LiveCfg) {
     );
 
     // tasks list: local view + healthy sync footer.
-    let output = run_cli(
-        &config,
-        ["tasks", "list", "--json"].as_slice(),
-        None,
-        Some(&cfg.token),
-    );
-    expect_exit(&output, 0, "tasks list");
-    let list = stdout_json(&output);
-    let row = list["stacks"]
-        .as_array()
-        .expect("stack groups")
-        .iter()
-        .flat_map(|s| s["tasks"].as_array().expect("tasks").iter())
-        .find(|t| t["id"] == task_id.as_str())
-        .unwrap_or_else(|| panic!("task listed: {list}"));
+    let row = listed_task_row(&config, &task_id, &cfg.token, "tasks list");
     assert_eq!(row["done"], false);
 
     // done → sync → the completion survives the round-trip.
@@ -248,21 +255,7 @@ async fn j1_login_select_add_verify(cfg: &LiveCfg) {
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    let output = run_cli(
-        &config,
-        ["tasks", "list", "--json"].as_slice(),
-        None,
-        Some(&cfg.token),
-    );
-    expect_exit(&output, 0, "final tasks list");
-    let list = stdout_json(&output);
-    let row = list["stacks"]
-        .as_array()
-        .expect("stack groups")
-        .iter()
-        .flat_map(|s| s["tasks"].as_array().expect("tasks").iter())
-        .find(|t| t["id"] == task_id.as_str())
-        .expect("task still listed");
+    let row = listed_task_row(&config, &task_id, &cfg.token, "final tasks list");
     assert_eq!(row["done"], true, "done state after the round-trip");
 
     teardown_board(&client, board.id).await;
