@@ -2,8 +2,9 @@
 //! `taskboard boards` (ADR 0009): `list` is a direct remote read (no
 //! core boot, no lock — the first-run discovery surface); `select` is
 //! the one-time single-board binding ceremony: pre-validate against a
-//! fresh listing, boot the core, refuse a rebind, `SetBoard`, wait for
-//! the adoption that persists the binding.
+//! fresh listing, boot the core, refuse a rebind, bind (the engine mints
+//! the tagged binding), and wait for the adoption cycle that settles the
+//! board's own sync row.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
