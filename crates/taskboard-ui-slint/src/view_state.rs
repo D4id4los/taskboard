@@ -11,7 +11,7 @@
 //! view scope/field focuses itself when it is created); this module
 //! owns *selection* — which task/stack the actions address.
 
-use taskboard_domain::{AppState, StackId, StateCommand, TaskChanges, TaskId};
+use taskboard_domain::{AppState, BoardId, StackId, StateCommand, TaskChanges, TaskId};
 
 use crate::actions::ContextId;
 use crate::presentation::{live_board, stacks_in_board};
@@ -83,18 +83,15 @@ pub fn append_order(state: &AppState, stack: StackId) -> i64 {
         .map_or(0, |t| t.order + 1)
 }
 
-/// The canonical append position on the board: the live stacks' max
-/// order + 1 (#304's "sensible default appended after the existing
-/// stacks"); 0 on an empty (or absent) board.
+/// The canonical append position on `board`: the board's live stacks'
+/// max order + 1 (#304's "sensible default appended after the existing
+/// stacks"); 0 on an empty board.
 #[must_use]
-pub fn append_stack_order(state: &AppState) -> i64 {
-    let Some(board) = state.boards.values().find(|b| !b.deleted) else {
-        return 0;
-    };
+pub fn append_stack_order(state: &AppState, board: BoardId) -> i64 {
     state
         .stacks
         .values()
-        .filter(|s| s.board == board.id && !s.deleted)
+        .filter(|s| s.board == board && !s.deleted)
         .map(|s| s.order)
         .max()
         .map_or(0, |max| max + 1)
@@ -474,13 +471,20 @@ impl ViewState {
                 );
             }
             Flow::CreateStack if !title.is_empty() => {
-                outcomes.insert(
-                    0,
-                    FlowOutcome::Command(StateCommand::CreateStack {
-                        title,
-                        order: append_stack_order(state),
-                    }),
-                );
+                // INTERIM(multi-board-2 → chunk-7): inline first-live-board
+                // resolve until ViewState.board + the seed rule land; no
+                // board ends the flow empty (the existing empty-board
+                // behavior).
+                if let Some(board) = live_board(state) {
+                    outcomes.insert(
+                        0,
+                        FlowOutcome::Command(StateCommand::CreateStack {
+                            board: board.id,
+                            title,
+                            order: append_stack_order(state, board.id),
+                        }),
+                    );
+                }
             }
             Flow::EditTitle { task } if !title.is_empty() => {
                 outcomes.insert(
@@ -920,7 +924,7 @@ mod tests {
 
     #[test]
     fn stack_create_flow_commits_the_appended_create_stack() {
-        let (state, _, [_, _], _) = fixture();
+        let (state, board_id, _, _) = fixture();
         let mut vs = ViewState::new();
         let outcomes = vs.begin_create_stack();
         assert_eq!(*vs.flow(), Flow::CreateStack);
@@ -932,6 +936,7 @@ mod tests {
         assert_eq!(
             vs.commit_edit(&state)[..1],
             [FlowOutcome::Command(StateCommand::CreateStack {
+                board: board_id,
                 title: "doing".to_owned(),
                 order: 2, // append after s0(0), s1(1)
             })][..]
@@ -958,9 +963,27 @@ mod tests {
         assert_eq!(
             vs.commit_edit(&state)[..1],
             [FlowOutcome::Command(StateCommand::CreateStack {
+                board: board_id,
                 title: "first".to_owned(),
                 order: 0,
             })][..]
+        );
+    }
+
+    #[test]
+    fn the_create_stack_flow_commits_nothing_without_a_board() {
+        // INTERIM(multi-board-2 → chunk-7): with no board at all the flow
+        // ends empty — nothing commands against a nonexistent board.
+        let (mut state, _, _, _) = fixture();
+        state.boards.clear();
+        let mut vs = ViewState::new();
+        vs.begin_create_stack();
+        vs.set_buffer("first".to_owned());
+        assert!(
+            !vs.commit_edit(&state)
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::Command(_))),
+            "no board commits no command"
         );
     }
 
@@ -982,18 +1005,38 @@ mod tests {
 
     #[test]
     fn append_stack_order_continues_the_canonical_board_order() {
-        let (state, _, [s0, s1], _) = fixture();
-        assert_eq!(append_stack_order(&state), 2);
+        let (state, board_id, [s0, s1], _) = fixture();
+        assert_eq!(append_stack_order(&state, board_id), 2);
         let mut empty = state.clone();
         let stacks: Vec<_> = empty.stacks.keys().copied().collect();
         for id in stacks {
             empty.stacks.remove(&id);
         }
-        assert_eq!(append_stack_order(&empty), 0);
-        let mut boardless = empty;
-        boardless.boards.clear();
-        assert_eq!(append_stack_order(&boardless), 0);
+        assert_eq!(append_stack_order(&empty, board_id), 0);
         let _ = (s0, s1);
+    }
+
+    #[test]
+    fn the_create_stack_interim_fill_picks_the_first_live_board() {
+        // INTERIM(multi-board-2 → chunk-7): with two live boards the
+        // inline fill resolves deterministically (presentation order =
+        // first live non-archived), and the command names that board.
+        let (mut state, _, _, _) = fixture();
+        let other = taskboard_domain::Board {
+            id: BoardId::from_uuid(uuid::Uuid::from_u128(0xB0AD)),
+            ..state.boards.values().next().unwrap().clone()
+        };
+        state.boards.insert(other.id, other);
+        let mut vs = ViewState::new();
+        vs.begin_create_stack();
+        vs.set_buffer("x".to_owned());
+        let FlowOutcome::Command(taskboard_domain::StateCommand::CreateStack { board, .. }) =
+            vs.commit_edit(&state)[0]
+        else {
+            panic!("the create-stack command must commit");
+        };
+        let expected = crate::presentation::live_board(&state).unwrap().id;
+        assert_eq!(board, expected);
     }
 
     #[test]

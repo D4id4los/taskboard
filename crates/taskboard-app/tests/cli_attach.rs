@@ -233,6 +233,7 @@ async fn v16_publish_creates_binds_and_reports() {
     let receipt = boards::publish(
         config.clone(),
         store_for(&server.uri()),
+        None,
         Duration::from_secs(60),
     )
     .await
@@ -249,9 +250,10 @@ async fn v16_publish_creates_binds_and_reports() {
     assert!(titles.contains(&"remote col") && titles.contains(&"v16-local-col"));
 }
 
-/// V17: `boards publish` typed refusals — no live board is `no-board`;
-/// a bound board is `board-already-bound`. Neither boots a cycle
-/// (no mounts needed beyond client construction).
+/// V17: `boards publish` typed refusals — no live board is the
+/// `ambiguous-board` refusal (empty candidates); a bound board is
+/// `board-already-bound` with the local board in the detail. Neither
+/// boots a cycle (no mounts needed beyond client construction).
 #[tokio::test]
 async fn v17_publish_refusals_are_typed() {
     let dir = tempdir();
@@ -259,18 +261,33 @@ async fn v17_publish_refusals_are_typed() {
 
     // No board at all.
     let config = config_for(&server.uri(), dir.path(), "v17a.db");
-    let err = boards::publish(config, store_for(&server.uri()), Duration::from_secs(5))
-        .await
-        .expect_err("no board");
-    assert_eq!(err.error_kind(), "no-board");
+    let err = boards::publish(
+        config,
+        store_for(&server.uri()),
+        None,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("no board");
+    assert_eq!(err.error_kind(), "ambiguous-board");
+    assert_eq!(err.error_detail().as_deref(), Some(""));
 
     // Already bound.
     let db = dir.path().join("v17b.db");
     common::seed_board_binding(&db, 0x00DA_000E, common::BOARD, "v17b").await;
     let config = config_for(&server.uri(), dir.path(), "v17b.db");
-    let err = boards::publish(config, store_for(&server.uri()), Duration::from_secs(5))
-        .await
-        .expect_err("bound board");
+    let err = boards::publish(
+        config,
+        store_for(&server.uri()),
+        None,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("bound board");
     assert_eq!(err.error_kind(), "board-already-bound");
-    assert_eq!(err.error_detail().as_deref(), Some("3"));
+    let local = uuid::Uuid::from_u128(0x00DA_000E).to_string();
+    assert_eq!(
+        err.error_detail().as_deref(),
+        Some(format!("{local} (bound remote 3)").as_str())
+    );
 }

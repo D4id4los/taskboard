@@ -63,20 +63,34 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             .prop_map(|(id, stack, order)| StateCommand::MoveTask { id, stack, order },),
         super::task_id_strategy().prop_map(|id| StateCommand::DeleteTask { id }),
         // 5: stack commands
-        (string_strategy(), -100_i64..=100)
-            .prop_map(|(title, order)| StateCommand::CreateStack { title, order }),
+        (
+            super::board_id_strategy(),
+            string_strategy(),
+            -100_i64..=100,
+        )
+            .prop_map(|(board, title, order)| StateCommand::CreateStack {
+                board,
+                title,
+                order
+            },),
         (super::stack_id_strategy(), string_strategy())
             .prop_map(|(id, new_title)| StateCommand::RenameStack { id, new_title }),
         super::stack_id_strategy().prop_map(|id| StateCommand::DeleteStack { id }),
         (super::stack_id_strategy(), -100_i64..=100)
             .prop_map(|(id, order)| StateCommand::MoveStack { id, order }),
         // 3: label commands
-        (string_strategy(), string_strategy()).prop_map(|(title, color)| {
-            StateCommand::CreateLabel {
-                title,
-                color: crate::entities::Color::new(color),
-            }
-        }),
+        (
+            super::board_id_strategy(),
+            string_strategy(),
+            string_strategy(),
+        )
+            .prop_map(|(board, title, color)| {
+                StateCommand::CreateLabel {
+                    board,
+                    title,
+                    color: crate::entities::Color::new(color),
+                }
+            }),
         (super::label_id_strategy(), super::label_changes_strategy())
             .prop_map(|(id, changes)| StateCommand::UpdateLabel { id, changes }),
         super::label_id_strategy().prop_map(|id| StateCommand::DeleteLabel { id }),
@@ -89,8 +103,13 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             title,
             color: crate::entities::Color::new("3366cc"),
         }),
-        string_strategy().prop_map(|title| StateCommand::RenameBoard { title }),
-        super::remote_board_id_strategy().prop_map(|remote| StateCommand::BindBoard { remote }),
+        (super::board_id_strategy(), string_strategy())
+            .prop_map(|(board, title)| StateCommand::RenameBoard { board, title }),
+        (
+            super::board_id_strategy(),
+            super::remote_board_id_strategy()
+        )
+            .prop_map(|(board, remote)| StateCommand::BindBoard { board, remote }),
         // 2: reminder commands
         (
             super::reminders::reminder_ref_strategy(),

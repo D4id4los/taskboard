@@ -39,8 +39,12 @@ mod tests {
 
     #[test]
     fn rejections_wrap_their_semantic_cause() {
-        let err = ExecuteError::from(CommandError::NoBoard);
-        assert!(matches!(err, ExecuteError::Rejected(CommandError::NoBoard)));
+        let board = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0xB0A0));
+        let err = ExecuteError::from(CommandError::UnknownBoard(board));
+        assert!(matches!(
+            err,
+            ExecuteError::Rejected(CommandError::UnknownBoard(id)) if id == board
+        ));
     }
 
     #[test]

@@ -64,8 +64,10 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
         .await
         .expect("engine boots");
 
+        let board_id = seeded_board().id;
         let stack = engine
             .execute(StateCommand::CreateStack {
+                board: board_id,
                 title: "todo".into(),
                 order: 1,
             })

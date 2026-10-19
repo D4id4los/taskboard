@@ -535,10 +535,19 @@ async fn i1_offline_creates_round_trip_to_the_server() {
     // fact) instead of sleeping through the actor's first tick.
     wait_subscribed(&stack.system_tx).await;
     bind_board(&commands).await;
+    let board_id = *stack
+        .engine
+        .shared_state()
+        .load()
+        .boards
+        .keys()
+        .next()
+        .expect("the seeded board");
 
     let CommandOutcome::CreatedStack(stack_id) = stack
         .engine
         .execute(taskboard_domain::StateCommand::CreateStack {
+            board: board_id,
             title: "col2".into(),
             order: 1,
         })

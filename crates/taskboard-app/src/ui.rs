@@ -275,6 +275,7 @@ mod tests {
                 order: 1,
             },
             StateCommand::CreateStack {
+                board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7()),
                 title: "done".into(),
                 order: 2,
             },

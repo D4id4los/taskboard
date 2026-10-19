@@ -46,7 +46,7 @@ async fn board_with_stack(config: &AppConfig, board: &str, stack: &str) {
     boards::create(config.clone(), forbidden_store(), board, None)
         .await
         .expect("board");
-    stacks::add(config.clone(), forbidden_store(), stack, None)
+    stacks::add(config.clone(), forbidden_store(), None, stack, None)
         .await
         .expect("stack");
 }
@@ -288,23 +288,25 @@ async fn e3b_deleted_task_is_not_a_selector_hit() {
 
 /// E4: `boards rename` — the title change is durable across invocations,
 /// a same-title repeat exits 0 (`NoOp`), and a board-less db is the typed
-/// `no-board` kind.
+/// `ambiguous-board` refusal (empty candidates).
 #[tokio::test]
 async fn e4_boards_rename_is_durable_and_idempotent() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "e4.db");
 
-    let err = boards::rename(config.clone(), forbidden_store(), "ghost").await;
+    let err = boards::rename(config.clone(), forbidden_store(), None, "ghost").await;
+    let err = err.expect_err("no board");
     assert_eq!(
-        err.expect_err("no board").error_kind(),
-        "no-board",
-        "a board-less db surfaces the engine's own rejection"
+        err.error_kind(),
+        "ambiguous-board",
+        "a board-less db surfaces the typed ambiguity refusal"
     );
+    assert_eq!(err.error_detail().as_deref(), Some(""));
 
     boards::create(config.clone(), forbidden_store(), "Personal", None)
         .await
         .expect("board");
-    let receipt = boards::rename(config.clone(), forbidden_store(), "Renamed Board")
+    let receipt = boards::rename(config.clone(), forbidden_store(), None, "Renamed Board")
         .await
         .expect("rename");
     assert_eq!(receipt.title, "Renamed Board");
@@ -312,14 +314,14 @@ async fn e4_boards_rename_is_durable_and_idempotent() {
     // Durability: a fresh invocation still sees the rename; a repeat of
     // the same title is an idempotent success.
     let config2 = standalone_config(dir.path(), "e4.db");
-    let repeat = boards::rename(config2.clone(), forbidden_store(), "Renamed Board")
+    let repeat = boards::rename(config2.clone(), forbidden_store(), None, "Renamed Board")
         .await
         .expect("repeat rename");
     assert_eq!(repeat.title, "Renamed Board");
 
     // The rename coexists with the rest of the editing surface: tasks
     // still list against the renamed board's stacks.
-    stacks::add(config2, forbidden_store(), "Todo", None)
+    stacks::add(config2, forbidden_store(), None, "Todo", None)
         .await
         .expect("stack after rename");
 }
@@ -397,23 +399,29 @@ async fn e6_labels_group() {
     board_with_stack(&config, "Personal", "Todo").await;
 
     // Empty list on a fresh board.
-    let rows = labels::list(config.clone(), forbidden_store())
+    let rows = labels::list(config.clone(), forbidden_store(), None)
         .await
         .expect("list");
     assert_eq!(rows.len(), 0);
 
     // Add: explicit color, then the default.
-    let urgent = labels::add(config.clone(), forbidden_store(), "urgent", Some("FF00AA"))
-        .await
-        .expect("add explicit");
+    let urgent = labels::add(
+        config.clone(),
+        forbidden_store(),
+        None,
+        "urgent",
+        Some("FF00AA"),
+    )
+    .await
+    .expect("add explicit");
     assert_eq!(urgent.color, "ff00aa", "six hex digits, lowercased");
-    let later = labels::add(config.clone(), forbidden_store(), "later", None)
+    let later = labels::add(config.clone(), forbidden_store(), None, "later", None)
         .await
         .expect("add default");
     assert_eq!(later.color, taskboard_app::cli::DEFAULT_LABEL_COLOR);
 
     // List: both rows, zero assignments so far.
-    let rows = labels::list(config.clone(), forbidden_store())
+    let rows = labels::list(config.clone(), forbidden_store(), None)
         .await
         .expect("list");
     assert_eq!(rows.len(), 2);
@@ -439,7 +447,7 @@ async fn e6_labels_group() {
     let _ = tasks::label(config.clone(), forbidden_store(), &created.id, "critical")
         .await
         .expect("assign");
-    let rows = labels::list(config.clone(), forbidden_store())
+    let rows = labels::list(config.clone(), forbidden_store(), None)
         .await
         .expect("list");
     let critical = rows.iter().find(|r| r.title == "critical").expect("row");
@@ -460,7 +468,9 @@ async fn e6_labels_group() {
         .await
         .expect("repeat delete");
     assert_eq!(repeat.id, gone.id);
-    let rows = labels::list(config, forbidden_store()).await.expect("list");
+    let rows = labels::list(config, forbidden_store(), None)
+        .await
+        .expect("list");
     assert_eq!(rows.len(), 1, "only 'critical' remains");
 }
 
@@ -472,10 +482,10 @@ async fn e7_tasks_label_unlabel() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "e7.db");
     board_with_stack(&config, "Personal", "Todo").await;
-    let _ = labels::add(config.clone(), forbidden_store(), "urgent", None)
+    let _ = labels::add(config.clone(), forbidden_store(), None, "urgent", None)
         .await
         .expect("label");
-    let _ = labels::add(config.clone(), forbidden_store(), "someday", None)
+    let _ = labels::add(config.clone(), forbidden_store(), None, "someday", None)
         .await
         .expect("second label");
     let created = tasks::add(config.clone(), forbidden_store(), "card", None)

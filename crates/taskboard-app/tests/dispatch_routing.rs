@@ -253,6 +253,7 @@ async fn boards_rename_routes_a_failed_credential_load_to_exit_one() {
     let code = dispatch(
         Command::Boards {
             cmd: BoardsCmd::Rename {
+                board: None,
                 title: "t".to_owned(),
             },
         },
@@ -322,7 +323,7 @@ async fn labels_list_routes_a_failed_credential_load_to_exit_one() {
     let mut err = Vec::new();
     let code = dispatch(
         Command::Labels {
-            cmd: LabelsCmd::List,
+            cmd: LabelsCmd::List { board: None },
         },
         ctx(dir.path(), &mut out, &mut err),
     )
@@ -338,6 +339,7 @@ async fn labels_add_routes_a_failed_credential_load_to_exit_one() {
     let code = dispatch(
         Command::Labels {
             cmd: LabelsCmd::Add {
+                board: None,
                 title: "l".to_owned(),
                 color: None,
             },
@@ -550,17 +552,20 @@ async fn one_shot_core_verbs_route_success_end_to_end() {
     });
     run!(Command::Boards {
         cmd: BoardsCmd::Rename {
+            board: None,
             title: "Work".to_owned(),
         },
     });
     run!(Command::Stacks {
         cmd: StacksCmd::Add {
+            board: None,
             title: "Todo".to_owned(),
             order: None,
         },
     });
     run!(Command::Stacks {
         cmd: StacksCmd::Add {
+            board: None,
             title: "Scratch".to_owned(),
             order: None,
         },
@@ -584,12 +589,13 @@ async fn one_shot_core_verbs_route_success_end_to_end() {
     });
     run!(Command::Labels {
         cmd: LabelsCmd::Add {
+            board: None,
             title: "urgent".to_owned(),
             color: Some("ff0000".to_owned()),
         },
     });
     run!(Command::Labels {
-        cmd: LabelsCmd::List,
+        cmd: LabelsCmd::List { board: None },
     });
     run!(Command::Labels {
         cmd: LabelsCmd::Edit {

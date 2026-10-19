@@ -74,9 +74,11 @@ fn two_stacks_json() -> String {
     .to_string()
 }
 
-/// V1: `tasks add` with no bound board → typed `no-board`, exit class 1.
+/// V1: `tasks add` with no live board → the typed `ambiguous-board`
+/// refusal with empty candidates (the sanctioned zero-boards mapping),
+/// exit class 1.
 #[tokio::test]
-async fn v1_add_without_a_board_is_no_board() {
+async fn v1_add_without_a_board_is_the_empty_ambiguity_refusal() {
     let dir = tempdir();
     let server = wiremock::MockServer::start().await;
     let config = config_for(&server.uri(), dir.path(), "v1.db");
@@ -84,7 +86,8 @@ async fn v1_add_without_a_board_is_no_board() {
     let err = tasks::add(config, store_for(&server.uri()), "t", None)
         .await
         .expect_err("no board bound");
-    assert_eq!(err.error_kind(), "no-board");
+    assert_eq!(err.error_kind(), "ambiguous-board");
+    assert_eq!(err.error_detail().as_deref(), Some(""), "zero candidates");
 }
 
 /// V2: seeded board + pulled stack → add by exact title and by exact
@@ -410,7 +413,11 @@ async fn v9_select_refuses_rebind_and_accepts_same_id() {
     .await
     .expect_err("rebind refused");
     assert_eq!(err.error_kind(), "board-already-bound");
-    assert_eq!(err.error_detail().as_deref(), Some("999"));
+    let local = uuid::Uuid::from_u128(0x00DA_000E).to_string();
+    assert_eq!(
+        err.error_detail().as_deref(),
+        Some(format!("{local} (bound remote 999)").as_str())
+    );
 
     // Same id → idempotent success.
     let dir = tempdir();
@@ -667,6 +674,7 @@ async fn v15_board_color_and_archive_edit_receipts() {
     let receipt = boards::color(
         config_for(&server.uri(), dir.path(), "v15.db"),
         Arc::clone(&store),
+        None,
         taskboard_domain::Color::new("00c2e0"),
     )
     .await
@@ -676,6 +684,7 @@ async fn v15_board_color_and_archive_edit_receipts() {
     let receipt = boards::archive(
         config_for(&server.uri(), dir.path(), "v15.db"),
         Arc::clone(&store),
+        None,
         true,
     )
     .await
@@ -685,6 +694,7 @@ async fn v15_board_color_and_archive_edit_receipts() {
     let receipt = boards::archive(
         config_for(&server.uri(), dir.path(), "v15.db"),
         Arc::clone(&store),
+        None,
         false,
     )
     .await
@@ -694,6 +704,7 @@ async fn v15_board_color_and_archive_edit_receipts() {
     let again = boards::archive(
         config_for(&server.uri(), dir.path(), "v15.db"),
         store,
+        None,
         false,
     )
     .await
@@ -708,11 +719,12 @@ async fn v15_board_color_and_archive_edit_receipts() {
     let ok = taskboard_app::cli::Cli::try_parse_from(["taskboard", "boards", "color", "00C2E0"])
         .expect("valid color parses");
     let Some(taskboard_app::cli::Command::Boards {
-        cmd: taskboard_app::cli::BoardsCmd::Color { color },
+        cmd: taskboard_app::cli::BoardsCmd::Color { board, color },
     }) = ok.command
     else {
         panic!("wrong command");
     };
+    assert_eq!(board, None, "the flag stays optional");
     assert_eq!(color, "00c2e0", "the parser normalizes to lowercase");
 }
 
@@ -733,6 +745,7 @@ async fn v16_delete_confirmation_ceremony() {
     let stack = taskboard_app::commands::stacks::add(
         config_for(&server.uri(), dir.path(), "v16.db"),
         Arc::clone(&store),
+        None,
         "col",
         None,
     )
@@ -752,6 +765,7 @@ async fn v16_delete_confirmation_ceremony() {
     let err = boards::delete(
         config_for(&server.uri(), dir.path(), "v16.db"),
         Arc::clone(&store),
+        None,
         false,
     )
     .await
@@ -762,6 +776,7 @@ async fn v16_delete_confirmation_ceremony() {
     let receipt = boards::delete(
         config_for(&server.uri(), dir.path(), "v16.db"),
         Arc::clone(&store),
+        None,
         true,
     )
     .await
@@ -793,6 +808,7 @@ async fn v17_reset_confirmation_ceremony() {
     let stack = taskboard_app::commands::stacks::add(
         config_for(&server.uri(), dir.path(), "v17.db"),
         Arc::clone(&store),
+        None,
         "col",
         None,
     )
@@ -810,6 +826,7 @@ async fn v17_reset_confirmation_ceremony() {
     let err = boards::reset(
         config_for(&server.uri(), dir.path(), "v17.db"),
         Arc::clone(&store),
+        None,
         false,
     )
     .await
@@ -819,6 +836,7 @@ async fn v17_reset_confirmation_ceremony() {
     let receipt = boards::reset(
         config_for(&server.uri(), dir.path(), "v17.db"),
         Arc::clone(&store),
+        None,
         true,
     )
     .await
@@ -828,9 +846,14 @@ async fn v17_reset_confirmation_ceremony() {
 
     // The repeat sees the already-empty scope (the engine's no-op) with
     // nothing left to lose.
-    let repeat = boards::reset(config_for(&server.uri(), dir.path(), "v17.db"), store, true)
-        .await
-        .expect("confirmed repeat");
+    let repeat = boards::reset(
+        config_for(&server.uri(), dir.path(), "v17.db"),
+        store,
+        None,
+        true,
+    )
+    .await
+    .expect("confirmed repeat");
     assert_eq!(
         (
             repeat.stacks,
@@ -840,4 +863,279 @@ async fn v17_reset_confirmation_ceremony() {
         ),
         (0, 0, 0, 0)
     );
+}
+
+// ---- V18: the board-scoped vocabulary (`--board` flag, invocation
+// default, typed refusals) over two-board cores -------------------------
+
+/// Seeds two live boards on one db through `boards create` (which always
+/// mints now), returning their uuids in creation (board-id) order.
+async fn two_boards(
+    server: &wiremock::MockServer,
+    dir: &std::path::Path,
+    db: &str,
+) -> (AppConfig, String, String) {
+    let config = config_for(&server.uri(), dir, db);
+    let store = store_for(&server.uri());
+    let a = boards::create(config.clone(), Arc::clone(&store), "alpha", None)
+        .await
+        .expect("board a");
+    let b = boards::create(config.clone(), Arc::clone(&store), "beta", None)
+        .await
+        .expect("board b");
+    (config, a.id, b.id)
+}
+
+/// The default resolution refuses typed when ≥2 live boards make the
+/// pick ambiguous, listing both candidates in board-id order.
+#[tokio::test]
+async fn v18_unflagged_two_board_rename_is_the_ambiguity_refusal() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    mount_pull(&server, "[]".to_owned()).await;
+    let (config, a, b) = two_boards(&server, dir.path(), "v18a.db").await;
+
+    let err = boards::rename(config, store_for(&server.uri()), None, "x")
+        .await
+        .expect_err("two live boards");
+    assert_eq!(err.error_kind(), "ambiguous-board");
+    assert_eq!(
+        err.error_detail().as_deref(),
+        Some(format!("{a}, {b}").as_str())
+    );
+}
+
+/// The `--board` flag targets the named board: the rename lands on it
+/// and the other board is untouched.
+#[tokio::test]
+async fn v18_flagged_rename_targets_the_named_board() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    mount_pull(&server, "[]".to_owned()).await;
+    let (config, a, b) = two_boards(&server, dir.path(), "v18b.db").await;
+    let store = store_for(&server.uri());
+
+    let receipt = boards::rename(
+        config.clone(),
+        Arc::clone(&store),
+        Some(taskboard_domain::BoardId::from_uuid(
+            uuid::Uuid::parse_str(&a).unwrap(),
+        )),
+        "renamed alpha",
+    )
+    .await
+    .expect("flagged rename");
+    assert_eq!(receipt.id, a);
+    assert_eq!(receipt.title, "renamed alpha");
+
+    // A second invocation resolves each board independently: beta kept
+    // its title, alpha kept its rename.
+    let a_receipt = boards::rename(
+        config.clone(),
+        Arc::clone(&store),
+        Some(taskboard_domain::BoardId::from_uuid(
+            uuid::Uuid::parse_str(&a).unwrap(),
+        )),
+        "renamed alpha",
+    )
+    .await
+    .expect("alpha re-read");
+    assert_eq!(a_receipt.title, "renamed alpha");
+    let b_receipt = boards::rename(
+        config,
+        Arc::clone(&store),
+        Some(taskboard_domain::BoardId::from_uuid(
+            uuid::Uuid::parse_str(&b).unwrap(),
+        )),
+        "beta",
+    )
+    .await
+    .expect("beta re-read");
+    assert_eq!(b_receipt.title, "beta");
+}
+
+/// A flagged id that names nothing / a tombstone refuses with the
+/// engine's typed rejections before any command is constructed.
+#[tokio::test]
+async fn v18_flagged_unknown_and_deleted_boards_refuse_typed() {
+    use taskboard_app::commands::CommandError;
+    use taskboard_domain::CommandError as D;
+    use taskboard_state::ExecuteError;
+
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    mount_pull(&server, "[]".to_owned()).await;
+    let (config, _a, b) = two_boards(&server, dir.path(), "v18c.db").await;
+    let store = store_for(&server.uri());
+    let stranger = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x57_414_1E5));
+
+    let err = boards::rename(config.clone(), Arc::clone(&store), Some(stranger), "x")
+        .await
+        .expect_err("unknown board");
+    assert!(matches!(
+        err,
+        CommandError::Engine(ref boxed)
+            if matches!(&**boxed, ExecuteError::Rejected(D::UnknownBoard(id)) if *id == stranger)
+    ));
+
+    // Tombstone beta, then the same flag refuses the deleted class.
+    boards::delete(
+        config.clone(),
+        Arc::clone(&store),
+        Some(taskboard_domain::BoardId::from_uuid(
+            uuid::Uuid::parse_str(&b).unwrap(),
+        )),
+        true,
+    )
+    .await
+    .expect("beta deleted");
+    let err = boards::rename(
+        config,
+        store_for(&server.uri()),
+        Some(taskboard_domain::BoardId::from_uuid(
+            uuid::Uuid::parse_str(&b).unwrap(),
+        )),
+        "x",
+    )
+    .await
+    .expect_err("deleted board");
+    assert_eq!(err.error_kind(), "unknown-board");
+    assert!(matches!(
+        err,
+        CommandError::Engine(ref boxed)
+            if matches!(&**boxed, ExecuteError::Rejected(D::BoardDeleted(_)))
+    ));
+}
+
+/// `stacks add` scopes the append order to the named board: two boards
+/// with different stack maxima append independently.
+#[tokio::test]
+async fn v18_stack_add_scopes_the_append_order_to_the_named_board() {
+    use taskboard_app::commands::stacks;
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    mount_pull(&server, "[]".to_owned()).await;
+    let (config, a, b) = two_boards(&server, dir.path(), "v18d.db").await;
+    let store = store_for(&server.uri());
+    let board = |uuid: &str| {
+        Some(taskboard_domain::BoardId::from_uuid(
+            uuid::Uuid::parse_str(uuid).unwrap(),
+        ))
+    };
+
+    // alpha grows two stacks (orders 0, 1); beta only one (order 0).
+    for title in ["a1", "a2"] {
+        stacks::add(config.clone(), Arc::clone(&store), board(&a), title, None)
+            .await
+            .expect("alpha stack");
+    }
+    stacks::add(config.clone(), Arc::clone(&store), board(&b), "b1", None)
+        .await
+        .expect("beta stack");
+
+    // The scoping pin: beta's append continues from beta's maximum, not
+    // alpha's.
+    let appended = stacks::add(config, Arc::clone(&store), board(&b), "b2", None)
+        .await
+        .expect("beta append");
+    assert_eq!(appended.order, 1, "beta's own maximum + 1");
+}
+
+/// `labels add`/`labels list` scope by the named board.
+#[tokio::test]
+async fn v18_labels_scope_by_the_named_board() {
+    use taskboard_app::commands::labels;
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    mount_pull(&server, "[]".to_owned()).await;
+    let (config, a, b) = two_boards(&server, dir.path(), "v18e.db").await;
+    let store = store_for(&server.uri());
+    let board = |uuid: &str| {
+        Some(taskboard_domain::BoardId::from_uuid(
+            uuid::Uuid::parse_str(uuid).unwrap(),
+        ))
+    };
+
+    let _ = labels::add(
+        config.clone(),
+        Arc::clone(&store),
+        board(&b),
+        "beta-only",
+        None,
+    )
+    .await
+    .expect("beta label");
+
+    let alpha_rows = labels::list(config.clone(), Arc::clone(&store), board(&a))
+        .await
+        .expect("alpha list");
+    assert!(alpha_rows.is_empty(), "alpha does not see beta's label");
+    let beta_rows = labels::list(config, Arc::clone(&store), board(&b))
+        .await
+        .expect("beta list");
+    assert_eq!(beta_rows.len(), 1);
+    assert_eq!(beta_rows[0].title, "beta-only");
+}
+
+/// The clap surface: `--board` parses on the board-scoped verbs, a
+/// malformed uuid is a usage error (exit-2 class).
+#[test]
+fn v18_board_flag_parses_uuids_and_rejects_garbage() {
+    use clap::Parser as _;
+    use taskboard_app::cli::{BoardsCmd, Cli, LabelsCmd, StacksCmd};
+    let good = "00000000-0000-0000-0000-000000000001";
+
+    let verbs: Vec<Vec<&str>> = vec![
+        vec!["taskboard", "boards", "rename", "--board", good, "t"],
+        vec!["taskboard", "boards", "publish", "--board", good],
+        vec!["taskboard", "boards", "color", "--board", good, "3366cc"],
+        vec!["taskboard", "boards", "archive", "--board", good],
+        vec!["taskboard", "boards", "unarchive", "--board", good],
+        vec![
+            "taskboard",
+            "boards",
+            "delete",
+            "--board",
+            good,
+            "--confirm",
+        ],
+        vec!["taskboard", "boards", "reset", "--board", good, "--confirm"],
+        vec!["taskboard", "stacks", "add", "--board", good, "t"],
+        vec!["taskboard", "labels", "list", "--board", good],
+        vec!["taskboard", "labels", "add", "--board", good, "t"],
+    ];
+    for argv in &verbs {
+        let parsed = Cli::try_parse_from(argv).unwrap_or_else(|e| {
+            panic!("{argv:?} must parse: {e}");
+        });
+        let has_board = match &parsed.command {
+            Some(taskboard_app::cli::Command::Boards { cmd }) => matches!(
+                cmd,
+                BoardsCmd::Rename { board: Some(_), .. }
+                    | BoardsCmd::Publish { board: Some(_), .. }
+                    | BoardsCmd::Color { board: Some(_), .. }
+                    | BoardsCmd::Archive { board: Some(_) }
+                    | BoardsCmd::Unarchive { board: Some(_) }
+                    | BoardsCmd::Delete { board: Some(_), .. }
+                    | BoardsCmd::Reset { board: Some(_), .. }
+            ),
+            Some(taskboard_app::cli::Command::Stacks { cmd }) => {
+                matches!(cmd, StacksCmd::Add { board: Some(_), .. })
+            }
+            Some(taskboard_app::cli::Command::Labels { cmd }) => {
+                matches!(
+                    cmd,
+                    LabelsCmd::List { board: Some(_) } | LabelsCmd::Add { board: Some(_), .. }
+                )
+            }
+            _ => false,
+        };
+        assert!(has_board, "{argv:?} must carry the parsed board");
+    }
+
+    for bad in ["not-a-uuid", "3"] {
+        let err = Cli::try_parse_from(["taskboard", "boards", "rename", "--board", bad, "t"])
+            .expect_err("malformed uuid");
+        assert_eq!(err.exit_code(), 2, "{bad} is a usage error");
+    }
 }

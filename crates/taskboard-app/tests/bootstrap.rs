@@ -947,16 +947,21 @@ async fn notifier_join_is_bounded_with_a_delivery_in_flight() {
 /// One live stack on the fresh db: a stack create requires a board, so
 /// the board is minted first (both through the engine).
 async fn seed_a_stack(app: &App) -> StackId {
-    app.engine
+    let outcome = app
+        .engine
         .execute(StateCommand::CreateBoard {
             title: "board".to_owned(),
             color: Color::new("3366cc"),
         })
         .await
         .expect("board created");
+    let taskboard_domain::CommandOutcome::CreatedBoard(created_board_id) = outcome else {
+        panic!("expected CreatedBoard");
+    };
     let outcome = app
         .engine
         .execute(StateCommand::CreateStack {
+            board: created_board_id,
             title: "stack".to_owned(),
             order: 0,
         })
