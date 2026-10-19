@@ -196,6 +196,10 @@ pub enum PersistenceAction {
     /// load time from the outbox attribution, so a stored counter can never
     /// drift from the queue it summarizes.
     UpsertSyncStatus(crate::ids::BoardId, SyncStatus),
+    /// Drop one board's sync-status row: the `UnbindBoard` ceremony's
+    /// cleanup — a stale `Synced`/`Failed` row for an unbound board
+    /// would be a lie the badge could show. Absent row = no-op.
+    DeleteSyncStatus(crate::ids::BoardId),
     /// Insert or replace a reminder rule.
     UpsertReminderRule(crate::reminders::ReminderRule),
     /// Remove a rule **and prune its deliveries and snooze links**:
@@ -276,6 +280,9 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 state
                     .sync
                     .set_stored(*board, status.phase, status.last_success);
+            }
+            PersistenceAction::DeleteSyncStatus(board) => {
+                state.sync.remove(*board);
             }
             PersistenceAction::UpsertReminderRule(rule) => {
                 state.reminders.rules.insert(rule.id, rule.clone());
@@ -601,6 +608,66 @@ mod tests {
             stored.pending_ops, 0,
             "the counter is re-derived from the (empty) outbox after the batch"
         );
+    }
+
+    #[test]
+    fn delete_sync_status_removes_only_that_row() {
+        let mut state = PersistedState::default();
+        let known = crate::ids::BoardId::from(uuid::Uuid::from_u128(71));
+        let orphan = crate::ids::BoardId::from(uuid::Uuid::from_u128(72));
+        // The known board exists in the maps (its row re-materializes as
+        // a default after the delete); the orphan has no board row at
+        // all (its row is dropped wholesale).
+        state.boards.insert(
+            known,
+            crate::entities::Board {
+                id: known,
+                remote: None,
+                title: "board".into(),
+                color: crate::entities::Color::new("0000ff"),
+                archived: false,
+                deleted: false,
+                clocks: crate::entities::BoardClocks {
+                    title: crate::entities::BoardClocks::epoch(),
+                    color: crate::entities::BoardClocks::epoch(),
+                    archived: crate::entities::BoardClocks::epoch(),
+                    deleted: crate::entities::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        for board in [known, orphan] {
+            apply_actions(
+                &mut state,
+                &[PersistenceAction::UpsertSyncStatus(
+                    board,
+                    SyncStatus {
+                        phase: crate::state::SyncPhase::Failed {
+                            last_error: crate::state::SyncErrorKind::Network,
+                        },
+                        last_success: Some(ts(400)),
+                        pending_ops: 0,
+                    },
+                )],
+            );
+        }
+        apply_actions(&mut state, &[PersistenceAction::DeleteSyncStatus(known)]);
+        // The deleted board is known to the maps, so the derivation
+        // re-materializes a default row — the *stored* part (phase,
+        // last success) is what the delete clears.
+        let known_row = state.sync.get(known).expect("materialized default row");
+        assert_eq!(known_row.phase, crate::state::SyncPhase::Idle);
+        assert_eq!(known_row.last_success, None);
+        // A row of a board absent from the maps survives untouched —
+        // the delete removes only the named board's row.
+        let orphan_row = state.sync.get(orphan).expect("only the named row goes");
+        assert_eq!(
+            orphan_row.phase,
+            crate::state::SyncPhase::Failed {
+                last_error: crate::state::SyncErrorKind::Network
+            }
+        );
+        assert_eq!(orphan_row.last_success, Some(ts(400)));
     }
 
     #[test]

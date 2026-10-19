@@ -1185,9 +1185,21 @@ fn apply_push_outcomes(
                 }
             },
             PushResult::Rejected { kind } => {
-                // BadRequest dead-letters; everything else stays queued
-                // untouched for retry.
-                if *kind == SyncErrorKind::BadRequest {
+                // BadRequest dead-letters (malformed write, permanent).
+                // A `LocalData` rejection dead-letters only the
+                // post-wipe signature: an update-class op on a
+                // *ref-less* entity whose owning board is bound — the
+                // remote reports the ref unknown, and that ref will not
+                // come back. Every other stranding class stays queued
+                // for retry: create-class ops on ref-less entities
+                // re-create once the owning stack re-binds; ref-less
+                // entities of an unbound board wait (the standalone
+                // precedent); entities bound to another remote carry
+                // refs and wait.
+                let dead_letter = *kind == SyncErrorKind::BadRequest
+                    || (*kind == SyncErrorKind::LocalData
+                        && dead_letters_localdata(&op.op, boards, stacks, tasks, labels));
+                if dead_letter {
                     op_results.insert(outcome.op, false);
                     tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, kind = ?kind, "push dead-lettered");
                 } else {
@@ -1197,6 +1209,43 @@ fn apply_push_outcomes(
         }
     }
     op_results
+}
+
+/// The dead-letter predicate for a `Rejected { LocalData }` outcome:
+/// `true` only for an *update-class* op on an entity that exists,
+/// carries no remote ref, and whose owning board is bound — the
+/// post-bind-wipe signature (design D3-3). Create-class ops never
+/// dead-letter here (they re-create on the new remote); board ops and
+/// deletes are not update-class.
+fn dead_letters_localdata(
+    op: &LocalOp,
+    boards: &BTreeMap<BoardId, Board>,
+    stacks: &BTreeMap<StackId, Stack>,
+    tasks: &BTreeMap<TaskId, Task>,
+    labels: &BTreeMap<LabelId, Label>,
+) -> bool {
+    let candidate = match op {
+        LocalOp::UpdateTask(id)
+        | LocalOp::MoveTask(id)
+        | LocalOp::AssignLabel(id, _)
+        | LocalOp::UnassignLabel(id, _) => tasks
+            .get(id)
+            .map(|t| (t.remote.is_none(), stacks.get(&t.stack).map(|s| s.board))),
+        LocalOp::RenameStack(id) | LocalOp::MoveStack(id) => {
+            stacks.get(id).map(|s| (s.remote.is_none(), Some(s.board)))
+        }
+        LocalOp::UpdateLabel(id) => labels.get(id).map(|l| (l.remote.is_none(), Some(l.board))),
+        _ => None,
+    };
+    match candidate {
+        Some((refless, owning_board)) => {
+            refless
+                && owning_board
+                    .and_then(|board| boards.get(&board))
+                    .is_some_and(|board| board.remote.is_some())
+        }
+        None => false,
+    }
 }
 
 fn cascade_board(
@@ -2149,6 +2198,140 @@ mod tests {
             SyncPhase::Failed {
                 last_error: SyncErrorKind::BadRequest
             }
+        );
+    }
+
+    /// A `LocalData`-rejected update on the post-wipe signature: the
+    /// dead-letter rule (D3-3) removes the op and counts it.
+    #[test]
+    fn localdata_rejected_update_on_refless_entity_of_bound_board_failops() {
+        let mut task = bound_task(1);
+        task.remote = None; // the bind-wipe signature
+        let base = base_state(task);
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(63));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateTask(TaskId::from(uuid::Uuid::from_u128(1))),
+            queued_at: ts(BASE),
+        };
+        let (merged, actions) = apply_push_report(
+            &base,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: crate::remote::PushResult::Rejected {
+                    kind: SyncErrorKind::LocalData,
+                },
+            }],
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+        assert!(
+            actions.contains(&PersistenceAction::FailOp(op_id)),
+            "the stranded update dead-letters"
+        );
+        assert_eq!(merged.sync.aggregate().pending_ops, 0);
+    }
+
+    #[test]
+    fn localdata_rejected_update_on_never_bound_board_stays_queued() {
+        let mut task = bound_task(1);
+        task.remote = None;
+        let mut base = base_state(task);
+        // The board itself is unbound: the standalone precedent — ops wait.
+        let board = base.boards.values_mut().next().unwrap();
+        board.remote = None;
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(64));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateTask(TaskId::from(uuid::Uuid::from_u128(1))),
+            queued_at: ts(BASE),
+        };
+        let (_, actions) = apply_push_report(
+            &base,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: crate::remote::PushResult::Rejected {
+                    kind: SyncErrorKind::LocalData,
+                },
+            }],
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(_))),
+            "an unbound board's ops wait, they do not die"
+        );
+    }
+
+    #[test]
+    fn localdata_rejected_op_on_entity_bound_elsewhere_stays_queued() {
+        // The entity carries a ref (bound to another remote): it waits
+        // (chunk 4's ownership filter owns that world).
+        let base = base_state(bound_task(1));
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(65));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateTask(task_by_card(&base, 1).id),
+            queued_at: ts(BASE),
+        };
+        let (_, actions) = apply_push_report(
+            &base,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: crate::remote::PushResult::Rejected {
+                    kind: SyncErrorKind::LocalData,
+                },
+            }],
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(_))),
+            "a ref-carrying entity's op waits"
+        );
+    }
+
+    #[test]
+    fn localdata_rejected_create_class_stays_queued() {
+        // The re-create promise: create-ops on ref-less entities of a
+        // bound board survive (they re-create on the new remote).
+        let mut task = bound_task(1);
+        task.remote = None;
+        let base = base_state(task);
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(66));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::CreateTask(TaskId::from(uuid::Uuid::from_u128(1))),
+            queued_at: ts(BASE),
+        };
+        let (_, actions) = apply_push_report(
+            &base,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: crate::remote::PushResult::Rejected {
+                    kind: SyncErrorKind::LocalData,
+                },
+            }],
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::FailOp(_))),
+            "create-class ops re-create, they never die here"
         );
     }
 

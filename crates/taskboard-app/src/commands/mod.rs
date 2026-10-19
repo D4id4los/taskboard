@@ -346,6 +346,7 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::UnknownStack(_) | D::StackDeleted(_) => "unknown-stack",
         D::UnknownLabel(_) | D::LabelDeleted(_) => "unknown-label",
         D::BoardAlreadyBound { .. } => "board-already-bound",
+        D::RemoteBoardInUse { .. } => "remote-board-in-use",
         D::UnknownReminderRule(_) => "unknown-reminder-rule",
         D::InvalidSnoozePostpone => "invalid-snooze-postpone",
     }

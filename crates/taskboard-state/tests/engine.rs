@@ -1266,13 +1266,75 @@ async fn a15_bind_board_sets_the_remote_binding() {
         })
         .await
         .expect("accepted");
-    assert_eq!(outcome, CommandOutcome::Applied);
+    assert_eq!(outcome, CommandOutcome::Bound { wiped_refs: 0 });
     let app = h.handle.shared_state().load_full();
     assert!(
         app.boards
             .values()
             .any(|b| b.remote == Some(RemoteBoardId(42)))
     );
+    drop(h);
+}
+
+/// Routing only (the semantics live in the domain corpus): `UnbindBoard`
+/// executes end to end — the published state loses the binding and the
+/// board's stored status row drops to the derived default — and a
+/// repeat is an accepted `NoOp`.
+#[tokio::test]
+async fn unbind_arm_executes_publishes_and_repeats_as_noop() {
+    let mut seeded = common::seed_bound_board_state("board");
+    let board_id = seeded.boards.values().next().expect("one board").id;
+    // A stale stored status row: the unbind must drop it (a stale
+    // `Failed`/`Synced` row for an unbound board would be a lie).
+    seeded.sync.set_stored(
+        board_id,
+        SyncPhase::Failed {
+            last_error: SyncErrorKind::Network,
+        },
+        Some(chrono::Utc::now()),
+    );
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(seeded)),
+        ..Spawner::default()
+    })
+    .await;
+
+    let outcome = h
+        .handle
+        .execute(StateCommand::UnbindBoard { board: board_id })
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::Unbound { stranded_ops: 0 });
+
+    let app = h.handle.shared_state().load_full();
+    assert_eq!(app.boards[&board_id].remote, None, "binding cleared");
+    let row = app.sync.get(board_id).expect("derived row");
+    assert_eq!(row.phase, SyncPhase::Idle, "stored status dropped");
+    assert_eq!(row.last_success, None, "stored last success dropped");
+
+    let outcome = h
+        .handle
+        .execute(StateCommand::UnbindBoard { board: board_id })
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::NoOp, "idempotent repeat");
+    drop(h);
+}
+
+/// Routing only: `ReconcileByTitle` over a settled single-board state
+/// is an accepted `NoOp` (no candidates) — the engine rides the
+/// domain's plan-apply-interpret path untouched.
+#[tokio::test]
+async fn reconcile_arm_over_settled_state_is_noop() {
+    let h = harness().await;
+    let outcome = h
+        .handle
+        .execute(StateCommand::ReconcileByTitle {
+            board: h.board_id(),
+        })
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::NoOp);
     drop(h);
 }
 

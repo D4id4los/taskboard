@@ -87,6 +87,15 @@ pub enum CommandError {
         /// The remote board it is bound to.
         bound: RemoteBoardId,
     },
+    /// The remote board is already bound to a (named) local board: one
+    /// remote board binds to at most one local board.
+    #[error("the remote board is already bound to another local board")]
+    RemoteBoardInUse {
+        /// The contested remote board.
+        remote: RemoteBoardId,
+        /// The local board that holds the binding.
+        board: BoardId,
+    },
     /// No reminder rule with this id exists.
     #[error("unknown reminder rule")]
     UnknownReminderRule(ReminderRuleId),
@@ -127,6 +136,33 @@ pub enum CommandOutcome {
     },
     /// The command changed state.
     Applied,
+    /// The command bound the board to a remote board; `wiped_refs` is
+    /// the exact count of descendant remote refs the bind cleared
+    /// (foreign-ref descendants of the freshly bound board — zero when
+    /// the board carries none).
+    Bound {
+        /// How many descendant refs the bind wiped.
+        wiped_refs: usize,
+    },
+    /// The command detached the board's remote binding; `stranded_ops`
+    /// is the count of outbox ops attributed to the board that now wait
+    /// for a re-bind (honest stranding — nothing was cancelled).
+    Unbound {
+        /// How many queued ops strand until a re-bind.
+        stranded_ops: usize,
+    },
+    /// The command merged same-title duplicates; the counts are the
+    /// merged pairs per entity kind plus the cancelled create-ops.
+    Reconciled {
+        /// Merged stack pairs.
+        stacks: usize,
+        /// Merged label pairs.
+        labels: usize,
+        /// Merged task pairs.
+        tasks: usize,
+        /// Create-ops cancelled on survivors that just adopted a ref.
+        cancelled_ops: usize,
+    },
     /// Accepted, redundant repeat: nothing changed, nothing persisted.
     NoOp,
     /// Sync request accepted; the engine forwards it to the sync actor.
@@ -849,11 +885,116 @@ pub fn plan_command(
                 }
                 None => {}
             }
+            // One remote board binds to at most one local board.
+            if let Some(holder) = app
+                .boards
+                .values()
+                .find(|b| b.id != board_id && b.remote == Some(*remote))
+            {
+                return Err(CommandError::RemoteBoardInUse {
+                    remote: *remote,
+                    board: holder.id,
+                });
+            }
+            // The bind-wipe: foreign refs among the board's live
+            // descendants clear (the entity graph adopts the new
+            // remote's refs on the next pull); refs already naming the
+            // bind target stay (pathological-but-possible, not ours to
+            // destroy); create-class ops stay queued (they re-create
+            // under the new remote); update-class ops on wiped entities
+            // strand until the next push cycle dead-letters them
+            // (D3-3). Tombstoned descendants keep their refs — the R9c
+            // finalize pushes need them.
+            let mut actions: Vec<PersistenceAction> = Vec::new();
+            let mut wiped_refs = 0usize;
+            let board_stacks: Vec<Stack> = app
+                .stacks
+                .values()
+                .filter(|s| s.board == board_id && !s.deleted)
+                .cloned()
+                .collect();
+            let board_stack_ids: std::collections::BTreeSet<StackId> =
+                board_stacks.iter().map(|s| s.id).collect();
+            for mut stack in board_stacks {
+                if stack.remote.is_some_and(|r| r.board != *remote) {
+                    stack.remote = None;
+                    wiped_refs += 1;
+                    actions.push(PersistenceAction::UpsertStack(stack));
+                }
+            }
+            for mut task in app
+                .tasks
+                .values()
+                .filter(|t| t.is_live() && board_stack_ids.contains(&t.stack))
+                .cloned()
+                .collect::<Vec<Task>>()
+            {
+                if task.remote.is_some_and(|r| r.board != *remote) {
+                    task.remote = None;
+                    wiped_refs += 1;
+                    actions.push(PersistenceAction::UpsertTask(task));
+                }
+            }
+            for mut label in app
+                .labels
+                .values()
+                .filter(|l| l.board == board_id && !l.deleted)
+                .cloned()
+                .collect::<Vec<Label>>()
+            {
+                if label.remote.is_some_and(|r| r.board != *remote) {
+                    label.remote = None;
+                    wiped_refs += 1;
+                    actions.push(PersistenceAction::UpsertLabel(label));
+                }
+            }
             let mut updated = board.clone();
             updated.remote = Some(*remote);
+            actions.push(PersistenceAction::UpsertBoard(updated));
             Ok(CommandPlan {
-                actions: vec![PersistenceAction::UpsertBoard(updated)],
-                outcome: CommandOutcome::Applied,
+                actions,
+                outcome: CommandOutcome::Bound { wiped_refs },
+            })
+        }
+        StateCommand::UnbindBoard { board } => {
+            // Edit-style intent: a tombstoned board refuses (the R9c
+            // tombstone push needs its binding until it finalizes —
+            // unbinding would strand the remote delete and let the
+            // planner's unbound-delete Noop finalize it locally while
+            // the remote copy survives).
+            let board_id = live_board_of(app, *board)?;
+            let board = &app.boards[&board_id];
+            if board.remote.is_none() {
+                // Idempotent repeat: already unbound.
+                return Ok(no_op());
+            }
+            // Honest stranding: the outbox is untouched; the count is
+            // the same attribution the pending_ops projection uses.
+            let stranded_ops = count_stranded_ops(app, outbox, board_id);
+            let mut updated = board.clone();
+            updated.remote = None;
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertBoard(updated),
+                    PersistenceAction::DeleteSyncStatus(board_id),
+                ],
+                outcome: CommandOutcome::Unbound { stranded_ops },
+            })
+        }
+        StateCommand::ReconcileByTitle { board } => {
+            let board_id = live_board_of(app, *board)?;
+            let (actions, counts) = crate::reconcile::plan_reconcile(app, outbox, board_id);
+            if actions.is_empty() {
+                return Ok(no_op());
+            }
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::Reconciled {
+                    stacks: counts.stacks,
+                    labels: counts.labels,
+                    tasks: counts.tasks,
+                    cancelled_ops: counts.cancelled_ops,
+                },
             })
         }
         StateCommand::SnoozeReminder {
@@ -953,6 +1094,99 @@ fn enqueue(op: LocalOp, ids: &dyn IdGenerator, now: DateTime<Utc>) -> Persistenc
         op,
         queued_at: now,
     })
+}
+
+/// The outbox ops attributed to `board` through the entity graph — the
+/// same attribution the pending-ops projection derives (one truth for
+/// the unbind receipt's stranded count and the app's pre-count).
+fn count_stranded_ops(app: &AppState, outbox: &[PendingOp], board: BoardId) -> usize {
+    outbox
+        .iter()
+        .filter(|pending| {
+            crate::state::attributed_board(&pending.op, &app.stacks, &app.tasks, &app.labels)
+                == Some(board)
+        })
+        .count()
+}
+
+/// How many descendant refs a `BindBoard { board, remote }` would wipe:
+/// live stacks/tasks/labels of the board whose ref names a different
+/// remote board. The bind receipt's `wiped_refs` is this exact count.
+#[must_use]
+pub fn bind_wipe_count(app: &AppState, board: BoardId, remote: RemoteBoardId) -> usize {
+    let board_stacks: std::collections::BTreeSet<StackId> = app
+        .stacks
+        .values()
+        .filter(|s| s.board == board && !s.deleted)
+        .map(|s| s.id)
+        .collect();
+    let stacks = app
+        .stacks
+        .values()
+        .filter(|s| s.board == board && !s.deleted)
+        .filter(|s| s.remote.is_some_and(|r| r.board != remote))
+        .count();
+    let tasks = app
+        .tasks
+        .values()
+        .filter(|t| t.is_live() && board_stacks.contains(&t.stack))
+        .filter(|t| t.remote.is_some_and(|r| r.board != remote))
+        .count();
+    let labels = app
+        .labels
+        .values()
+        .filter(|l| l.board == board && !l.deleted)
+        .filter(|l| l.remote.is_some_and(|r| r.board != remote))
+        .count();
+    stacks + tasks + labels
+}
+
+/// The update-class outbox ops targeting entities a `BindBoard { board,
+/// remote }` would wipe — the bind receipt's *forecast* of stranded ops
+/// (an upper bound: some are re-matched by the follow-up reconcile and
+/// become pushable; the exact count lands push-side, D3-3/D3-6).
+#[must_use]
+pub fn bind_wipe_forecast(
+    app: &AppState,
+    outbox: &[PendingOp],
+    board: BoardId,
+    remote: RemoteBoardId,
+) -> usize {
+    let board_stacks: std::collections::BTreeSet<StackId> = app
+        .stacks
+        .values()
+        .filter(|s| s.board == board && !s.deleted)
+        .map(|s| s.id)
+        .collect();
+    let wipes_stack = |id: &StackId| {
+        app.stacks.get(id).is_some_and(|s| {
+            s.board == board && !s.deleted && s.remote.is_some_and(|r| r.board != remote)
+        })
+    };
+    let wipes_task = |id: &TaskId| {
+        app.tasks.get(id).is_some_and(|t| {
+            t.is_live()
+                && board_stacks.contains(&t.stack)
+                && t.remote.is_some_and(|r| r.board != remote)
+        })
+    };
+    let wipes_label = |id: &LabelId| {
+        app.labels.get(id).is_some_and(|l| {
+            l.board == board && !l.deleted && l.remote.is_some_and(|r| r.board != remote)
+        })
+    };
+    outbox
+        .iter()
+        .filter(|pending| match pending.op {
+            LocalOp::UpdateTask(id)
+            | LocalOp::MoveTask(id)
+            | LocalOp::AssignLabel(id, _)
+            | LocalOp::UnassignLabel(id, _) => wipes_task(&id),
+            LocalOp::RenameStack(id) | LocalOp::MoveStack(id) => wipes_stack(&id),
+            LocalOp::UpdateLabel(id) => wipes_label(&id),
+            _ => false,
+        })
+        .count()
 }
 
 fn all_task_clocks(now: DateTime<Utc>) -> TaskClocks {
@@ -2430,12 +2664,180 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(plan.outcome, CommandOutcome::Bound { wiped_refs: 0 });
         let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
             panic!("first action must be the board upsert");
         };
         assert_eq!(updated.remote, Some(crate::ids::RemoteBoardId(42)));
         assert_eq!(plan.actions.len(), 1, "bind carries no outbox op");
+    }
+
+    #[test]
+    fn bind_remote_held_by_another_board_refuses_remote_board_in_use() {
+        let mut app = unbound_board_state();
+        let other_raw = 801_u64;
+        let other = BoardId::from(uuid::Uuid::from_u128(u128::from(other_raw)));
+        let mut holder = app.boards[&board_id()].clone();
+        holder.id = other;
+        holder.remote = Some(crate::ids::RemoteBoardId(42));
+        app.boards.insert(other, holder);
+        assert_eq!(
+            run(
+                &app,
+                &[],
+                &StateCommand::BindBoard {
+                    board: board_id(),
+                    remote: crate::ids::RemoteBoardId(42)
+                }
+            ),
+            Err(CommandError::RemoteBoardInUse {
+                remote: crate::ids::RemoteBoardId(42),
+                board: other,
+            })
+        );
+    }
+
+    #[test]
+    fn bind_wipe_clears_only_foreign_refs() {
+        let mut app = unbound_board_state();
+        let stack = stack(901, false);
+        let board_stack = stack.id;
+        app.stacks.insert(board_stack, stack);
+        // Live descendants: one carrying an R1 ref (wipes), one already
+        // naming the bind target R2 (stays), one unbound (stays).
+        let mut foreign = task(2, board_stack, true);
+        foreign.remote = Some(crate::ids::RemoteCardRef {
+            board: crate::ids::RemoteBoardId(1),
+            stack: crate::ids::RemoteStackId(5),
+            card: crate::ids::RemoteCardId(2),
+        });
+        let foreign_id = foreign.id;
+        app.tasks.insert(foreign_id, foreign);
+        let mut already = task(3, board_stack, true);
+        already.remote = Some(crate::ids::RemoteCardRef {
+            board: crate::ids::RemoteBoardId(2),
+            stack: crate::ids::RemoteStackId(5),
+            card: crate::ids::RemoteCardId(3),
+        });
+        let already_id = already.id;
+        app.tasks.insert(already_id, already);
+        let local_only = task(4, board_stack, false);
+        let local_id = local_only.id;
+        app.tasks.insert(local_id, local_only);
+        // A tombstoned descendant keeps its ref (the R9c finalize needs it).
+        let mut dead = task(5, board_stack, true);
+        dead.deleted = true;
+        dead.remote = Some(crate::ids::RemoteCardRef {
+            board: crate::ids::RemoteBoardId(1),
+            stack: crate::ids::RemoteStackId(5),
+            card: crate::ids::RemoteCardId(5),
+        });
+        let dead_id = dead.id;
+        app.tasks.insert(dead_id, dead);
+
+        let plan = run(
+            &app,
+            &[],
+            &StateCommand::BindBoard {
+                board: board_id(),
+                remote: crate::ids::RemoteBoardId(2),
+            },
+        )
+        .unwrap();
+        let cleared: Vec<_> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::UpsertTask(t) => Some((t.id, t.remote)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            cleared.contains(&(foreign_id, None)),
+            "the foreign ref wipes"
+        );
+        assert!(
+            !cleared.contains(&(already_id, None)),
+            "a ref already naming the bind target stays"
+        );
+        assert!(
+            !cleared.contains(&(local_id, None)),
+            "an unbound entity stays"
+        );
+        assert!(
+            !plan
+                .actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::UpsertTask(t) if t.id == dead_id)),
+            "a tombstoned descendant keeps its ref (R9c finalize)"
+        );
+        let PersistenceAction::UpsertBoard(board_row) = plan
+            .actions
+            .iter()
+            .find(|a| matches!(a, PersistenceAction::UpsertBoard(_)))
+            .expect("board row upserted")
+        else {
+            unreachable!("filtered above");
+        };
+        assert_eq!(board_row.remote, Some(crate::ids::RemoteBoardId(2)));
+    }
+
+    #[test]
+    fn bind_outcome_counts_wiped_refs() {
+        let mut app = unbound_board_state();
+        let stack = stack(901, false);
+        let board_stack = stack.id;
+        app.stacks.insert(board_stack, stack);
+        let mut foreign = task(2, board_stack, true);
+        foreign.remote = Some(crate::ids::RemoteCardRef {
+            board: crate::ids::RemoteBoardId(1),
+            stack: crate::ids::RemoteStackId(5),
+            card: crate::ids::RemoteCardId(2),
+        });
+        app.tasks.insert(foreign.id, foreign);
+        let plan = run(
+            &app,
+            &[],
+            &StateCommand::BindBoard {
+                board: board_id(),
+                remote: crate::ids::RemoteBoardId(9),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            plan.outcome,
+            CommandOutcome::Bound { wiped_refs: 1 },
+            "the outcome counts exactly the cleared refs"
+        );
+    }
+
+    #[test]
+    fn bind_wipe_forecast_counts_stranded_update_ops() {
+        let mut app = unbound_board_state();
+        let stack = stack(901, false);
+        let board_stack = stack.id;
+        app.stacks.insert(board_stack, stack);
+        let mut foreign = task(2, board_stack, true);
+        foreign.remote = Some(crate::ids::RemoteCardRef {
+            board: crate::ids::RemoteBoardId(1),
+            stack: crate::ids::RemoteStackId(5),
+            card: crate::ids::RemoteCardId(2),
+        });
+        let foreign_id = foreign.id;
+        app.tasks.insert(foreign.id, foreign);
+        let create = op_for(11, LocalOp::CreateTask(foreign_id));
+        let update = op_for(12, LocalOp::UpdateTask(foreign_id));
+        let outbox = vec![create, update];
+        assert_eq!(
+            bind_wipe_forecast(&app, &outbox, board_id(), crate::ids::RemoteBoardId(9)),
+            1,
+            "only the update-class op on a to-be-wiped entity forecasts"
+        );
+        assert_eq!(
+            bind_wipe_count(&app, board_id(), crate::ids::RemoteBoardId(9)),
+            1,
+            "the wipe count names the one foreign ref"
+        );
     }
 
     #[test]
@@ -2487,6 +2889,116 @@ mod tests {
                 board: board_id(),
                 bound: crate::ids::RemoteBoardId(42)
             })
+        );
+    }
+
+    // ---- UnbindBoard --------------------------------------------------
+
+    #[test]
+    fn unbind_unknown_board_refuses() {
+        let empty = AppState::default();
+        let outbox: Vec<PendingOp> = Vec::new();
+        let stranger = BoardId::from(uuid::Uuid::from_u128(4242));
+        assert_eq!(
+            run(
+                &empty,
+                &outbox,
+                &StateCommand::UnbindBoard { board: stranger }
+            ),
+            Err(CommandError::UnknownBoard(stranger))
+        );
+    }
+
+    #[test]
+    fn unbind_tombstoned_board_refuses() {
+        let outbox: Vec<PendingOp> = Vec::new();
+        let mut dead = unbound_board_state();
+        let board = dead.boards.get_mut(&board_id()).unwrap();
+        board.deleted = true;
+        assert_eq!(
+            run(
+                &dead,
+                &outbox,
+                &StateCommand::UnbindBoard { board: board_id() }
+            ),
+            Err(CommandError::BoardDeleted(board_id()))
+        );
+    }
+
+    #[test]
+    fn unbind_unbound_board_is_accepted_noop() {
+        let app = unbound_board_state();
+        let outbox: Vec<PendingOp> = Vec::new();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UnbindBoard { board: board_id() },
+        )
+        .unwrap();
+        assert_eq!(plan, no_op());
+    }
+
+    #[test]
+    fn unbind_clears_binding_and_drops_status_row() {
+        let mut app = unbound_board_state();
+        app.boards.get_mut(&board_id()).unwrap().remote = Some(crate::ids::RemoteBoardId(42));
+        // Two ops attributed to the board (stack op + board op), one
+        // other entity op that attributes nowhere near it.
+        let stack = app.stacks.values().next().unwrap().id;
+        let outbox = vec![
+            op_for(11, LocalOp::RenameStack(stack)),
+            op_for(12, LocalOp::UpdateBoard(board_id())),
+            op_for(13, LocalOp::UpdateTask(task_id())),
+        ];
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UnbindBoard { board: board_id() },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Unbound { stranded_ops: 2 });
+        assert_eq!(
+            plan.actions
+                .iter()
+                .filter(|a| matches!(a, PersistenceAction::UpsertBoard(b) if b.remote.is_none() && b.id == board_id()))
+                .count(),
+            1,
+            "the board row is upserted with the binding cleared"
+        );
+        assert!(
+            plan.actions
+                .contains(&PersistenceAction::DeleteSyncStatus(board_id())),
+            "the board's sync-status row drops with the binding"
+        );
+    }
+
+    #[test]
+    fn unbind_leaves_outbox_and_descendant_refs_untouched() {
+        let mut app = unbound_board_state();
+        app.boards.get_mut(&board_id()).unwrap().remote = Some(crate::ids::RemoteBoardId(42));
+        let stack = app.stacks.values().next().unwrap().id;
+        let outbox = vec![op_for(11, LocalOp::RenameStack(stack))];
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UnbindBoard { board: board_id() },
+        )
+        .unwrap();
+        assert!(
+            !plan.actions.iter().any(|a| matches!(
+                a,
+                PersistenceAction::EnqueueOp(_) | PersistenceAction::FailOp(_)
+            )),
+            "unbind never touches the outbox (honest stranding)"
+        );
+        assert!(
+            !plan.actions.iter().any(|a| matches!(
+                a,
+                PersistenceAction::UpsertStack(_)
+                    | PersistenceAction::UpsertTask(_)
+                    | PersistenceAction::UpsertLabel(_)
+            )),
+            "unbind never touches descendant rows (same-remote rebind re-adopts by them)"
         );
     }
 

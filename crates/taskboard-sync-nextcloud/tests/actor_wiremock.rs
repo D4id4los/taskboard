@@ -523,10 +523,13 @@ async fn a7_offline_episode_broadcasts_lost_once_then_restored() {
     );
 }
 
-/// A8: a `SetBoard` before any binding triggers a cycle that reports
-/// `Failed { NoBoard }`; after the target is set a normal cycle runs.
+/// A8 (multi-board chunk 3): with nothing bound, cycles report
+/// `Failed { NoBoard }` — and a commanded target no persisted binding
+/// holds does NOT resurrect a cycle: the target-liveness guard evicts
+/// it (the ceremonies bind before they nudge; a binding-less `SetBoard`
+/// is the operator-error shape and reports honestly).
 #[tokio::test(start_paused = true)]
-async fn a8_no_board_reported_once_a_target_is_commanded() {
+async fn a8_no_board_reported_without_a_persisted_binding() {
     let server = start_server().await;
     let mut actor = spawn(&server, Arc::new(InMemoryRepository::new()));
 
@@ -542,7 +545,13 @@ async fn a8_no_board_reported_once_a_target_is_commanded() {
 
     mount_standard_pull(&server, serde_json::json!([])).await;
     let report = set_board_and_report(&mut actor).await;
-    assert!(matches!(report, SyncReport::Completed { .. }));
+    assert!(matches!(
+        report,
+        SyncReport::Failed {
+            kind: SyncErrorKind::NoBoard,
+            ..
+        }
+    ));
     assert!(actor.system_rx.try_recv().is_err(), "no network events");
 }
 
@@ -1669,6 +1678,17 @@ async fn a24_board_switch_serves_the_new_board_after_the_cache_clear() {
     let server = start_server().await;
     mount_two_board_pull(&server).await;
     let repo = repo_with(&[(2, STACK)], &[]);
+    // The guard (chunk 3) validates targets against persisted bindings:
+    // board 43 needs its own board row to be switchable.
+    let mut second = bound_board();
+    second.id = taskboard_domain::BoardId::from(uuid(9));
+    second.remote = Some(RemoteBoardId(43));
+    InMemoryRepository::apply(
+        repo.as_ref(),
+        vec![taskboard_domain::PersistenceAction::UpsertBoard(second)],
+    )
+    .await
+    .expect("seed board 43");
     for key in [
         taskboard_domain::ValidatorKey::Boards,
         taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(BOARD)),
@@ -1758,7 +1778,19 @@ async fn a25_set_board_during_a_cycle_is_absorbed_into_one_switch() {
     let server = start_server().await;
     mount_two_board_pull(&server).await;
 
-    let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
+    let repo = repo_with(&[(2, STACK)], &[]);
+    // The guard (chunk 3) validates targets against persisted bindings:
+    // board 43 needs its own board row to be switchable.
+    let mut second = bound_board();
+    second.id = taskboard_domain::BoardId::from(uuid(9));
+    second.remote = Some(RemoteBoardId(43));
+    InMemoryRepository::apply(
+        repo.as_ref(),
+        vec![taskboard_domain::PersistenceAction::UpsertBoard(second)],
+    )
+    .await
+    .expect("seed board 43");
+    let mut actor = spawn(&server, repo);
     actor
         .commands
         .send(SyncCommand::SetBoard(RemoteBoardId(BOARD)))

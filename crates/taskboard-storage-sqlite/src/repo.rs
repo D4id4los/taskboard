@@ -730,6 +730,7 @@ async fn execute_batch(
     let mut op_appends = Vec::new();
     let mut validator_upserts = Vec::new();
     let mut sync_status_upserts = Vec::new();
+    let mut sync_status_deletes = Vec::new();
     let mut rule_upserts = Vec::new();
     let mut rule_deletes = Vec::new();
     let mut deliveries = Vec::new();
@@ -751,6 +752,9 @@ async fn execute_batch(
             }
             PersistenceAction::UpsertSyncStatus(board, status) => {
                 sync_status_upserts.push((*board, status.clone()));
+            }
+            PersistenceAction::DeleteSyncStatus(board) => {
+                sync_status_deletes.push(*board);
             }
             PersistenceAction::UpsertReminderRule(rule) => rule_upserts.push(rule),
             PersistenceAction::DeleteReminderRule(rule_id) => rule_deletes.push(rule_id),
@@ -1043,6 +1047,19 @@ async fn execute_batch(
             phase = codec::sync_phase_to_text(status.phase),
             "sync status upserted"
         );
+    }
+
+    // The unbind ceremony's cleanup: drop the board's status row
+    // (absent row = no-op, like the shared apply semantics).
+    for board in sync_status_deletes {
+        sqlx::query!(
+            "DELETE FROM sync_status WHERE board = ?",
+            codec::uuid_to_text(board.as_uuid())
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(board = ?board, "sync status deleted");
     }
 
     // Reminder partitions (tasks precede rules — the only FK). Within

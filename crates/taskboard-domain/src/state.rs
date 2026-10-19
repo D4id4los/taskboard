@@ -156,6 +156,15 @@ impl SyncStates {
         row.pending_ops = 0;
     }
 
+    /// Drops one board's row entirely — the [`PersistenceAction::
+    /// DeleteSyncStatus`](crate::PersistenceAction::DeleteSyncStatus)
+    /// arm. For a board still present in the entity maps, the batch-end
+    /// derivation re-materializes a default row; only the *stored* part
+    /// (phase, last success) is what the delete clears there.
+    pub fn remove(&mut self, board: BoardId) {
+        self.0.remove(&board);
+    }
+
     /// The memory-only `Syncing` transient: flips one row's phase in
     /// place, preserving the derived `pending_ops` and the stored
     /// `last_success` (the displayed queue must stay honest while a
