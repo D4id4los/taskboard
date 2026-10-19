@@ -297,6 +297,12 @@ pub(crate) async fn attach_from_persisted(
             AttachError::AlreadyAttached => W::AlreadyAttached,
             AttachError::Engine(_) => W::Engine,
             AttachError::Draining => W::Draining,
+            // The attach primitive builds no client (D-7): the module
+            // factory is the boot path's constructor, so these build
+            // failures cannot originate here.
+            AttachError::Credential(_) | AttachError::Client(_) => {
+                unreachable!("attach spawns over a ceremony-built client")
+            }
         };
     }
 

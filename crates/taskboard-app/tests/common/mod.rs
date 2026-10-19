@@ -394,7 +394,9 @@ pub async fn seed_board_binding(db_path: &Path, local_id: u128, remote_id: u64, 
         .apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
             taskboard_domain::Board {
                 id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(local_id)),
-                remote: Some(taskboard_domain::RemoteBoardId(remote_id)),
+                remote: taskboard_domain::test_support::test_binding(
+                    taskboard_domain::RemoteBoardId(remote_id),
+                ),
                 title: run.to_owned(),
                 color: taskboard_domain::Color::new("00c2e0"),
                 archived: false,
@@ -471,3 +473,152 @@ pub fn write_test_config(
 }
 
 use taskboard_sync_nextcloud::DeckClient;
+
+/// Fixture handles of the v0.1.x-shaped database (stable ids for
+/// assertions).
+pub(crate) struct V01xIds {
+    pub board: uuid::Uuid,
+    pub stack: uuid::Uuid,
+    pub task: uuid::Uuid,
+    pub op: uuid::Uuid,
+}
+
+/// Builds a v0.1.x-shaped database (schema at migrations ≤ 0005): one
+/// bound board (`remote_board_id`, no `connector` column), one bound
+/// stack + one bound task carrying epoch-default clocks (0005's world:
+/// remote wins every LWW comparison), one queued `UpdateTask` op, and a
+/// non-idle `sync_status` singleton.
+///
+/// Method (the storage crate's own migration-fixture pattern): run the
+/// shipped migrations, then strip 0006's effects (the column, the rebuilt
+/// table, the bookkeeping row) — leaving exactly the pre-0006 shape.
+#[allow(clippy::too_many_lines)] // one normative fixture; the seeded rows ARE the shape
+pub(crate) async fn write_v01x_db(
+    db_path: &Path,
+    remote_board_id: u64,
+    remote_stack_id: u64,
+    remote_card_id: u64,
+    task_title: &str,
+) -> V01xIds {
+    const EPOCH: &str = "0001-01-01T00:00:00+00:00";
+    #[allow(clippy::redundant_clone)] // the vec![] bind lists read uniformly
+    let raw = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db_path.display()))
+        .await
+        .expect("raw connect");
+    sqlx::migrate!("../taskboard-storage-sqlite/migrations")
+        .run(&raw)
+        .await
+        .expect("migrate");
+    for (sql, why) in [
+        (
+            "ALTER TABLE boards DROP COLUMN connector",
+            "strip the tag column",
+        ),
+        ("DROP TABLE sync_status", "strip the rebuilt table"),
+        (
+            "CREATE TABLE sync_status (id INTEGER PRIMARY KEY CHECK (id = 1), \
+             phase TEXT NOT NULL, last_error TEXT NULL, last_success TEXT NULL)",
+            "restore the 0005 singleton",
+        ),
+        (
+            "INSERT INTO sync_status (id, phase) VALUES (1, 'idle')",
+            "the singleton seed",
+        ),
+        (
+            "DELETE FROM _sqlx_migrations WHERE version = 6",
+            "strip the bookkeeping",
+        ),
+    ] {
+        sqlx::query(sql)
+            .execute(&raw)
+            .await
+            .unwrap_or_else(|err| panic!("{why} must apply: {err}"));
+    }
+
+    let ids = V01xIds {
+        board: uuid::Uuid::from_u128(0x00DA_0000_0000_0000_0000_0000_0000_0001),
+        stack: uuid::Uuid::from_u128(0x00DA_0000_0000_0000_0000_0000_0000_0002),
+        task: uuid::Uuid::from_u128(0x00DA_0000_0000_0000_0000_0000_0000_0003),
+        op: uuid::Uuid::from_u128(0x00DA_0000_0000_0000_0000_0000_0000_0004),
+    };
+    let board_text = ids.board.to_string();
+    let stack_text = ids.stack.to_string();
+    let task_text = ids.task.to_string();
+    for (sql, binds, why) in [
+        (
+            "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, \
+             ck_title, ck_color, ck_archived, ck_deleted, remote_seen) \
+             VALUES (?, ?, 'old title', '0000ff', 0, 0, ?, ?, ?, ?, NULL)",
+            vec![
+                board_text.clone(),
+                remote_board_id.to_string(),
+                EPOCH.into(),
+                EPOCH.into(),
+                EPOCH.into(),
+                EPOCH.into(),
+            ],
+            "board row",
+        ),
+        (
+            "INSERT INTO stacks (id, board, remote_board_id, remote_stack_id, title, sort_order, \
+             archived, deleted, ck_title, ck_sort_order, ck_deleted, remote_seen) \
+             VALUES (?, ?, ?, ?, 'old col', 0, 0, 0, ?, ?, ?, NULL)",
+            vec![
+                stack_text.clone(),
+                board_text.clone(),
+                remote_board_id.to_string(),
+                remote_stack_id.to_string(),
+                EPOCH.into(),
+                EPOCH.into(),
+                EPOCH.into(),
+            ],
+            "stack row",
+        ),
+        (
+            "INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, \
+             title, description, duedate, done, sort_order, archived, deleted, \
+             ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, \
+             ck_archived, ck_deleted, remote_seen) \
+             VALUES (?, ?, ?, ?, ?, ?, '', NULL, NULL, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            vec![
+                task_text.clone(),
+                stack_text.clone(),
+                remote_board_id.to_string(),
+                remote_stack_id.to_string(),
+                remote_card_id.to_string(),
+                task_title.to_owned(),
+                EPOCH.into(),
+                EPOCH.into(),
+                EPOCH.into(),
+                EPOCH.into(),
+                EPOCH.into(),
+                EPOCH.into(),
+                EPOCH.into(),
+                EPOCH.into(),
+            ],
+            "task row",
+        ),
+        (
+            "INSERT INTO outbox (op_id, op_kind, task_id, queued_at) \
+             VALUES (?, 'update_task', ?, '2026-01-01T00:00:00+00:00')",
+            vec![ids.op.to_string(), task_text],
+            "queued op",
+        ),
+        (
+            "UPDATE sync_status SET phase = 'syncing'",
+            vec![],
+            "non-idle status",
+        ),
+    ] {
+        let mut query = sqlx::query(sql);
+        for bind in binds {
+            query = query.bind(bind);
+        }
+        query
+            .execute(&raw)
+            .await
+            .unwrap_or_else(|err| panic!("{why} must insert: {err}"));
+    }
+    raw.close().await;
+    ids
+}

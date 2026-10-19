@@ -84,7 +84,7 @@ fn local_stack_id() -> StackId {
 fn bound_board() -> Board {
     Board {
         id: bound_board_id(),
-        remote: Some(RemoteBoardId(BOARD)),
+        remote: taskboard_domain::test_support::test_binding(RemoteBoardId(BOARD)),
         title: "board".into(),
         color: Color::new("00ff00"),
         archived: false,
@@ -257,10 +257,9 @@ async fn b2_seeded_cycle_pulls_and_authenticates() {
 
     eventually(&app, |state| {
         state.sync.aggregate().last_success.is_some()
-            && state
-                .boards
-                .values()
-                .any(|b| b.remote == Some(RemoteBoardId(BOARD)))
+            && state.boards.values().any(|b| {
+                b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId(BOARD))
+            })
     })
     .await;
 
@@ -533,10 +532,9 @@ async fn b7_restart_continuity_with_validators() {
         .expect("RequestSync accepted");
     eventually(&app, |state| {
         state.sync.aggregate().last_success.is_some()
-            && state
-                .boards
-                .values()
-                .any(|b| b.remote == Some(RemoteBoardId(BOARD)))
+            && state.boards.values().any(|b| {
+                b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId(BOARD))
+            })
     })
     .await;
 

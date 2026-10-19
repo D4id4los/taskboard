@@ -72,6 +72,13 @@ keyring = { workspace = true, features = ["windows-native"] }
 keyring = { workspace = true, features = ["apple-native"] }
 
 [dev-dependencies]
+# The FakeModule/registry-loop fixtures share the domain's test-support
+# helpers (binding fixtures; fakes over mocks).
+taskboard-domain = { workspace = true, features = ["test-support"] }
+# The v0.1.x db fixture builds a pre-0006 database with raw SQL (the
+# storage crate's own migration-fixture pattern; workspace-pinned pin,
+# zero lock change).
+sqlx.workspace = true
 wiremock.workspace = true
 tempfile.workspace = true
 base64.workspace = true

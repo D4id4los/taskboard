@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use taskboard_app::bootstrap::bootstrap;
 use taskboard_domain::persistence::TaskRepository as _;
-use taskboard_sync_nextcloud::{DeckClient, NewCard, StackFilter};
+use taskboard_sync_nextcloud::{DeckClient, NewCard, StackFilter, Validators};
 
 mod common;
 
@@ -750,4 +750,186 @@ async fn it_nextcloud_docker_sync_over_ipc() {
     })
     .await
     .expect("test must finish within the live deadline");
+}
+
+// -------------------------------------------------------------------------
+// The v0.1.x additive-upgrade boot test (design §3.9): a pre-0006 db +
+// scalar config boot the new build; the synthesis-of-one connector adopts
+// the world. Two halves: a hermetic boot-time half (runs everywhere) and
+// the full merge+drain half (dockerized, MD-5).
+
+/// The hermetic half: boot against a refused server asserts the upgrade's
+/// boot-time contract only — migration 0006 ran over the v0.1.x db, the
+/// binding decodes tagged-default, the synthesized connector owns the
+/// world, and the singleton's non-idle phase settles via the offline-first
+/// path. Merge + drain assertions live in the dockerized half.
+#[tokio::test]
+async fn v0_1_x_additive_upgrade_boot_settles_offline_without_a_server() {
+    let _env = env_lock();
+    let _password = EnvOverride::set("TASKBOARD_APP_PASSWORD", "hermetic-password");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("taskboard.db");
+    common::write_v01x_db(&db_path, 77, 7, 55, "v01x local rename").await;
+
+    let config = common::live_config(
+        &common::LiveCfg {
+            url: "http://127.0.0.1:9".into(), // refused fast
+            user: "v01x".into(),
+            token: String::new(),
+        },
+        &db_path,
+    );
+    config.validate().expect("config valid");
+
+    let app = bootstrap(
+        config,
+        Arc::new(taskboard_app::secrets::EnvCredentialStore),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("the v0.1.x db boots");
+
+    // Decode + synthesis: the binding is the synthesized connector's
+    // tagged-default decode (NULL column ⇒ "nextcloud", board 77).
+    eventually(&app, |state| {
+        state.boards.values().any(|b| {
+            b.remote
+                .as_ref()
+                .is_some_and(|r| r.connector.as_str() == "nextcloud" && r.board.get() == 77)
+        })
+    })
+    .await;
+
+    // The singleton's `syncing` phase hydrates onto the bound board's row
+    // (migration backfill) and settles via the offline-first failure path:
+    // the first cycle reports `Failed { Network }` (no pushes), and the
+    // engine files it under the bound board.
+    eventually(&app, |state| {
+        state.sync.iter().any(|(board, row)| {
+            matches!(
+                row.phase,
+                taskboard_domain::SyncPhase::Failed {
+                    last_error: taskboard_domain::SyncErrorKind::Network,
+                }
+            ) && state
+                .boards
+                .get(board)
+                .and_then(|b| b.remote.as_ref())
+                .is_some_and(|r| r.board.get() == 77)
+        })
+    })
+    .await;
+
+    let outcome = app.shutdown().await;
+    assert!(!outcome.actor_aborted);
+}
+
+/// The tier-2 half: the full §3.9 assertion list against the dockerized
+/// Nextcloud — synthesized connector, tagged-default decode, status-row
+/// hydration + settle, a cycle merging per the unchanged policy (epoch
+/// clocks: the remote board's title/color win), and the queued op
+/// draining (its effect visible remotely through one typed read).
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_v0_1_x_additive_upgrade_boot() {
+    let Some(cfg) = common::live_docker_config() else {
+        return; // skip, never fail: tier not configured
+    };
+    common::with_deadline(v0_1_x_additive_upgrade(&cfg))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+async fn v0_1_x_additive_upgrade(cfg: &common::LiveCfg) {
+    let _env = env_lock();
+    let _password = EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
+    let client = DeckClient::new(&cfg.url, &cfg.user, &cfg.token).expect("base URL");
+    let run = common::run_id();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("taskboard.db");
+    let (board, stack) = create_board_and_stack(&client, &run).await;
+    let server_card = common::retry(|| async {
+        client
+            .create_card(
+                board.id,
+                stack.id,
+                &NewCard {
+                    title: format!("{run}-remote"),
+                    order: Some(0),
+                    description: None,
+                    duedate: None,
+                    kind: None,
+                },
+            )
+            .await
+    })
+    .await
+    .expect("server-side card creation must succeed");
+    let local_title = format!("{run}-local-rename");
+    let ids =
+        common::write_v01x_db(&db_path, board.id, stack.id, server_card.id, &local_title).await;
+
+    let config = common::live_config(cfg, &db_path);
+    let app = bootstrap(
+        config,
+        Arc::new(taskboard_app::secrets::EnvCredentialStore),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("the v0.1.x db boots");
+
+    app.engine
+        .execute(taskboard_domain::StateCommand::RequestSync)
+        .await
+        .expect("RequestSync accepted");
+
+    // (1) tagged-default decode + synthesis; (2) the hydrated status row
+    // settled (last_success set, phase Idle); (3) the merge ran per the
+    // unchanged policy — the epoch-clocked local board loses title and
+    // color to the remote; (4) the queued op drained.
+    eventually(&app, |state| {
+        let Some(b) = state
+            .boards
+            .get(&taskboard_domain::BoardId::from_uuid(ids.board))
+        else {
+            return false;
+        };
+        let binding_ok = b
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.connector.as_str() == "nextcloud" && r.board.get() == board.id);
+        let row = state.sync.get(b.id);
+        let settled = row.is_some_and(|r| {
+            r.phase == taskboard_domain::SyncPhase::Idle && r.last_success.is_some()
+        });
+        let merged = b.title == run && b.color.as_str() == "00c2e0";
+        let drained = row.is_some_and(|r| r.pending_ops == 0);
+        binding_ok && settled && merged && drained
+    })
+    .await;
+
+    // The op's effect is visible remotely (one typed read): the local
+    // rename won the push and the pull adopted the echo.
+    let stacks = common::retry(|| async {
+        client
+            .fetch_stacks(board.id, StackFilter::Active, &Validators::default())
+            .await
+            .map(|fetched| fetched.data)
+    })
+    .await
+    .expect("remote read")
+    .expect("stacks listed");
+    let card_title = stacks
+        .iter()
+        .flat_map(|s| &s.cards)
+        .find(|c| c.id == server_card.id)
+        .map(|c| c.title.clone())
+        .expect("the bound card survives the cycle");
+    assert_eq!(
+        card_title, local_title,
+        "the queued rename drained remotely"
+    );
+
+    let outcome = app.shutdown().await;
+    assert!(!outcome.actor_aborted);
 }

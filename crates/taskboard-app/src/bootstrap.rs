@@ -75,8 +75,8 @@ use crate::secrets::{CredentialError, CredentialStore};
 /// Channel capacity of the system broadcast (`NetworkLost`,
 /// `NetworkRestored`, `Shutdown`).
 pub const SYSTEM_BROADCAST_CAPACITY: usize = 64;
-/// Channel capacity of the sync-command inbox (`SyncNow`/`SetBoard`
-/// nudges; "full" already means "coalesced").
+/// Channel capacity of the sync-command inbox (`SyncNow` nudges; "full"
+/// already means "coalesced").
 pub const SYNC_COMMAND_CAPACITY: usize = 32;
 /// Channel capacity of the sync-report inbox (one report per cycle).
 pub const SYNC_REPORT_CAPACITY: usize = 32;
@@ -116,8 +116,8 @@ pub enum BootstrapError {
     },
 }
 
-/// The running sync actor's halves: its inbox sender (also cloned out
-/// through [`App::sync_commands`]) and its join handle.
+/// One registry entry: the connector's inbox sender (the pair-mate of
+/// the receiver its module spawned with) and its join handle.
 struct SyncActor {
     commands: mpsc::Sender<SyncCommand>,
     join: JoinHandle<()>,
@@ -139,6 +139,9 @@ pub struct App {
     /// never held across `.await`, and actor messaging stays the typed
     /// `mpsc` `SyncCommand` channel (AGENTS §3).
     connectors: std::sync::Mutex<Vec<SyncActor>>,
+    /// The config-minted default connector id — the single mint every
+    /// binding tag, storage row, and engine plan carries (DF-3).
+    default_connector: taskboard_domain::ConnectorId,
     /// The twin of the engine's permanent reports receiver (design
     /// §4.2.3): every attached actor spawns with a `clone()`, N actors
     /// sharing one fan-in inbox, so the engine's select loop needs no
@@ -164,29 +167,6 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
-    /// The sync-command seam (`SetBoard` ceremonies, sync nudges). Under
-    /// `standalone` — or after [`App::detach_connector`] — the
-    /// connector is absent: the returned sender feeds a dropped
-    /// receiver, so sends fail closed (`Closed`) exactly as a dead
-    /// connector — callers must not rely on delivery.
-    ///
-    /// # Panics
-    ///
-    /// Only if the connector-lifecycle mutex is poisoned by a panic while
-    /// held (unreachable: the critical sections never panic).
-    #[must_use]
-    pub fn sync_commands(&self) -> mpsc::Sender<SyncCommand> {
-        // v1: at most one connector, so `first()` *is* "the" connector;
-        // N-shape command routing is the multi-connector round's.
-        if let Some(actor) = self.connectors.lock().expect("connector lock").first() {
-            actor.commands.clone()
-        } else {
-            let (tx, rx) = mpsc::channel::<SyncCommand>(1);
-            drop(rx);
-            tx
-        }
-    }
-
     /// Whether the sync connector is still attached (WI-H): `false`
     /// under `standalone` or after [`App::detach_connector`]. The
     /// daemon-side `status` answer reports it so a detached daemon does
@@ -289,8 +269,11 @@ impl App {
             }
         }
 
-        // 4. Spawn over the fan-in clone (the actor is self-configuring).
+        // 4. Spawn over the fan-in clone, tagged with the config-minted
+        //    default id (D-7: the attach path holds a ceremony-built
+        //    client; the module factory is the boot path's constructor).
         let join = spawn_sync_actor(
+            self.default_connector.clone(),
             client,
             Arc::new(self.engine.clone()) as Arc<dyn SyncStateReader>,
             commands_rx,
@@ -335,6 +318,7 @@ impl App {
             config,
             engine,
             system,
+            default_connector: _,
             connectors,
             reports,
             storage,
@@ -435,6 +419,14 @@ pub enum AttachError {
     /// The state engine declined the push (draining — a raced shutdown).
     #[error("state engine is shutting down")]
     Draining,
+    /// A module's credential resolution failed (the boot loop maps this
+    /// onto [`BootstrapError::Credential`] — wrapped, not duplicated).
+    #[error("credential resolution failed")]
+    Credential(#[from] CredentialError),
+    /// A module's Deck client rejected the server URL (the boot loop maps
+    /// this onto [`BootstrapError::Client`]).
+    #[error("deck client construction failed")]
+    Client(#[from] taskboard_sync_nextcloud::DeckError),
 }
 
 /// The vacancy half of the at-most-one guard, checked before anything
@@ -514,6 +506,38 @@ pub async fn bootstrap(
     credentials: Arc<dyn CredentialStore>,
     notifier_sink: Arc<dyn NotificationSink>,
 ) -> Result<App, BootstrapError> {
+    // The module list derives from the legacy scalar config
+    // (synthesis-of-one; the loop body below is the seam a second
+    // connector kind plugs into — a match arm, nothing else).
+    let specs = crate::connectors::configured_connectors(&config);
+    let modules: Vec<Arc<dyn crate::connectors::ConnectorModule>> = specs
+        .iter()
+        .map(|spec| match spec.backend {
+            SyncBackend::Nextcloud => Arc::new(crate::connectors::NextcloudModule::new(
+                spec.name.clone(),
+                config.server_url().to_owned(),
+                config.username().to_owned(),
+                credentials.clone(),
+            )) as Arc<dyn crate::connectors::ConnectorModule>,
+            // The synthesis never yields a standalone spec; a module list
+            // built by hand (tests) simply never contains one.
+            SyncBackend::Standalone => unreachable!("standalone synthesizes no connector"),
+        })
+        .collect();
+    bootstrap_with_modules(config, credentials, notifier_sink, modules).await
+}
+
+/// The registry-loop seam: production `bootstrap` synthesizes the
+/// Nextcloud module and delegates; app tests pass a `FakeModule` to
+/// control the connector without a server.
+#[allow(clippy::result_large_err)] // the error is constructed once at boot
+#[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
+async fn bootstrap_with_modules(
+    config: AppConfig,
+    _credentials: Arc<dyn CredentialStore>,
+    notifier_sink: Arc<dyn NotificationSink>,
+    modules: Vec<Arc<dyn crate::connectors::ConnectorModule>>,
+) -> Result<App, BootstrapError> {
     // No `[app] mode` gate here: the core is mode-agnostic, and the
     // REPL (ADR 0011) serves any mode's console. The daemon/UI entry
     // (main) refuses `Desktop`/`Kiosk` itself until Phase 7 supplies
@@ -541,56 +565,24 @@ pub async fn bootstrap(
         LockError::Io(source) => BootstrapError::LockIo(source),
     })?;
 
-    // Credential resolution before anything spawns: a missing secret
-    // must not leave half a graph behind. Under `standalone` no
-    // credential store is consulted and no client is built (ADR 0010 —
-    // the kiosk/no-keyring story improves accordingly).
-    let client = match config.sync_backend() {
-        SyncBackend::Nextcloud => {
-            let server = config.server_url().to_owned();
-            let username = config.username().to_owned();
-            tracing::info!(
-                server = %server,
-                username = %username,
-                store = ?config.nextcloud.credential_store,
-                db = %config.db_path().display(),
-                mode = ?config.app.mode,
-                poll = config.sync.poll_interval_secs,
-                "resolved configuration (backend: nextcloud)"
-            );
-            // F12-03: one cleartext warn per process — bootstrap runs
-            // once, so every front end that learns the URL from config
-            // (one-shot, REPL, daemon) is warned exactly once.
-            if crate::config::url_is_cleartext(&server) {
-                tracing::warn!(
-                    server = %server,
-                    "server_url uses cleartext http; the app password \
-                     travels unencrypted — prefer https"
-                );
-            }
-            Some(DeckClient::new(
-                &server,
-                &username,
-                credentials.load(&server, &username)?.expose(),
-            )?)
-        }
-        SyncBackend::Standalone => {
-            tracing::info!(
-                db = %config.db_path().display(),
-                mode = ?config.app.mode,
-                "resolved configuration (backend: standalone — no connector)"
-            );
-            None
-        }
-    };
-
-    // Chunk 1 has no connector config: the legacy scalar world has
-    // exactly one connector name, so it is the default tag every board
-    // binding gets (DF-3's mint-chain head; chunk 4 refines the
-    // derivation, chunk 5 adds validation).
-    let default_connector = taskboard_domain::ConnectorId::from("nextcloud");
+    // The default connector id: the first module's config-minted name,
+    // else the stable constant (inert under standalone — no bindings
+    // exist to decode; a legacy bound db flipped to standalone decodes
+    // its NULLs against the stable name and nothing consumes the tag).
+    let default_connector = modules.first().map_or_else(
+        || taskboard_domain::ConnectorId::from(crate::connectors::DEFAULT_CONNECTOR_NAME),
+        |module| module.id().clone(),
+    );
+    tracing::info!(
+        connector = %default_connector,
+        db = %config.db_path().display(),
+        mode = ?config.app.mode,
+        poll = config.sync.poll_interval_secs,
+        store = ?config.nextcloud.credential_store,
+        "resolved configuration"
+    );
     tracing::info!(db = %db_path.display(), "opening database");
-    let repo = Arc::new(taskboard_storage_sqlite::open(&db_path, default_connector).await?);
+    let repo = Arc::new(taskboard_storage_sqlite::open(&db_path, default_connector.clone()).await?);
     let (storage, storage_join) = spawn_storage_actor(repo);
 
     let (system, system_rx_engine) = broadcast::channel::<SystemEvent>(SYSTEM_BROADCAST_CAPACITY);
@@ -617,6 +609,7 @@ pub async fn bootstrap(
         system_rx_engine,
         notifier,
         config.reminder_engine_config(),
+        default_connector.clone(),
     )
     .await;
 
@@ -632,37 +625,67 @@ pub async fn bootstrap(
         }
     };
 
-    let connectors = if let Some(client) = client {
-        let join = spawn_sync_actor(
-            client,
+    // The registry loop (the N=2 exit criterion's seam): one module per
+    // configured connector, each spawning over its own command pair. The
+    // first module consumes the *boot* pair — its sender is the engine's
+    // boot nudge-registry entry. N ∈ {0, 1} this chunk; the loop's shape
+    // is the seam, not speculative plural plumbing.
+    let timeout = Duration::from_secs(config.app.shutdown_timeout_secs);
+    let mut connectors: Vec<SyncActor> = Vec::new();
+    let mut boot_pair: Option<(mpsc::Sender<SyncCommand>, mpsc::Receiver<SyncCommand>)> =
+        Some((sync_commands.clone(), sync_rx));
+    for module in &modules {
+        let (commands, commands_rx) = match boot_pair.take() {
+            Some(pair) => pair,
+            None => mpsc::channel::<SyncCommand>(SYNC_COMMAND_CAPACITY),
+        };
+        match module.build_and_spawn(
+            commands_rx,
             Arc::new(engine.clone()) as Arc<dyn SyncStateReader>,
-            sync_rx,
             // The actor reports through a clone of the permanently
             // parked sender (N actors, one fan-in inbox).
             reports.clone(),
             system.clone(),
             config.sync_actor_config(),
-        );
-        vec![SyncActor {
-            commands: sync_commands.clone(),
-            join,
-        }]
-    } else {
-        // Standalone: the command receiver is dropped immediately — the
-        // engine sees the closed-channel world its loop already
+        ) {
+            Ok(spawned) => {
+                connectors.push(SyncActor {
+                    commands,
+                    join: spawned.join,
+                });
+            }
+            Err(err) => {
+                return Err(unwind_after_module_failure(
+                    connectors,
+                    sync_commands,
+                    system,
+                    reports,
+                    engine_join,
+                    timeout,
+                    storage,
+                    storage_join,
+                    err,
+                )
+                .await);
+            }
+        }
+    }
+    if let Some((_, rx)) = boot_pair {
+        // Standalone: the boot command receiver is dropped immediately —
+        // the engine sees the closed-channel world its loop already
         // handles, and its nudges fail closed (the boot registry entry
         // prunes on the first fan-out). The reports sender is *not*
         // dropped: it parks in `App` (below) as the fan-in inbox's twin
         // for a later attach.
-        drop(sync_rx);
-        Vec::new()
-    };
+        drop(rx);
+    }
     tracing::info!("actor graph spawned: storage, state engine, notifier");
 
     Ok(App {
         config,
         engine,
         system,
+        default_connector,
         connectors: std::sync::Mutex::new(connectors),
         reports,
         storage,
@@ -671,6 +694,43 @@ pub async fn bootstrap(
         notifier_join,
         _lock: lock,
     })
+}
+
+/// A module whose `build_and_spawn` failed after the engine already
+/// spawned: unwind like a failed boot — close every engine input (the
+/// registry senders, the parked reports twin, the system channel after
+/// one `Shutdown`), then bounded-join the engine and drain the storage
+/// actor. Nothing keeps running behind the error; the typed
+/// `BootstrapError` maps from the module's `AttachError` (wrap, not
+/// duplicate — D-14).
+#[allow(clippy::too_many_arguments)] // the owned halves ARE the unwind
+async fn unwind_after_module_failure(
+    connectors: Vec<SyncActor>,
+    sync_commands: mpsc::Sender<SyncCommand>,
+    system: broadcast::Sender<SystemEvent>,
+    reports: mpsc::Sender<SyncReport>,
+    engine_join: JoinHandle<()>,
+    timeout: Duration,
+    storage: StorageHandle,
+    storage_join: JoinHandle<()>,
+    err: AttachError,
+) -> BootstrapError {
+    tracing::error!(?err, "bootstrap failed: connector module did not start");
+    drop(connectors);
+    drop(sync_commands);
+    let _ = system.send(SystemEvent::Shutdown);
+    drop(system);
+    drop(reports);
+    join_bounded(engine_join, timeout, "state engine").await;
+    drop(storage);
+    if let Err(join_err) = storage_join.await {
+        tracing::warn!(?join_err, "storage actor join failed");
+    }
+    match err {
+        AttachError::Credential(source) => BootstrapError::Credential(source),
+        AttachError::Client(source) => BootstrapError::Client(source),
+        other => unreachable!("build_and_spawn surfaces only credential/client errors: {other:?}"),
+    }
 }
 
 /// Subscribes to the system broadcast and logs every event — the
@@ -803,5 +863,197 @@ pub async fn wait_for_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod connector_module_tests {
+    use super::*;
+    use crate::connectors::{ConnectorModule, SpawnedConnector};
+    use chrono::TimeZone as _;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use taskboard_domain::RemoteBoardSnapshot;
+
+    /// Handwritten test fake (AGENTS §5 — fakes over mocks): spawns a
+    /// scripted task over the *real* channels; every `SyncNow` pops the
+    /// next queued [`SyncReport`], `Detach` (or a closed inbox) stops it.
+    /// Gives the registry-loop test connector control without wiremock.
+    #[derive(Debug)]
+    struct FakeModule {
+        id: taskboard_domain::ConnectorId,
+        script: Arc<Mutex<VecDeque<SyncReport>>>,
+    }
+
+    impl FakeModule {
+        fn new(id: &str, script: Vec<SyncReport>) -> Self {
+            Self {
+                id: taskboard_domain::ConnectorId::from(id),
+                script: Arc::new(Mutex::new(script.into())),
+            }
+        }
+    }
+
+    impl ConnectorModule for FakeModule {
+        fn id(&self) -> &taskboard_domain::ConnectorId {
+            &self.id
+        }
+
+        fn build_and_spawn(
+            &self,
+            mut commands: mpsc::Receiver<SyncCommand>,
+            _engine_reader: Arc<dyn SyncStateReader>,
+            reports: mpsc::Sender<SyncReport>,
+            _system: broadcast::Sender<SystemEvent>,
+            _cfg: taskboard_sync_nextcloud::SyncActorConfig, // unused; signature parity only
+        ) -> Result<SpawnedConnector, AttachError> {
+            let script = Arc::clone(&self.script);
+            let join = tokio::spawn(async move {
+                while let Some(command) = commands.recv().await {
+                    match command {
+                        SyncCommand::SyncNow => {
+                            let next = script.lock().expect("script lock").pop_front();
+                            if let Some(report) = next
+                                && reports.send(report).await.is_err()
+                            {
+                                return; // engine gone
+                            }
+                        }
+                        SyncCommand::Detach => return,
+                    }
+                }
+            });
+            Ok(SpawnedConnector {
+                id: self.id.clone(),
+                join,
+            })
+        }
+    }
+
+    fn snapshot_of(board: u64) -> RemoteBoardSnapshot {
+        use taskboard_domain::{RemoteBoard, RemoteBoardId};
+        RemoteBoardSnapshot {
+            board: RemoteBoard {
+                id: RemoteBoardId(board),
+                title: "remote board".into(),
+                color: "00ff00".into(),
+                archived: false,
+                deleted_at: None,
+                last_modified: chrono::Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+            },
+            stacks: Vec::new(),
+            tasks: Vec::new(),
+            labels: Vec::new(),
+        }
+    }
+
+    /// The registry loop at N=1 over a `FakeModule`: the engine's nudge
+    /// fans out to the module's actor, the scripted `Completed` lands, and
+    /// the adopted board's status row settles — connector control without
+    /// a server. `SpawnedConnector`'s registry key is the module's id.
+    #[tokio::test]
+    async fn registry_loop_wires_the_fake_module_end_to_end() {
+        let mut config = AppConfig::default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        config.validate().expect("config valid");
+
+        let completed = SyncReport::Completed {
+            snapshot: Box::new(snapshot_of(77)),
+            validators: taskboard_domain::BoardPullValidators {
+                boards: taskboard_domain::SyncValidators::default(),
+                stacks: taskboard_domain::SyncValidators::default(),
+                archived_stacks: taskboard_domain::SyncValidators::default(),
+            },
+            pushes: Vec::new(),
+            read_at: chrono::Utc.timestamp_opt(1_700_000_001, 0).unwrap(),
+        };
+        let module: Arc<dyn ConnectorModule> =
+            Arc::new(FakeModule::new("fakemodule", vec![completed]));
+
+        let app = bootstrap_with_modules(
+            config,
+            Arc::new(RefusingStore),
+            Arc::new(crate::notifications::LogSink),
+            vec![module],
+        )
+        .await
+        .expect("boot");
+
+        let outcome = app
+            .engine
+            .execute(taskboard_domain::StateCommand::RequestSync)
+            .await
+            .expect("nudge accepted");
+        assert_eq!(
+            outcome,
+            taskboard_domain::CommandOutcome::SyncRequested,
+            "the nudge fanned out to the fake module's actor"
+        );
+        app.engine.flush().await;
+
+        let state = app.engine.shared_state().load_full();
+        let adopted = state.boards.values().next().expect("board adopted");
+        let binding = adopted.remote.as_ref().expect("adopt-new mint");
+        assert_eq!(binding.board, taskboard_domain::RemoteBoardId(77));
+        assert_eq!(
+            binding.connector.as_str(),
+            "fakemodule",
+            "the registry key (the module's id) tags the adopted binding"
+        );
+        let row = state.sync.get(adopted.id).expect("status row");
+        assert_eq!(row.phase, taskboard_domain::SyncPhase::Idle);
+        assert!(row.last_success.is_some(), "the cycle settled the row");
+        assert_eq!(state.sync.aggregate().pending_ops, 0);
+
+        let outcome = app.shutdown().await;
+        assert!(!outcome.actor_aborted);
+    }
+
+    /// A credential-refusing store: `build_and_spawn`'s failure maps onto
+    /// the existing typed `BootstrapError` variant (D-14: wrap, not
+    /// duplicate) — and unwinds the already-spawned engine.
+    #[derive(Debug)]
+    struct RefusingStore;
+
+    impl crate::secrets::CredentialStore for RefusingStore {
+        fn load(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<crate::secrets::AppPassword, crate::secrets::CredentialError> {
+            Err(crate::secrets::CredentialError::NotFound)
+        }
+        fn store(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::secrets::AppPassword,
+        ) -> Result<(), crate::secrets::CredentialError> {
+            Err(crate::secrets::CredentialError::Unsupported)
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), crate::secrets::CredentialError> {
+            Err(crate::secrets::CredentialError::Unsupported)
+        }
+    }
+
+    #[tokio::test]
+    async fn module_build_failure_maps_onto_the_typed_bootstrap_error() {
+        let mut config = AppConfig::default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        config.nextcloud.server_url = Some("https://cloud.example.com".into());
+        config.nextcloud.username = Some("alice".into());
+        config.validate().expect("config valid");
+        // A resolved nextcloud backend synthesizes the real module, whose
+        // credential load refuses: the loop maps the error and unwinds.
+        let err = bootstrap(
+            config,
+            Arc::new(RefusingStore),
+            Arc::new(crate::notifications::LogSink),
+        )
+        .await
+        .expect_err("credential failure surfaces");
+        assert!(matches!(err, BootstrapError::Credential(_)));
     }
 }
