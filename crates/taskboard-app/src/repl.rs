@@ -665,7 +665,10 @@ pub async fn run_session_with_parts(
     editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> EditorIo,
     io: &mut CommandIo<'_>,
 ) -> u8 {
-    let backend = config.sync_backend();
+    // The gate half is set-emptiness; the display half is the default
+    // connector's kind word (D5-9).
+    let backend = config.resolved_default_backend();
+    let connectors_configured = !crate::connectors::configured_connectors(&config).is_empty();
     let app = match crate::bootstrap::bootstrap(
         config,
         store.clone(),
@@ -686,7 +689,7 @@ pub async fn run_session_with_parts(
     };
     // The one-shot prefix's boot-pull wait, once per session (a
     // connector-less core can never run a cycle; skip the wait).
-    if backend != SyncBackend::Standalone {
+    if connectors_configured {
         let timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs.max(1));
         crate::bootstrap::wait_for_boot_pull(&app, timeout).await;
     }

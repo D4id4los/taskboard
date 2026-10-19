@@ -303,7 +303,9 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::from(DeckError::BadRequest),
         CommandError::NotConfigured,
         CommandError::NoDaemon,
-        CommandError::Attach(taskboard_app::bootstrap::AttachError::AlreadyAttached),
+        CommandError::Attach(taskboard_app::bootstrap::AttachError::ConnectorNameInUse(
+            taskboard_domain::ConnectorId::from("nextcloud"),
+        )),
         CommandError::BackendExplicitStandalone,
         CommandError::ConnectionExists,
         CommandError::IpcTransport,

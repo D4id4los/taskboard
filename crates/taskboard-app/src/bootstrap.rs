@@ -73,7 +73,8 @@ use crate::notifications::{NOTIFIER_CAPACITY, NotificationSink};
 use crate::secrets::{CredentialError, CredentialStore};
 
 /// Channel capacity of the system broadcast (`NetworkLost`,
-/// `NetworkRestored`, `Shutdown`).
+/// `NetworkRestored`, the per-connector `ConnectorLost`/`Restored`
+/// episodes, `Shutdown`).
 pub const SYSTEM_BROADCAST_CAPACITY: usize = 64;
 /// Channel capacity of the sync-command inbox (`SyncNow` nudges; "full"
 /// already means "coalesced").
@@ -142,9 +143,6 @@ pub struct App {
     /// never held across `.await`, and actor messaging stays the typed
     /// `mpsc` `SyncCommand` channel (AGENTS §3).
     connectors: std::sync::Mutex<Vec<SyncActor>>,
-    /// The config-minted default connector id — the single mint every
-    /// binding tag, storage row, and engine plan carries (DF-3).
-    default_connector: taskboard_domain::ConnectorId,
     /// The twin of the engine's permanent reports receiver (design
     /// §4.2.3): every attached actor spawns with a `clone()`, N actors
     /// sharing one fan-in inbox, so the engine's select loop needs no
@@ -232,19 +230,80 @@ impl App {
         }
     }
 
-    /// Attaches a fresh sync connector to the running core (WI-J, the
-    /// mirror of [`App::detach_connector`]): guards the at-most-one
-    /// invariant, rewires the engine's nudge registry (push + FIFO ack),
-    /// spawns the actor over a fresh command pair and a clone of the
-    /// permanently parked reports sender, and registers it. The actor
-    /// self-targets from the persisted board binding and fires its first
-    /// cycle immediately; awaiting settling (bounded, offline-first) is
-    /// the caller's job, not the primitive's.
+    /// The named lookup for any targeted send (design §3.3 option (b)'s
+    /// accessor): the connector's inbox sender when the name is
+    /// registered, else `None`. The routing table is the registry; the
+    /// engine fan-out stays broadcast-only.
+    ///
+    /// # Panics
+    ///
+    /// Only if the connector-lifecycle mutex is poisoned by a panic
+    /// while held (unreachable: the critical sections never panic).
+    #[must_use]
+    pub fn connector_commands(
+        &self,
+        id: &taskboard_domain::ConnectorId,
+    ) -> Option<mpsc::Sender<SyncCommand>> {
+        self.connectors
+            .lock()
+            .expect("connector lock")
+            .iter()
+            .find(|actor| &actor.id == id)
+            .map(|actor| actor.commands.clone())
+    }
+
+    /// Named detach (D5-7, the named registry's mirror of
+    /// [`App::detach_connector`]): stops only the named connector — the
+    /// session swap uses it so a second live connector survives the
+    /// rewrite of the default entry. Unknown name ⇒
+    /// [`DetachOutcome::NoConnector`] (idempotent).
+    ///
+    /// # Panics
+    ///
+    /// Only if the connector-lifecycle mutex is poisoned by a panic
+    /// while held (unreachable: the critical sections never panic).
+    pub async fn detach_connector_named(
+        &self,
+        id: &taskboard_domain::ConnectorId,
+    ) -> DetachOutcome {
+        // One lock scope for the lookup and the removal: the position is
+        // never stale (a concurrent attach/detach cannot slip between).
+        let actor = {
+            let mut registry = self.connectors.lock().expect("connector lock");
+            registry
+                .iter()
+                .position(|actor| &actor.id == id)
+                .map(|position| registry.remove(position))
+        };
+        let Some(actor) = actor else {
+            tracing::info!(connector = %id, "detach: no connector under that name");
+            return DetachOutcome::NoConnector;
+        };
+        let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
+        let aborted = stop_actor(actor, timeout).await;
+        // Registry hook: the membership shrinks.
+        self.authority.detach(id);
+        if aborted {
+            DetachOutcome::TimedOut
+        } else {
+            tracing::info!(connector = %id, "detach: connector dropped");
+            DetachOutcome::Detached
+        }
+    }
+
+    /// Attaches a fresh sync connector under `name` (the registry key;
+    /// the mirror of [`App::detach_connector_named`]): guards the name,
+    /// rewires the engine's nudge registry (push + FIFO ack), spawns the
+    /// actor over a fresh command pair and a clone of the permanently
+    /// parked reports sender, and registers it. The actor derives its
+    /// board set from the persisted bindings tagged `name` and fires its
+    /// first cycle immediately; awaiting settling (bounded,
+    /// offline-first) is the caller's job, not the primitive's.
     ///
     /// # Errors
     ///
-    /// [`AttachError::AlreadyAttached`] when a connector is attached
-    /// (detach first — re-attach after detach is permitted);
+    /// [`AttachError::ConnectorNameInUse`] when `name` is already
+    /// registered (detach first — re-attach after detach is permitted);
     /// [`AttachError::Engine`] when the engine could not take the push;
     /// [`AttachError::Draining`] when it declined one (a raced shutdown).
     ///
@@ -252,11 +311,15 @@ impl App {
     ///
     /// Only if the connector-lifecycle mutex is poisoned by a panic
     /// while held (unreachable: the critical sections never panic).
-    pub async fn attach_connector(&self, client: DeckClient) -> Result<(), AttachError> {
-        // 1. Guard: the v1 count-≤-1 invariant (lock released at the
-        //    statement's end — never across the awaits below).
-        if let Err(err) = ensure_vacant(&self.connectors) {
-            tracing::info!("attach: refused, a connector is already attached");
+    pub async fn attach_connector(
+        &self,
+        name: taskboard_domain::ConnectorId,
+        client: DeckClient,
+    ) -> Result<(), AttachError> {
+        // 1. Guard: the name is free (lock released at the statement's
+        //    end — never across the awaits below).
+        if let Err(err) = ensure_name_free(&self.connectors, &name) {
+            tracing::info!(connector = %name, "attach: refused, the name is in use");
             return Err(err);
         }
 
@@ -281,11 +344,11 @@ impl App {
             }
         }
 
-        // 4. Spawn over the fan-in clone, tagged with the config-minted
-        //    default id (D-7: the attach path holds a ceremony-built
-        //    client; the module factory is the boot path's constructor).
+        // 4. Spawn over the fan-in clone, tagged with the registered
+        //    name (D-7: the attach path holds a ceremony-built client;
+        //    the module factory is the boot path's constructor).
         let join = spawn_sync_actor(
-            self.default_connector.clone(),
+            name.clone(),
             client,
             Arc::new(self.engine.clone()) as Arc<dyn SyncStateReader>,
             commands_rx,
@@ -300,19 +363,19 @@ impl App {
         //    entry self-prunes on the next fan-out).
         let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
         let actor = SyncActor {
-            id: self.default_connector.clone(),
+            id: name.clone(),
             commands,
             join,
         };
         if let Some(unwound) = try_register(&self.connectors, actor) {
-            tracing::info!("attach: vacancy lost to a concurrent attach; unwinding");
+            tracing::info!(connector = %name, "attach: the name was taken while the engine ack was in flight; unwinding");
             stop_actor(unwound, timeout).await;
-            return Err(AttachError::AlreadyAttached);
+            return Err(AttachError::ConnectorNameInUse(name));
         }
-        // Registry hook: membership grows. The v1 attach path mints the
-        // default id; a set that was all-down-nonempty closes loudly.
-        self.authority.attach(&self.default_connector);
-        tracing::info!("attach: connector attached");
+        // Registry hook: membership grows; a set that was
+        // all-down-nonempty closes loudly.
+        self.authority.attach(&name);
+        tracing::info!(connector = %name, "attach: connector attached");
         Ok(())
     }
 
@@ -338,7 +401,6 @@ impl App {
             config,
             engine,
             system,
-            default_connector: _,
             connectors,
             reports,
             storage,
@@ -432,14 +494,16 @@ pub enum DetachOutcome {
     TimedOut,
 }
 
-/// Typed attach refusals (the app layer's count-≤-1 policy lives here,
+/// Typed attach refusals (the app layer's naming policy lives here,
 /// not in the engine).
 #[derive(Debug, thiserror::Error)]
 pub enum AttachError {
-    /// A connector is already attached (v1: at most one; detach first —
-    /// re-attach after detach is permitted).
+    /// A connector under this name is already registered (detach first —
+    /// re-attach after detach is permitted). The payload names the
+    /// offender (the guard that was the count-≤-1 `AlreadyAttached`,
+    /// same refusal, named — design §3.3).
     #[error("a connector is already attached")]
-    AlreadyAttached,
+    ConnectorNameInUse(taskboard_domain::ConnectorId),
     /// The state engine could not take the push (stopped).
     #[error("state engine unavailable")]
     Engine(#[from] taskboard_state::AttachError),
@@ -456,32 +520,40 @@ pub enum AttachError {
     Client(#[from] taskboard_sync_nextcloud::DeckError),
 }
 
-/// The vacancy half of the at-most-one guard, checked before anything
+/// The name-free half of the attach guard, checked before anything
 /// spawns (the registration re-check in [`App::attach_connector`]
 /// closes the concurrent-caller race).
-fn ensure_vacant(connectors: &std::sync::Mutex<Vec<SyncActor>>) -> Result<(), AttachError> {
-    if connectors.lock().expect("connector lock").is_empty() {
-        Ok(())
+fn ensure_name_free(
+    connectors: &std::sync::Mutex<Vec<SyncActor>>,
+    name: &taskboard_domain::ConnectorId,
+) -> Result<(), AttachError> {
+    if connectors
+        .lock()
+        .expect("connector lock")
+        .iter()
+        .any(|actor| &actor.id == name)
+    {
+        Err(AttachError::ConnectorNameInUse(name.clone()))
     } else {
-        Err(AttachError::AlreadyAttached)
+        Ok(())
     }
 }
 
-/// Atomically registers `actor` if the registry is still vacant — the
+/// Atomically registers `actor` if its name is still free — the
 /// re-check and the push share one lock acquisition, closing the
-/// concurrent-caller race the pre-spawn [`ensure_vacant`] leaves open.
-/// Returns the actor back when the vacancy was lost; the caller owns
-/// stopping it.
+/// concurrent-caller race the pre-spawn [`ensure_name_free`] leaves
+/// open. Returns the actor back when the name was taken; the caller
+/// owns stopping it.
 fn try_register(
     connectors: &std::sync::Mutex<Vec<SyncActor>>,
     actor: SyncActor,
 ) -> Option<SyncActor> {
     let mut registry = connectors.lock().expect("connector lock");
-    if registry.is_empty() {
+    if registry.iter().any(|registered| registered.id == actor.id) {
+        Some(actor)
+    } else {
         registry.push(actor);
         None
-    } else {
-        Some(actor)
     }
 }
 
@@ -671,9 +743,30 @@ async fn bootstrap_with_modules(
     let mut boot_pair: Option<(mpsc::Sender<SyncCommand>, mpsc::Receiver<SyncCommand>)> =
         Some((sync_commands.clone(), sync_rx));
     for module in &modules {
-        let (commands, commands_rx) = match boot_pair.take() {
-            Some(pair) => pair,
-            None => mpsc::channel::<SyncCommand>(SYNC_COMMAND_CAPACITY),
+        // The first module consumes the boot pair: its sender *is* the
+        // engine's boot nudge-registry entry.
+        let (commands, commands_rx) = if let Some(pair) = boot_pair.take() {
+            pair
+        } else {
+            // Every later module needs its own fan-out entry: the
+            // registry push is what makes the engine's nudges reach
+            // it (chunk 5 makes N ≥ 2 reachable, so the fan-out
+            // must grow with the module set).
+            let (commands, commands_rx) = mpsc::channel::<SyncCommand>(SYNC_COMMAND_CAPACITY);
+            match engine.attach_connector(commands.clone()).await {
+                Ok(taskboard_state::AttachReceipt::Attached) => {}
+                Ok(taskboard_state::AttachReceipt::Draining) => {
+                    tracing::warn!("boot: the engine is draining; the module still spawns");
+                }
+                // The engine loop exits only on shutdown or a
+                // closed reports inbox — both impossible between
+                // its spawn and this wiring (both senders are
+                // owned below), so the push cannot fail here.
+                Err(err) => {
+                    unreachable!("the engine exited between spawn and module wiring: {err:?}")
+                }
+            }
+            (commands, commands_rx)
         };
         match module.build_and_spawn(
             commands_rx,
@@ -723,7 +816,6 @@ async fn bootstrap_with_modules(
         config,
         engine,
         system,
-        default_connector,
         connectors: std::sync::Mutex::new(connectors),
         reports,
         storage,
@@ -925,14 +1017,32 @@ mod connector_module_tests {
     struct FakeModule {
         id: taskboard_domain::ConnectorId,
         script: Arc<Mutex<VecDeque<SyncReport>>>,
+        /// Optional per-`SyncNow` event script: each popped
+        /// `SystemEvent` is broadcast after the cycle's report — the
+        /// authority test's actor-side episode control.
+        events: Arc<Mutex<VecDeque<SystemEvent>>>,
+        /// The actor's cycle counter (the test's observable of "this
+        /// connector answered the nudge").
+        cycles: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl FakeModule {
         fn new(id: &str, script: Vec<SyncReport>) -> Self {
+            Self::with_events(id, script, Vec::new())
+        }
+
+        fn with_events(id: &str, script: Vec<SyncReport>, events: Vec<SystemEvent>) -> Self {
             Self {
                 id: taskboard_domain::ConnectorId::from(id),
                 script: Arc::new(Mutex::new(script.into())),
+                events: Arc::new(Mutex::new(events.into())),
+                cycles: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             }
+        }
+
+        /// How many `SyncNow` cycles this connector's actor ran.
+        fn cycles(&self) -> usize {
+            self.cycles.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -946,19 +1056,29 @@ mod connector_module_tests {
             mut commands: mpsc::Receiver<SyncCommand>,
             _engine_reader: Arc<dyn SyncStateReader>,
             reports: mpsc::Sender<SyncReport>,
-            _system: broadcast::Sender<SystemEvent>,
+            system: broadcast::Sender<SystemEvent>,
             _cfg: taskboard_sync_nextcloud::SyncActorConfig, // unused; signature parity only
         ) -> Result<SpawnedConnector, AttachError> {
             let script = Arc::clone(&self.script);
+            let events = Arc::clone(&self.events);
+            let cycles = Arc::clone(&self.cycles);
             let join = tokio::spawn(async move {
                 while let Some(command) = commands.recv().await {
                     match command {
                         SyncCommand::SyncNow => {
+                            cycles.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             let next = script.lock().expect("script lock").pop_front();
                             if let Some(report) = next
                                 && reports.send(report).await.is_err()
                             {
                                 return; // engine gone
+                            }
+                            // The cycle's whole episode script broadcasts
+                            // with its report (report-then-event order).
+                            let queued: Vec<SystemEvent> =
+                                events.lock().expect("event lock").drain(..).collect();
+                            for event in queued {
+                                let _ = system.send(event);
                             }
                         }
                         SyncCommand::Detach => return,
@@ -1047,6 +1167,212 @@ mod connector_module_tests {
         assert_eq!(row.phase, taskboard_domain::SyncPhase::Idle);
         assert!(row.last_success.is_some(), "the cycle settled the row");
         assert_eq!(state.sync.aggregate().pending_ops, 0);
+
+        let outcome = app.shutdown().await;
+        assert!(!outcome.actor_aborted);
+    }
+
+    // ---- the N=2 exit criterion, hermetic half (D5-18) ----------------
+
+    fn completed_validators() -> taskboard_domain::BoardPullValidators {
+        taskboard_domain::BoardPullValidators {
+            boards: taskboard_domain::SyncValidators::default(),
+            stacks: taskboard_domain::SyncValidators::default(),
+            archived_stacks: taskboard_domain::SyncValidators::default(),
+        }
+    }
+
+    fn completed(board: u64, at: chrono::DateTime<chrono::Utc>) -> SyncReport {
+        SyncReport::Completed {
+            snapshot: Box::new(snapshot_of(board)),
+            validators: completed_validators(),
+            pushes: Vec::new(),
+            read_at: at,
+        }
+    }
+
+    fn any_client() -> DeckClient {
+        DeckClient::new("https://nc.example", "u", "t").expect("client")
+    }
+
+    /// Polls a predicate against the shared state with a wall-clock
+    /// deadline (never a sleep; the fake actors answer over real I/O).
+    async fn wait_until(
+        app: &crate::bootstrap::App,
+        deadline: Duration,
+        pred: impl Fn(&taskboard_domain::AppState) -> bool,
+    ) {
+        let end = std::time::Instant::now() + deadline;
+        loop {
+            if pred(&app.engine.shared_state().load_full()) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < end,
+                "predicate not satisfied within the deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// The N=2 registry over two `FakeModule`s (the exit criterion's
+    /// hermetic half): both modules registered under their names, the
+    /// nudge fans to both (each script lands its own adopted board —
+    /// adoption mints the default tag; the per-board *tagged* fixture
+    /// is the tier-2 test's), the named lookup resolves exactly the
+    /// registered names, a double attach refuses by name, and a named
+    /// detach stops only that connector (the other still answers a
+    /// nudge).
+    #[tokio::test]
+    async fn two_connectors_live_simultaneously_over_the_named_registry() {
+        use taskboard_domain::{CommandOutcome, StateCommand};
+        let mut config = AppConfig::default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        config.validate().expect("config valid");
+
+        let t1 = chrono::Utc.timestamp_opt(1_700_000_001, 0).unwrap();
+        let t2 = chrono::Utc.timestamp_opt(1_700_000_002, 0).unwrap();
+        let module_a = Arc::new(FakeModule::new("a", vec![completed(11, t1)]));
+        let module_b = Arc::new(FakeModule::new(
+            "b",
+            vec![completed(22, t1), completed(22, t2)],
+        ));
+        let modules: Vec<Arc<dyn ConnectorModule>> = vec![module_a.clone(), module_b.clone()];
+
+        let app = bootstrap_with_modules(
+            config,
+            Arc::new(RefusingStore),
+            Arc::new(crate::notifications::LogSink),
+            modules,
+        )
+        .await
+        .expect("boot");
+
+        // Both names resolve; an unknown name does not.
+        let id = |name: &str| taskboard_domain::ConnectorId::from(name);
+        assert!(app.connector_commands(&id("a")).is_some());
+        assert!(app.connector_commands(&id("b")).is_some());
+        assert!(app.connector_commands(&id("ghost")).is_none());
+
+        // A double attach refuses by name (the b11 guard, named).
+        let err = app
+            .attach_connector(id("a"), any_client())
+            .await
+            .expect_err("the name is live");
+        assert!(
+            matches!(err, crate::bootstrap::AttachError::ConnectorNameInUse(ref name) if name.as_str() == "a"),
+            "the refusal names the offender"
+        );
+
+        // The nudge fans to both: both boards' rows settle.
+        let outcome = app
+            .engine
+            .execute(StateCommand::RequestSync)
+            .await
+            .expect("nudge accepted");
+        assert_eq!(outcome, CommandOutcome::SyncRequested);
+        wait_until(&app, Duration::from_secs(5), |state| {
+            state.sync.iter().count() == 2
+                && state.sync.iter().all(|(_, row)| {
+                    matches!(row.phase, taskboard_domain::SyncPhase::Idle)
+                        && row.last_success.is_some()
+                })
+        })
+        .await;
+        assert_eq!(module_a.cycles(), 1, "a answered the first nudge");
+        assert_eq!(module_b.cycles(), 1, "b answered the first nudge");
+
+        // The named detach stops only `a`; `b` still answers a nudge.
+        assert_eq!(
+            app.detach_connector_named(&id("a")).await,
+            DetachOutcome::Detached
+        );
+        assert!(
+            app.connector_commands(&id("a")).is_none(),
+            "a is gone from the registry"
+        );
+        assert!(app.connector_attached(), "b survives the named detach");
+        let outcome = app
+            .engine
+            .execute(StateCommand::RequestSync)
+            .await
+            .expect("nudge accepted");
+        assert_eq!(outcome, CommandOutcome::SyncRequested);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while module_b.cycles() < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "b never answered the post-detach nudge"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            module_a.cycles(),
+            1,
+            "a ran no cycle after its named detach"
+        );
+
+        let outcome = app.shutdown().await;
+        assert!(!outcome.actor_aborted);
+    }
+
+    /// The authority over a booted N=2 with scripted episodes (D5-13's
+    /// integrated pin): a's lost is silent, b's lost fires the global
+    /// `NetworkLost`, b's restored fires `NetworkRestored`.
+    #[tokio::test]
+    async fn the_authority_counts_scripted_episodes_across_two_connectors() {
+        use taskboard_domain::{CommandOutcome, StateCommand};
+        let mut config = AppConfig::default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        config.validate().expect("config valid");
+
+        let lost = |id: &str| SystemEvent::ConnectorLost(taskboard_domain::ConnectorId::from(id));
+        let restored =
+            |id: &str| SystemEvent::ConnectorRestored(taskboard_domain::ConnectorId::from(id));
+        let modules: Vec<Arc<dyn ConnectorModule>> = vec![
+            Arc::new(FakeModule::new("a", vec![])),
+            Arc::new(FakeModule::with_events(
+                "b",
+                vec![],
+                vec![lost("a"), lost("b"), lost("b"), restored("b")],
+            )),
+        ];
+
+        let app = bootstrap_with_modules(
+            config,
+            Arc::new(RefusingStore),
+            Arc::new(crate::notifications::LogSink),
+            modules,
+        )
+        .await
+        .expect("boot");
+        let mut events = app.system.subscribe();
+
+        // One nudge drives b's whole event script; the authority must
+        // emit exactly the two crossings (a's lost alone never crosses).
+        let outcome = app
+            .engine
+            .execute(StateCommand::RequestSync)
+            .await
+            .expect("nudge accepted");
+        assert_eq!(outcome, CommandOutcome::SyncRequested);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut globals = Vec::new();
+        while tokio::time::Instant::now() < deadline && globals.len() < 2 {
+            if let Ok(Ok(global @ (SystemEvent::NetworkLost | SystemEvent::NetworkRestored))) =
+                tokio::time::timeout(Duration::from_millis(100), events.recv()).await
+            {
+                globals.push(global);
+            }
+        }
+        assert_eq!(
+            globals,
+            vec![SystemEvent::NetworkLost, SystemEvent::NetworkRestored],
+            "exactly the two all-down crossings, in order"
+        );
 
         let outcome = app.shutdown().await;
         assert!(!outcome.actor_aborted);

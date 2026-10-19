@@ -26,7 +26,9 @@ pub fn print(config_path: Option<std::path::PathBuf>) -> Result<ConfigView, Comm
         .map(|err: ConfigError| err.kind().to_owned());
     Ok(ConfigView {
         config_path: config_path.as_ref().map(|p| p.display().to_string()),
-        backend: match config.sync_backend() {
+        // The default connector's kind word (D5-9): the array world
+        // displays its first entry, the legacy world today's resolution.
+        backend: match config.resolved_default_backend() {
             SyncBackend::Standalone => "standalone",
             SyncBackend::Nextcloud => "nextcloud",
         }

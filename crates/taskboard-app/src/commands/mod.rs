@@ -33,18 +33,22 @@ use taskboard_sync_nextcloud::DeckError;
 
 use crate::bootstrap::BootstrapError;
 use crate::cli::{BoardsCmd, Command, LabelsCmd, StacksCmd, TasksCmd};
-use crate::config::{AppConfig, CredentialStoreKind, SyncBackend};
+use crate::config::{AppConfig, CredentialStoreKind};
 use crate::secrets::{CredentialError, CredentialStore};
 
 /// The connector-only gate (ADR 0010 decision 9): runs at handler entry
 /// — after config load, before any core boot or client construction —
-/// so connector verbs fail loudly under `standalone`.
+/// so connector verbs fail loudly when the core has no connector.
 /// # Errors
 ///
-/// [`CommandError::SyncDisabled`] when the resolved backend is
-/// `standalone`.
+/// [`CommandError::SyncDisabled`] when no connector is configured — a
+/// standalone resolution or an empty `[[sync.connectors]]` array.
 pub fn require_connector(config: &AppConfig) -> Result<(), CommandError> {
-    if config.sync_backend() == SyncBackend::Standalone {
+    // Pluralised (D5-8): "at least one connector configured" — the
+    // array world counts entries (an empty array is a valid
+    // zero-connector world), the legacy scalar world resolves through
+    // the same set.
+    if crate::connectors::configured_connectors(config).is_empty() {
         return Err(CommandError::SyncDisabled);
     }
     Ok(())
@@ -802,7 +806,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             cmd: TasksCmd::List { stack },
         } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => {
-                let standalone = config.sync_backend() == SyncBackend::Standalone;
+                let standalone = crate::connectors::configured_connectors(&config).is_empty();
                 emit_result(
                     &mut ctx.io,
                     tasks::list(config, store, stack.as_deref()).await,
@@ -1203,7 +1207,7 @@ pub async fn dispatch_line(
             // attach/detach fact read off the App (ADR 0014). Never
             // boots, never syncs.
             let flag = status::connector_flag(
-                session.session_config().sync_backend(),
+                !crate::connectors::configured_connectors(session.session_config()).is_empty(),
                 app.connector_attached(),
             );
             let view = status::StatusView::in_session(flag);
@@ -1409,7 +1413,8 @@ async fn tasks_line(
 ) -> u8 {
     match cmd {
         TasksCmd::List { stack } => {
-            let standalone = session.session_config().sync_backend() == SyncBackend::Standalone;
+            let standalone =
+                crate::connectors::configured_connectors(session.session_config()).is_empty();
             emit_result(io, tasks::list_on(app, stack.as_deref()), |list| {
                 tasks::render_text_list(list, standalone)
             })

@@ -736,9 +736,12 @@ async fn b10_standalone_attach_makes_the_engine_live_and_the_report_is_ingested(
         SyncPhase::Idle
     );
 
-    app.attach_connector(client_for(&server.uri()))
-        .await
-        .expect("attach succeeds on an empty registry");
+    app.attach_connector(
+        taskboard_domain::ConnectorId::from("nextcloud"),
+        client_for(&server.uri()),
+    )
+    .await
+    .expect("attach succeeds on an empty registry");
     assert!(app.connector_attached());
 
     // The nudge forwards through the engine registry to the new actor.
@@ -773,12 +776,16 @@ async fn b11_double_attach_is_refused_typed() {
     assert!(app.connector_attached(), "a nextcloud boot has a connector");
 
     let err = app
-        .attach_connector(client_for(&server.uri()))
+        .attach_connector(
+            taskboard_domain::ConnectorId::from("nextcloud"),
+            client_for(&server.uri()),
+        )
         .await
         .expect_err("the second attach is refused");
     assert!(matches!(
         err,
-        taskboard_app::bootstrap::AttachError::AlreadyAttached
+        taskboard_app::bootstrap::AttachError::ConnectorNameInUse(name)
+            if name.as_str() == "nextcloud"
     ));
 
     assert!(
@@ -808,9 +815,12 @@ async fn b12_detach_then_re_attach_round_trips() {
     assert_eq!(app.detach_connector().await, DetachOutcome::Detached);
     assert!(!app.connector_attached());
 
-    app.attach_connector(client_for(&server.uri()))
-        .await
-        .expect("re-attach after detach is permitted");
+    app.attach_connector(
+        taskboard_domain::ConnectorId::from("nextcloud"),
+        client_for(&server.uri()),
+    )
+    .await
+    .expect("re-attach after detach is permitted");
     assert!(app.connector_attached());
 
     let outcome = app

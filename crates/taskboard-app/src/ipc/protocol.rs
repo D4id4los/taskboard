@@ -64,6 +64,14 @@ pub enum Request {
         server_url: String,
         /// The username of the identity to attach.
         username: String,
+        /// The target connector's config name (D5-14); `None` = the
+        /// default (first) connector. Additive on the wire (no
+        /// `PROTOCOL_VERSION` bump — ADR 0012 amendment's additive
+        /// precedent): a `None` name serializes to *absent*, so
+        /// `None`-carrying requests are byte-identical to the
+        /// pre-`name` shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
 }
 
@@ -235,6 +243,7 @@ mod tests {
             v: PROTOCOL_VERSION,
             server_url: "https://cloud.example.com".to_owned(),
             username: "alice".to_owned(),
+            name: None,
         };
         let json = serde_json::to_value(&attach).expect("serialize");
         assert_eq!(json["type"], "attach-connector");
@@ -298,6 +307,7 @@ mod tests {
             v: PROTOCOL_VERSION,
             server_url: "https://cloud.example.com".to_owned(),
             username: "alice".to_owned(),
+            name: None,
         };
         let json = serde_json::to_value(&request).expect("serialize");
         let mut keys: Vec<&str> = json
@@ -308,6 +318,22 @@ mod tests {
             .collect();
         keys.sort_unstable();
         assert_eq!(keys, ["server_url", "type", "username", "v"]);
+
+        // The named target (D5-14): the key rides the wire only when
+        // present; the absent form decodes as `None` (additive).
+        let named = Request::AttachConnector {
+            v: PROTOCOL_VERSION,
+            server_url: "https://cloud.example.com".to_owned(),
+            username: "alice".to_owned(),
+            name: Some("beta".to_owned()),
+        };
+        let json = serde_json::to_value(&named).expect("serialize");
+        assert_eq!(json["name"], "beta");
+        let back: Request =
+            serde_json::from_value(serde_json::json!({"type": "attach-connector", "v": 1,
+                "server_url": "https://cloud.example.com", "username": "alice"}))
+            .expect("the absent name decodes");
+        assert_eq!(back, request);
 
         let response = Response::AttachConnector {
             v: PROTOCOL_VERSION,
@@ -343,6 +369,13 @@ mod tests {
                 v: 1,
                 server_url: "https://c.example.com".to_owned(),
                 username: "bob".to_owned(),
+                name: None,
+            },
+            Request::AttachConnector {
+                v: 1,
+                server_url: "https://c.example.com".to_owned(),
+                username: "bob".to_owned(),
+                name: Some("beta".to_owned()),
             },
         ];
         for request in requests {

@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::commands::output::SyncStatusView;
-use crate::config::SyncBackend;
 
 /// The connector-attached fact under the backend gate, for the
 /// in-session projection: present iff `nextcloud` — a session's
@@ -21,10 +20,14 @@ use crate::config::SyncBackend;
 /// daemon-side projection carries the live flag unconditionally (it can
 /// attach from persisted state a standalone boot never named).
 #[must_use]
-pub(crate) fn connector_flag(backend: SyncBackend, attached: bool) -> Option<bool> {
-    match backend {
-        SyncBackend::Nextcloud => Some(attached),
-        SyncBackend::Standalone => None,
+pub(crate) fn connector_flag(connectors_configured: bool, attached: bool) -> Option<bool> {
+    // `Some` when any connector is configured — configured-ness, not
+    // the backend word, is the gate (the array world's empty array is
+    // the standalone fact). Legacy outputs are identical.
+    if connectors_configured {
+        Some(attached)
+    } else {
+        None
     }
 }
 
@@ -68,7 +71,7 @@ impl StatusView {
     /// never boots anything, never triggers a cycle.
     #[must_use]
     pub fn server(app: &crate::App) -> Self {
-        let backend = match app.config.sync_backend() {
+        let backend = match app.config.resolved_default_backend() {
             crate::config::SyncBackend::Standalone => "standalone",
             crate::config::SyncBackend::Nextcloud => "nextcloud",
         };
@@ -200,14 +203,15 @@ mod tests {
         );
     }
 
-    /// The gate is view vocabulary, held once: present iff `nextcloud`.
+    /// The gate is view vocabulary, held once: present iff any
+    /// connector is configured (D5-9 — the configured-ness fact, not
+    /// the backend word; legacy outputs identical).
     #[test]
-    fn the_connector_flag_is_gated_on_the_backend() {
-        use crate::config::SyncBackend;
-        assert_eq!(connector_flag(SyncBackend::Nextcloud, true), Some(true));
-        assert_eq!(connector_flag(SyncBackend::Nextcloud, false), Some(false));
-        assert_eq!(connector_flag(SyncBackend::Standalone, true), None);
-        assert_eq!(connector_flag(SyncBackend::Standalone, false), None);
+    fn the_connector_flag_is_gated_on_configured_connectors() {
+        assert_eq!(connector_flag(true, true), Some(true));
+        assert_eq!(connector_flag(true, false), Some(false));
+        assert_eq!(connector_flag(false, true), None);
+        assert_eq!(connector_flag(false, false), None);
     }
 
     /// The serde contract for the in-session arms: the key is skipped
