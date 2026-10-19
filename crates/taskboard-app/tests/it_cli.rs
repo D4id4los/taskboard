@@ -20,9 +20,9 @@
 //! ```
 
 use std::io::Write as _;
-use std::path::Path;
-use std::process::{Output, Stdio};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use taskboard_sync_nextcloud::{DeckClient, NewCard, StackFilter};
 
@@ -525,4 +525,122 @@ fn j5_gui_verb_reaches_config_load_without_a_tty() {
     let envelope: serde_json::Value = serde_json::from_str(&last_stderr_line(&output))
         .expect("stderr ends with one JSON error object");
     assert_eq!(envelope["error"]["kind"], "decode");
+}
+
+/// The K3/ADR 0016 appliance trio's shared mechanics: a standalone
+/// config under the given `[app] mode`, the binary spawned with plain
+/// pipes (the no-TTY fact itself) under `timeout 30`, and the display
+/// variables removed from the *child's* env (a developer's graphical
+/// session must not flip the appliance into its GUI branch — child-env
+/// configuration, not `std::env` mutation).
+fn spawn_headless(config: &Path, args: &[&str]) -> Child {
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    std::process::Command::new("timeout")
+        .arg("30")
+        .arg(binary)
+        .arg("--config")
+        .arg(config)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("DISPLAY")
+        .spawn()
+        .expect("spawn taskboard under timeout")
+}
+
+/// A per-test standalone config with the given `[app] mode`; returns
+/// the config path and the IPC socket the lifecycle must bind.
+fn headless_config(dir: &Path, mode: &str) -> (PathBuf, PathBuf) {
+    let config = dir.join("taskboard.toml");
+    let db = dir.join("taskboard.db");
+    let toml = format!(
+        "[app]\nmode = '{mode}'\n[sync]\nbackend = 'standalone'\n\
+         [storage]\ndb_path = '{}'\n",
+        db.display()
+    );
+    std::fs::write(&config, toml).expect("write config");
+    let socket = dir.join("taskboard.sock");
+    (config, socket)
+}
+
+/// Polls the socket predicate with a deadline (never a fixed wait).
+fn wait_for_socket(socket: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !socket.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the lifecycle never bound the ipc socket"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A serving child that exits 0 (not the timeout's 124) after the
+/// graceful remote stop.
+fn assert_graceful_remote_stop(child: Child, config: &Path, what: &str) {
+    wait_for_socket(&config.with_file_name("taskboard.sock"));
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let stop = std::process::Command::new(binary)
+        .arg("--config")
+        .arg(config)
+        .args(["daemon", "stop"])
+        .output()
+        .expect("daemon stop runs");
+    assert_eq!(
+        stop.status.code(),
+        Some(0),
+        "{what}: daemon stop failed: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let output = child.wait_with_output().expect("child completes");
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "{what}: hung instead of stopping gracefully"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{what}: child exits 0 on the remote stop, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// K3 — the bare kiosk appliance without a display falls back loudly
+/// to the headless daemon lifecycle: it routes to the appliance (not
+/// the old mode-gate refusal), the gate takes the headless branch, the
+/// socket serves, and the shared tail drains and shuts down cleanly on
+/// `daemon stop` (ADR 0016). The GUI branch is display-gated by
+/// construction and is not pinned here (mounting headless panics — the
+/// very reason the gate exists).
+#[test]
+fn kiosk_bare_without_display_serves_headless_and_stops() {
+    let dir = tempdir();
+    let (config, _socket) = headless_config(dir.path(), "kiosk");
+    let child = spawn_headless(&config, &[]);
+    assert_graceful_remote_stop(child, &config, "bare kiosk appliance");
+}
+
+/// K3 — the explicit `daemon` verb under a kiosk config stays the
+/// headless maintenance entry (the mode gate refuses `Desktop` only):
+/// it serves and stops gracefully, identically to daemon mode.
+#[test]
+fn explicit_daemon_under_kiosk_mode_stays_headless() {
+    let dir = tempdir();
+    let (config, _socket) = headless_config(dir.path(), "kiosk");
+    let child = spawn_headless(&config, ["daemon"].as_slice());
+    assert_graceful_remote_stop(child, &config, "explicit daemon under kiosk");
+}
+
+/// K3 — the surviving gate arm: an explicit `daemon` under a desktop
+/// config is still refused (exit 1 — distinguished from serve by the
+/// exit code alone; the refusal text is UX, never asserted).
+#[test]
+fn explicit_daemon_under_desktop_mode_is_refused() {
+    let dir = tempdir();
+    let (config, _socket) = headless_config(dir.path(), "desktop");
+    let output = run_cli(&config, ["daemon"].as_slice(), None, None);
+    expect_exit(&output, 1, "explicit daemon under desktop is refused");
 }

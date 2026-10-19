@@ -605,11 +605,11 @@ async fn r12_repl_loop_shuts_the_core_down_before_returning() {
     let _next = InstanceLock::acquire(&db).expect("lock released");
 }
 
-/// R13: the core is mode-agnostic (ADR 0011): a session on a
-/// `mode = "kiosk"` config boots, serves its lines, and shuts down —
-/// the console a kiosk machine gets instead of the pre-REPL
-/// `ModeNotImplemented` dead end (the daemon/UI entry owns the Phase-7
-/// refusal, not `bootstrap`).
+/// R13: the core and the REPL are mode-agnostic (ADR 0011): a session
+/// on a `mode = "kiosk"` config boots, serves its lines, and shuts
+/// down — any mode's console. A kiosk machine's *bare* entry is the
+/// appliance (ADR 0016); an explicit REPL session on a kiosk config
+/// still works, which is what this pins.
 #[tokio::test]
 async fn r13_a_kiosk_mode_session_boots_and_serves() {
     let dir = tempdir();
