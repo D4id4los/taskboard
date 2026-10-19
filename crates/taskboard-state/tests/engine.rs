@@ -179,6 +179,7 @@ async fn spawn(spawner: Spawner) -> Harness {
         system_rx,
         notifier,
         spawner.reminders,
+        taskboard_domain::ConnectorId::from("nextcloud"),
     )
     .await
     .expect("engine boots");
@@ -450,10 +451,9 @@ async fn a5_completed_report_ingestion_publishes() {
 
     eventually(&h.handle, |app| {
         !app.boards.is_empty()
-            && app
-                .boards
-                .values()
-                .any(|b| b.remote == Some(RemoteBoardId(77)))
+            && app.boards.values().any(|b| {
+                b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId(77))
+            })
             && app.sync.aggregate().last_success == Some(ts(T0))
             && app.sync.aggregate().phase == SyncPhase::Idle
     })
@@ -733,6 +733,7 @@ async fn a12_boot_failure_surfaces_load_error() {
         system_rx,
         notifier,
         ReminderEngineConfig::disabled(),
+        taskboard_domain::ConnectorId::from("nextcloud"),
     )
     .await;
     assert!(matches!(
@@ -859,7 +860,7 @@ async fn completed_report_persists_validators_under_the_board_binding() {
     eventually(&h.handle, |app| {
         app.boards
             .values()
-            .any(|b| b.remote == Some(RemoteBoardId(77)))
+            .any(|b| b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId(77)))
     })
     .await;
 
@@ -884,6 +885,80 @@ async fn completed_report_persists_validators_under_the_board_binding() {
             )),
         Some(&validators.archived_stacks),
     );
+}
+
+/// The report's own board owns the validator keys at ≥2 bound boards:
+/// a `Completed` report for the *second* board files its validators
+/// under the second board's remote id — never under the first-bound
+/// board's (the pre-chunk-4 pick, which would misfile them at ≥2).
+#[tokio::test]
+async fn validators_file_under_the_reported_board_not_the_first_bound_one() {
+    let (state, _second) = two_bound_boards();
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(state)),
+        ..Spawner::default()
+    })
+    .await;
+
+    let mut validators = etag_validators();
+    validators.stacks.etag = Some("\"s9\"".into());
+    validators.archived_stacks.etag = Some("\"a9\"".into());
+    h.report_tx
+        .send(completed_report_for(RemoteBoardId(9), validators.clone()))
+        .await
+        .expect("report channel open");
+    h.handle.flush().await;
+
+    let read = taskboard_domain::SyncStateReader::read_state(&h.handle)
+        .await
+        .expect("reachable");
+    assert_eq!(
+        read.validators
+            .get(&taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(9))),
+        Some(&validators.stacks),
+        "the reported board owns the stacks key",
+    );
+    assert_eq!(
+        read.validators
+            .get(&taskboard_domain::ValidatorKey::ArchivedStacks(
+                RemoteBoardId(9)
+            )),
+        Some(&validators.archived_stacks),
+    );
+    assert_eq!(
+        read.validators
+            .get(&taskboard_domain::ValidatorKey::Stacks(RemoteBoardId(7))),
+        None,
+        "nothing misfiles under the first-bound board's remote id",
+    );
+}
+
+/// One `Completed` report per board settles *each* bound board's own
+/// status row — the per-board map, not a single shared phase.
+#[tokio::test]
+async fn per_board_reports_settle_each_bound_boards_row() {
+    let (state, _second) = two_bound_boards();
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(state)),
+        ..Spawner::default()
+    })
+    .await;
+
+    for remote in [RemoteBoardId(9), RemoteBoardId(7)] {
+        h.report_tx
+            .send(completed_report_for(remote, test_validators()))
+            .await
+            .expect("report channel open");
+    }
+    eventually(&h.handle, |app| {
+        app.boards.len() == 2
+            && app.boards.values().all(|b| {
+                app.sync.get(b.id).is_some_and(|row| {
+                    row.phase == SyncPhase::Idle && row.last_success == Some(ts(T0))
+                })
+            })
+    })
+    .await;
 }
 
 /// A `Failed` report carrying completed pushes lands them (decision 3):
@@ -1271,7 +1346,7 @@ async fn a15_bind_board_sets_the_remote_binding() {
     assert!(
         app.boards
             .values()
-            .any(|b| b.remote == Some(RemoteBoardId(42)))
+            .any(|b| b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId(42)))
     );
     drop(h);
 }
@@ -1601,10 +1676,19 @@ fn etag_validators() -> taskboard_domain::BoardPullValidators {
 /// The fixture `Completed` report: board 77, no stacks/tasks/labels,
 /// etag validators, fixed `read_at` — byte-identical on every call.
 fn completed_report() -> SyncReport {
+    completed_report_for(RemoteBoardId(77), etag_validators())
+}
+
+/// [`completed_report`] parameterized by the reported board and its
+/// validators — the ≥2-boards scenarios name a non-default board.
+fn completed_report_for(
+    board: RemoteBoardId,
+    validators: taskboard_domain::BoardPullValidators,
+) -> SyncReport {
     SyncReport::Completed {
         snapshot: Box::new(RemoteBoardSnapshot {
             board: RemoteBoard {
-                id: RemoteBoardId(77),
+                id: board,
                 title: "remote board".into(),
                 color: "00ff00".into(),
                 archived: false,
@@ -1615,10 +1699,30 @@ fn completed_report() -> SyncReport {
             tasks: vec![],
             labels: vec![],
         }),
-        validators: etag_validators(),
+        validators,
         pushes: vec![],
         read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
     }
+}
+
+/// Two live boards bound to *distinct* remote boards, both tagged with
+/// the engine's default connector — the ≥2-boards-per-connector shape
+/// the per-board report semantics exist for. Board-id order puts
+/// `first` (remote 7) ahead of `second` (remote 9): a first-bound pick
+/// and the report's own board disagree exactly here.
+fn two_bound_boards() -> (PersistedState, taskboard_domain::BoardId) {
+    let mut state = PersistedState::default();
+    for (raw, remote) in [(1_u128, 7_u64), (2, 9)] {
+        let mut board = common::board("bound");
+        board.id = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(raw));
+        board.remote = Some(taskboard_domain::RemoteBoardBinding {
+            connector: taskboard_domain::ConnectorId::from("nextcloud"),
+            board: RemoteBoardId(remote),
+        });
+        state.boards.insert(board.id, board);
+    }
+    let second = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
+    (state, second)
 }
 
 /// F4-02a: sending the *identical* `Completed` report a second time
@@ -1640,7 +1744,7 @@ async fn identical_completed_report_appends_nothing() {
     eventually(&h.handle, |app| {
         app.boards
             .values()
-            .any(|b| b.remote == Some(RemoteBoardId(77)))
+            .any(|b| b.remote == taskboard_domain::test_support::test_binding(RemoteBoardId(77)))
             && app.sync.aggregate().last_success == Some(ts(T0))
             && app.sync.aggregate().phase == SyncPhase::Idle
     })

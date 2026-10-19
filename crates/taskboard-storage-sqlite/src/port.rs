@@ -47,7 +47,9 @@ mod tests {
         // writes always follow the board row, so the seed does too.
         let board = taskboard_domain::Board {
             id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1)),
-            remote: Some(taskboard_domain::RemoteBoardId(1)),
+            remote: taskboard_domain::test_support::test_binding(taskboard_domain::RemoteBoardId(
+                1,
+            )),
             title: "board".into(),
             color: taskboard_domain::Color::new("0000ff"),
             archived: false,

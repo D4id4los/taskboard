@@ -68,6 +68,7 @@ impl Scenario {
             system_rx,
             notifier,
             ReminderEngineConfig::disabled(),
+            taskboard_domain::ConnectorId::from("nextcloud"),
         )
         .await
         .expect("engine boots");
@@ -298,7 +299,12 @@ async fn s3_sync_ingestion_binds_and_pulls() {
                 .load_full()
                 .boards
                 .values()
-                .any(|b| b.remote == Some(taskboard_domain::RemoteBoardId(77)));
+                .any(|b| {
+                    b.remote
+                        == taskboard_domain::test_support::test_binding(
+                            taskboard_domain::RemoteBoardId(77),
+                        )
+                });
             if bound {
                 break;
             }
@@ -586,7 +592,7 @@ async fn s7_standalone_first_run_and_bind() {
     let app = s.handle.shared_state().load_full();
     assert_eq!(
         app.boards[&board].remote,
-        Some(taskboard_domain::RemoteBoardId(77))
+        taskboard_domain::test_support::test_binding(taskboard_domain::RemoteBoardId(77))
     );
     s.snap("s7");
     drop(s);

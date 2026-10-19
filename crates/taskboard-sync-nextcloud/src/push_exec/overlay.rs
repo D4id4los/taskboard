@@ -17,7 +17,10 @@ pub struct BindingOverlay {
 }
 
 impl BindingOverlay {
-    /// Seeds the overlay from the read state's bindings.
+    /// Seeds the overlay from the read state's bindings, scoped to the
+    /// cycle's board: refs naming a *different* remote board are invisible
+    /// here — `card_of` stamps the cycle's board id, and an unfiltered
+    /// overlay would mis-tag another board's refs at N ≥ 2 boards.
     #[must_use]
     pub fn from_index(board: RemoteBoardId, index: &RemoteIndex) -> Self {
         Self {
@@ -25,16 +28,19 @@ impl BindingOverlay {
             stack_by_local: index
                 .stack_by_ref
                 .iter()
+                .filter(|(r, _)| r.board == board)
                 .map(|(r, local)| (*local, r.stack))
                 .collect(),
             task_by_local: index
                 .task_by_ref
                 .iter()
+                .filter(|(r, _)| r.board == board)
                 .map(|(r, local)| (*local, (r.stack, r.card)))
                 .collect(),
             label_by_local: index
                 .label_by_ref
                 .iter()
+                .filter(|(r, _)| r.board == board)
                 .map(|(r, local)| (*local, r.label))
                 .collect(),
         }

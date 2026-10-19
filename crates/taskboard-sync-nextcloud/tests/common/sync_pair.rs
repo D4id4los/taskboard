@@ -58,12 +58,14 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
         system_engine_rx,
         notifier,
         taskboard_state::ReminderEngineConfig::disabled(),
+        taskboard_domain::ConnectorId::from("nextcloud"),
     )
     .await
     .expect("engine boots");
 
     let state_reader: Arc<dyn taskboard_domain::SyncStateReader> = Arc::new(engine.clone());
     let _actor = spawn_sync_actor(
+        taskboard_domain::ConnectorId::from("nextcloud"),
         client,
         state_reader,
         nudges_rx,
@@ -84,14 +86,29 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
 }
 
 impl SyncPair {
-    /// Arms the pull target (the CLI `boards select` path, Phase 6).
+    /// Binds the local board to the remote board through the engine (the
+    /// ceremony's real path, chunk 3 onward): the next cycle's derived set
+    /// picks the binding up with no targeting message.
     pub(crate) async fn set_board(&self, board: u64) {
-        self.commands
-            .send(SyncCommand::SetBoard(taskboard_domain::RemoteBoardId(
-                board,
-            )))
+        let local = self
+            .engine
+            .execute(taskboard_domain::StateCommand::CreateBoard {
+                title: "pair board".into(),
+                color: taskboard_domain::Color::new("00ff00"),
+            })
             .await
-            .expect("actor command channel open");
+            .expect("board created");
+        let taskboard_domain::CommandOutcome::CreatedBoard(board_id) = local else {
+            panic!("expected a CreatedBoard receipt");
+        };
+        self.engine
+            .execute(taskboard_domain::StateCommand::BindBoard {
+                board: board_id,
+                remote: taskboard_domain::RemoteBoardId(board),
+            })
+            .await
+            .expect("board bound");
+        self.sync_now().await;
     }
 
     /// Nudges a cycle (the engine does this after every mutating command).

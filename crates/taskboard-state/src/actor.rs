@@ -250,6 +250,7 @@ pub async fn spawn_state_engine(
     system: broadcast::Receiver<SystemEvent>,
     notifier: mpsc::Sender<Notification>,
     reminder_cfg: ReminderEngineConfig,
+    default_connector: taskboard_domain::ConnectorId,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
     // Log the counts straight off the hydrated data — never clone the
@@ -286,6 +287,7 @@ pub async fn spawn_state_engine(
             system_out: system_out.downgrade(),
             notifier,
             reminders: reminder_cfg,
+            default_connector,
         },
         shared,
         signals,
@@ -306,6 +308,10 @@ struct EngineParts {
     system_out: broadcast::WeakSender<SystemEvent>,
     notifier: mpsc::Sender<Notification>,
     reminders: ReminderEngineConfig,
+    /// The config-minted default connector: the binding-tag mint for
+    /// `BindBoard` plans and the adopt-new mint for sync reports (DF-3's
+    /// one name, threaded; D-2/D-8).
+    default_connector: taskboard_domain::ConnectorId,
 }
 
 #[allow(
@@ -329,6 +335,7 @@ async fn run_loop(
         system_out,
         notifier,
         reminders: reminder_cfg,
+        default_connector,
     } = parts;
     // Edge-trigger state for `StorageFailed`: the event fires on the
     // ok->fail transition (a dying disk fires once per failure epoch,
@@ -382,7 +389,14 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (&repo, ids.as_ref(), clock.as_ref(), &mut sync_outs, &system_out),
+                        (
+                            &repo,
+                            ids.as_ref(),
+                            clock.as_ref(),
+                            &mut sync_outs,
+                            &system_out,
+                            &default_connector,
+                        ),
                         command,
                         reply,
                         &mut storage_failing,
@@ -419,7 +433,12 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (&repo, ids.as_ref(), clock.as_ref()),
+                        (
+                            &repo,
+                            ids.as_ref(),
+                            clock.as_ref(),
+                            &default_connector,
+                        ),
                         report,
                     )
                     .await;
@@ -501,20 +520,21 @@ fn publish(
     let _ = signals.send(EngineSignal::StateUpdated);
 }
 
-/// The seams tuple: `(repo, ids, clock, sync_outs, system_out)`.
+/// The seams tuple: `(repo, ids, clock, sync_outs, system_out, default_connector)`.
 type Seams<'a> = (
     &'a Arc<dyn TaskRepository>,
     &'a dyn IdGenerator,
     &'a dyn Clock,
     &'a mut Vec<mpsc::Sender<SyncCommand>>,
     &'a broadcast::WeakSender<SystemEvent>,
+    &'a taskboard_domain::ConnectorId,
 );
 
 async fn execute_command(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock, sync_outs, system_out): Seams<'_>,
+    (repo, ids, clock, sync_outs, system_out, default_connector): Seams<'_>,
     command: StateCommand,
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
     storage_failing: &mut bool,
@@ -540,7 +560,14 @@ async fn execute_command(
         return;
     }
 
-    let plan = match plan_command(&core.app(), core.outbox(), &command, ids, now) {
+    let plan = match plan_command(
+        &core.app(),
+        core.outbox(),
+        &command,
+        ids,
+        now,
+        default_connector,
+    ) {
         Ok(plan) => plan,
         Err(rejection) => {
             tracing::warn!(?rejection, "command rejected");
@@ -622,7 +649,12 @@ async fn ingest_sync_report(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock): (&Arc<dyn TaskRepository>, &dyn IdGenerator, &dyn Clock),
+    (repo, ids, clock, default_connector): (
+        &Arc<dyn TaskRepository>,
+        &dyn IdGenerator,
+        &dyn Clock,
+        &taskboard_domain::ConnectorId,
+    ),
     report: taskboard_domain::SyncReport,
 ) {
     tracing::debug!("sync report ingested");
@@ -642,12 +674,13 @@ async fn ingest_sync_report(
                 read_at,
                 ids,
                 now,
+                default_connector,
             );
             append_status_if_changed(core, &mut batch, &merged.sync);
             // The binding may have been adopted by this very batch, so the
             // keys derive from the post-merge board — "its own binding" is
             // the engine's after it ingests the report.
-            append_validators_if_changed(core, &mut batch, &validators, &merged);
+            append_validators_if_changed(core, &mut batch, &validators, &merged, snapshot.board.id);
             batch
         }
         taskboard_domain::SyncReport::Failed { kind, pushes, .. } if pushes.is_empty() => {
@@ -732,28 +765,31 @@ fn mark_bound_syncing(core: &mut EngineCore) -> bool {
 }
 
 /// Appends one `UpsertValidators` per key derived from the report's
-/// `BoardPullValidators`, keyed against the engine's own board binding
-/// (phase 4 decision 4 — the actor never reasons about storage keys).
-/// No-op when no board is bound or nothing differs from the stored values.
+/// `BoardPullValidators`, keyed by the report snapshot's own board — the
+/// local board whose binding names the snapshot's remote id (phase 4
+/// decision 4 — the actor never reasons about storage keys; D-11: at ≥2
+/// boards per connector the report's board, not a first-bound pick,
+/// owns these keys). No-op when no bound board matches or nothing
+/// differs from the stored values.
 fn append_validators_if_changed(
     core: &EngineCore,
     batch: &mut Vec<PersistenceAction>,
     validators: &taskboard_domain::BoardPullValidators,
     merged: &AppState,
+    snapshot_board: taskboard_domain::RemoteBoardId,
 ) {
-    let Some(board) = merged
+    let Some(_board_row) = merged
         .boards
         .values()
-        .find(|b| b.remote.is_some())
-        .and_then(|b| b.remote)
+        .find(|b| b.remote.as_ref().map(|r| r.board) == Some(snapshot_board))
     else {
         return;
     };
     let incoming = [
         (ValidatorKey::Boards, &validators.boards),
-        (ValidatorKey::Stacks(board), &validators.stacks),
+        (ValidatorKey::Stacks(snapshot_board), &validators.stacks),
         (
-            ValidatorKey::ArchivedStacks(board),
+            ValidatorKey::ArchivedStacks(snapshot_board),
             &validators.archived_stacks,
         ),
     ];

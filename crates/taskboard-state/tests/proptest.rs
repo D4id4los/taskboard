@@ -216,9 +216,12 @@ proptest! {
             &app,
             &persisted.outbox,
             &snapshot,
-            &pushes, chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            &pushes,
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &ids,
-            now());
+            now(),
+            &taskboard_domain::ConnectorId::from("nextcloud"),
+        );
         // The engine appends the status action iff phase or last_success
         // changed — the same rule the actor applies.
         for (board, status) in merged.sync.iter() {
@@ -469,6 +472,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
             system_rx,
             notifier,
             ReminderEngineConfig::disabled(),
+            taskboard_domain::ConnectorId::from("nextcloud"),
         )
         .await
         .expect("engine boots");

@@ -372,7 +372,7 @@ fn keep_label_intent(
 /// read by the per-entity merge primitives.
 // Still one fixed-order sequence after the R9 decision table was extracted
 // into `apply_push_outcomes`; the numbered sections ARE the design.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // the injected seams ARE the constructor
 pub fn apply_sync_report(
     current: &AppState,
     outbox: &[PendingOp],
@@ -381,6 +381,7 @@ pub fn apply_sync_report(
     read_at: DateTime<Utc>,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
+    default_connector: &crate::ids::ConnectorId,
 ) -> (AppState, Vec<PersistenceAction>) {
     let _span = tracing::debug_span!(
         "apply_sync_report",
@@ -432,7 +433,7 @@ pub fn apply_sync_report(
     let mut board_ids_by_remote: HashMap<RemoteBoardId, crate::ids::BoardId> = current
         .boards
         .iter()
-        .filter_map(|(id, b)| Some((b.remote?, *id)))
+        .filter_map(|(id, b)| Some((b.remote.as_ref()?.board, *id)))
         .collect();
     let remote_board = &snapshot.board;
     let board_id = if let Some(id) = board_ids_by_remote.get(&remote_board.id).copied() {
@@ -445,7 +446,10 @@ pub fn apply_sync_report(
         id
     } else {
         let id = ids.new_board_id();
-        boards.insert(id, adopt_remote_board(remote_board, id));
+        boards.insert(
+            id,
+            adopt_remote_board(remote_board, default_connector.clone(), id),
+        );
         board_ids_by_remote.insert(remote_board.id, id);
         tracing::debug!(rule = RULE_R1, board_id = ?id, fresh_id = ?id, "board adopted");
         id
@@ -1323,6 +1327,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 3_600),
+            &crate::test_support::test_connector(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -1365,6 +1370,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 600),
+            &crate::test_support::test_connector(),
         );
         let merged_task = app.0.tasks.values().next().unwrap();
         assert!(merged_task.deleted, "stack tombstone cascades to its tasks");
@@ -1400,6 +1406,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 3_660),
+            &crate::test_support::test_connector(),
         );
         assert!(
             app.1
@@ -1431,6 +1438,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         assert_eq!(
@@ -1467,6 +1475,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -1498,6 +1507,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
@@ -1519,6 +1529,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
@@ -1568,6 +1579,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         let adopted_label = app
@@ -1608,6 +1620,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
         let second_state = app_into_state(&first);
         let second = apply_sync_report(
@@ -1618,6 +1631,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 180),
+            &crate::test_support::test_connector(),
         );
 
         assert!(
@@ -1662,6 +1676,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 3_660),
+            &crate::test_support::test_connector(),
         );
 
         let state_after = app_into_state(&app);
@@ -1697,6 +1712,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         // R9a echo adoption applies to create/update pushes only; a move
@@ -1741,6 +1757,7 @@ mod tests {
             ts(BASE + 30), // the cycle read after the create was queued
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         let state_after = app_into_state(&app);
@@ -1794,6 +1811,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 420),
+            &crate::test_support::test_connector(),
         );
 
         assert!(
@@ -1835,6 +1853,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         assert!(
@@ -1913,6 +1932,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         assert!(
@@ -1961,6 +1981,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 180),
+            &crate::test_support::test_connector(),
         );
         assert_eq!(
             app.0.stacks[&stack_id].title, "locally newer",
@@ -1993,6 +2014,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 90),
+            &crate::test_support::test_connector(),
         );
 
         assert_eq!(
@@ -2059,6 +2081,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         assert!(
@@ -2477,7 +2500,8 @@ mod tests {
             let (pushed_state, pushed_actions) = apply_push_report(
                 &app, &state.outbox, &pushes, chrono::DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now);
             let (full_state, full_actions) = apply_sync_report(
-                &app, &state.outbox, &snapshot, &pushes, DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now);
+                &app, &state.outbox, &snapshot, &pushes, DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
+            &crate::test_support::test_connector());
             prop_assert_eq!(pushed_state, full_state);
             prop_assert_eq!(pushed_actions, full_actions);
         }
@@ -2490,7 +2514,7 @@ mod tests {
     fn mirror_snapshot(state: &crate::persistence::PersistedState) -> Option<RemoteBoardSnapshot> {
         use crate::remote::{RemoteBoard, RemoteLabel as RL, RemoteStack as RS, RemoteTask as RT};
         let board = state.boards.values().find(|b| b.remote.is_some())?;
-        let board_id = board.remote?;
+        let board_id = board.remote.as_ref()?.board;
         let remote_board = RemoteBoard {
             id: board_id,
             title: board.title.clone(),
@@ -2591,6 +2615,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 180),
+            &crate::test_support::test_connector(),
         );
 
         let merged = app.0.tasks.get(&task_id).expect("same local task");
@@ -2672,6 +2697,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         let task_id = task_by_card(&state, 1).id;
@@ -2720,6 +2746,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         let merged = &app.0.stacks[stack_id];
@@ -2759,6 +2786,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         let merged = &app.0.labels[&label_id];
@@ -2810,6 +2838,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         assert!(app.0.stacks[&stack_id].deleted);
@@ -2856,6 +2885,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         assert!(app.0.stacks[&stack_id].deleted);
@@ -2910,6 +2940,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         assert!(app.0.tasks[&task_id].deleted);
@@ -2957,6 +2988,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         assert!(app.0.tasks[&task_id].deleted);
@@ -3004,6 +3036,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         let merged = &app.0.stacks[&stack_id];
@@ -3027,6 +3060,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         let merged = &app.0.labels[&label_id];
@@ -3066,6 +3100,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         assert!(app.0.boards.values().all(|b| b.deleted));
@@ -3106,6 +3141,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         let task_id = task_by_card(&state, 1).id;
@@ -3139,6 +3175,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 420),
+            &crate::test_support::test_connector(),
         );
 
         let state_after = app_into_state(&app);
@@ -3169,6 +3206,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
         assert!(
             first
@@ -3195,6 +3233,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 180),
+            &crate::test_support::test_connector(),
         );
         let adopted = second
             .tasks
@@ -3230,6 +3269,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         let draft = app
@@ -3263,6 +3303,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         let adopted = app
@@ -3293,13 +3334,14 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         let adopted = app
             .0
             .boards
             .values()
-            .find(|b| b.remote == Some(board(88)))
+            .find(|b| b.remote == crate::test_support::test_binding(board(88)))
             .expect("second board adopted (multi-board-ready shape)");
         assert_eq!(adopted.title, "board 88");
     }
@@ -3322,6 +3364,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         assert!(
@@ -3348,6 +3391,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         assert_eq!(app.0.labels[&label_id].title, "label 7 renamed");
@@ -3372,6 +3416,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         // Deliberately not `assert!(app.1.is_empty())`: CI's newer stable
@@ -3509,6 +3554,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            &crate::test_support::test_connector(),
         );
 
         // No ghost entity was fabricated into state; every ghost op is
@@ -3541,8 +3587,10 @@ mod tests {
         let remote = remote_task(1, card, remote_last_modified);
         let snap = single_stack_snapshot(vec![remote], remote_last_modified.max(BASE));
 
-        let a = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000));
-        let b = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000));
+        let a = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
+            &crate::test_support::test_connector());
+        let b = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
+            &crate::test_support::test_connector());
         prop_assert_eq!(a.0.tasks, b.0.tasks);
     }
     }
@@ -3577,6 +3625,7 @@ mod tests {
             ts(BASE), // the cycle read before the edit was queued
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let state_after = app_into_state(&app);
@@ -3617,6 +3666,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let state_after = app_into_state(&app);
@@ -3649,6 +3699,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let state_after = app_into_state(&app);
@@ -3685,6 +3736,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let state_after = app_into_state(&app);
@@ -3723,6 +3775,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let merged = app.0.stacks[&local.id].clone();
@@ -3759,6 +3812,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let merged = app.0.stacks[&local.id].clone();
@@ -3795,6 +3849,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let merged = app.0.boards[&local.id].clone();
@@ -3831,6 +3886,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let merged = &app.0.labels[&label_id];
@@ -3928,7 +3984,11 @@ mod tests {
             ts(BASE + 300),
             "clock is max(local, echo stamp)"
         );
-        assert_eq!(merged.remote, Some(expected_ref));
+        assert_eq!(
+            merged.remote,
+            crate::test_support::test_binding(expected_ref),
+            "the echo preserves the local board's binding"
+        );
         assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
         assert!(
             app.1
@@ -4039,6 +4099,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         assert!(
@@ -4086,6 +4147,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let final_state = app_into_state(&app);
@@ -4145,6 +4207,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 120),
+            &crate::test_support::test_connector(),
         );
 
         let merged = &app.0.tasks[&task_id];
@@ -4194,6 +4257,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let final_state = app_into_state(&app);
@@ -4229,6 +4293,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let final_state = app_into_state(&app);
@@ -4262,6 +4327,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let merged = &app.0.stacks[&local.id];
@@ -4292,6 +4358,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let merged = &app.0.labels[&local.id];
@@ -4321,6 +4388,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         let final_state = app_into_state(&app);
@@ -4355,6 +4423,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         assert_eq!(
@@ -4385,6 +4454,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         assert_eq!(
@@ -4413,6 +4483,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         assert_eq!(
@@ -4451,6 +4522,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         assert_eq!(
@@ -4487,6 +4559,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 360),
+            &crate::test_support::test_connector(),
         );
 
         assert_eq!(

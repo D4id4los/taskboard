@@ -426,7 +426,12 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                     // action's business (multi-board safety; the MVP holds
                     // 0..1 boards, so the bound remote board is the one).
                     ValidatorKey::Stacks(b) | ValidatorKey::ArchivedStacks(b) => {
-                        Some(*b) != state.boards.get(board).and_then(|row| row.remote)
+                        Some(*b)
+                            != state
+                                .boards
+                                .get(board)
+                                .and_then(|row| row.remote.as_ref())
+                                .map(|r| r.board)
                     }
                 });
             }
@@ -804,11 +809,11 @@ mod tests {
                 // The doomed board (bound), a second (untouched) board.
                 PersistenceAction::UpsertBoard(board_row(
                     board,
-                    Some(crate::ids::RemoteBoardId(7)),
+                    crate::test_support::test_binding(crate::ids::RemoteBoardId(7)),
                 )),
                 PersistenceAction::UpsertBoard(board_row(
                     other,
-                    Some(crate::ids::RemoteBoardId(8)),
+                    crate::test_support::test_binding(crate::ids::RemoteBoardId(8)),
                 )),
                 PersistenceAction::UpsertStack(stack_row(stack, board)),
                 PersistenceAction::UpsertStack(stack_row(other_stack, other)),

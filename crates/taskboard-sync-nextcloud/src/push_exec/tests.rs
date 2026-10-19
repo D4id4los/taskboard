@@ -150,7 +150,10 @@ fn board_row(raw: u128, title: &str) -> taskboard_domain::Board {
     let now = chrono::Utc::now();
     taskboard_domain::Board {
         id: taskboard_domain::BoardId::from(uid(raw)),
-        remote: Some(RemoteBoardId(42)),
+        remote: Some(taskboard_domain::RemoteBoardBinding {
+            connector: taskboard_domain::ConnectorId::from("nextcloud"),
+            board: RemoteBoardId(42),
+        }),
         title: title.into(),
         color: taskboard_domain::Color::new("00c2e0"),
         archived: false,
@@ -249,6 +252,78 @@ fn overlay_with(
         }),
     );
     BindingOverlay::from_index(board, &index)
+}
+
+/// The overlay is scoped to the named board: refs naming a *different*
+/// remote board are invisible (their local ids resolve to nothing), so
+/// `card_of` can never stamp this cycle's board id onto them at N ≥ 2
+/// boards on one connector.
+#[test]
+fn from_index_scopes_the_overlay_to_the_named_board() {
+    let index = RemoteIndex::from_bindings(
+        [
+            (
+                RemoteCardRef {
+                    board: RemoteBoardId(1),
+                    stack: RemoteStackId(10),
+                    card: taskboard_domain::RemoteCardId(100),
+                },
+                task_id(1),
+            ),
+            (
+                RemoteCardRef {
+                    board: RemoteBoardId(2),
+                    stack: RemoteStackId(20),
+                    card: taskboard_domain::RemoteCardId(200),
+                },
+                task_id(2),
+            ),
+        ]
+        .into_iter(),
+        [
+            (
+                taskboard_domain::RemoteStackRef {
+                    board: RemoteBoardId(1),
+                    stack: RemoteStackId(10),
+                },
+                stack_id(3),
+            ),
+            (
+                taskboard_domain::RemoteStackRef {
+                    board: RemoteBoardId(2),
+                    stack: RemoteStackId(20),
+                },
+                stack_id(4),
+            ),
+        ]
+        .into_iter(),
+        std::iter::empty(),
+    );
+
+    let overlay = BindingOverlay::from_index(RemoteBoardId(1), &index);
+    assert_eq!(
+        overlay.card_of(task_id(1)),
+        Some(RemoteCardRef {
+            board: RemoteBoardId(1),
+            stack: RemoteStackId(10),
+            card: taskboard_domain::RemoteCardId(100),
+        }),
+        "the named board's own ref resolves fully",
+    );
+    assert_eq!(
+        overlay.card_of(task_id(2)),
+        None,
+        "another board's ref is invisible to this overlay"
+    );
+    assert_eq!(
+        overlay.stack_by_local.get(&stack_id(3)),
+        Some(&RemoteStackId(10)),
+    );
+    assert_eq!(
+        overlay.stack_by_local.get(&stack_id(4)),
+        None,
+        "another board's stack binding is not in this overlay"
+    );
 }
 
 #[tokio::test]

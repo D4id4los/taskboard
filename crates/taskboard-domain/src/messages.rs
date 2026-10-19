@@ -304,11 +304,13 @@ pub enum EngineSignal {
     StateUpdated,
 }
 
-/// Engine/app → sync actor command (mpsc payload).
+/// Engine/app → sync actor command (mpsc payload). Each actor derives its
+/// board set from the persisted bindings tagged with its own connector id
+/// every cycle — no targeted targeting command exists (the retired
+/// `SetBoard` told a single-target actor its one binding; the tagged
+/// binding world needs no message).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SyncCommand {
-    /// First-run board binding (CLI `boards select`); MVP is single-board.
-    SetBoard(RemoteBoardId),
     /// Nudge: run a sync cycle ASAP (after local edits and for `sync`).
     SyncNow,
     /// Connector-only detach (WI-H): the actor finishes any in-flight
@@ -391,11 +393,7 @@ mod tests {
     fn copy_enums_travel_by_value() {
         let events = [SystemEvent::Shutdown, SystemEvent::NetworkLost];
         for _event in events {}
-        let commands = [
-            SyncCommand::SyncNow,
-            SyncCommand::SetBoard(RemoteBoardId(1)),
-            SyncCommand::Detach,
-        ];
+        let commands = [SyncCommand::SyncNow, SyncCommand::Detach];
         for _command in commands {}
         let signals = [EngineSignal::StateUpdated; 2];
         assert_eq!(signals[0], signals[1]);

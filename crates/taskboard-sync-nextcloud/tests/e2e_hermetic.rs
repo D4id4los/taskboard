@@ -89,6 +89,7 @@ async fn boot(server: MockServer, repo_state: taskboard_domain::PersistedState) 
         system_engine_rx,
         notifier,
         taskboard_state::ReminderEngineConfig::disabled(),
+        taskboard_domain::ConnectorId::from("nextcloud"),
     )
     .await
     .expect("engine boots");
@@ -105,7 +106,7 @@ async fn boot(server: MockServer, repo_state: taskboard_domain::PersistedState) 
 }
 
 /// Spawns an actor against the stack on a fresh command channel; returns
-/// the command half (for `SetBoard`/manual nudges) and the join handle.
+/// the command half (for manual nudges) and the join handle.
 fn spawn_actor(stack: &Stack) -> (mpsc::Sender<SyncCommand>, tokio::task::JoinHandle<()>) {
     spawn_actor_with_cfg(stack, cfg(stack.clock.clone()))
 }
@@ -118,6 +119,7 @@ fn spawn_actor_with_cfg(
     let state_reader: Arc<dyn taskboard_domain::SyncStateReader> = Arc::new(stack.engine.clone());
     let (commands, command_rx) = mpsc::channel(16);
     let join = spawn_sync_actor(
+        taskboard_domain::ConnectorId::from("nextcloud"),
         client,
         state_reader,
         command_rx,
@@ -128,10 +130,11 @@ fn spawn_actor_with_cfg(
     (commands, join)
 }
 
-/// Arms the pull target through the actor's command channel.
-async fn bind_board(commands: &mpsc::Sender<SyncCommand>) {
+/// Nudges a cycle: the board set derives from the persisted bindings
+/// seeded into the stack's repo.
+async fn nudge_cycle(commands: &mpsc::Sender<SyncCommand>) {
     commands
-        .send(SyncCommand::SetBoard(RemoteBoardId0(BOARD)))
+        .send(SyncCommand::SyncNow)
         .await
         .expect("commands channel open");
 }
@@ -167,7 +170,10 @@ fn seeded_state() -> taskboard_domain::PersistedState {
     let mut state = taskboard_domain::PersistedState::default();
     let board = taskboard_domain::Board {
         id: taskboard_domain::BoardId::from(uuid(1)),
-        remote: Some(RemoteBoardId0(BOARD)),
+        remote: Some(taskboard_domain::RemoteBoardBinding {
+            connector: taskboard_domain::ConnectorId::from("nextcloud"),
+            board: RemoteBoardId0(BOARD),
+        }),
         title: "board".into(),
         color: taskboard_domain::Color::new("00ff00"),
         archived: false,
@@ -534,7 +540,7 @@ async fn i1_offline_creates_round_trip_to_the_server() {
     // Deterministic: wait for the broadcast subscription (a structural
     // fact) instead of sleeping through the actor's first tick.
     wait_subscribed(&stack.system_tx).await;
-    bind_board(&commands).await;
+    nudge_cycle(&commands).await;
     let board_id = *stack
         .engine
         .shared_state()
@@ -639,7 +645,7 @@ async fn i2_remote_newer_edit_adopts() {
     let stack = boot(server, state).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
-    bind_board(&commands).await;
+    nudge_cycle(&commands).await;
 
     eventually(&stack.engine, |app| {
         app.tasks
@@ -694,7 +700,7 @@ async fn i3_concurrent_edits_resolve_per_field() {
     let stack = boot(server, state).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
-    bind_board(&commands).await;
+    nudge_cycle(&commands).await;
 
     eventually(&stack.engine, |app| {
         matches!(
@@ -820,7 +826,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
     let stack = boot(server, state).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
-    bind_board(&commands).await;
+    nudge_cycle(&commands).await;
 
     eventually(&stack.engine, |app| app.sync.aggregate().pending_ops == 0).await;
     // The move and the label assignment both reached the server.
@@ -897,7 +903,7 @@ async fn i5_restart_resumes_conditional_polling() {
     let stack = boot(server, seeded_state()).await;
     let (commands, first_actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
-    bind_board(&commands).await;
+    nudge_cycle(&commands).await;
     eventually(&stack.engine, |app| {
         app.sync.aggregate().phase == SyncPhase::Idle && app.sync.aggregate().last_success.is_some()
     })

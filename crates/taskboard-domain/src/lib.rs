@@ -60,8 +60,8 @@ pub use entities::{
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
-    BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardId, RemoteCardId, RemoteCardRef,
-    RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
+    BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId, RemoteCardId,
+    RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 pub use merge::{
     adopt_board_if_newer, adopt_label_after_push, adopt_remote_board, adopt_remote_label,

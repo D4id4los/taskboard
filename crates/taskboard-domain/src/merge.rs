@@ -658,7 +658,10 @@ pub fn adopt_board_if_newer(local: &Board, remote: &RemoteBoard) -> Board {
     tracing::debug!(rule = RULE_R6, board_id = ?local.id, outcome = "adopted", "board adopted");
     Board {
         id: local.id,
-        remote: Some(remote.id),
+        // The binding is identity, not content: the merge never changes
+        // *which* remote board (and owning connector) a local board is
+        // bound to — the snapshot came from that very board.
+        remote: local.remote.clone(),
         title: remote.title.clone(),
         color: crate::entities::Color::new(remote.color.clone()),
         archived: remote.archived,
@@ -747,7 +750,9 @@ pub fn adopt_board_after_push(local: &Board, echo: &RemoteBoard) -> Board {
     tracing::debug!(rule = RULE_R9, board_id = ?local.id, "board echo adopted");
     Board {
         id: local.id,
-        remote: Some(echo.id),
+        // Binding preservation, same rule as the pull merges: an echo is
+        // this board's own write coming back.
+        remote: local.remote.clone(),
         title: echo.title.clone(),
         color: crate::entities::Color::new(echo.color.clone()),
         archived: echo.archived,
@@ -796,9 +801,14 @@ pub fn adopt_board_after_delete_push(local: &Board, echo: &RemoteBoard) -> Board
 
 /// R1 for boards: adopt a remotely-created board under a fresh local id.
 #[must_use]
-pub fn adopt_remote_board(remote: &RemoteBoard, id: crate::ids::BoardId) -> Board {
+pub fn adopt_remote_board(
+    remote: &RemoteBoard,
+    connector: crate::ids::ConnectorId,
+    id: crate::ids::BoardId,
+) -> Board {
     tracing::trace!(
         board_id = ?id,
+        connector = %connector,
         remote_board = ?remote.id,
         remote_ts = ?remote.last_modified,
         title = %remote.title,
@@ -807,7 +817,10 @@ pub fn adopt_remote_board(remote: &RemoteBoard, id: crate::ids::BoardId) -> Boar
     tracing::debug!(rule = RULE_R1, board_id = ?id, "board adopted");
     Board {
         id,
-        remote: Some(remote.id),
+        remote: Some(crate::ids::RemoteBoardBinding {
+            connector,
+            board: remote.id,
+        }),
         title: remote.title.clone(),
         color: crate::entities::Color::new(remote.color.clone()),
         archived: remote.archived,
@@ -892,6 +905,33 @@ mod tests {
     /// A local board row in `merge_testutil`'s fixture shape.
     fn local_board() -> Board {
         crate::merge_testutil::base_board()
+    }
+
+    #[test]
+    fn every_board_merge_path_preserves_a_non_default_binding_tag() {
+        // The binding is identity: a board tagged for a connector that is
+        // not the default keeps that tag through every merge path — none
+        // of them re-mints (D-8's preserve rule).
+        let tag = crate::ids::ConnectorId::from("work");
+        let binding = crate::ids::RemoteBoardBinding {
+            connector: tag,
+            board: board(REMOTE_BOARD_NUM),
+        };
+        let mut local = local_board();
+        local.remote = Some(binding.clone());
+
+        let remote = remote_board(REMOTE_BOARD_NUM, BASE + 120);
+        assert_eq!(
+            adopt_board_if_newer(&local, &remote).remote,
+            Some(binding.clone())
+        );
+        assert_eq!(merge_board(&local, &remote).remote, Some(binding.clone()));
+        assert_eq!(
+            adopt_board_after_push(&local, &remote).remote,
+            Some(binding.clone())
+        );
+        // The delete push is the one path that *clears* (finalize): its
+        // clearing is asserted by its own test above.
     }
 
     #[test]
@@ -1207,9 +1247,17 @@ mod tests {
     #[test]
     fn adopt_remote_board_stamps_remote_content() {
         let id = crate::ids::BoardId::from(uuid::Uuid::from_u128(1234));
-        let adopted = adopt_remote_board(&remote_board(99, BASE + 5), id);
+        let adopted = adopt_remote_board(
+            &remote_board(99, BASE + 5),
+            crate::test_support::test_connector(),
+            id,
+        );
         assert_eq!(adopted.id, id);
-        assert_eq!(adopted.remote, Some(board(99)));
+        assert_eq!(
+            adopted.remote,
+            crate::test_support::test_binding(board(99)),
+            "the adopt-new mint carries the passed connector tag"
+        );
         assert_eq!(adopted.remote_seen, Some(ts(BASE + 5)));
         assert!(!adopted.deleted);
     }
@@ -1377,7 +1425,7 @@ mod tests {
         let mut local = local_board();
         local.deleted = true;
         local.clocks.deleted = ts(BASE + 60);
-        local.remote = Some(board(REMOTE_BOARD_NUM));
+        local.remote = crate::test_support::test_binding(board(REMOTE_BOARD_NUM));
         let echo = remote_board(REMOTE_BOARD_NUM, BASE + 120);
         let finalized = adopt_board_after_delete_push(&local, &echo);
         assert!(finalized.deleted, "a delete echo must never un-delete");

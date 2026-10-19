@@ -125,6 +125,17 @@ impl std::fmt::Display for ConnectorId {
     }
 }
 
+/// A board's remote binding: the remote board *and* the connector that
+/// owns it. The connector tag is config-minted (DF-3): one name from
+/// config through the registry, the module, and the storage row.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RemoteBoardBinding {
+    /// The connector that owns this binding (its actor syncs this board).
+    pub connector: ConnectorId,
+    /// The remote board id within that connector's namespace.
+    pub board: RemoteBoardId,
+}
+
 /// Location of a card on the remote: Deck card ids are only unique per
 /// board, so the full ref carries board and stack context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
@@ -190,6 +201,20 @@ mod tests {
             prop_assert_eq!(RemoteStackId(raw).get(), raw);
             prop_assert_eq!(RemoteLabelId(raw).get(), raw);
             prop_assert_eq!(RemoteBoardId(raw).get(), raw);
+        }
+
+        #[test]
+        fn bindings_roundtrip_through_serde(
+            name in "[a-z][a-z0-9-]{0,31}",
+            b in any::<u64>(),
+        ) {
+            let binding = RemoteBoardBinding {
+                connector: ConnectorId::from(name.as_str()),
+                board: RemoteBoardId(b),
+            };
+            let json = serde_json::to_string(&binding).unwrap();
+            let back: RemoteBoardBinding = serde_json::from_str(&json).unwrap();
+            prop_assert_eq!(back, binding);
         }
 
         #[test]

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, remote_board_id, title, color,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title as \"ck_title: DateTime<Utc>\",\n                      ck_color as \"ck_color: DateTime<Utc>\",\n                      ck_archived as \"ck_archived: DateTime<Utc>\",\n                      ck_deleted as \"ck_deleted: DateTime<Utc>\",\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM boards ORDER BY id",
+  "query": "SELECT id, remote_board_id, connector, title, color,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title as \"ck_title: DateTime<Utc>\",\n                      ck_color as \"ck_color: DateTime<Utc>\",\n                      ck_archived as \"ck_archived: DateTime<Utc>\",\n                      ck_deleted as \"ck_deleted: DateTime<Utc>\",\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM boards ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -26,8 +26,19 @@
         }
       },
       {
-        "name": "title",
+        "name": "connector",
         "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "boards",
+            "name": "connector"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "color",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "archived: bool",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "deleted: bool",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "ck_title: DateTime<Utc>",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "ck_color: DateTime<Utc>",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "ck_archived: DateTime<Utc>",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "ck_deleted: DateTime<Utc>",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +126,7 @@
       },
       {
         "name": "remote_seen: DateTime<Utc>",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -131,6 +142,7 @@
     "nullable": [
       false,
       true,
+      true,
       false,
       false,
       false,
@@ -142,5 +154,5 @@
       true
     ]
   },
-  "hash": "03036f751ba3cd59e3e1a54c003d42d190be0d5e0efb155aa6e447c9a670dc52"
+  "hash": "c987258bfed69e00b483a626ae6b6b5bdb264f41741fce81ba58ea5207e393a2"
 }

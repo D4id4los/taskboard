@@ -518,7 +518,9 @@ mod tests {
 
         let board = taskboard_domain::Board {
             id: taskboard_domain::BoardId::from(board_uuid),
-            remote: Some(taskboard_domain::RemoteBoardId(42)),
+            remote: taskboard_domain::test_support::test_binding(taskboard_domain::RemoteBoardId(
+                42,
+            )),
             title: "board".into(),
             color: taskboard_domain::Color::new("00ff00"),
             archived: false,
@@ -540,6 +542,92 @@ mod tests {
             connector_column().await.as_deref(),
             Some(test_connector().as_str()),
             "the upsert re-tags the binding with the repo's default connector"
+        );
+        repo.close().await;
+    }
+
+    /// D-3: a non-NULL tag naming a connector nobody configured decodes
+    /// as-is — no codec-level existence validation; the owning actor
+    /// simply never finds the board (its set filter misses). The chunk-4
+    /// world cannot mint such a row (one name exists), so the fixture
+    /// writes it raw.
+    #[tokio::test]
+    async fn a_non_null_foreign_tag_decodes_as_is() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("foreign.db");
+        open(&db, test_connector())
+            .await
+            .expect("migrating open")
+            .close()
+            .await;
+        let raw = SqlitePool::connect(&format!("sqlite://{}", db.display()))
+            .await
+            .expect("raw connect");
+        sqlx::query(
+            "INSERT INTO boards (id, remote_board_id, connector, title, color, archived, deleted, ck_title, remote_seen) \
+             VALUES (?, 42, 'work', 'board', '00ff00', 0, 0, '2026-01-01T00:00:00+00:00', NULL)",
+        )
+        .bind(uuid::Uuid::from_u128(0xd3).to_string())
+        .execute(&raw)
+        .await
+        .expect("seed foreign-tagged board");
+        raw.close().await;
+
+        let repo = open(&db, test_connector()).await.expect("open");
+        let state = repo.load().await.expect("load");
+        let board = state
+            .boards
+            .get(&taskboard_domain::BoardId::from(uuid::Uuid::from_u128(
+                0xd3,
+            )))
+            .expect("the foreign-tagged board loads");
+        assert_eq!(
+            board.remote,
+            Some(taskboard_domain::RemoteBoardBinding {
+                connector: taskboard_domain::ConnectorId::from("work"),
+                board: taskboard_domain::RemoteBoardId(42),
+            }),
+            "the row's tag decodes as-is, never rewritten to the default"
+        );
+        repo.close().await;
+    }
+
+    /// DF-4's flip, with the distinguishing case the default-tag fixtures
+    /// cannot express: the binding's tag is the write source — a board
+    /// bound to a non-default tag stores *that* tag, and the round trip
+    /// returns it (an implementation writing the default unconditionally
+    /// would fail both reads).
+    #[tokio::test]
+    async fn upserts_write_the_binding_s_tag_and_it_round_trips() {
+        let repo = open_memory(test_connector()).await.expect("open");
+        let board = taskboard_domain::Board {
+            id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(0xd4)),
+            remote: Some(taskboard_domain::RemoteBoardBinding {
+                connector: taskboard_domain::ConnectorId::from("work"),
+                board: taskboard_domain::RemoteBoardId(42),
+            }),
+            title: "board".into(),
+            color: taskboard_domain::Color::new("00ff00"),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::BoardClocks {
+                title: taskboard_domain::BoardClocks::epoch(),
+                color: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        };
+        repo.apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
+            board.clone(),
+        )])
+        .await
+        .expect("apply");
+
+        let state = repo.load().await.expect("load");
+        assert_eq!(
+            state.boards[&board.id].remote, board.remote,
+            "the stored binding round-trips with its own tag"
         );
         repo.close().await;
     }
