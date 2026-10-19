@@ -428,13 +428,18 @@ tests S). The report §3.7's "L core + M view" splits the same way.**
    chunk, recording this doc's D-U1…D-U4 as the decision.
 
 **Out of scope (v1), each typed `NotUndoable` with its reason in the
-outcome (no silent gaps):** `DeleteStack`/`RestoreStack` (multi-entity
-restore machinery — the journal already holds the pre-images, so v2 is
-additive), `DeleteBoard`/`ResetBoard`/`ClearBoardContent`/bind &
-reconcile ceremonies (their `ConfirmationRequired`/pre-count ceremonies
-*are* the defense, DF-5), the reminder surface (D-R1 verbs, snooze,
-mute — deliveries are proof facts that must never be retracted),
-board-level `Undo`-of-`Undo` special cases beyond the symmetric rule.
+outcome (no silent gaps) — and, per the 2026-10-19 decision session,
+each deferral captured as a backlog issue so it is not lost:**
+`DeleteStack`/`RestoreStack` (#356 — multi-entity restore machinery;
+the journal already holds the pre-images, so v2 is additive),
+`DeleteBoard`/`ResetBoard`/`ClearBoardContent`/bind & reconcile
+ceremonies (#357 — their `ConfirmationRequired`/pre-count ceremonies
+*are* the defense, DF-5), the reminder surface (#354 — D-R1 verbs,
+snooze, mute; deliveries are proof facts that must never be retracted),
+board-level `Undo`-of-`Undo` special cases beyond the symmetric rule
+(**no issue, recorded as a non-item**: the symmetric rule of §3.2 is
+the complete answer — there is no known work under this bullet; if a
+real special case surfaces it arrives with its own evidence).
 
 **Cost, on the house scale:**
 
@@ -497,15 +502,16 @@ each has a recorded additive path (v2).
 
 | # | Question | Recommendation | Status |
 |---|---|---|---|
-| D-U1 | Journal + inverse synthesis vs snapshots | **Journal intents + plan-time pre-images in the command's own batch; undo = inverse-command synthesis through `plan_command`** (snapshots rejected: they fight LWW clocks, carry no causal structure, cost whole-state clones, and don't name commands — §3.1) | proposed |
-| D-U2 | The pushed-edit rule | **Hard rule (§3.2): post-push-boundary undo/redo is a new edit — fresh plan, fresh clocks, own outbox ops; never a retraction, never a rewind of `remote_seen`/validators/clocks. Pre-boundary undo retracts (`FailOp`) — the server never knew. Undo always restores pre-image values with fresh write clocks.** | proposed (stated as a hard rule per the round's mandate) |
-| D-U3 | Sync validators + `remote_seen` interplay | **Touch nothing observational: validators and `remote_seen` monotone; the existing self-clobber guard covers post-`read_at` undo ops for free; the sequential loop makes retract-vs-push race-free; `MarkJournalPushed` (flipped with the `CompleteOp` batch) is the exact boundary signal** (§3.3) | proposed |
-| D-U4 | Undo-tree scope | **Journal the tree (parent pointers day one); v1 exposes a linear undo/redo line (`StateCommand::Undo`/`Redo` + `AppState.undo: UndoView`); branch-picker UI and per-board line scoping deferred with additive paths recorded** (§3.4) | proposed |
-| D-U5 | v1 scope + cost | **§3.5's list — journal substrate, invertible family, `RestoreTask`, Undo/Redo + projection, CLI verbs, reserved-row wiring, bounded retention, the ADR — in two chunks; house scale L (domain M, UI M, rest S)**; #176 stays the implementation carrier, unscheduled until the user opens the wave | proposed |
+| D-U1 | Journal + inverse synthesis vs snapshots | **Journal intents + plan-time pre-images in the command's own batch; undo = inverse-command synthesis through `plan_command`** (snapshots rejected: they fight LWW clocks, carry no causal structure, cost whole-state clones, and don't name commands — §3.1) | **ACCEPTED (2026-10-19)** |
+| D-U2 | The pushed-edit rule | **Hard rule (§3.2): post-push-boundary undo/redo is a new edit — fresh plan, fresh clocks, own outbox ops; never a retraction, never a rewind of `remote_seen`/validators/clocks. Pre-boundary undo retracts (`FailOp`) — the server never knew. Undo always restores pre-image values with fresh write clocks.** | **ACCEPTED (2026-10-19)** (stated as a hard rule per the round's mandate) |
+| D-U3 | Sync validators + `remote_seen` interplay | **Touch nothing observational: validators and `remote_seen` monotone; the existing self-clobber guard covers post-`read_at` undo ops for free; the sequential loop makes retract-vs-push race-free; `MarkJournalPushed` (flipped with the `CompleteOp` batch) is the exact boundary signal** (§3.3) | **ACCEPTED (2026-10-19)** |
+| D-U4 | Undo-tree scope | **Journal the tree (parent pointers day one); v1 exposes a linear undo/redo line (`StateCommand::Undo`/`Redo` + `AppState.undo: UndoView`); branch-picker UI and per-board line scoping deferred with additive paths recorded** (§3.4) | **ACCEPTED (2026-10-19)** |
+| D-U5 | v1 scope + cost | **§3.5's list — journal substrate, invertible family, `RestoreTask`, Undo/Redo + projection, CLI verbs, reserved-row wiring, bounded retention, the ADR — in two chunks; house scale L (domain M, UI M, rest S)**; #176 stays the implementation carrier, unscheduled until the user opens the wave | **ACCEPTED (2026-10-19)** — with the rider that the out-of-scope items are captured as backlog issues (#353–#357) so they are not lost |
 
-All five are *proposed* — this is a design round; the user's decision
-session may accept, amend, or reopen each (the sibling chunks' ruling
-commits are the precedent).
+Decision session (user review), 2026-10-19: D-U1…D-U4 accepted as
+proposed; D-U5 accepted with the backlog-capture rider. §8 records the
+per-candidate rulings; candidate 5 was asked back (clarification
+question from the user — see §8).
 
 ## 6. Consequences for the later implementation wave (#176)
 
@@ -563,19 +569,44 @@ commits are the precedent).
   "journal-for-debugging" perk, and the pushed-edit sidebar are the
    round's mandates — all three carried into D-U1/D-U2/D-U4.
 
-## 8. Backlog candidates (out-of-scope ideas; the user promotes)
+## 8. Backlog candidates (out-of-scope ideas) — rulings recorded 2026-10-19
 
-1. `backlog:` branch-picker UI over the journaled tree (v2; additive —
-   the data is already there). Category `ui`, `p3`.
-2. `backlog:` reminder-surface undo (D-R1 verbs; deliveries stay
-   irretractable). Category `architecture`, `p3`.
-3. `backlog:` per-board undo line scoping (engine option or caller
-   filter; §3.4's open point if the session overrules the global
-   line). Category `architecture`, `p3`.
-4. `backlog:` `RestoreStack` + cascaded-task restore (v2; pre-images
-   already journaled). Category `architecture`, `p3`.
-5. `backlog:` journal export/roaming on the D5 substrate (Wave-4
-   question, per the report). Category `architecture`, `p3`.
+1. Branch-picker UI over the journaled tree (v2; additive — the data is
+   already there). **Accepted → #353** (`ui`, `p3`), with the ruling
+   note that it **needs further consideration** before scheduling.
+2. Reminder-surface undo (D-R1 verbs; deliveries stay irretractable).
+   **Accepted → #354** (`architecture`, `p3`), with the ruling note
+   that it **needs further consideration** before scheduling.
+3. Per-board undo line scoping (engine option or caller filter;
+   §3.4's open point). **Accepted → #355** (`architecture`, `p3`),
+   with the ruling note that it **needs further consideration** before
+   scheduling.
+4. `RestoreStack` + cascaded-task restore (v2; pre-images already
+   journaled). **Accepted → #356** (`architecture`, `p3`).
+5. **Journal roaming/export on the D5 substrate — pending the user's
+   call (asked back at the 2026-10-19 session; no issue yet).** What
+   this name refers to, stated precisely: the future-directions
+   report's D5 lists "journal/export roaming" among the app-data
+   categories that cannot sync through Deck and must wait for a
+   non-Deck substrate (sidecar today, per-device journal later,
+   Wave 4). Attached to *this* design it would mean one of two
+   things, and the two have very different value:
+   - **(a) Roaming the undo journal itself** — other devices seeing
+     (and, in the strongest form, executing) this device's undo
+     history. The weak form (history visible for audit/"what did I
+     do") is a plausible Wave-4 feature; the strong form (executing
+     an undo computed from another device's pre-images) is dubious —
+     pre-images are device-local facts that go stale against the
+     other device's own edits, and under the pushed-edit rule a
+     cross-device undo is just a new edit the receiving device's
+     merge machinery already handles.
+   - **(b) Command replay for testing/debugging** — a replay harness
+     re-running a recorded journal against a fresh state to reproduce
+     bugs. Genuinely useful, but a dev-tooling idea of its own, not
+     what the D5 line meant, and not what this design defers.
+   Recommendation if the user wants it captured at all: record (a)'s
+   weak form only (history export/audit), and record (b) as its own
+   separate candidate if the replay idea appeals.
 
 ## 9. References
 
