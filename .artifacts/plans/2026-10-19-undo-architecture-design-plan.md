@@ -482,8 +482,12 @@ each has a recorded additive path (v2).
 - **Chunk 1 (sidecar):** disjoint clock domains stay disjoint — undo
   never touches document-embedded clocks; the D-S6 guard extension
   covers post-read undo writes to sidecar fields when those land.
-  Journal is device-local (the report's D5: journal roaming is a
-  Wave-4 substrate question — not this round).
+  The command journal is device-local by design (v1). Note the word
+  collision, corrected at the decision session: the report's D5
+  "journal/export roaming" line refers to the *user-facing journaling
+  feature* of report §3.4 (`JournalEntry`/`ReflectionTemplate`
+  entities), not to this command journal — the two share a word and
+  nothing else (see §8 item 5's withdrawal).
 - **Chunk 2 (field family):** the #244 lockstep manifest gains one more
   consumer — the synthesis catalogue matches `StateCommand` arms
   exhaustively, so a new field riding `TaskChanges` is undoable with
@@ -510,8 +514,9 @@ each has a recorded additive path (v2).
 
 Decision session (user review), 2026-10-19: D-U1…D-U4 accepted as
 proposed; D-U5 accepted with the backlog-capture rider. §8 records the
-per-candidate rulings; candidate 5 was asked back (clarification
-question from the user — see §8).
+per-candidate rulings; candidate 5 was withdrawn after the user's
+clarification (the report's D5 "journal" is the §3.4 user journaling
+feature, not this design's command journal — see §8).
 
 ## 6. Consequences for the later implementation wave (#176)
 
@@ -563,8 +568,11 @@ question from the user — see §8).
 4. From chunk 4 (D-V5 v2): the global inbox is a designated board —
    capture is `CreateTask`, no special undo case.
 5. From the sidecar doc (D-S2/D-S6): the document schema's section
-   registry and clock-domain separation are untouched by undo; journal
-   roaming stays a D5 Wave-4 question (device-local v1).
+   registry and clock-domain separation are untouched by undo; the
+   command journal is device-local (v1). The report's D5
+   "journal/export roaming" concern belongs to the §3.4 user
+   journaling feature, not this command journal (corrected at the
+   decision session — §8 item 5).
 6. From the report (§3.7/§4 D4/§7): the tree ambition, the
   "journal-for-debugging" perk, and the pushed-edit sidebar are the
    round's mandates — all three carried into D-U1/D-U2/D-U4.
@@ -583,30 +591,20 @@ question from the user — see §8).
    scheduling.
 4. `RestoreStack` + cascaded-task restore (v2; pre-images already
    journaled). **Accepted → #356** (`architecture`, `p3`).
-5. **Journal roaming/export on the D5 substrate — pending the user's
-   call (asked back at the 2026-10-19 session; no issue yet).** What
-   this name refers to, stated precisely: the future-directions
-   report's D5 lists "journal/export roaming" among the app-data
-   categories that cannot sync through Deck and must wait for a
-   non-Deck substrate (sidecar today, per-device journal later,
-   Wave 4). Attached to *this* design it would mean one of two
-   things, and the two have very different value:
-   - **(a) Roaming the undo journal itself** — other devices seeing
-     (and, in the strongest form, executing) this device's undo
-     history. The weak form (history visible for audit/"what did I
-     do") is a plausible Wave-4 feature; the strong form (executing
-     an undo computed from another device's pre-images) is dubious —
-     pre-images are device-local facts that go stale against the
-     other device's own edits, and under the pushed-edit rule a
-     cross-device undo is just a new edit the receiving device's
-     merge machinery already handles.
-   - **(b) Command replay for testing/debugging** — a replay harness
-     re-running a recorded journal against a fresh state to reproduce
-     bugs. Genuinely useful, but a dev-tooling idea of its own, not
-     what the D5 line meant, and not what this design defers.
-   Recommendation if the user wants it captured at all: record (a)'s
-   weak form only (history export/audit), and record (b) as its own
-   separate candidate if the replay idea appeals.
+5. **Journal roaming/export on the D5 substrate — WITHDRAWN at the
+   2026-10-19 decision session; no issue, nothing to add to the
+   backlog.** The candidate rested on a misreading: the report's D5
+   "journal/export roaming" line refers to the *user-facing
+   journaling feature* of report §3.4 ("Review, journaling, planning,
+   decision support" — `JournalEntry`/`ReflectionTemplate` entities,
+   end-of-day reviews, wellbeing attributes) and to syncing **that**
+   data across devices. When the report was written, no AppState-level
+   command journal had been conceived of; this design's command
+   journal is a different object that happens to share the word. The
+   command journal stays device-local (v1) by this design's own
+   choice, and whether *it* should ever roam is not an open question
+   this round carries — it would need its own motivation if one ever
+   appears.
 
 ## 9. References
 
