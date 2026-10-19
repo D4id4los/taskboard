@@ -225,7 +225,7 @@ async fn read_scope(
                 .count();
         (
             board.id,
-            board.remote.map(|r| r.0),
+            board.remote.as_ref().map(|r| r.board.0),
             stacks,
             tasks,
             labels,
@@ -653,12 +653,12 @@ pub(crate) async fn publish_on(
     // an already-bound board (that would publish a duplicate), and the
     // engine cannot see it until after the create. The bind below
     // remains the rule's only enforcer for the racy case.
-    if let Some(current) = local.remote {
+    if let Some(current) = local.remote.as_ref() {
         return Err(CommandError::Engine(Box::new(
             taskboard_state::ExecuteError::Rejected(
                 taskboard_domain::CommandError::BoardAlreadyBound {
                     board: board_id,
-                    bound: current,
+                    bound: current.board,
                 },
             ),
         )));
@@ -971,7 +971,7 @@ async fn wait_for_adoption(
         let binding_present = state
             .boards
             .get(&board)
-            .is_some_and(|b| !b.deleted && b.remote == Some(remote));
+            .is_some_and(|b| !b.deleted && b.remote.as_ref().map(|r| r.board) == Some(remote));
         if fresh_settled && phase == SyncPhase::Idle && binding_present {
             let adopted = &state.boards[&board];
             return Ok(SelectReceipt {

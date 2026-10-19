@@ -6598,6 +6598,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell-words",
+ "sqlx",
  "taskboard-domain",
  "taskboard-state",
  "taskboard-storage-sqlite",

@@ -1110,7 +1110,9 @@ async fn seed_bound_board(db: &std::path::Path) {
     repo.apply(vec![taskboard_domain::PersistenceAction::UpsertBoard(
         taskboard_domain::Board {
             id: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x51)),
-            remote: Some(taskboard_domain::RemoteBoardId(common::BOARD)),
+            remote: taskboard_domain::test_support::test_binding(taskboard_domain::RemoteBoardId(
+                common::BOARD,
+            )),
             title: "board".into(),
             color: taskboard_domain::Color::new("00ff00"),
             archived: false,
