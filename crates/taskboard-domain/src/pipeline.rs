@@ -381,7 +381,7 @@ pub fn apply_sync_report(
     read_at: DateTime<Utc>,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
-    default_connector: &crate::ids::ConnectorId,
+    connector: &crate::ids::ConnectorId,
 ) -> (AppState, Vec<PersistenceAction>) {
     let _span = tracing::debug_span!(
         "apply_sync_report",
@@ -423,20 +423,33 @@ pub fn apply_sync_report(
     // re-adopting the card as a duplicate local task (observed by the
     // phase-6 J1 journey against a real server). Built before the board
     // cascade runs — a cascade-finalized binding must not re-match.
-    let task_by_board_card: HashMap<(RemoteBoardId, RemoteCardId), TaskId> = tasks
+    let mut task_by_board_card: HashMap<(RemoteBoardId, RemoteCardId), TaskId> = tasks
         .iter()
         .filter_map(|(id, t)| Some((t.remote?, *id)))
         .map(|(r, id)| ((r.board, r.card), id))
         .collect();
 
     // ---- 2. Board ---------------------------------------------------
-    let mut board_ids_by_remote: HashMap<RemoteBoardId, crate::ids::BoardId> = current
+    // Attribution keys on the (connector, remote board) pair: remote ids
+    // are only unique per server, and N ≥ 2 means overlapping id spaces
+    // across connectors. A same-pair hit merges; a miss adopts under the
+    // reporting connector's tag.
+    let mut board_ids_by_remote: HashMap<
+        (crate::ids::ConnectorId, RemoteBoardId),
+        crate::ids::BoardId,
+    > = current
         .boards
         .iter()
-        .filter_map(|(id, b)| Some((b.remote.as_ref()?.board, *id)))
+        .filter_map(|(id, b)| {
+            let remote = b.remote.as_ref()?;
+            Some(((remote.connector.clone(), remote.board), *id))
+        })
         .collect();
     let remote_board = &snapshot.board;
-    let board_id = if let Some(id) = board_ids_by_remote.get(&remote_board.id).copied() {
+    let board_id = if let Some(id) = board_ids_by_remote
+        .get(&(connector.clone(), remote_board.id))
+        .copied()
+    {
         let local = &boards[&id];
         let mut merged = merge_board(local, remote_board);
         let (update, delete) = pending_board_intent(outbox, id, read_at);
@@ -446,14 +459,27 @@ pub fn apply_sync_report(
         id
     } else {
         let id = ids.new_board_id();
-        boards.insert(
-            id,
-            adopt_remote_board(remote_board, default_connector.clone(), id),
-        );
-        board_ids_by_remote.insert(remote_board.id, id);
+        boards.insert(id, adopt_remote_board(remote_board, connector.clone(), id));
+        board_ids_by_remote.insert((connector.clone(), remote_board.id), id);
         tracing::debug!(rule = RULE_R1, board_id = ?id, fresh_id = ?id, "board adopted");
         id
     };
+    // Per-connector attribution scope (DF-1's recorded extension): the
+    // global ref index is unambiguous only within one server's id
+    // space — N ≥ 2 means two connectors can mint identical
+    // (board, stack, card, label) ids, and a foreign entry would merge
+    // server B's data into server A's board. The report names its
+    // board; every ref not owned by that board is invisible to this
+    // merge (echo bindings from this cycle's pushes belong to it and
+    // survive the prune).
+    ctx.stack_by_ref
+        .retain(|_, id| stacks[id].board == board_id);
+    ctx.task_by_ref
+        .retain(|_, id| stacks[&tasks[id].stack].board == board_id);
+    ctx.label_by_ref
+        .retain(|_, id| labels[id].board == board_id);
+    ctx.board_by_ref.retain(|_, id| *id == board_id);
+    task_by_board_card.retain(|_, id| stacks[&tasks[id].stack].board == board_id);
     let board_deleted = boards[&board_id].deleted;
     if board_deleted {
         tracing::debug!(rule = RULE_R6, board_id = ?board_id, "board deletion cascade fired");
@@ -1374,6 +1400,52 @@ mod tests {
         );
         let merged_task = app.0.tasks.values().next().unwrap();
         assert!(merged_task.deleted, "stack tombstone cascades to its tasks");
+    }
+
+    /// Per-connector attribution: remote ids are only unique per server,
+    /// so a report from another connector whose remote board id collides
+    /// with an already-bound board adopts a fresh local board under its
+    /// own tag — it must never merge server B's data into server A's
+    /// board.
+    #[test]
+    fn a_foreign_connectors_colliding_board_adopts_fresh_not_merges() {
+        let state = base_state(bound_task(1)); // bound to `test_connector`, remote board 77
+        let snap = snapshot(vec![], vec![]); // reports remote board 77 too
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            &crate::ids::ConnectorId::from("beta"),
+        );
+
+        assert_eq!(app.0.boards.len(), 2, "adoption, not a merge");
+        let alpha = app
+            .0
+            .boards
+            .values()
+            .find(|b| {
+                b.remote
+                    .as_ref()
+                    .is_some_and(|r| r.connector == crate::test_support::test_connector())
+            })
+            .expect("the pre-bound board keeps its binding");
+        assert_eq!(alpha.remote.as_ref().map(|r| r.board), Some(board(77)));
+        let beta = app
+            .0
+            .boards
+            .values()
+            .find(|b| {
+                b.remote
+                    .as_ref()
+                    .is_some_and(|r| r.connector.as_str() == "beta")
+            })
+            .expect("the colliding board is adopted under beta's tag");
+        assert_eq!(beta.remote.as_ref().map(|r| r.board), Some(board(77)));
+        assert_ne!(alpha.id, beta.id, "two distinct local boards");
     }
 
     #[test]

@@ -614,8 +614,8 @@ pub async fn bootstrap(
         .map(|spec| match spec.backend {
             SyncBackend::Nextcloud => Arc::new(crate::connectors::NextcloudModule::new(
                 spec.name.clone(),
-                config.server_url().to_owned(),
-                config.username().to_owned(),
+                spec.server_url.clone(),
+                spec.username.clone(),
                 credentials.clone(),
             )) as Arc<dyn crate::connectors::ConnectorModule>,
             // The synthesis never yields a standalone spec; a module list
@@ -1121,6 +1121,7 @@ mod connector_module_tests {
         config.validate().expect("config valid");
 
         let completed = SyncReport::Completed {
+            connector: taskboard_domain::ConnectorId::from("fakemodule"),
             snapshot: Box::new(snapshot_of(77)),
             validators: taskboard_domain::BoardPullValidators {
                 boards: taskboard_domain::SyncValidators::default(),
@@ -1182,8 +1183,9 @@ mod connector_module_tests {
         }
     }
 
-    fn completed(board: u64, at: chrono::DateTime<chrono::Utc>) -> SyncReport {
+    fn completed(connector: &str, board: u64, at: chrono::DateTime<chrono::Utc>) -> SyncReport {
         SyncReport::Completed {
+            connector: taskboard_domain::ConnectorId::from(connector),
             snapshot: Box::new(snapshot_of(board)),
             validators: completed_validators(),
             pushes: Vec::new(),
@@ -1233,10 +1235,10 @@ mod connector_module_tests {
 
         let t1 = chrono::Utc.timestamp_opt(1_700_000_001, 0).unwrap();
         let t2 = chrono::Utc.timestamp_opt(1_700_000_002, 0).unwrap();
-        let module_a = Arc::new(FakeModule::new("a", vec![completed(11, t1)]));
+        let module_a = Arc::new(FakeModule::new("a", vec![completed("a", 11, t1)]));
         let module_b = Arc::new(FakeModule::new(
             "b",
-            vec![completed(22, t1), completed(22, t2)],
+            vec![completed("b", 22, t1), completed("b", 22, t2)],
         ));
         let modules: Vec<Arc<dyn ConnectorModule>> = vec![module_a.clone(), module_b.clone()];
 

@@ -429,6 +429,7 @@ async fn a5_completed_report_ingestion_publishes() {
     let h = harness().await;
     h.report_tx
         .send(SyncReport::Completed {
+            connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
                     id: RemoteBoardId(77),
@@ -473,6 +474,7 @@ async fn a6_failed_report_sets_typed_phase() {
     .await;
     h.report_tx
         .send(SyncReport::Failed {
+            connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Auth,
             pushes: vec![],
 
@@ -983,6 +985,7 @@ async fn completed_report_persists_validators_under_the_board_binding() {
     };
     h.report_tx
         .send(SyncReport::Completed {
+            connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
                     id: RemoteBoardId(77),
@@ -1118,6 +1121,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
     // Bind board 77 and its stack 9 first, so the create's echo can bind.
     h.report_tx
         .send(SyncReport::Completed {
+            connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
                     id: RemoteBoardId(77),
@@ -1211,6 +1215,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
     let echo = echo_card.tasks.pop().expect("echo task");
     h.report_tx
         .send(SyncReport::Failed {
+            connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Network,
             pushes: vec![taskboard_domain::PushOutcome {
                 op: op_id,
@@ -1247,6 +1252,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
 /// observable evidence that a report *landed*.
 fn failed_report() -> SyncReport {
     SyncReport::Failed {
+        connector: taskboard_domain::test_support::test_connector(),
         kind: SyncErrorKind::Network,
         pushes: vec![],
         read_at: ts(T0),
@@ -1831,6 +1837,7 @@ fn completed_report_for(
     validators: taskboard_domain::BoardPullValidators,
 ) -> SyncReport {
     SyncReport::Completed {
+        connector: taskboard_domain::test_support::test_connector(),
         snapshot: Box::new(RemoteBoardSnapshot {
             board: RemoteBoard {
                 id: board,
@@ -1905,6 +1912,7 @@ async fn identical_completed_report_appends_nothing() {
         .expect("report channel open");
     h.report_tx
         .send(SyncReport::Failed {
+            connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Auth,
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
@@ -1986,6 +1994,7 @@ async fn failed_report_keeps_the_last_success_stamp() {
 
     h.report_tx
         .send(SyncReport::Failed {
+            connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Network,
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
