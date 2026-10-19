@@ -361,6 +361,7 @@ async fn cycle(
             send_report(
                 reports,
                 SyncReport::Failed {
+                    connector: id.clone(),
                     kind: SyncErrorKind::NoBoard,
                     pushes: Vec::new(),
                     read_at: cfg.clock.now(),
@@ -520,6 +521,7 @@ async fn cycle(
         let sent = send_report(
             reports,
             SyncReport::Completed {
+                connector: id.clone(),
                 snapshot: Box::new(snapshot),
                 validators,
                 pushes,
@@ -591,6 +593,7 @@ async fn fail_cycle(
     send_report(
         reports,
         SyncReport::Failed {
+            connector: id.clone(),
             kind,
             pushes,
             read_at,

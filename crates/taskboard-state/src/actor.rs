@@ -433,12 +433,7 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (
-                            &repo,
-                            ids.as_ref(),
-                            clock.as_ref(),
-                            &default_connector,
-                        ),
+                        (&repo, ids.as_ref(), clock.as_ref()),
                         report,
                     )
                     .await;
@@ -664,18 +659,14 @@ async fn ingest_sync_report(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock, default_connector): (
-        &Arc<dyn TaskRepository>,
-        &dyn IdGenerator,
-        &dyn Clock,
-        &taskboard_domain::ConnectorId,
-    ),
+    (repo, ids, clock): (&Arc<dyn TaskRepository>, &dyn IdGenerator, &dyn Clock),
     report: taskboard_domain::SyncReport,
 ) {
     tracing::debug!("sync report ingested");
     let now = clock.now();
     let actions = match report {
         taskboard_domain::SyncReport::Completed {
+            connector,
             snapshot,
             validators,
             pushes,
@@ -689,7 +680,7 @@ async fn ingest_sync_report(
                 read_at,
                 ids,
                 now,
-                default_connector,
+                &connector,
             );
             append_status_if_changed(core, &mut batch, &merged.sync);
             // The binding may have been adopted by this very batch, so the
@@ -698,15 +689,19 @@ async fn ingest_sync_report(
             append_validators_if_changed(core, &mut batch, &validators, &merged, snapshot.board.id);
             batch
         }
-        taskboard_domain::SyncReport::Failed { kind, pushes, .. } if pushes.is_empty() => {
-            // No board identity exists anywhere in the report: every bound
-            // board carries the verdict with its own row's last success
-            // (exact in the one-bound-board world; per-connector
-            // attribution scopes this when reports carry a connector).
-            // A board-less failure vanishes from the map — the aggregate
-            // stays idle, like the singleton it replaces.
+        taskboard_domain::SyncReport::Failed {
+            connector,
+            kind,
+            pushes,
+            ..
+        } if pushes.is_empty() => {
+            // No board identity exists anywhere in the report: every board
+            // bound to the *reporting* connector carries the verdict with
+            // its own row's last success (per-connector attribution — the
+            // report names its connector). A board-less failure vanishes
+            // from the map — the aggregate stays idle.
             core.app()
-                .bound_boards()
+                .bound_boards_of(&connector)
                 .into_iter()
                 .map(|board| {
                     let last_success = core.sync_status(board).and_then(|row| row.last_success);

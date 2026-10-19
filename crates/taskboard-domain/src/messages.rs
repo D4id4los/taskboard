@@ -341,6 +341,11 @@ pub enum SyncReport {
     /// A cycle finished pushing and pulling; the engine executes the merge
     /// policy against this data.
     Completed {
+        /// The reporting connector (per-connector attribution, DF-1's
+        /// recorded scope): remote board ids are only unique per server,
+        /// so N ≥ 2 attribution keys on the connector too. In-process
+        /// mpsc only — never persisted, never on the IPC wire.
+        connector: crate::ids::ConnectorId,
         /// Complete remote view of the board at sync time (completeness
         /// contract: absence means the resource is gone server-side).
         /// Boxed: a snapshot dwarfs the other variants and reports travel
@@ -362,6 +367,9 @@ pub enum SyncReport {
     },
     /// The cycle failed before producing a snapshot.
     Failed {
+        /// The reporting connector: the failed verdict's row writes scope
+        /// to *this* connector's boards.
+        connector: crate::ids::ConnectorId,
         /// Deck-agnostic failure class.
         kind: SyncErrorKind,
         /// Successful push outcomes from the aborted cycle; empty when the
