@@ -25,6 +25,19 @@ use taskboard_sync_nextcloud::{DeckClient, DeckColor};
 /// color is not valid hex (CLI-validated input makes this defensive).
 pub(crate) const DEFAULT_BOARD_COLOR: &str = "0082c9";
 
+/// The binding tag the bind ceremonies mint while `--connector` is not
+/// threaded yet: the config's default (first) connector — today's
+/// engine-spawn mint, moved call-site (D6-1's interim state; the
+/// targeting phase threads the resolved spec).
+fn default_connector_of(app: &crate::App) -> taskboard_domain::ConnectorId {
+    crate::connectors::configured_connectors(&app.config)
+        .first()
+        .map_or_else(
+            || crate::connectors::DEFAULT_CONNECTOR_NAME.into(),
+            |spec| spec.name.clone(),
+        )
+}
+
 /// Builds the Deck client from config + credential store (the shared
 /// construction of `bootstrap`, `boards list`, and `login`).
 pub(crate) fn client_for(
@@ -686,6 +699,7 @@ pub(crate) async fn publish_on(
         .execute(StateCommand::BindBoard {
             board: board_id,
             remote: RemoteBoardId(created.id),
+            connector: default_connector_of(app),
         })
         .await?;
     let wiped_refs = match outcome {
@@ -888,6 +902,7 @@ pub async fn select_on(
         .execute(StateCommand::BindBoard {
             board: board_id,
             remote,
+            connector: default_connector_of(app),
         })
         .await?;
     match outcome {

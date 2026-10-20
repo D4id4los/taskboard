@@ -58,7 +58,6 @@ pub(crate) async fn boot_pair(client: DeckClient) -> SyncPair {
         system_engine_rx,
         notifier,
         taskboard_state::ReminderEngineConfig::disabled(),
-        taskboard_domain::ConnectorId::from("nextcloud"),
     )
     .await
     .expect("engine boots");
@@ -105,6 +104,7 @@ impl SyncPair {
             .execute(taskboard_domain::StateCommand::BindBoard {
                 board: board_id,
                 remote: taskboard_domain::RemoteBoardId(board),
+                connector: taskboard_domain::test_support::test_connector(),
             })
             .await
             .expect("board bound");

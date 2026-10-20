@@ -250,7 +250,6 @@ pub async fn spawn_state_engine(
     system: broadcast::Receiver<SystemEvent>,
     notifier: mpsc::Sender<Notification>,
     reminder_cfg: ReminderEngineConfig,
-    default_connector: taskboard_domain::ConnectorId,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
     // Log the counts straight off the hydrated data — never clone the
@@ -287,7 +286,6 @@ pub async fn spawn_state_engine(
             system_out: system_out.downgrade(),
             notifier,
             reminders: reminder_cfg,
-            default_connector,
         },
         shared,
         signals,
@@ -308,10 +306,6 @@ struct EngineParts {
     system_out: broadcast::WeakSender<SystemEvent>,
     notifier: mpsc::Sender<Notification>,
     reminders: ReminderEngineConfig,
-    /// The config-minted default connector: the binding-tag mint for
-    /// `BindBoard` plans and the adopt-new mint for sync reports (DF-3's
-    /// one name, threaded; D-2/D-8).
-    default_connector: taskboard_domain::ConnectorId,
 }
 
 #[allow(
@@ -335,7 +329,6 @@ async fn run_loop(
         system_out,
         notifier,
         reminders: reminder_cfg,
-        default_connector,
     } = parts;
     // Edge-trigger state for `StorageFailed`: the event fires on the
     // ok->fail transition (a dying disk fires once per failure epoch,
@@ -395,7 +388,6 @@ async fn run_loop(
                             clock.as_ref(),
                             &mut sync_outs,
                             &system_out,
-                            &default_connector,
                         ),
                         command,
                         reply,
@@ -530,21 +522,20 @@ fn publish(
     let _ = signals.send(EngineSignal::StateUpdated);
 }
 
-/// The seams tuple: `(repo, ids, clock, sync_outs, system_out, default_connector)`.
+/// The seams tuple: `(repo, ids, clock, sync_outs, system_out)`.
 type Seams<'a> = (
     &'a Arc<dyn TaskRepository>,
     &'a dyn IdGenerator,
     &'a dyn Clock,
     &'a mut Vec<mpsc::Sender<SyncCommand>>,
     &'a broadcast::WeakSender<SystemEvent>,
-    &'a taskboard_domain::ConnectorId,
 );
 
 async fn execute_command(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock, sync_outs, system_out, default_connector): Seams<'_>,
+    (repo, ids, clock, sync_outs, system_out): Seams<'_>,
     command: StateCommand,
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
     storage_failing: &mut bool,
@@ -570,14 +561,7 @@ async fn execute_command(
         return;
     }
 
-    let plan = match plan_command(
-        &core.app(),
-        core.outbox(),
-        &command,
-        ids,
-        now,
-        default_connector,
-    ) {
+    let plan = match plan_command(&core.app(), core.outbox(), &command, ids, now) {
         Ok(plan) => plan,
         Err(rejection) => {
             tracing::warn!(?rejection, "command rejected");

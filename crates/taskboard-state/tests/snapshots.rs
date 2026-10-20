@@ -68,7 +68,6 @@ impl Scenario {
             system_rx,
             notifier,
             ReminderEngineConfig::disabled(),
-            taskboard_domain::ConnectorId::from("nextcloud"),
         )
         .await
         .expect("engine boots");
@@ -582,6 +581,7 @@ async fn s7_standalone_first_run_and_bind() {
     s.run(StateCommand::BindBoard {
         board: s.board_id(),
         remote: taskboard_domain::RemoteBoardId(77),
+        connector: taskboard_domain::test_support::test_connector(),
     })
     .await;
     // Rebinding to the same remote is the accepted no-op.
@@ -589,6 +589,7 @@ async fn s7_standalone_first_run_and_bind() {
         .run_raw(StateCommand::BindBoard {
             board: s.board_id(),
             remote: taskboard_domain::RemoteBoardId(77),
+            connector: taskboard_domain::test_support::test_connector(),
         })
         .await
         .expect("accepted");
@@ -763,6 +764,7 @@ async fn s10_boards_reset() {
     s.run(StateCommand::BindBoard {
         board: s.board_id(),
         remote: taskboard_domain::RemoteBoardId(77),
+        connector: taskboard_domain::test_support::test_connector(),
     })
     .await;
     // Warm validators: the reset must clear them (the 304 trap).

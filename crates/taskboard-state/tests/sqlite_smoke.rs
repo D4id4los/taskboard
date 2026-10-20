@@ -60,7 +60,6 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
             system_rx,
             notifier,
             ReminderEngineConfig::disabled(),
-            taskboard_domain::ConnectorId::from("nextcloud"),
         )
         .await
         .expect("engine boots");
