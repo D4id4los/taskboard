@@ -34,6 +34,13 @@ sync:
     phase: Idle
     last_success: ~
     pending_ops: 2
+    counters:
+      cycles: 0
+      pushes: 0
+      pulls: 0
+      failures: 0
+      offline_episodes: 0
+      last_cycle: ~
 reminders:
   rules: {}
   deliveries: []

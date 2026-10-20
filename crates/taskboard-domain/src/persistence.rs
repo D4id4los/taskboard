@@ -603,6 +603,7 @@ mod tests {
                     phase: crate::state::SyncPhase::Offline,
                     last_success: Some(ts(400)),
                     pending_ops: 9999, // ignored: derived, never stored
+                    counters: crate::state::SyncCounters::default(),
                 },
             )],
         );
@@ -652,6 +653,7 @@ mod tests {
                         },
                         last_success: Some(ts(400)),
                         pending_ops: 0,
+                        counters: crate::state::SyncCounters::default(),
                     },
                 )],
             );
@@ -877,6 +879,7 @@ mod tests {
                         phase: crate::state::SyncPhase::Idle,
                         last_success: Some(ts(300)),
                         pending_ops: 0,
+                        counters: crate::state::SyncCounters::default(),
                     },
                 ),
             ],

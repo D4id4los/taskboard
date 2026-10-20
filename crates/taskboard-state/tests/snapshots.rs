@@ -244,6 +244,7 @@ async fn s3_sync_ingestion_binds_and_pulls() {
     s.clock.advance(60);
     s.report_tx
         .send(SyncReport::Completed {
+            duration: std::time::Duration::from_millis(250),
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
@@ -364,6 +365,7 @@ async fn s4_sync_resolution_drains_outbox() {
     s.clock.advance(60);
     s.report_tx
         .send(SyncReport::Completed {
+            duration: std::time::Duration::from_millis(250),
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
@@ -509,6 +511,8 @@ async fn s6_network_lost_restored_cycle() {
     s.clock.advance(60);
     s.report_tx
         .send(SyncReport::Failed {
+            duration: std::time::Duration::from_millis(100),
+            board: None,
             connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Network,
             pushes: vec![],
@@ -771,6 +775,7 @@ async fn s10_boards_reset() {
     s.clock.advance(60);
     s.report_tx
         .send(SyncReport::Completed {
+            duration: std::time::Duration::ZERO,
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {

@@ -17,7 +17,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use proptest::prelude::*;
-use taskboard_domain::StateCommand;
 use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::persistence::TaskRepository;
 use taskboard_domain::test_support::{
@@ -28,6 +27,7 @@ use taskboard_domain::{
     LocalOp, Notification, OpId, PendingOp, PersistedState, PersistenceAction, Stack, StackClocks,
     StackId, SyncPhase, Task, TaskClocks, TaskId, apply_sync_report,
 };
+use taskboard_domain::{StateCommand, SyncCounters};
 use taskboard_state::{EngineCore, ReminderEngineConfig, spawn_state_engine};
 
 mod common;
@@ -146,6 +146,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
         Just(PersistenceAction::UpsertSyncStatus(
             taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1)),
             taskboard_domain::SyncStatus {
+                counters: SyncCounters::default(),
                 phase: SyncPhase::Offline,
                 last_success: None,
                 pending_ops: 0,

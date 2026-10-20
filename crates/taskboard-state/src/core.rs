@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 
 use taskboard_domain::{
-    AppState, BoardId, PendingOp, PersistedState, PersistenceAction, SyncValidators, ValidatorKey,
-    apply_actions,
+    AppState, BoardId, PendingOp, PersistedState, PersistenceAction, SyncCounters, SyncValidators,
+    ValidatorKey, apply_actions,
 };
 
 /// The engine's private working state: the persisted shape plus the one
@@ -22,6 +22,12 @@ use taskboard_domain::{
 pub struct EngineCore {
     state: PersistedState,
     last_updated: Option<DateTime<Utc>>,
+    /// Process-lifetime sync counters, keyed by local board. Memory-only
+    /// observability: never part of `PersistedState`, never persisted,
+    /// never entering `interpret`'s batches. `app()` overlays them onto
+    /// the published rows; a restart re-hydrates rows without counters —
+    /// cumulative-since-boot by construction.
+    sync_counters: BTreeMap<BoardId, SyncCounters>,
 }
 
 impl EngineCore {
@@ -42,6 +48,7 @@ impl EngineCore {
         Self {
             state,
             last_updated: None,
+            sync_counters: BTreeMap::new(),
         }
     }
 
@@ -59,13 +66,22 @@ impl EngineCore {
     /// engine's `last_updated` stamp.
     #[must_use]
     pub fn app(&self) -> AppState {
+        let mut sync = self.state.sync.clone();
+        // Overlay the counters onto the rows that already exist. A
+        // counter entry for a row-less board (its row was deleted) writes
+        // nothing — no phantom row re-materializes.
+        for (board, counters) in &self.sync_counters {
+            if let Some(row) = sync.get_mut(*board) {
+                row.counters = counters.clone();
+            }
+        }
         AppState {
             boards: self.state.boards.clone(),
             stacks: self.state.stacks.clone(),
             tasks: self.state.tasks.clone(),
             labels: self.state.labels.clone(),
             reminders: self.state.reminders.clone(),
-            sync: self.state.sync.clone(),
+            sync,
             last_updated: self.last_updated,
         }
     }
@@ -126,6 +142,22 @@ impl EngineCore {
     pub fn mark_syncing(&mut self, board: BoardId) -> bool {
         self.state.sync.mark_syncing(board)
     }
+
+    /// Saturating-accumulates one report's counter delta into a board's
+    /// process-lifetime facts (default-entry on first sight). Strictly
+    /// outside the persistence pipeline: no batch, no `last_updated`
+    /// stamp — observability, not accounting.
+    pub fn record_report(&mut self, board: BoardId, delta: &SyncCounters) {
+        let entry = self.sync_counters.entry(board).or_default();
+        entry.fold_into(delta);
+    }
+
+    /// Records one offline-episode edge for a board (the caller owns the
+    /// edge semantics; this is the accumulation only).
+    pub fn record_offline_episode(&mut self, board: BoardId) {
+        let entry = self.sync_counters.entry(board).or_default();
+        entry.offline_episodes = entry.offline_episodes.saturating_add(1);
+    }
 }
 
 #[cfg(test)]
@@ -134,7 +166,9 @@ mod tests {
     use chrono::TimeZone;
     use taskboard_domain::idgen::IdGenerator as _;
     use taskboard_domain::test_support::CountingIds;
-    use taskboard_domain::{BoardId, PersistenceAction, Stack, StackClocks, StackId, SyncPhase};
+    use taskboard_domain::{
+        Board, BoardId, PersistenceAction, Stack, StackClocks, StackId, SyncCounters, SyncPhase,
+    };
 
     fn ts(secs: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(secs, 0).unwrap()
@@ -195,6 +229,71 @@ mod tests {
         // instant cannot change the projection.
         assert!(core.interpret(&[], ts(200)));
         assert!(!core.interpret(&[], ts(200)));
+    }
+
+    #[test]
+    fn the_overlay_writes_counters_only_onto_existing_rows() {
+        let (mut state, _) = seeded();
+        // The overlay is row-keyed, and rows materialize per board: seed
+        // one board (the stack fixture alone has no sync row).
+        let ids = CountingIds::new();
+        let board_id = ids.new_board_id();
+        state.boards.insert(
+            board_id,
+            Board {
+                id: board_id,
+                remote: None,
+                title: "board".into(),
+                color: taskboard_domain::Color::new("0000ff"),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        let mut core = EngineCore::from_persisted(state);
+        let known = board_id;
+        core.record_report(
+            known,
+            &SyncCounters {
+                cycles: 3,
+                pulls: 7,
+                ..SyncCounters::default()
+            },
+        );
+        // An existing row receives its counters.
+        assert_eq!(core.app().sync.get(known).unwrap().counters.cycles, 3);
+        assert_eq!(core.app().sync.get(known).unwrap().counters.pulls, 7);
+        // A counter entry for a row-less board materializes no row: the
+        // delta drops out of the projection with the deleted board.
+        let stranger = BoardId::from(uuid::Uuid::from_u128(999));
+        core.record_report(
+            stranger,
+            &SyncCounters {
+                cycles: 9,
+                ..SyncCounters::default()
+            },
+        );
+        assert!(
+            core.app().sync.get(stranger).is_none(),
+            "no phantom row for a board whose row is gone"
+        );
+        // Counters are invisible to the persisted shape.
+        assert!(
+            core.persisted_view()
+                .sync
+                .get(known)
+                .unwrap()
+                .counters
+                .cycles
+                == 0,
+            "persisted rows stay counter-free (restart-from-zero)"
+        );
     }
 
     #[test]

@@ -428,6 +428,7 @@ async fn a5_completed_report_ingestion_publishes() {
     let h = harness().await;
     h.report_tx
         .send(SyncReport::Completed {
+            duration: std::time::Duration::ZERO,
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
@@ -473,6 +474,8 @@ async fn a6_failed_report_sets_typed_phase() {
     .await;
     h.report_tx
         .send(SyncReport::Failed {
+            duration: std::time::Duration::ZERO,
+            board: None,
             connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Auth,
             pushes: vec![],
@@ -983,6 +986,7 @@ async fn completed_report_persists_validators_under_the_board_binding() {
     };
     h.report_tx
         .send(SyncReport::Completed {
+            duration: std::time::Duration::ZERO,
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
@@ -1119,6 +1123,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
     // Bind board 77 and its stack 9 first, so the create's echo can bind.
     h.report_tx
         .send(SyncReport::Completed {
+            duration: std::time::Duration::ZERO,
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
                 board: RemoteBoard {
@@ -1213,6 +1218,8 @@ async fn failed_report_with_pushes_applies_the_evidence() {
     let echo = echo_card.tasks.pop().expect("echo task");
     h.report_tx
         .send(SyncReport::Failed {
+            duration: std::time::Duration::ZERO,
+            board: None,
             connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Network,
             pushes: vec![taskboard_domain::PushOutcome {
@@ -1250,6 +1257,8 @@ async fn failed_report_with_pushes_applies_the_evidence() {
 /// observable evidence that a report *landed*.
 fn failed_report() -> SyncReport {
     SyncReport::Failed {
+        duration: std::time::Duration::ZERO,
+        board: None,
         connector: taskboard_domain::test_support::test_connector(),
         kind: SyncErrorKind::Network,
         pushes: vec![],
@@ -1836,6 +1845,7 @@ fn completed_report_for(
     validators: taskboard_domain::BoardPullValidators,
 ) -> SyncReport {
     SyncReport::Completed {
+        duration: std::time::Duration::ZERO,
         connector: taskboard_domain::test_support::test_connector(),
         snapshot: Box::new(RemoteBoardSnapshot {
             board: RemoteBoard {
@@ -1911,6 +1921,8 @@ async fn identical_completed_report_appends_nothing() {
         .expect("report channel open");
     h.report_tx
         .send(SyncReport::Failed {
+            duration: std::time::Duration::ZERO,
+            board: None,
             connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Auth,
             pushes: vec![],
@@ -1993,6 +2005,8 @@ async fn failed_report_keeps_the_last_success_stamp() {
 
     h.report_tx
         .send(SyncReport::Failed {
+            duration: std::time::Duration::ZERO,
+            board: None,
             connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Network,
             pushes: vec![],
@@ -2172,4 +2186,366 @@ async fn j5_attach_during_drain_is_declined_typed() {
         .await
         .expect("the engine drains and stops within the deadline")
         .expect("the loop exits cleanly");
+}
+
+// ---------------------------------------------------------------------
+// K-series: sync counters on the published rows + engine metrics (#156/#145)
+// ---------------------------------------------------------------------
+
+/// A `Completed` report with a non-empty snapshot (two stacks, three
+/// tasks, one label) and one landed push outcome.
+fn counter_report(board: RemoteBoardId, duration: std::time::Duration) -> SyncReport {
+    SyncReport::Completed {
+        duration,
+        connector: taskboard_domain::test_support::test_connector(),
+        snapshot: Box::new(RemoteBoardSnapshot {
+            board: RemoteBoard {
+                id: board,
+                title: "remote board".into(),
+                color: "00ff00".into(),
+                archived: false,
+                deleted_at: None,
+                last_modified: ts(T0),
+            },
+            stacks: [0_i64, 1]
+                .into_iter()
+                .map(|i| taskboard_domain::RemoteStack {
+                    id: taskboard_domain::RemoteStackRef {
+                        board,
+                        stack: taskboard_domain::RemoteStackId(i.unsigned_abs()),
+                    },
+                    title: format!("col{i}"),
+                    order: i,
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0),
+                })
+                .collect(),
+            tasks: vec![],
+            labels: vec![taskboard_domain::RemoteLabel {
+                id: taskboard_domain::RemoteLabelRef {
+                    board,
+                    label: taskboard_domain::RemoteLabelId(5),
+                },
+                title: "bug".into(),
+                color: "ff0000".into(),
+                deleted_at: None,
+                last_modified: ts(T0),
+            }],
+        }),
+        validators: test_validators(),
+        pushes: vec![taskboard_domain::PushOutcome {
+            op: taskboard_domain::OpId(uuid::Uuid::from_u128(500)),
+            result: taskboard_domain::PushResult::Applied { echo: None },
+        }],
+        read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+    }
+}
+
+fn bound_harness() -> Spawner {
+    Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    }
+}
+
+/// A completed report counts its cycle, its landed push, every pulled
+/// entity (the board itself included: 1 + 2 stacks + 3 tasks + 1 label —
+/// here tasks are empty, so 1 + 2 + 0 + 1), and the cycle's wall duration
+/// onto its board's row.
+#[tokio::test]
+async fn k1_a_completed_report_counts_cycle_pushes_pulls_and_duration_on_its_board() {
+    let h = spawn(bound_harness()).await;
+    h.report_tx
+        .send(counter_report(
+            RemoteBoardId(42),
+            std::time::Duration::from_millis(250),
+        ))
+        .await
+        .expect("report channel open");
+
+    eventually(&h.handle, |app| app.sync.aggregate().counters.cycles == 1).await;
+    let counters = h
+        .handle
+        .shared_state()
+        .load_full()
+        .sync
+        .aggregate()
+        .counters;
+    assert_eq!(counters.cycles, 1);
+    assert_eq!(counters.pushes, 1);
+    assert_eq!(counters.pulls, 4);
+    assert_eq!(counters.failures, 0);
+    assert_eq!(
+        counters.last_cycle,
+        Some(std::time::Duration::from_millis(250))
+    );
+}
+
+/// The trap pin: a no-change cycle (the identical report replays to an
+/// empty action batch) still counts its cycle AND still publishes — the
+/// counters ride the existing ingestion wake; no new wake source.
+#[tokio::test]
+async fn k2_a_no_change_cycle_still_counts_and_publishes() {
+    let h = spawn(bound_harness()).await;
+    let mut signals = h.handle.subscribe();
+    let report = counter_report(RemoteBoardId(42), std::time::Duration::from_millis(5));
+    h.report_tx.send(report.clone()).await.expect("open");
+    eventually(&h.handle, |app| app.sync.aggregate().counters.cycles == 1).await;
+    let _ = drain_signals(&mut signals);
+
+    h.report_tx.send(report).await.expect("open");
+    eventually(&h.handle, |app| app.sync.aggregate().counters.cycles == 2).await;
+    let signal = tokio::time::timeout(std::time::Duration::from_secs(60), signals.recv()).await;
+    assert!(
+        matches!(signal, Ok(Ok(EngineSignal::StateUpdated))),
+        "the counted no-change cycle must publish: got {signal:?}"
+    );
+}
+
+/// A connector-wide failure (no board identity) counts the cycle, the
+/// failure, and the duration on *every* board bound to the reporting
+/// connector — pushes untouched.
+#[tokio::test]
+async fn k3_a_connector_wide_failure_counts_every_connector_board() {
+    let (state, _) = two_bound_boards();
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(state)),
+        ..Spawner::default()
+    })
+    .await;
+    h.report_tx
+        .send(SyncReport::Failed {
+            connector: taskboard_domain::test_support::test_connector(),
+            kind: SyncErrorKind::Network,
+            pushes: vec![],
+            read_at: ts(T0),
+            board: None,
+            duration: std::time::Duration::from_millis(100),
+        })
+        .await
+        .expect("report channel open");
+
+    eventually(&h.handle, |app| {
+        app.boards.len() == 2
+            && app
+                .boards
+                .keys()
+                .all(|b| app.sync.get(*b).is_some_and(|r| r.counters.cycles == 1))
+    })
+    .await;
+    for board in h.handle.shared_state().load_full().boards.keys() {
+        let counters = h
+            .handle
+            .shared_state()
+            .load_full()
+            .sync
+            .get(*board)
+            .unwrap()
+            .counters
+            .clone();
+        assert_eq!(counters.cycles, 1);
+        assert_eq!(counters.failures, 1);
+        assert_eq!(counters.pushes, 0);
+        assert_eq!(
+            counters.last_cycle,
+            Some(std::time::Duration::from_millis(100))
+        );
+    }
+}
+
+/// A board-scoped failure counts only the resolved failing board.
+#[tokio::test]
+async fn k4_a_board_scoped_failure_counts_only_the_failing_board() {
+    let (state, second) = two_bound_boards();
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(state)),
+        ..Spawner::default()
+    })
+    .await;
+    // The evidence arm (board-scoped) requires push evidence: an empty
+    // `pushes` is the connector-wide verdict by the ingestion's guard.
+    h.report_tx
+        .send(SyncReport::Failed {
+            connector: taskboard_domain::test_support::test_connector(),
+            kind: SyncErrorKind::Auth,
+            pushes: vec![taskboard_domain::PushOutcome {
+                op: taskboard_domain::OpId(uuid::Uuid::from_u128(501)),
+                result: taskboard_domain::PushResult::Applied { echo: None },
+            }],
+            read_at: ts(T0),
+            board: Some(RemoteBoardId(9)),
+            duration: std::time::Duration::from_millis(40),
+        })
+        .await
+        .expect("report channel open");
+
+    eventually(&h.handle, |app| {
+        app.sync.get(second).is_some_and(|r| r.counters.cycles == 1)
+    })
+    .await;
+    let app = h.handle.shared_state().load_full();
+    let failing = app.sync.get(second).unwrap().counters.clone();
+    assert_eq!(failing.cycles, 1);
+    assert_eq!(failing.failures, 1);
+    assert_eq!(
+        failing.last_cycle,
+        Some(std::time::Duration::from_millis(40))
+    );
+    for (board, row) in app.sync.iter() {
+        if *board != second {
+            assert_eq!(
+                row.counters.cycles, 0,
+                "the other board's counters are untouched"
+            );
+        }
+    }
+}
+
+/// The offline episode edge: two `NetworkLost` events inside one episode
+/// count once; a restore (a cycle's evidence lands, the phase leaves
+/// `Offline`) re-arms the edge for the next loss.
+#[tokio::test]
+async fn k5_network_lost_counts_one_episode_per_board_until_restored() {
+    let h = spawn(bound_harness()).await;
+    h.system_tx.send(SystemEvent::NetworkLost).expect("send");
+    h.system_tx.send(SystemEvent::NetworkLost).expect("send");
+    eventually(&h.handle, |app| {
+        app.sync.aggregate().counters.offline_episodes == 1
+    })
+    .await;
+
+    // Restore: the next report is the evidence; it moves the phase out of
+    // `Offline`, re-arming the episode edge.
+    h.system_tx
+        .send(SystemEvent::NetworkRestored)
+        .expect("send");
+    h.report_tx
+        .send(counter_report(RemoteBoardId(42), std::time::Duration::ZERO))
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.sync.aggregate().phase == SyncPhase::Idle
+    })
+    .await;
+    h.system_tx.send(SystemEvent::NetworkLost).expect("send");
+    eventually(&h.handle, |app| {
+        app.sync.aggregate().counters.offline_episodes == 2
+    })
+    .await;
+}
+
+/// Counters are cumulative per process run: a fresh engine over the same
+/// repository starts from zero by construction (the counters never enter
+/// the persisted shape).
+#[tokio::test]
+async fn k6_counters_restart_from_zero_on_a_fresh_engine_over_the_same_repo() {
+    let repo: Arc<dyn TaskRepository> = Arc::new(InMemoryRepository::with_state(
+        common::seed_bound_board_state("board"),
+    ));
+    let first = spawn(Spawner {
+        repo: repo.clone(),
+        ..Spawner::default()
+    })
+    .await;
+    first
+        .report_tx
+        .send(counter_report(
+            RemoteBoardId(42),
+            std::time::Duration::from_millis(1),
+        ))
+        .await
+        .expect("report channel open");
+    eventually(&first.handle, |app| {
+        app.sync.aggregate().counters.cycles == 1
+    })
+    .await;
+    first.join.abort();
+    drop(first);
+
+    let second = spawn(Spawner {
+        repo,
+        ..Spawner::default()
+    })
+    .await;
+    eventually(&second.handle, |app| app.boards.len() == 1).await;
+    let counters = second
+        .handle
+        .shared_state()
+        .load_full()
+        .sync
+        .aggregate()
+        .counters;
+    assert_eq!(counters.cycles, 0, "a new engine restarts from zero");
+    assert_eq!(counters.last_cycle, None);
+}
+
+/// Nudges and the `Syncing` transient count no cycles — only reports do.
+#[tokio::test]
+async fn k7_nudges_and_mark_syncing_count_no_cycles() {
+    let h = spawn(bound_harness()).await;
+    let outcome = h
+        .handle
+        .execute(StateCommand::RequestSync)
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::SyncRequested);
+    let counters = h
+        .handle
+        .shared_state()
+        .load_full()
+        .sync
+        .aggregate()
+        .counters;
+    assert_eq!(counters.cycles, 0);
+    assert_eq!(counters.last_cycle, None);
+}
+
+/// The handle's engine metrics: an accepted mutating command counts one
+/// command and one publish signal; a semantically rejected one counts the
+/// rejection. Exact snapshots — the counters are the status surface's
+/// facts, never in `AppState`.
+#[tokio::test]
+async fn k8_the_handle_counts_commands_rejections_and_signals() {
+    use taskboard_state::EngineMetricsSnapshot as Snap;
+
+    let h = harness().await;
+    h.handle
+        .execute(StateCommand::CreateStack {
+            board: h.board_id(),
+            title: "backlog".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted");
+    assert_eq!(
+        h.handle.metrics(),
+        Snap {
+            commands: 1,
+            rejections: 0,
+            signals: 1,
+        }
+    );
+    let rejected = h
+        .handle
+        .execute(StateCommand::CreateTask {
+            title: "orphan".into(),
+            stack: taskboard_domain::StackId::from(uuid::Uuid::from_u128(424_242)),
+            order: 1,
+        })
+        .await;
+    assert!(
+        matches!(rejected, Err(ExecuteError::Rejected(_))),
+        "an unknown stack must be a typed rejection"
+    );
+    assert_eq!(
+        h.handle.metrics(),
+        Snap {
+            commands: 2,
+            rejections: 1,
+            signals: 1,
+        }
+    );
 }

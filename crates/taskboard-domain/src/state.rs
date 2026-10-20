@@ -53,6 +53,52 @@ pub struct SyncStatus {
     pub last_success: Option<DateTime<Utc>>,
     /// Outbox depth (pending operations).
     pub pending_ops: u32,
+    /// Process-lifetime sync activity facts for this board. Never
+    /// persisted: the storage codec and `set_stored` never touch it, so
+    /// the serde `default` is what every hydrated row carries.
+    #[serde(default)]
+    pub counters: SyncCounters,
+}
+
+/// Process-lifetime sync activity facts for one board.
+///
+/// Counters are cumulative per process run: they start at zero at every
+/// boot, live only in the state engine's memory, and are never
+/// persisted — a restart resets them by construction. Cross-restart
+/// accumulation would need durable per-board rows (a storage migration)
+/// for numbers no kiosk dashboard has asked for; the live process is
+/// what the dashboard reads. `last_cycle` is the last cycle's wall
+/// duration for that board, however the cycle ended.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncCounters {
+    /// Sync cycles that produced a report for this board.
+    pub cycles: u64,
+    /// Ops successfully pushed for this board.
+    pub pushes: u64,
+    /// Remote entities pulled (merged) for this board.
+    pub pulls: u64,
+    /// Cycles that ended in a failure attributed to this board.
+    pub failures: u64,
+    /// Offline transitions this board lived through (one per
+    /// `NetworkLost`/`ConnectorLost` edge, not per repeated event).
+    pub offline_episodes: u64,
+    /// Wall duration of the board's last cycle, however it ended.
+    pub last_cycle: Option<std::time::Duration>,
+}
+
+impl SyncCounters {
+    /// The aggregate fold step: saturating sums (counters are monotone;
+    /// a wrap would be a lie) and the max last-cycle duration
+    /// (order-independent, the same rule style as the fold's
+    /// `last_success` max).
+    pub fn fold_into(&mut self, other: &Self) {
+        self.cycles = self.cycles.saturating_add(other.cycles);
+        self.pushes = self.pushes.saturating_add(other.pushes);
+        self.pulls = self.pulls.saturating_add(other.pulls);
+        self.failures = self.failures.saturating_add(other.failures);
+        self.offline_episodes = self.offline_episodes.saturating_add(other.offline_episodes);
+        self.last_cycle = std::cmp::max(self.last_cycle, other.last_cycle);
+    }
 }
 
 /// Phase of the sync lifecycle.
@@ -111,6 +157,12 @@ impl SyncStates {
     #[must_use]
     pub fn get(&self, board: BoardId) -> Option<&SyncStatus> {
         self.0.get(&board)
+    }
+
+    /// Mutable access to one stored row (the engine's counter overlay
+    /// writes only existing rows — never materializes one).
+    pub fn get_mut(&mut self, board: BoardId) -> Option<&mut SyncStatus> {
+        self.0.get_mut(&board)
     }
 
     /// Every stored row, in deterministic board-id order.
@@ -199,6 +251,7 @@ pub fn aggregate_rows<'a>(rows: impl Iterator<Item = &'a SyncStatus>) -> SyncSta
         }
         aggregated.last_success = std::cmp::max(aggregated.last_success, status.last_success);
         aggregated.pending_ops = aggregated.pending_ops.saturating_add(status.pending_ops);
+        aggregated.counters.fold_into(&status.counters);
     }
     aggregated
 }
@@ -354,6 +407,7 @@ mod sync_states_tests {
             phase,
             last_success,
             pending_ops: pending,
+            counters: SyncCounters::default(),
         }
     }
 
@@ -399,6 +453,55 @@ mod sync_states_tests {
         assert_eq!(
             super::aggregate_rows(std::iter::empty()),
             SyncStatus::default()
+        );
+    }
+
+    #[test]
+    fn sync_counters_default_is_zeroed() {
+        assert_eq!(
+            SyncCounters::default(),
+            SyncCounters {
+                cycles: 0,
+                pushes: 0,
+                pulls: 0,
+                failures: 0,
+                offline_episodes: 0,
+                last_cycle: None,
+            }
+        );
+        assert_eq!(SyncStatus::default().counters, SyncCounters::default());
+    }
+
+    #[test]
+    fn aggregate_rows_folds_counters_saturating_and_takes_max_last_cycle() {
+        let mut big = status(SyncPhase::Idle, None, 0);
+        big.counters = SyncCounters {
+            cycles: u64::MAX,
+            pushes: 1,
+            pulls: 2,
+            failures: 3,
+            offline_episodes: 4,
+            last_cycle: Some(std::time::Duration::from_millis(100)),
+        };
+        let mut small = status(SyncPhase::Idle, None, 0);
+        small.counters = SyncCounters {
+            cycles: 10,
+            pushes: 1,
+            pulls: 0,
+            failures: 0,
+            offline_episodes: 4,
+            last_cycle: Some(std::time::Duration::from_millis(250)),
+        };
+        let folded = super::aggregate_rows([big, small].iter());
+        assert_eq!(folded.counters.cycles, u64::MAX, "saturates, never wraps");
+        assert_eq!(folded.counters.pushes, 2);
+        assert_eq!(folded.counters.pulls, 2);
+        assert_eq!(folded.counters.failures, 3);
+        assert_eq!(folded.counters.offline_episodes, 8);
+        assert_eq!(
+            folded.counters.last_cycle,
+            Some(std::time::Duration::from_millis(250)),
+            "the aggregate's last cycle is the longest of the boards'"
         );
     }
 
@@ -531,6 +634,67 @@ mod sync_states_tests {
                 .map(|(_, row)| row.pending_ops)
                 .fold(0_u32, u32::saturating_add);
             prop_assert_eq!(first.pending_ops, total, "sum conservation");
+        }
+
+        #[test]
+        fn aggregate_counter_sums_are_conserved(
+            rows in prop::collection::vec(
+                (
+                    0_u128..8,
+                    any::<u64>(),
+                    any::<u64>(),
+                    any::<u64>(),
+                    any::<u64>(),
+                    any::<u64>(),
+                    prop::option::of(Just(())),
+                ),
+                0..12,
+            ),
+            phases in prop::collection::vec(
+                prop_oneof![Just(SyncPhase::Idle), Just(SyncPhase::Offline)],
+                0..12,
+            ),
+        ) {
+            let stamped: Vec<(u128, SyncStatus)> = rows
+                .into_iter()
+                .zip(phases)
+                .map(
+                    |((raw, cycles, pushes, pulls, failures, episodes, _), phase)| {
+                        let mut status = status(phase, None, 0);
+                        status.counters = SyncCounters {
+                            cycles,
+                            pushes,
+                            pulls,
+                            failures,
+                            offline_episodes: episodes,
+                            last_cycle: Some(std::time::Duration::from_secs(
+                                cycles % 1_000,
+                            )),
+                        };
+                        (raw, status)
+                    },
+                )
+                .collect();
+            let sync = map_with(stamped);
+            let folded = sync.aggregate();
+            let sum = |pick: fn(&SyncCounters) -> u64| {
+                sync.iter()
+                    .map(|(_, row)| pick(&row.counters))
+                    .fold(0_u64, u64::saturating_add)
+            };
+            prop_assert_eq!(folded.counters.cycles, sum(|c| c.cycles));
+            prop_assert_eq!(folded.counters.pushes, sum(|c| c.pushes));
+            prop_assert_eq!(folded.counters.pulls, sum(|c| c.pulls));
+            prop_assert_eq!(folded.counters.failures, sum(|c| c.failures));
+            prop_assert_eq!(
+                folded.counters.offline_episodes,
+                sum(|c| c.offline_episodes)
+            );
+            let max_last = sync
+                .iter()
+                .map(|(_, row)| row.counters.last_cycle)
+                .fold(None, std::cmp::max);
+            prop_assert_eq!(folded.counters.last_cycle, max_last, "max law");
         }
 
         #[test]

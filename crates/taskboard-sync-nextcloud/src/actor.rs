@@ -341,6 +341,7 @@ async fn cycle(
     // Wall-clock note: every stamp flows through the injected `Clock` seam;
     // production runs engine and actor on one `SystemClock`.
     let read_at = cfg.clock.now();
+    let started = std::time::Instant::now();
     let persisted = match state.read_state().await {
         Ok(persisted) => persisted,
         Err(err) => {
@@ -365,6 +366,8 @@ async fn cycle(
                     kind: SyncErrorKind::NoBoard,
                     pushes: Vec::new(),
                     read_at: cfg.clock.now(),
+                    board: None,
+                    duration: started.elapsed(),
                 },
             )
             .await;
@@ -466,6 +469,8 @@ async fn cycle(
                             system,
                             SyncErrorKind::Network,
                             Duration::ZERO,
+                            Some(target),
+                            started,
                             pushes,
                             read_at,
                         )
@@ -503,6 +508,8 @@ async fn cycle(
                     system,
                     kind,
                     advertised_floor(&err),
+                    Some(target),
+                    started,
                     pushes,
                     read_at,
                 )
@@ -526,6 +533,7 @@ async fn cycle(
                 validators,
                 pushes,
                 read_at,
+                duration: started.elapsed(),
             },
         )
         .await;
@@ -576,6 +584,8 @@ async fn fail_cycle(
     system: &broadcast::Sender<SystemEvent>,
     kind: SyncErrorKind,
     floor: Duration,
+    board: Option<taskboard_domain::RemoteBoardId>,
+    started: std::time::Instant,
     pushes: Vec<PushOutcome>,
     read_at: chrono::DateTime<chrono::Utc>,
 ) {
@@ -597,6 +607,8 @@ async fn fail_cycle(
             kind,
             pushes,
             read_at,
+            board,
+            duration: started.elapsed(),
         },
     )
     .await;
