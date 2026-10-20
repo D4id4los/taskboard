@@ -988,25 +988,27 @@ impl Drop for Cleanup {
 }
 
 async fn two_connectors_live_and_partial_outage() {
-    // Two test-owned instances, brought up concurrently (~1 min each).
+    // Two test-owned instances, brought up sequentially: concurrent
+    // compose invocations on the shared compose file proved flaky on
+    // this runner (one instance was stopped mid-run); sequential spawns
+    // are the harness's own convention.
     let up = |suffix: &'static str, port: u16| {
         tokio::task::spawn_blocking(move || common::spawn_instance_sync(suffix, port))
     };
-    let (a_res, b_res) = tokio::join!(up("-c5a", 8390), up("-c5b", 8391));
-    let a = a_res.expect("instance A join");
-    let b = b_res.expect("instance B join");
-    let (a, b) = match (a, b) {
-        (Ok(a), Ok(b)) => (a, b),
-        (Err(err), _) | (_, Err(err)) => {
-            common::teardown_instance_sync("-c5a");
-            common::teardown_instance_sync("-c5b");
-            panic!("the two-connector tier could not come up: {err}");
-        }
-    };
+    let a = up("-c5a", 8390)
+        .await
+        .expect("instance A join")
+        .unwrap_or_else(|err| panic!("instance A did not come up: {err}"));
+    let b = up("-c5b", 8391)
+        .await
+        .expect("instance B join")
+        .unwrap_or_else(|err| panic!("instance B did not come up: {err}"));
 
-    // (Drop runs on unwind; the guard above is defined at module scope.)
+    // All exits — assertion panics included — tear both instances down
+    // (Drop runs on unwind; leaked containers poison the next run).
     let _cleanup_a = Cleanup(a.clone());
     let _cleanup_b = Cleanup(b.clone());
+
     two_connector_body(&a, &b)
         .await
         .expect("the two-connector journey");
@@ -1119,23 +1121,11 @@ async fn two_connector_body(
     // last_success, each binding tagged with its own connector, and the
     // server-side cards landed through each connector's own actor.
     eventually(&app, |state| {
-        let settled = state.sync.iter().count() == 2
+        state.sync.iter().count() == 2
             && state
                 .sync
                 .iter()
-                .all(|(_, row)| matches!(row.phase, SyncPhase::Idle) && row.last_success.is_some());
-        if !settled {
-            eprintln!(
-                "tier-debug: boards={:?} sync={:?}",
-                state
-                    .boards
-                    .values()
-                    .map(|b| (format!("{:?}", b.id), b.remote.clone()))
-                    .collect::<Vec<_>>(),
-                state.sync
-            );
-        }
-        settled
+                .all(|(_, row)| matches!(row.phase, SyncPhase::Idle) && row.last_success.is_some())
     })
     .await;
     let state = app.engine.shared_state().load_full();
