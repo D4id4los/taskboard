@@ -91,7 +91,7 @@ async fn boards_list_routes_a_failed_credential_load_to_exit_one() {
     let mut err = Vec::new();
     let code = dispatch(
         Command::Boards {
-            cmd: BoardsCmd::List,
+            cmd: BoardsCmd::List { connector: None },
         },
         ctx(dir.path(), &mut out, &mut err),
     )
@@ -111,6 +111,7 @@ async fn boards_select_routes_a_failed_credential_load_to_exit_one() {
                 local_board: None,
                 timeout_secs: 1,
                 bind_local_board: false,
+                connector: None,
             },
         },
         ctx(dir.path(), &mut out, &mut err),
@@ -198,6 +199,7 @@ async fn sync_routes_a_failed_credential_load_to_exit_one() {
         Command::Sync {
             no_wait: false,
             timeout_secs: 1,
+            connector: None,
         },
         ctx(dir.path(), &mut out, &mut err),
     )
@@ -719,6 +721,7 @@ async fn sync_routes_the_timeout_and_failure_outcomes() {
         Command::Sync {
             no_wait: false,
             timeout_secs: 1,
+            connector: None,
         },
         ctx(dir.path(), &mut out, &mut err),
     )
@@ -743,6 +746,7 @@ async fn sync_routes_the_timeout_and_failure_outcomes() {
         Command::Sync {
             no_wait: false,
             timeout_secs: 30,
+            connector: None,
         },
         ctx(dir.path(), &mut out, &mut err),
     )

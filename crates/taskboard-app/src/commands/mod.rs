@@ -54,6 +54,33 @@ pub fn require_connector(config: &AppConfig) -> Result<(), CommandError> {
     Ok(())
 }
 
+/// Resolves the connector a targeting verb addresses (D6-5): the named
+/// entry, else the default (first). Call after [`require_connector`].
+///
+/// # Errors
+///
+/// [`CommandError::UnknownConnector`] when the flag names no configured
+/// connector. No clap-level value parser: the configured set is config
+/// state, so the guard lives here where config lives.
+pub(crate) fn resolve_connector(
+    config: &AppConfig,
+    flag: Option<&str>,
+) -> Result<crate::connectors::ConnectorSpec, CommandError> {
+    let configured = crate::connectors::configured_connectors(config);
+    match flag {
+        None => configured
+            .into_iter()
+            .next()
+            .ok_or(CommandError::SyncDisabled),
+        Some(name) => configured
+            .into_iter()
+            .find(|spec| spec.name.as_str() == name)
+            .ok_or_else(|| CommandError::UnknownConnector {
+                name: name.to_owned(),
+            }),
+    }
+}
+
 /// Where a dispatch writes its output. The binary wires stdout/stderr;
 /// tests inject buffers and the future daemon-IPC frontend (WI-5) will
 /// inject socket sinks. `json` rides per invocation (REPL: per line).
@@ -287,6 +314,18 @@ pub enum CommandError {
         /// The server's protocol version.
         server_v: u32,
     },
+    /// A `--connector` flag named no configured connector (D6-5): the
+    /// guard lives handler-side where the configured set lives.
+    #[error("no connector named {:?}", name)]
+    UnknownConnector {
+        /// The offending name.
+        name: String,
+    },
+    /// A REPL-only line (`boards use`) was invoked one-shot: the
+    /// selection is session state; there is nothing to select for a
+    /// single invocation.
+    #[error("boards use is an interactive-session verb — run it inside the taskboard session")]
+    SessionOnly,
 }
 
 impl From<crate::config::ConfigError> for CommandError {
@@ -359,6 +398,8 @@ impl CommandError {
             Self::ReconcileConfirmationRequired { .. } => "reconcile-confirmation-required",
             Self::IpcTransport => "ipc-transport",
             Self::IpcVersion { .. } => "ipc-version",
+            Self::UnknownConnector { .. } => "unknown-connector",
+            Self::SessionOnly => "session-only",
         }
     }
 
@@ -384,6 +425,7 @@ impl CommandError {
                 Some(format!("{} (bound remote {})", board.as_uuid(), bound.0))
             }
             Self::UnknownBoard(id) => Some(id.to_string()),
+            Self::UnknownConnector { name } => Some(name.clone()),
             Self::BoardAlreadyBound { board, current } => {
                 Some(format!("{board} (bound remote {current})"))
             }
@@ -550,13 +592,15 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         }
         Command::Logout => logout_command(&mut ctx.io, ctx.config_path.clone()).await,
         Command::Boards {
-            cmd: BoardsCmd::List,
+            cmd: BoardsCmd::List { connector },
         } => {
             run_core(
                 &mut ctx.io,
                 ctx.config_path.clone(),
                 |entries: &Vec<_>| boards::render_text_list(entries),
-                |config, store| async move { boards::list(&config, &store).await },
+                move |config, store| async move {
+                    boards::list(&config, &store, connector.as_deref()).await
+                },
             )
             .await
         }
@@ -567,6 +611,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                     local_board,
                     timeout_secs,
                     bind_local_board,
+                    connector,
                 },
         } => {
             run_core(
@@ -581,11 +626,19 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                         local_board,
                         Duration::from_secs(timeout_secs),
                         bind_local_board,
+                        connector.as_deref(),
                     )
                     .await
                 },
             )
             .await
+        }
+        Command::Boards {
+            cmd: BoardsCmd::Use { .. },
+        } => {
+            // Session state has no one-shot home (D6-6): the selection
+            // is the REPL's; the daemon socket refuses it routing-level.
+            report_to(&mut ctx.io, &CommandError::SessionOnly)
         }
         Command::Boards {
             cmd: BoardsCmd::Create { title, color },
@@ -614,6 +667,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 BoardsCmd::Publish {
                     board,
                     timeout_secs,
+                    connector,
                 },
         } => {
             run_core(
@@ -621,7 +675,14 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 ctx.config_path.clone(),
                 boards::render_text_select,
                 move |config, store| async move {
-                    boards::publish(config, store, board, Duration::from_secs(timeout_secs)).await
+                    boards::publish(
+                        config,
+                        store,
+                        board,
+                        Duration::from_secs(timeout_secs),
+                        connector.as_deref(),
+                    )
+                    .await
                 },
             )
             .await
@@ -906,7 +967,17 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         Command::Sync {
             no_wait,
             timeout_secs,
-        } => sync_command(&mut ctx.io, ctx.config_path.clone(), no_wait, timeout_secs).await,
+            connector,
+        } => {
+            sync_command(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                no_wait,
+                timeout_secs,
+                connector.as_deref(),
+            )
+            .await
+        }
         Command::Config { cmd } => config::handle(&cmd, &mut ctx),
         Command::Status => {
             // No core boot: the config resolves for the db path only; a
@@ -1083,10 +1154,19 @@ async fn sync_command(
     config_path: Option<PathBuf>,
     no_wait: bool,
     timeout_secs: u64,
+    connector: Option<&str>,
 ) -> u8 {
     match core_ctx(config_path) {
         Ok((config, store)) => {
-            match sync::run(config, store, no_wait, Duration::from_secs(timeout_secs)).await {
+            match sync::run(
+                config,
+                store,
+                no_wait,
+                Duration::from_secs(timeout_secs),
+                connector,
+            )
+            .await
+            {
                 Ok(outcome) => {
                     emit_to(io, outcome.view(), &sync::render_text(&outcome));
                     match outcome {
@@ -1218,7 +1298,18 @@ pub async fn dispatch_line(
         Command::Sync {
             no_wait,
             timeout_secs,
-        } => sync_line(session, app, io, no_wait, timeout_secs).await,
+            connector,
+        } => {
+            sync_line(
+                session,
+                app,
+                io,
+                no_wait,
+                timeout_secs,
+                connector.as_deref(),
+            )
+            .await
+        }
     }
 }
 
@@ -1226,6 +1317,7 @@ pub async fn dispatch_line(
 /// session config/store; `select`/`publish` run their connector
 /// preludes against the session before touching the core; `create`/
 /// `rename` hit the core directly.
+#[allow(clippy::too_many_lines)] // one arm per subcommand, kept flat for review
 async fn boards_line(
     session: &(impl CoreSession + ?Sized),
     app: &crate::App,
@@ -1233,9 +1325,14 @@ async fn boards_line(
     io: &mut CommandIo<'_>,
 ) -> u8 {
     match cmd {
-        BoardsCmd::List => emit_result(
+        BoardsCmd::List { connector } => emit_result(
             io,
-            boards::list(session.session_config(), session.session_store()).await,
+            boards::list(
+                session.session_config(),
+                session.session_store(),
+                connector.as_deref(),
+            )
+            .await,
             |entries: &Vec<_>| boards::render_text_list(entries),
         ),
         BoardsCmd::Select {
@@ -1243,11 +1340,17 @@ async fn boards_line(
             local_board,
             timeout_secs,
             bind_local_board,
+            connector,
         } => {
-            match boards::select_prelude(session.session_config(), session.session_store(), board)
-                .await
+            match boards::select_prelude(
+                session.session_config(),
+                session.session_store(),
+                board,
+                connector.as_deref(),
+            )
+            .await
             {
-                Ok(entry) => emit_result(
+                Ok((entry, spec)) => emit_result(
                     io,
                     boards::select_on(
                         app,
@@ -1255,6 +1358,7 @@ async fn boards_line(
                         Duration::from_secs(timeout_secs),
                         bind_local_board,
                         local_board,
+                        &spec.name,
                     )
                     .await,
                     boards::render_text_select,
@@ -1262,6 +1366,9 @@ async fn boards_line(
                 Err(err) => report_to(io, &err),
             }
         }
+        BoardsCmd::Use { .. } => unreachable!(
+            "the REPL loop intercepts boards use (session mutation); the IPC server refuses it before dispatch"
+        ),
         BoardsCmd::Create { title, color } => {
             let color = boards::resolved_color(color.as_deref());
             let color_str = color.as_str().to_owned();
@@ -1279,14 +1386,28 @@ async fn boards_line(
         BoardsCmd::Publish {
             board,
             timeout_secs,
-        } => match boards::publish_prelude(session.session_config(), session.session_store()) {
-            Ok(client) => emit_result(
-                io,
-                boards::publish_on(app, &client, board, Duration::from_secs(timeout_secs)).await,
-                boards::render_text_select,
-            ),
-            Err(err) => report_to(io, &err),
-        },
+            connector,
+        } => {
+            match boards::publish_prelude(
+                session.session_config(),
+                session.session_store(),
+                connector.as_deref(),
+            ) {
+                Ok((client, spec)) => emit_result(
+                    io,
+                    boards::publish_on(
+                        app,
+                        &client,
+                        board,
+                        Duration::from_secs(timeout_secs),
+                        &spec.name,
+                    )
+                    .await,
+                    boards::render_text_select,
+                ),
+                Err(err) => report_to(io, &err),
+            }
+        }
         BoardsCmd::Color { board, color } => emit_result(
             io,
             boards::color_on(app, board, taskboard_domain::Color::new(&color)).await,
@@ -1487,6 +1608,7 @@ async fn sync_line(
     io: &mut CommandIo<'_>,
     no_wait: bool,
     timeout_secs: u64,
+    connector: Option<&str>,
 ) -> u8 {
     // A live connector outranks the boot-frozen backend word (the
     // status projection's same honesty rule): a standalone-booted
@@ -1500,7 +1622,23 @@ async fn sync_line(
     {
         return report_to(io, &err);
     }
-    match sync::sync_on(app, no_wait, Duration::from_secs(timeout_secs)).await {
+    let scope = match connector {
+        Some(name) => {
+            match crate::commands::resolve_connector(session.session_config(), Some(name)) {
+                Ok(spec) => Some(spec.name),
+                Err(err) => return report_to(io, &err),
+            }
+        }
+        None => None,
+    };
+    match sync::sync_on(
+        app,
+        no_wait,
+        Duration::from_secs(timeout_secs),
+        scope.as_ref(),
+    )
+    .await
+    {
         Ok(outcome) => {
             emit_to(io, outcome.view(), &sync::render_text(&outcome));
             match outcome {
@@ -1547,7 +1685,7 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         // lane.
         | Command::Gui
         | Command::Boards {
-            cmd: BoardsCmd::List,
+            cmd: BoardsCmd::List { .. },
         } => IpcRoute::Local,
         Command::Status | Command::Daemon { .. } => IpcRoute::IpcOnly,
         Command::Boards { .. }
@@ -1671,7 +1809,7 @@ mod ipc_routing_tests {
                 cmd: crate::cli::ConfigCmd::Print,
             },
             Command::Boards {
-                cmd: BoardsCmd::List,
+                cmd: BoardsCmd::List { connector: None },
             },
         ];
         for command in &local {
@@ -1706,6 +1844,7 @@ mod ipc_routing_tests {
                     local_board: None,
                     timeout_secs: 1,
                     bind_local_board: false,
+                    connector: None,
                 },
             },
             Command::Stacks {
@@ -1727,10 +1866,59 @@ mod ipc_routing_tests {
             Command::Sync {
                 no_wait: false,
                 timeout_secs: 1,
+                connector: None,
             },
         ];
         for command in &ipc_or_local {
             assert_eq!(route_for_ipc(command), IpcRoute::IpcOrLocal, "{command:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod connector_resolution_tests {
+    use crate::commands::{CommandError, resolve_connector};
+    use crate::config::{AppConfig, ConnectorCfg, SyncBackend};
+
+    fn two_connector_config() -> AppConfig {
+        let mut config = AppConfig::default();
+        config.sync.connectors = Some(vec![
+            ConnectorCfg {
+                name: "alpha".into(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://a.example".into(),
+                username: "ua".into(),
+            },
+            ConnectorCfg {
+                name: "beta".into(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://b.example".into(),
+                username: "ub".into(),
+            },
+        ]);
+        config
+    }
+
+    /// `None` resolves the default (first) entry; a named hit resolves
+    /// that entry; a miss refuses typed, carrying the name (D6-5).
+    #[test]
+    fn resolve_connector_picks_default_named_and_refuses_misses() {
+        let config = two_connector_config();
+        let default = resolve_connector(&config, None).expect("default");
+        assert_eq!(default.name.as_str(), "alpha");
+        assert_eq!(default.server_url, "https://a.example");
+        let named = resolve_connector(&config, Some("beta")).expect("beta");
+        assert_eq!(named.name.as_str(), "beta");
+        assert_eq!(named.username, "ub");
+        assert!(matches!(
+            resolve_connector(&config, Some("gama")),
+            Err(CommandError::UnknownConnector { ref name }) if name == "gama"
+        ));
+        assert_eq!(
+            resolve_connector(&config, Some("gama"))
+                .unwrap_err()
+                .error_kind(),
+            "unknown-connector"
+        );
     }
 }

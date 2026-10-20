@@ -162,6 +162,7 @@ async fn v15_select_bind_local_board_migrates_and_refuses_without_the_flag() {
         None,
         Duration::from_secs(10),
         false,
+        None,
     )
     .await
     .expect_err("plain select refuses");
@@ -175,6 +176,7 @@ async fn v15_select_bind_local_board_migrates_and_refuses_without_the_flag() {
         None,
         Duration::from_secs(60),
         true,
+        None,
     )
     .await
     .expect("bind ceremony succeeds");
@@ -237,6 +239,7 @@ async fn v16_publish_creates_binds_and_reports() {
         store_for(&server.uri()),
         None,
         Duration::from_secs(60),
+        None,
     )
     .await
     .expect("publish succeeds");
@@ -268,6 +271,7 @@ async fn v17_publish_refusals_are_typed() {
         store_for(&server.uri()),
         None,
         Duration::from_secs(5),
+        None,
     )
     .await
     .expect_err("no board");
@@ -283,6 +287,7 @@ async fn v17_publish_refusals_are_typed() {
         store_for(&server.uri()),
         None,
         Duration::from_secs(5),
+        None,
     )
     .await
     .expect_err("bound board");

@@ -25,29 +25,18 @@ use taskboard_sync_nextcloud::{DeckClient, DeckColor};
 /// color is not valid hex (CLI-validated input makes this defensive).
 pub(crate) const DEFAULT_BOARD_COLOR: &str = "0082c9";
 
-/// The binding tag the bind ceremonies mint while `--connector` is not
-/// threaded yet: the config's default (first) connector — today's
-/// engine-spawn mint, moved call-site (D6-1's interim state; the
-/// targeting phase threads the resolved spec).
-fn default_connector_of(app: &crate::App) -> taskboard_domain::ConnectorId {
-    crate::connectors::configured_connectors(&app.config)
-        .first()
-        .map_or_else(
-            || crate::connectors::DEFAULT_CONNECTOR_NAME.into(),
-            |spec| spec.name.clone(),
-        )
-}
-
-/// Builds the Deck client from config + credential store (the shared
-/// construction of `bootstrap`, `boards list`, and `login`).
-pub(crate) fn client_for(
-    config: &AppConfig,
+/// Builds the Deck client from one resolved connector spec (D6-5): the
+/// store is already keyed per identity, so the spec's `(server_url,
+/// username)` pair selects the credential — the legacy scalar-accessor
+/// constructor is gone with its last caller (all three migrated).
+pub(crate) fn client_for_spec(
+    spec: &crate::connectors::ConnectorSpec,
     store: &Arc<dyn CredentialStore>,
 ) -> Result<DeckClient, CommandError> {
-    let password = store.load(config.server_url(), config.username())?;
+    let password = store.load(&spec.server_url, &spec.username)?;
     Ok(DeckClient::new(
-        config.server_url(),
-        config.username(),
+        &spec.server_url,
+        &spec.username,
         password.expose(),
     )?)
 }
@@ -60,9 +49,13 @@ pub(crate) fn client_for(
 pub async fn list(
     config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
+    connector: Option<&str>,
 ) -> Result<Vec<BoardsListEntry>, CommandError> {
     crate::commands::require_connector(config)?;
-    let client = client_for(config, store)?;
+    // Resolution precedes IO (the routing pin): an unknown name refuses
+    // before any client construction or network touch.
+    let spec = crate::commands::resolve_connector(config, connector)?;
+    let client = client_for_spec(&spec, store)?;
     let boards = client.boards().await.map_err(map_deck_error)?;
     let mut entries: Vec<BoardsListEntry> = boards
         .iter()
@@ -614,12 +607,13 @@ pub async fn publish(
     store: Arc<dyn CredentialStore>,
     board: Option<taskboard_domain::BoardId>,
     timeout: Duration,
+    connector: Option<&str>,
 ) -> Result<PublishReceipt, CommandError> {
-    let client = publish_prelude(&config, &store)?;
+    let (client, spec) = publish_prelude(&config, &store, connector)?;
 
     let app =
         crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
-    let result = publish_on(&app, &client, board, timeout).await;
+    let result = publish_on(&app, &client, board, timeout, &spec.name).await;
     let _ = app.shutdown().await;
     result
 }
@@ -635,12 +629,14 @@ pub async fn publish(
 pub(crate) fn publish_prelude(
     config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
-) -> Result<DeckClient, CommandError> {
+    connector: Option<&str>,
+) -> Result<(DeckClient, crate::connectors::ConnectorSpec), CommandError> {
     crate::commands::require_connector(config)?;
-    // The client is built from config + store before the core boots
-    // (the same shape `select` uses); the dispatcher already refused
-    // the standalone backend.
-    client_for(config, store)
+    // Resolution precedes IO; the client is built from the resolved
+    // spec before the core boots (the same shape `select` uses).
+    let spec = crate::commands::resolve_connector(config, connector)?;
+    let client = client_for_spec(&spec, store)?;
+    Ok((client, spec))
 }
 
 /// The publish steps on a booted core; the caller owns the shutdown
@@ -650,6 +646,7 @@ pub(crate) async fn publish_on(
     client: &DeckClient,
     board: Option<taskboard_domain::BoardId>,
     timeout: Duration,
+    connector: &taskboard_domain::ConnectorId,
 ) -> Result<PublishReceipt, CommandError> {
     let board_id = crate::commands::resolve_board(app, board)?;
     let state = app.engine.shared_state().load_full();
@@ -699,7 +696,7 @@ pub(crate) async fn publish_on(
         .execute(StateCommand::BindBoard {
             board: board_id,
             remote: RemoteBoardId(created.id),
-            connector: default_connector_of(app),
+            connector: connector.clone(),
         })
         .await?;
     let wiped_refs = match outcome {
@@ -766,12 +763,21 @@ pub async fn select(
     local_board: Option<taskboard_domain::BoardId>,
     timeout: Duration,
     bind_local_board: bool,
+    connector: Option<&str>,
 ) -> Result<SelectReceipt, CommandError> {
-    let entry = select_prelude(&config, &store, board).await?;
+    let (entry, spec) = select_prelude(&config, &store, board, connector).await?;
 
     let app =
         crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
-    let result = select_on(&app, entry, timeout, bind_local_board, local_board).await;
+    let result = select_on(
+        &app,
+        entry,
+        timeout,
+        bind_local_board,
+        local_board,
+        &spec.name,
+    )
+    .await;
     let _ = app.shutdown().await;
     result
 }
@@ -789,12 +795,13 @@ pub(crate) async fn select_prelude(
     config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
     board: u64,
-) -> Result<BoardsListEntry, CommandError> {
+    connector: Option<&str>,
+) -> Result<(BoardsListEntry, crate::connectors::ConnectorSpec), CommandError> {
     crate::commands::require_connector(config)?;
-    // Pre-validation: a bogus id inside a sync cycle would only surface
-    // as the generic `Failed { Server }` — check the fresh listing
-    // first, before anything boots.
-    let client = client_for(config, store)?;
+    // Resolution precedes IO: which connector's listing pre-validates
+    // the id is decided before any client construction.
+    let spec = crate::commands::resolve_connector(config, connector)?;
+    let client = client_for_spec(&spec, store)?;
     let listing = client.boards().await.map_err(map_deck_error)?;
     let entry = listing
         .iter()
@@ -805,7 +812,9 @@ pub(crate) async fn select_prelude(
             archived: b.archived,
             deleted: !b.is_live(),
         });
-    entry.ok_or(CommandError::UnknownBoard(board))
+    entry
+        .map(|entry| (entry, spec))
+        .ok_or(CommandError::UnknownBoard(board))
 }
 
 /// The bind ceremony's shared tail (D3-7): nudge the engine
@@ -866,6 +875,7 @@ pub async fn select_on(
     timeout: Duration,
     bind_local_board: bool,
     flag: Option<taskboard_domain::BoardId>,
+    connector: &taskboard_domain::ConnectorId,
 ) -> Result<SelectReceipt, CommandError> {
     let remote = RemoteBoardId(entry.id);
     // Resolution (D3-7): the `--board` flag wins; else the single live
@@ -902,7 +912,7 @@ pub async fn select_on(
         .execute(StateCommand::BindBoard {
             board: board_id,
             remote,
-            connector: default_connector_of(app),
+            connector: connector.clone(),
         })
         .await?;
     match outcome {
@@ -1124,4 +1134,95 @@ pub fn render_text_destruct(receipt: &BoardDestructReceipt) -> String {
         line.push_str(" is destroyed on the next cycle");
     }
     line
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::{client_for_spec, list};
+    use crate::config::{AppConfig, ConnectorCfg, CredentialStoreKind, SyncBackend};
+    use crate::secrets::{AppPassword, CredentialError, CredentialStore};
+    use std::sync::Arc;
+
+    fn two_connector_config() -> AppConfig {
+        let mut config = AppConfig::default();
+        config.sync.connectors = Some(vec![
+            ConnectorCfg {
+                name: "alpha".into(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://a.example".into(),
+                username: "ua".into(),
+            },
+            ConnectorCfg {
+                name: "beta".into(),
+                backend: SyncBackend::Nextcloud,
+                server_url: "https://b.example".into(),
+                username: "ub".into(),
+            },
+        ]);
+        config.nextcloud.credential_store = CredentialStoreKind::Env;
+        config
+    }
+
+    #[derive(Debug)]
+    struct ExplodingStore;
+
+    impl CredentialStore for ExplodingStore {
+        fn load(&self, _: &str, _: &str) -> Result<AppPassword, CredentialError> {
+            panic!("no credential may load — resolution must precede IO")
+        }
+        fn store(&self, _: &str, _: &str, _: AppPassword) -> Result<(), CredentialError> {
+            panic!("never")
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), CredentialError> {
+            panic!("never")
+        }
+    }
+
+    /// The routing pin (D6-5): `boards list --connector gama` on a
+    /// two-connector config refuses `unknown-connector` *before any
+    /// client construction* — the store would panic on any load, so
+    /// reaching the typed refusal proves no IO attempt happened.
+    #[tokio::test]
+    async fn an_unknown_connector_refuses_before_any_client_construction() {
+        let config = two_connector_config();
+        let store: Arc<dyn CredentialStore> = Arc::new(ExplodingStore);
+        let err = list(&config, &store, Some("gama"))
+            .await
+            .expect_err("gama is not configured");
+        assert_eq!(err.error_kind(), "unknown-connector");
+        assert_eq!(err.error_detail().as_deref(), Some("gama"));
+    }
+
+    /// `client_for_spec` builds from the spec's identity: the fixed
+    /// store observes the (`server_url`, `username`) pair it is asked for.
+    #[test]
+    fn client_for_spec_loads_by_the_spec_identity() {
+        #[derive(Debug)]
+        struct ObservedStore(std::sync::Mutex<(String, String)>);
+        impl CredentialStore for ObservedStore {
+            fn load(&self, server: &str, user: &str) -> Result<AppPassword, CredentialError> {
+                *self.0.lock().expect("lock") = (server.to_owned(), user.to_owned());
+                Ok(AppPassword::new("pw"))
+            }
+            fn store(&self, _: &str, _: &str, _: AppPassword) -> Result<(), CredentialError> {
+                Err(CredentialError::Unsupported)
+            }
+            fn delete(&self, _: &str, _: &str) -> Result<(), CredentialError> {
+                Err(CredentialError::Unsupported)
+            }
+        }
+        let observed = Arc::new(ObservedStore(std::sync::Mutex::default()));
+        let spec = crate::connectors::ConnectorSpec {
+            name: "beta".into(),
+            backend: SyncBackend::Nextcloud,
+            server_url: "https://b.example".into(),
+            username: "ub".into(),
+        };
+        let store: Arc<dyn CredentialStore> = observed.clone();
+        let client = client_for_spec(&spec, &store).expect("client builds");
+        let _ = client; // construction is the surface under test
+        let (server, user) = observed.0.lock().expect("lock").clone();
+        assert_eq!(server, "https://b.example");
+        assert_eq!(user, "ub");
+    }
 }

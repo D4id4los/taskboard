@@ -341,7 +341,7 @@ async fn r7_dispatch_line_routes_every_verb_family() {
         // Connector verbs refuse typed at their preludes.
         for command in [
             Command::Boards {
-                cmd: BoardsCmd::List,
+                cmd: BoardsCmd::List { connector: None },
             },
             Command::Boards {
                 cmd: BoardsCmd::Select {
@@ -349,17 +349,20 @@ async fn r7_dispatch_line_routes_every_verb_family() {
                     local_board: None,
                     timeout_secs: 1,
                     bind_local_board: false,
+                    connector: None,
                 },
             },
             Command::Boards {
                 cmd: BoardsCmd::Publish {
                     board: None,
                     timeout_secs: 1,
+                    connector: None,
                 },
             },
             Command::Sync {
                 no_wait: false,
                 timeout_secs: 1,
+                connector: None,
             },
         ] {
             let code = dispatch_line(&session, &app, command, &mut io).await;
@@ -540,7 +543,15 @@ async fn r11_select_on_a_standalone_core_surfaces_the_typed_gate() {
         archived: false,
         deleted: false,
     };
-    let outcome = boards::select_on(&app, entry, Duration::from_secs(1), false, None).await;
+    let outcome = boards::select_on(
+        &app,
+        entry,
+        Duration::from_secs(1),
+        false,
+        None,
+        &taskboard_domain::ConnectorId::from("nextcloud"),
+    )
+    .await;
     let _ = dispatch_line(
         &session,
         &app,
@@ -550,6 +561,7 @@ async fn r11_select_on_a_standalone_core_surfaces_the_typed_gate() {
                 local_board: None,
                 timeout_secs: 1,
                 bind_local_board: false,
+                connector: None,
             },
         },
         &mut io,

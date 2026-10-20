@@ -178,11 +178,12 @@ async fn st4_connector_verbs_refuse_sync_disabled() {
         forbidden_store(),
         false,
         std::time::Duration::from_secs(1),
+        None,
     )
     .await
     .expect_err("sync refuses");
     assert_eq!(err.error_kind(), "sync-disabled");
-    let err = boards::list(&config, &forbidden_store())
+    let err = boards::list(&config, &forbidden_store(), None)
         .await
         .expect_err("list refuses");
     assert_eq!(err.error_kind(), "sync-disabled");
@@ -193,6 +194,7 @@ async fn st4_connector_verbs_refuse_sync_disabled() {
         None,
         std::time::Duration::from_secs(1),
         false,
+        None,
     )
     .await
     .expect_err("select refuses");
@@ -202,6 +204,7 @@ async fn st4_connector_verbs_refuse_sync_disabled() {
         forbidden_store(),
         None,
         std::time::Duration::from_secs(1),
+        None,
     )
     .await
     .expect_err("publish refuses");

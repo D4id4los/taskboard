@@ -256,6 +256,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::ReconcileConfirmationRequired { .. } => "reconcile-confirmation-required",
             CommandError::IpcTransport => "ipc-transport",
             CommandError::IpcVersion { .. } => "ipc-version",
+            CommandError::UnknownConnector { .. } => "unknown-connector",
+            CommandError::SessionOnly => "session-only",
         }
     }
 
@@ -310,6 +312,10 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::ConnectionExists,
         CommandError::IpcTransport,
         CommandError::IpcVersion { server_v: 2 },
+        CommandError::UnknownConnector {
+            name: "gama".to_owned(),
+        },
+        CommandError::SessionOnly,
     ];
     for err in &samples {
         assert_eq!(err.error_kind(), expected(err), "{err}");

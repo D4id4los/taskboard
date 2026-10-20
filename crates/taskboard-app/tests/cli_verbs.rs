@@ -255,7 +255,7 @@ async fn v5_sync_pushes_the_queued_create_and_succeeds() {
         .await
         .expect("add");
 
-    let outcome = sync::run(config, store, false, Duration::from_secs(30))
+    let outcome = sync::run(config, store, false, Duration::from_secs(30), None)
         .await
         .expect("sync runs");
     let SyncOutcome::Succeeded(view) = outcome else {
@@ -305,6 +305,7 @@ async fn v6_sync_failure_and_timeout_are_typed() {
         store_for(&server.uri()),
         false,
         Duration::from_secs(30),
+        None,
     )
     .await
     .expect("sync runs");
@@ -330,6 +331,7 @@ async fn v6_sync_failure_and_timeout_are_typed() {
         store_for(&server.uri()),
         false,
         Duration::from_secs(2),
+        None,
     )
     .await
     .expect("sync runs");
@@ -353,6 +355,7 @@ async fn v7_select_binds_and_adopts() {
         None,
         Duration::from_secs(30),
         false,
+        None,
     )
     .await
     .expect("select binds");
@@ -381,6 +384,7 @@ async fn v8_select_unknown_board_never_boots() {
         None,
         Duration::from_secs(5),
         false,
+        None,
     )
     .await
     .expect_err("unknown board");
@@ -412,6 +416,7 @@ async fn v9_select_refuses_rebind_and_accepts_same_id() {
         None,
         Duration::from_secs(5),
         false,
+        None,
     )
     .await
     .expect_err("rebind refused");
@@ -436,6 +441,7 @@ async fn v9_select_refuses_rebind_and_accepts_same_id() {
         None,
         Duration::from_secs(15),
         false,
+        None,
     )
     .await
     .expect("same-id select succeeds");
@@ -550,6 +556,7 @@ async fn v11_select_ignores_a_stale_persisted_failure() {
         None,
         Duration::from_secs(30),
         true,
+        None,
     )
     .await
     .expect("stale failure must not block the adoption");
@@ -596,6 +603,7 @@ async fn v12_select_surfaces_a_fresh_failure_typed() {
         None,
         Duration::from_secs(30),
         true,
+        None,
     )
     .await
     .expect_err("the cycle's failure surfaces typed");
@@ -620,7 +628,7 @@ async fn v13_sync_no_wait_reports_without_awaiting() {
         .expect("add");
 
     let started = std::time::Instant::now();
-    let outcome = sync::run(config, store, true, Duration::from_secs(30))
+    let outcome = sync::run(config, store, true, Duration::from_secs(30), None)
         .await
         .expect("sync runs");
     let SyncOutcome::NoWait(view) = outcome else {
@@ -1254,6 +1262,7 @@ mod ceremonies {
             None,
             Duration::from_secs(30),
             false,
+            None,
         )
         .await
         .expect("fresh select binds");
@@ -1282,6 +1291,7 @@ mod ceremonies {
             None,
             Duration::from_secs(0),
             false,
+            None,
         )
         .await
         .expect("immediate receipt");
@@ -1319,6 +1329,7 @@ mod ceremonies {
             Some(second),
             Duration::from_secs(5),
             true,
+            None,
         )
         .await
         .expect_err("the held remote refuses");
@@ -1349,6 +1360,7 @@ mod ceremonies {
             None,
             Duration::from_secs(5),
             false,
+            None,
         )
         .await
         .expect_err("two live boards");
@@ -1441,6 +1453,7 @@ mod ceremonies {
             Some(local),
             Duration::from_secs(30),
             true,
+            None,
         )
         .await
         .expect("rebind lands");
@@ -1502,9 +1515,16 @@ mod ceremonies {
             archived: false,
             deleted: false,
         };
-        boards::select_on(&app, entry, Duration::from_secs(30), true, Some(local))
-            .await
-            .expect("binds, adopts, reconciles");
+        boards::select_on(
+            &app,
+            entry,
+            Duration::from_secs(30),
+            true,
+            Some(local),
+            &taskboard_domain::ConnectorId::from("nextcloud"),
+        )
+        .await
+        .expect("binds, adopts, reconciles");
 
         let state = app.engine.shared_state().load_full();
         let live: Vec<_> = state.stacks.values().filter(|s| !s.deleted).collect();

@@ -91,6 +91,11 @@ pub enum Command {
         /// Return immediately after nudging the sync actor.
         #[arg(long)]
         no_wait: bool,
+        /// Scope the reported status (and the wait's watched aggregate)
+        /// to this connector's bound boards; the nudge stays broadcast.
+        /// The default (first) connector when omitted.
+        #[arg(long)]
+        connector: Option<String>,
         /// Wait budget for the cycle, in seconds (default 60).
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
@@ -130,13 +135,26 @@ pub enum DaemonCmd {
 #[derive(Debug, Subcommand)]
 pub enum BoardsCmd {
     /// List the server's boards (remote ids feed `boards select`).
-    List,
+    List {
+        /// The connector whose server is listed; the default (first)
+        /// connector when omitted.
+        #[arg(long)]
+        connector: Option<String>,
+    },
     /// Bind this installation to one board (refuses a rebind; migrates a
     /// local board with `--bind-local-board`; pins the local board with
     /// `--board` when several are live).
     Select {
-        /// The remote Deck board id (from `boards list`).
+        /// The remote Deck board id (from `boards list`). The internal
+        /// clap id is `remote_board` (completion routes it as server
+        /// state); the displayed syntax is unchanged.
+        #[arg(id = "remote_board", value_name = "board")]
         board: u64,
+        /// The connector whose listing pre-validates the id and whose
+        /// binding tag the bind mints; the default (first) connector
+        /// when omitted.
+        #[arg(long)]
+        connector: Option<String>,
         /// The local board (uuid) to bind; the single live board when
         /// omitted, a freshly minted one on a board-less install.
         #[arg(long, value_parser = parse_board_id)]
@@ -174,10 +192,23 @@ pub enum BoardsCmd {
         /// Target board (uuid); the single live board when omitted.
         #[arg(long, value_parser = parse_board_id)]
         board: Option<taskboard_domain::BoardId>,
+        /// The connector whose server the remote board is created on
+        /// and whose binding tag the bind mints; the default (first)
+        /// connector when omitted.
+        #[arg(long)]
+        connector: Option<String>,
         /// Wait budget for the settling first sync cycle, in seconds
         /// (default 60).
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
+    },
+    /// Set the session's board selection (REPL-only): later board-scoped
+    /// lines pre-fill `--board` from it. Without a uuid, answers the
+    /// current selection. One-shot and daemon-socket invocations refuse.
+    Use {
+        /// The local board (uuid); omit to query the selection.
+        #[arg(value_parser = parse_board_id)]
+        board: Option<taskboard_domain::BoardId>,
     },
     /// Set a board's color (pushes as a full-send when the board is
     /// bound).
@@ -579,6 +610,112 @@ mod tests {
             Ok(chrono::TimeDelta::try_minutes(10).expect("10m"))
         );
         assert!(parse_before_flag("5min").is_err());
+    }
+
+    #[test]
+    fn connector_flags_parse_on_the_targeting_verbs() {
+        // `--connector` lands in the arm on boards list/select/publish
+        // and sync (D6-5).
+        let cli = Cli::try_parse_from(["taskboard", "boards", "list", "--connector", "beta"])
+            .expect("boards list --connector parses");
+        let Some(Command::Boards {
+            cmd: BoardsCmd::List { connector },
+        }) = cli.command
+        else {
+            panic!("expected boards list");
+        };
+        assert_eq!(connector.as_deref(), Some("beta"));
+
+        let cli = Cli::try_parse_from([
+            "taskboard",
+            "boards",
+            "select",
+            "42",
+            "--connector",
+            "beta",
+            "--bind-local-board",
+        ])
+        .expect("boards select --connector parses");
+        let Some(Command::Boards {
+            cmd: BoardsCmd::Select {
+                board, connector, ..
+            },
+        }) = cli.command
+        else {
+            panic!("expected boards select");
+        };
+        assert_eq!(board, 42);
+        assert_eq!(connector.as_deref(), Some("beta"));
+
+        let cli = Cli::try_parse_from(["taskboard", "boards", "publish", "--connector", "beta"])
+            .expect("boards publish --connector parses");
+        let Some(Command::Boards {
+            cmd: BoardsCmd::Publish { connector, .. },
+        }) = cli.command
+        else {
+            panic!("expected boards publish");
+        };
+        assert_eq!(connector.as_deref(), Some("beta"));
+
+        let cli = Cli::try_parse_from(["taskboard", "sync", "--connector", "beta"])
+            .expect("sync --connector parses");
+        let Some(Command::Sync { connector, .. }) = cli.command else {
+            panic!("expected sync");
+        };
+        assert_eq!(connector.as_deref(), Some("beta"));
+
+        // Omission is `None` — the default (first) connector.
+        let cli = Cli::try_parse_from(["taskboard", "boards", "list"]).expect("bare list");
+        let Some(Command::Boards {
+            cmd: BoardsCmd::List { connector },
+        }) = cli.command
+        else {
+            panic!("expected boards list");
+        };
+        assert_eq!(connector, None);
+    }
+
+    #[test]
+    fn boards_use_parses_with_and_without_a_uuid() {
+        let good = "00000000-0000-0000-0000-000000000001";
+        let cli = Cli::try_parse_from(["taskboard", "boards", "use", good]).expect("use parses");
+        let Some(Command::Boards {
+            cmd: BoardsCmd::Use { board },
+        }) = cli.command
+        else {
+            panic!("expected boards use");
+        };
+        assert_eq!(
+            board,
+            Some(taskboard_domain::BoardId::from_uuid(
+                uuid::Uuid::parse_str(good).unwrap()
+            ))
+        );
+        let cli = Cli::try_parse_from(["taskboard", "boards", "use"]).expect("query parses");
+        let Some(Command::Boards {
+            cmd: BoardsCmd::Use { board },
+        }) = cli.command
+        else {
+            panic!("expected boards use");
+        };
+        assert_eq!(board, None);
+        // Malformed uuids are usage errors, like --board.
+        assert!(Cli::try_parse_from(["taskboard", "boards", "use", "nope"]).is_err());
+    }
+
+    #[test]
+    fn the_select_positional_id_rename_is_invisible_to_the_syntax() {
+        // The internal clap id is `remote_board` (completion routes it
+        // as server state); the displayed value name stays `board`.
+        let cli = Cli::try_parse_from(["taskboard", "boards", "select", "42"])
+            .expect("the positional still parses");
+        let Some(Command::Boards {
+            cmd: BoardsCmd::Select { board, .. },
+        }) = cli.command
+        else {
+            panic!("expected boards select");
+        };
+        assert_eq!(board, 42);
     }
 
     #[test]

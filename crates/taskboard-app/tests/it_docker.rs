@@ -363,6 +363,7 @@ async fn it_nextcloud_docker_cli_standalone_publish() {
             Arc::clone(&store),
             None,
             Duration::from_secs(120),
+            None,
         )
         .await
         .expect("publish succeeds");
@@ -477,6 +478,7 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
         Arc::clone(&store),
         None,
         Duration::from_secs(120),
+        None,
     )
     .await
     .expect("publish succeeds");
@@ -567,6 +569,7 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
         Arc::clone(&store),
         false,
         Duration::from_secs(120),
+        None,
     )
     .await
     .expect("sync runs");
