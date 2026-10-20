@@ -144,6 +144,44 @@ pub struct SyncStatusView {
     pub error_kind: Option<String>,
 }
 
+/// One connector's status row (D6-3): the derived health aggregate over
+/// its bound boards' sync rows, and those boards in board-id order. A
+/// zero-bound connector carries the default `health` and an empty
+/// `boards` — configured-and-idle, never hidden.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConnectorStatusView {
+    /// The config-minted connector name (the `--connector` token).
+    pub name: String,
+    /// The health aggregate over this connector's bound boards
+    /// (`aggregate_rows`, the domain fold — attribution is derived from
+    /// bindings, never stored).
+    pub health: SyncStatusView,
+    /// The connector's bound boards, board-id order.
+    pub boards: Vec<BoardStatusView>,
+}
+
+/// One board's status row in the status answer's arrays (D6-3/D6-4).
+/// The `Option` fields serialize as `null`, never absent — inside the
+/// arrays the keys are always present (the "local-only" fact is the
+/// nulls, structurally distinguishable from a skipped key).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BoardStatusView {
+    /// Local board uuid.
+    pub board: String,
+    /// Board title.
+    pub title: String,
+    /// The bound remote board id; `null` = local-only.
+    pub remote: Option<u64>,
+    /// The derived connector attribution (the binding's tag); `null` =
+    /// local-only.
+    pub connector: Option<String>,
+    /// The board's sync map row, or the default when none exists yet
+    /// (e.g. a just-bound board before its first cycle). Stranded ops
+    /// of an unbound board are *not* counted here — that count is the
+    /// unbind receipt's and `read_scope`'s job.
+    pub sync: SyncStatusView,
+}
+
 impl SyncStatusView {
     /// Projects a domain status; never leaks domain serde casing.
     #[must_use]
@@ -494,6 +532,18 @@ pub struct BoardReceipt {
     pub title: String,
     /// Board color as stored (lenient string).
     pub color: String,
+}
+
+/// The `boards use` receipt (REPL-only, D6-6): the session's selected
+/// board. `board: null` serializes (not skips) — the honest "no board
+/// selected" query answer; `title` is present only with a selection.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BoardUseView {
+    /// The selected board's uuid, or `null` when none is selected.
+    pub board: Option<String>,
+    /// The selected board's title; absent without a selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// The `boards delete`/`boards reset` receipt: the landed counts of the
