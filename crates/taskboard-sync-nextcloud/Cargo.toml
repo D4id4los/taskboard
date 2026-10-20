@@ -29,6 +29,11 @@ base64.workspace = true
 # Additive dev-only feature: tokio::time::pause()/start_paused for
 # deterministic retry-timing assertions (docs/testing_strategy.org §6/§8).
 tokio = { workspace = true, features = ["test-util"] }
+criterion.workspace = true
+
+[[bench]]
+name = "mapping"
+harness = false
 
 [lints]
 workspace = true
