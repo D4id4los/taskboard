@@ -48,6 +48,9 @@ expression: rows
             - Space
           action: task.complete
         - sequence:
+            - B
+          action: board.previous
+        - sequence:
             - M
           action: task.move
         - sequence:
@@ -56,6 +59,9 @@ expression: rows
         - sequence:
             - S
           action: stack.create
+        - sequence:
+            - b
+          action: board.next
         - sequence:
             - Delete
           action: task.delete
@@ -154,6 +160,12 @@ expression: rows
             - Return
           action: task.edit
         - sequence:
+            - B
+          action: board.previous
+        - sequence:
+            - b
+          action: board.next
+        - sequence:
             - Ctrl+c
             - Ctrl+t
           action: task.complete
@@ -245,6 +257,9 @@ expression: rows
             - ":"
           action: app.menu
         - sequence:
+            - B
+          action: board.previous
+        - sequence:
             - O
           action: stack.create
         - sequence:
@@ -262,6 +277,9 @@ expression: rows
         - sequence:
             - a
           action: mode.insert
+        - sequence:
+            - b
+          action: board.next
         - sequence:
             - d
             - d

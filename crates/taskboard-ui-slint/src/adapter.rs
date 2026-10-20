@@ -17,7 +17,7 @@ use slint::language::KeyboardModifiers;
 use slint::{ComponentHandle as _, ModelRc, SharedString};
 use tokio::sync::mpsc;
 
-use taskboard_domain::{AppState, StackId, StateCommand, TaskId};
+use taskboard_domain::{AppState, BoardId, StackId, StateCommand, TaskId};
 
 use crate::actions::{ActionId, ContextId};
 use crate::keymap::Keymap;
@@ -57,6 +57,10 @@ pub(crate) struct Adapter {
     /// The banner row target set by row activation (D4); consumed by
     /// the next snooze/mute dispatch, then cleared (one-shot).
     reminder_target: Option<ReminderTarget>,
+    /// The board-bar segment's board (design §3.8); consumed by the
+    /// next `board.select` dispatch, then cleared (one-shot, the
+    /// `reminder_target` precedent).
+    board_target: Option<BoardId>,
     /// The id tables of the last refresh pass (D2): index → id.
     tables: IdTables,
     /// The exit-effect counter (the §6 component-test seam: journeys
@@ -122,6 +126,8 @@ impl Adapter {
         let mut ctx = self.shell.dispatch_ctx();
         ctx.reminder_target = self.reminder_target;
         self.reminder_target = None;
+        ctx.board_target = self.board_target;
+        self.board_target = None;
         let outcome = ActionRouter::dispatch(id, &ctx);
         match outcome {
             DispatchOutcome::Command(command) => {
@@ -208,7 +214,12 @@ impl Adapter {
         let flow = self.view_state.flow().clone();
         let leaving = matches!(
             effect,
-            UiEffect::NextView | UiEffect::PrevView | UiEffect::FocusBoard
+            UiEffect::NextView
+                | UiEffect::PrevView
+                | UiEffect::FocusBoard
+                | UiEffect::BoardNext
+                | UiEffect::BoardPrevious
+                | UiEffect::BoardSelect(_)
         );
 
         // Leaving the edit field by effect first commits the buffer;
@@ -277,6 +288,9 @@ impl Adapter {
             (_, UiEffect::NextView) => self.view_state.next_view(&state),
             (_, UiEffect::PrevView) => self.view_state.prev_view(&state),
             (_, UiEffect::FocusBoard) => self.view_state.focus_board(),
+            (_, UiEffect::BoardNext) => self.view_state.next_board(&state),
+            (_, UiEffect::BoardPrevious) => self.view_state.previous_board(&state),
+            (_, UiEffect::BoardSelect(board)) => self.view_state.select_board(&state, board),
             // A mode flip with no view meaning stays plain shell
             // state (D10) — e.g. Escape out of an empty insert.
             (_, UiEffect::SetMode(mode)) => {
@@ -341,7 +355,10 @@ impl Adapter {
             | UiEffect::BeginCreate
             | UiEffect::BeginCreateStack
             | UiEffect::Activate
-            | UiEffect::RequestMove => self.interpret(window, effect),
+            | UiEffect::RequestMove
+            | UiEffect::BoardNext
+            | UiEffect::BoardPrevious
+            | UiEffect::BoardSelect(_) => self.interpret(window, effect),
         }
     }
 
@@ -396,6 +413,7 @@ pub(crate) fn install(
         commands,
         menu_entries: Vec::new(),
         reminder_target: None,
+        board_target: None,
         tables: IdTables::default(),
         quit_requests: 0,
     }));

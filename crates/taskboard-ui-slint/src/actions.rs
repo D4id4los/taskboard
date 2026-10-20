@@ -103,6 +103,9 @@ pub enum ActionId {
     NavFocusBoard,
     NavNextItem,
     NavPrevItem,
+    BoardNext,
+    BoardPrevious,
+    BoardSelect,
     TaskCreate,
     StackCreate,
     TaskEdit,
@@ -137,6 +140,9 @@ impl ActionId {
             Self::NavFocusBoard => "nav.focus-board",
             Self::NavNextItem => "nav.next-item",
             Self::NavPrevItem => "nav.prev-item",
+            Self::BoardNext => "board.next",
+            Self::BoardPrevious => "board.previous",
+            Self::BoardSelect => "board.select",
             Self::TaskCreate => "task.create",
             Self::StackCreate => "stack.create",
             Self::TaskEdit => "task.edit",
@@ -192,6 +198,14 @@ pub struct ActionEntry {
 
 const GLOBAL: &[ContextId] = &[ContextId::Global];
 const VIEW_NAV: &[ContextId] = &[
+    ContextId::Board,
+    ContextId::StackDetail,
+    ContextId::TaskDetail,
+];
+/// The board verbs' menu availability (design §3.8): global-capable
+/// like the `nav.*` family — offered in every context's menu.
+const GLOBAL_VIEW_NAV: &[ContextId] = &[
+    ContextId::Global,
     ContextId::Board,
     ContextId::StackDetail,
     ContextId::TaskDetail,
@@ -292,6 +306,27 @@ pub const REGISTRY: &[ActionEntry] = &[
         id: ActionId::NavPrevItem,
         label: "Focus previous item",
         contexts: VIEW_NAV,
+        category: Category::Navigation,
+        enabled: true,
+    },
+    ActionEntry {
+        id: ActionId::BoardNext,
+        label: "Next board",
+        contexts: GLOBAL_VIEW_NAV,
+        category: Category::Navigation,
+        enabled: true,
+    },
+    ActionEntry {
+        id: ActionId::BoardPrevious,
+        label: "Previous board",
+        contexts: GLOBAL_VIEW_NAV,
+        category: Category::Navigation,
+        enabled: true,
+    },
+    ActionEntry {
+        id: ActionId::BoardSelect,
+        label: "Select board",
+        contexts: GLOBAL_VIEW_NAV,
         category: Category::Navigation,
         enabled: true,
     },
@@ -438,6 +473,9 @@ mod tests {
             ActionId::NavFocusBoard,
             ActionId::NavNextItem,
             ActionId::NavPrevItem,
+            ActionId::BoardNext,
+            ActionId::BoardPrevious,
+            ActionId::BoardSelect,
             ActionId::TaskCreate,
             ActionId::StackCreate,
             ActionId::TaskEdit,

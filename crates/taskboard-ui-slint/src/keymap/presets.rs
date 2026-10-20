@@ -81,6 +81,8 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Board, &["Return"]),
     (ActionId::TaskMove, ContextId::Board, &["M"]),
     (ActionId::TaskDelete, ContextId::Board, &["Delete"]),
+    (ActionId::BoardNext, ContextId::Board, &["b"]),
+    (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     // StackDetail
     (ActionId::NavNextItem, ContextId::StackDetail, &["Down"]),
     (ActionId::NavPrevItem, ContextId::StackDetail, &["Up"]),
@@ -131,6 +133,8 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Board, &["Return"]),
     (ActionId::TaskMove, ContextId::Board, &["Ctrl+c", "Ctrl+w"]),
     (ActionId::TaskDelete, ContextId::Board, &["Ctrl+d"]),
+    (ActionId::BoardNext, ContextId::Board, &["b"]),
+    (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     // StackDetail
     (ActionId::NavNextItem, ContextId::StackDetail, &["Ctrl+n"]),
     (ActionId::NavPrevItem, ContextId::StackDetail, &["Ctrl+p"]),
@@ -166,6 +170,8 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::ViNormal, &["Return"]),
     (ActionId::TaskDelete, ContextId::ViNormal, &["d", "d"]),
     (ActionId::TaskMove, ContextId::ViNormal, &["g", "m"]),
+    (ActionId::BoardNext, ContextId::ViNormal, &["b"]),
+    (ActionId::BoardPrevious, ContextId::ViNormal, &["B"]),
     (ActionId::ModeInsert, ContextId::ViNormal, &["i"]),
     (ActionId::ModeInsert, ContextId::ViNormal, &["a"]),
     (ActionId::AppUndo, ContextId::ViNormal, &["u"]),

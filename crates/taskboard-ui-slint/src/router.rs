@@ -6,7 +6,7 @@
 //! over the mpsc and applies [`UiEffect`]s to the shell state.
 
 use chrono::TimeDelta;
-use taskboard_domain::{StackId, StateCommand, TaskId};
+use taskboard_domain::{BoardId, StackId, StateCommand, TaskId};
 
 use crate::actions::{ActionId, entry as registry_entry};
 use crate::presentation::ReminderTarget;
@@ -60,6 +60,15 @@ pub enum UiEffect {
     Activate,
     /// Ask for move mode (a second request cancels it).
     RequestMove,
+    // --- chunk-7 board dimension (design §3.8): pure view state; the
+    // adapter resolves them against the view-state model. Never a
+    // `DispatchOutcome::Command`.
+    /// Step to the next live board (canonical order, no wrap).
+    BoardNext,
+    /// Step to the previous live board.
+    BoardPrevious,
+    /// Select the parameterized board (`DispatchCtx::board_target`).
+    BoardSelect(BoardId),
 }
 
 /// What dispatching an action produced (D16).
@@ -89,6 +98,10 @@ pub struct DispatchCtx {
     /// adapter when a banner row is activated; snooze/mute route from
     /// it (`NoTarget` without one).
     pub reminder_target: Option<ReminderTarget>,
+    /// The board-bar segment's board (design §3.8): set by the adapter
+    /// when a segment is activated; `board.select` routes from it
+    /// (`NoTarget` without one — a menu invocation carries no target).
+    pub board_target: Option<BoardId>,
 }
 
 /// The pure dispatch table. Every [`ActionId`] variant is matched —
@@ -153,6 +166,13 @@ impl ActionRouter {
             ActionId::StackCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreateStack),
             ActionId::TaskEdit => DispatchOutcome::UiEffect(UiEffect::Activate),
             ActionId::TaskMove => DispatchOutcome::UiEffect(UiEffect::RequestMove),
+            // The board dimension (design §3.8): pure view intents.
+            ActionId::BoardNext => DispatchOutcome::UiEffect(UiEffect::BoardNext),
+            ActionId::BoardPrevious => DispatchOutcome::UiEffect(UiEffect::BoardPrevious),
+            ActionId::BoardSelect => match ctx.board_target {
+                Some(board) => DispatchOutcome::UiEffect(UiEffect::BoardSelect(board)),
+                None => DispatchOutcome::NoTarget,
+            },
             // Reserved (§5.8) — the only disabled rows left (D6).
             ActionId::AppUndo
             | ActionId::AppRedo
@@ -175,6 +195,7 @@ mod tests {
             focused_task: task.then(|| TaskId::from_uuid(Uuid::now_v7())),
             focused_stack: None,
             reminder_target: None,
+            board_target: None,
         }
     }
 
@@ -272,6 +293,34 @@ mod tests {
                 DispatchOutcome::UiEffect(effect)
             );
         }
+    }
+
+    /// Design §3.8 — the board verbs: next/previous route to their
+    /// effects; `board.select` routes the parameterized target and
+    /// absorbs as `NoTarget` without one. Never a `Command` — the
+    /// dumb-client pin at the routing layer.
+    #[test]
+    fn board_verbs_route_to_effects_and_the_parameterized_target() {
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::BoardNext, &ctx(true)),
+            DispatchOutcome::UiEffect(UiEffect::BoardNext)
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::BoardPrevious, &ctx(true)),
+            DispatchOutcome::UiEffect(UiEffect::BoardPrevious)
+        );
+        let board = taskboard_domain::BoardId::from_uuid(Uuid::now_v7());
+        let mut ctx = ctx(true);
+        ctx.board_target = Some(board);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::BoardSelect, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::BoardSelect(board))
+        );
+        ctx.board_target = None;
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::BoardSelect, &ctx),
+            DispatchOutcome::NoTarget
+        );
     }
 
     #[test]
