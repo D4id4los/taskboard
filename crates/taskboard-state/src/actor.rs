@@ -25,14 +25,15 @@ use tokio::task::JoinHandle;
 
 use taskboard_domain::{
     AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, Notification, PersistedState,
-    PersistenceAction, ReminderFiring, RepositoryError, StateCommand, SyncCommand, SyncPhase,
-    SyncStateReader, SyncStates, SyncStatus, SystemEvent, TaskRepository, ValidatorKey,
+    PersistenceAction, ReminderFiring, RepositoryError, StateCommand, SyncCommand, SyncCounters,
+    SyncPhase, SyncStateReader, SyncStates, SyncStatus, SystemEvent, TaskRepository, ValidatorKey,
     apply_push_report, apply_sync_report, notifications_for, plan_command,
 };
 
 use crate::config::ReminderEngineConfig;
 use crate::core::EngineCore;
 use crate::error::{EngineStartupError, ExecuteError};
+use crate::metrics::{EngineMetrics, EngineMetricsSnapshot};
 
 /// Generous command buffer: UI dispatch is fire-and-forget `try_send`
 /// (a panic in a sync UI callback is never correct), and a full buffer is
@@ -112,6 +113,7 @@ pub struct EngineHandle {
     commands: mpsc::Sender<EngineEnvelope>,
     signals: broadcast::Sender<EngineSignal>,
     state: Arc<ArcSwap<AppState>>,
+    metrics: Arc<EngineMetrics>,
 }
 
 impl EngineHandle {
@@ -197,6 +199,14 @@ impl EngineHandle {
         self.signals.subscribe()
     }
 
+    /// A point-in-time read of the engine's activity counters
+    /// (`EngineMetrics`) — handle-side atomics, never part of the
+    /// published `AppState`.
+    #[must_use]
+    pub fn metrics(&self) -> EngineMetricsSnapshot {
+        self.metrics.snapshot()
+    }
+
     /// The UI-facing, lock-free read side.
     #[must_use]
     pub fn shared_state(&self) -> Arc<ArcSwap<AppState>> {
@@ -267,10 +277,12 @@ pub async fn spawn_state_engine(
     let shared = Arc::new(ArcSwap::from_pointee(core.app()));
     let (commands, command_rx) = mpsc::channel(COMMAND_BUFFER);
     let (signals, _) = broadcast::channel(SIGNAL_BUFFER);
+    let metrics = Arc::new(EngineMetrics::default());
     let handle = EngineHandle {
         commands,
         signals: signals.clone(),
         state: Arc::clone(&shared),
+        metrics: Arc::clone(&metrics),
     };
     let join = tokio::spawn(run_loop(
         core,
@@ -279,6 +291,7 @@ pub async fn spawn_state_engine(
             ids,
             clock,
             sync_out,
+            metrics,
             // Weak by design (#316): the engine must not pin its own
             // system channel open — external producers own its lifetime,
             // and their death is what makes the all-sources exit
@@ -303,6 +316,7 @@ struct EngineParts {
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
     sync_out: mpsc::Sender<SyncCommand>,
+    metrics: Arc<EngineMetrics>,
     system_out: broadcast::WeakSender<SystemEvent>,
     notifier: mpsc::Sender<Notification>,
     reminders: ReminderEngineConfig,
@@ -326,6 +340,7 @@ async fn run_loop(
         ids,
         clock,
         sync_out,
+        metrics,
         system_out,
         notifier,
         reminders: reminder_cfg,
@@ -378,6 +393,7 @@ async fn run_loop(
                         }
                         continue;
                     }
+                    metrics.count_command();
                     execute_command(
                         &mut core,
                         &shared,
@@ -389,6 +405,7 @@ async fn run_loop(
                             &mut sync_outs,
                             &system_out,
                         ),
+                        &metrics,
                         command,
                         reply,
                         &mut storage_failing,
@@ -426,6 +443,7 @@ async fn run_loop(
                         &shared,
                         &signals,
                         (&repo, ids.as_ref(), clock.as_ref()),
+                        &metrics,
                         report,
                     )
                     .await;
@@ -460,7 +478,16 @@ async fn run_loop(
                     }
                 }
                 Ok(SystemEvent::NetworkLost) if !draining => {
-                    go_offline(&mut core, &shared, &signals, &repo, clock.as_ref(), None).await;
+                    go_offline(
+                        &mut core,
+                        &shared,
+                        &signals,
+                        &repo,
+                        clock.as_ref(),
+                        &metrics,
+                        None,
+                    )
+                    .await;
                 }
                 Ok(SystemEvent::NetworkRestored) if !draining => {
                     // No phase change: the next report is the evidence; a
@@ -471,8 +498,16 @@ async fn run_loop(
                     // One connector's episode: only its boards flip.
                     // Idempotent per board, so the authority's global
                     // follow-up (N=1) is a no-op second pass.
-                    go_offline(&mut core, &shared, &signals, &repo, clock.as_ref(), Some(&c))
-                        .await;
+                    go_offline(
+                        &mut core,
+                        &shared,
+                        &signals,
+                        &repo,
+                        clock.as_ref(),
+                        &metrics,
+                        Some(&c),
+                    )
+                    .await;
                 }
                 Ok(SystemEvent::ConnectorRestored(_)) if !draining => {
                     forward_sync_now(&mut sync_outs);
@@ -500,6 +535,7 @@ async fn run_loop(
                     &shared,
                     &signals,
                     (&repo, clock.as_ref(), &system_out, &notifier),
+                    &metrics,
                     &reminder_cfg,
                     &mut storage_failing,
                 )
@@ -517,8 +553,10 @@ fn publish(
     core: &EngineCore,
     shared: &ArcSwap<AppState>,
     signals: &broadcast::Sender<EngineSignal>,
+    metrics: &EngineMetrics,
 ) {
     shared.store(Arc::new(core.app()));
+    metrics.count_signal();
     let _ = signals.send(EngineSignal::StateUpdated);
 }
 
@@ -531,11 +569,13 @@ type Seams<'a> = (
     &'a broadcast::WeakSender<SystemEvent>,
 );
 
+#[allow(clippy::too_many_arguments)] // the seams + receipt + metrics are the context
 async fn execute_command(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
     (repo, ids, clock, sync_outs, system_out): Seams<'_>,
+    metrics: &EngineMetrics,
     command: StateCommand,
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
     storage_failing: &mut bool,
@@ -549,7 +589,7 @@ async fn execute_command(
             // No board-scoped commands exist yet (chunk 2): both nudge
             // sites derive the set engine-side — every bound board.
             if mark_bound_syncing(core) {
-                publish(core, shared, signals);
+                publish(core, shared, signals, metrics);
             }
             CommandOutcome::SyncRequested
         } else {
@@ -565,6 +605,7 @@ async fn execute_command(
         Ok(plan) => plan,
         Err(rejection) => {
             tracing::warn!(?rejection, "command rejected");
+            metrics.count_rejection();
             if let Some(reply) = reply {
                 let _ = reply.send(Err(ExecuteError::Rejected(rejection)));
             }
@@ -604,7 +645,7 @@ async fn execute_command(
         .any(|action| matches!(action, PersistenceAction::EnqueueOp(_)));
     let marked_syncing = enqueued_ops && forward_sync_now(sync_outs) && mark_bound_syncing(core);
     if changed || marked_syncing {
-        publish(core, shared, signals);
+        publish(core, shared, signals, metrics);
     }
     if let Some(reply) = reply {
         let _ = reply.send(Ok(plan.outcome));
@@ -639,22 +680,26 @@ fn forward_sync_now(sync_outs: &mut Vec<mpsc::Sender<SyncCommand>>) -> bool {
     forwarded
 }
 
+#[allow(clippy::too_many_lines)] // one report, three arms; the arms ARE the design
 async fn ingest_sync_report(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
     (repo, ids, clock): (&Arc<dyn TaskRepository>, &dyn IdGenerator, &dyn Clock),
+    metrics: &EngineMetrics,
     report: taskboard_domain::SyncReport,
 ) {
     tracing::debug!("sync report ingested");
     let now = clock.now();
-    let actions = match report {
+    let (actions, deltas) = match report {
         taskboard_domain::SyncReport::Completed {
             connector,
             snapshot,
             validators,
             pushes,
             read_at,
+            duration,
+            ..
         } => {
             let (merged, mut batch) = apply_sync_report(
                 &core.app(),
@@ -671,12 +716,31 @@ async fn ingest_sync_report(
             // keys derive from the post-merge board — "its own binding" is
             // the engine's after it ingests the report.
             append_validators_if_changed(core, &mut batch, &validators, &merged, snapshot.board.id);
-            batch
+            // Counter delta: every remote entity the snapshot carried is a
+            // pull (the board itself included); the push outcomes are the
+            // board's landed ops.
+            let pulls = 1 + snapshot.stacks.len() + snapshot.tasks.len() + snapshot.labels.len();
+            let delta = SyncCounters {
+                cycles: 1,
+                pushes: pushes.len() as u64,
+                pulls: pulls as u64,
+                last_cycle: Some(duration),
+                ..SyncCounters::default()
+            };
+            let deltas = if let Some(board) = resolve_board(&merged, &connector, snapshot.board.id)
+            {
+                vec![(board, delta)]
+            } else {
+                tracing::debug!(connector = %connector, "counter delta dropped: no board");
+                Vec::new()
+            };
+            (batch, deltas)
         }
         taskboard_domain::SyncReport::Failed {
             connector,
             kind,
             pushes,
+            duration,
             ..
         } if pushes.is_empty() => {
             // No board identity exists anywhere in the report: every board
@@ -684,52 +748,126 @@ async fn ingest_sync_report(
             // its own row's last success (per-connector attribution — the
             // report names its connector). A board-less failure vanishes
             // from the map — the aggregate stays idle.
-            core.app()
-                .bound_boards_of(&connector)
-                .into_iter()
+            let bound = core.app().bound_boards_of(&connector);
+            let delta = SyncCounters {
+                cycles: 1,
+                failures: 1,
+                last_cycle: Some(duration),
+                ..SyncCounters::default()
+            };
+            let actions = bound
+                .iter()
                 .map(|board| {
-                    let last_success = core.sync_status(board).and_then(|row| row.last_success);
+                    let last_success = core.sync_status(*board).and_then(|row| row.last_success);
                     PersistenceAction::UpsertSyncStatus(
-                        board,
+                        *board,
                         SyncStatus {
                             phase: SyncPhase::Failed { last_error: kind },
                             last_success,
                             pending_ops: 0, // ignored: derived at apply time
+                            counters: SyncCounters::default(),
                         },
                     )
                 })
-                .collect::<Vec<PersistenceAction>>()
+                .collect::<Vec<PersistenceAction>>();
+            // Connector-wide verdict: every bound board's counters carry it.
+            let deltas = bound
+                .into_iter()
+                .map(|board| (board, delta.clone()))
+                .collect();
+            (actions, deltas)
         }
         // Evidence-then-verdict (phase 4 decision 3): the cycle's completed
         // pushes land even though the pull aborted — no snapshot merge, no
         // reconciliation, no cascade (that is `apply_push_report`'s job).
         taskboard_domain::SyncReport::Failed {
-            pushes, read_at, ..
+            connector,
+            pushes,
+            read_at,
+            board,
+            duration,
+            ..
         } => {
             let (merged, mut batch) =
                 apply_push_report(&core.app(), core.outbox(), &pushes, read_at, ids, now);
             append_status_if_changed(core, &mut batch, &merged.sync);
-            batch
+            // Board-scoped verdict: the report names its failing board.
+            let delta = SyncCounters {
+                cycles: 1,
+                pushes: pushes.len() as u64,
+                failures: 1,
+                last_cycle: Some(duration),
+                ..SyncCounters::default()
+            };
+            let deltas = if let Some(resolved) =
+                board.and_then(|remote| resolve_board(&merged, &connector, remote))
+            {
+                vec![(resolved, delta)]
+            } else {
+                tracing::debug!(connector = %connector, "counter delta dropped: no board");
+                Vec::new()
+            };
+            (batch, deltas)
         }
     };
 
     if actions.is_empty() {
-        // A no-change cycle (fast path, nothing merged): nothing to do.
+        // A no-change cycle (fast path, nothing merged): the counters
+        // still ride the existing ingestion wake — a counted cycle
+        // publishes, so the dashboard sees the motion.
+        if record_deltas(core, deltas) {
+            publish(core, shared, signals, metrics);
+        }
         return;
     }
 
-    match repo.apply(actions.clone()).await {
-        Err(err) => {
-            // Discard the report: state unchanged, the next cycle
-            // re-delivers the same server truth.
-            tracing::error!(?err, "sync batch lost; report discarded");
-        }
-        Ok(()) => {
-            if core.interpret(&actions, now) {
-                publish(core, shared, signals);
-            }
+    if let Err(err) = repo.apply(actions.clone()).await {
+        // Discard the report: state unchanged, the next cycle
+        // re-delivers the same server truth. Nothing counted — the
+        // same discard rule as the state itself.
+        tracing::error!(?err, "sync batch lost; report discarded");
+    } else {
+        let changed = core.interpret(&actions, now);
+        let counted = record_deltas(core, deltas);
+        if changed || counted {
+            publish(core, shared, signals, metrics);
         }
     }
+}
+
+/// The local board whose tagged binding matches `(connector, remote)` —
+/// the same attribution rule `append_validators_if_changed` applies to
+/// the report snapshot's board (the connector tag included: remote ids
+/// are only unique per server).
+fn resolve_board(
+    app: &AppState,
+    connector: &taskboard_domain::ConnectorId,
+    remote: taskboard_domain::RemoteBoardId,
+) -> Option<taskboard_domain::BoardId> {
+    app.boards
+        .values()
+        .find(|b| {
+            b.remote
+                .as_ref()
+                .is_some_and(|r| r.connector == *connector && r.board == remote)
+        })
+        .map(|b| b.id)
+}
+
+/// Records the report's per-board counter deltas (memory-only
+/// observability, strictly after `interpret`, before `publish`); returns
+/// whether anything was recorded. An unresolvable board drops its delta —
+/// counters are observability, not accounting.
+fn record_deltas(
+    core: &mut EngineCore,
+    deltas: impl IntoIterator<Item = (taskboard_domain::BoardId, SyncCounters)>,
+) -> bool {
+    let mut counted = false;
+    for (board, delta) in deltas {
+        core.record_report(board, &delta);
+        counted = true;
+    }
+    counted
 }
 
 /// Appends one `UpsertSyncStatus` per board whose stable part (phase or
@@ -805,6 +943,7 @@ async fn go_offline(
     signals: &broadcast::Sender<EngineSignal>,
     repo: &Arc<dyn TaskRepository>,
     clock: &dyn Clock,
+    metrics: &EngineMetrics,
     scope: Option<&taskboard_domain::ConnectorId>,
 ) {
     // Per-board idempotence: one Offline write per bound board not
@@ -829,6 +968,7 @@ async fn go_offline(
         return;
     }
     let now = clock.now();
+    let episode_boards: Vec<taskboard_domain::BoardId> = targets.clone();
     let actions: Vec<PersistenceAction> = targets
         .into_iter()
         .map(|board| {
@@ -839,17 +979,24 @@ async fn go_offline(
                     phase: SyncPhase::Offline,
                     last_success,
                     pending_ops: 0, // ignored: derived at apply time
+                    counters: SyncCounters::default(),
                 },
             )
         })
         .collect();
-    match repo.apply(actions.clone()).await {
-        Err(err) => tracing::error!(?err, "offline transition lost"),
-        Ok(()) => {
-            if core.interpret(&actions, now) {
-                publish(core, shared, signals);
-            }
+    if let Err(err) = repo.apply(actions.clone()).await {
+        tracing::error!(?err, "offline transition lost");
+    } else {
+        core.interpret(&actions, now);
+        // One episode per written target board: the "not already
+        // Offline" filter above made repeat events within one episode
+        // a no-op, so the edge is counted exactly once. Something
+        // always counted here (targets is non-empty), so the publish
+        // is unconditional.
+        for board in &episode_boards {
+            core.record_offline_episode(*board);
         }
+        publish(core, shared, signals, metrics);
     }
 }
 
@@ -892,6 +1039,7 @@ async fn reminder_tick(
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
     (repo, clock, system_out, notifier): TickSeams<'_>,
+    metrics: &EngineMetrics,
     cfg: &ReminderEngineConfig,
     storage_failing: &mut bool,
 ) {
@@ -911,7 +1059,7 @@ async fn reminder_tick(
     *storage_failing = false;
     let payloads = notifications_for(&firings, core.tasks());
     if core.interpret(&actions, now) {
-        publish(core, shared, signals);
+        publish(core, shared, signals, metrics);
     }
     send_notifications(notifier, payloads).await;
 }

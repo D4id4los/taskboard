@@ -2487,3 +2487,67 @@ async fn a32b_network_failure_ends_the_cycle_before_the_next_board() {
         "the shared-down transport fires the episode edge once"
     );
 }
+
+/// The engine's per-board counter attribution rides two raw facts only
+/// the actor knows: the cycle's wall `duration` (on `Completed` and
+/// `Failed`) and the failing board on a board-scoped `Failed` (`None` on
+/// the board-less `NoBoard` skip). The duration's magnitude is
+/// timing-dependent (a real-`Instant` measure over wiremock I/O), so the
+/// pin is the carry, never the clock.
+#[tokio::test(start_paused = true)]
+async fn reports_carry_duration_and_the_failing_board() {
+    let server = start_server().await;
+    let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let responder_down = down.clone();
+    let responder = move |req: &wiremock::Request| {
+        if responder_down.load(std::sync::atomic::Ordering::SeqCst) {
+            return ResponseTemplate::new(503);
+        }
+        let p = req.url.path().to_string();
+        let body = if p.ends_with("/stacks") {
+            stacks_json(&serde_json::json!([]))
+        } else if p.ends_with("/stacks/archived") {
+            "[]".to_string()
+        } else if p.ends_with(&format!("/boards/{BOARD}")) {
+            board_json(false, &serde_json::json!([]))
+        } else {
+            boards_json(false, &serde_json::json!([]))
+        };
+        ResponseTemplate::new(200)
+            .insert_header("ETag", "\"gen-1\"")
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .respond_with(responder)
+        .mount(&server)
+        .await;
+
+    let mut actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
+    let completed = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { duration, .. } = completed else {
+        panic!("expected a Completed report, got {completed:?}");
+    };
+    let _ = duration; // the carry is the pin; the value is wall timing
+
+    // A board-scoped pull failure names the failing board.
+    down.store(true, std::sync::atomic::Ordering::SeqCst);
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let failed = next_report(&mut actor).await;
+    let SyncReport::Failed { board, .. } = failed else {
+        panic!("expected a Failed report, got {failed:?}");
+    };
+    assert_eq!(board, Some(RemoteBoardId(BOARD)));
+
+    // The commanded board-less skip carries no board identity (an empty
+    // repository: no boards at all — `repo_with` always seeds one).
+    let mut actor = spawn(
+        &server,
+        Arc::new(InMemoryRepository::with_state(PersistedState::default())),
+    );
+    let skipped = nudge_and_report(&mut actor).await;
+    let SyncReport::Failed { kind, board, .. } = skipped else {
+        panic!("expected a Failed report, got {skipped:?}");
+    };
+    assert_eq!(kind, SyncErrorKind::NoBoard);
+    assert_eq!(board, None);
+}

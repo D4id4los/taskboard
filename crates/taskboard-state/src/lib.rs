@@ -77,8 +77,10 @@ pub(crate) mod actor;
 pub mod config;
 pub(crate) mod core;
 pub mod error;
+pub mod metrics;
 
 pub use actor::{AttachError, AttachReceipt, EngineEnvelope, EngineHandle, spawn_state_engine};
 pub use config::ReminderEngineConfig;
 pub use core::EngineCore;
 pub use error::{EngineStartupError, ExecuteError};
+pub use metrics::{EngineMetrics, EngineMetricsSnapshot};

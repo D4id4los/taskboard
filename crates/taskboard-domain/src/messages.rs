@@ -371,6 +371,11 @@ pub enum SyncReport {
         /// edits (see `apply_sync_report`). The engine passes this through
         /// verbatim; both sides share one process clock.
         read_at: chrono::DateTime<chrono::Utc>,
+        /// Wall duration of the cycle up to this report (monotonic
+        /// `Instant` elapsed, actor-measured). On multi-board cycles a
+        /// later board's duration includes earlier boards' time; the
+        /// engine folds the max.
+        duration: std::time::Duration,
     },
     /// The cycle failed before producing a snapshot.
     Failed {
@@ -386,6 +391,13 @@ pub enum SyncReport {
         /// landed push evidence must not clobber edits queued after the
         /// cycle's read either.
         read_at: chrono::DateTime<chrono::Utc>,
+        /// The failing board in the actor's remote id space (`None` when
+        /// no board identity exists — the commanded `NoBoard` skip); the
+        /// engine attributes the failure without a second report.
+        board: Option<RemoteBoardId>,
+        /// Wall duration of the cycle up to this report (see
+        /// `Completed::duration`).
+        duration: std::time::Duration,
     },
 }
 
