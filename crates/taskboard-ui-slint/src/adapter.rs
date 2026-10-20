@@ -255,13 +255,10 @@ impl Adapter {
                 }
             }
             (Flow::None, UiEffect::BeginCreateStack) => {
-                // The refusal class of TaskCreate on an empty board: a
-                // never-booted session offers nothing to create a stack
-                // on (D9).
-                match crate::presentation::live_board(&state) {
-                    Some(_) => self.view_state.begin_create_stack(),
-                    None => Vec::new(),
-                }
+                // The refusal (a never-booted session offers nothing to
+                // create a stack on) lives in the view-state method —
+                // the one home for the board-existence refusal.
+                self.view_state.begin_create_stack(&state)
             }
             // vi's `i`/`a` open the view's editing flow rather than
             // flipping mode into the void (D5).

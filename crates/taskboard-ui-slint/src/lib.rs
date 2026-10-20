@@ -807,6 +807,7 @@ mod keymap_adapter_tests {
                 },
             );
             handle.state.store(state.into());
+            handle.refresh(); // the board selection seeds at reconcile
             press(&handle, "i");
             assert!(
                 keyboard.get_vi_insert(),
@@ -1250,7 +1251,12 @@ mod view_component_tests {
     fn view_cycle_advances_and_reconcile_pops_deleted_subjects() {
         on_slint_thread(|| {
             let initial = fixture_state();
-            let victim = crate::view_state::ViewState::reading_order(&initial)
+            // The board selection seeds at reconcile; the reading order
+            // is the seeded view state's.
+            let mut seeded = crate::view_state::ViewState::new();
+            seeded.reconcile(&initial);
+            let victim = seeded
+                .reading_order(&initial)
                 .first()
                 .copied()
                 .expect("fixture has tasks");
@@ -1309,11 +1315,15 @@ mod view_component_tests {
                 !handle.window.global::<KeyboardState>().get_vi_insert(),
                 "the commit seam pushes normal mode (apply_outcomes sync)"
             );
+            let state = handle.state.load();
+            let mut seeded = crate::view_state::ViewState::new();
+            seeded.reconcile(&state);
+            let expected_stack = seeded.stack_ids(&state)[0];
             assert_eq!(
                 commands.try_recv().expect("the create command arrived"),
                 StateCommand::CreateTask {
                     title: "x".into(),
-                    stack: crate::view_state::ViewState::stack_ids(&handle.state.load())[0],
+                    stack: expected_stack,
                     order: 2,
                 }
             );
