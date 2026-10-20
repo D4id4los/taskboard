@@ -120,6 +120,24 @@ unexercised aspiration: =taskboard-app= depends on the UI crate and
 its other actors never do, so a future frontend would be a new
 workspace member behind the same hand-over contract.
 
+** Board Selection is Caller-Owned
+
+With N live boards there is no engine-side "the selected board": the
+State Engine holds no selection state (DF-2 — selection never enters
+the domain crate). Each frontend owns its own:
+
+- *CLI*: the =--board <uuid>= flag on the board-scoped verbs; when
+  omitted, the single live board is resolved at invocation — with zero
+  or several live boards the verb refuses with the typed
+  =ambiguous-board= error listing the candidates.
+- *REPL*: =ReplSession.current_board= (set by =boards use <uuid>=);
+  later board-scoped lines pre-fill =--board= from it.
+- *UI*: =ViewState.board= (refresh-time normalization re-seeds it from
+  =presentation::live_board= when absent or no longer live); the board
+  switcher — =select_board= and the =board.next/previous= walk,
+  mirroring the stack switcher — is its only mutator. Switching is
+  pure view state — nothing is dispatched to the engine.
+
 * Inter-Component Communication Protocol
 
 Components communicate through typed channels and shared atomic pointers,
@@ -131,9 +149,10 @@ avoiding central runtime bottlenecks.
 | *State Engine → UI (Read)* | =arc_swap::ArcSwap<AppState>= | Provides lock-free, zero-contention state inspection during UI repaints. |
 | *State Engine → UI (Signal)* | =tokio::sync::broadcast= | Emits lightweight triggers (=EngineSignal::StateUpdated=) to prompt GUI repaints. |
 | *UI/CLI → State Engine* | =tokio::sync::mpsc= + =oneshot= | =EngineEnvelope::Execute= carries a =StateCommand= payload with an optional oneshot receipt (typed =Result<CommandOutcome, ExecuteError>=; a received reply implies durability). =EngineEnvelope::Flush= is the reply-less dispatch durability barrier (CLI exit). |
-| *State Engine → Sync Actor* | =tokio::sync::mpsc= | =SyncCommand= nudges: =SyncNow= (forwarded iff an accepted batch enqueued an op, or on =RequestSync= / =NetworkRestored=) and =SetBoard= (pull-target selection, Phase 6's CLI path). The actor dedupes =SyncNow= while a cycle runs. |
+| *State Engine → Sync Actor* | =tokio::sync::mpsc= | =SyncCommand= nudges: =SyncNow= (forwarded iff an accepted batch enqueued an op, or on =RequestSync= / =NetworkRestored=). The actor dedupes =SyncNow= while a cycle runs. There is no targeting message: the retired =SetBoard= pull-target command is gone — each sync actor derives its per-cycle board set from the persisted connector-tagged bindings (the broadcast =SyncNow= is the only nudge). |
 | *Sync Actor → State Engine* | =tokio::sync::mpsc= | =SyncReport::{Completed, Failed}= ingestion through the conflict pipeline (ADR 0007's evidence-then-verdict: =Completed= carries snapshot + validators + pushes + =read_at=; =Failed= carries the pushes that landed before the abort). |
-| *Sync Actor → Everyone* | =tokio::sync::broadcast= | Produces =SystemEvent::NetworkLost= / =NetworkRestored= (this actor is the network authority) and consumes only =Shutdown= from the same channel. |
+| *Sync Actor → Everyone* | =tokio::sync::broadcast= | Produces =SystemEvent::ConnectorLost= / =ConnectorRestored(ConnectorId)= for its own connector (episode-edge: exactly once per offline episode, report-then-restore order) and consumes only =Shutdown= from the same channel. The global =NetworkLost= / =NetworkRestored= names belong to the app-layer authority (next row). |
+| *App authority → Everyone* | =tokio::sync::broadcast= | The all-down authority (=taskboard-app/src/authority.rs=): an app-layer counting task seeded from the configured connector module set and updated by the registry's attach/detach hooks. It subscribes the system broadcast and emits the global =SystemEvent::NetworkLost= on the all-down crossing (the last up connector flips down) and =NetworkRestored= on the first up — so one connector down while others respond is normal operation, not an outage. Single-connector installs keep the old semantics exactly. |
 | *Sync Actor → State Engine (reads)* | domain port =SyncStateReader= | =EngineEnvelope::ReadState= envelope behind the port: the cycle reads outbox, bindings, and validators via the engine, never direct SQL (ADR 0005/0007). |
 | *State Engine → Notifier* | =tokio::sync::mpsc= | =Notification= payloads (capacity 64, =NOTIFIER_CAPACITY=) consumed by the notifier task (=spawn_notifier=), which delivers them through the =NotificationSink= port (=LogSink= v1 — ADR 0013). Delivery is durable-then-notify: delivery markers persist before any send and a failed batch fires nothing; =send= (not =try_send=) backpressures the tick; the consumer exits when the engine's exit closes the channel. Derived edge: =docs/flow_model.org= E-20 / actor NTF. |
 | *Actors ↔ Actors* | =tokio::sync::mpsc= | Direct point-to-point command delivery between backend actors (e.g., State Engine → Storage via the =TaskRepository= port adapter). |
@@ -141,7 +160,7 @@ avoiding central runtime bottlenecks.
 | *CLI ⇄ Daemon (local socket)* | =interprocess= local sockets + length-framed JSON | Transport-only reuse of =dispatch_line= (ADR 0012): the daemon serves the per-database socket (<db>.sock sidecar); a CLI invocation relays raw argv and prints the daemon's rendered ={code, out, err}= verbatim — byte-identical to the in-process dispatch. Versioned envelopes (v1); one request per connection; serial execution on one dispatcher task. |
 | *Asynchronous Queries* | =tokio::sync::oneshot= | Embedded inside an =mpsc= message payload for direct, async request-response cycles. Payloads are pure domain types; the channel-bearing envelope is declared by the actor crate (payload/envelope split, ADR 0004). |
 | *REPL loop ⇄ editor thread (disposition)* | =tokio::sync::mpsc= + embedded =oneshot= (ADR 0014) | The per-line handshake: the editor thread delivers one =LineEvent=, then awaits the loop's =Disposition= (=Next=, or =Prompt{label, kind, reply}= for a follow-up read). Masked reads (=rpassword=) run on the reader thread; answers ride the oneshot and never enter history or completion. Capacity-1 channels keep the alternation strict — the race-free property. |
-| *Session ⇄ core (connector ceremonies)* | =App::attach_connector= / =App::detach_connector= + config refresh (ADR 0014) | An in-session =connect= line runs the shared ceremony through the session's prompt reader, refreshes the session config through the boot resolution, detaches any live connector, and attaches a fresh one from the refreshed config; =logout= is the mirror (local teardown → detach → refresh). Verb bodies are frontend-agnostic functions the Phase 7 GUI reuses. |
+| *Session ⇄ core (connector ceremonies)* | =App::attach_connector= / =App::detach_connector= + config refresh (ADR 0014) | An in-session =connect= line runs the shared ceremony through the session's prompt reader, refreshes the session config through the boot resolution, detaches any live connector, and attaches a fresh one from the refreshed config; =logout= is the mirror (local teardown → detach → refresh). Attach/detach are per-name against the connector registry (=ConnectorNameInUse= names the offender when the name is already live). Verb bodies are frontend-agnostic functions the Phase 7 GUI reuses. |
 
 Channel wiring is *handed over by bootstrap; constructed in the owning
 spawn/hand-over functions*. =bootstrap()= itself constructs the system
@@ -156,6 +175,26 @@ constructor arguments and never construct channels between themselves
 — every off-bootstrap constructor sits in a spawn/hand-over function
 the app layer calls (ADR 0008).
 
+** Vocabulary after the multi-board wave
+
+The multi-board wave (ADR 0010 as amended, 2026-10-20) moved the four
+inter-actor vocabularies from "the one bound board" to N boards across
+N named connectors. The post-wave shape, one row per vocabulary:
+
+| Vocabulary | Shape after the wave |
+|---+---+---|
+| Commands (=StateCommand=) | The board-scoped arms carry =board: BoardId= (=CreateStack=, =CreateLabel=, =RenameBoard=, =SetBoardColor=, =SetBoardArchived=, =DeleteBoard=, =ResetBoard=, =BindBoard=, plus =UnbindBoard { board }= and =ReconcileByTitle { board }= from the ceremonies); =CreateBoard= carries none — its single-live-board refusal is lifted, so it always mints. Task/stack/label-scoped commands stay id-addressed. |
+| Outbox ops (=LocalOp=) | Unchanged — already board-addressed / entity-scoped; the push side filters to the boards owned by the pushing connector. |
+| =CommandError= | Removed =NoBoard= and =BoardExists=; added =UnknownBoard(BoardId)= and =BoardDeleted(BoardId)=; =BoardAlreadyBound { board, bound }= names both sides; =RemoteBoardInUse { remote, board }= refuses adopting a remote another board already owns. |
+| Status payloads | =AppState.sync= is the per-board =SyncStates(BTreeMap<BoardId, SyncStatus>)= map with the =aggregate()= fold; =SyncCommand= is ={SyncNow, Detach}= (=SetBoard= retired); =SyncReport= is unchanged (already per-board snapshots). |
+
+Connector identity is one name end-to-end: config =name= →
+=ConnectorId= (a domain newtype) → the connector tag on
+=RemoteBoardBinding= → the registry key (=SyncActor.id=) → the module
+id (=ConnectorModule::id=) → the CLI's =--connector= values. Board
+attribution in status surfaces stays *derived from bindings, never
+stored*.
+
 * Cargo Workspace Topology
 
 To enforce strict boundary checks at compile time and accelerate build
@@ -168,8 +207,14 @@ dependency hierarchies.
    =Task= / =Label= entity set with per-field write clocks; =Project= is
    superseded by =Board= and =UserPreferences= is deferred), inter-actor
    message payloads (=StateCommand=, =SystemEvent=, =SyncCommand=,
-   =SyncReport=), the persistence port (=TaskRepository=), and the pure
-   sync conflict policy (=apply_sync_report=, ADR 0004). The policy is
+   =SyncReport=), the =ConnectorId= config-name newtype, the
+   persistence port (=TaskRepository=), and the pure
+   sync conflict policy (=apply_sync_report=, ADR 0004). Board
+   bindings carry their owning connector (=RemoteBoardBinding
+   { connector, board }=), and the runtime state's =AppState.sync= is
+   the per-board =SyncStates(BTreeMap<BoardId, SyncStatus>)= map with
+   the =aggregate()= fold — attribution stays derived from bindings,
+   never stored. The policy is
    executed by the *state engine*, never by the sync actor. Dependencies:
    minimal (=serde=, =chrono=, =uuid=, =thiserror=, =tracing= for
    pure-macro event instrumentation of the conflict policy — no I/O, no
@@ -190,7 +235,11 @@ dependency hierarchies.
    =ArcSwap<AppState>= and broadcasts =EngineSignal::StateUpdated=.
    Inbox: =EngineEnvelope::{Execute (oneshot receipt), Flush (durability
    barrier)}=; it also ingests =SyncReport=s and =SystemEvent=s, and
-   forwards =SyncNow= nudges to the sync actor. Scheduling rides a
+   forwards =SyncNow= nudges to the sync actor. =SyncReport= ingestion
+   re-keys the per-board sync map by the report's board; the
+   =SystemEvent::ConnectorLost(c)= arm scopes =go_offline= to =c='s
+   boards (derived from the engine's own binding tags) while
+   =ConnectorRestored(c)= forwards the nudge. Scheduling rides a
    =sleep_until= select *tick arm* (first tick immediate, so reminders
    left undelivered before a shutdown fire on the next boot; disarmed
    while the engine drains) that runs the pure reminder evaluator over
@@ -204,13 +253,21 @@ dependency hierarchies.
    cycle that reads the engine's persisted state through the domain's
    =SyncStateReader= port (never direct SQL, ADR 0005), pushes the
    coalesced outbox via the pure =plan_pushes= planner + push executor
-   (binding overlay, fetch-before-write, typed error classification),
-   pulls the bound board through three conditional reads into a complete
-   =RemoteBoardSnapshot= (both stack listings; per-card detail refresh),
-   and reports =SyncReport=s with evidence-then-verdict semantics. Owns
-   the offline FSM: broadcasts =SystemEvent::NetworkLost/Restored=,
-   failure backoff, cycle-in-flight dedupe; =SetBoard= sets the pull
-   target (binding happens by adoption in the engine). Stateless across
+   (binding overlay, fetch-before-write, typed error classification;
+   the ownership filter plans only the boards bound to *this*
+   connector), pulls every board in its derived owned-board set —
+   recomputed each cycle from the persisted connector-tagged bindings
+   (tombstoned boards drain out; foreign-tagged boards are excluded) —
+   each through three conditional reads into a complete
+   =RemoteBoardSnapshot= (both stack listings; per-card detail
+   refresh) with per-board pull-cache keys (no cache-clear on rebind;
+   unchanged boards stay cheap via per-board validators), and reports
+   =SyncReport=s with evidence-then-verdict semantics. Owns the
+   per-connector offline FSM: broadcasts
+   =SystemEvent::ConnectorLost/ConnectorRestored= for its own
+   connector, failure backoff, cycle-in-flight dedupe; binding happens
+   by adoption in the engine, and the broadcast =SyncNow= is the only
+   nudge it consumes. Stateless across
    restarts except the injected =DeckClient=. Dependencies:
    =taskboard-domain=, =reqwest=, =serde=, =serde_json=, =chrono=,
    =tokio=, =thiserror=, =tracing=.
@@ -218,7 +275,13 @@ dependency hierarchies.
 4. *taskboard-storage-sqlite* — Manages local SQLite disk persistence.
    Ensures the app boots immediately with cached data if network
    connectivity is lost. Normalized schema (boards/stacks/tasks/labels,
-   =task_labels= join, =outbox=, =sync_metadata=, =sync_status= singleton,
+   =task_labels= join, =outbox=, =sync_metadata=, the per-board
+   =sync_status= table — migration 0006 rebuilt the v0.1.x singleton
+   and also added the =boards.connector= binding tag, whose legacy
+   =NULL= decodes as the spawn-time default connector
+   (the =default_connector= parameter of the storage =open= /
+   =open_with=, handed the config-resolved id at boot);
+   upserts write the tag, so legacy NULLs are read-only relics),
    plus the four reminder tables of migration 0004: =reminder_rules= /
    =reminder_deliveries= / =reminder_snoozes= / =reminder_muted=,
    ADR 0013)
@@ -240,7 +303,15 @@ dependency hierarchies.
    merge validation, pure stroke resolver with chords/prefixes/vi
    modes/masking), =adapter= (the root-FocusScope capture
    interception) + =menu= (the generated action menu), =router= /
-   =view_state= (the Board → StackDetail → TaskDetail view machine),
+   =view_state= (the Board → StackDetail → TaskDetail view machine,
+   widened with the board dimension: =ViewState.board= (refresh-time
+   normalization re-seeds it from =presentation::live_board= when
+   absent or no longer live), =select_board= mirroring
+   =select_stack=, the =board.next/previous/select= actions, and the
+   =board-bar.slint= strip — one segment per live board; the compact
+   layout hides it while keyboard switching keeps working; the =push=
+   builder derives its board argument from the selection, so
+   =IdTables= are not re-keyed, and switching is pure view state),
    the L1 widget / L2 composition / L3 view component layering
    under =ui/=, and =presentation= (pure display helpers reusing the
    domain's overdue/due-soon semantics) + =responsive= (unscaled
@@ -272,9 +343,18 @@ dependency hierarchies.
    storage, UI-command, IPC, and REPL channels are constructed inside
    their owning spawn/hand-over functions, all called from here —
    ADR 0007's handoff note; under the resolved =standalone= backend the
-   sync connector is *not* spawned and its channel halves are dropped —
-   the engine sees the closed-channel world it already handles, ADR
-   0010) and returns the =App= handle shared by every frontend, =lockfile= (the per-database instance lock — an
+   connector set is empty and no sync actor is spawned — the channel
+   halves are dropped and the engine sees the closed-channel world it
+   already handles, ADR 0010), =connectors= (the named connector
+   registry loop over the configured =[[sync.connectors]]= entries:
+   each resolves to a =ConnectorModule= — the app-layer module trait
+   of ADR 0010's amended split, domain vocabulary + app module trait,
+   =dyn=-dispatched with one implementation today (nextcloud) — that
+   spawns its sync actor with its =ConnectorId=; attach/detach are
+   per-name) and =authority= (the all-down counting task emitting the
+   global =NetworkLost/NetworkRestored= on the episode-edge crossings,
+   =taskboard-app/src/authority.rs=), and returns the =App= handle
+   shared by every frontend, =lockfile= (the per-database instance lock — an
    OS-released advisory lock on a =<db>.lock= sidecar acquired before
    the db open, ADR 0009), =notifications= (the =NotificationSink=
    port with =LogSink= v1 — one log line per delivery; desktop toasts
@@ -282,11 +362,17 @@ dependency hierarchies.
    (ADR 0009): the operator
    CLI's typed handlers — =connect= (introduces a connection; =login=
    is its deprecated alias, ADR 0014), =logout=, =boards= (list/select/
-   create/publish/rename), =stacks= (add/rename/delete/move), =tasks=
+   create/publish/rename/color/archive/unarchive/delete/reset/unbind/
+   reconcile, plus the REPL-only =boards use= — the session's board
+   selection; =--board= targets one of N on the board-scoped verbs,
+   =--connector <name>= scopes =boards list/select/publish= and
+   =sync=), =stacks= (add/rename/delete/move), =tasks=
    (list/add/done/move/edit/delete/label/unlabel/remind — the
    =remind= mode flags =--before=/=--list=/=--clear=/=--off=/=--on=,
    ADR 0013), =labels=
-   (list/add/edit/delete), =sync=, =config print= — with the =--json=
+   (list/add/edit/delete), =sync=, =status= (the additive
+   per-connector =connectors= array and flat per-board =boards= array
+   beside the unchanged aggregate =sync= field), =config print= — with the =--json=
    output contract (typed projections on stdout, kebab-case error
    envelopes on stderr). Task selectors cascade exact uuid → unique
    ≥8-char prefix → exact title; destructive verbs are
@@ -303,7 +389,10 @@ dependency hierarchies.
    =dispatch_line= through the same =*_on(&App)= verb bodies the
    one-shot wrappers call; =connect=/=login=/=logout= are intercepted
    by the session loop as ceremonies (ADR 0014: config refresh +
-   connector attach/detach against the running core), and the daemon
+   per-name connector attach/detach against the running core, over the
+   connector registry), =boards use= sets =ReplSession.current_board=
+   (the session's board selection for later board-scoped lines), and
+   the daemon
    IPC server refuses them as terminal-bound before dispatch. The
    rustyline editor lives on a dedicated thread streaming =LineEvent=s
    through a bounded channel and answering the loop's per-line
