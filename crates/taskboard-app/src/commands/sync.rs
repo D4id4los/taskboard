@@ -59,13 +59,56 @@ pub async fn run(
     store: Arc<dyn CredentialStore>,
     no_wait: bool,
     timeout: Duration,
+    connector: Option<&str>,
 ) -> Result<SyncOutcome, CommandError> {
     crate::commands::require_connector(&config)?;
+    // The scope resolves after the gate (D6-5): `--connector` names a
+    // configured connector or refuses typed before the core boots.
+    let scope = connector
+        .map(|name| crate::commands::resolve_connector(&config, Some(name)))
+        .transpose()?
+        .map(|spec| spec.name);
     let app =
         crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
-    let result = sync_on(&app, no_wait, timeout).await;
+    let result = sync_on(&app, no_wait, timeout, scope.as_ref()).await;
     let _ = app.shutdown().await;
     result
+}
+
+/// The watched sync status of one poll: the connector-scoped fold over
+/// the *currently*-bound boards' rows when scoped (bindings re-derived
+/// each poll — a mid-wait move changes the watched set honestly,
+/// D6-6's recorded semantics), else the back-compat all-boards
+/// aggregate. The map fold itself is always the domain's
+/// `aggregate_rows` — never duplicated here.
+fn watched_status(
+    app: &crate::App,
+    scope: Option<&taskboard_domain::ConnectorId>,
+) -> taskboard_domain::SyncStatus {
+    let state = app.engine.shared_state().load_full();
+    scoped_sync_status(&state, scope)
+}
+
+/// The pure half of [`watched_status`], unit-testable over a
+/// hand-built state.
+fn scoped_sync_status(
+    state: &taskboard_domain::AppState,
+    scope: Option<&taskboard_domain::ConnectorId>,
+) -> SyncStatus {
+    match scope {
+        Some(connector) => {
+            let rows: Vec<SyncStatus> = state
+                .boards
+                .values()
+                .filter(|b| {
+                    !b.deleted && b.remote.as_ref().is_some_and(|r| &r.connector == connector)
+                })
+                .filter_map(|b| state.sync.get(b.id).cloned())
+                .collect();
+            taskboard_domain::aggregate_rows(rows.iter())
+        }
+        None => state.sync.aggregate(),
+    }
 }
 
 /// The sync steps on a booted core; the caller owns the shutdown (the
@@ -74,11 +117,12 @@ pub(crate) async fn sync_on(
     app: &crate::App,
     no_wait: bool,
     timeout: Duration,
+    scope: Option<&taskboard_domain::ConnectorId>,
 ) -> Result<SyncOutcome, CommandError> {
     // Hydrated from the db — may be a stale `Idle`/`Failed`.
-    let startup = app.engine.shared_state().load_full().sync.aggregate();
+    let startup = watched_status(app, scope);
     if no_wait {
-        let view = SyncStatusView::new(&app.engine.shared_state().load_full().sync.aggregate());
+        let view = SyncStatusView::new(&watched_status(app, scope));
         return Ok(SyncOutcome::NoWait(view));
     }
     // Belt-and-braces nudge; the boot cycle coalesces with it. A
@@ -90,7 +134,7 @@ pub(crate) async fn sync_on(
     if outcome == taskboard_domain::CommandOutcome::NoOp {
         return Err(CommandError::SyncUnavailable);
     }
-    Ok(wait_for_sync_result(app, &startup, timeout).await)
+    Ok(wait_for_sync_result(app, &startup, timeout, scope).await)
 }
 
 /// Event-driven (with a polling fallback) predicate poll with a
@@ -108,12 +152,13 @@ pub async fn wait_for_sync_result(
     app: &crate::App,
     startup: &SyncStatus,
     deadline: Duration,
+    scope: Option<&taskboard_domain::ConnectorId>,
 ) -> SyncOutcome {
     let mut signals = app.engine.subscribe();
     let mut seen_change = false;
     let deadline_at = Instant::now() + deadline;
     loop {
-        let status = app.engine.shared_state().load_full().sync.aggregate();
+        let status = watched_status(app, scope);
         if status.last_success > startup.last_success {
             return SyncOutcome::Succeeded(SyncStatusView::new(&status));
         }
@@ -170,6 +215,105 @@ pub fn render_text(outcome: &SyncOutcome) -> String {
 }
 
 #[cfg(test)]
+mod scope_tests {
+    use super::scoped_sync_status;
+    use taskboard_domain::ids::BoardId;
+    use taskboard_domain::{
+        AppState, Board, BoardClocks, ConnectorId, RemoteBoardBinding, RemoteBoardId,
+        SyncErrorKind, SyncPhase, SyncStates, SyncStatus,
+    };
+
+    fn board(raw: u128, tag: &str, remote: u64) -> (BoardId, Board) {
+        let id = BoardId::from(uuid::Uuid::from_u128(raw));
+        (
+            id,
+            Board {
+                id,
+                remote: Some(RemoteBoardBinding {
+                    connector: ConnectorId::from(tag),
+                    board: RemoteBoardId(remote),
+                }),
+                title: "b".to_owned(),
+                color: taskboard_domain::Color::new("0082c9"),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: BoardClocks::epoch(),
+                    color: BoardClocks::epoch(),
+                    archived: BoardClocks::epoch(),
+                    deleted: BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        )
+    }
+
+    fn status(phase: SyncPhase, pending: u32) -> SyncStatus {
+        SyncStatus {
+            phase,
+            last_success: None,
+            pending_ops: pending,
+        }
+    }
+
+    /// The scoped fold: only the named connector's currently-bound live
+    /// boards' rows fold (D6-6); the unscoped call is the all-boards
+    /// aggregate, unchanged.
+    #[test]
+    fn the_scoped_fold_watches_only_the_named_connectors_boards() {
+        let mut state = AppState::default();
+        let (a1, row) = board(0xA1, "alpha", 1);
+        state.boards.insert(a1, row);
+        let (a2, row) = board(0xA2, "alpha", 2);
+        state.boards.insert(a2, row);
+        let (b1, row) = board(0xB1, "beta", 1);
+        state.boards.insert(b1, row);
+        let mut sync = SyncStates::new();
+        sync.set_stored(
+            a1,
+            SyncPhase::Failed {
+                last_error: SyncErrorKind::Network,
+            },
+            None,
+        );
+        sync.set_stored(a2, SyncPhase::Syncing, None);
+        sync.set_stored(b1, SyncPhase::Idle, None);
+        state.sync = sync;
+
+        let alpha = ConnectorId::from("alpha");
+        let beta = ConnectorId::from("beta");
+        let scoped = scoped_sync_status(&state, Some(&alpha));
+        assert_eq!(scoped.phase, SyncPhase::Syncing, "alpha's dominance");
+        assert_eq!(scoped.pending_ops, 0);
+        assert_eq!(
+            scoped_sync_status(&state, Some(&beta)),
+            status(SyncPhase::Idle, 0),
+            "beta unaffected by alpha's rows"
+        );
+        assert_eq!(
+            scoped_sync_status(&state, None),
+            state.sync.aggregate(),
+            "the unscoped watch is the back-compat aggregate"
+        );
+
+        // The watch re-derives from current bindings: a board moved to
+        // beta changes alpha's watched set on the next poll.
+        state.boards.get_mut(&a2).expect("live").remote = Some(RemoteBoardBinding {
+            connector: beta.clone(),
+            board: RemoteBoardId(2),
+        });
+        let scoped = scoped_sync_status(&state, Some(&alpha));
+        assert_eq!(
+            scoped.phase,
+            SyncPhase::Failed {
+                last_error: SyncErrorKind::Network
+            },
+            "a1's row only — a2 moved to beta"
+        );
+    }
+}
+
+#[cfg(test)]
 mod detach_tests {
     use super::*;
     use crate::bootstrap::DetachOutcome;
@@ -214,7 +358,7 @@ mod detach_tests {
 
         assert_eq!(app.detach_connector().await, DetachOutcome::Detached);
 
-        let outcome = sync_on(&app, false, Duration::from_secs(1)).await;
+        let outcome = sync_on(&app, false, Duration::from_secs(1), None).await;
         assert!(
             matches!(outcome, Err(CommandError::SyncUnavailable)),
             "expected the typed refusal, got {outcome:?}"

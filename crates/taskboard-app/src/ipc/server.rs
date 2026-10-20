@@ -546,6 +546,24 @@ async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, St
                         .to_owned(),
                 );
             }
+            // `boards use` mutates the *session's* board selection
+            // (D6-6): the daemon holds no interactive session, so the
+            // wire refuses it in the same usage class — before any
+            // dispatch.
+            if matches!(
+                command,
+                crate::cli::Command::Boards {
+                    cmd: crate::cli::BoardsCmd::Use { .. }
+                }
+            ) {
+                return (
+                    2,
+                    String::new(),
+                    "boards use selects a board for an interactive session; the daemon holds \
+                     none\n"
+                        .to_owned(),
+                );
+            }
             let mut out = Vec::new();
             let mut err = Vec::new();
             let mut io = CommandIo {
