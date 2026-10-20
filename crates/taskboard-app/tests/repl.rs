@@ -142,6 +142,86 @@ async fn r1_session_journey_boot_once_work_exit_durable() {
 
 /// R2: a failed line reports typed and the session continues — the
 /// unknown-task refusal does not abort anything after it.
+/// R14: `boards use` is the session's board selection (D6-6): the
+/// receipt is typed, the query answers the selection (`board: null`
+/// when none), later board-scoped lines pre-fill from it — in a
+/// two-board world where the shared single-live default would refuse
+/// ambiguous — and unknown/deleted ids refuse with the engine's named
+/// kinds. A stale selection survives its board's death untouched (no
+/// handler silently mutates session state).
+#[tokio::test]
+async fn r14_boards_use_selects_prefills_and_refuses_typed() {
+    let dir = tempdir();
+    let db = dir.path().join("r14.db");
+    // Seed two boards one-shot so the session starts ambiguous to the
+    // shared default rule.
+    let (code, out, err) = run_session(
+        &db,
+        false,
+        vec![
+            line("boards create Alpha --json"),
+            line("boards create Beta --json"),
+            line("exit"),
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    let alpha = receipts[0]["id"].as_str().expect("alpha uuid").to_owned();
+    let beta = receipts[1]["id"].as_str().expect("beta uuid").to_owned();
+
+    // A second session: select Alpha, rename without --board (the
+    // ambiguous-world proof the pre-fill works), query, then refuse.
+    let (code, out, err) = run_session(
+        &db,
+        false,
+        vec![
+            line("boards rename Renamed --json"),
+            line(&format!("boards use {alpha} --json")),
+            line("boards rename Renamed --json"),
+            line("boards use --json"),
+            line(&format!("boards use {beta} --json")),
+            line("boards use 00000000-0000-0000-0000-00000000dead --json"),
+            line(&format!("boards delete --board {beta} --confirm --json")),
+            line(&format!("boards use {beta} --json")),
+            line("boards use --json"),
+            line("exit"),
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let lines = json_lines(&out);
+    let refusals = json_lines(&err);
+    assert_eq!(refusals.len(), 3);
+
+    // Line 1 refused ambiguous — the two-board world has no shared
+    // default, so the pre-fill is what made the later rename land.
+    assert_eq!(refusals[0]["error"]["kind"], "ambiguous-board");
+
+    // The selection journey: use → pre-filled rename lands on Alpha.
+    assert_eq!(lines[0]["board"], alpha, "the use receipt names the board");
+    assert_eq!(lines[1]["id"], alpha, "the pre-filled rename hit Alpha");
+    assert_eq!(lines[1]["title"], "Renamed");
+    // The query answers the selection.
+    assert_eq!(lines[2]["board"], alpha);
+    assert_eq!(lines[2]["title"], "Renamed");
+    // Re-pointing answers the new selection.
+    assert_eq!(lines[3]["board"], beta);
+    // Unknown id: typed, naming the uuid (the refusal rides stderr).
+    assert_eq!(refusals[1]["error"]["kind"], "unknown-board");
+    // A tombstoned target refuses with the same collapsed kind (the
+    // engine's `BoardDeleted` maps to `unknown-board` in the CLI's
+    // kind vocabulary), and the stale selection survives untouched —
+    // the final query still answers it; the remedy is `boards use
+    // <other>`.
+    assert_eq!(refusals[2]["error"]["kind"], "unknown-board");
+    assert_eq!(lines[5]["board"], beta, "the stale selection still answers");
+    assert!(
+        lines[5].get("title").is_none(),
+        "a dead board's title is gone"
+    );
+}
+
 #[tokio::test]
 async fn r2_a_failed_line_reports_and_the_session_continues() {
     let dir = tempdir();
