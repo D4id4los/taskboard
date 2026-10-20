@@ -142,6 +142,22 @@ pub struct SyncStatusView {
     pub pending_ops: u32,
     /// The failure classification when `phase == "failed"`.
     pub error_kind: Option<String>,
+    /// Process-lifetime sync counters (cumulative per engine process
+    /// run; never persisted — a restart resets them).
+    pub cycles: u64,
+    /// Ops successfully pushed.
+    pub pushes: u64,
+    /// Remote entities pulled (merged).
+    pub pulls: u64,
+    /// Cycles that ended in a failure.
+    pub failures: u64,
+    /// Offline transitions lived through.
+    pub offline_episodes: u64,
+    /// Wall duration of the board's last cycle, in milliseconds (`None`
+    /// = no cycle counted yet). Flat number on the wire — never a
+    /// `{secs, nanos}` pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cycle_ms: Option<u64>,
 }
 
 /// One connector's status row (D6-3): the derived health aggregate over
@@ -199,6 +215,15 @@ impl SyncStatusView {
             last_success: status.last_success,
             pending_ops: status.pending_ops,
             error_kind,
+            cycles: status.counters.cycles,
+            pushes: status.counters.pushes,
+            pulls: status.counters.pulls,
+            failures: status.counters.failures,
+            offline_episodes: status.counters.offline_episodes,
+            last_cycle_ms: status
+                .counters
+                .last_cycle
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
         }
     }
 }

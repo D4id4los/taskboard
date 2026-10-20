@@ -78,6 +78,7 @@ pub enum Request {
 /// The server's answer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
+#[allow(clippy::large_enum_variant)] // Status is the answer; boxing the view churns every site for a local lint
 pub enum Response {
     /// Exec outcome: process-shaped exit code plus the exact rendered
     /// streams the in-process dispatch would have printed.
@@ -91,7 +92,9 @@ pub enum Response {
         /// Rendered stderr bytes.
         err: String,
     },
-    /// Live status answer (server side).
+    // The status view IS the payload: boxing it would churn every
+    // construction site for a purely local size lint.
+    #[allow(clippy::large_enum_variant)]
     Status {
         /// Protocol version.
         v: u32,
@@ -276,6 +279,7 @@ mod tests {
             connector_attached: None,
             connectors: None,
             boards: None,
+            engine: None,
         };
         let json = serde_json::to_value(Response::Status { v: 1, status: view }).expect("s");
         assert_eq!(json["type"], "status");
@@ -404,6 +408,7 @@ mod tests {
                     connector_attached: None,
                     connectors: None,
                     boards: None,
+                    engine: None,
                 },
             },
             Response::Shutdown { v: 1 },
@@ -439,6 +444,7 @@ mod tests {
             sync: None,
             holder_pid: None,
             connector_attached: Some(true),
+            engine: None,
             connectors: Some(vec![ConnectorStatusView {
                 name: "alpha".to_owned(),
                 health: SyncStatusView {
@@ -446,6 +452,12 @@ mod tests {
                     last_success: None,
                     pending_ops: 1,
                     error_kind: None,
+                    cycles: 0,
+                    pushes: 0,
+                    pulls: 0,
+                    failures: 0,
+                    offline_episodes: 0,
+                    last_cycle_ms: None,
                 },
                 boards: Vec::new(),
             }]),
@@ -459,6 +471,12 @@ mod tests {
                     last_success: None,
                     pending_ops: 1,
                     error_kind: None,
+                    cycles: 0,
+                    pushes: 0,
+                    pulls: 0,
+                    failures: 0,
+                    offline_episodes: 0,
+                    last_cycle_ms: None,
                 },
             }]),
         };
@@ -495,6 +513,7 @@ mod tests {
             connector_attached: None,
             connectors: None,
             boards: None,
+            engine: None,
         };
         let json = serde_json::to_value(&view).expect("serialize");
         assert_eq!(json, serde_json::json!({ "daemon": false }));
@@ -541,6 +560,7 @@ mod tests {
             connector_attached: Some(true),
             connectors: None,
             boards: None,
+            engine: None,
         };
         let json = serde_json::to_value(&attached).expect("serialize");
         assert_eq!(json["connector_attached"], true);

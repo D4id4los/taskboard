@@ -70,6 +70,7 @@ mod tests {
                     phase: taskboard_domain::SyncPhase::Offline,
                     last_success: None,
                     pending_ops: 0,
+                    counters: taskboard_domain::SyncCounters::default(),
                 },
             ),
         ])

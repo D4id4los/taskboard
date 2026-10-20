@@ -1120,6 +1120,7 @@ mod connector_module_tests {
         config.validate().expect("config valid");
 
         let completed = SyncReport::Completed {
+            duration: std::time::Duration::ZERO,
             connector: taskboard_domain::ConnectorId::from("fakemodule"),
             snapshot: Box::new(snapshot_of(77)),
             validators: taskboard_domain::BoardPullValidators {
@@ -1184,6 +1185,7 @@ mod connector_module_tests {
 
     fn completed(connector: &str, board: u64, at: chrono::DateTime<chrono::Utc>) -> SyncReport {
         SyncReport::Completed {
+            duration: std::time::Duration::ZERO,
             connector: taskboard_domain::ConnectorId::from(connector),
             snapshot: Box::new(snapshot_of(board)),
             validators: completed_validators(),

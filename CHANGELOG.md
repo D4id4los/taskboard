@@ -10,6 +10,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Per-board cumulative sync counters on the published sync status
+  (kiosk wave K8): cycles, pushes, pulls, failures, offline episodes,
+  and the last cycle's wall duration — populated at the existing
+  `SyncReport` ingestion points, carried by the `status` answer's
+  aggregate, connector-health, and per-board folds
+  (`last_cycle_ms` as a flat number). Counters are cumulative per
+  process run: they live only in the engine's memory and are never
+  persisted — a restart resets them by construction.
+- Engine activity counters (`status`'s new `engine` object, present in
+  daemon and REPL answers): accepted commands, typed rejections, and
+  publish signals — handle-side atomics read off the engine handle,
+  never part of the published state.
 - The UI board dimension: a board-switcher strip above the kanban
   (one segment per live board, regular/expansive layouts; compact
   hides it — keyboard switching still works), `board.next`/`board.
