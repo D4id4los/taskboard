@@ -40,6 +40,9 @@ workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+# The refresh+draw bench (K6/S2): workspace-pinned, zero CI edits —
+# the bencher job already runs `cargo bench --workspace`.
+criterion.workspace = true
 uuid.workspace = true
 proptest.workspace = true
 serde.workspace = true
@@ -50,3 +53,7 @@ i-slint-backend-testing.workspace = true
 # The first-frame contract test: a handwritten capturing Layer over
 # Registry — dev-only, never a shipped dependency.
 tracing-subscriber.workspace = true
+
+[[bench]]
+name = "refresh_draw"
+harness = false

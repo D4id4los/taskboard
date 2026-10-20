@@ -168,7 +168,12 @@ pub(crate) fn on_slint_thread<R: Send + 'static>(f: impl FnOnce() -> R + Send + 
         .expect("the slint test worker returned a result")
 }
 
+// Compiled into the lib under cfg(test); when the file is
+// #[path]-included into the bench target, cfg(test) is set there too
+// and the tests' own imports warn unused (the tests never run under
+// the criterion harness) — the allow covers that include shape.
 #[cfg(test)]
+#[allow(unused_imports)]
 mod tests {
     use super::*;
     use crate::{UiSettings, mount};
