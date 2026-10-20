@@ -465,6 +465,65 @@ fn the_ten_step_keyboard_session() {
     );
 }
 
+/// The chunk-7 board leg (design §3.8, one behaviour, one test): the
+/// keyboard walk over the canonical board order with no wrap, the
+/// second board's stacks re-rendered, the toolbar title switched,
+/// nothing dispatched at any step (the dumb-client pin), and a
+/// compact leg — the strip hidden, keyboard switching remains.
+#[test]
+fn board_switching_walks_boards_by_keyboard() {
+    let (_fixture, state) = fixture::two_board_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(harness.handle.window().get_current_view(), View::Board);
+            assert_eq!(harness.board_shape(), vec![2, 1], "board one's stacks");
+            assert_eq!(
+                harness.handle.window().get_toolbar_title(),
+                "board one",
+                "the seed is the lowest live board"
+            );
+            harness.assert_commands(&[]);
+
+            harness.press(ActionId::BoardNext);
+            assert_eq!(
+                harness.board_shape(),
+                vec![1],
+                "the second board's stacks re-rendered"
+            );
+            assert_eq!(harness.handle.window().get_toolbar_title(), "board two");
+            harness.assert_commands(&[]);
+
+            harness.press(ActionId::BoardNext);
+            assert_eq!(harness.board_shape(), vec![1], "the last end holds");
+            assert_eq!(harness.handle.window().get_toolbar_title(), "board two");
+
+            harness.press(ActionId::BoardPrevious);
+            assert_eq!(harness.board_shape(), vec![2, 1], "back to board one");
+            assert_eq!(harness.handle.window().get_toolbar_title(), "board one");
+            harness.assert_commands(&[]);
+
+            // The compact leg (R9/kiosk): at 600 px the strip is
+            // hidden and the keyboard walk still switches boards.
+            harness.driver.set_window_size(600, 800);
+            assert!(
+                harness.handle.window().get_compact_active(),
+                "600 px is the compact breakpoint"
+            );
+            harness.press(ActionId::BoardNext);
+            assert_eq!(
+                harness.board_shape(),
+                vec![1],
+                "keyboard switching works while the strip is hidden"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
 /// §8.1 scriptability — the cold-start view-graph walk (chunk plan
 /// §5.2): every view reachable by action, `nav.focus-board` returns
 /// from everywhere, the menu and the edit flow's Escape always land

@@ -1150,6 +1150,54 @@ mod view_component_tests {
         });
     }
 
+    /// T13 — the leaving rule for the board dimension (chunk-7 plan
+    /// D5): a bar click mid-edit-flow commits the buffer first, against
+    /// the board being left; then the view switches. Typed command +
+    /// title read; no text assertions.
+    #[test]
+    fn a_board_switch_mid_flow_commits_against_the_board_being_left() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(two_board_fixture_state(), UiSettings::default().keymap);
+            press(&handle, "S"); // stack.create (the standard Board binding)
+            assert!(matches!(
+                handle.adapter.borrow().view_state.flow(),
+                crate::view_state::Flow::CreateStack
+            ));
+            // The Rust buffer mirror (no rendered field seeds it here).
+            handle
+                .adapter
+                .borrow_mut()
+                .view_state
+                .set_buffer("x".to_owned());
+            handle.window.invoke_board_bar_segment_activated(1);
+
+            let board_one = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x1001));
+            assert_eq!(
+                commands
+                    .try_recv()
+                    .expect("the commit reached the boundary"),
+                StateCommand::CreateStack {
+                    board: board_one,
+                    title: "x".into(),
+                    order: 2, // append after board one's two stacks
+                },
+                "the flow committed against the board being left"
+            );
+            assert_eq!(
+                *handle.adapter.borrow().view_state.flow(),
+                crate::view_state::Flow::None,
+                "the flow closed"
+            );
+            assert_eq!(
+                handle.window.get_toolbar_title(),
+                "board two",
+                "the view switched after the commit"
+            );
+            assert!(commands.try_recv().is_err(), "nothing else dispatched");
+        });
+    }
+
     /// §6 test 3 — editing safety (standard preset): `N` opens the
     /// create row; typing dispatches nothing; Escape ends the flow;
     /// Ctrl+Q stays live mid-edit (the quit counter seam); a refresh

@@ -48,7 +48,8 @@ pub(crate) struct Adapter {
     keymap: Keymap,
     shell: KeymapShell,
     resolver: KeymapResolver,
-    view_state: ViewState,
+    /// pub(crate) for the lib tests' flow/buffer seams only.
+    pub(crate) view_state: ViewState,
     state: Arc<ArcSwap<AppState>>,
     commands: mpsc::Sender<StateCommand>,
     /// The open menu's entries (the D19 projection snapshot the
