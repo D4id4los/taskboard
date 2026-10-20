@@ -10,6 +10,13 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The UI board dimension: a board-switcher strip above the kanban
+  (one segment per live board, regular/expansive layouts; compact
+  hides it — keyboard switching still works), `board.next`/`board.
+  previous` keys (`b`/`B` in every preset's board scope, no wrap),
+  and a per-board sync badge whose phase, pending depth, and recency
+  follow the selected board. Switching is pure view state: nothing is
+  dispatched to the engine.
 - The additive per-connector/per-board `status` answer (daemon IPC and
   REPL sessions alike): `connectors: […]` (name, derived health,
   bound boards) and `boards: […]` (flat, board-id order, local-only
