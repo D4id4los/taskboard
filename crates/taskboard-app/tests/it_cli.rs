@@ -601,6 +601,35 @@ fn assert_graceful_remote_stop(child: Child, config: &Path, what: &str) {
     );
 }
 
+/// K9 — a bare kiosk boot with a `[kiosk] fixed_board` pin naming no
+/// live board refuses typed: nonzero exit, the `--json` envelope
+/// carrying the `unknown-fixed-board` discriminant (a typed kind, never
+/// message text). Nothing serves — no `daemon stop` handshake.
+#[test]
+fn kiosk_bare_with_a_dangling_pin_refuses_typed() {
+    let dir = tempdir();
+    let (config, _socket) = headless_config(dir.path(), "kiosk");
+    let dangling = uuid::Uuid::new_v4();
+    let seeded = std::fs::read_to_string(&config).expect("read config");
+    std::fs::write(
+        &config,
+        format!("{seeded}[kiosk]\nfixed_board = '{dangling}'\n"),
+    )
+    .expect("append the kiosk pin");
+
+    let child = spawn_headless(&config, &["--json"]);
+    let output = child.wait_with_output().expect("child completes");
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "the dangling pin must refuse the boot, not linger"
+    );
+    expect_exit(&output, 1, "a dangling fixed_board pin refuses the boot");
+    let envelope: serde_json::Value =
+        serde_json::from_str(&last_stderr_line(&output)).expect("one JSON error object");
+    assert_eq!(envelope["error"]["kind"], "unknown-fixed-board");
+}
+
 /// K3 — the bare kiosk appliance without a display falls back loudly
 /// to the headless daemon lifecycle: it routes to the appliance (not
 /// the old mode-gate refusal), the gate takes the headless branch, the

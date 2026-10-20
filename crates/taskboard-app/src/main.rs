@@ -425,6 +425,32 @@ async fn run_kiosk(
 ) -> color_eyre::Result<()> {
     let (app, server) = boot_and_serve(config, config_path, json, "kiosk appliance").await?;
 
+    // The `[kiosk] fixed_board` pin's typed boot resolution (KDF-10):
+    // the state is loaded (boards live in the ArcSwap), the display
+    // gate has not run — the refusal covers the appliance *and* the
+    // loud headless fallback, because the deployment contract does not
+    // depend on display presence. Unknown/dead board = typed config
+    // error, never a silent default, never a runtime warning.
+    let live_boards: Vec<uuid::Uuid> = app
+        .engine
+        .shared_state()
+        .load()
+        .boards
+        .keys()
+        .map(|id| id.as_uuid())
+        .collect();
+    match app.config.resolve_fixed_board(&live_boards) {
+        Ok(Some(id)) => tracing::info!(board = %id, "kiosk fixed board resolved"),
+        Ok(None) => {}
+        Err(err) => {
+            // The server is already spawned — drain through the shared
+            // tail (the mount-error arm's convention), then report
+            // typed.
+            let _ = drain_and_shutdown(app, server).await;
+            std::process::exit(i32::from(report(json, &CommandError::from(err))));
+        }
+    }
+
     match taskboard_app::ui::kiosk_start(taskboard_app::ui::display_env_available()) {
         taskboard_app::ui::KioskStart::Headless => {
             // The loud fallback (Q3): no display, no window — but the

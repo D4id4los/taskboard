@@ -79,6 +79,9 @@ pub struct AppConfig {
     /// Presentation-layer knobs (handed to the UI as typed values).
     #[serde(default)]
     pub ui: UiSection,
+    /// Kiosk appliance deployment profile.
+    #[serde(default)]
+    pub kiosk: KioskSection,
 }
 
 /// Which frontend the process runs.
@@ -359,6 +362,22 @@ pub struct KeymapSection {
     pub overrides: BTreeMap<String, OverrideSpec>,
 }
 
+/// `[kiosk]`: the kiosk appliance's deployment profile. An absent table
+/// decodes to the default (no pin) — today's behaviour; the table grows
+/// rotation keys only in the ambient-view chunk (K13).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KioskSection {
+    /// The board the wall display pins to, resolved typed against the
+    /// live boards at kiosk boot (see [`AppConfig::resolve_fixed_board`]):
+    /// absent pin + N live boards is the ambient view's rotation scope,
+    /// absent pin + 1 board is that board (KDF-10). Skipped when absent
+    /// so pin-less configs serialize unchanged (the `sync.connectors`
+    /// precedent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_board: Option<uuid::Uuid>,
+}
+
 /// The `[reminders] default_before` grammar (one definition site, shared
 /// with the CLI `--before` flag): a non-empty sequence of
 /// `<unsigned-int><unit>` components, unit ∈ `s | m | h | d`, no sign, no
@@ -497,6 +516,15 @@ pub enum ConfigError {
         /// `username`, or `backend`).
         field: &'static str,
     },
+    /// `[kiosk] fixed_board` names no live board (unknown UUID, or a
+    /// board deleted before this boot); the payload names the pin.
+    /// Resolution is a boot-time typed refusal — never a silent
+    /// default, never a runtime warning.
+    #[error("kiosk fixed board unknown")]
+    UnknownFixedBoard {
+        /// The pin that does not resolve.
+        id: uuid::Uuid,
+    },
 }
 
 impl ConfigError {
@@ -520,6 +548,7 @@ impl ConfigError {
             Self::DuplicateConnectorName { .. } => "duplicate-connector-name",
             Self::InvalidConnectorName { .. } => "invalid-connector-name",
             Self::InvalidConnectorEntry { .. } => "invalid-connector-entry",
+            Self::UnknownFixedBoard { .. } => "unknown-fixed-board",
         }
     }
 }
@@ -754,6 +783,33 @@ impl AppConfig {
             return Err(ConfigError::InvalidScale { field: "ui.scale" });
         }
         Ok(())
+    }
+
+    /// Resolves the `[kiosk] fixed_board` pin against the live board
+    /// ids captured at boot. Pure — the caller owns capturing the
+    /// boards. A pin naming no live board (unknown UUID, or a deleted
+    /// board) is the typed [`ConfigError::UnknownFixedBoard`]: never a
+    /// silent default, never a runtime warning (the deployment
+    /// contract is that the wall shows the pinned board or nothing
+    /// boots). Called only under `mode = "kiosk"` — the pin is the
+    /// kiosk deployment's contract, not a global invariant, so other
+    /// modes (the operator's maintenance session on the same config
+    /// file) ignore it.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::UnknownFixedBoard`] when the pin names no live
+    /// board.
+    #[allow(clippy::result_large_err)] // mirrors the enum's one grant above
+    pub fn resolve_fixed_board(
+        &self,
+        live_board_ids: &[uuid::Uuid],
+    ) -> Result<Option<uuid::Uuid>, ConfigError> {
+        match self.kiosk.fixed_board {
+            None => Ok(None),
+            Some(pin) if live_board_ids.contains(&pin) => Ok(Some(pin)),
+            Some(pin) => Err(ConfigError::UnknownFixedBoard { id: pin }),
+        }
     }
 
     /// The resolved database path. Call after [`AppConfig::load`]
@@ -1523,9 +1579,84 @@ mod tests {
         ));
     }
 
+    // ---- the [kiosk] deployment profile (chunk 9) --------------------
+
+    #[test]
+    fn kiosk_section_absent_decodes_to_none_and_validates() {
+        let config = decode("[app]\nmode = 'kiosk'\n").expect("decodes");
+        assert_eq!(config.kiosk.fixed_board, None);
+        let mut config = config;
+        config.storage.db_path = Some(PathBuf::from("/tmp/t.db"));
+        config.validate().expect("the absent section validates");
+    }
+
+    #[test]
+    fn fixed_board_decodes_from_a_uuid_string() {
+        let id = uuid::Uuid::new_v4();
+        let toml = format!("[kiosk]\nfixed_board = '{id}'\n");
+        let config = decode(&toml).expect("decodes");
+        assert_eq!(config.kiosk.fixed_board, Some(id));
+        // A pin-less section serializes empty — the skip contract that
+        // keeps existing configs' rendered shape unchanged.
+        let value = serde_json::to_value(KioskSection::default()).expect("serializes");
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn malformed_fixed_board_is_a_decode_error() {
+        let err = decode("[kiosk]\nfixed_board = 'not-a-uuid'\n")
+            .expect_err("a non-UUID pin is structure, not semantics");
+        assert!(matches!(err, ConfigError::Decode(_)));
+    }
+
+    #[test]
+    fn unknown_key_in_the_kiosk_table_is_a_decode_error() {
+        let err = decode("[kiosk]\nfixed_baord = 'not-a-uuid'\n")
+            .expect_err("the typo guard rejects unknown keys");
+        assert!(matches!(err, ConfigError::Decode(_)));
+    }
+
+    #[test]
+    fn resolve_fixed_board_returns_none_without_a_pin() {
+        let config = valid();
+        assert_eq!(config.resolve_fixed_board(&[]).expect("resolves"), None);
+        let live = [uuid::Uuid::new_v4()];
+        assert_eq!(config.resolve_fixed_board(&live).expect("resolves"), None);
+    }
+
+    #[test]
+    fn resolve_fixed_board_resolves_a_live_board() {
+        let pin = uuid::Uuid::new_v4();
+        let mut config = valid();
+        config.kiosk.fixed_board = Some(pin);
+        assert_eq!(
+            config.resolve_fixed_board(&[pin]).expect("resolves"),
+            Some(pin)
+        );
+    }
+
+    #[test]
+    fn resolve_fixed_board_rejects_an_unknown_board_naming_the_pin() {
+        let pin = uuid::Uuid::new_v4();
+        let mut config = valid();
+        config.kiosk.fixed_board = Some(pin);
+        for live in [&[][..], &[uuid::Uuid::new_v4()]] {
+            match config.resolve_fixed_board(live) {
+                Err(ConfigError::UnknownFixedBoard { id }) => assert_eq!(id, pin),
+                other => panic!("expected UnknownFixedBoard, got {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn the_new_kinds_extend_the_stable_discriminants() {
         for (err, kind) in [
+            (
+                ConfigError::UnknownFixedBoard {
+                    id: uuid::Uuid::nil(),
+                },
+                "unknown-fixed-board",
+            ),
             (ConfigError::ConnectorShapeMixed, "connector-shape-mixed"),
             (
                 ConfigError::NextcloudTableWithConnectors,
