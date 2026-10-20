@@ -538,6 +538,7 @@ async fn v11_select_ignores_a_stale_persisted_failure() {
     seed_sync_status(
         &db,
         taskboard_domain::SyncStatus {
+            counters: taskboard_domain::SyncCounters::default(),
             phase: taskboard_domain::SyncPhase::Failed {
                 last_error: taskboard_domain::SyncErrorKind::NoBoard,
             },
@@ -585,6 +586,7 @@ async fn v12_select_surfaces_a_fresh_failure_typed() {
     seed_sync_status(
         &db,
         taskboard_domain::SyncStatus {
+            counters: taskboard_domain::SyncCounters::default(),
             phase: taskboard_domain::SyncPhase::Failed {
                 last_error: taskboard_domain::SyncErrorKind::NoBoard,
             },

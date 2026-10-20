@@ -79,6 +79,39 @@ pub struct StatusView {
     /// The flat per-board view (same population rule as `connectors`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boards: Option<Vec<BoardStatusView>>,
+    /// The live engine's activity counters (#145; present in every
+    /// core-holding projection — `server` and `in_session`). Absent in
+    /// `no_daemon` answers (nothing is running to read), preserving the
+    /// `{"daemon": false}` byte pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineMetricsView>,
+}
+
+/// The engine-activity counters' wire projection: flat numbers, the
+/// handle's `EngineMetricsSnapshot` verbatim.
+///
+/// Additivity rides `default` + `skip_serializing_if` (the `connectors`
+/// precedent — no protocol-version bump).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EngineMetricsView {
+    /// Accepted mutating commands.
+    pub commands: u64,
+    /// Semantically rejected commands.
+    pub rejections: u64,
+    /// Publish/repaint signals sent (attempted sends included).
+    pub signals: u64,
+}
+
+impl EngineMetricsView {
+    /// Projects a handle snapshot; never leaks the atomics.
+    #[must_use]
+    pub fn new(snapshot: taskboard_state::EngineMetricsSnapshot) -> Self {
+        Self {
+            commands: snapshot.commands,
+            rejections: snapshot.rejections,
+            signals: snapshot.signals,
+        }
+    }
 }
 
 /// The attribution derivation (D6-4): groups every live board's sync
@@ -186,6 +219,7 @@ impl StatusView {
             connector_attached,
             connectors: Some(connectors),
             boards: Some(boards),
+            engine: Some(EngineMetricsView::new(app.engine.metrics())),
         }
     }
 
@@ -206,6 +240,7 @@ impl StatusView {
             connector_attached: None,
             connectors: None,
             boards: None,
+            engine: None,
         }
     }
 
@@ -230,6 +265,9 @@ impl StatusView {
             connector_attached,
             connectors: Some(connectors),
             boards: Some(boards),
+            // The session *is* the core holder: the same handle read as
+            // `server`, same honesty.
+            engine: Some(EngineMetricsView::new(app.engine.metrics())),
         }
     }
 }
@@ -257,6 +295,13 @@ pub fn render_text(view: &StatusView) -> String {
             daemon.push_str(", ");
             daemon.push_str(&sync.pending_ops.to_string());
             daemon.push_str(" pending");
+        }
+        if let Some(engine) = &view.engine {
+            let _ = write!(
+                daemon,
+                ", engine: {} cmds / {} rejected / {} signals",
+                engine.commands, engine.rejections, engine.signals
+            );
         }
         daemon.push_str(detached);
         // The arrays render after the existing clauses (the daemon-line
@@ -337,6 +382,7 @@ mod tests {
             connector_attached: None,
             connectors: None,
             boards: None,
+            engine: None,
         }
     }
 
@@ -388,6 +434,64 @@ mod tests {
         );
         assert_eq!(view.boards.as_ref().expect("some"), &Vec::new());
         let _ = app.shutdown().await;
+    }
+
+    /// T14: the projection carries the folded counters and converts the
+    /// last-cycle duration to flat milliseconds app-side.
+    #[test]
+    fn sync_status_view_projects_counters_and_last_cycle_ms() {
+        let status = taskboard_domain::SyncStatus {
+            counters: taskboard_domain::SyncCounters {
+                cycles: 3,
+                pushes: 5,
+                pulls: 11,
+                failures: 1,
+                offline_episodes: 2,
+                last_cycle: Some(std::time::Duration::from_millis(1_500)),
+            },
+            ..taskboard_domain::SyncStatus::default()
+        };
+        let view = SyncStatusView::new(&status);
+        assert_eq!(view.cycles, 3);
+        assert_eq!(view.pushes, 5);
+        assert_eq!(view.pulls, 11);
+        assert_eq!(view.failures, 1);
+        assert_eq!(view.offline_episodes, 2);
+        assert_eq!(view.last_cycle_ms, Some(1_500));
+        // The no-cycle default is the zeroed fold, no millisecond fact.
+        let empty = SyncStatusView::new(&taskboard_domain::SyncStatus::default());
+        assert_eq!(empty.cycles, 0);
+        assert_eq!(empty.last_cycle_ms, None);
+    }
+
+    /// T15: every core-holding projection carries the engine counters;
+    /// the client-side no-daemon answer does not (nothing is running).
+    #[tokio::test]
+    async fn status_view_carries_engine_metrics_when_the_core_is_held() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app = boot_standalone(dir.path()).await;
+        for view in [StatusView::server(&app), StatusView::in_session(&app)] {
+            let engine = view.engine.expect("core held ⇒ engine counters present");
+            // A fresh standalone engine: nothing executed, nothing
+            // rejected (the minted atomics start at zero; the boot
+            // hydration stores without a broadcast signal).
+            assert_eq!(engine.commands, 0);
+            assert_eq!(engine.rejections, 0);
+        }
+        let none = StatusView::no_daemon(std::path::Path::new("/nonexistent/t.db"));
+        assert!(none.engine.is_none());
+        let _ = app.shutdown().await;
+    }
+
+    /// T16: the `engine` key is skipped when absent — the no-daemon byte
+    /// pin survives the field's addition (mirrors the connector key pin).
+    #[test]
+    fn the_engine_key_is_skipped_when_absent() {
+        let json = serde_json::to_value(StatusView::no_daemon(std::path::Path::new(
+            "/nonexistent/taskboard.db",
+        )))
+        .expect("json");
+        assert_eq!(json, serde_json::json!({ "daemon": false }));
     }
 
     async fn boot_standalone(dir: &std::path::Path) -> crate::App {
@@ -468,6 +572,12 @@ mod tests {
                 last_success: None,
                 pending_ops: 0,
                 error_kind: None,
+                cycles: 0,
+                pushes: 0,
+                pulls: 0,
+                failures: 0,
+                offline_episodes: 0,
+                last_cycle_ms: None,
             },
             boards: Vec::new(),
         }]);
@@ -481,6 +591,12 @@ mod tests {
                 last_success: None,
                 pending_ops: 2,
                 error_kind: None,
+                cycles: 0,
+                pushes: 0,
+                pulls: 0,
+                failures: 0,
+                offline_episodes: 0,
+                last_cycle_ms: None,
             },
         }]);
         // Key order is declaration order — pinned through `to_string`
@@ -515,10 +631,20 @@ mod tests {
                 .keys()
                 .map(String::as_str)
                 .collect::<std::collections::BTreeSet<_>>(),
-            ["phase", "last_success", "pending_ops", "error_kind"]
-                .into_iter()
-                .collect(),
-            "the sync object's key set is unchanged"
+            [
+                "phase",
+                "last_success",
+                "pending_ops",
+                "error_kind",
+                "cycles",
+                "pushes",
+                "pulls",
+                "failures",
+                "offline_episodes",
+            ]
+            .into_iter()
+            .collect(),
+            "the sync object's key set (last_cycle_ms skipped when absent)"
         );
         // The round-trip is lossless.
         let back: StatusView = serde_json::from_value(json).expect("decode");
@@ -567,6 +693,7 @@ mod tests {
 
     fn phase_view(phase: SyncPhase, pending: u32) -> SyncStatusView {
         SyncStatusView::new(&SyncStatus {
+            counters: taskboard_domain::SyncCounters::default(),
             phase,
             last_success: None,
             pending_ops: pending,

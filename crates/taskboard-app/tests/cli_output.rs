@@ -16,7 +16,7 @@ use taskboard_app::commands::output::{
 };
 use taskboard_app::config::ConfigError;
 use taskboard_app::secrets::CredentialError;
-use taskboard_domain::SyncErrorKind;
+use taskboard_domain::{SyncCounters, SyncErrorKind};
 use taskboard_state::ExecuteError;
 use taskboard_sync_nextcloud::DeckError;
 
@@ -155,6 +155,7 @@ fn o1b_receipt_payloads_expose_documented_fields() {
 fn o2_sync_status_view_phase_table() {
     fn view(phase: taskboard_domain::SyncPhase) -> Value {
         serde_json::to_value(SyncStatusView::new(&taskboard_domain::SyncStatus {
+            counters: SyncCounters::default(),
             phase,
             last_success: None,
             pending_ops: 0,

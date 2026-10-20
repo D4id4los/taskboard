@@ -250,6 +250,7 @@ mod scope_tests {
 
     fn status(phase: SyncPhase, pending: u32) -> SyncStatus {
         SyncStatus {
+            counters: taskboard_domain::SyncCounters::default(),
             phase,
             last_success: None,
             pending_ops: pending,

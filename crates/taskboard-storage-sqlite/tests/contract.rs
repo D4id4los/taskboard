@@ -64,6 +64,7 @@ async fn per_board_status_roundtrip_and_fake_parity() {
         phase,
         last_success: at,
         pending_ops: 0, // derived, never stored
+        counters: taskboard_domain::SyncCounters::default(),
     };
 
     let mut actions = vec![
