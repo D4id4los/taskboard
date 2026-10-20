@@ -64,6 +64,7 @@ impl KeymapShell {
             focused_task: self.focused_task,
             focused_stack: self.focused_stack,
             reminder_target: None,
+            board_target: None,
         }
     }
 
@@ -109,7 +110,10 @@ impl KeymapShell {
             | UiEffect::BeginCreate
             | UiEffect::BeginCreateStack
             | UiEffect::Activate
-            | UiEffect::RequestMove => {}
+            | UiEffect::RequestMove
+            | UiEffect::BoardNext
+            | UiEffect::BoardPrevious
+            | UiEffect::BoardSelect(_) => {}
         }
         true
     }
@@ -210,5 +214,23 @@ mod tests {
         shell.apply(&UiEffect::MenuNext, 0);
         shell.apply(&UiEffect::MenuPrevious, 0);
         assert_eq!(shell.selected_entry(), None);
+    }
+
+    /// Design §3.8 — the board effects are view intents: the shell
+    /// records nothing for them (they apply `true`, plain state
+    /// unchanged; resolution happens in the view-state machine).
+    #[test]
+    fn board_effects_record_nothing_in_the_shell() {
+        let mut shell = KeymapShell::default();
+        let before = shell;
+        for effect in [
+            UiEffect::BoardNext,
+            UiEffect::BoardPrevious,
+            UiEffect::BoardSelect(taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7())),
+        ] {
+            assert!(shell.apply(&effect, 3), "a board effect is plain state");
+        }
+        assert_eq!(shell.menu, before.menu);
+        assert_eq!(shell.mode, before.mode);
     }
 }

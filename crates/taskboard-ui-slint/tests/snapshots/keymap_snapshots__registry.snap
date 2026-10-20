@@ -84,6 +84,33 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
+- id: board.next
+  label: Next board
+  contexts:
+    - global
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
+- id: board.previous
+  label: Previous board
+  contexts:
+    - global
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
+- id: board.select
+  label: Select board
+  contexts:
+    - global
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
 - id: task.create
   label: New task
   contexts:

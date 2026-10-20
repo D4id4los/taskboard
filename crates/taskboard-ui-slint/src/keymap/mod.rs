@@ -434,6 +434,8 @@ mod tests {
             ActionId::NavPrevItem,
             ActionId::NavNextView,
             ActionId::NavPrevView,
+            ActionId::BoardNext,
+            ActionId::BoardPrevious,
             ActionId::TaskCreate,
             ActionId::TaskEdit,
             ActionId::TaskComplete,
@@ -455,6 +457,25 @@ mod tests {
             Preset::Vi.rows().iter().map(|(a, _, _)| *a).collect();
         for verb in [ActionId::ModeInsert, ActionId::ModeNormal] {
             assert!(vi_bound.contains(&verb), "vi misses {verb}");
+        }
+    }
+
+    /// Design §3.8 (R4: "navigate boards" is a core verb): every
+    /// preset resolves both board verbs in a `[Board, ViNormal,
+    /// Global]` chain — standard/emacs bind them in `Board`, vi in
+    /// `ViNormal`. The exact strokes are the preset draft's business;
+    /// the contract is existence + resolution.
+    #[test]
+    fn every_preset_resolves_the_board_verbs_in_the_view_chain() {
+        let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for verb in [ActionId::BoardNext, ActionId::BoardPrevious] {
+                assert!(
+                    keymap.first_binding_display(verb, &chain).is_some(),
+                    "{preset:?} does not resolve {verb} in the board chain"
+                );
+            }
         }
     }
 
