@@ -1204,13 +1204,10 @@ pub async fn dispatch_line(
         Command::Status => {
             // The session *is* the core holder; the honest client-side
             // answer names it — and under `nextcloud`, the live
-            // attach/detach fact read off the App (ADR 0014). Never
+            // attach/detach fact read off the App (ADR 0014). It
+            // derives the arrays from its own core (D6-7). Never
             // boots, never syncs.
-            let flag = status::connector_flag(
-                !crate::connectors::configured_connectors(session.session_config()).is_empty(),
-                app.connector_attached(),
-            );
-            let view = status::StatusView::in_session(flag);
+            let view = status::StatusView::in_session(app);
             status::emit(io, &view);
             0
         }
