@@ -10,6 +10,17 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The S2 refresh+draw criterion bench (`cargo bench -p
+  taskboard-ui-slint --bench refresh_draw`): the UI refresh pass and
+  the headless software draw leg timed as separate lanes (full-frame
+  and dirty-tracked partial, region areas reported) at board scale
+  N ∈ {100, 1 000, 10 000} on the deterministic fixture, over the
+  extended dev-only test platform whose software renderer now draws
+  headlessly through an explicit `render_into` pass-through (still
+  no implicit draws; sizes 0×0 until `Window::set_size`). The
+  renderer-software path is pure CPU over a caller buffer — no
+  GL/llvmpipe anywhere. Dev-machine references, never gates; the
+  on-device verdict belongs to the phase-B spike (#300).
 - Process smoke harnesses (`scripts/process_smoke.py`, local manual
   only): the S1 RSS steady-state run (spawns the standalone daemon on
   the N = 10 000 bench fixture, polls readiness over `status --json`,
