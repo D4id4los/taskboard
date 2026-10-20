@@ -37,6 +37,61 @@ The workspace carries a single global version (see `docs/architecture.org`);
 - Completion for board ids (`--board`, `--local-board`, `boards use`),
   configured connector names (`--connector`), and the new
   verbs/flags — offered only at their own positions.
+- Multiple active connectors (multi-board wave): a
+  `[[sync.connectors]]` array of named entries — `name` (kebab-case,
+  unique; the connector id everywhere), `backend`, `server_url`,
+  `username` — whose first entry is the default connector; the legacy
+  scalar shape loads unchanged (a resolved `nextcloud` backend still
+  synthesizes one connector named `nextcloud`), and any mix of the two
+  representations is a typed config rejection (`connector-shape-mixed`,
+  `nextcloud-table-with-connectors`, `duplicate-connector-name`,
+  `invalid-connector-name`, `invalid-connector-entry`) naming the
+  offending key. Note: setting `TASKBOARD_SYNC__BACKEND` over an array
+  config is now a loud error where it was previously meaningless-but-
+  decodable.
+- Named connector registry: attach/detach are per-name
+  (`ConnectorNameInUse` names the offender; `connector_commands(id)`
+  is the named lookup; the daemon attach verb carries an additive
+  `name` field whose absent form is byte-identical on the wire), and
+  the daemon detach matches against the resolved connector set.
+- Per-connector network events with an all-down authority: sync actors
+  emit `ConnectorLost`/`ConnectorRestored` for their own connector
+  (exactly once per offline episode, report-then-restore order); an
+  app-layer counting task emits the global `NetworkLost` when the
+  last configured connector flips down and `NetworkRestored` when the
+  first comes back. One connector down is normal operation: only its
+  own boards flip `Offline` (the engine scopes the write by binding
+  tags) while the global banner stays silent. Single-connector
+  installs behave exactly as before. `require_connector` verbs now
+  refuse with `sync-disabled` when *no* connector is configured
+  (including an explicit empty `[[sync.connectors]]` array).
+- Connector identity end-to-end on the wire (multi-board wave): board
+  bindings carry their owning connector
+  (`RemoteBoardBinding { connector, board }` — a v0.1.x database
+  upgrades in place, its NULL tags decoding as the synthesized
+  `nextcloud` connector), and a connector syncs *every* board bound
+  to it, derived from the persisted bindings each cycle with
+  per-board pull caches — no cache-clear on rebind, unchanged boards
+  stay cheap via per-board validators. The new `ConnectorModule`
+  seam (ADR 0010 amended) is how a connector kind plugs in; still
+  one connector per install until the plural config lands.
+- Board ceremonies at N (multi-board wave): `boards unbind
+  [--board <uuid>] [--confirm]` detaches a board's remote binding
+  (content and queued ops stay — they strand honestly and drain on a
+  re-bind; the sync-status row goes), and `boards reconcile
+  [--board <uuid>] [--confirm]` deterministically merges same-title
+  duplicates the bind ceremony's pull adopted (survivors keep the
+  local ids; duplicate rows neutralize; duplicate create-ops cancel).
+  Both verbs refuse without `--confirm`, stating the scope (unbind:
+  the bound remote, the ops that will strand, the kept refs;
+  reconcile: the match counts). `boards select` gained `--local-board
+  <uuid>` (pin the local board), binds a board-less install by
+  minting a shell from the remote's title, no longer needs `SetBoard`
+  (the engine nudge drives the adoption wait, now scoped to that
+  board's own sync row), runs the reconcile automatically after
+  adoption, and surfaces the count of stale remote refs the bind
+  wiped in its receipt; `boards publish` rides the same per-board
+  wait.
 - The S2 refresh+draw criterion bench (`cargo bench -p
   taskboard-ui-slint --bench refresh_draw`): the UI refresh pass and
   the headless software draw leg timed as separate lanes (full-frame
@@ -72,34 +127,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
   (mode × TTY × display, plus the `gui`/`daemon` verbs and the
   `TASKBOARD_APP__MODE` escape hatch) verified against the shipped
   routing.
-- Multiple active connectors (multi-board wave chunk 5): a
-  `[[sync.connectors]]` array of named entries — `name` (kebab-case,
-  unique; the connector id everywhere), `backend`, `server_url`,
-  `username` — whose first entry is the default connector; the legacy
-  scalar shape loads unchanged (a resolved `nextcloud` backend still
-  synthesizes one connector named `nextcloud`), and any mix of the two
-  representations is a typed config rejection (`connector-shape-mixed`,
-  `nextcloud-table-with-connectors`, `duplicate-connector-name`,
-  `invalid-connector-name`, `invalid-connector-entry`) naming the
-  offending key. Note: setting `TASKBOARD_SYNC__BACKEND` over an array
-  config is now a loud error where it was previously meaningless-but-
-  decodable.
-- Named connector registry: attach/detach are per-name
-  (`ConnectorNameInUse` names the offender; `connector_commands(id)`
-  is the named lookup; the daemon attach verb carries an additive
-  `name` field whose absent form is byte-identical on the wire), and
-  the daemon detach matches against the resolved connector set.
-- Per-connector network events with an all-down authority: sync actors
-  emit `ConnectorLost`/`ConnectorRestored` for their own connector
-  (exactly once per offline episode, report-then-restore order); an
-  app-layer counting task emits the global `NetworkLost` when the
-  last configured connector flips down and `NetworkRestored` when the
-  first comes back. One connector down is normal operation: only its
-  own boards flip `Offline` (the engine scopes the write by binding
-  tags) while the global banner stays silent. Single-connector
-  installs behave exactly as before. `require_connector` verbs now
-  refuse with `sync-disabled` when *no* connector is configured
-  (including an explicit empty `[[sync.connectors]]` array).
 - `mode = "kiosk"` boots the kiosk appliance (ADR 0016): the daemon
   core plus the display-gated fullscreen window — TTY-independent
   bare routing, a loud headless fallback that keeps serving over
@@ -111,33 +138,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
   when set (on the winit backend fullscreen also suppresses
   decorations); derived from the run mode, not a config key, and no
   consumer yet — the kiosk appliance lifecycle hands it over (#237).
-- Connector identity end-to-end on the wire (multi-board wave chunk
-  4): board bindings carry their owning connector
-  (`RemoteBoardBinding { connector, board }` — a v0.1.x database
-  upgrades in place, its NULL tags decoding as the synthesized
-  `nextcloud` connector), and a connector syncs *every* board bound
-  to it, derived from the persisted bindings each cycle with
-  per-board pull caches — no cache-clear on rebind, unchanged boards
-  stay cheap via per-board validators. The new `ConnectorModule`
-  seam (ADR 0010 amended) is how a connector kind plugs in; still
-  one connector per install until the plural config lands.
-- Board ceremonies at N (multi-board wave chunk 3): `boards unbind
-  [--board <uuid>] [--confirm]` detaches a board's remote binding
-  (content and queued ops stay — they strand honestly and drain on a
-  re-bind; the sync-status row goes), and `boards reconcile
-  [--board <uuid>] [--confirm]` deterministically merges same-title
-  duplicates the bind ceremony's pull adopted (survivors keep the
-  local ids; duplicate rows neutralize; duplicate create-ops cancel).
-  Both verbs refuse without `--confirm`, stating the scope (unbind:
-  the bound remote, the ops that will strand, the kept refs;
-  reconcile: the match counts). `boards select` gained `--local-board
-  <uuid>` (pin the local board), binds a board-less install by
-  minting a shell from the remote's title, no longer needs `SetBoard`
-  (the engine nudge drives the adoption wait, now scoped to that
-  board's own sync row), runs the reconcile automatically after
-  adoption, and surfaces the count of stale remote refs the bind
-  wiped in its receipt; `boards publish` rides the same per-board
-  wait.
 - `taskboard gui`: explicit desktop-frontend verb — boots the core
   and opens the desktop window in this process regardless of
   `[app] mode` and TTY; never relayed over IPC and refused as a
@@ -157,12 +157,12 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Changed
 - `boards select` and the sync actor no longer exchange a targeted
-  `SetBoard` command: the binding tags + per-cycle derived board sets
-  replace it entirely (the broadcast `SyncNow` nudge remains the only
-  sync signal). Internal vocabulary change; no user-visible flag or
-  output changed.
-- Board-scoped commands carry their target (multi-board wave chunk
-  2): the nine board-scoped verbs gained a leading `board: BoardId`
+  `SetBoard` command (multi-board wave): the binding tags + per-cycle
+  derived board sets replace it entirely (the broadcast `SyncNow`
+  nudge remains the only sync signal). Internal vocabulary change; no
+  user-visible flag or output changed.
+- Board-scoped commands carry their target (multi-board wave): the
+  nine board-scoped verbs gained a leading `board: BoardId`
   (inter-actor `StateCommand` wire), and the CLI gained `--board
   <uuid>` on `boards rename/publish/color/archive/unarchive/delete/
   reset`, `stacks add`, and `labels list/add`. Omitting the flag
@@ -174,7 +174,7 @@ The workspace carries a single global version (see `docs/architecture.org`);
   `board-exists` JSON error kinds no longer exist (breaking for
   external scripts pinning them). `boards create` also no longer
   refuses a second board.
-- Sync status is tracked per board (multi-board wave chunk 1): the
+- Sync status is tracked per board (multi-board wave): the
   storage schema's singleton `sync_status` row becomes a per-board
   table (migration 0006, which also tags board bindings with their
   connector; the legacy `NULL` tag keeps its meaning until the

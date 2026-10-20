@@ -151,6 +151,39 @@ poll_interval_secs = 30
 scale = 1.0             # theme token multiplier; 0.5–3.0 enforced at load
 #+end_src
 
+*Multiple connectors* (optional): the scalar shape above is the legacy
+form and still loads unchanged — a resolved =nextcloud= backend
+synthesizes exactly one connector named =nextcloud=. For two or more
+servers, declare a =[[sync.connectors]]= array of named entries
+instead (=name= is kebab-case and unique — it is the connector id
+everywhere; the first entry is the default connector):
+
+#+begin_src toml
+[[sync.connectors]]
+name = "alpha"
+backend = "nextcloud"
+server_url = "https://cloud-a.example.com"
+username = "<user-a>"
+
+[[sync.connectors]]
+name = "beta"
+backend = "nextcloud"
+server_url = "https://cloud-b.example.com"
+username = "<user-b>"
+#+end_src
+
+The two representations never mix silently — every mix is a typed
+config rejection naming the offending key: a scalar =[sync] backend=
+plus the array (=connector-shape-mixed=), a =[nextcloud]= table plus
+the array (=nextcloud-table-with-connectors=), =standalone= with the
+array, a duplicate or non-kebab-case =name=
+(=duplicate-connector-name= / =invalid-connector-name=), or a
+resolved =nextcloud= backend with an empty array
+(=invalid-connector-entry=). A resolved =standalone= backend means no
+connectors at all. Note that the array cannot be expressed through
+environment variables, and setting =TASKBOARD_SYNC__BACKEND= over an
+array config is now a loud error.
+
 ** Display scaling
 
 The desktop UI scales on two orthogonal axes (they compose; both need a
@@ -232,6 +265,13 @@ the file manager and double-click it straight from the extracted
 archive. Its =Exec= is =taskboard gui= — the double-click path is
 the =gui= verb row above.
 
+In the desktop window, a board-switcher strip sits above the kanban
+(one segment per live board; the compact layout hides it — keyboard
+switching still works). =b= / =B= walk =board.next= / =board.previous=
+in every keymap preset's board scope (no wrap at the ends), and each
+board's sync badge follows the selected board. Switching is pure view
+state — nothing is dispatched to the engine.
+
 ** Interactive shell (no arguments on a terminal)
 
 Bare =taskboard= with a terminal on stdin opens a =parted=-style REPL
@@ -284,6 +324,39 @@ taskboard boards select <id> --bind-local-board
 taskboard sync
 taskboard daemon                      # headless sync loop until Ctrl-C/SIGTERM
 #+end_src
+
+** Multiple boards and connectors
+
+Boards bind independently — there is no one-board invariant. Every
+board-scoped verb takes =--board <uuid>=; omitting it resolves the
+single live board, and with zero or several live boards the verb
+refuses with the typed =ambiguous-board= error (candidates listed).
+The connector-targeting verbs (=boards list=, =boards select=,
+=boards publish=, =sync=) take =--connector <name>=; an unknown name
+refuses with typed =unknown-connector=. =taskboard status= reports
+the per-connector =connectors= array (name, derived health, bound
+boards) and the flat per-board =boards= array beside the unchanged
+aggregate =sync= field.
+
+In the REPL, =boards use <uuid>= sets the session's board selection —
+later board-scoped lines pre-fill =--board= from it (query with a
+bare =boards use=; one-shot and daemon-socket invocations refuse, it
+is session-only).
+
+*Moving a board between connectors* (unbind → reconcile → re-bind on
+the other server):
+
+#+begin_src sh
+taskboard boards unbind --board <uuid> --confirm      # content and ops stay; ops strand until a re-bind
+taskboard boards select <remote-id> --local-board <uuid> --connector beta
+taskboard boards reconcile --board <uuid> --confirm   # merge same-title duplicates the pull adopted
+#+end_src
+
+Rebind semantics are per board: re-selecting a board's own remote is
+an accepted no-op; binding an already-bound board refuses with typed
+=board-already-bound= (naming the board and its existing binding);
+adopting a remote that another board already owns refuses with typed
+=remote-board-in-use=.
 
 ** The daemon and IPC
 
@@ -369,8 +442,12 @@ Notes:
   failures print ={"error":{"kind":"<kebab-case>"}}= on stderr and exit
   =1=. Idempotent repeats (=tasks done= twice) are successes. Exit code
   =130= is the daemon's second-signal force exit.
-- *Single board:* the MVP binds exactly one board; =boards select=
-  refuses a rebind to a different board (typed =board-already-bound=).
+- *Multiple boards:* the one-board invariant is gone — boards bind
+  independently (each board its own binding; see [[*Multiple boards and
+  connectors][Multiple boards and connectors]]). =boards select= refuses a rebind
+  only while the board is already bound elsewhere (=board-already-bound=
+  names the board and its binding); a remote adopted by another board
+  refuses (=remote-board-in-use=).
 
 ** Testing & Quality Gates
 
