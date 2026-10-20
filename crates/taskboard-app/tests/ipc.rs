@@ -793,6 +793,19 @@ async fn ip16_attach_from_persisted_state_attaches_and_serves() {
         let outcome = exec_once(&db, &argv("boards use")).await;
         assert_eq!(outcome.code, 2, "boards use stays refused over the wire");
 
+        // The status answer carries the arrays (D6-7's daemon-side
+        // mirror): standalone ⇒ zero configured connectors, but the
+        // just-created board is in the flat view with null attribution.
+        let view = status_once(&db).await;
+        let connectors = view
+            .connectors
+            .expect("connectors present in the daemon answer");
+        assert!(connectors.is_empty(), "standalone: none configured");
+        let boards = view.boards.expect("boards present in the daemon answer");
+        assert_eq!(boards.len(), 1);
+        assert_eq!(boards[0].title, "Personal");
+        assert!(boards[0].connector.is_none() && boards[0].remote.is_none());
+
         handle.join(DRAIN_BUDGET).await;
     })
     .await;

@@ -1233,3 +1233,273 @@ async fn drain_no_global(
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Chunk 6 — the move-board exit criterion (impl plan §5): one board moved
+// between connectors, verified by per-board status attribution moving in
+// the derived connector grouping. The world is built entirely through the
+// ceremony verbs — no db fixture (the surface chunk 5 lacked; D6-9).
+// ---------------------------------------------------------------------------
+
+/// The two-connector move-board journey (tier-2, two test-owned
+/// instances). Honest skip without the tier context (MD-5); the
+/// chunk-5-documented host-kill flakiness applies here too — CI's
+/// nextcloud-integration workflow is the stable runner.
+#[tokio::test]
+#[ignore = "requires docker and the tier context (TASKBOARD_IT_DOCKER_URL)"]
+async fn it_nextcloud_docker_move_board_between_connectors() {
+    if std::env::var("TASKBOARD_IT_DOCKER_URL").is_err() {
+        eprintln!(
+            "SKIP (honest, MD-5): the move-board journey needs the tier context \
+             (eval \"scripts/nextcloud_it_setup.sh up\"); the hermetic halves — the \
+             derivation matrix over seeded tagged bindings, the D6-1/D6-2 domain \
+             corpus, and the ceremony routing pins — cover the logic; the \
+             dockerized journey here is the live-server half"
+        );
+        return;
+    }
+    // Two instance spawns join the journey's budget; carry a larger
+    // wall like the chunk-5 two-connector test.
+    if tokio::time::timeout(Duration::from_mins(15), move_board_between_connectors())
+        .await
+        .is_err()
+    {
+        panic!("the move-board journey exceeded its 15-minute budget");
+    }
+}
+
+async fn move_board_between_connectors() {
+    let up = |suffix: &'static str, port: u16| {
+        tokio::task::spawn_blocking(move || common::spawn_instance_sync(suffix, port))
+    };
+    let a = up("-c6a", 8392)
+        .await
+        .expect("instance A join")
+        .unwrap_or_else(|err| panic!("instance A did not come up: {err}"));
+    let b = up("-c6b", 8393)
+        .await
+        .expect("instance B join")
+        .unwrap_or_else(|err| panic!("instance B did not come up: {err}"));
+    let _cleanup_a = Cleanup(a.clone());
+    let _cleanup_b = Cleanup(b.clone());
+
+    move_board_body(&a, &b)
+        .await
+        .expect("the move-board journey");
+}
+
+async fn move_board_body(
+    a: &common::OwnedInstance,
+    b: &common::OwnedInstance,
+) -> Result<(), BoxError> {
+    use taskboard_app::commands::boards;
+    use taskboard_app::commands::status::StatusView;
+    use taskboard_app::config::{AppConfig, ConnectorCfg, CredentialStoreKind, SyncBackend};
+    use taskboard_domain::{ConnectorId, SyncPhase};
+
+    let client_a = DeckClient::new(&a.url, &a.user, &a.token)?;
+    let client_b = DeckClient::new(&b.url, &b.user, &b.token)?;
+    let run = common::run_id();
+    let dir = tempfile::tempdir()?;
+    let db_path = dir.path().join("taskboard.db");
+
+    // Two remote boards on alpha's server, one on beta's: the move
+    // needs a second alpha board so the flat view shows attribution
+    // *moving* while another board stays put.
+    let (board_a, _stack_a) = create_board_and_stack(&client_a, &run).await;
+    let (board_a2, _stack_a2) = create_board_and_stack(&client_a, &run).await;
+    let (board_b, _stack_b) = create_board_and_stack(&client_b, &run).await;
+
+    // A real [[sync.connectors]] config: alpha = A first (default), beta
+    // = B; credentials via the keyed fixed store.
+    let mut config = AppConfig::default();
+    config.sync.connectors = Some(vec![
+        ConnectorCfg {
+            name: "alpha".into(),
+            backend: SyncBackend::Nextcloud,
+            server_url: a.url.clone(),
+            username: a.user.clone(),
+        },
+        ConnectorCfg {
+            name: "beta".into(),
+            backend: SyncBackend::Nextcloud,
+            server_url: b.url.clone(),
+            username: b.user.clone(),
+        },
+    ]);
+    config.nextcloud.credential_store = CredentialStoreKind::Env;
+    config.sync.poll_interval_secs = 1;
+    config.sync.backoff_initial_secs = 1;
+    config.sync.backoff_max_secs = 5;
+    config.app.shutdown_timeout_secs = 5;
+    config.storage.db_path = Some(db_path);
+    config.validate()?;
+    let mut store = common::KeyedFixedStore::with(&a.url, &a.user, &a.token);
+    store.add(&b.url, &b.user, &b.token);
+    let store: Arc<dyn taskboard_app::secrets::CredentialStore> = Arc::new(store);
+
+    let app = bootstrap(
+        config.clone(),
+        store.clone(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await?;
+    let alpha = ConnectorId::from("alpha");
+    let beta = ConnectorId::from("beta");
+    let adopt_budget = Duration::from_secs(120);
+
+    // Attribution read through the app-side view helper (the status
+    // answer's own derivation) — never re-derived in the test.
+    let attribution_of = |app: &taskboard_app::App| {
+        let view = StatusView::server(app);
+        (
+            view.connectors.expect("server answers carry the arrays"),
+            view.boards.expect("server answers carry the arrays"),
+        )
+    };
+
+    // (1) Bind board A through alpha's ceremony (fresh install ⇒ the
+    // fresh path mints l1); then a second local board bound onto A's
+    // second remote board. Both attributed under alpha.
+    let (entry_a, spec_a) =
+        boards::select_prelude(&config, &store, board_a.id, Some("alpha")).await?;
+    assert_eq!(spec_a.name, alpha);
+    boards::select_on(&app, entry_a, adopt_budget, false, None, &alpha).await?;
+    // Fresh install: the ceremony minted the only live board (l1).
+    let l1 = {
+        let state = app.engine.shared_state().load_full();
+        let live: Vec<_> = state.boards.values().filter(|b| !b.deleted).collect();
+        assert_eq!(live.len(), 1, "the fresh path minted exactly one board");
+        live[0].id
+    };
+    let (entry_a2, _) = boards::select_prelude(&config, &store, board_a2.id, Some("alpha")).await?;
+    let l2_raw = boards::create_on(
+        &app,
+        format!("{run}-second"),
+        taskboard_domain::Color::new("0082c9"),
+        "0082c9".to_owned(),
+    )
+    .await?
+    .id;
+    let l2 = taskboard_domain::BoardId::from_uuid(uuid::Uuid::parse_str(&l2_raw).expect("uuid"));
+    boards::select_on(&app, entry_a2, adopt_budget, true, Some(l2), &alpha).await?;
+
+    eventually(&app, |state| {
+        state
+            .sync
+            .iter()
+            .all(|(_, row)| matches!(row.phase, SyncPhase::Idle) && row.last_success.is_some())
+            && state.sync.iter().count() == 2
+    })
+    .await;
+    let (connectors, flat) = attribution_of(&app);
+    assert_eq!(connectors.len(), 2, "every configured connector lists");
+    assert_eq!(connectors[0].name, "alpha");
+    assert_eq!(connectors[0].boards.len(), 2, "both boards under alpha");
+    assert_eq!(connectors[1].name, "beta");
+    assert_eq!(
+        connectors[1].boards,
+        Vec::new(),
+        "beta configured-and-idle before the move"
+    );
+    assert_eq!(flat.len(), 2);
+    eprintln!("tier: l1 + l2 bound through alpha, beta idle");
+
+    // (2) Unbind l1 (honest stranding — the binding is gone).
+    let receipt = boards::unbind_on(&app, Some(l1), true).await?;
+    assert_eq!(receipt.board, l1.as_uuid().to_string());
+    assert_eq!(receipt.bound_remote, Some(board_a.id));
+    {
+        let state = app.engine.shared_state().load_full();
+        assert!(state.boards[&l1].remote.is_none(), "the binding is gone");
+    }
+    eprintln!("tier: l1 unbound from alpha");
+
+    // (3) The rebind onto beta's remote — the move-board surface: the
+    // bind mints tag beta, adoption settles through beta's actor.
+    let (entry_b, spec_b) =
+        boards::select_prelude(&config, &store, board_b.id, Some("beta")).await?;
+    assert_eq!(spec_b.name, beta);
+    boards::select_on(&app, entry_b, adopt_budget, true, Some(l1), &beta).await?;
+    {
+        let state = app.engine.shared_state().load_full();
+        let binding = state.boards[&l1].remote.as_ref().expect("re-bound");
+        assert_eq!(binding.connector, beta, "the command's tag is the mint");
+        assert_eq!(binding.board.get(), board_b.id);
+    }
+    eventually(&app, |state| {
+        state
+            .sync
+            .get(l1)
+            .is_some_and(|row| matches!(row.phase, SyncPhase::Idle) && row.last_success.is_some())
+    })
+    .await;
+
+    // The exit criterion, per board: l1 sits under beta, l2 still under
+    // alpha — attribution moved in the derived grouping.
+    let (connectors, flat) = attribution_of(&app);
+    let alpha_view = connectors
+        .iter()
+        .find(|c| c.name == "alpha")
+        .expect("alpha");
+    let beta_view = connectors.iter().find(|c| c.name == "beta").expect("beta");
+    assert_eq!(
+        beta_view
+            .boards
+            .iter()
+            .map(|row| row.board.as_str())
+            .collect::<Vec<_>>(),
+        [l1.as_uuid().to_string()],
+        "l1 moved to beta"
+    );
+    assert_eq!(
+        alpha_view
+            .boards
+            .iter()
+            .map(|row| row.board.as_str())
+            .collect::<Vec<_>>(),
+        [l2.as_uuid().to_string()],
+        "l2 stayed under alpha"
+    );
+    let l1_flat = flat
+        .iter()
+        .find(|row| row.board == l1.as_uuid().to_string())
+        .expect("l1");
+    assert_eq!(l1_flat.connector.as_deref(), Some("beta"));
+    assert_eq!(l1_flat.remote, Some(board_b.id));
+
+    // Server-side truth: l1's content adopted from beta's board (its
+    // stack carries a beta ref), and both servers' listings intact.
+    eventually(&app, |state| {
+        let stacks = state
+            .stacks
+            .values()
+            .filter(|s| s.board == l1 && !s.deleted)
+            .collect::<Vec<_>>();
+        !stacks.is_empty()
+            && stacks
+                .iter()
+                .all(|s| s.remote.is_some_and(|r| r.board.get() == board_b.id))
+    })
+    .await;
+    let listing_a = retry(|| async { client_a.boards().await }).await?;
+    for remote in [board_a.id, board_a2.id] {
+        assert!(
+            listing_a
+                .iter()
+                .any(|board| board.id == remote && board.is_live()),
+            "alpha's boards stay intact"
+        );
+    }
+    let listing_b = retry(|| async { client_b.boards().await }).await?;
+    assert!(
+        listing_b
+            .iter()
+            .any(|board| board.id == board_b.id && board.is_live()),
+        "beta's board serves l1's content"
+    );
+    eprintln!("tier: l1 moved to beta, l2 stayed on alpha, both servers intact");
+
+    let _ = app.shutdown().await;
+    Ok(())
+}
