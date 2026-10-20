@@ -349,6 +349,12 @@ pub struct ReplSession {
     /// The resolved, validated config the session booted with —
     /// refreshed after every session ceremony.
     pub config: AppConfig,
+    /// The session's board selection (D6-6): later board-scoped lines
+    /// pre-fill `--board` from it. `None` at boot — no seeding (DF-2's
+    /// REPL home is the `boards use` line; the UI seed rule is the UI
+    /// layer's business). App-side only: nothing of selection ever
+    /// enters the domain.
+    pub current_board: Option<taskboard_domain::BoardId>,
     /// The credential store picked from the config at boot.
     pub store: Arc<dyn CredentialStore>,
     /// The `--json` flag from the launch invocation; lines may override
@@ -377,6 +383,7 @@ impl ReplSession {
         let (orphan, _) = mpsc::channel(1);
         Self {
             config,
+            current_board: None,
             store,
             json_default,
             config_path: None,
@@ -512,6 +519,122 @@ pub enum ReplExit {
     Graceful,
 }
 
+/// The `boards use` line (D6-6): with a uuid, resolve it against the
+/// live boards (the typed `unknown-board`/`board-deleted` kinds — the
+/// same rule as `--board`) and select it; without, answer the current
+/// selection (`board: null` when none). Never aborts the session.
+fn boards_use_line(
+    session: &mut ReplSession,
+    app: &crate::App,
+    board: Option<taskboard_domain::BoardId>,
+    io: &mut CommandIo<'_>,
+) -> u8 {
+    if let Some(id) = board {
+        return match crate::commands::resolve_board(app, Some(id)) {
+            Ok(board_id) => {
+                let title = app
+                    .engine
+                    .shared_state()
+                    .load_full()
+                    .boards
+                    .get(&board_id)
+                    .map(|b| b.title.clone());
+                session.current_board = Some(board_id);
+                crate::commands::emit_to(
+                    io,
+                    &crate::commands::output::BoardUseView {
+                        board: Some(board_id.as_uuid().to_string()),
+                        title,
+                    },
+                    &format!("using board {}", board_id.as_uuid()),
+                );
+                0
+            }
+            Err(err) => crate::commands::report_to(io, &err),
+        };
+    }
+    let view = match session.current_board {
+        Some(board_id) => {
+            let title = app
+                .engine
+                .shared_state()
+                .load_full()
+                .boards
+                .get(&board_id)
+                .filter(|b| !b.deleted)
+                .map(|b| b.title.clone());
+            crate::commands::output::BoardUseView {
+                board: Some(board_id.as_uuid().to_string()),
+                title,
+            }
+        }
+        None => crate::commands::output::BoardUseView {
+            board: None,
+            title: None,
+        },
+    };
+    crate::commands::emit_to(io, &view, &render_board_use_text(&view));
+    0
+}
+
+/// The human `boards use` answer (presentation, never asserted).
+fn render_board_use_text(view: &crate::commands::output::BoardUseView) -> String {
+    match (&view.board, &view.title) {
+        (Some(board), Some(title)) => format!("using board {board} ({title})"),
+        (Some(board), None) => format!("using board {board}"),
+        (None, _) => "no board selected".to_owned(),
+    }
+}
+
+/// Fills every `None` board-target flag from the session's selection
+/// (D6-6): `--board` on the board-scoped verbs, `--local-board` on
+/// `boards select`, and `publish`'s `--board`. A `None` selection is a
+/// no-op — the verbs then fall to DF-2's CLI default rules verbatim
+/// (the single-live default and its ambiguity refusal keep their
+/// shape). Exhaustively unit-pinned arm by arm.
+#[must_use]
+pub(crate) fn prefill_boards(
+    mut command: Command,
+    current: Option<taskboard_domain::BoardId>,
+) -> Command {
+    use crate::cli::{BoardsCmd, LabelsCmd, StacksCmd};
+    let Some(current) = current else {
+        return command;
+    };
+    match &mut command {
+        Command::Boards { cmd } => match cmd {
+            BoardsCmd::Rename { board, .. }
+            | BoardsCmd::Publish { board, .. }
+            | BoardsCmd::Color { board, .. }
+            | BoardsCmd::Archive { board }
+            | BoardsCmd::Unarchive { board }
+            | BoardsCmd::Delete { board, .. }
+            | BoardsCmd::Reset { board, .. }
+            | BoardsCmd::Unbind { board, .. }
+            | BoardsCmd::Reconcile { board, .. } => {
+                board.get_or_insert(current);
+            }
+            BoardsCmd::Select { local_board, .. } => {
+                local_board.get_or_insert(current);
+            }
+            BoardsCmd::Create { .. } | BoardsCmd::List { .. } | BoardsCmd::Use { .. } => {}
+        },
+        Command::Stacks {
+            cmd: StacksCmd::Add { board, .. },
+        } => {
+            board.get_or_insert(current);
+        }
+        Command::Labels { cmd } => match cmd {
+            LabelsCmd::List { board } | LabelsCmd::Add { board, .. } => {
+                board.get_or_insert(current);
+            }
+            LabelsCmd::Edit { .. } | LabelsCmd::Delete { .. } => {}
+        },
+        _ => {}
+    }
+    command
+}
+
 /// The session loop: consume line events, dispatch lines, honor exits,
 /// and shut the core down exactly once at the end. Every consumed event
 /// gets exactly one disposition — `Next` after a handled line or an
@@ -613,7 +736,17 @@ pub async fn repl_loop(
                         .await
                     }
                     Command::Logout => logout_line(&mut session, &app, &mut line_io).await,
-                    other => dispatch_line(&session, &app, other, &mut line_io).await,
+                    // `boards use` is session-layer action like the
+                    // ceremonies: it mutates the session's selection
+                    // (D6-6), so the loop intercepts it before the
+                    // immutable-session dispatch.
+                    Command::Boards {
+                        cmd: crate::cli::BoardsCmd::Use { board },
+                    } => boards_use_line(&mut session, &app, board, &mut line_io),
+                    other => {
+                        let command = prefill_boards(other, session.current_board);
+                        dispatch_line(&session, &app, command, &mut line_io).await
+                    }
                 };
                 let _ = outcome;
             }
@@ -682,6 +815,7 @@ pub async fn run_session_with_parts(
     let editor_io = editor_io(app.engine.shared_state());
     let session = ReplSession {
         config: app.config.clone(),
+        current_board: None,
         store,
         json_default,
         config_path,
@@ -1062,8 +1196,9 @@ mod tests {
 
         // The chunk-3 ceremony verbs parse as line verbs with their
         // loud flags intact (routing rides `boards_line`'s shared
-        // `*_on` seam; the single-live default is the INTERIM
-        // multi-board-6 resolve).
+        // `*_on` seam; board targeting rides the session selection's
+        // pre-fill, with the shared single-live default as the
+        // no-selection fallback — DF-2's CLI rules verbatim).
         let (command, _) = execute(resolve_line("boards unbind --confirm", false));
         assert!(matches!(
             command,
@@ -1078,6 +1213,185 @@ mod tests {
                 cmd: BoardsCmd::Reconcile { confirm: false, .. }
             }
         ));
+    }
+
+    /// The pre-fill walk (D6-6): every board-scoped arm fills its
+    /// `None` targeting flag from the session selection — including
+    /// `select`'s `--local-board` — and nothing else is touched. A
+    /// `None` selection is a no-op (the DF-2 CLI rules verbatim).
+    #[test]
+    #[allow(clippy::too_many_lines)] // exhaustive per-arm table, kept flat
+    fn prefill_boards_fills_every_board_scoped_arm_from_the_selection() {
+        use crate::cli::{LabelsCmd, StacksCmd};
+        let current = Some(taskboard_domain::BoardId::from_uuid(uuid::Uuid::nil()));
+
+        // Explicit flags are never overwritten.
+        let explicit = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(7));
+        let filled = super::prefill_boards(
+            Command::Boards {
+                cmd: BoardsCmd::Unbind {
+                    board: Some(explicit),
+                    confirm: false,
+                },
+            },
+            current,
+        );
+        let Command::Boards {
+            cmd: BoardsCmd::Unbind { board, .. },
+        } = filled
+        else {
+            panic!("expected boards unbind");
+        };
+        assert_eq!(board, Some(explicit));
+
+        // Every `--board` arm fills.
+        let arms: Vec<Command> = vec![
+            Command::Boards {
+                cmd: BoardsCmd::Rename {
+                    board: None,
+                    title: "t".to_owned(),
+                },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Publish {
+                    board: None,
+                    timeout_secs: 1,
+                    connector: None,
+                },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Color {
+                    board: None,
+                    color: "31cc7c".to_owned(),
+                },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Archive { board: None },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Unarchive { board: None },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Delete {
+                    board: None,
+                    confirm: false,
+                },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Reset {
+                    board: None,
+                    confirm: false,
+                },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Unbind {
+                    board: None,
+                    confirm: false,
+                },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Reconcile {
+                    board: None,
+                    confirm: false,
+                },
+            },
+            Command::Stacks {
+                cmd: StacksCmd::Add {
+                    board: None,
+                    title: "s".to_owned(),
+                    order: None,
+                },
+            },
+            Command::Labels {
+                cmd: LabelsCmd::List { board: None },
+            },
+            Command::Labels {
+                cmd: LabelsCmd::Add {
+                    board: None,
+                    title: "l".to_owned(),
+                    color: None,
+                },
+            },
+        ];
+        for command in arms {
+            let filled = super::prefill_boards(command, current);
+            let got = match &filled {
+                Command::Boards { cmd } => match cmd {
+                    BoardsCmd::Rename { board, .. }
+                    | BoardsCmd::Publish { board, .. }
+                    | BoardsCmd::Color { board, .. }
+                    | BoardsCmd::Archive { board }
+                    | BoardsCmd::Unarchive { board }
+                    | BoardsCmd::Delete { board, .. }
+                    | BoardsCmd::Reset { board, .. }
+                    | BoardsCmd::Unbind { board, .. }
+                    | BoardsCmd::Reconcile { board, .. } => *board,
+                    other => panic!("unexpected arm {other:?}"),
+                },
+                Command::Stacks {
+                    cmd: StacksCmd::Add { board, .. },
+                } => *board,
+                Command::Labels { cmd } => match cmd {
+                    LabelsCmd::List { board } | LabelsCmd::Add { board, .. } => *board,
+                    other => panic!("unexpected arm {other:?}"),
+                },
+                other => panic!("unexpected command {other:?}"),
+            };
+            assert_eq!(got, current, "the arm must pre-fill: {filled:?}");
+        }
+
+        // select fills --local-board, never its positional or connector.
+        let filled = super::prefill_boards(
+            Command::Boards {
+                cmd: BoardsCmd::Select {
+                    board: 3,
+                    local_board: None,
+                    timeout_secs: 1,
+                    bind_local_board: false,
+                    connector: None,
+                },
+            },
+            current,
+        );
+        let Command::Boards {
+            cmd: BoardsCmd::Select { local_board, .. },
+        } = filled
+        else {
+            panic!("expected boards select");
+        };
+        assert_eq!(local_board, current);
+
+        // Non-board arms are untouched: create, list, use, tasks.
+        let untouched = vec![
+            Command::Boards {
+                cmd: BoardsCmd::Create {
+                    title: "t".to_owned(),
+                    color: None,
+                },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::List { connector: None },
+            },
+            Command::Boards {
+                cmd: BoardsCmd::Use { board: None },
+            },
+        ];
+        for command in untouched {
+            let before = format!("{command:?}");
+            let after = format!("{:?}", super::prefill_boards(command, current));
+            assert_eq!(before, after, "no board-target flag to fill");
+        }
+
+        // A None selection is a no-op everywhere.
+        let command = Command::Boards {
+            cmd: BoardsCmd::Unbind {
+                board: None,
+                confirm: false,
+            },
+        };
+        let before = format!("{command:?}");
+        let after = format!("{:?}", super::prefill_boards(command, None));
+        assert_eq!(before, after, "no selection: DF-2 defaults verbatim");
     }
 }
 

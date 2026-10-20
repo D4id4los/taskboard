@@ -788,6 +788,11 @@ async fn ip16_attach_from_persisted_state_attaches_and_serves() {
         let outcome = exec_once(&db, &argv("connect")).await;
         assert_eq!(outcome.code, 2, "ceremony argv stays refused");
 
+        // `boards use` is refused routing-level too (D6-6): the daemon
+        // holds no interactive session to select a board for.
+        let outcome = exec_once(&db, &argv("boards use")).await;
+        assert_eq!(outcome.code, 2, "boards use stays refused over the wire");
+
         handle.join(DRAIN_BUDGET).await;
     })
     .await;

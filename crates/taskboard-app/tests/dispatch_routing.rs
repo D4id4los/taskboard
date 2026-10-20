@@ -825,3 +825,23 @@ async fn connect_over_a_configured_identity_without_force_routes_to_exit_one() {
     .await;
     assert_eq!(code, 1);
 }
+
+/// The one-shot `boards use` refuses typed `session-only` (D6-6): the
+/// selection is session state; the one-shot dispatch has no home for it.
+#[tokio::test]
+async fn boards_use_one_shot_refuses_session_only() {
+    let dir = tempdir();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let code = dispatch(
+        Command::Boards {
+            cmd: BoardsCmd::Use { board: None },
+        },
+        ctx(dir.path(), &mut out, &mut err),
+    )
+    .await;
+    assert_eq!(code, 1);
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&err).expect("the error envelope is JSON");
+    assert_eq!(envelope["error"]["kind"], "session-only");
+}
