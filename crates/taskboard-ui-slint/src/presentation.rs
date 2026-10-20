@@ -153,11 +153,36 @@ pub struct SyncBadge {
 }
 
 /// Maps the domain sync status onto the badge (exhaustive, one
-/// direction). The map is folded first (the selected-board read is
-/// chunk 7's) — every phase renders the aggregate.
+/// direction). Superseded read path: the UI's badge reads the
+/// *selected* board ([`sync_badge_for_board`]); this aggregate read
+/// survives only until the model push switches over.
 #[must_use]
 pub fn sync_badge(sync: &taskboard_domain::SyncStates) -> SyncBadge {
     let status = sync.aggregate();
+    let phase = match status.phase {
+        SyncPhase::Idle => SyncPhaseUi::Idle,
+        SyncPhase::Syncing => SyncPhaseUi::Syncing,
+        SyncPhase::Offline => SyncPhaseUi::Offline,
+        SyncPhase::Failed { .. } => SyncPhaseUi::Failed,
+    };
+    SyncBadge {
+        phase,
+        pending: status.pending_ops,
+    }
+}
+
+/// Maps the *selected* board's sync row onto the badge (design §3.2,
+/// option (a)): `Some(board)` reads that board's row — the derivation
+/// materializes a default row per known board, so a bound-but-never-
+/// synced board reads `Idle`/0; `None` (no boards at all) reads the
+/// default. The aggregate fold is not a UI display read (the app-side
+/// daemon `status` keeps it).
+#[must_use]
+pub fn sync_badge_for_board(
+    sync: &taskboard_domain::SyncStates,
+    board: Option<BoardId>,
+) -> SyncBadge {
+    let status = board.and_then(|b| sync.get(b)).cloned().unwrap_or_default();
     let phase = match status.phase {
         SyncPhase::Idle => SyncPhaseUi::Idle,
         SyncPhase::Syncing => SyncPhaseUi::Syncing,
@@ -245,10 +270,26 @@ pub fn stacks_in_board(state: &AppState, board: BoardId) -> Vec<&Stack> {
     stacks
 }
 
-/// The single live, non-archived board (MVP 0..1).
+/// The live, non-archived boards in canonical order: `state.boards`
+/// `BTreeMap` iteration order — board-id ascending, the exact order
+/// the CLI's `boards list` renders. The board walk's domain and the
+/// seed rule's candidate list.
+#[must_use]
+pub fn live_boards(state: &AppState) -> Vec<&Board> {
+    state
+        .boards
+        .values()
+        .filter(|b| !b.deleted && !b.archived)
+        .collect()
+}
+
+/// The single live, non-archived board — the view-state seed rule's
+/// pick ([`ViewState`](crate::view_state::ViewState)'s `board` when
+/// `None`): the first of [`live_boards`]. Its only remaining role;
+/// selection lives in the view state.
 #[must_use]
 pub fn live_board(state: &AppState) -> Option<&Board> {
-    state.boards.values().find(|b| !b.deleted && !b.archived)
+    live_boards(state).into_iter().next()
 }
 
 #[cfg(test)]
@@ -404,59 +445,79 @@ mod tests {
     }
 
     #[test]
-    fn sync_badge_maps_every_phase() {
-        let board_id = BoardId::from_uuid(uuid::Uuid::from_u128(1));
-        let empty = taskboard_domain::SyncStates::new();
+    fn sync_badge_follows_the_named_board() {
+        // Two stored rows (Syncing on board 1, Offline on board 2,
+        // Failed on board 3) plus derived pending ops attributed to
+        // board 1 only: the badge reads the *named* board's row —
+        // phase and pending both — not a fold.
+        let b1 = BoardId::from_uuid(uuid::Uuid::from_u128(1));
+        let b2 = BoardId::from_uuid(uuid::Uuid::from_u128(2));
+        let b3 = BoardId::from_uuid(uuid::Uuid::from_u128(3));
+        let mut states = taskboard_domain::SyncStates::new();
+        states.set_stored(b1, SyncPhase::Syncing, None);
+        states.set_stored(b2, SyncPhase::Offline, None);
+        states.set_stored(
+            b3,
+            SyncPhase::Failed {
+                last_error: taskboard_domain::SyncErrorKind::Network,
+            },
+            None,
+        );
+        let mut state = AppState::default();
+        let stack_id = StackId::from_uuid(uuid::Uuid::from_u128(2));
+        let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(3));
+        state.boards.insert(b1, board(b1));
+        state.boards.insert(b2, board(b2));
+        state.boards.insert(b3, board(b3));
+        state.stacks.insert(stack_id, stack(stack_id, b1, 0));
+        state.tasks.insert(task_id, task(task_id, stack_id, 0));
+        let ops: Vec<taskboard_domain::PendingOp> = (0..2)
+            .map(|i| taskboard_domain::PendingOp {
+                op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(10 + i)),
+                op: taskboard_domain::LocalOp::UpdateTask(task_id),
+                queued_at: chrono::Utc::now(),
+            })
+            .collect();
+        taskboard_domain::derive_sync_states(
+            &state.boards,
+            &state.stacks,
+            &state.tasks,
+            &state.labels,
+            &ops,
+            &mut states,
+        );
         assert_eq!(
-            sync_badge(&empty),
+            sync_badge_for_board(&states, Some(b1)),
             SyncBadge {
-                phase: SyncPhaseUi::Idle,
+                phase: SyncPhaseUi::Syncing,
+                pending: 2
+            }
+        );
+        assert_eq!(
+            sync_badge_for_board(&states, Some(b2)),
+            SyncBadge {
+                phase: SyncPhaseUi::Offline,
                 pending: 0
             }
         );
-        for (phase, expected) in [
-            (SyncPhase::Syncing, SyncPhaseUi::Syncing),
-            (SyncPhase::Offline, SyncPhaseUi::Offline),
-            (
-                SyncPhase::Failed {
-                    last_error: taskboard_domain::SyncErrorKind::Network,
-                },
-                SyncPhaseUi::Failed,
-            ),
-        ] {
-            let mut states = taskboard_domain::SyncStates::new();
-            states.set_stored(board_id, phase, None);
-            // The pending read is the aggregate fold over the derived
-            // rows: attribute three fabricated ops to the board.
-            let mut state = AppState::default();
-            let stack_id = StackId::from_uuid(uuid::Uuid::from_u128(2));
-            let task_id = TaskId::from_uuid(uuid::Uuid::from_u128(3));
-            state.boards.insert(board_id, board(board_id));
-            state.stacks.insert(stack_id, stack(stack_id, board_id, 0));
-            state.tasks.insert(task_id, task(task_id, stack_id, 0));
-            let ops: Vec<taskboard_domain::PendingOp> = (0..3)
-                .map(|i| taskboard_domain::PendingOp {
-                    op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(10 + i)),
-                    op: taskboard_domain::LocalOp::UpdateTask(task_id),
-                    queued_at: chrono::Utc::now(),
-                })
-                .collect();
-            taskboard_domain::derive_sync_states(
-                &state.boards,
-                &state.stacks,
-                &state.tasks,
-                &state.labels,
-                &ops,
-                &mut states,
-            );
-            assert_eq!(
-                sync_badge(&states),
-                SyncBadge {
-                    phase: expected,
-                    pending: 3
-                }
-            );
-        }
+        assert_eq!(
+            sync_badge_for_board(&states, Some(b3)),
+            SyncBadge {
+                phase: SyncPhaseUi::Failed,
+                pending: 0
+            }
+        );
+        let default = SyncBadge {
+            phase: SyncPhaseUi::Idle,
+            pending: 0,
+        };
+        assert_eq!(sync_badge_for_board(&states, None), default, "no boards");
+        let unknown = BoardId::from_uuid(uuid::Uuid::from_u128(0xFEED));
+        assert_eq!(
+            sync_badge_for_board(&states, Some(unknown)),
+            default,
+            "an unknown board reads the default row"
+        );
     }
 
     #[test]
@@ -501,6 +562,34 @@ mod tests {
         archived.archived = true;
         state.boards.insert(b2, archived);
         assert_eq!(live_board(&state), None, "deleted/archived boards skipped");
+    }
+
+    #[test]
+    fn live_boards_filters_to_live_boards_in_canonical_order() {
+        // Deterministic ids: live low + live high, one deleted and one
+        // archived between them; the walk order is board-id ascending
+        // (the `boards list` order) and `live_board` is its first.
+        let low = BoardId::from_uuid(uuid::Uuid::from_u128(0x01));
+        let dead = BoardId::from_uuid(uuid::Uuid::from_u128(0x02));
+        let archived = BoardId::from_uuid(uuid::Uuid::from_u128(0x03));
+        let high = BoardId::from_uuid(uuid::Uuid::from_u128(0x04));
+        let mut state = AppState::default();
+        state.boards.insert(high, board(high));
+        state.boards.insert(archived, {
+            let mut b = board(archived);
+            b.archived = true;
+            b
+        });
+        state.boards.insert(dead, {
+            let mut b = board(dead);
+            b.deleted = true;
+            b
+        });
+        state.boards.insert(low, board(low));
+
+        let ids: Vec<BoardId> = live_boards(&state).into_iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec![low, high]);
+        assert_eq!(live_board(&state).map(|b| b.id), Some(low));
     }
 
     #[test]
