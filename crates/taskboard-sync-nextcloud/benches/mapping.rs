@@ -22,6 +22,32 @@
 //! wrap, their numbers upper-bounded by those) and the O(1) error-path
 //! classifiers `classify_push`/`classify_read` (once per *failed* op,
 //! not a per-entity cycle leg).
+//!
+//! # Budget derivation (budget row 5: sync-cycle wall <= 30 s per typical board)
+//!
+//! The cycle's wall time is network-dominated (audit plan D7): only the
+//! CPU share is in-repo measurable, and the groups above are that
+//! share. Per cycle at board scale N = 10 000 (the largest fixture
+//! tier):
+//!
+//! - pull side: `map_board` x1 + `map_stack` x4 + `map_label` x6 +
+//!   `map_card` xN
+//! - push side: `plan_pushes` on the steady outbox (N/10 ops); the
+//!   burst variant (N ops, five-kind rotation) is the offline-session
+//!   worst case
+//! - write side: the builders, x the cycle's op counts (<= outbox
+//!   depth)
+//!
+//! Dev-machine numbers (stage-2 run, 2026-10-20): pull ~ 1.25 ms, push
+//! steady ~ 0.40 ms (burst ~ 5.38 ms), write ~ 3.52 ms; composed CPU
+//! share ~ 5.2 ms of the 30 000 ms budget = 0.017% (burst worst case ~
+//! 10.2 ms = 0.034%). Under the audit's D2 derate note (a full
+//! order-of-magnitude in-order-core derate) the share stays <= 0.34% —
+//! still a small fraction of the cycle budget (the S4 pass criterion).
+//! Dev-machine references, never device conformance: the on-device
+//! verdict is the kiosk spike's. No budget value is invented here
+//! (audit plan D4) — the 30 s envelope is consumed from `§budgets`,
+//! not re-derived.
 
 mod support;
 
