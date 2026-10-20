@@ -145,7 +145,7 @@ impl ConnectorModule for NextcloudModule {
 /// the module selector, and the identity the module builds its client
 /// from (per-connector — never the legacy single-connector accessors).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ConnectorSpec {
+pub struct ConnectorSpec {
     /// The config-minted connector name.
     pub name: ConnectorId,
     /// The connector kind (the module selector).

@@ -121,8 +121,13 @@ pub async fn rename(
     .await
 }
 
-/// The `boards create` steps on a booted core (the REPL/session seam).
-pub(crate) async fn create_on(
+/// The `boards create` steps on a booted core (the REPL/session seam;
+/// public so the tier journeys drive the ceremony steps directly).
+///
+/// # Errors
+///
+/// [`CommandError`] — the engine's typed refusals (pass-through).
+pub async fn create_on(
     app: &crate::App,
     title: String,
     color: taskboard_domain::Color,
@@ -311,7 +316,12 @@ async fn destruct_on(
 /// The `boards unbind` steps on a booted core: refuse without
 /// `--confirm` (typed, stating the scope), else dispatch `UnbindBoard`
 /// and report the landed receipt.
-pub(crate) async fn unbind_on(
+///
+/// # Errors
+///
+/// [`CommandError`] — [`CommandError::UnbindConfirmationRequired`]
+/// without `--confirm`, engine classes otherwise.
+pub async fn unbind_on(
     app: &crate::App,
     board: Option<taskboard_domain::BoardId>,
     confirm: bool,
@@ -785,13 +795,14 @@ pub async fn select(
 /// The pre-boot half of `boards select` (the standalone gate + the
 /// fresh-listing pre-validation): shared verbatim by the one-shot
 /// wrapper and the session dispatcher. Returns the validated listing
-/// entry — its real title feeds the fresh path's mint (D3-1).
+/// entry and the resolved connector spec — its real title feeds the
+/// fresh path's mint (D3-1), its name the bind's tag (D6-1).
 ///
 /// # Errors
 ///
 /// [`CommandError`] — typed: `SyncDisabled`, credential/transport
 /// classes, [`CommandError::UnknownBoard`].
-pub(crate) async fn select_prelude(
+pub async fn select_prelude(
     config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
     board: u64,

@@ -424,6 +424,62 @@ mod tests {
         }
     }
 
+    /// The status answer rides `Response::Status` verbatim: populated
+    /// arrays round-trip losslessly, and an old-shape answer (arrays
+    /// absent) decodes with `None`s — the both-ways additivity pin on
+    /// the wire (D6-3, no protocol bump).
+    #[test]
+    fn the_status_answer_round_trips_populated_arrays_and_decodes_old_shapes() {
+        use crate::commands::output::{BoardStatusView, ConnectorStatusView, SyncStatusView};
+        let status = StatusView {
+            daemon: true,
+            version: Some("0.1.0".to_owned()),
+            backend: Some("nextcloud".to_owned()),
+            pid: Some(1),
+            sync: None,
+            holder_pid: None,
+            connector_attached: Some(true),
+            connectors: Some(vec![ConnectorStatusView {
+                name: "alpha".to_owned(),
+                health: SyncStatusView {
+                    phase: "idle".to_owned(),
+                    last_success: None,
+                    pending_ops: 1,
+                    error_kind: None,
+                },
+                boards: Vec::new(),
+            }]),
+            boards: Some(vec![BoardStatusView {
+                board: "00000000-0000-0000-0000-000000000001".to_owned(),
+                title: "solo".to_owned(),
+                remote: Some(7),
+                connector: Some("alpha".to_owned()),
+                sync: SyncStatusView {
+                    phase: "idle".to_owned(),
+                    last_success: None,
+                    pending_ops: 1,
+                    error_kind: None,
+                },
+            }]),
+        };
+        let response = Response::Status {
+            v: PROTOCOL_VERSION,
+            status,
+        };
+        let bytes = serde_json::to_vec(&response).expect("serialize");
+        let back: Response = serde_json::from_slice(&bytes).expect("deserialize");
+        assert!(matches!(back, Response::Status { .. }));
+
+        // An old binary's answer: the two keys absent ⇒ decode `None`.
+        let old: StatusView = serde_json::from_value(serde_json::json!({
+            "daemon": true, "version": "0.0.9", "backend": "nextcloud",
+            "pid": 1, "connector_attached": true
+        }))
+        .expect("old shape decodes");
+        assert_eq!(old.connectors, None);
+        assert_eq!(old.boards, None);
+    }
+
     /// Optional fields are absent (not `null`) when `None` — the status
     /// payload stays minimal and the discriminating `daemon` bool plus
     /// present-fields decide the shape.
