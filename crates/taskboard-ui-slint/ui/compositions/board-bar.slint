@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The board-bar composition (L2, design §3.8): one segment per live
+// board, the selected board highlighted — the compact stack switcher's
+// segment pattern one level up (tab role, selected state, TouchArea
+// click). Layout only; colours/tokens all from Theme (R1: no new
+// primitive, no view-local restyle); clicks are the action layer's
+// business (§5.1 — the callback routes through the adapter seam).
+
+import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
+
+// One board-bar segment (a display model, not a bag of strings). The
+// segment set is the live boards — an archived board is unreachable
+// as a selection (the view-state normalization repairs it), so the
+// model carries no archived field.
+export struct BoardSegmentModel {
+    title: string,
+}
+
+// The board bar's model (D2/D22): the live segments plus the selected
+// index (a board index into the same pass's id tables).
+export struct BoardBarModel {
+    segments: [BoardSegmentModel],
+    selected: int,
+}
+
+export component BoardBar inherits Rectangle {
+    in property <BoardBarModel> bar;
+    callback segment-activated(int);
+
+    // A zero-segment model (a never-booted install) renders no row.
+    if (root.bar.segments.length > 0): HorizontalLayout {
+        spacing: Theme.space-1;
+        accessible-role: AccessibleRole.tab-list;
+        accessible-label: "Boards";
+        for segment[segment-index] in root.bar.segments: tab := FocusScope {
+            // A real tab stop (D15); the keyboard path for switching
+            // is the action layer's board.next/previous.
+            focus-on-tab-navigation: true;
+            accessible-role: AccessibleRole.tab;
+            accessible-label: segment.title;
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: Theme.radius-small;
+                background: segment-index == root.bar.selected ? Theme.surface-raised : transparent;
+                border-width: tab.has-focus ? Theme.focus-ring-width : 0;
+                border-color: Semantic.focus-ring;
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-2;
+                    RoleText {
+                        role: segment-index == root.bar.selected
+                            ? Typography.body-emphasized
+                            : Typography.body;
+                        text-color: segment-index == root.bar.selected
+                            ? Theme.text-primary
+                            : Theme.text-secondary;
+                        text: segment.title;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            TouchArea {
+                clicked => root.segment-activated(segment-index);
+            }
+        }
+    }
+}

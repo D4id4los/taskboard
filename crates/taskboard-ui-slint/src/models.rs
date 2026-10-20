@@ -12,7 +12,7 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
 use chrono::{DateTime, TimeDelta, Utc};
 
-use taskboard_domain::{AppState, StackId, Task, TaskId};
+use taskboard_domain::{AppState, BoardId, StackId, Task, TaskId};
 
 use crate::actions::{ActionId, ContextId};
 use crate::keymap::Keymap;
@@ -20,9 +20,10 @@ use crate::presentation::{self, DueKind, DueSets};
 use crate::responsive::Breakpoint;
 use crate::view_state::{Flow, ViewState};
 use crate::{
-    AppWindow, BannerRowModel, BoardModel, Breakpoint as SlintBreakpoint, DueKind as SlintDueKind,
-    FlowHintModel, Responsive, StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi,
-    TaskCardModel, TaskDetailModel, View,
+    AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
+    Breakpoint as SlintBreakpoint, DueKind as SlintDueKind, FlowHintModel, Responsive,
+    StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel,
+    TaskDetailModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -33,6 +34,10 @@ pub const BANNER_ROW_CAP: usize = 3;
 /// together with the models, always consistent.
 #[derive(Debug, Clone, Default)]
 pub struct IdTables {
+    /// The live boards in canonical order (design §3.8): the board
+    /// bar's segment indices resolve against this pass (an added index
+    /// table — the content tables stay single-board-per-refresh).
+    pub board_ids: Vec<BoardId>,
     /// The board's stacks in display order.
     pub stack_ids: Vec<StackId>,
     /// Per board column, the tasks in canonical order.
@@ -107,8 +112,27 @@ pub fn push(
     now: DateTime<Utc>,
 ) -> IdTables {
     let sets = presentation::due_sets(state, now);
-    let board = presentation::live_board(state);
+    let board = vs.board().and_then(|id| state.boards.get(&id));
     let stack_ids: Vec<StackId> = vs.stack_ids(state);
+    let live_boards = presentation::live_boards(state);
+
+    // The board bar (design §3.8): one segment per live board,
+    // selected index over the same pass's tables.
+    let segments: Vec<BoardSegmentModel> = live_boards
+        .iter()
+        .map(|b| BoardSegmentModel {
+            title: SharedString::from(b.title.clone()),
+        })
+        .collect();
+    window.set_board_bar_model(BoardBarModel {
+        segments: ModelRc::new(VecModel::from(segments)),
+        selected: i32::try_from(
+            vs.board()
+                .and_then(|b| live_boards.iter().position(|board| board.id == b))
+                .unwrap_or(0),
+        )
+        .unwrap_or(i32::MAX),
+    });
 
     push_chrome(window, board, keymap, chain);
     window.set_current_view(match vs.view() {
@@ -118,6 +142,7 @@ pub fn push(
     });
 
     let mut tables = IdTables {
+        board_ids: live_boards.iter().map(|b| b.id).collect(),
         stack_ids: stack_ids.clone(),
         ..IdTables::default()
     };
@@ -274,7 +299,14 @@ fn push_status_bar(
     now: DateTime<Utc>,
     tables: &mut IdTables,
 ) {
-    let badge = presentation::sync_badge(&state.sync);
+    // The badge reads the *selected* board's row (design §3.2); the
+    // recency caption follows it — the badge's freshness, per board.
+    let badge = presentation::sync_badge_for_board(&state.sync, vs.board());
+    let last_success = vs
+        .board()
+        .and_then(|b| state.sync.get(b))
+        .map(|row| row.last_success)
+        .unwrap_or_default();
     window.set_sync_model(SyncBadgeModel {
         phase: match badge.phase {
             presentation::SyncPhaseUi::Idle => SyncPhaseUi::Idle,
@@ -283,7 +315,7 @@ fn push_status_bar(
             presentation::SyncPhaseUi::Failed => SyncPhaseUi::Failed,
         },
         pending: i32::try_from(badge.pending).unwrap_or(i32::MAX),
-        recency: SharedString::from(recency_caption(state.sync.aggregate().last_success, now)),
+        recency: SharedString::from(recency_caption(last_success, now)),
     });
 
     let banner = presentation::banner_rows(state, now);

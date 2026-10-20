@@ -152,25 +152,6 @@ pub struct SyncBadge {
     pub pending: u32,
 }
 
-/// Maps the domain sync status onto the badge (exhaustive, one
-/// direction). Superseded read path: the UI's badge reads the
-/// *selected* board ([`sync_badge_for_board`]); this aggregate read
-/// survives only until the model push switches over.
-#[must_use]
-pub fn sync_badge(sync: &taskboard_domain::SyncStates) -> SyncBadge {
-    let status = sync.aggregate();
-    let phase = match status.phase {
-        SyncPhase::Idle => SyncPhaseUi::Idle,
-        SyncPhase::Syncing => SyncPhaseUi::Syncing,
-        SyncPhase::Offline => SyncPhaseUi::Offline,
-        SyncPhase::Failed { .. } => SyncPhaseUi::Failed,
-    };
-    SyncBadge {
-        phase,
-        pending: status.pending_ops,
-    }
-}
-
 /// Maps the *selected* board's sync row onto the badge (design §3.2,
 /// option (a)): `Some(board)` reads that board's row — the derivation
 /// materializes a default row per known board, so a bound-but-never-

@@ -6,6 +6,7 @@
 
 import { Theme, Semantic } from "../theme.slint";
 import { BoardLayout, StackColumnModel } from "../compositions/board-layout.slint";
+import { BoardBarModel } from "../compositions/board-bar.slint";
 
 // The board model (D22): the kanban geometry. The board title renders
 // in the toolbar (the window's `toolbar-title`), not in this model.
@@ -17,6 +18,10 @@ export struct BoardModel {
 
 export component BoardView inherits FocusScope {
     in property <BoardModel> board;
+    // The board bar's model + activation (design §3.8), threaded
+    // window → view → layout.
+    in property <BoardBarModel> board-bar;
+    callback board-bar-activated(int);
     callback task-activated(int, int);
     callback task-clicked(int, int);
     callback header-activated(int);
@@ -45,6 +50,8 @@ export component BoardView inherits FocusScope {
                 stacks: root.board.stacks;
                 selected-stack: root.board.selected-stack;
                 move-target: root.board.move-target;
+                board-bar: root.board-bar;
+                board-bar-activated(i) => root.board-bar-activated(i);
                 task-activated(c, r) => root.task-activated(c, r);
                 task-clicked(c, r) => root.task-clicked(c, r);
                 header-activated(c) => root.header-activated(c);
