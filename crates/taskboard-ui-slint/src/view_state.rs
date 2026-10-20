@@ -14,7 +14,7 @@
 use taskboard_domain::{AppState, BoardId, StackId, StateCommand, TaskChanges, TaskId};
 
 use crate::actions::ContextId;
-use crate::presentation::{live_board, stacks_in_board};
+use crate::presentation::{live_board, live_boards, stacks_in_board};
 use crate::router::Mode;
 
 /// The three v0.1.0 views (D7): one tree, one cycle
@@ -59,6 +59,10 @@ pub enum FlowOutcome {
 #[derive(Debug, Clone, Default)]
 pub struct ViewState {
     view: ViewId,
+    /// The selected board (design §3.8): `None` only before the seed
+    /// rule first runs or with zero boards — `reconcile` seeds and
+    /// repairs it (the normalization is refresh-time, one site).
+    board: Option<BoardId>,
     /// The `StackDetail` subject, snapshotted at entry (D7).
     subject_stack: Option<StackId>,
     /// The `TaskDetail` subject, snapshotted at entry (D7).
@@ -110,6 +114,7 @@ impl ViewState {
     pub const fn new() -> Self {
         Self {
             view: ViewId::Board,
+            board: None,
             subject_stack: None,
             subject_task: None,
             focused_task: None,
@@ -122,6 +127,13 @@ impl ViewState {
     #[must_use]
     pub const fn view(&self) -> ViewId {
         self.view
+    }
+
+    /// The selected board (the refresh-time seed/repair keeps it live;
+    /// `None` only with zero boards).
+    #[must_use]
+    pub const fn board(&self) -> Option<BoardId> {
+        self.board
     }
 
     #[must_use]
@@ -189,20 +201,23 @@ impl ViewState {
         }
     }
 
-    /// The board's stack ids in display order (D10).
+    /// The selected board's stack ids in display order (D10). No
+    /// seeding inside — `reconcile` normalizes before every push; an
+    /// unseeded state reads empty.
     #[must_use]
-    pub fn stack_ids(state: &AppState) -> Vec<StackId> {
-        live_board(state)
+    pub fn stack_ids(&self, state: &AppState) -> Vec<StackId> {
+        self.board
+            .and_then(|board| state.boards.get(&board))
             .map(|board| stacks_in_board(state, board.id))
             .map(|stacks| stacks.into_iter().map(|s| s.id).collect())
             .unwrap_or_default()
     }
 
-    /// The board's task ids in reading order (D7): columns in stack
-    /// order, tasks in canonical order.
+    /// The selected board's task ids in reading order (D7): columns in
+    /// stack order, tasks in canonical order.
     #[must_use]
-    pub fn reading_order(state: &AppState) -> Vec<TaskId> {
-        Self::stack_ids(state)
+    pub fn reading_order(&self, state: &AppState) -> Vec<TaskId> {
+        self.stack_ids(state)
             .into_iter()
             .flat_map(|stack| state.tasks_in_stack(stack))
             .map(|t| t.id)
@@ -253,7 +268,7 @@ impl ViewState {
                 let stack = self
                     .focused_stack(state)
                     .or(self.selected_stack)
-                    .or_else(|| Self::stack_ids(state).first().copied());
+                    .or_else(|| self.stack_ids(state).first().copied());
                 match stack {
                     Some(stack) => {
                         self.view = ViewId::StackDetail;
@@ -286,6 +301,70 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
+    // -- board selection (design §3.8) -----------------------------------
+
+    /// Seeds or repairs the board selection: `None` takes the first
+    /// live board; a selection that is no longer live (deleted or
+    /// archived under the session) falls back the same way. The one
+    /// normalization site — `reconcile` runs it refresh-time; the
+    /// board walk and `begin_create_stack` before they read.
+    fn normalize_board(&mut self, state: &AppState) {
+        let live = self.board.is_some_and(|id| {
+            state
+                .boards
+                .get(&id)
+                .is_some_and(|b| !b.deleted && !b.archived)
+        });
+        if !live {
+            self.board = live_board(state).map(|b| b.id);
+        }
+    }
+
+    /// A board-bar segment click or a targeted select: sets the board,
+    /// resets the stack selection to the new board's first stack and
+    /// the focus to that stack's first task — the `select_stack`
+    /// mirror (D2). Pure view state; no view/subject reset (the
+    /// refresh-time subject re-validation pops a stale subject). No
+    /// liveness guard on the argument: a stale click cannot name a
+    /// dead board through a fresh tables pass, and an interleaved
+    /// deletion is repaired by `reconcile`.
+    pub fn select_board(&mut self, state: &AppState, board: BoardId) -> Vec<FlowOutcome> {
+        self.board = Some(board);
+        self.selected_stack = self.stack_ids(state).first().copied();
+        self.focused_task = self
+            .selected_stack
+            .and_then(|stack| Self::first_task_of(state, stack));
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// `board.next`: step to the next live board in canonical order —
+    /// no wrap (the ends hold). Inert (`Vec::new()`, no repaint) at
+    /// the last board or with fewer than two boards.
+    pub fn next_board(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.step_board(state, 1)
+    }
+
+    /// `board.previous`: the walk backwards, same no-wrap rule.
+    pub fn previous_board(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.step_board(state, -1)
+    }
+
+    fn step_board(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let boards = live_boards(state);
+        let Some(current) = self
+            .board
+            .and_then(|b| boards.iter().position(|board| board.id == b))
+        else {
+            return Vec::new();
+        };
+        let next = i64::from(direction) + i64::try_from(current).unwrap_or(0);
+        let Some(neighbour) = boards.get(usize::try_from(next).unwrap_or(usize::MAX)) else {
+            return Vec::new(); // no wrap: the ends hold
+        };
+        self.select_board(state, neighbour.id)
+    }
+
     // -- board focus walk (D7/D8) ----------------------------------------
 
     /// `nav.next-item` without a move flow: in compact, selection
@@ -306,7 +385,7 @@ impl ViewState {
         // move the stack selection (wrap) and land on the new stack's
         // first task — one keypress per switch (D8).
         if compact && self.focused_task.is_none() {
-            let stacks = Self::stack_ids(state);
+            let stacks = self.stack_ids(state);
             if stacks.is_empty() {
                 return Vec::new();
             }
@@ -330,7 +409,7 @@ impl ViewState {
         let domain: Vec<TaskId> = if compact {
             match self
                 .selected_stack
-                .or_else(|| Self::stack_ids(state).first().copied())
+                .or_else(|| self.stack_ids(state).first().copied())
             {
                 Some(stack) => state
                     .tasks_in_stack(stack)
@@ -340,7 +419,7 @@ impl ViewState {
                 None => Vec::new(),
             }
         } else {
-            Self::reading_order(state)
+            self.reading_order(state)
         };
         let Some(current) = self
             .focused_task
@@ -425,7 +504,7 @@ impl ViewState {
             ViewId::Board => self
                 .focused_stack(state)
                 .or(self.selected_stack)
-                .or_else(|| Self::stack_ids(state).first().copied()),
+                .or_else(|| self.stack_ids(state).first().copied()),
             ViewId::StackDetail => self.subject_stack,
             ViewId::TaskDetail => self
                 .subject_task
@@ -442,8 +521,16 @@ impl ViewState {
     }
 
     /// `BeginCreateStack`: opens the stack create row in insert mode
-    /// (#304) — no target stack, so an empty board offers it too.
-    pub fn begin_create_stack(&mut self) -> Vec<FlowOutcome> {
+    /// (#304) — no target stack, so an empty board offers it too. The
+    /// board-existence refusal lives here (one home): the selection
+    /// normalizes first, and a board-less state is refused with an
+    /// inert `Vec::new()` — nothing offers a stack create with no
+    /// board to create it on.
+    pub fn begin_create_stack(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        if self.board.is_none() {
+            return Vec::new();
+        }
         self.flow = Flow::CreateStack;
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
@@ -471,17 +558,17 @@ impl ViewState {
                 );
             }
             Flow::CreateStack if !title.is_empty() => {
-                // INTERIM(multi-board-2 → chunk-7): inline first-live-board
-                // resolve until ViewState.board + the seed rule land; no
-                // board ends the flow empty (the existing empty-board
-                // behavior).
-                if let Some(board) = live_board(state) {
+                // The command names the *selected* board (design §3.8);
+                // a board-less state cannot get here —
+                // `begin_create_stack` refuses and `reconcile` ends the
+                // flow when the last board vanishes.
+                if let Some(board) = self.board {
                     outcomes.insert(
                         0,
                         FlowOutcome::Command(StateCommand::CreateStack {
-                            board: board.id,
+                            board,
                             title,
-                            order: append_stack_order(state, board.id),
+                            order: append_stack_order(state, board),
                         }),
                     );
                 }
@@ -522,7 +609,7 @@ impl ViewState {
         };
         let Some(target) = self
             .focused_stack(state)
-            .or_else(|| Self::stack_ids(state).first().copied())
+            .or_else(|| self.stack_ids(state).first().copied())
         else {
             return Vec::new();
         };
@@ -536,7 +623,7 @@ impl ViewState {
         let Flow::Move { target, .. } = self.flow else {
             return Vec::new();
         };
-        let stacks = Self::stack_ids(state);
+        let stacks = self.stack_ids(state);
         if stacks.is_empty() {
             return Vec::new();
         }
@@ -584,6 +671,7 @@ impl ViewState {
     /// `StackDetail` → Board and re-falls-back the compact selection;
     /// flows on vanished entities end without commands.
     pub fn reconcile(&mut self, state: &AppState) {
+        self.normalize_board(state);
         let is_live = |id: TaskId| {
             state
                 .tasks
@@ -593,7 +681,7 @@ impl ViewState {
         if self.focused_task.is_some_and(|t| !is_live(t)) {
             self.focused_task = None;
         }
-        let stacks = Self::stack_ids(state);
+        let stacks = self.stack_ids(state);
         if self.selected_stack.is_some_and(|s| !stacks.contains(&s)) {
             self.selected_stack = stacks.first().copied();
         }
@@ -730,6 +818,7 @@ mod tests {
     fn view_cycle_walks_board_stack_task_and_back() {
         let (state, _, [s0, _], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         assert_eq!(vs.view(), ViewId::Board);
 
         vs.next_view(&state);
@@ -760,6 +849,7 @@ mod tests {
     fn focus_moves_retarget_the_view_cycle_entry() {
         let (state, _, [_, s1], [.., c]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(c, s1);
         vs.next_view(&state);
         assert_eq!(
@@ -779,6 +869,7 @@ mod tests {
     fn entering_a_view_snapshots_its_subject() {
         let (state, _, [s0, s1], [a, b, c]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.next_view(&state);
         assert_eq!(vs.subject_stack(), Some(s0));
@@ -806,6 +897,7 @@ mod tests {
         // the detail; only `Activate` begins the title edit (D14/D9).
         let (state, _, _, _) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.next_view(&state);
         vs.next_view(&state);
         assert_eq!(vs.view(), ViewId::TaskDetail);
@@ -818,6 +910,7 @@ mod tests {
     fn reading_order_walk_is_columns_then_cards_without_wrap() {
         let (state, _, _, [a, b, c]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.advance_focus(&state, false);
         assert_eq!(
             vs.focused_task(),
@@ -840,6 +933,7 @@ mod tests {
     fn compact_walk_covers_the_selected_stack_and_returns_to_the_switcher() {
         let (state, _, [s0, s1], [a, b, c]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         // Entering the walk takes the first stack's first card
         // (one keypress per switch, D8).
         vs.advance_focus(&state, true);
@@ -883,6 +977,7 @@ mod tests {
     fn select_stack_resets_focus_to_the_new_stacks_first_task() {
         let (state, _, [s0, s1], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.select_stack(&state, s1);
         vs.select_stack(&state, s0);
         assert_eq!(vs.selected_stack(), Some(s0));
@@ -905,6 +1000,7 @@ mod tests {
     fn create_flow_commits_an_appended_create_task() {
         let (state, _, [s0, _], [_, b, _]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(b, s0);
         let target = vs.create_target_stack(&state).expect("target");
         assert_eq!(target, s0, "the focused stack is the create target");
@@ -926,7 +1022,8 @@ mod tests {
     fn stack_create_flow_commits_the_appended_create_stack() {
         let (state, board_id, _, _) = fixture();
         let mut vs = ViewState::new();
-        let outcomes = vs.begin_create_stack();
+        vs.reconcile(&state);
+        let outcomes = vs.begin_create_stack(&state);
         assert_eq!(*vs.flow(), Flow::CreateStack);
         assert!(
             outcomes.contains(&FlowOutcome::SetMode(Mode::Insert)),
@@ -958,7 +1055,8 @@ mod tests {
         }
         let _ = board_id;
         let mut vs = ViewState::new();
-        vs.begin_create_stack();
+        vs.reconcile(&state);
+        vs.begin_create_stack(&state);
         vs.set_buffer("first".to_owned());
         assert_eq!(
             vs.commit_edit(&state)[..1],
@@ -971,13 +1069,19 @@ mod tests {
     }
 
     #[test]
-    fn the_create_stack_flow_commits_nothing_without_a_board() {
-        // INTERIM(multi-board-2 → chunk-7): with no board at all the flow
-        // ends empty — nothing commands against a nonexistent board.
+    fn begin_create_stack_refuses_without_a_board() {
+        // The one-home refusal: a board-less state gets no flow at all,
+        // so nothing can command against a nonexistent board later.
         let (mut state, _, _, _) = fixture();
         state.boards.clear();
         let mut vs = ViewState::new();
-        vs.begin_create_stack();
+        vs.reconcile(&state);
+        assert_eq!(
+            vs.begin_create_stack(&state),
+            Vec::new(),
+            "the refusal is inert"
+        );
+        assert_eq!(*vs.flow(), Flow::None, "no flow opened");
         vs.set_buffer("first".to_owned());
         assert!(
             !vs.commit_edit(&state)
@@ -991,7 +1095,8 @@ mod tests {
     fn an_empty_stack_create_buffer_commits_nothing() {
         let (state, _, _, _) = fixture();
         let mut vs = ViewState::new();
-        vs.begin_create_stack();
+        vs.reconcile(&state);
+        vs.begin_create_stack(&state);
         vs.set_buffer("   ".to_owned());
         let outcomes = vs.commit_edit(&state);
         assert!(
@@ -1016,33 +1121,226 @@ mod tests {
         let _ = (s0, s1);
     }
 
+    /// The two-board fixture (deterministic ids: board 1 < board 2, so
+    /// board 1 is the seed): board one carries the classic two-stack
+    /// shape (stack a: tasks a, b; stack b: task c), board two one
+    /// stack (c: task d).
+    fn two_board_fixture() -> (AppState, BoardId, BoardId, [StackId; 3], [TaskId; 4]) {
+        let b1 = BoardId::from_uuid(uuid::Uuid::from_u128(0x1001));
+        let b2 = BoardId::from_uuid(uuid::Uuid::from_u128(0x1002));
+        let sa = StackId::from_uuid(uuid::Uuid::from_u128(0x2001));
+        let sb = StackId::from_uuid(uuid::Uuid::from_u128(0x2002));
+        let sc = StackId::from_uuid(uuid::Uuid::from_u128(0x2003));
+        let ta = TaskId::from_uuid(uuid::Uuid::from_u128(0x3001));
+        let tb = TaskId::from_uuid(uuid::Uuid::from_u128(0x3002));
+        let tc = TaskId::from_uuid(uuid::Uuid::from_u128(0x3003));
+        let td = TaskId::from_uuid(uuid::Uuid::from_u128(0x3004));
+        let mut state = AppState::default();
+        for (id, title) in [(b1, "board one"), (b2, "board two")] {
+            state.boards.insert(
+                id,
+                Board {
+                    id,
+                    remote: None,
+                    title: title.to_owned(),
+                    color: taskboard_domain::Color::new(""),
+                    archived: false,
+                    deleted: false,
+                    clocks: BoardClocks {
+                        title: epoch(),
+                        color: epoch(),
+                        archived: epoch(),
+                        deleted: epoch(),
+                    },
+                    remote_seen: None,
+                },
+            );
+        }
+        state.stacks.insert(sa, stack(sa, b1, 0));
+        state.stacks.insert(sb, stack(sb, b1, 1));
+        state.stacks.insert(sc, stack(sc, b2, 0));
+        state.tasks.insert(ta, task(ta, sa, 0));
+        state.tasks.insert(tb, task(tb, sa, 1));
+        state.tasks.insert(tc, task(tc, sb, 0));
+        state.tasks.insert(td, task(td, sc, 0));
+        (state, b1, b2, [sa, sb, sc], [ta, tb, tc, td])
+    }
+
+    // -- board selection (design §3.8) -------------------------------------
+
     #[test]
-    fn the_create_stack_interim_fill_picks_the_first_live_board() {
-        // INTERIM(multi-board-2 → chunk-7): with two live boards the
-        // inline fill resolves deterministically (presentation order =
-        // first live non-archived), and the command names that board.
-        let (mut state, _, _, _) = fixture();
-        let other = taskboard_domain::Board {
-            id: BoardId::from_uuid(uuid::Uuid::from_u128(0xB0AD)),
-            ..state.boards.values().next().unwrap().clone()
-        };
-        state.boards.insert(other.id, other);
+    fn reconcile_seeds_the_lowest_live_board() {
+        let (state, b1, b2, _, _) = two_board_fixture();
         let mut vs = ViewState::new();
-        vs.begin_create_stack();
+        vs.reconcile(&state);
+        assert_eq!(vs.board(), Some(b1), "the lowest live board seeds");
+
+        // An archived lowest board seeds the next one.
+        let mut archived = state.clone();
+        archived.boards.get_mut(&b1).expect("board").archived = true;
+        let mut vs = ViewState::new();
+        vs.reconcile(&archived);
+        assert_eq!(vs.board(), Some(b2));
+
+        // Zero boards stays None, and the stack read is empty.
+        let mut empty = state;
+        empty.boards.clear();
+        let mut vs = ViewState::new();
+        vs.reconcile(&empty);
+        assert_eq!(vs.board(), None);
+        assert_eq!(vs.stack_ids(&empty), Vec::new());
+    }
+
+    #[test]
+    fn reconcile_repairs_a_dead_board_selection_and_pops_the_stale_subject() {
+        let (state, b1, b2, [sa, ..], _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_board(&state, b2);
+        assert_eq!(vs.board(), Some(b2));
+
+        // A deleted selection falls back to the first live board.
+        let mut dead = state.clone();
+        dead.boards.get_mut(&b2).expect("board").deleted = true;
+        vs.reconcile(&dead);
+        assert_eq!(vs.board(), Some(b1), "dead selection re-seeds");
+
+        // An archived selection repairs the same way.
+        let mut archived = state.clone();
+        archived.boards.get_mut(&b2).expect("board").archived = true;
+        vs.select_board(&state, b2);
+        vs.reconcile(&archived);
+        assert_eq!(vs.board(), Some(b1));
+
+        // A stale StackDetail subject of the old board pops to Board:
+        // select_board does not reset the view (the select_stack
+        // mirror); the refresh-time subject re-validation does.
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_stack(&state, sa);
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::StackDetail);
+        vs.select_board(&state, b2);
+        vs.reconcile(&state);
+        assert_eq!(vs.view(), ViewId::Board, "the stale subject pops");
+    }
+
+    #[test]
+    fn select_board_resets_the_selection_like_select_stack() {
+        let (state, b1, b2, [sa, ..], [ta, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_board(&state, b2);
+        let outcomes = vs.select_board(&state, b1);
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.board(), Some(b1));
+        assert_eq!(vs.selected_stack(), Some(sa), "the new board's first stack");
+        assert_eq!(vs.focused_task(), Some(ta), "that stack's first task");
+        assert!(
+            !outcomes
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::Command(_))),
+            "the dumb-client pin: switching dispatches nothing"
+        );
+
+        // An empty target board leaves both selections None with the
+        // same single outcome (select_stack's task-less-stack shape).
+        let mut stripped = state;
+        let stacks: Vec<_> = stripped
+            .stacks
+            .values()
+            .filter(|s| s.board == b2)
+            .map(|s| s.id)
+            .collect();
+        for id in stacks {
+            stripped.stacks.remove(&id);
+        }
+        stripped
+            .tasks
+            .retain(|_, t| stripped.stacks.get(&t.stack).is_none_or(|s| s.board != b2));
+        vs.select_board(&stripped, b2);
+        assert_eq!(vs.selected_stack(), None);
+        assert_eq!(vs.focused_task(), None);
+    }
+
+    #[test]
+    fn the_board_walk_steps_without_wrapping() {
+        let (state, b1, b2, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        assert_eq!(vs.next_board(&state), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.board(), Some(b2));
+        assert_eq!(vs.next_board(&state), Vec::new(), "the last end holds");
+        assert_eq!(vs.board(), Some(b2));
+        assert_eq!(vs.previous_board(&state), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.board(), Some(b1));
+        assert_eq!(vs.previous_board(&state), Vec::new(), "the first end holds");
+        assert_eq!(vs.board(), Some(b1));
+        assert!(
+            !vs.next_board(&state)
+                .iter()
+                .chain(vs.previous_board(&state).iter())
+                .any(|o| matches!(o, FlowOutcome::Command(_))),
+            "the dumb-client pin: the walk dispatches nothing"
+        );
+
+        // A single-board state is inert in both directions.
+        let mut single = state.clone();
+        single.boards.remove(&b2);
+        let mut vs = ViewState::new();
+        vs.reconcile(&single);
+        assert_eq!(vs.next_board(&single), Vec::new());
+        assert_eq!(vs.previous_board(&single), Vec::new());
+
+        // An unseeded state seeds, then steps (normalize-first).
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        assert_eq!(vs.next_board(&state), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.board(), Some(b2));
+    }
+
+    #[test]
+    fn the_create_stack_flow_names_the_selected_board() {
+        // Replaces the interim first-live-board fill: the command names
+        // the board the view selected, with that board's append order.
+        let (state, b1, b2, [sa, sb, sc], _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_board(&state, b2);
+        let outcomes = vs.begin_create_stack(&state);
+        assert!(
+            outcomes.contains(&FlowOutcome::SetMode(Mode::Insert)),
+            "the row opens in insert mode"
+        );
         vs.set_buffer("x".to_owned());
-        let FlowOutcome::Command(taskboard_domain::StateCommand::CreateStack { board, .. }) =
-            vs.commit_edit(&state)[0]
-        else {
-            panic!("the create-stack command must commit");
-        };
-        let expected = crate::presentation::live_board(&state).unwrap().id;
-        assert_eq!(board, expected);
+        match &vs.commit_edit(&state)[0] {
+            FlowOutcome::Command(StateCommand::CreateStack { board, order, .. }) => {
+                assert_eq!(board, &b2);
+                assert_eq!(order, &1, "append after board two's single stack");
+            }
+            other => panic!("the create-stack command must commit, got {other:?}"),
+        }
+
+        // And on board one the command names board one.
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_create_stack(&state);
+        vs.set_buffer("x".to_owned());
+        match &vs.commit_edit(&state)[0] {
+            FlowOutcome::Command(StateCommand::CreateStack { board, order, .. }) => {
+                assert_eq!(board, &b1);
+                assert_eq!(order, &2, "append after board one's two stacks");
+            }
+            other => panic!("the create-stack command must commit, got {other:?}"),
+        }
+        let _ = (sa, sb, sc);
     }
 
     #[test]
     fn create_flow_in_stack_detail_targets_the_subject() {
         let (state, _, [s0, s1], _) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.select_stack(&state, s1);
         vs.next_view(&state);
         assert_eq!(vs.view(), ViewId::StackDetail);
@@ -1054,6 +1352,7 @@ mod tests {
     fn an_empty_create_buffer_commits_nothing_but_ends_the_flow() {
         let (state, _, [s0, _], _) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.begin_create(s0);
         vs.set_buffer("   ".to_owned());
         let outcomes = vs.commit_edit(&state);
@@ -1086,6 +1385,7 @@ mod tests {
     fn activate_focused_opens_the_title_edit_with_the_mirror_seeded() {
         let (state, _, [s0, _], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.activate_focused(&state);
         assert_eq!(vs.view(), ViewId::TaskDetail);
@@ -1113,6 +1413,7 @@ mod tests {
     fn insert_intent_in_task_detail_edits_the_subject_in_place() {
         let (state, _, [s0, _], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.activate_focused(&state);
         vs.discard_edit();
@@ -1142,6 +1443,7 @@ mod tests {
     fn move_flow_cycles_the_target_and_confirms_with_append() {
         let (state, _, [s0, s1], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.start_move(&state);
         assert_eq!(
@@ -1194,6 +1496,7 @@ mod tests {
     fn re_requesting_move_cancels_without_dispatch() {
         let (state, _, [s0, _], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.start_move(&state);
         let outcomes = vs.cancel_move();
@@ -1205,6 +1508,7 @@ mod tests {
     fn move_without_focus_is_inert() {
         let (state, _, _, _) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         assert_eq!(vs.start_move(&state), Vec::new());
         assert_eq!(vs.confirm_move(&state), Vec::new());
     }
@@ -1213,6 +1517,7 @@ mod tests {
     fn flows_are_exclusive_starting_one_ends_the_other() {
         let (state, _, [s0, _], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.start_move(&state);
         // Beginning a create ends the move flow (one flow at a time).
@@ -1231,6 +1536,7 @@ mod tests {
     fn reconcile_pops_task_detail_when_the_subject_is_deleted() {
         let (mut state, _, [s0, _], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.activate_focused(&state);
         assert_eq!(vs.view(), ViewId::TaskDetail);
@@ -1249,6 +1555,7 @@ mod tests {
     fn reconcile_refalls_back_the_compact_selection_and_pops_stack_detail() {
         let (mut state, _, [s0, s1], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.select_stack(&state, s1);
         vs.next_view(&state);
@@ -1263,6 +1570,7 @@ mod tests {
     fn reconcile_ends_flows_on_vanished_targets() {
         let (mut state, _, [s0, s1], [a, ..]) = fixture();
         let mut vs = ViewState::new();
+        vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.start_move(&state);
         state.tasks.get_mut(&a).expect("task").deleted = true;

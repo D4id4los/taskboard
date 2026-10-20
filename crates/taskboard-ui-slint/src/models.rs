@@ -108,7 +108,7 @@ pub fn push(
 ) -> IdTables {
     let sets = presentation::due_sets(state, now);
     let board = presentation::live_board(state);
-    let stack_ids: Vec<StackId> = ViewState::stack_ids(state);
+    let stack_ids: Vec<StackId> = vs.stack_ids(state);
 
     push_chrome(window, board, keymap, chain);
     window.set_current_view(match vs.view() {
