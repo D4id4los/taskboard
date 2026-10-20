@@ -10,6 +10,22 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The `[kiosk]` config section with `fixed_board`: an optional board
+  UUID resolved typed against the live boards at kiosk boot — a pin
+  naming no live board refuses the boot with the new
+  `unknown-fixed-board` config error; the section's absence leaves
+  existing configs and behaviour unchanged (kiosk wave K9, the
+  fixed-board pin the multi-board design deferred).
+- `contrib/taskboard-kiosk.service`: a system-level unit for the
+  kiosk appliance — the config file's `mode = "kiosk"` is the only
+  mode authority (never an environment variable), `Restart=always`
+  owns crash recovery (ADR 0016), the seat's display environment is
+  imported, and the unit anchors at `graphical.target`.
+- `docs/kiosk_bringup_runbook.org`: the kiosk bring-up runbook —
+  minimal image checklist, software-renderer selection seam,
+  on-device harness invocation, the four budget-verdict recording
+  slots, and the D250's i686 cross-build lane (target, toolchain,
+  build, transfer).
 - Per-board cumulative sync counters on the published sync status
   (kiosk wave K8): cycles, pushes, pulls, failures, offline episodes,
   and the last cycle's wall duration — populated at the existing

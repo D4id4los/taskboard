@@ -1,0 +1,216 @@
+#+title: taskboard Kiosk Bring-Up Runbook
+#+options: toc:t
+
+Bringing a physical wall unit up as a taskboard kiosk appliance
+(ADR 0016): the minimal OS image, the software-renderer selection
+seam, the binary legs (x86_64 and the D250's i686 cross-build), the
+config + systemd unit install, and the on-device measurement slots
+whose verdicts the spike report records. This runbook is
+evidence-grade — every command is meant to be copy-pasteable onto the
+target unit; the four budget-verdict slots (§7) are the spike's
+measurement plan (audit axis J).
+
+* 1. Scope and hardware
+
+The phase-A kiosk round targets two physical units:
+
+| Unit     | CPU               | Arch    | Note                                                              |
+|----------+-------------------+---------+-------------------------------------------------------------------|
+| NF310    | (64-capable)      | x86_64  | First-class release binary; 64-bit BIOS boot verified on-device.  |
+| D250-0Dk | Atom N270 (32-bit)| i686    | *No x86_64.* Finding 2026-10-19 (issue #233): Debian 12 i386      |
+|          |                   |         | userland, kernel =6.1.0-39-686-pae=, driven over ssh.             |
+
+The budget envelope (unchanged from the wave plan): RSS ≤ 200 MB;
+repaint ≤ 50 ms full-frame / ≤ 20 ms partial; cold start ≤ 5 s;
+sync-cycle CPU share recorded (no hard line). The *software* renderer
+is the only viable lane on these gen3 GPUs — no hardware OpenGL on
+modern Mesa, so everything runs through llvmpipe.
+
+* 2. The image
+
+Debian 12 minimal, **no desktop environment** — the unit supervises
+its own seat session (§6); a DE would double the memory bill and
+compete for the display.
+
+- **Boot medium**: prefer SSD or USB over the units' spinning disks.
+  SQLite's continuous writes (the local cache actor) are latency- and
+  seek-sensitive; a 5400-rpm platter is tolerated for bring-up but
+  expected to show up in the sync-cycle verdict (§7 slot 4).
+- **Packages** (X11 seat, the bring-up default):
+
+#+begin_src sh
+apt install --no-install-recommends \
+    xorg xinit libinput-tools \
+    libgl1 mesa-utils libegl1 \
+    fonts-dejavu-core \
+    python3 python3-minimal
+#+end_src
+
+  For a wayland seat instead, substitute a kiosk compositor
+  (=apt install cage=) for the xorg line; the seat session line in
+  §6 changes accordingly (=cage -s -- taskboard …= replaces
+  =xinit=).
+- =fonts-dejavu-core= is required: the UI registers its runtime fonts
+  from the system set.
+- =python3= is for the measurement harness (§7).
+
+* 3. Renderer selection — the seam, not a flip
+
+The shipped binary builds with winit + femtovg (software GL via
+Mesa/llvmpipe). Selection at runtime is the =SLINT_BACKEND=
+environment variable; it belongs in the seat-session line or
+=/etc/default/taskboard-kiosk=, never baked into the unit file's
+launch decision.
+
+The =renderer-software= / =backend-fb= build features are **not
+compiled in** (the ADR 0015 deferral); whether the release build
+flips is *the spike's* decision, recorded post-bring-up (§8). This
+runbook measures the shipped configuration as-is.
+
+* 4. Binary leg A — x86_64 (NF310)
+
+The first-class release artifact, or a local build:
+
+#+begin_src sh
+cargo build --release -p taskboard-app
+# → target/release/taskboard
+scp target/release/taskboard root@<unit>:/usr/local/bin/taskboard
+#+end_src
+
+* 5. Binary leg B — the D250 i686 cross-build lane
+
+The D250's Atom N270 has **no x86_64**; it runs Debian 12 i386
+userland (the running =686-pae= kernel proves the i686 baseline; the
+N270's PAE + SSE2 cover it). Target triple:
+=i686-unknown-linux-gnu= (=i586= is *not* needed).
+
+** 5.1 Host toolchain (on the x86_64 dev box)
+
+#+begin_src sh
+rustup target add i686-unknown-linux-gnu
+sudo apt install gcc-i686-linux-gnu
+#+end_src
+
+** 5.2 Cross environment
+
+Set per-shell, **never committed** (no =.cargo/config.toml= change in
+this wave):
+
+#+begin_src sh
+export CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER=i686-linux-gnu-gcc
+export CC_i686_unknown_linux_gnu=i686-linux-gnu-gcc
+#+end_src
+
+The C cross-compiler is required because =libsqlite3-sys= (bundled
+sqlite) and =ring= (rustls' crypto) compile C/asm for the target.
+reqwest is rustls-only, so there is no openssl in the tree.
+
+** 5.3 Build and transfer
+
+#+begin_src sh
+cargo build --release --target i686-unknown-linux-gnu -p taskboard-app
+# → target/i686-unknown-linux-gnu/release/taskboard
+scp target/i686-unknown-linux-gnu/release/taskboard root@<d250>:/usr/local/bin/taskboard
+#+end_src
+
+** 5.4 glibc note
+
+The artifact links the *host* glibc. The D250 runs Debian 12
+(glibc 2.36) — build on a matched-userland host (or container). A
+mismatch fails on-device in one step with a loader error naming the
+missing version (=... version `GLIBC_2.xx' not found=): rebuild
+against an older/matched userland, do not patch the target.
+
+** 5.5 The release-target decision
+
+Whether i686 becomes a release-matrix leg or stays a documented
+self-build rides **spike exit** (§8). Until then, this lane is the
+documented self-build.
+
+* 6. Config + unit install
+
+On the unit (root), following =contrib/taskboard-kiosk.service='s
+header comment:
+
+#+begin_src sh
+useradd --system --home-dir /var/lib/taskboard \
+    --shell /usr/sbin/nologin taskboard
+install -m 0755 taskboard /usr/local/bin/taskboard
+install -d -o taskboard -g taskboard /var/lib/taskboard
+#+end_src
+
+The config file =/etc/taskboard/taskboard.toml= — the *config file's*
+mode is the appliance's frontend authority (the unit never sets a
+=TASKBOARD_*= variable):
+
+#+begin_src toml
+[app]
+mode = "kiosk"
+
+[sync]
+backend = "standalone"
+
+[storage]
+db_path = "/var/lib/taskboard/taskboard.db"
+#+end_src
+
+Optional board pin — the wall shows the pinned board, resolved typed
+at boot against the live boards:
+
+#+begin_src toml
+[kiosk]
+fixed_board = "<board-uuid>"
+#+end_src
+
+The pin contract: a pin naming no live board (unknown UUID, or a
+board deleted before this boot) **refuses the boot** with the typed
+config error kind =unknown-fixed-board= (visible in
+=journalctl -u taskboard-kiosk=); it is never silently ignored and
+never warned past. A pin is resolved *at boot only* — a board deleted
+while the appliance runs is the ambient-view chunk's (K13) rotation
+problem, an interim this runbook records. Standalone installs (no
+sync) need no credential store.
+
+Install the unit and the seat's display environment:
+
+#+begin_src sh
+install -m 0644 contrib/taskboard-kiosk.service /etc/systemd/system/
+install -m 0644 /dev/null /etc/default/taskboard-kiosk
+# wayland seat (adjust socket name and the seat UID):
+#   WAYLAND_DISPLAY=wayland-0
+#   XDG_RUNTIME_DIR=/run/user/1000
+# X11 seat:
+#   DISPLAY=:0
+systemctl daemon-reload
+systemctl enable --now taskboard-kiosk.service
+#+end_src
+
+Before the seat session is up, the unit fails its =ExecStartPre=
+display gate and restart-loops every 5 s — the appliance never
+lingers headless on a wall.
+
+* 7. On-device measurement — the four budget-verdict slots
+
+Each slot is a fill-in row (device, binary leg, number, verdict,
+date) destined for the spike report
+(=.artifacts/reports/<date>-kiosk-wave-exit-report.md=) and the #233
+annotation. The harnesses are smoke *references*, never gates.
+
+| # | Verdict                  | Budget              | Producer |
+|---+--------------------------+---------------------+----------|
+| 1 | RSS steady/peak          | ≤ 200 MB            | =python3 scripts/process_smoke.py rss --taskboard ./taskboard --no-build= on-device; build the N=10 000 fixture once on the dev machine and transfer it (=--fixture <db>=) — a spinning-disk box should not pay fixture construction |
+| 2 | Full/partial repaint     | ≤ 50 / ≤ 20 ms      | The S2 criterion bench's dev-machine reference (kiosk K6) recorded alongside the on-device draw observation; the on-device draw verdict belongs to the spike (the API-blocker rule) |
+| 3 | Cold start               | ≤ 5 s               | =python3 scripts/process_smoke.py cold-start --taskboard ./taskboard --no-build= with the seat session live (spawn → the structured =first-frame= moment) |
+| 4 | Sync-cycle CPU share     | recorded (no line)  | The S4 criterion legs (dev machine) + the on-device cycle wall read from =taskboard status --json='s per-board =last_cycle_ms= during a live sync |
+
+* 8. Post-bring-up decisions recorded at spike exit
+
+The runbook records *where* each decision lands; it decides nothing:
+
+- The **i686 release-target** decision (release-matrix leg vs
+  documented self-build) — spike exit.
+- **sd_notify** (#160) — ruled at the spike as a comment on the issue;
+  it stays open until then. Default today: not needed under
+  =Type=simple= + =Restart=always=.
+- The **renderer/backend flip** verdict (=renderer-software= /
+  =backend-fb= build features) — spike exit.
