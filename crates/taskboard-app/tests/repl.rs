@@ -79,7 +79,7 @@ async fn run_session(
         standalone_config(db),
         None,
         json_default,
-        |_| EditorIo {
+        |_, _| EditorIo {
             lines: rx,
             dispositions: verdicts,
         },
@@ -336,7 +336,7 @@ async fn r6_a_held_instance_lock_fails_the_session_boot_typed() {
         standalone_config(&db),
         None,
         true,
-        |_| EditorIo {
+        |_, _| EditorIo {
             lines: rx,
             dispositions: verdicts,
         },
@@ -570,7 +570,7 @@ async fn r10_a_connector_sync_failure_is_typed_and_survivable() {
         config,
         None,
         true,
-        |_| EditorIo {
+        |_, _| EditorIo {
             lines: rx,
             dispositions: verdicts,
         },
@@ -726,7 +726,7 @@ async fn r13_a_kiosk_mode_session_boots_and_serves() {
         config,
         None,
         true,
-        |_| EditorIo {
+        |_, _| EditorIo {
             lines: rx,
             dispositions: verdicts,
         },
@@ -1157,7 +1157,7 @@ async fn run_with(
         config_path,
         store,
         json_default,
-        |_| EditorIo {
+        |_, _| EditorIo {
             lines: rx,
             dispositions: vtx,
         },

@@ -85,6 +85,12 @@ pub(crate) enum Kind {
     Tasks,
     /// Live label titles (parity with `resolve_label`).
     Labels,
+    /// Live board uuids/titles (parity with `resolve_board` — live,
+    /// `!deleted`, title-matched, uuid-disambiguated collisions).
+    Boards,
+    /// The configured connector names (boot-fixed for a session; config
+    /// is not engine state).
+    Connectors,
     /// Static enumerable literals for one flag (`--due` → `none`).
     Literals(&'static [&'static str]),
     /// Free text or unclassifiable: offer nothing.
@@ -254,18 +260,24 @@ fn flag_value_kind(long: &str) -> Kind {
     match long {
         "stack" => Kind::Stacks,
         "due" => Kind::Literals(&["none"]),
+        "board" | "local-board" => Kind::Boards,
+        "connector" => Kind::Connectors,
         _ => Kind::None,
     }
 }
 
 /// Positional id → completion kind. `task`/`stack`/`label` are the
 /// selector positions (`resolve_task`/`resolve_stack`/`resolve_label`
-/// parity); everything else (titles, board ids) is free text.
+/// parity), `board` is `boards use`'s positional (the `--board` flag's
+/// kind); `remote_board` (`boards select`'s positional — a remote u64,
+/// server state) completes nothing locally, `boards list` is its
+/// source.
 fn positional_kind(id: &str) -> Kind {
     match id {
         "task" => Kind::Tasks,
         "stack" => Kind::Stacks,
         "label" => Kind::Labels,
+        "board" => Kind::Boards,
         _ => Kind::None,
     }
 }
@@ -616,6 +628,7 @@ fn quoted(word: &str) -> Candidate {
 pub(crate) fn candidates(
     spec: &CompletionSpec,
     state: &AppState,
+    connector_names: &[String],
     plan: &CompletionPlan,
 ) -> Vec<Candidate> {
     let stem = plan.stem.as_str();
@@ -678,6 +691,19 @@ pub(crate) fn candidates(
                 .map(|l| (l.id.as_uuid(), l.title.as_str())),
             stem,
         ),
+        Kind::Boards => live_entries(
+            state
+                .boards
+                .values()
+                .filter(|b| !b.deleted)
+                .map(|b| (b.id.as_uuid(), b.title.as_str())),
+            stem,
+        ),
+        Kind::Connectors => connector_names
+            .iter()
+            .filter(|n| n.starts_with(stem))
+            .map(|n| quoted(n))
+            .collect(),
         Kind::None => Vec::new(),
     }
 }
@@ -730,6 +756,7 @@ fn live_entries<'a>(
 pub(crate) fn complete(
     spec: &CompletionSpec,
     state: &AppState,
+    connector_names: &[String],
     line: &str,
     pos: usize,
 ) -> Option<(usize, Vec<Candidate>)> {
@@ -738,7 +765,7 @@ pub(crate) fn complete(
     if plan.kind == Kind::None {
         return None;
     }
-    let out = candidates(spec, state, &plan);
+    let out = candidates(spec, state, connector_names, &plan);
     Some((plan.start, out))
 }
 
@@ -754,14 +781,23 @@ pub(crate) fn complete(
 pub(crate) struct ReplHelper {
     spec: CompletionSpec,
     state: Arc<arc_swap::ArcSwap<AppState>>,
+    /// The configured connector names, boot-fixed for the session (the
+    /// connect ceremony rewrites the default entry's identity, never
+    /// the name set). Config is not engine state, so it rides beside
+    /// the state handle, not through it.
+    connector_names: Vec<String>,
 }
 
 impl ReplHelper {
     #[must_use]
-    pub(crate) fn new(state: Arc<arc_swap::ArcSwap<AppState>>) -> Self {
+    pub(crate) fn new(
+        state: Arc<arc_swap::ArcSwap<AppState>>,
+        connector_names: Vec<String>,
+    ) -> Self {
         Self {
             spec: CompletionSpec::from_cli(),
             state,
+            connector_names,
         }
     }
 }
@@ -778,7 +814,8 @@ impl rustyline::completion::Completer for ReplHelper {
         // None / Kind::None / an empty match all map to *no candidates*,
         // never an error — a wrong-shaped line must not fail the Tab.
         let state = self.state.load_full();
-        let out = complete(&self.spec, &state, line, pos).unwrap_or((pos, Vec::new()));
+        let out = complete(&self.spec, &state, &self.connector_names, line, pos)
+            .unwrap_or((pos, Vec::new()));
         Ok((
             out.0,
             out.1
@@ -1110,6 +1147,7 @@ mod tests {
                     "select",
                     "unbind",
                     "unarchive",
+                    "use",
                 ],
             ),
             ("stacks", vec!["add", "delete", "move", "rename"]),
@@ -1144,6 +1182,16 @@ mod tests {
             &[Kind::Tasks],
             "the remind selector, then flags only"
         );
+        assert_eq!(
+            kinds(["boards", "use"]),
+            &[Kind::Boards],
+            "boards use's positional completes live boards"
+        );
+        assert_eq!(
+            kinds(["boards", "select"]),
+            &[Kind::None],
+            "select's remote positional is server state (completes nothing locally)"
+        );
         assert_eq!(kinds(["tasks", "list"]), &[] as &[Kind]);
         assert_eq!(
             kinds(["tasks", "add"]),
@@ -1170,6 +1218,44 @@ mod tests {
             .find(|f| f.long == "due")
             .expect("--due walked");
         assert_eq!(due.value_kind, Kind::Literals(&["none"]));
+        for path in [
+            ["boards", "rename"],
+            ["boards", "delete"],
+            ["labels", "add"],
+        ] {
+            let board_flag = flags(path)
+                .iter()
+                .find(|f| f.long == "board")
+                .expect("--board walked");
+            assert!(board_flag.takes_value);
+            assert_eq!(board_flag.value_kind, Kind::Boards, "{path:?}");
+        }
+        let local = flags(["boards", "select"])
+            .iter()
+            .find(|f| f.long == "local-board")
+            .expect("--local-board walked");
+        assert_eq!(local.value_kind, Kind::Boards);
+        let sync_flags = spec
+            .flags
+            .get(&vec!["sync".to_owned()])
+            .expect("sync walked");
+        let sync_connector = sync_flags
+            .iter()
+            .find(|f| f.long == "connector")
+            .expect("--connector walked");
+        assert_eq!(sync_connector.value_kind, Kind::Connectors);
+        for path in [
+            ["boards", "list"],
+            ["boards", "select"],
+            ["boards", "publish"],
+        ] {
+            let connector_flag = flags(path)
+                .iter()
+                .find(|f| f.long == "connector")
+                .expect("--connector walked");
+            assert!(connector_flag.takes_value);
+            assert_eq!(connector_flag.value_kind, Kind::Connectors, "{path:?}");
+        }
 
         // Globals: `--config` kept for counting but never offered;
         // `--version` is root-local (`root_only`), `--json` propagates.
@@ -1299,15 +1385,25 @@ mod tests {
         label(&mut state, board_id, "gone", true);
 
         // Stacks: tombstoned absent, canonical (order, id) order.
-        let titles = titles_of(&candidates(&spec, &state, &kind_plan(Kind::Stacks, "")));
+        let titles = titles_of(&candidates(
+            &spec,
+            &state,
+            &[],
+            &kind_plan(Kind::Stacks, ""),
+        ));
         assert_eq!(titles, ["Archived", "Todo"]);
 
         // Tasks: done and archived in, tombstoned out.
-        let titles = titles_of(&candidates(&spec, &state, &kind_plan(Kind::Tasks, "")));
+        let titles = titles_of(&candidates(&spec, &state, &[], &kind_plan(Kind::Tasks, "")));
         assert_eq!(titles, ["Archived chore", "Buy milk", "Done report"]);
 
         // Labels: tombstoned out.
-        let titles = titles_of(&candidates(&spec, &state, &kind_plan(Kind::Labels, "")));
+        let titles = titles_of(&candidates(
+            &spec,
+            &state,
+            &[],
+            &kind_plan(Kind::Labels, ""),
+        ));
         assert_eq!(titles, ["urgent"]);
     }
 
@@ -1323,12 +1419,12 @@ mod tests {
 
         // Case-sensitive: `buy` matches only the lowercase title, never
         // `Buy milk` (selectors are exact-match).
-        let out = candidates(&spec, &state, &kind_plan(Kind::Tasks, "buy"));
+        let out = candidates(&spec, &state, &[], &kind_plan(Kind::Tasks, "buy"));
         assert_eq!(titles_of(&out), ["buy milk later"]);
 
         // A hard collision replaces the deduped title row with one
         // uuid row per entity: title first, the uuid the distinguisher.
-        let out = candidates(&spec, &state, &kind_plan(Kind::Tasks, "Buy"));
+        let out = candidates(&spec, &state, &[], &kind_plan(Kind::Tasks, "Buy"));
         assert_eq!(out.len(), 2, "one uuid row per colliding entity");
         let offered: std::collections::BTreeMap<String, String> = out
             .iter()
@@ -1369,7 +1465,7 @@ mod tests {
         // Stacks: two uuid rows, each resolving exactly; display is
         // title-first. Canonical order is (order, id) — the fixture's
         // orders (0, 1) decide, so the rows are deterministic.
-        let out = candidates(&spec, &state, &kind_plan(Kind::Stacks, "Spr"));
+        let out = candidates(&spec, &state, &[], &kind_plan(Kind::Stacks, "Spr"));
         assert_eq!(out.len(), 2);
         for (cand, id) in out.iter().zip([first, second]) {
             let uuid = id.as_uuid().to_string();
@@ -1384,7 +1480,7 @@ mod tests {
 
         // Labels: same rule (id canonical order — order-agnostic set
         // assertion, the fixture ids are generated).
-        let out = candidates(&spec, &state, &kind_plan(Kind::Labels, "urg"));
+        let out = candidates(&spec, &state, &[], &kind_plan(Kind::Labels, "urg"));
         assert_eq!(out.len(), 2);
         let offered: Vec<(String, LabelId)> = out
             .iter()
@@ -1419,7 +1515,7 @@ mod tests {
         task(&mut state, todo, 1, "Solo", false, false, false);
         let dup_high = task(&mut state, todo, 2, "Dup", false, false, false);
 
-        let out = candidates(&spec, &state, &kind_plan(Kind::Tasks, ""));
+        let out = candidates(&spec, &state, &[], &kind_plan(Kind::Tasks, ""));
         // Group order = first encounter: the Dup group (order 0) leads,
         // the unique title follows; no plain `Dup` row anywhere.
         assert_eq!(out.len(), 3);
@@ -1446,11 +1542,11 @@ mod tests {
         // none of the session-refused verbs.
         let prefix = tokenize_prefix("ta", 2);
         assert_eq!(
-            replacements(&candidates(&spec, &state, &plan(&spec, &prefix))),
+            replacements(&candidates(&spec, &state, &[], &plan(&spec, &prefix))),
             ["tasks "]
         );
         let prefix = tokenize_prefix("", 0);
-        let all_verbs = candidates(&spec, &state, &plan(&spec, &prefix));
+        let all_verbs = candidates(&spec, &state, &[], &plan(&spec, &prefix));
         let all = replacements(&all_verbs);
         assert!(all.contains(&"exit "));
         assert!(all.contains(&"boards "));
@@ -1465,19 +1561,19 @@ mod tests {
 
         // Subverbs: `tasks l` → label, list.
         let prefix = tokenize_prefix("tasks l", 7);
-        let out = candidates(&spec, &state, &plan(&spec, &prefix));
+        let out = candidates(&spec, &state, &[], &plan(&spec, &prefix));
         assert_eq!(replacements(&out), ["label ", "list "]);
 
         // Flags: `--st` on `tasks list` → only `--stack`.
         let prefix = tokenize_prefix("tasks list --st", 15);
         assert_eq!(
-            replacements(&candidates(&spec, &state, &plan(&spec, &prefix))),
+            replacements(&candidates(&spec, &state, &[], &plan(&spec, &prefix))),
             ["--stack "]
         );
 
         // Bare `--` before any verb: the root globals, `--config` excluded.
         let prefix = tokenize_prefix("--", 2);
-        let out = candidates(&spec, &state, &plan(&spec, &prefix));
+        let out = candidates(&spec, &state, &[], &plan(&spec, &prefix));
         let flags: Vec<&str> = out.iter().map(|c| c.display.as_str()).collect();
         assert_eq!(flags, ["--help", "--json", "--version"]);
 
@@ -1486,11 +1582,11 @@ mod tests {
         // usage error.
         let prefix = tokenize_prefix("--ver", 5);
         assert_eq!(
-            replacements(&candidates(&spec, &state, &plan(&spec, &prefix))),
+            replacements(&candidates(&spec, &state, &[], &plan(&spec, &prefix))),
             ["--version "]
         );
         let prefix = tokenize_prefix("tasks list --ver", 16);
-        let out = candidates(&spec, &state, &plan(&spec, &prefix));
+        let out = candidates(&spec, &state, &[], &plan(&spec, &prefix));
         assert!(
             out.is_empty(),
             "--version is root-local: {:?}",
@@ -1508,9 +1604,133 @@ mod tests {
         // Literals: `--due` offers exactly `none`.
         let prefix = tokenize_prefix("tasks edit t2 --due ", 20);
         assert_eq!(
-            replacements(&candidates(&spec, &state, &plan(&spec, &prefix))),
+            replacements(&candidates(&spec, &state, &[], &plan(&spec, &prefix))),
             ["none "]
         );
+    }
+
+    // -- board + connector candidates (D6-8) ---------------------------------------
+
+    fn board_state() -> AppState {
+        let mut state = AppState::default();
+        let clocks = taskboard_domain::BoardClocks {
+            title: epoch(),
+            color: epoch(),
+            archived: epoch(),
+            deleted: epoch(),
+        };
+        let mk = |raw: u128, title: &str, deleted: bool| {
+            let id = BoardId::from_uuid(seeded_id(raw));
+            (
+                id,
+                Board {
+                    id,
+                    remote: None,
+                    title: title.to_owned(),
+                    color: taskboard_domain::Color::new("0082c9"),
+                    archived: false,
+                    deleted,
+                    clocks,
+                    remote_seen: None,
+                },
+            )
+        };
+        let (a, board) = mk(0x10, "Personal", false);
+        state.boards.insert(a, board);
+        let (b, board) = mk(0x11, "Work", false);
+        state.boards.insert(b, board);
+        let (c, board) = mk(0x12, "Gone", true);
+        state.boards.insert(c, board);
+        state
+    }
+
+    /// `Kind::Boards` parity: live (`!deleted`) boards only, title rows,
+    /// collision disambiguation mirrors the Stacks rule.
+    #[test]
+    fn board_candidates_list_live_boards_with_stacks_parity() {
+        let spec = CompletionSpec::from_cli();
+        let state = board_state();
+        let out = candidates(&spec, &state, &[], &kind_plan(Kind::Boards, ""));
+        assert_eq!(titles_of(&out), ["Personal", "Work"], "tombstoned is out");
+
+        // A hard title collision: one uuid row per board, replacement
+        // is the uuid.
+        let mut state = board_state();
+        let (dup, board) = {
+            let id = BoardId::from_uuid(seeded_id(0x13));
+            (
+                id,
+                Board {
+                    id,
+                    remote: None,
+                    title: "Work".to_owned(),
+                    color: taskboard_domain::Color::new("0082c9"),
+                    archived: false,
+                    deleted: false,
+                    clocks: taskboard_domain::BoardClocks {
+                        title: epoch(),
+                        color: epoch(),
+                        archived: epoch(),
+                        deleted: epoch(),
+                    },
+                    remote_seen: None,
+                },
+            )
+        };
+        state.boards.insert(dup, board);
+        let out = candidates(&spec, &state, &[], &kind_plan(Kind::Boards, "Wor"));
+        assert_eq!(out.len(), 2, "one uuid row per colliding board");
+        for cand in &out {
+            let uuid = cand.display.split(" - ").nth(1).expect("uuid suffix");
+            assert_eq!(
+                cand.replacement,
+                format!("{} ", shell_words::quote(uuid)),
+                "the insertion is the uuid"
+            );
+        }
+    }
+
+    /// `Kind::Connectors` prefix-filters the configured names (plain
+    /// quoted literals).
+    #[test]
+    fn connector_candidates_prefix_filter_the_configured_names() {
+        let spec = CompletionSpec::from_cli();
+        let state = AppState::default();
+        let names = vec!["alpha".to_owned(), "beta".to_owned()];
+        let out = candidates(&spec, &state, &names, &kind_plan(Kind::Connectors, ""));
+        assert_eq!(titles_of(&out), ["alpha", "beta"]);
+        let out = candidates(&spec, &state, &names, &kind_plan(Kind::Connectors, "b"));
+        assert_eq!(titles_of(&out), ["beta"]);
+    }
+
+    /// Context correctness: connector names offered only at
+    /// `--connector` positions; board ids only at `--board`/
+    /// `--local-board`/`boards use` positions; nothing new at task/
+    /// stack/label selector positions.
+    #[test]
+    fn the_new_kinds_route_only_at_their_positions() {
+        let spec = CompletionSpec::from_cli();
+        assert_eq!(
+            routed(&spec, "boards list --connector ", 24),
+            Kind::Connectors
+        );
+        assert_eq!(routed(&spec, "sync --connector ", 17), Kind::Connectors);
+        assert_eq!(
+            routed(&spec, "boards select 3 --connector ", 28),
+            Kind::Connectors
+        );
+        assert_eq!(routed(&spec, "boards rename --board ", 22), Kind::Boards);
+        assert_eq!(
+            routed(&spec, "boards select --local-board ", 28),
+            Kind::Boards
+        );
+        assert_eq!(routed(&spec, "boards use ", 11), Kind::Boards);
+        // The remote positional completes nothing (server state).
+        assert_eq!(routed(&spec, "boards select ", 14), Kind::None);
+        // Unchanged selector positions.
+        assert_eq!(routed(&spec, "tasks label ", 12), Kind::Tasks);
+        assert_eq!(routed(&spec, "stacks rename ", 14), Kind::Stacks);
+        assert_eq!(routed(&spec, "boards list ", 12), Kind::None);
     }
 
     // -- quoting roundtrips ---------------------------------------------------------
@@ -1530,12 +1750,12 @@ mod tests {
         let mut subjects: Vec<String> = Vec::new();
         for line in ["", "tasks ", "tasks list --"] {
             let prefix = tokenize_prefix(line, line.len());
-            for c in candidates(&spec, &state, &plan(&spec, &prefix)) {
+            for c in candidates(&spec, &state, &[], &plan(&spec, &prefix)) {
                 subjects.push(c.replacement);
             }
         }
         for kind in [Kind::Stacks, Kind::Tasks, Kind::Labels] {
-            for c in candidates(&spec, &state, &kind_plan(kind, "")) {
+            for c in candidates(&spec, &state, &[], &kind_plan(kind, "")) {
                 subjects.push(c.replacement);
             }
         }
@@ -1572,16 +1792,17 @@ mod tests {
         stack(&mut state, board_id, 0, "Todo", false);
 
         // `stacks rename To|` → the live title, inserted at the stem.
-        let (start, out) = complete(&spec, &state, "stacks rename To", 16).expect("stack kind");
+        let (start, out) =
+            complete(&spec, &state, &[], "stacks rename To", 16).expect("stack kind");
         assert_eq!(start, "stacks rename ".len());
         assert_eq!(replacements(&out), ["Todo "]);
 
         // No match → an empty list, still Some (never an error).
-        let (_, out) = complete(&spec, &state, "stacks rename Zzz", 17).expect("stack kind");
+        let (_, out) = complete(&spec, &state, &[], "stacks rename Zzz", 17).expect("stack kind");
         assert_eq!(out, Vec::new());
 
         // Unclassifiable → None (the glue maps that to no candidates).
-        assert!(complete(&spec, &state, "frobnicate ", 11).is_none());
+        assert!(complete(&spec, &state, &[], "frobnicate ", 11).is_none());
     }
 
     #[test]
@@ -1591,8 +1812,10 @@ mod tests {
 
         let (mut state, board_id) = fresh_state();
         stack(&mut state, board_id, 0, "Todo", false);
-        let helper =
-            super::ReplHelper::new(std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(state)));
+        let helper = super::ReplHelper::new(
+            std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(state)),
+            Vec::new(),
+        );
         let history = DefaultHistory::new();
         let ctx = rustyline::Context::new(&history);
 
