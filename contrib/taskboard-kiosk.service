@@ -1,0 +1,65 @@
+# systemd *system*-unit template for the taskboard kiosk appliance
+# (ADR 0016; the kiosk deployment profile).
+#
+# The appliance's frontend comes from the config file's
+# [app] mode = "kiosk" — never from an environment variable: the unit
+# launches the binary bare with an explicit --config, so the config
+# file is the single mode authority (no TASKBOARD_* variable may ever
+# appear here; ADR 0015's #236 rule keeps unit launches explicit).
+#
+# One-time install (root, on the kiosk machine; the bring-up runbook
+# walks the whole image):
+#   useradd --system --home-dir /var/lib/taskboard \
+#       --shell /usr/sbin/nologin taskboard
+#   install -m 0755 taskboard /usr/local/bin/taskboard
+#   install -D -m 0644 taskboard.toml /etc/taskboard/taskboard.toml
+#   #   ... [app] mode = "kiosk"; pin [storage] db_path to
+#   #   /var/lib/taskboard/taskboard.db (the StateDirectory below).
+#   install -m 0644 taskboard-kiosk.service /etc/systemd/system/
+#   # The seat's display session must be reachable from this system
+#   # unit: write the display environment into
+#   # /etc/default/taskboard-kiosk, e.g. for a wayland seat (adjust
+#   # the socket name and the seat UID):
+#   #   WAYLAND_DISPLAY=wayland-0
+#   #   XDG_RUNTIME_DIR=/run/user/1000
+#   # or for X11:  DISPLAY=:0
+#   systemctl daemon-reload
+#   systemctl enable --now taskboard-kiosk.service
+#
+# Operate (over ssh):
+#   systemctl status taskboard-kiosk      # supervision view
+#   taskboard status --json               # taskboard's own view (IPC)
+#   taskboard daemon stop                 # graceful stop over IPC
+#   journalctl -u taskboard-kiosk -f      # logs (tracing → stderr)
+#
+# Restart=always is the appliance's supervisor: ADR 0016 accepts that
+# a GUI crash takes the core with it (one process), so recovery is
+# re-execution, not in-process GUI supervision. The ExecStartPre gate
+# mirrors the binary's own display_available predicate (set and
+# non-empty): before the seat session is up at boot, the unit fails
+# fast and restart-loops every 5 s until the display appears — the
+# appliance never lingers headless on a wall. A display variable that
+# outlives its server fails typed at mount (nonzero exit → restart),
+# the ADR 0016 race tolerance.
+
+[Unit]
+Description=taskboard kiosk appliance
+Documentation=https://github.com/D4id4los/taskboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=taskboard
+StateDirectory=taskboard
+EnvironmentFile=/etc/default/taskboard-kiosk
+ExecStartPre=/bin/sh -c 'test -n "$$WAYLAND_DISPLAY" || test -n "$$DISPLAY"'
+ExecStart=/usr/local/bin/taskboard --config /etc/taskboard/taskboard.toml
+Restart=always
+RestartSec=5
+# SIGTERM triggers the graceful drain (flush → broadcast → bounded
+# actor joins, ADR 0008 §5); the second signal force-exits (130).
+TimeoutStopSec=30
+
+[Install]
+WantedBy=graphical.target
