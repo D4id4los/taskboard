@@ -472,7 +472,6 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
             system_rx,
             notifier,
             ReminderEngineConfig::disabled(),
-            taskboard_domain::ConnectorId::from("nextcloud"),
         )
         .await
         .expect("engine boots");

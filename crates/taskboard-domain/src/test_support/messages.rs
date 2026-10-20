@@ -107,9 +107,14 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
             .prop_map(|(board, title)| StateCommand::RenameBoard { board, title }),
         (
             super::board_id_strategy(),
-            super::remote_board_id_strategy()
+            super::remote_board_id_strategy(),
+            string_strategy(),
         )
-            .prop_map(|(board, remote)| StateCommand::BindBoard { board, remote }),
+            .prop_map(|(board, remote, connector)| StateCommand::BindBoard {
+                board,
+                remote,
+                connector: crate::ids::ConnectorId::from(connector),
+            }),
         // 2: reminder commands
         (
             super::reminders::reminder_ref_strategy(),

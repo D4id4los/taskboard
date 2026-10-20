@@ -89,7 +89,6 @@ async fn boot(server: MockServer, repo_state: taskboard_domain::PersistedState) 
         system_engine_rx,
         notifier,
         taskboard_state::ReminderEngineConfig::disabled(),
-        taskboard_domain::ConnectorId::from("nextcloud"),
     )
     .await
     .expect("engine boots");

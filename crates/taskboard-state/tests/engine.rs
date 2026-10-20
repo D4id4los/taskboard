@@ -179,7 +179,6 @@ async fn spawn(spawner: Spawner) -> Harness {
         system_rx,
         notifier,
         spawner.reminders,
-        taskboard_domain::ConnectorId::from("nextcloud"),
     )
     .await
     .expect("engine boots");
@@ -880,7 +879,6 @@ async fn a12_boot_failure_surfaces_load_error() {
         system_rx,
         notifier,
         ReminderEngineConfig::disabled(),
-        taskboard_domain::ConnectorId::from("nextcloud"),
     )
     .await;
     assert!(matches!(
@@ -1489,6 +1487,7 @@ async fn a15_bind_board_sets_the_remote_binding() {
         .execute(StateCommand::BindBoard {
             board: h.board_id(),
             remote: RemoteBoardId(42),
+            connector: taskboard_domain::test_support::test_connector(),
         })
         .await
         .expect("accepted");

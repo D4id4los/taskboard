@@ -130,12 +130,19 @@ pub enum StateCommand {
     },
     /// Attach the named local board to an existing remote board. The next
     /// pull matches by this binding and merges instead of adopting a
-    /// duplicate; the outbox then drains onto the remote board.
+    /// duplicate; the outbox then drains onto the remote board. The
+    /// connector tag is the command's (D6-1): the app layer resolves and
+    /// guards the name against the configured set; the engine mints the
+    /// binding from the command verbatim (config-blind by the topology
+    /// rule) and scopes its equality/refusal comparisons to the full
+    /// binding.
     BindBoard {
         /// The local board to bind.
         board: BoardId,
         /// The remote board to bind to.
         remote: RemoteBoardId,
+        /// The connector that will own the binding.
+        connector: ConnectorId,
     },
     /// Rename the named board's title (accepted no-op when unchanged;
     /// pushes as a full-send when the board is bound).

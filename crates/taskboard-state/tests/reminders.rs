@@ -188,7 +188,6 @@ async fn spawn(spawner: Spawner) -> Harness {
         system_rx,
         notifier,
         spawner.reminders,
-        taskboard_domain::ConnectorId::from("nextcloud"),
     )
     .await
     .expect("engine boots");

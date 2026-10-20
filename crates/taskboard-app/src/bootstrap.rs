@@ -717,7 +717,6 @@ async fn bootstrap_with_modules(
         system_rx_engine,
         notifier,
         config.reminder_engine_config(),
-        default_connector.clone(),
     )
     .await;
 

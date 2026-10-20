@@ -293,7 +293,6 @@ pub fn plan_command(
     command: &StateCommand,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
-    default_connector: &crate::ids::ConnectorId,
 ) -> Result<CommandPlan, CommandError> {
     match command {
         StateCommand::CreateTask {
@@ -873,27 +872,40 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        StateCommand::BindBoard { board, remote } => {
+        StateCommand::BindBoard {
+            board,
+            remote,
+            connector,
+        } => {
             let board_id = live_board_of(app, *board)?;
             let board = &app.boards[&board_id];
-            // Board-id equality: at N=1 the connector tag is constant, so
-            // comparing the remote board identifies the same-remote rebind.
-            match board.remote.as_ref().map(|r| r.board) {
-                Some(bound) if bound == *remote => return Ok(no_op()),
+            // Binding-scoped equality (D6-2): remote ids are namespaced
+            // per connector, so "the same remote" is the full
+            // `(connector, remote)` pair — the same numeric id through a
+            // different connector is a genuinely different remote board.
+            let binding = crate::ids::RemoteBoardBinding {
+                connector: connector.clone(),
+                board: *remote,
+            };
+            match board.remote.as_ref() {
+                Some(bound) if *bound == binding => return Ok(no_op()),
                 Some(bound) => {
                     return Err(CommandError::BoardAlreadyBound {
                         board: board_id,
-                        bound,
+                        bound: bound.board,
                     });
                 }
                 None => {}
             }
-            // One remote board binds to at most one local board.
-            if let Some(holder) = app
-                .boards
-                .values()
-                .find(|b| b.id != board_id && b.remote.as_ref().map(|r| r.board) == Some(*remote))
-            {
+            // One remote board binds to at most one local board — scoped
+            // to the same connector: another connector's remote with the
+            // same numeric id is a different board and cannot collide.
+            if let Some(holder) = app.boards.values().find(|b| {
+                b.id != board_id
+                    && b.remote
+                        .as_ref()
+                        .is_some_and(|r| r.board == *remote && r.connector == *connector)
+            }) {
                 return Err(CommandError::RemoteBoardInUse {
                     remote: *remote,
                     board: holder.id,
@@ -952,10 +964,9 @@ pub fn plan_command(
                 }
             }
             let mut updated = board.clone();
-            updated.remote = Some(crate::ids::RemoteBoardBinding {
-                connector: default_connector.clone(),
-                board: *remote,
-            });
+            // The mint source is the command (D6-1): the app layer
+            // resolves and guards the name; the engine is config-blind.
+            updated.remote = Some(binding);
             actions.push(PersistenceAction::UpsertBoard(updated));
             Ok(CommandPlan {
                 actions,
@@ -1457,14 +1468,7 @@ mod tests {
         outbox: &[PendingOp],
         command: &StateCommand,
     ) -> Result<CommandPlan, CommandError> {
-        plan_command(
-            app,
-            outbox,
-            command,
-            &CountingIds::default(),
-            now(),
-            &crate::test_support::test_connector(),
-        )
+        plan_command(app, outbox, command, &CountingIds::default(), now())
     }
 
     fn op_for(raw: u128, op: LocalOp) -> PendingOp {
@@ -2638,15 +2642,7 @@ mod tests {
             title: "second".into(),
             color: crate::entities::Color::new("000000"),
         };
-        let first = plan_command(
-            &app,
-            &outbox,
-            &command,
-            &ids,
-            now(),
-            &crate::test_support::test_connector(),
-        )
-        .unwrap();
+        let first = plan_command(&app, &outbox, &command, &ids, now()).unwrap();
         let CommandOutcome::CreatedBoard(first_id) = first.outcome else {
             panic!("wrong outcome");
         };
@@ -2660,15 +2656,7 @@ mod tests {
                 ..grown.boards[&board_id()].clone()
             },
         );
-        let second = plan_command(
-            &grown,
-            &outbox,
-            &command,
-            &ids,
-            now(),
-            &crate::test_support::test_connector(),
-        )
-        .unwrap();
+        let second = plan_command(&grown, &outbox, &command, &ids, now()).unwrap();
         let CommandOutcome::CreatedBoard(second_id) = second.outcome else {
             panic!("wrong outcome");
         };
@@ -2690,6 +2678,7 @@ mod tests {
             &StateCommand::BindBoard {
                 board: board_id(),
                 remote: crate::ids::RemoteBoardId(42),
+                connector: crate::test_support::test_connector(),
             },
         )
         .unwrap();
@@ -2705,7 +2694,10 @@ mod tests {
     }
 
     #[test]
-    fn bind_board_mints_the_binding_with_the_default_connector_tag() {
+    fn bind_board_mints_the_binding_with_the_commands_connector_tag() {
+        // The mint source is the command (D6-1): the tag it carries is
+        // the tag the binding gets. The legacy-world corpus tag keeps
+        // the old fixture's exact binding value.
         let app = unbound_board_state();
         let plan = run(
             &app,
@@ -2713,25 +2705,24 @@ mod tests {
             &StateCommand::BindBoard {
                 board: board_id(),
                 remote: crate::ids::RemoteBoardId(42),
+                connector: crate::test_support::test_connector(),
             },
         )
         .unwrap();
         let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
             panic!("first action must be the board upsert");
         };
-        let binding = updated.remote.as_ref().expect("bind mints the binding");
-        assert_eq!(binding.board, crate::ids::RemoteBoardId(42));
         assert_eq!(
-            binding.connector.as_str(),
-            "nextcloud",
-            "the tag is the engine's config-minted default"
+            updated.remote,
+            crate::test_support::test_binding(crate::ids::RemoteBoardId(42))
         );
     }
 
     #[test]
-    fn bind_board_mints_the_binding_with_a_custom_default_connector_tag() {
-        // A non-default engine tag is threaded through unchanged (D-5: the
-        // mint is the caller's default, not a constant).
+    fn bind_board_mints_a_non_default_connector_tag_verbatim() {
+        // The engine is config-blind (the topology rule): a non-default
+        // tag rides through unchanged — the move-board surface (D5-18's
+        // deferred chunk-6 motion).
         let app = unbound_board_state();
         let custom = crate::ids::ConnectorId::from("work");
         let plan = plan_command(
@@ -2740,10 +2731,10 @@ mod tests {
             &StateCommand::BindBoard {
                 board: board_id(),
                 remote: crate::ids::RemoteBoardId(42),
+                connector: custom.clone(),
             },
             &CountingIds::default(),
             now(),
-            &custom,
         )
         .unwrap();
         let PersistenceAction::UpsertBoard(updated) = &plan.actions[0] else {
@@ -2754,6 +2745,83 @@ mod tests {
             Some(crate::ids::RemoteBoardBinding {
                 connector: custom,
                 board: crate::ids::RemoteBoardId(42),
+            })
+        );
+    }
+
+    #[test]
+    fn same_remote_id_through_a_different_connector_refuses_board_already_bound() {
+        // Binding-scoped equality (D6-2): remote 42 via beta is a
+        // genuinely different remote board than remote 42 via alpha —
+        // a board holding the alpha binding cannot be re-bound onto the
+        // beta remote as if it were the same remote.
+        let mut app = unbound_board_state();
+        app.boards.get_mut(&board_id()).unwrap().remote =
+            crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        assert_eq!(
+            run(
+                &app,
+                &[],
+                &StateCommand::BindBoard {
+                    board: board_id(),
+                    remote: crate::ids::RemoteBoardId(42),
+                    connector: crate::ids::ConnectorId::from("beta"),
+                },
+            ),
+            Err(CommandError::BoardAlreadyBound {
+                board: board_id(),
+                bound: crate::ids::RemoteBoardId(42),
+            })
+        );
+    }
+
+    #[test]
+    fn cross_connector_remote_id_does_not_collide() {
+        // The RemoteBoardInUse guard scopes to the connector (D6-2):
+        // another board holding (alpha, 42) does not block a bind of
+        // (beta, 42) — the numeric ids name different remote boards.
+        let mut app = unbound_board_state();
+        let other = BoardId::from(uuid::Uuid::from_u128(801));
+        let mut holder = app.boards[&board_id()].clone();
+        holder.id = other;
+        holder.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        app.boards.insert(other, holder);
+        let plan = run(
+            &app,
+            &[],
+            &StateCommand::BindBoard {
+                board: board_id(),
+                remote: crate::ids::RemoteBoardId(42),
+                connector: crate::ids::ConnectorId::from("beta"),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Bound { wiped_refs: 0 });
+    }
+
+    #[test]
+    fn same_binding_held_by_another_board_still_refuses_remote_board_in_use() {
+        // The cross-board guard stays binding-scoped: exactly
+        // (connector, remote) held by another live board refuses.
+        let mut app = unbound_board_state();
+        let other = BoardId::from(uuid::Uuid::from_u128(802));
+        let mut holder = app.boards[&board_id()].clone();
+        holder.id = other;
+        holder.remote = crate::test_support::test_binding(crate::ids::RemoteBoardId(42));
+        app.boards.insert(other, holder);
+        assert_eq!(
+            run(
+                &app,
+                &[],
+                &StateCommand::BindBoard {
+                    board: board_id(),
+                    remote: crate::ids::RemoteBoardId(42),
+                    connector: crate::test_support::test_connector(),
+                },
+            ),
+            Err(CommandError::RemoteBoardInUse {
+                remote: crate::ids::RemoteBoardId(42),
+                board: other,
             })
         );
     }
@@ -2770,6 +2838,7 @@ mod tests {
                 &StateCommand::BindBoard {
                     board: board_id(),
                     remote: crate::ids::RemoteBoardId(42),
+                    connector: crate::test_support::test_connector(),
                 },
             )
             .unwrap()
@@ -2793,7 +2862,8 @@ mod tests {
                 &[],
                 &StateCommand::BindBoard {
                     board: board_id(),
-                    remote: crate::ids::RemoteBoardId(42)
+                    remote: crate::ids::RemoteBoardId(42),
+                    connector: crate::test_support::test_connector(),
                 }
             ),
             Err(CommandError::RemoteBoardInUse {
@@ -2847,6 +2917,7 @@ mod tests {
             &StateCommand::BindBoard {
                 board: board_id(),
                 remote: crate::ids::RemoteBoardId(2),
+                connector: crate::test_support::test_connector(),
             },
         )
         .unwrap();
@@ -2910,6 +2981,7 @@ mod tests {
             &StateCommand::BindBoard {
                 board: board_id(),
                 remote: crate::ids::RemoteBoardId(9),
+                connector: crate::test_support::test_connector(),
             },
         )
         .unwrap();
@@ -2960,7 +3032,8 @@ mod tests {
                 &outbox,
                 &StateCommand::BindBoard {
                     board: stranger,
-                    remote: crate::ids::RemoteBoardId(1)
+                    remote: crate::ids::RemoteBoardId(1),
+                    connector: crate::test_support::test_connector(),
                 }
             ),
             Err(CommandError::UnknownBoard(stranger))
@@ -2982,6 +3055,7 @@ mod tests {
             &StateCommand::BindBoard {
                 board: board_id(),
                 remote: crate::ids::RemoteBoardId(42),
+                connector: crate::test_support::test_connector(),
             },
         )
         .unwrap();
@@ -2992,7 +3066,8 @@ mod tests {
                 &outbox,
                 &StateCommand::BindBoard {
                     board: board_id(),
-                    remote: crate::ids::RemoteBoardId(43)
+                    remote: crate::ids::RemoteBoardId(43),
+                    connector: crate::test_support::test_connector(),
                 }
             ),
             Err(CommandError::BoardAlreadyBound {
@@ -4186,8 +4261,7 @@ mod proptests {
                 };
                 let outbox = persisted.outbox.clone();
                 let result = plan_command(&app, &outbox, &command, &CountingIds::default(),
-                    chrono::Utc.timestamp_opt(36_000, 0).unwrap(),
-                &crate::test_support::test_connector());
+                    chrono::Utc.timestamp_opt(36_000, 0).unwrap());
 
                 // Totality: never a panic — always a plan or a typed error.
                 let Ok(plan) = result else {
@@ -4235,15 +4309,13 @@ mod proptests {
                 // keep the fresh ids (entity and op) comparable.
                 let empty: Vec<PendingOp> = Vec::new();
                 let now = chrono::Utc.timestamp_opt(36_000, 0).unwrap();
-                let baseline = plan_command(&state, &empty, &command, &CountingIds::default(), now,
-                &crate::test_support::test_connector());
+                let baseline = plan_command(&state, &empty, &command, &CountingIds::default(), now);
                 let variant = plan_command(
                     &state,
                     &outbox_state.outbox,
                     &command,
                     &CountingIds::default(),
                     now,
-                            &crate::test_support::test_connector()
     );
 
                 match (&baseline, &variant) {

@@ -127,18 +127,7 @@ impl SyncStates {
     /// fresh install shows today.
     #[must_use]
     pub fn aggregate(&self) -> SyncStatus {
-        let mut aggregated = SyncStatus::default();
-        for status in self.0.values() {
-            // A strictly higher rank replaces; an equal rank keeps the
-            // first (a `Failed` tie therefore keeps the lowest board id,
-            // since iteration is sorted).
-            if phase_rank(status.phase) > phase_rank(aggregated.phase) {
-                aggregated.phase = status.phase;
-            }
-            aggregated.last_success = std::cmp::max(aggregated.last_success, status.last_success);
-            aggregated.pending_ops = aggregated.pending_ops.saturating_add(status.pending_ops);
-        }
-        aggregated
+        aggregate_rows(self.0.values())
     }
 
     /// The engine's write seam for the stored part of one row (the
@@ -190,6 +179,28 @@ fn phase_rank(phase: SyncPhase) -> u8 {
         SyncPhase::Failed { .. } => 2,
         SyncPhase::Syncing => 3,
     }
+}
+
+/// The aggregate fold over an arbitrary *subset* of rows (D6-4): the
+/// same precedence/max/saturating-sum rules as
+/// [`SyncStates::aggregate`], exposed pure so the surfaces can fold a
+/// connector's boards (attribution derived app-side) without
+/// duplicating the fold logic. The empty fold is
+/// [`SyncStatus::default`].
+#[must_use]
+pub fn aggregate_rows<'a>(rows: impl Iterator<Item = &'a SyncStatus>) -> SyncStatus {
+    let mut aggregated = SyncStatus::default();
+    for status in rows {
+        // A strictly higher rank replaces; an equal rank keeps the
+        // first (a `Failed` tie therefore keeps the lowest board id,
+        // since callers iterating a `BTreeMap` feed sorted rows).
+        if phase_rank(status.phase) > phase_rank(aggregated.phase) {
+            aggregated.phase = status.phase;
+        }
+        aggregated.last_success = std::cmp::max(aggregated.last_success, status.last_success);
+        aggregated.pending_ops = aggregated.pending_ops.saturating_add(status.pending_ops);
+    }
+    aggregated
 }
 
 /// Recomputes the per-board sync projection: materializes a default row
@@ -361,6 +372,45 @@ mod sync_states_tests {
     #[test]
     fn empty_map_aggregates_to_the_default_status() {
         assert_eq!(SyncStates::new().aggregate(), SyncStatus::default());
+    }
+
+    #[test]
+    fn aggregate_rows_folds_a_subset_with_the_same_rules() {
+        // Dominance, max, and saturating sum over an arbitrary subset —
+        // the per-connector fold the surfaces derive with (D6-4).
+        let rows = [
+            status(SyncPhase::Idle, Some(ts(100)), 3),
+            status(failed(SyncErrorKind::Auth), Some(ts(200)), 4),
+            status(SyncPhase::Offline, None, u32::MAX),
+        ];
+        let folded = super::aggregate_rows(rows.iter());
+        assert_eq!(folded.phase, failed(SyncErrorKind::Auth));
+        assert_eq!(folded.last_success, Some(ts(200)));
+        assert_eq!(folded.pending_ops, u32::MAX, "saturating");
+
+        // A two-row subset folds to exactly the two-row aggregate.
+        let folded = super::aggregate_rows(rows[..2].iter());
+        assert_eq!(
+            folded,
+            status(failed(SyncErrorKind::Auth), Some(ts(200)), 7)
+        );
+
+        // The empty fold is the default.
+        assert_eq!(
+            super::aggregate_rows(std::iter::empty()),
+            SyncStatus::default()
+        );
+    }
+
+    #[test]
+    fn aggregate_delegates_to_aggregate_rows() {
+        // One fold logic, one home: the map method is the free function
+        // over all rows (equality pin over mixed inputs).
+        let sync = map_with(vec![
+            (1, status(SyncPhase::Syncing, Some(ts(50)), 2)),
+            (2, status(failed(SyncErrorKind::Network), Some(ts(90)), 5)),
+        ]);
+        assert_eq!(sync.aggregate(), super::aggregate_rows(sync.0.values()));
     }
 
     #[test]
