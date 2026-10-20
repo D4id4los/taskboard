@@ -10,6 +10,26 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The additive per-connector/per-board `status` answer (daemon IPC and
+  REPL sessions alike): `connectors: […]` (name, derived health,
+  bound boards) and `boards: […]` (flat, board-id order, local-only
+  boards with null attribution) — attribution derived from bindings,
+  never stored; a zero-bound connector lists configured-and-idle. The
+  `sync` field's byte shape is unchanged; old binaries decode the new
+  answer, new binaries decode old answers.
+- `--connector <name>` on the targeting verbs: `boards list`,
+  `boards select`, `boards publish`, and `sync` (the reported status —
+  and the wait's watched aggregate — scope to that connector's bound
+  boards; the nudge stays broadcast). An unknown name refuses typed
+  `unknown-connector`; cross-connector binds mint the chosen
+  connector's binding tag (the move-board surface).
+- REPL `boards use <uuid>` (query form answers the selection): the
+  session's board selection that later board-scoped lines pre-fill
+  `--board`/`--local-board` from; unknown/deleted ids refuse typed.
+  One-shot and daemon-socket invocations refuse (`session-only`).
+- Completion for board ids (`--board`, `--local-board`, `boards use`),
+  configured connector names (`--connector`), and the new
+  verbs/flags — offered only at their own positions.
 - The S2 refresh+draw criterion bench (`cargo bench -p
   taskboard-ui-slint --bench refresh_draw`): the UI refresh pass and
   the headless software draw leg timed as separate lanes (full-frame
