@@ -166,3 +166,66 @@ pub fn golden_state() -> (Fixture, AppState) {
         state,
     )
 }
+
+/// The deterministic board ids and the second board's stack of
+/// `two_board_state` (board one < board two, so board one seeds).
+#[derive(Debug, Clone, Copy)]
+pub struct TwoBoardFixture {
+    pub board_one: BoardId,
+    pub board_two: BoardId,
+    /// Board two's single stack ("c").
+    pub stack_c: StackId,
+}
+
+/// The two-board journey fixture (chunk-7 plan D9): board one
+/// ("board one") with stacks "a" (tasks 0, 1) and "b" (task 2),
+/// board two ("board two") with stack "c" (task 3); sync rows
+/// derived idle. Deterministic board ids fix the canonical order —
+/// board one is the seed.
+#[must_use]
+pub fn two_board_state() -> (TwoBoardFixture, AppState) {
+    let board_one = BoardId::from_uuid(uuid::Uuid::from_u128(0x1001));
+    let board_two = BoardId::from_uuid(uuid::Uuid::from_u128(0x1002));
+    let stack_a = StackId::from_uuid(uuid::Uuid::from_u128(0x2001));
+    let stack_b = StackId::from_uuid(uuid::Uuid::from_u128(0x2002));
+    let stack_c = StackId::from_uuid(uuid::Uuid::from_u128(0x2003));
+    let mut state = AppState::default();
+    for (id, title) in [(board_one, "board one"), (board_two, "board two")] {
+        let mut board = board(id);
+        title.clone_into(&mut board.title);
+        state.boards.insert(id, board);
+    }
+    state
+        .stacks
+        .insert(stack_a, stack(stack_a, board_one, "a", 0));
+    state
+        .stacks
+        .insert(stack_b, stack(stack_b, board_one, "b", 1));
+    state
+        .stacks
+        .insert(stack_c, stack(stack_c, board_two, "c", 0));
+    for (id, st, order) in [
+        (TaskId::from_uuid(uuid::Uuid::from_u128(0x3001)), stack_a, 0),
+        (TaskId::from_uuid(uuid::Uuid::from_u128(0x3002)), stack_a, 1),
+        (TaskId::from_uuid(uuid::Uuid::from_u128(0x3003)), stack_b, 0),
+        (TaskId::from_uuid(uuid::Uuid::from_u128(0x3004)), stack_c, 0),
+    ] {
+        state.tasks.insert(id, task(id, st, order));
+    }
+    taskboard_domain::derive_sync_states(
+        &state.boards,
+        &state.stacks,
+        &state.tasks,
+        &state.labels,
+        &[],
+        &mut state.sync,
+    );
+    (
+        TwoBoardFixture {
+            board_one,
+            board_two,
+            stack_c,
+        },
+        state,
+    )
+}
