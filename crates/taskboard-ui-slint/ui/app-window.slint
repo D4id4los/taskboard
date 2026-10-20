@@ -14,12 +14,14 @@ import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
 import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
+import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
 export { Theme, Typography, Semantic, Responsive }
+export { BoardBarModel, BoardSegmentModel }
 
 export enum KeyFeedback {
     none,
@@ -64,6 +66,7 @@ export component AppWindow inherits Window {
     in-out property <[string]> toolbar-menu-hint;
     in-out property <View> current-view: View.board;
     in-out property <BoardModel> board-model;
+    in-out property <BoardBarModel> board-bar-model;
     in-out property <StackDetailModel> stack-model;
     in-out property <TaskDetailModel> task-model;
     in-out property <SyncBadgeModel> sync-model;
@@ -106,6 +109,8 @@ export component AppWindow inherits Window {
             // children (rule C).
             if (root.current-view == View.board): BoardView {
                 board: root.board-model;
+                board-bar: root.board-bar-model;
+                board-bar-activated(i) => root.board-bar-segment-activated(i);
                 task-activated(c, r) => root.board-task-activated(c, r);
                 task-clicked(c, r) => root.board-task-clicked(c, r);
                 header-activated(c) => root.board-header-activated(c);
@@ -175,6 +180,7 @@ export component AppWindow inherits Window {
     // in the adapter. Indices only — the adapter resolves them
     // against the id tables it built when pushing the models (D2).
     pure callback toolbar-menu-clicked();
+    pure callback board-bar-segment-activated(int);
     pure callback board-task-activated(int, int);
     pure callback board-task-clicked(int, int);
     pure callback board-header-activated(int);

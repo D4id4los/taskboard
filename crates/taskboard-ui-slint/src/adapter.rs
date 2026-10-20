@@ -474,6 +474,7 @@ pub(crate) fn install(
 /// state (the adapter applies `view_state` outcomes verbatim, D9).
 fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_toolbar_seam(window, adapter);
+    install_board_bar_seam(window, adapter);
     install_board_seams(window, adapter);
     install_stack_seams(window, adapter);
     install_task_seam(window, adapter);
@@ -487,6 +488,30 @@ fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     window.on_toolbar_menu_clicked(move || {
         let Some(window) = weak.upgrade() else { return };
         adapter.borrow_mut().route(&window, ActionId::AppMenu);
+    });
+}
+
+/// A board-bar segment click (design §3.8): resolve the segment's
+/// board against the tables pass that pushed the bar, set the one-shot
+/// target, and route `board.select` — every click affordance has an
+/// action equivalent (§7.1). A stale index against an older pass is
+/// absorbed silently.
+fn install_board_bar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let adapter = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_board_bar_segment_activated(move |index| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        let mut a = adapter.borrow_mut();
+        let Some(board) = a.tables.board_ids.get(index).copied() else {
+            return;
+        };
+        a.board_target = Some(board);
+        a.route(&window, ActionId::BoardSelect);
     });
 }
 

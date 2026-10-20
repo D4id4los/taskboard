@@ -1026,6 +1026,110 @@ mod view_component_tests {
         });
     }
 
+    /// Two boards with deterministic ids (board one < board two, so
+    /// board one seeds): "board one" carries the classic two-stack
+    /// shape, "board two" one stack with one task; stored sync phases
+    /// differ per board so the badge read is attributable.
+    fn two_board_fixture_state() -> taskboard_domain::AppState {
+        use taskboard_domain::{StackId, SyncPhase};
+        let b1 = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x1001));
+        let b2 = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x1002));
+        let sa = StackId::from_uuid(uuid::Uuid::from_u128(0x2001));
+        let sb = StackId::from_uuid(uuid::Uuid::from_u128(0x2002));
+        let sc = StackId::from_uuid(uuid::Uuid::from_u128(0x2003));
+        let mut state = taskboard_domain::AppState::default();
+        for (id, title) in [(b1, "board one"), (b2, "board two")] {
+            let mut board = board(id);
+            board.title = title.to_owned();
+            state.boards.insert(id, board);
+        }
+        state.stacks.insert(sa, stack(sa, b1, 0));
+        state.stacks.insert(sb, stack(sb, b1, 1));
+        state.stacks.insert(sc, stack(sc, b2, 0));
+        for (order, st) in [(0, sa), (1, sa), (2, sb), (0, sc)] {
+            let id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+            state.tasks.insert(id, task(id, st, order));
+        }
+        state.sync.set_stored(b1, SyncPhase::Syncing, None);
+        state.sync.set_stored(b2, SyncPhase::Offline, None);
+        taskboard_domain::derive_sync_states(
+            &state.boards,
+            &state.stacks,
+            &state.tasks,
+            &state.labels,
+            &[],
+            &mut state.sync,
+        );
+        state
+    }
+
+    /// The chunk-7 board dimension (design §3.8), T10: the push reads
+    /// the *selected* board — the seeded first board's title/columns/
+    /// badge row, and after a `board.next` press board two's. The bar
+    /// model carries one segment per live board with the selected
+    /// index; switching dispatches nothing (the dumb-client pin).
+    #[test]
+    fn the_push_reads_the_selected_board() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(two_board_fixture_state(), UiSettings::default().keymap);
+            assert_eq!(handle.window.get_toolbar_title(), "board one", "the seed");
+            assert_eq!(handle.window.get_board_model().stacks.row_count(), 2);
+            let bar = handle.window.get_board_bar_model();
+            assert_eq!(bar.segments.row_count(), 2, "one segment per live board");
+            assert_eq!(bar.selected, 0);
+            assert_eq!(
+                handle.window.get_sync_model().phase,
+                SyncPhaseUi::Syncing,
+                "board one's row"
+            );
+
+            press(&handle, "b"); // board.next (the standard Board binding)
+            assert_eq!(handle.window.get_toolbar_title(), "board two");
+            assert_eq!(
+                handle.window.get_board_model().stacks.row_count(),
+                1,
+                "board two's columns re-rendered"
+            );
+            assert_eq!(handle.window.get_board_bar_model().selected, 1);
+            assert_eq!(
+                handle.window.get_sync_model().phase,
+                SyncPhaseUi::Offline,
+                "the badge follows the selected board"
+            );
+            assert!(commands.try_recv().is_err(), "switching dispatches nothing");
+        });
+    }
+
+    /// T11 — the board-bar click seam: a segment click switches the
+    /// view state through `board.select` and the command channel stays
+    /// empty (the dumb-client boundary); a stale index against an
+    /// older tables pass is absorbed silently.
+    #[test]
+    fn the_board_bar_click_seam_switches_without_commands() {
+        on_slint_thread(|| {
+            let (handle, mut commands) =
+                handover_with(two_board_fixture_state(), UiSettings::default().keymap);
+            handle.window.invoke_board_bar_segment_activated(1);
+            assert_eq!(handle.window.get_toolbar_title(), "board two");
+            assert_eq!(handle.window.get_board_bar_model().selected, 1);
+            assert_eq!(handle.window.get_board_model().stacks.row_count(), 1);
+            assert!(commands.try_recv().is_err(), "the click dispatched nothing");
+
+            handle.window.invoke_board_bar_segment_activated(9);
+            assert_eq!(
+                handle.window.get_toolbar_title(),
+                "board two",
+                "a stale index is absorbed"
+            );
+            assert!(commands.try_recv().is_err());
+
+            handle.window.invoke_board_bar_segment_activated(0);
+            assert_eq!(handle.window.get_toolbar_title(), "board one");
+            assert_eq!(handle.window.get_board_bar_model().selected, 0);
+        });
+    }
+
     /// §6 test 2 — breakpoint demotion: the width push through the
     /// generated callback flips the read-back `compact-active` fact;
     /// the board model itself is breakpoint-independent (the degeneration
