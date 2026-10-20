@@ -172,7 +172,10 @@ pub struct EditorIo {
 /// Never in normal operation: the only `expect` guards the thread spawn
 /// itself (an OS-level thread-creation failure at session start).
 #[must_use]
-pub fn spawn_line_reader(state: Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> EditorIo {
+pub fn spawn_line_reader(
+    state: Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>,
+    connector_names: Vec<String>,
+) -> EditorIo {
     let (tx, rx) = mpsc::channel(1);
     let (verdicts_tx, mut verdicts_rx) = mpsc::channel::<Disposition>(1);
     std::thread::Builder::new()
@@ -192,7 +195,7 @@ pub fn spawn_line_reader(state: Arc<arc_swap::ArcSwap<taskboard_domain::AppState
                     return;
                 }
             };
-            editor.set_helper(Some(completion::ReplHelper::new(state)));
+            editor.set_helper(Some(completion::ReplHelper::new(state, connector_names)));
             // File-backed recall: submitted lines persist in the data
             // dir across sessions, best-effort — a missing, corrupt, or
             // unwritable history file never ends the session (see
@@ -776,7 +779,7 @@ pub async fn run_session_with_lines(
     config: AppConfig,
     config_path: Option<std::path::PathBuf>,
     json_default: bool,
-    editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> EditorIo,
+    editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>, Vec<String>) -> EditorIo,
     io: &mut CommandIo<'_>,
 ) -> u8 {
     let store: Arc<dyn CredentialStore> =
@@ -795,7 +798,7 @@ pub async fn run_session_with_parts(
     config_path: Option<std::path::PathBuf>,
     store: Arc<dyn CredentialStore>,
     json_default: bool,
-    editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>) -> EditorIo,
+    editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>, Vec<String>) -> EditorIo,
     io: &mut CommandIo<'_>,
 ) -> u8 {
     // The gate half is set-emptiness; the display half is the default
@@ -812,7 +815,11 @@ pub async fn run_session_with_parts(
         Ok(app) => app,
         Err(err) => return crate::commands::report_to(io, &CommandError::from(err)),
     };
-    let editor_io = editor_io(app.engine.shared_state());
+    let connector_names: Vec<String> = crate::connectors::configured_connectors(&app.config)
+        .iter()
+        .map(|spec| spec.name.to_string())
+        .collect();
+    let editor_io = editor_io(app.engine.shared_state(), connector_names);
     let session = ReplSession {
         config: app.config.clone(),
         current_board: None,
