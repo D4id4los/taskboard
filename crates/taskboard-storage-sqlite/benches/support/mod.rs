@@ -159,10 +159,7 @@ fn fixture_task(i: usize, stacks: &[Stack], labels: &[Label]) -> Task {
         title: format!("Task {i:05} bench fixture"),
         description: format!("Deterministic bench fixture task number {i}."),
         duedate: i.is_multiple_of(3).then(|| ts(ix(i) + 1_000_000)),
-        // Interim (chunk-1 storage step): the codec does not persist the
-        // family columns yet, so the fixture carries only what survives
-        // the round-trip; 0007 wiring enriches this.
-        scheduled: None,
+        scheduled: i.is_multiple_of(4).then(|| ts(ix(i) + 1_500_000)),
         done: i.is_multiple_of(10).then(|| ts(ix(i) + 2_000_000)),
         stack: stacks[i % STACK_COUNT].id,
         order: ix(i),
@@ -179,18 +176,17 @@ fn fixture_task(i: usize, stacks: &[Stack], labels: &[Label]) -> Task {
 
 fn task_clocks(i: usize) -> TaskClocks {
     let t = ts(ix(i));
-    let epoch = taskboard_domain::entities::BoardClocks::epoch();
     TaskClocks {
         title: t,
         description: t,
         duedate: t,
-        scheduled: epoch,
+        scheduled: ts(ix(i) + 1_500_000),
         done: t,
         position: t,
         labels: t,
-        effort: epoch,
-        importance: epoch,
-        urgency: epoch,
+        effort: ts(ix(i) + 1_600_000),
+        importance: ts(ix(i) + 1_700_000),
+        urgency: ts(ix(i) + 1_800_000),
         archived: t,
         deleted: t,
     }
