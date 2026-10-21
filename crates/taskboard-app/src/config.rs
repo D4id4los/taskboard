@@ -133,6 +133,10 @@ pub enum CredentialStoreKind {
     /// The `TASKBOARD_APP_PASSWORD` environment escape hatch
     /// (headless/CI; explicit opt-in, never a silent fallback).
     Env,
+    /// The encrypted-file store for machines without a Secret Service
+    /// (kiosks): a generated 0600 key file beside the db plus AEAD
+    /// envelopes under `<db-dir>/credentials/` (ADR 0008).
+    File,
 }
 
 /// `[nextcloud]` table. `server_url` and `username` are required —
@@ -812,6 +816,17 @@ impl AppConfig {
         }
     }
 
+    /// The directory the file credential store roots at: the db's
+    /// parent, so `credential_store = "file"` needs no config keys of
+    /// its own — relocating `[storage] db_path` relocates the key file
+    /// and the envelope directory with it. Call after
+    /// [`AppConfig::load`] (which fills the db default); a db path
+    /// with no parent maps to the process directory.
+    #[must_use]
+    pub fn credential_base_dir(&self) -> &Path {
+        self.db_path().parent().unwrap_or(Path::new("."))
+    }
+
     /// The resolved database path. Call after [`AppConfig::load`]
     /// (which fills the default) or after setting it manually.
     ///
@@ -1074,6 +1089,16 @@ mod tests {
     }
 
     #[test]
+    fn credential_base_dir_is_the_db_parent() {
+        let mut config = AppConfig::default();
+        config.storage.db_path = Some(PathBuf::from("/srv/taskboard/taskboard.db"));
+        assert_eq!(config.credential_base_dir(), Path::new("/srv/taskboard"));
+        // A bare filename roots the store at the process directory.
+        config.storage.db_path = Some(PathBuf::from("taskboard.db"));
+        assert_eq!(config.credential_base_dir(), Path::new("."));
+    }
+
+    #[test]
     fn validate_rejects_empty_db_path() {
         let mut c = valid();
         c.storage.db_path = Some(PathBuf::new());
@@ -1253,6 +1278,13 @@ mod tests {
                 .extract()
                 .expect("kebab-case credential store decodes");
         assert_eq!(store.credential_store, CredentialStoreKind::Env);
+
+        let store: NextcloudSection =
+            Figment::from(Serialized::defaults(NextcloudSection::default()))
+                .merge(Toml::string("credential_store = 'file'"))
+                .extract()
+                .expect("kebab-case file store decodes");
+        assert_eq!(store.credential_store, CredentialStoreKind::File);
     }
 
     #[test]
