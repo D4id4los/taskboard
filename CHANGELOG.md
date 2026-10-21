@@ -10,6 +10,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The task field family (#208, #209): `scheduled` (the "when do I
+  intend to begin" half of the deadline split), `effort` (whole-second
+  estimate), and `importance`/`urgency` (two distinct five-level enums,
+  sortable by severity) on every task — editable data model only in
+  this increment: values stamp per-field write clocks, persist through
+  migration 0007 (additive, epoch-defaulted so pre-migration rows keep
+  the remote-wins merge behavior), and `scheduled` rides Deck's native
+  `startdate` card slot end-to-end (per-field last-writer-wins merge,
+  create/update wire pins). Effort/importance/urgency are local-only
+  until the app-data sidecar lane lands; no user surface exposes them
+  yet.
+- The `TASK_FIELDS` lockstep manifest (#244): one exported table
+  mapping every mergeable task field to its clock set and Deck sync
+  lane, pinned by domain and storage assertions so the field skeleton
+  cannot grow half-landed.
 - The encrypted-file credential store: `[nextcloud] credential_store =
   "file"` selects a third `CredentialStore` implementation for kiosk
   machines without a Secret Service — a machine-generated 0600 key
