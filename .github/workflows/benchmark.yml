@@ -1,0 +1,102 @@
+name: Benchmark
+
+# Criterion benchmarks run out of the per-PR CI path: the bench-profile
+# build alone cost 8 minutes and the full lane 14–19 minutes per PR,
+# with every result discarded (uploads were main-push-only) — noise, not
+# signal. PRs keep `clippy --all-targets` compiling the bench targets.
+# This lane feeds the Bencher `main` trend on every main push plus a
+# weekly Thursday run (the free cron slot: miri Mon 03:00, mutation
+# Mon 04:00, nextcloud Wed 04:00) and on manual dispatch.
+
+on:
+  push:
+    branches: ["main"]
+  schedule:
+    - cron: "0 4 * * 4" # Thursdays 04:00 UTC
+  # Manual dispatch: a branch ref runs the full suite with no upload
+  # (the guard is on the ref, not the event — see the two bench steps).
+  workflow_dispatch:
+
+# Cancel in-progress runs on the same ref when new commits are pushed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark:
+    name: Performance Benchmarking
+    runs-on: ubuntu-latest
+    # Hang guard, not a performance gate: ~2.4x the worst observed run
+    # (18.8 min) including a cold sccache.
+    timeout-minutes: 45
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libdbus-1-dev pkg-config \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libfontconfig1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.11
+        # Pinned (house pin policy): v0.0.11 = latest release at resolve
+        # time (published 2026-07-29, resolved 2026-10-21). Bump
+        # deliberately.
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Bencher CLI
+        # Pinned deliberately (house pin policy, cf. the coverage lane):
+        # the CLI's flags and API are this workflow's contract, and an
+        # unpinned tool once broke a workflow silently (F1-03 class).
+        # Bencher Cloud occasionally ships server changes needing a
+        # newer CLI — a skew fails this step loudly, which is the
+        # designed posture; bump on purpose.
+        uses: bencherdev/bencher@v0.6.13
+        with:
+          version: 0.6.13
+
+      - name: Verify Bencher CLI
+        # PR-visible proof the CLI exists on PATH — the exact failure
+        # (command not found, exit 127, swallowed) the graduation fixed.
+        run: bencher --version
+
+      - name: Run Criterion Benchmarks
+        # Every non-main ref (branch dispatches). Benches run exactly
+        # once per event: on main refs they run inside `bencher run`
+        # below instead. The guard keys on the ref only, never the
+        # event name — a manual dispatch on a branch must never write
+        # to Bencher branch `main`.
+        # (--output-format bencher is a nightly-only libtest flag and
+        # unneeded on stable; bencher's rust_criterion adapter parses
+        # criterion's own output.)
+        if: github.ref != 'refs/heads/main'
+        run: cargo bench --workspace
+
+      - name: Track Benchmarks with Bencher
+        # Record trend data from main refs only (pushes, scheduled runs,
+        # main dispatches). The rust_criterion adapter parses criterion's
+        # stdout, so the suite runs inside `bencher run`. The CLI reads
+        # the secret through BENCHER_API_KEY — the former
+        # BENCHER_API_TOKEN env name is the exact bug that killed every
+        # upload since 2026-10-18 (secret name unchanged). Failures are
+        # loud — never re-add continue-on-error here.
+        if: github.ref == 'refs/heads/main'
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_TOKEN }}
+        run: |
+          bencher run \
+            --project taskboard \
+            --branch main \
+            --testbed ubuntu-latest \
+            --adapter rust_criterion \
+            "cargo bench --workspace"

@@ -177,9 +177,10 @@ jobs:
       - name: Run Tests
         # --no-tests=warn: green while the workspace has no tests yet.
         # Default target set (lib+bins+tests): bench targets are the
-        # benchmark job's lane (every PR); clippy --all-targets keeps
-        # them compiling here. tests/bench_fixtures.rs stays — it is a
-        # regular integration test, not a bench target.
+        # benchmark workflow's lane (main pushes + weekly; off PRs since
+        # 2026-10-21); clippy --all-targets keeps them compiling here.
+        # tests/bench_fixtures.rs stays — it is a regular integration
+        # test, not a bench target.
         run: cargo nextest run --workspace --no-tests=warn
 
       - name: Run Doc Tests
@@ -293,61 +294,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         # Organization/project keys are read from sonar-project.properties.
 
-  benchmark:
-    name: Performance Benchmarking
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install system deps (keyring sync-secret-service links libdbus-1)
-        run: |
-          sudo apt-get update && sudo apt-get install -y \
-            libdbus-1-dev pkg-config \
-            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
-            libfontconfig1-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install Bencher CLI
-        # Pinned deliberately (house pin policy, cf. the coverage lane):
-        # the CLI's flags and API are this workflow's contract, and an
-        # unpinned tool once broke a workflow silently (F1-03 class).
-        # Bencher Cloud occasionally ships server changes needing a
-        # newer CLI — a skew fails this step loudly, which is the
-        # designed posture; bump on purpose.
-        uses: bencherdev/bencher@v0.6.13
-        with:
-          version: 0.6.13
-
-      - name: Verify Bencher CLI
-        # PR-visible proof the CLI exists on PATH — the exact failure
-        # (command not found, exit 127, swallowed) the graduation fixed.
-        run: bencher --version
-
-      - name: Run Criterion Benchmarks
-        # Every non-main-push event (PRs, manual dispatch). Benches run
-        # exactly once per event: on main pushes they run inside
-        # `bencher run` below instead (the former double run).
-        # (--output-format bencher is a nightly-only libtest flag and
-        # unneeded on stable; bencher's rust_criterion adapter parses
-        # criterion's own output.)
-        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
-        run: cargo bench --workspace
-
-      - name: Track Benchmarks with Bencher
-        # Record trend data from main pushes only; Bencher needs the API
-        # token. The rust_criterion adapter parses criterion's stdout,
-        # so the suite runs inside `bencher run`. Failures are loud —
-        # never re-add continue-on-error here.
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        env:
-          BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
-        run: |
-          bencher run \
-            --project taskboard \
-            --branch main \
-            --testbed ubuntu-latest \
-            --adapter rust_criterion \
-            "cargo bench --workspace"
+  # The Criterion benchmark lane moved to its own workflow
+  # (benchmark.yml, main pushes + weekly + dispatch): the 14–19 min
+  # bench-profile build made it the most expensive per-PR job while
+  # every per-PR result was discarded.
