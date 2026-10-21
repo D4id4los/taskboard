@@ -3,7 +3,10 @@
 # purpose — the instance is ephemeral and bound to 127.0.0.1 only.
 services:
   nextcloud:
-    image: nextcloud:35-apache
+    # Interpolated so a variant instance can pin a different image (the
+    # Deck 1.17.5 gate runs `TASKBOARD_IT_NC_IMAGE=nextcloud:33-apache`);
+    # unset = the default tier, byte-identical behavior.
+    image: ${TASKBOARD_IT_NC_IMAGE:-nextcloud:35-apache}
     # Suffix-scoped so several throwaway instances coexist (set
     # TASKBOARD_IT_SUFFIX per instance; empty = the original singleton).
     container_name: taskboard-it-nextcloud${SUFFIX:-}
