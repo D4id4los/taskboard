@@ -296,8 +296,8 @@ async fn daemon_lifecycle(
     // IPC the daemon's purpose is "own the core, serve commands" — a
     // `standalone` daemon gives scripters the same no-boot-per-command
     // latency the connector profile gets, and idling is over.
-    let (app, server) = boot_and_serve(config, config_path, json, "daemon").await?;
-    serve_and_shutdown(app, server).await
+    let (app, server, web) = boot_and_serve(config, config_path, json, "daemon").await?;
+    serve_and_shutdown(app, server, web).await
 }
 
 /// The shared headless boot (ADR 0016): resolve the credential store,
@@ -313,7 +313,11 @@ async fn boot_and_serve(
     config_path: Option<std::path::PathBuf>,
     json: bool,
     what: &'static str,
-) -> color_eyre::Result<(Arc<App>, taskboard_app::ipc::server::IpcServerHandle)> {
+) -> color_eyre::Result<(
+    Arc<App>,
+    taskboard_app::ipc::server::IpcServerHandle,
+    Option<taskboard_app::web::DashboardServerHandle>,
+)> {
     let store = taskboard_app::secrets::resolve_credential_store(
         config.nextcloud.credential_store,
         config.credential_base_dir(),
@@ -352,7 +356,25 @@ async fn boot_and_serve(
         db = %app.config.db_path().display(),
         "{what} serving commands over ipc"
     );
-    Ok((app, server))
+    // The web kiosk dashboard (K11): opt-in through `[web]`, spawned
+    // beside the IPC socket — the decode rules were enforced at config
+    // load, the token ceremony and the LAN-bind refusal live in the
+    // spawn. An absent or disabled table spawns nothing.
+    let web = if app.config.web.enabled {
+        match taskboard_app::web::spawn_dashboard(
+            &app.config,
+            app.engine.clone(),
+            app.config.web.clone(),
+        )
+        .await
+        {
+            Ok(handle) => Some(handle),
+            Err(err) => return Err(err.into()),
+        }
+    } else {
+        None
+    };
+    Ok((app, server, web))
 }
 
 /// The shared serve→drain→shutdown tail (ADR 0016): wait for the first
@@ -364,6 +386,7 @@ async fn boot_and_serve(
 async fn serve_and_shutdown(
     app: Arc<App>,
     server: taskboard_app::ipc::server::IpcServerHandle,
+    web: Option<taskboard_app::web::DashboardServerHandle>,
 ) -> color_eyre::Result<()> {
     // The first-signal wait happens here — *before* arming the
     // force-exit watcher — because `ctrl_c` and SIGTERM notify every
@@ -377,7 +400,7 @@ async fn serve_and_shutdown(
             tracing::info!("shutdown requested over ipc");
         }
     }
-    drain_and_shutdown(app, server).await
+    drain_and_shutdown(app, server, web).await
 }
 
 /// The drain half of the shared tail, without the serve wait: bounded
@@ -387,13 +410,18 @@ async fn serve_and_shutdown(
 async fn drain_and_shutdown(
     app: Arc<App>,
     server: taskboard_app::ipc::server::IpcServerHandle,
+    web: Option<taskboard_app::web::DashboardServerHandle>,
 ) -> color_eyre::Result<()> {
     let shutdown_timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs);
     let drain = async {
-        // Bounded: past the budget the server aborts its tasks (a
+        // Bounded: past the budget the servers abort their tasks (a
         // wedged peer must never hold the daemon's shutdown hostage)
-        // and the refcount is released either way.
+        // and the refcount is released either way. The dashboard's
+        // drain rides the same budget as the IPC socket's.
         server.join(shutdown_timeout).await;
+        if let Some(web) = web {
+            web.join(shutdown_timeout).await;
+        }
         taskboard_app::bootstrap::shutdown_from_arc(app).await
     };
     let outcome = tokio::select! {
@@ -426,7 +454,8 @@ async fn run_kiosk(
     config_path: Option<std::path::PathBuf>,
     json: bool,
 ) -> color_eyre::Result<()> {
-    let (app, server) = boot_and_serve(config, config_path, json, "kiosk appliance").await?;
+    let (app, server, mut web) =
+        boot_and_serve(config, config_path, json, "kiosk appliance").await?;
 
     // The `[kiosk] fixed_board` pin's typed boot resolution (KDF-10):
     // the state is loaded (boards live in the ArcSwap), the display
@@ -449,7 +478,7 @@ async fn run_kiosk(
             // The server is already spawned — drain through the shared
             // tail (the mount-error arm's convention), then report
             // typed.
-            let _ = drain_and_shutdown(app, server).await;
+            let _ = drain_and_shutdown(app, server, web.take()).await;
             std::process::exit(i32::from(report(json, &CommandError::from(err))));
         }
     }
@@ -460,7 +489,7 @@ async fn run_kiosk(
             // socket is already serving, so keep serving the shared
             // daemon tail.
             tracing::error!("no display available; continuing as headless daemon");
-            serve_and_shutdown(app, server).await
+            serve_and_shutdown(app, server, web.take()).await
         }
         taskboard_app::ui::KioskStart::Appliance => {
             // The hand-over, in `run_desktop`'s order: the escape hatch
@@ -490,7 +519,7 @@ async fn run_kiosk(
                 // mount error is the reported outcome.
                 Err(err) => {
                     forwarder.abort();
-                    let _ = drain_and_shutdown(app, server).await;
+                    let _ = drain_and_shutdown(app, server, web.take()).await;
                     return Err(err.into());
                 }
             };
@@ -520,7 +549,7 @@ async fn run_kiosk(
             forwarder.abort();
             // The shutdown-tail error (a still-shared core) outranks
             // the loop result, mirroring `run_desktop`'s order.
-            drain_and_shutdown(app, server).await?;
+            drain_and_shutdown(app, server, web.take()).await?;
             run_result?;
             Ok(())
         }
