@@ -83,7 +83,7 @@ pub fn map_card(card: &Card, board: RemoteBoardId) -> RemoteTask {
         title: card.title.clone(),
         description: card.description.clone(),
         duedate: card.duedate,
-        scheduled: None,
+        scheduled: card.startdate,
         done: card.done,
         stack: RemoteStackId(card.stack_id),
         order: card.order,
@@ -216,6 +216,7 @@ pub fn new_card_from(shape: &NewCardShape) -> NewCard {
         order: Some(shape.order),
         description: Some(shape.description.clone()),
         duedate: shape.duedate,
+        startdate: shape.scheduled,
         kind: None,
     }
 }
@@ -274,6 +275,7 @@ pub fn apply_card_shape(
     card.title.clone_from(&shape.title);
     card.description.clone_from(&shape.description);
     card.duedate = shape.duedate;
+    card.startdate = shape.scheduled;
     card.done = shape.done;
     card.order = shape.order;
     card.archived = shape.archived;
@@ -359,6 +361,73 @@ mod tests {
         assert!(view.labels.contains(&RemoteLabelId(11)));
         assert_eq!(view.duedate, Some("2020-01-20T09:52:43Z".parse().unwrap()));
         assert_eq!(view.done, None);
+    }
+
+    #[test]
+    fn card_mapping_threads_startdate_and_tolerates_its_absence() {
+        // The startDate camelCase alias decodes too.
+        let with_start: Card = serde_json::from_str(
+            r#"{"id": 5, "title": "c", "startdate": "2026-04-01T08:00:00+00:00"}"#,
+        )
+        .unwrap();
+        let view = map_card(&with_start, RemoteBoardId(42));
+        assert_eq!(
+            view.scheduled,
+            Some("2026-04-01T08:00:00Z".parse().unwrap())
+        );
+
+        let camel: Card = serde_json::from_str(
+            r#"{"id": 5, "title": "c", "startDate": "2026-04-01T08:00:00+00:00"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            map_card(&camel, RemoteBoardId(42)).scheduled,
+            view.scheduled
+        );
+
+        // Absent, explicit null, and camelCase scaffolding all decode to
+        // None — null-tolerance both directions (D-F2).
+        let absent: Card = serde_json::from_str(r#"{"id": 5, "title": "c"}"#).unwrap();
+        assert_eq!(map_card(&absent, RemoteBoardId(42)).scheduled, None);
+        let nulled: Card =
+            serde_json::from_str(r#"{"id": 5, "title": "c", "startdate": null}"#).unwrap();
+        assert_eq!(map_card(&nulled, RemoteBoardId(42)).scheduled, None);
+    }
+
+    #[test]
+    fn push_shapes_thread_scheduled_into_the_wire_fields() {
+        let shape = taskboard_domain::NewCardShape {
+            title: "c".into(),
+            order: 0,
+            description: String::new(),
+            duedate: None,
+            scheduled: Some(ts(1_800_000_000)),
+            done: None,
+            archived: false,
+            labels: BTreeSet::default(),
+        };
+        // Create payload: the shape's scheduled becomes the wire startdate.
+        assert_eq!(new_card_from(&shape).startdate, Some(ts(1_800_000_000)));
+
+        // Update path: apply_card_shape writes the fetched wire card's
+        // startdate (the full-send PUT body then carries it, null
+        // included when unset — Card has no skip).
+        let fetched = wire_card();
+        let card = apply_card_shape(
+            &fetched,
+            &taskboard_domain::CardShape {
+                title: "renamed".into(),
+                description: String::new(),
+                duedate: None,
+                scheduled: Some(ts(1_800_000_000)),
+                done: None,
+                order: 0,
+                archived: false,
+                labels: BTreeSet::default(),
+            },
+            None,
+        );
+        assert_eq!(card.startdate, Some(ts(1_800_000_000)));
     }
 
     #[test]

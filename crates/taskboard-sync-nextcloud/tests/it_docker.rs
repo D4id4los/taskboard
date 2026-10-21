@@ -179,6 +179,7 @@ mod d {
                         order: Some(1),
                         description: None,
                         duedate: None,
+                        startdate: None,
                         kind: None,
                     },
                 )
@@ -229,6 +230,7 @@ mod d {
                         order: Some(0),
                         description: None,
                         duedate: None,
+                        startdate: None,
                         kind: None,
                     },
                 )
@@ -324,6 +326,7 @@ mod d {
                         order: Some(0),
                         description: None,
                         duedate: None,
+                        startdate: None,
                         kind: None,
                     },
                 )
@@ -388,6 +391,7 @@ mod d {
                         order: Some(0),
                         description: None,
                         duedate: None,
+                        startdate: None,
                         kind: None,
                     },
                 )
@@ -476,6 +480,7 @@ mod d {
                         order: Some(0),
                         description: None,
                         duedate: None,
+                        startdate: None,
                         kind: None,
                     },
                 )

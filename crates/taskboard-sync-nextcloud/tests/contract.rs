@@ -460,6 +460,7 @@ async fn card_detail_decodes_iso8601_timestamps() {
     server.verify().await;
     assert_eq!(card.id, 5);
     assert!(card.duedate.is_some());
+    assert_eq!(card.startdate, None, "the fixture carries no startdate key");
 }
 
 #[tokio::test]
@@ -720,6 +721,7 @@ async fn create_card_posts_exact_payload_including_iso_duedate() {
                 order: Some(3),
                 description: None,
                 duedate: Some("2020-01-20T09:52:43Z".parse().unwrap()),
+                startdate: None,
                 kind: None,
             },
         )
@@ -752,6 +754,7 @@ async fn update_card_puts_full_round_trip_body() {
     let mut card: Card = serde_json::from_str(&card_json(5, "original")).unwrap();
     card.title = "edited".into();
     card.duedate = Some("2026-12-31T23:59:59Z".parse().unwrap());
+    card.startdate = Some("2026-12-01T08:00:00Z".parse().unwrap());
     let updated = client_for(&server).update_card(42, &card).await.unwrap();
     server.verify().await;
     assert_eq!(updated.title, "edited");
@@ -764,6 +767,81 @@ async fn update_card_puts_full_round_trip_body() {
     assert_eq!(body["type"], "plain");
     assert_eq!(body["title"], "edited");
     assert_eq!(body["duedate"], "2026-12-31T23:59:59+00:00");
+    // The native startdate rides the full-send PUT like every other
+    // round-trip field (D-F2 branch A).
+    assert_eq!(body["startdate"], "2026-12-01T08:00:00+00:00");
+}
+
+#[tokio::test]
+async fn create_card_posts_exact_payload_including_iso_startdate() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(5, "scheduled")))
+        .mount(&server)
+        .await;
+
+    let card = client_for(&server)
+        .create_card(
+            42,
+            9,
+            &NewCard {
+                title: "scheduled".into(),
+                order: Some(1),
+                description: None,
+                duedate: None,
+                startdate: Some("2026-04-01T08:00:00Z".parse().unwrap()),
+                kind: None,
+            },
+        )
+        .await
+        .unwrap();
+    server.verify().await;
+    assert_eq!(card.id, 5);
+    // The write keeps Deck's +00:00 ISO shape on the native slot.
+    assert_eq!(
+        last_body(&server).await,
+        serde_json::json!({
+            "title": "scheduled", "order": 1,
+            "startdate": "2026-04-01T08:00:00+00:00"
+        })
+    );
+}
+
+#[tokio::test]
+async fn card_startdate_decodes_value_null_and_absence() {
+    // Value: the modeled fixture pins the read path.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{BOARDS_PATH}/42/stacks/9/cards/6")))
+        .respond_with(ResponseTemplate::new(200).set_body_string(fixture("card_startdate.json")))
+        .mount(&server)
+        .await;
+    let card = client_for(&server).card(42, 9, 6).await.unwrap();
+    server.verify().await;
+    assert_eq!(
+        card.startdate,
+        Some("2026-04-01T08:00:00Z".parse().unwrap())
+    );
+
+    // Explicit null is a decode to None, never an error.
+    let nulled: Card = serde_json::from_str(&card_json(5, "c").replace(
+        "\"duedate\": null",
+        "\"duedate\": null, \"startdate\": null",
+    ))
+    .unwrap();
+    assert_eq!(nulled.startdate, None);
+
+    // Absent key: card_detail.json carries no startdate key at all —
+    // absence decodes to None (the 1.17.5 tolerance pin).
+    let detail: serde_json::Value = serde_json::from_str(&fixture("card_detail.json")).unwrap();
+    assert!(
+        detail.get("startdate").is_none(),
+        "fixture must omit the key"
+    );
+    let detail = detail.to_string();
+    let absent: Card = serde_json::from_str(&detail).unwrap();
+    assert_eq!(absent.startdate, None);
 }
 
 #[tokio::test]

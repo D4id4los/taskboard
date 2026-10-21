@@ -135,6 +135,13 @@ pub struct NewCard {
         serialize_with = "crate::model::ser_opt_datetime"
     )]
     pub duedate: Option<DateTime<Utc>>,
+    /// ISO-8601 scheduled start; omitted lets the server default apply.
+    #[serde(
+        rename = "startdate",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::model::ser_opt_datetime"
+    )]
+    pub startdate: Option<DateTime<Utc>>,
     /// `plain` or `rich`; omitted lets Deck default to `plain`.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,

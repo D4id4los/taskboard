@@ -281,6 +281,7 @@ fn wire_card(i: usize) -> WireCard {
         created_at: EPOCH_SECS + 400 + ix(i),
         last_modified: EPOCH_SECS + 500 + ix(i),
         duedate: i.is_multiple_of(3).then(|| ts(ix(i) + 1_000_000)),
+        startdate: i.is_multiple_of(4).then(|| ts(ix(i) + 1_500_000)),
         done: i.is_multiple_of(10).then(|| ts(ix(i) + 2_000_000)),
         archived: false,
         owner: None,

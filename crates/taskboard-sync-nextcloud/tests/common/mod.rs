@@ -250,6 +250,7 @@ pub(crate) mod suite {
                     order: Some(0),
                     description: None,
                     duedate: Some(duedate),
+                    startdate: None,
                     kind: None,
                 },
             )
@@ -263,6 +264,7 @@ pub(crate) mod suite {
                     order: Some(1),
                     description: None,
                     duedate: None,
+                    startdate: None,
                     kind: None,
                 },
             )
@@ -430,6 +432,7 @@ pub(crate) mod suite {
                         order: Some(0),
                         description: None,
                         duedate: None,
+                        startdate: None,
                         kind: None,
                     },
                 )
