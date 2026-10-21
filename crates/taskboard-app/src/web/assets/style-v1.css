@@ -1,0 +1,123 @@
+/* taskboard web kiosk dashboard — style-v1.css
+ * The 2014-browser checklist (design Q7): CSS tables + inline-block
+ * only, system fonts, no images, no grid, no layout-module boxes, no
+ * viewport-relative units, no computed units, no motion. A redesign ships
+ * style-v2.css — this file's URL is its cache-buster.
+ */
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, "Droid Sans", Ubuntu,
+    "Helvetica Neue", Arial, sans-serif;
+  margin: 0;
+  padding: 8px;
+  background: #f4f4f0;
+  color: #222;
+}
+h1 {
+  font-size: 140%;
+  margin: 4px 0;
+}
+h2 {
+  font-size: 110%;
+  margin: 6px 0 4px 0;
+}
+a {
+  color: #1a4d8f;
+}
+p {
+  margin: 2px 0;
+}
+section {
+  display: block;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  padding: 6px 10px;
+  margin: 8px 0;
+}
+.sub {
+  color: #555;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+th,
+td {
+  text-align: left;
+  border-bottom: 1px solid #ddd;
+  padding: 3px 6px;
+  font-size: 90%;
+}
+th {
+  background: #e8e8e2;
+}
+/* Board columns: a CSS table, the one layout primitive a 2014 Android
+ * browser renders reliably (Q7 item 2). */
+.board {
+  display: table;
+  width: 100%;
+  border-spacing: 6px 0;
+}
+.stack {
+  display: table-cell;
+  vertical-align: top;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  padding: 6px;
+}
+.card {
+  display: block;
+  background: #fbfbf7;
+  border: 1px solid #d5d5cd;
+  border-radius: 4px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1);
+  padding: 4px 6px;
+  margin: 4px 0;
+}
+.card .title {
+  font-weight: bold;
+}
+.card .due {
+  color: #555;
+  font-size: 85%;
+}
+.card.done {
+  background: #eef3ea;
+}
+.card.done .title {
+  text-decoration: line-through;
+  color: #667;
+  font-weight: normal;
+}
+.card.overdue .title {
+  color: #8f1a1a;
+}
+.card.overdue .due {
+  color: #8f1a1a;
+}
+/* The reconnect banner the ES5 script toggles; hidden by default. */
+#reconnect-banner {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: #8f1a1a;
+  color: #fff;
+  padding: 6px 10px;
+  font-weight: bold;
+}
+/* Tablet panels side by side; narrow phones stack the columns via
+ * table-caption-style fallback (media query, Q7 item 6). */
+@media screen and (max-width: 700px) {
+  .board {
+    display: block;
+  }
+  .stack {
+    display: block;
+    margin: 6px 0;
+  }
+}
