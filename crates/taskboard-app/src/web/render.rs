@@ -78,12 +78,14 @@ impl CachePolicy {
 /// transporter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendered {
-    /// HTTP status (`200`/`404` in this lane).
+    /// HTTP status (`200`/`302`/`404`/`405` in this lane).
     pub status: u16,
     /// `Content-Type` header value.
     pub content_type: &'static str,
     /// The cache policy.
     pub cache: CachePolicy,
+    /// The `Location` header target (redirects only).
+    pub location: Option<String>,
     /// The body bytes (HTML or CSS).
     pub body: String,
 }
@@ -165,6 +167,7 @@ pub fn render_index(state: &AppState, metrics: EngineMetricsSnapshot, ctx: &Rend
         status: 200,
         content_type: "text/html; charset=utf-8",
         cache: CachePolicy::NoStore,
+        location: None,
         body,
     }
 }
@@ -240,8 +243,26 @@ last success: {}</p>\n",
         status: 200,
         content_type: "text/html; charset=utf-8",
         cache: CachePolicy::NoStore,
+        location: None,
         body,
     })
+}
+
+/// The bare `/d/<token>` index's canonical-form redirect: the pages'
+/// links are relative (`board/…`, `style-v1.css`), so the slash-less
+/// form must never serve HTML — the client is sent to `/d/<token>/`
+/// first, where those links resolve. `302` over `301`/`308`: every
+/// 2014-era browser in the Q7 checklist's support set honours it, and
+/// a capability URL must never bake a permanent-redirect cache entry.
+#[must_use]
+pub fn render_index_redirect(token: &str) -> Rendered {
+    Rendered {
+        status: 302,
+        content_type: "text/plain; charset=utf-8",
+        cache: CachePolicy::NoStore,
+        location: Some(format!("/d/{token}/")),
+        body: String::new(),
+    }
 }
 
 /// The stylesheet response (the one-year-cached arm).
@@ -251,6 +272,7 @@ pub fn render_stylesheet() -> Rendered {
         status: 200,
         content_type: "text/css; charset=utf-8",
         cache: CachePolicy::OneYear,
+        location: None,
         body: STYLESHEET.to_owned(),
     }
 }
@@ -263,6 +285,7 @@ pub fn render_not_found() -> Rendered {
         status: 404,
         content_type: "text/plain; charset=utf-8",
         cache: CachePolicy::NoStore,
+        location: None,
         body: String::new(),
     }
 }
@@ -274,6 +297,7 @@ pub fn render_method_not_allowed() -> Rendered {
         status: 405,
         content_type: "text/plain; charset=utf-8",
         cache: CachePolicy::NoStore,
+        location: None,
         body: String::new(),
     }
 }
@@ -684,6 +708,19 @@ mod tests {
         let empty: Rendered = render_not_found();
         assert_eq!(empty.cache, CachePolicy::NoStore);
         assert_eq!(empty.status, 404);
+    }
+
+    /// Regression: the bare `/d/<token>` index must redirect to the
+    /// canonical trailing-slash form, never serve HTML in place — the
+    /// pages' links are relative, so a slash-less HTML response would
+    /// carry links the browser resolves against `/d/` (broken 404s).
+    /// `302` and never cached.
+    #[test]
+    fn the_slashless_index_redirects_to_the_canonical_form() {
+        let rendered = super::render_index_redirect("tok");
+        assert_eq!(rendered.status, 302);
+        assert_eq!(rendered.location.as_deref(), Some("/d/tok/"));
+        assert_eq!(rendered.cache, CachePolicy::NoStore);
     }
 
     /// Escaping: board and card titles are the only user-controlled

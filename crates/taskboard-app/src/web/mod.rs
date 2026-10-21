@@ -283,6 +283,7 @@ fn answer(
                 routes::Route::Stylesheet => render::render_stylesheet(),
             }
         }
+        Resolution::Redirect => render::render_index_redirect(&dashboard.token),
         Resolution::NotFound => render::render_not_found(),
         Resolution::MethodNotAllowed => render::render_method_not_allowed(),
     };
@@ -294,6 +295,9 @@ fn build_response(rendered: &Rendered) -> Response<Full<Bytes>> {
         .status(rendered.status)
         .header(hyper::header::CONTENT_TYPE, rendered.content_type)
         .header(hyper::header::CACHE_CONTROL, rendered.cache.value());
+    if let Some(location) = &rendered.location {
+        builder = builder.header(hyper::header::LOCATION, location);
+    }
     if rendered.status == 405 {
         builder = builder.header(hyper::header::ALLOW, "GET");
     }
