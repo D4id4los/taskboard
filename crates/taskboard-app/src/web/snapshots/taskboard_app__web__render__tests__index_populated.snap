@@ -1,0 +1,89 @@
+---
+source: crates/taskboard-app/src/web/render.rs
+expression: page.body
+---
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>taskboard</title>
+<meta http-equiv="refresh" content="30">
+<link rel="stylesheet" href="style-v1.css">
+<script>
+// taskboard web kiosk dashboard — reconnect.js (design §6.4)
+// The single allowed script: an ES5-only enhancement over the
+// meta-refresh baseline. While the server is unreachable it holds the
+// page in place (no navigation away to a browser error page), shows a
+// reconnecting banner, and keeps retrying; the first successful probe
+// reloads, which restores fresh content. With scripting disabled the
+// page still works — the meta refresh in the head is untouched markup.
+(function () {
+  'use strict';
+  var delay = 30;
+  var metas = document.getElementsByTagName('meta');
+  for (var i = 0; i < metas.length; i++) {
+    var equiv = metas[i].getAttribute('http-equiv');
+    if (equiv && equiv.toLowerCase() === 'refresh') {
+      var content = parseInt(metas[i].getAttribute('content'), 10);
+      if (content > 0) {
+        delay = content;
+      }
+      metas[i].parentNode.removeChild(metas[i]);
+    }
+  }
+  var banner = document.createElement('div');
+  banner.id = 'reconnect-banner';
+  banner.style.display = 'none';
+  banner.appendChild(document.createTextNode('reconnecting\u2026'));
+  function mount() {
+    if (document.body) {
+      document.body.appendChild(banner);
+    } else {
+      setTimeout(mount, 50);
+    }
+  }
+  mount();
+  var down = false;
+  function poll() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', location.href, true);
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) {
+        return;
+      }
+      if (xhr.status >= 200 && xhr.status < 500) {
+        if (down) {
+          location.reload();
+        }
+        down = false;
+        banner.style.display = 'none';
+      } else {
+        down = true;
+        banner.style.display = 'block';
+      }
+    };
+    xhr.send();
+  }
+  setInterval(poll, delay * 1000);
+}());
+</script>
+</head>
+<body>
+<h1>taskboard</h1>
+<p class="sub">version 0.1.0 · daemon · sync backend: Nextcloud</p>
+<section id="sync"><h2>sync</h2>
+<p>phase: idle</p>
+<p>last success: 2023-11-14 22:13:20 UTC</p>
+<p>pending ops: 3</p>
+</section>
+<section id="engine"><h2>engine</h2>
+<p>commands: 7 · rejections: 1 · signals: 9</p>
+</section>
+<section id="boards"><h2>boards</h2>
+<table><tr><th>board</th><th>phase</th><th>pending</th><th>cycles</th><th>pushes</th><th>pulls</th><th>failures</th><th>offline</th><th>last cycle</th><th>last success</th></tr>
+<tr><td><a href="board/00000000-0000-0000-0000-000000000001">Household &lt;&amp; chores&gt;</a></td><td>idle</td><td>3</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>—</td><td>2023-11-14 22:13:20 UTC</td></tr>
+</table>
+</section>
+</body>
+</html>
