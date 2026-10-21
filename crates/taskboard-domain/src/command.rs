@@ -350,11 +350,44 @@ pub fn plan_command(
                 updated.duedate = duedate;
                 updated.clocks.duedate = now;
             }
+            if let Some(scheduled) = changes.scheduled {
+                updated.scheduled = scheduled;
+                updated.clocks.scheduled = now;
+            }
+            if let Some(effort) = changes.effort {
+                updated.effort = effort;
+                updated.clocks.effort = now;
+            }
+            if let Some(importance) = changes.importance {
+                updated.importance = importance;
+                updated.clocks.importance = now;
+            }
+            if let Some(urgency) = changes.urgency {
+                updated.urgency = urgency;
+                updated.clocks.urgency = now;
+            }
             if let Some(archived) = changes.archived {
                 updated.archived = archived;
                 updated.clocks.archived = now;
             }
-            Ok(applied_task(&updated, ids, now))
+            // Lane split (impl-plan §5 interim, MD-10): a native slot in
+            // the changeset full-sends `UpdateTask`; an app-only edit
+            // stays local — `UpdateAppData` does not exist yet, and
+            // enqueueing a full-send card write with no native change is
+            // a no-op push. Chunk 4 reverses exactly the app-slot half.
+            let native = changes.title.is_some()
+                || changes.description.is_some()
+                || changes.duedate.is_some()
+                || changes.scheduled.is_some()
+                || changes.archived.is_some();
+            if native {
+                Ok(applied_task(&updated, ids, now))
+            } else {
+                Ok(CommandPlan {
+                    actions: vec![PersistenceAction::UpsertTask(updated)],
+                    outcome: CommandOutcome::Applied,
+                })
+            }
         }
         StateCommand::SetTaskDone { id, done } => {
             let task = live_task(app, *id)?;
@@ -1594,6 +1627,121 @@ mod tests {
         assert_eq!(updated.clocks.position, ts(T0 - 3_600));
         assert_eq!(updated.clocks.labels, ts(T0 - 3_600));
         assert_eq!(updated.clocks.done, ts(T0 - 3_600));
+        let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert!(matches!(op.op, LocalOp::UpdateTask(id) if id == task_id()));
+    }
+
+    #[test]
+    fn update_task_sets_and_stamps_the_field_family() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: TaskChanges {
+                    scheduled: Some(Some(ts(T0 + 172_800))),
+                    effort: Some(Some(crate::entities::Effort::new(1_500))),
+                    importance: Some(Some(crate::entities::Importance::High)),
+                    urgency: Some(Some(crate::entities::Urgency::VeryLow)),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.scheduled, Some(ts(T0 + 172_800)));
+        assert_eq!(updated.effort, Some(crate::entities::Effort::new(1_500)));
+        assert_eq!(updated.importance, Some(crate::entities::Importance::High));
+        assert_eq!(updated.urgency, Some(crate::entities::Urgency::VeryLow));
+        assert_eq!(updated.clocks.scheduled, now());
+        assert_eq!(updated.clocks.effort, now());
+        assert_eq!(updated.clocks.importance, now());
+        assert_eq!(updated.clocks.urgency, now());
+        // Untouched fields keep their clocks.
+        assert_eq!(updated.clocks.title, ts(T0 - 3_600));
+        assert_eq!(updated.clocks.duedate, ts(T0 - 3_600));
+    }
+
+    #[test]
+    fn update_task_clearing_stamps_the_clock() {
+        // Clearing is a write (D-S2's {v: null, clock} semantics): a
+        // Some(None) slot writes the value None AND advances the clock —
+        // regardless of the prior value.
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: TaskChanges {
+                    scheduled: Some(None),
+                    importance: Some(None),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.scheduled, None, "cleared");
+        assert_eq!(updated.importance, None, "cleared");
+        assert_eq!(updated.clocks.scheduled, now());
+        assert_eq!(updated.clocks.importance, now());
+        // The untouched effort clock stays.
+        assert_eq!(updated.clocks.effort, ts(T0 - 3_600));
+    }
+
+    #[test]
+    fn app_field_edits_stay_local_until_the_appdata_lane_lands() {
+        // Interim (implementation-plan §5 / MD-10): effort/importance/
+        // urgency persist and stamp, but enqueue no sync op — an
+        // `UpdateTask` full-send with no native change is a no-op push.
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: TaskChanges {
+                    effort: Some(Some(crate::entities::Effort::new(900))),
+                    importance: Some(Some(crate::entities::Importance::Normal)),
+                    urgency: Some(Some(crate::entities::Urgency::High)),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(plan.actions.len(), 1, "upsert only, no enqueue");
+        assert!(matches!(plan.actions[0], PersistenceAction::UpsertTask(_)));
+    }
+
+    #[test]
+    fn scheduled_edit_rides_the_native_update_op() {
+        // `scheduled` is native (D-F2 branch A): it full-sends UpdateTask
+        // like every other native slot.
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: TaskChanges {
+                    scheduled: Some(Some(ts(T0 + 86_400))),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.actions.len(), 2);
+        assert!(matches!(plan.actions[0], PersistenceAction::UpsertTask(_)));
         let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
             panic!("second action must be the enqueue");
         };
