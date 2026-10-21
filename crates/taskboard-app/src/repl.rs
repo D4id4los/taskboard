@@ -782,8 +782,10 @@ pub async fn run_session_with_lines(
     editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>, Vec<String>) -> EditorIo,
     io: &mut CommandIo<'_>,
 ) -> u8 {
-    let store: Arc<dyn CredentialStore> =
-        crate::commands::production_store(config.nextcloud.credential_store);
+    let store: Arc<dyn CredentialStore> = crate::commands::production_store(
+        config.nextcloud.credential_store,
+        config.credential_base_dir(),
+    );
     run_session_with_parts(config, config_path, store, json_default, editor_io, io).await
 }
 

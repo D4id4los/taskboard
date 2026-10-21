@@ -279,7 +279,10 @@ pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result
 
     let (ui_settings, keymap_findings) = resolve_ui_settings(&config.ui);
     surface_keymap_findings(&keymap_findings);
-    let store = crate::secrets::resolve_credential_store(config.nextcloud.credential_store);
+    let store = crate::secrets::resolve_credential_store(
+        config.nextcloud.credential_store,
+        config.credential_base_dir(),
+    );
     let app =
         crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
 

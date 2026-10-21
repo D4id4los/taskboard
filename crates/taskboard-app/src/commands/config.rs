@@ -74,6 +74,7 @@ pub fn render_text(view: &ConfigView) -> String {
         match c.nextcloud.credential_store {
             crate::config::CredentialStoreKind::Keyring => "keyring",
             crate::config::CredentialStoreKind::Env => "env",
+            crate::config::CredentialStoreKind::File => "file",
         }
     ));
     lines.push(format!(

@@ -466,10 +466,14 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
 /// The production credential store for a config-selected kind. Tests
 /// inject fakes by calling the handlers directly.
 #[must_use]
-pub fn production_store(kind: CredentialStoreKind) -> Arc<dyn CredentialStore> {
+pub fn production_store(
+    kind: CredentialStoreKind,
+    base_dir: &std::path::Path,
+) -> Arc<dyn CredentialStore> {
     match kind {
         CredentialStoreKind::Keyring => Arc::new(crate::secrets::KeyringStore),
         CredentialStoreKind::Env => Arc::new(crate::secrets::EnvCredentialStore),
+        CredentialStoreKind::File => Arc::new(crate::secrets::FileCredentialStore::new(base_dir)),
     }
 }
 
@@ -1082,7 +1086,7 @@ async fn connect_command(
     match AppConfig::extract_raw(Some(&path)) {
         Ok(raw) => {
             let db_path = raw.db_path().to_path_buf();
-            let store = production_store(raw.nextcloud.credential_store);
+            let store = production_store(raw.nextcloud.credential_store, raw.credential_base_dir());
             let mut prompts = connect::StdinPrompts;
             match connect::run(&path, raw, args, &mut prompts, &store).await {
                 Ok(mut receipt) => {
@@ -1125,7 +1129,7 @@ async fn logout_command(io: &mut CommandIo<'_>, config_path: Option<PathBuf>) ->
         .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
     match AppConfig::extract_raw(Some(&path)) {
         Ok(raw) => {
-            let store = production_store(raw.nextcloud.credential_store);
+            let store = production_store(raw.nextcloud.credential_store, raw.credential_base_dir());
             match logout::run(&path, &raw, store.as_ref()) {
                 Ok(mut receipt) => {
                     let nudge =
@@ -1721,7 +1725,10 @@ fn core_ctx(
     config_path: Option<PathBuf>,
 ) -> Result<(AppConfig, Arc<dyn CredentialStore>), CommandError> {
     let config = AppConfig::load(config_path)?;
-    let store = production_store(config.nextcloud.credential_store);
+    let store = production_store(
+        config.nextcloud.credential_store,
+        config.credential_base_dir(),
+    );
     Ok((config, store))
 }
 

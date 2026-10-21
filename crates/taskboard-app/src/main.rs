@@ -314,7 +314,10 @@ async fn boot_and_serve(
     json: bool,
     what: &'static str,
 ) -> color_eyre::Result<(Arc<App>, taskboard_app::ipc::server::IpcServerHandle)> {
-    let store = taskboard_app::secrets::resolve_credential_store(config.nextcloud.credential_store);
+    let store = taskboard_app::secrets::resolve_credential_store(
+        config.nextcloud.credential_store,
+        config.credential_base_dir(),
+    );
 
     let app = match bootstrap(
         config,
