@@ -55,6 +55,14 @@ sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runti
 
 # Networking
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+# Web kiosk dashboard HTTP server (taskboard-app): the hyper 1.x server
+# stack, feature-activated over what reqwest already compiles in (the
+# `client` feature stays on so the shared feature set matches reqwest's
+# activation — the union is what compiles). Exact versions land via
+# Cargo.lock.
+hyper = { version = "1", default-features = false, features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", default-features = false, features = ["http1", "server", "service", "tokio"] }
+http-body-util = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

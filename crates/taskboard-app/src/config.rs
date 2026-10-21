@@ -82,6 +82,11 @@ pub struct AppConfig {
     /// Kiosk appliance deployment profile.
     #[serde(default)]
     pub kiosk: KioskSection,
+    /// Web kiosk dashboard (opt-in). An absent table is today's
+    /// behaviour: no HTTP surface, no port, no task. Skipped when at
+    /// its off default so pin-less configs serialize unchanged.
+    #[serde(default, skip_serializing_if = "WebSection::is_default")]
+    pub web: WebSection,
 }
 
 /// Which frontend the process runs.
@@ -382,6 +387,102 @@ pub struct KioskSection {
     pub fixed_board: Option<uuid::Uuid>,
 }
 
+/// `[web]`: the web kiosk dashboard's deployment profile (K11). The
+/// table's presence *plus* `enabled` spawns the read-only HTTP surface;
+/// `enabled = false` or an absent table never spawn one. Field-level
+/// defaults apply whenever the table is present; the struct's `Default`
+/// is the absent-table placeholder (`enabled = false`) that keeps
+/// section-less configs byte-identical on serialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSection {
+    /// Spawns the dashboard server iff the section is present and this
+    /// is `true`. Defaults to `true` inside a present table — writing
+    /// `[web]` is the opt-in. Skipped when off so the absent-table
+    /// placeholder serializes to nothing.
+    #[serde(
+        default = "default_web_enabled",
+        skip_serializing_if = "web_enabled_is_off"
+    )]
+    pub enabled: bool,
+    /// Listen address. The loopback default is the trusted arm; a
+    /// non-loopback bind additionally requires a resolvable capability
+    /// token (checked at boot, where the token file lives).
+    #[serde(
+        default = "default_web_bind",
+        skip_serializing_if = "web_bind_is_default"
+    )]
+    pub bind: String,
+    /// Meta-refresh cadence in seconds; the self-DoS floor
+    /// [`WEB_REFRESH_MIN_SECS`] is enforced typed in
+    /// [`AppConfig::validate`].
+    #[serde(
+        default = "default_web_refresh",
+        skip_serializing_if = "web_refresh_is_default"
+    )]
+    pub refresh_secs: u64,
+    /// Explicit capability-token override. Unset = generated (or
+    /// reloaded from the persisted token file beside the database).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+impl Default for WebSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_web_bind(),
+            refresh_secs: DEFAULT_WEB_REFRESH_SECS,
+            token: None,
+        }
+    }
+}
+
+impl WebSection {
+    /// The absent-table test behind `skip_serializing_if`: the off
+    /// placeholder serializes to nothing, so a config without `[web]`
+    /// renders unchanged.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn default_web_enabled() -> bool {
+    true
+}
+
+fn default_web_bind() -> String {
+    DEFAULT_WEB_BIND.to_owned()
+}
+
+fn default_web_refresh() -> u64 {
+    DEFAULT_WEB_REFRESH_SECS
+}
+
+// serde's `skip_serializing_if` demands the `fn(&T) -> bool` shape.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn web_enabled_is_off(enabled: &bool) -> bool {
+    !*enabled
+}
+
+fn web_bind_is_default(bind: &str) -> bool {
+    bind == DEFAULT_WEB_BIND
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip fn shape
+fn web_refresh_is_default(secs: &u64) -> bool {
+    *secs == DEFAULT_WEB_REFRESH_SECS
+}
+
+/// `[web] bind`: loopback by default — the trusted, no-token arm.
+pub const DEFAULT_WEB_BIND: &str = "127.0.0.1:8787";
+/// `[web] refresh_secs` default: the meta-refresh cadence.
+pub const DEFAULT_WEB_REFRESH_SECS: u64 = 30;
+/// `[web] refresh_secs` typed floor: a faster poll is a self-DoS, not a
+/// feature — refused, never clamped.
+pub const WEB_REFRESH_MIN_SECS: u64 = 5;
+
 /// The `[reminders] default_before` grammar (one definition site, shared
 /// with the CLI `--before` flag): a non-empty sequence of
 /// `<unsigned-int><unit>` components, unit ∈ `s | m | h | d`, no sign, no
@@ -529,6 +630,14 @@ pub enum ConfigError {
         /// The pin that does not resolve.
         id: uuid::Uuid,
     },
+    /// A `[web]` field carries an unusable value: `refresh_secs` below
+    /// the typed floor, or a `bind` that does not parse as a socket
+    /// address. The payload names the field.
+    #[error("web setting invalid")]
+    InvalidWebConfig {
+        /// The dotted config key that is invalid.
+        field: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -553,6 +662,7 @@ impl ConfigError {
             Self::InvalidConnectorName { .. } => "invalid-connector-name",
             Self::InvalidConnectorEntry { .. } => "invalid-connector-entry",
             Self::UnknownFixedBoard { .. } => "unknown-fixed-board",
+            Self::InvalidWebConfig { .. } => "invalid-web-config",
         }
     }
 }
@@ -785,6 +895,17 @@ impl AppConfig {
         // range comparisons (NaN compares false both ways).
         if !self.ui.scale.is_finite() || !(UI_SCALE_MIN..=UI_SCALE_MAX).contains(&self.ui.scale) {
             return Err(ConfigError::InvalidScale { field: "ui.scale" });
+        }
+        // `[web]`: the decoded (or default) table validates always —
+        // the absent table's placeholder carries valid defaults, so the
+        // floor and the parse refusal only ever fire on real values.
+        if self.web.refresh_secs < WEB_REFRESH_MIN_SECS {
+            return Err(ConfigError::InvalidWebConfig {
+                field: "web.refresh_secs",
+            });
+        }
+        if self.web.bind.parse::<std::net::SocketAddr>().is_err() {
+            return Err(ConfigError::InvalidWebConfig { field: "web.bind" });
         }
         Ok(())
     }
@@ -1758,6 +1879,106 @@ mod tests {
                 .merge(Toml::string("[nextcloud]\ntoken = 'leak'"))
                 .extract();
         assert!(result.is_err());
+    }
+
+    // ---- the [web] dashboard profile (K11) ---------------------------
+
+    #[test]
+    fn web_section_absent_decodes_disabled_and_serializes_nothing() {
+        let config = decode("[app]\nmode = 'daemon'\n").expect("decodes");
+        assert!(!config.web.enabled, "an absent table never spawns");
+        assert_eq!(config.web.bind, DEFAULT_WEB_BIND);
+        assert_eq!(config.web.refresh_secs, DEFAULT_WEB_REFRESH_SECS);
+        let mut config = config;
+        config.storage.db_path = Some(PathBuf::from("/tmp/t.db"));
+        config.validate().expect("the absent section validates");
+        // The serialization fence: a section-less config renders without
+        // any `web` key (the `kiosk.fixed_board` precedent).
+        let value = serde_json::to_value(WebSection::default()).expect("serializes");
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn web_section_present_defaults_to_enabled_loopback_and_30s() {
+        let config = decode("[web]\n").expect("a bare table decodes");
+        assert!(config.web.enabled, "the table's presence is the opt-in");
+        assert_eq!(config.web.bind, DEFAULT_WEB_BIND);
+        assert_eq!(config.web.refresh_secs, DEFAULT_WEB_REFRESH_SECS);
+        assert_eq!(config.web.token, None);
+        let mut config = config;
+        config.storage.db_path = Some(PathBuf::from("/tmp/t.db"));
+        config.validate().expect("the default table validates");
+    }
+
+    #[test]
+    fn web_section_decodes_every_field_and_round_trips_the_token() {
+        let config = decode(
+            "[web]\nenabled = false\nbind = '192.168.1.10:9000'\n\
+             refresh_secs = 60\ntoken = 'sekrit'\n",
+        )
+        .expect("decodes");
+        assert!(!config.web.enabled);
+        assert_eq!(config.web.bind, "192.168.1.10:9000");
+        assert_eq!(config.web.refresh_secs, 60);
+        assert_eq!(config.web.token.as_deref(), Some("sekrit"));
+    }
+
+    #[test]
+    fn web_refresh_secs_below_the_floor_is_typed() {
+        for secs in [0, 1, 4] {
+            let mut config = valid();
+            config.web.enabled = true;
+            config.web.refresh_secs = secs;
+            assert!(
+                matches!(
+                    config.validate(),
+                    Err(ConfigError::InvalidWebConfig {
+                        field: "web.refresh_secs"
+                    })
+                ),
+                "{secs} must be refused, never clamped"
+            );
+        }
+        let mut config = valid();
+        config.web.refresh_secs = WEB_REFRESH_MIN_SECS;
+        config.validate().expect("the floor itself passes");
+    }
+
+    #[test]
+    fn web_bind_that_does_not_parse_is_typed() {
+        let mut config = valid();
+        config.web.bind = "localhost:8787".into();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidWebConfig { field: "web.bind" })
+        ));
+    }
+
+    #[test]
+    fn web_refusals_validate_even_while_disabled() {
+        // Consistent with the sync/reminders seconds fields: a bad
+        // value is a bad value regardless of the enable bit.
+        let mut config = valid();
+        config.web.enabled = false;
+        config.web.refresh_secs = 1;
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidWebConfig { .. })
+        ));
+    }
+
+    #[test]
+    fn unknown_key_in_the_web_table_is_a_decode_error() {
+        let err = decode("[web]\ntoekn = 'x'\n").expect_err("typo guard");
+        assert!(matches!(err, ConfigError::Decode(_)));
+    }
+
+    #[test]
+    fn the_web_error_kind_extends_the_stable_discriminants() {
+        assert_eq!(
+            ConfigError::InvalidWebConfig { field: "web.bind" }.kind(),
+            "invalid-web-config"
+        );
     }
 
     // ---- [ui.keymap] (D14, T28/T29) ---------------------------------

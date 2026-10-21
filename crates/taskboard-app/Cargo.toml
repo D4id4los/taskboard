@@ -46,6 +46,9 @@ fd-lock.workspace = true
 toml_edit.workspace = true
 interprocess.workspace = true
 serde_json.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
 thiserror.workspace = true
 # File credential store (`credential_store = "file"`): the AEAD envelope
 # cipher and its randomness source (both pinned once in the workspace).
@@ -76,6 +79,11 @@ keyring = { workspace = true, features = ["windows-native"] }
 keyring = { workspace = true, features = ["apple-native"] }
 
 [dev-dependencies]
+# HTML snapshot tests for the web kiosk dashboard renderers (the HTML is
+# the UI state of this lane; insta is the workspace's snapshot tool).
+insta.workspace = true
+# The dashboard integration journey's plain HTTP client.
+reqwest.workspace = true
 # The FakeModule/registry-loop fixtures share the domain's test-support
 # helpers (binding fixtures; fakes over mocks).
 taskboard-domain = { workspace = true, features = ["test-support"] }
