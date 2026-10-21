@@ -15,6 +15,63 @@ use taskboard_domain::reminders::ReminderRef;
 use taskboard_domain::state::{SyncErrorKind, SyncPhase};
 use uuid::Uuid;
 
+/// The stored TEXT form of an importance/urgency level: the domain
+/// enum's serde unit name (the one-representation discipline — storage
+/// TEXT *is* the serde encoding).
+#[must_use]
+pub fn importance_to_text(level: taskboard_domain::entities::Importance) -> &'static str {
+    use taskboard_domain::entities::Importance::{High, Low, Normal, VeryHigh, VeryLow};
+    match level {
+        VeryLow => "very_low",
+        Low => "low",
+        Normal => "normal",
+        High => "high",
+        VeryHigh => "very_high",
+    }
+}
+
+/// Parses the stored TEXT form back; `None` on an unknown level.
+#[must_use]
+pub fn importance_from_text(raw: &str) -> Option<taskboard_domain::entities::Importance> {
+    use taskboard_domain::entities::Importance::{High, Low, Normal, VeryHigh, VeryLow};
+    match raw {
+        "very_low" => Some(VeryLow),
+        "low" => Some(Low),
+        "normal" => Some(Normal),
+        "high" => Some(High),
+        "very_high" => Some(VeryHigh),
+        _ => None,
+    }
+}
+
+/// The stored TEXT form of an urgency level (see
+/// [`importance_to_text`]).
+#[must_use]
+pub fn urgency_to_text(level: taskboard_domain::entities::Urgency) -> &'static str {
+    use taskboard_domain::entities::Urgency::{High, Low, Normal, VeryHigh, VeryLow};
+    match level {
+        VeryLow => "very_low",
+        Low => "low",
+        Normal => "normal",
+        High => "high",
+        VeryHigh => "very_high",
+    }
+}
+
+/// Parses the stored TEXT form back; `None` on an unknown level.
+#[must_use]
+pub fn urgency_from_text(raw: &str) -> Option<taskboard_domain::entities::Urgency> {
+    use taskboard_domain::entities::Urgency::{High, Low, Normal, VeryHigh, VeryLow};
+    match raw {
+        "very_low" => Some(VeryLow),
+        "low" => Some(Low),
+        "normal" => Some(Normal),
+        "high" => Some(High),
+        "very_high" => Some(VeryHigh),
+        _ => None,
+    }
+}
+
 /// A decode rejection; the repository maps this onto
 /// [`RepositoryError::Corrupted`](taskboard_domain::persistence::RepositoryError).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

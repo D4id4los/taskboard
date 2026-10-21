@@ -81,16 +81,24 @@ struct TaskRow {
     title: String,
     description: String,
     duedate: Option<DateTime<Utc>>,
+    scheduled: Option<DateTime<Utc>>,
     done: Option<DateTime<Utc>>,
     sort_order: i64,
+    effort: Option<i64>,
+    importance: Option<String>,
+    urgency: Option<String>,
     archived: bool,
     deleted: bool,
     ck_title: String,
     ck_description: String,
     ck_duedate: String,
+    ck_scheduled: String,
     ck_done: String,
     ck_position: String,
     ck_labels: String,
+    ck_effort: String,
+    ck_importance: String,
+    ck_urgency: String,
     ck_archived: String,
     ck_deleted: String,
     remote_seen: Option<DateTime<Utc>>,
@@ -173,6 +181,18 @@ mod decode {
 
     pub(crate) fn remote_opt(cols: &[Option<i64>]) -> Result<Option<Vec<u64>>, RepositoryError> {
         codec::remote_columns_present_or_none(cols).map_err(|_| RepositoryError::Corrupted)
+    }
+
+    pub(crate) fn importance(
+        raw: &str,
+    ) -> Result<taskboard_domain::entities::Importance, RepositoryError> {
+        codec::importance_from_text(raw).ok_or(RepositoryError::Corrupted)
+    }
+
+    pub(crate) fn urgency(
+        raw: &str,
+    ) -> Result<taskboard_domain::entities::Urgency, RepositoryError> {
+        codec::urgency_from_text(raw).ok_or(RepositoryError::Corrupted)
     }
 }
 
@@ -272,14 +292,23 @@ fn decode_task(
         title: row.title,
         description: row.description,
         duedate: row.duedate,
-        scheduled: None,
+        scheduled: row.scheduled,
         done: row.done,
         stack: StackId::from(stack),
         order: row.sort_order,
         labels,
-        effort: None,
-        importance: None,
-        urgency: None,
+        effort: row
+            .effort
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| RepositoryError::Corrupted)?
+            .map(taskboard_domain::entities::Effort::new),
+        importance: row
+            .importance
+            .as_deref()
+            .map(decode::importance)
+            .transpose()?,
+        urgency: row.urgency.as_deref().map(decode::urgency).transpose()?,
         archived: row.archived,
         deleted: row.deleted,
         clocks: TaskClocks {
@@ -295,7 +324,10 @@ fn decode_task(
                 .ck_duedate
                 .parse()
                 .map_err(|_| RepositoryError::Corrupted)?,
-            scheduled: taskboard_domain::entities::BoardClocks::epoch(),
+            scheduled: row
+                .ck_scheduled
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
             done: row
                 .ck_done
                 .parse()
@@ -308,9 +340,18 @@ fn decode_task(
                 .ck_labels
                 .parse()
                 .map_err(|_| RepositoryError::Corrupted)?,
-            effort: taskboard_domain::entities::BoardClocks::epoch(),
-            importance: taskboard_domain::entities::BoardClocks::epoch(),
-            urgency: taskboard_domain::entities::BoardClocks::epoch(),
+            effort: row
+                .ck_effort
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            importance: row
+                .ck_importance
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            urgency: row
+                .ck_urgency
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
             archived: row
                 .ck_archived
                 .parse()
@@ -495,11 +536,15 @@ impl SqliteTaskRepository {
             r#"SELECT id, stack, remote_board_id, remote_stack_id, remote_card_id,
                       title, description,
                       duedate as "duedate: DateTime<Utc>",
+                      scheduled as "scheduled: DateTime<Utc>",
                       done as "done: DateTime<Utc>",
                       sort_order,
+                      effort,
+                      importance, urgency,
                       archived as "archived: bool", deleted as "deleted: bool",
-                      ck_title, ck_description, ck_duedate, ck_done, ck_position,
-                      ck_labels, ck_archived, ck_deleted,
+                      ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,
+                      ck_position, ck_labels, ck_effort, ck_importance, ck_urgency,
+                      ck_archived, ck_deleted,
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM tasks ORDER BY id"#
         )
@@ -910,9 +955,16 @@ async fn execute_batch(
             let (b, s, c) = codec::remote_card_to_columns(r);
             (Some(b), Some(s), Some(c))
         });
+        // D-F1's typed bound: effort is unsigned in the domain; the
+        // storage INTEGER is an i64, so values past i64::MAX are a
+        // corrupt-input rejection, never a silent wrap.
+        let effort = task
+            .effort
+            .map(|e| i64::try_from(e.seconds()).map_err(|_| RepositoryError::Corrupted))
+            .transpose()?;
         sqlx::query!(
-            r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, done, sort_order, archived, deleted, ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, ck_archived, ck_deleted, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, scheduled, done, sort_order, effort, importance, urgency, archived, deleted, ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, ck_effort, ck_importance, ck_urgency, ck_archived, ck_deleted, remote_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        stack = excluded.stack,
                        remote_board_id = excluded.remote_board_id,
@@ -921,16 +973,24 @@ async fn execute_batch(
                        title = excluded.title,
                        description = excluded.description,
                        duedate = excluded.duedate,
+                       scheduled = excluded.scheduled,
                        done = excluded.done,
                        sort_order = excluded.sort_order,
+                       effort = excluded.effort,
+                       importance = excluded.importance,
+                       urgency = excluded.urgency,
                        archived = excluded.archived,
                        deleted = excluded.deleted,
                        ck_title = excluded.ck_title,
                        ck_description = excluded.ck_description,
                        ck_duedate = excluded.ck_duedate,
+                       ck_scheduled = excluded.ck_scheduled,
                        ck_done = excluded.ck_done,
                        ck_position = excluded.ck_position,
                        ck_labels = excluded.ck_labels,
+                       ck_effort = excluded.ck_effort,
+                       ck_importance = excluded.ck_importance,
+                       ck_urgency = excluded.ck_urgency,
                        ck_archived = excluded.ck_archived,
                        ck_deleted = excluded.ck_deleted,
                        remote_seen = excluded.remote_seen"#,
@@ -942,16 +1002,24 @@ async fn execute_batch(
             task.title,
             task.description,
             task.duedate,
+            task.scheduled,
             task.done,
             task.order,
+            effort,
+            task.importance.map(codec::importance_to_text),
+            task.urgency.map(codec::urgency_to_text),
             task.archived,
             task.deleted,
             task.clocks.title.to_rfc3339(),
             task.clocks.description.to_rfc3339(),
             task.clocks.duedate.to_rfc3339(),
+            task.clocks.scheduled.to_rfc3339(),
             task.clocks.done.to_rfc3339(),
             task.clocks.position.to_rfc3339(),
             task.clocks.labels.to_rfc3339(),
+            task.clocks.effort.to_rfc3339(),
+            task.clocks.importance.to_rfc3339(),
+            task.clocks.urgency.to_rfc3339(),
             task.clocks.archived.to_rfc3339(),
             task.clocks.deleted.to_rfc3339(),
             task.remote_seen,
