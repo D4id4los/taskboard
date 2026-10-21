@@ -72,6 +72,14 @@ pub(crate) fn live_docker_config() -> Option<LiveCfg> {
     read_cfg("TASKBOARD_IT_DOCKER")
 }
 
+/// Reads the Deck 1.17.5 gate-tier credentials (the second instance pinned
+/// via `DECK_VERSION=v1.17.5` + `TASKBOARD_IT_NC_IMAGE=nextcloud:33-apache`,
+/// exported under the `TASKBOARD_IT_DOCKER_DECK1175` prefix); `None` when
+/// unset — skip, never fail.
+pub(crate) fn live_docker_deck1175_config() -> Option<LiveCfg> {
+    read_cfg("TASKBOARD_IT_DOCKER_DECK1175")
+}
+
 /// Reads Tier 3 live-server credentials from the environment (after loading
 /// the repo-root `.env` when present); `None` when any is unset.
 pub(crate) fn live_config() -> Option<LiveCfg> {
@@ -515,6 +523,19 @@ pub(crate) mod suite {
             .await?;
         assert_eq!(downloaded, payload_v1);
 
+        // The content route serves no HTTP validators (D1 §3.2, pinned
+        // against the live tier, not just mocked): the typed validator
+        // pair re-extracted from the download response must be empty —
+        // change detection rides attachment metadata instead.
+        let content_validators = client
+            .download_attachment_validators(board_id, stack.id, card.id, created.id)
+            .await?;
+        assert_eq!(
+            content_validators,
+            taskboard_sync_nextcloud::Validators::default(),
+            "the content route must serve no ETag/Last-Modified validators"
+        );
+
         // In-place update with the same filename: id and createdAt are
         // preserved; second-granularity stamps only guarantee >=.
         let updated = super::retrying_server_errors(|| async {
@@ -632,6 +653,111 @@ pub(crate) mod suite {
             .download_attachment(board_id, stack_id, card_id, attachment_id)
             .await?;
         assert_eq!(after_restore, expected_content);
+        Ok(())
+    }
+
+    /// `startdate` read/write round trip (D-F2's one-assertion-per-direction
+    /// wire pins, gated on the Deck 1.17.5 tier by DDF-10): create with a
+    /// startdate reads it back; a full-send card PUT with a new startdate
+    /// reads the new value back; a create without one reads `None`.
+    pub(crate) async fn startdate_round_trip(client: &DeckClient) {
+        let run = run_id();
+        let color =
+            taskboard_sync_nextcloud::DeckColor::from_hex("00c2e0").expect("valid lifecycle color");
+
+        let board = client
+            .create_board(&run, &color)
+            .await
+            .expect("board creation must succeed");
+
+        let result = startdate_body(client, board.id, &run).await;
+
+        let deleted = client.delete_board(board.id).await;
+        match (result, deleted) {
+            (Ok(()), Ok(d)) => assert!(!d.is_live(), "DELETE payload must stamp deletedAt"),
+            (Err(body_err), _) => panic!("startdate round trip failed: {body_err:?}"),
+            (Ok(()), Err(teardown_err)) => panic!("board teardown failed: {teardown_err}"),
+        }
+    }
+
+    async fn startdate_body(
+        client: &DeckClient,
+        board_id: u64,
+        run: &str,
+    ) -> Result<(), taskboard_sync_nextcloud::DeckError> {
+        use chrono::SubsecRound as _;
+        use taskboard_sync_nextcloud::NewCard;
+
+        let stack = super::retrying_server_errors(|| async {
+            client
+                .create_stack(board_id, &format!("{run}-stack"), 0)
+                .await
+        })
+        .await?;
+
+        // Create with a startdate; the created value reads back equal at
+        // second granularity (whole seconds are what we send).
+        let start = (chrono::Utc::now() + chrono::Duration::days(3)).trunc_subsecs(0);
+        let card = super::retrying_server_errors(|| async {
+            client
+                .create_card(
+                    board_id,
+                    stack.id,
+                    &NewCard {
+                        title: format!("{run}-started"),
+                        order: Some(0),
+                        description: None,
+                        duedate: None,
+                        startdate: Some(start),
+                        kind: None,
+                    },
+                )
+                .await
+        })
+        .await?;
+        let read = client.card(board_id, stack.id, card.id).await?;
+        assert_eq!(
+            read.startdate,
+            Some(start),
+            "the created startdate must read back"
+        );
+
+        // Full-send card PUT with a new startdate; the new value reads back.
+        let new_start = start + chrono::Duration::days(1);
+        let mut fetched = client.card(board_id, stack.id, card.id).await?;
+        fetched.startdate = Some(new_start);
+        super::retrying_server_errors(|| async { client.update_card(board_id, &fetched).await })
+            .await?;
+        let updated = client.card(board_id, stack.id, card.id).await?;
+        assert_eq!(
+            updated.startdate,
+            Some(new_start),
+            "the PUT startdate must read back"
+        );
+
+        // Create without a startdate; `null` on the wire decodes `None`.
+        let plain = super::retrying_server_errors(|| async {
+            client
+                .create_card(
+                    board_id,
+                    stack.id,
+                    &NewCard {
+                        title: format!("{run}-plain"),
+                        order: Some(1),
+                        description: None,
+                        duedate: None,
+                        startdate: None,
+                        kind: None,
+                    },
+                )
+                .await
+        })
+        .await?;
+        let plain_read = client.card(board_id, stack.id, plain.id).await?;
+        assert_eq!(
+            plain_read.startdate, None,
+            "absent startdate must decode None"
+        );
         Ok(())
     }
 

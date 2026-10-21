@@ -722,6 +722,41 @@ impl DeckClient {
         result
     }
 
+    /// Performs the attachment-content GET and reports only the HTTP
+    /// validators the response carried (`ETag`/`Last-Modified`, typed).
+    ///
+    /// Fixture seam for the no-validators-on-content pin (D1 spike §3.2):
+    /// change detection on attachment content rides the metadata endpoints
+    /// precisely because this route serves no validators, and the tier-2
+    /// fixtures assert that fact against the real servers. The actor does
+    /// not use it.
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`].
+    pub async fn download_attachment_validators(
+        &self,
+        board_id: u64,
+        stack_id: u64,
+        card_id: u64,
+        attachment_id: u64,
+    ) -> Result<Validators, DeckError> {
+        let call = Call {
+            method: Method::GET,
+            resource: format!(
+                "boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments/{attachment_id}"
+            ),
+            scope: Scope::OcsApi,
+            body: None,
+            validators: None,
+        };
+        self.send_with_retries(call, |raw| {
+            map_status(&raw)?;
+            Ok(raw.validators)
+        })
+        .await
+    }
+
     /// Replaces an attachment's content in place.
     ///
     /// This is the frontend's app-level route — POST

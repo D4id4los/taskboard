@@ -19,9 +19,9 @@ mod common;
 
 use common::suite::{
     attachment_content_lifecycle, board_lifecycle, conditional_read_cycle,
-    delete_missing_board_is_typed_error, full_tree_lifecycle, lists_boards,
+    delete_missing_board_is_typed_error, full_tree_lifecycle, lists_boards, startdate_round_trip,
 };
-use common::{deck_client, live_docker_config, with_deadline};
+use common::{deck_client, live_docker_config, live_docker_deck1175_config, with_deadline};
 
 #[tokio::test]
 #[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
@@ -628,6 +628,45 @@ async fn it_nextcloud_docker_attachment_content_lifecycle() {
         return;
     };
     with_deadline(attachment_content_lifecycle(&deck_client(&cfg)))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_startdate_round_trip() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(startdate_round_trip(&deck_client(&cfg)))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+/// The Deck 1.17.5 gate tier (DDF-10): the same attachment contract
+/// fixtures, run against a second instance pinned to
+/// `DECK_VERSION=v1.17.5` + `TASKBOARD_IT_NC_IMAGE=nextcloud:33-apache`,
+/// credentials under the `TASKBOARD_IT_DOCKER_DECK1175` prefix. Unset ⇒
+/// skip, never fail; the gate run happens locally against the pinned
+/// instance (CI does not wire the variant).
+#[tokio::test]
+#[ignore = "requires the pinned Deck 1.17.5 gate tier (nextcloud_it_setup.sh with DECK_VERSION=v1.17.5)"]
+async fn it_nextcloud_docker_deck1175_attachment_content_lifecycle() {
+    let Some(cfg) = live_docker_deck1175_config() else {
+        return;
+    };
+    with_deadline(attachment_content_lifecycle(&deck_client(&cfg)))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned Deck 1.17.5 gate tier (nextcloud_it_setup.sh with DECK_VERSION=v1.17.5)"]
+async fn it_nextcloud_docker_deck1175_startdate_round_trip() {
+    let Some(cfg) = live_docker_deck1175_config() else {
+        return;
+    };
+    with_deadline(startdate_round_trip(&deck_client(&cfg)))
         .await
         .expect("test must finish within the live deadline");
 }
