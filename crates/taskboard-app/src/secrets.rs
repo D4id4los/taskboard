@@ -559,6 +559,14 @@ fn aad(server: &str, username: &str) -> Vec<u8> {
     aad
 }
 
+/// The public name of the filename encoder: lowercase hex of the
+/// account key bytes (lossless, collision-free, filesystem-safe).
+/// Exposed for tests and operators locating an envelope on disk.
+#[must_use]
+pub fn hex_account_name(bytes: &[u8]) -> String {
+    hex_lower(bytes)
+}
+
 /// Lowercase hex, no deps: account keys are arbitrary UTF-8 (the
 /// garbage-input guarantees of `credential_key`), so filenames
 /// hex-encode them — lossless, collision-free, filesystem-safe.
