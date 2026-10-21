@@ -22,10 +22,16 @@
   (§3 Option C — the dashboard as the tablet-path surface, sequenced
   before Option B by §6 Q7); #234 (the tablet's constraints);
   dispatch plan §1/§11 (MD-10, the evidence & artefact mandate).
-- **Status**: **PROPOSED** — awaits the user's session. K11
-  (implementation) dispatches only from this design's acceptance plus
-  the stack approval. Evidence base: the worktree at `origin/main`
-  tip `e2bc3f7` (2026-10-21; the kiosk round's chunks 1–9 are merged
+- **Status**: **ACCEPTED 2026-10-21** — the user's session ruled
+  every question (§5; the Q1 stack-approval gate is **closed** —
+  hyper approved). Two addenda landed with the rulings: §6 (the
+  tablet deployment path — the session's connectivity question,
+  answered) and §7 (designing for a future write surface — the
+  session's forms condition). §6 carries exactly one **open
+  sub-decision** (the reconnect script) that awaits the user's nod;
+  everything else is ruled. K11 (implementation) dispatches from
+  this document. Evidence base: the worktree at `origin/main` tip
+  `e2bc3f7` (2026-10-21; the kiosk round's chunks 1–9 are merged
   there — the metrics surface of K8 is **code on main**, not a plan).
 
 ## 1. Background
@@ -143,6 +149,12 @@ the user weighs API simplicity above tree discipline.
 > this round. K11 pins the approved stack after the user's explicit
 > approval in the decision session — the two steps (recommendation
 > here, approval there) are deliberately separate.
+>
+> **APPROVED 2026-10-21** (§5, item 1): the session approved the
+> hyper-server recommendation — D-K7's gate is closed. K11 pins
+> `hyper`/`hyper-util`/`http-body-util` once in
+> `[workspace.dependencies]`; still nothing enters the tree in
+> *this* round.
 
 ### Q2 — Bind + auth model (the security decision)
 
@@ -396,17 +408,156 @@ the 2026-10-16 Q7 ruling, its own design round).
 ## 4. What K11 inherits from acceptance
 
 The accepted rulings of §3 (plus the stack approval) are K11's
-normative input: the crate pins (after approval), the
+normative input: the crate pins (approved §5.1), the
 `DashboardServerHandle` spawn contract in `boot_and_serve`, the
 GET-only page set (index + per-board), the token/bind decode
 rules, the no-JS + checklist constraints, the caching headers, and
-the hands-on-test flag to the user. K11's stage-1 plan re-locates
-every symbol at its own start (MD-8) — the line numbers here are
-2026-10-21 references against `e2bc3f7`.
+the hands-on-test flag to the user — **plus the §6/§7 addenda**
+(the tablet deployment story, incl. the open reconnect
+sub-decision if ruled in, and the forms-readiness constraints).
+K11's stage-1 plan re-locates every symbol at its own start
+(MD-8) — the line numbers here are 2026-10-21 references against
+`e2bc3f7`.
 
-## 5. Tracker action on landing
+## 5. Decision record (user session 2026-10-21)
+
+| Item | Ruling |
+|---|---|
+| Q1 HTTP stack | **Accepted** — the hyper server is approved; the D-K7/MD-10 stack gate is closed. K11 pins `hyper`/`hyper-util`/`http-body-util` once in `[workspace.dependencies]` |
+| Q2 bind + auth | **Accepted in shape**; the session asked how the tablet topology works in practice — the §6 addendum is the answer (deployment, connection, and permission management); the loopback default, the token capability-URL, and the typed non-loopback gate stand as designed |
+| Q3 content scope | **Accepted as the first implementation, with a binding design constraint**: a future write surface (forms — start/stop time tracking on tasks, marking tasks done, "or some such") must remain possible without rework — the §7 addendum records the constraints that keep that door open |
+| Q4 refresh | **Accepted** (meta-refresh, no JS). §6.4 derives one scoped amendment candidate (the reconnect script) from the tablet-path analysis — an **open sub-decision**, not folded in |
+| Q5 placement | Accepted |
+| Q6 standalone | Accepted |
+| Q7 browser checklist | Accepted |
+| Q8 caching | Accepted |
+| Q9 config sketch | Accepted |
+| card detail | **Minimal in v1 by ruling** — the user widens detail/interactivity only after on-tablet practice; the per-board page keeps card rendering shaped so widening is additive (§7 rule 6) |
+
+## 6. Addendum — the tablet as kiosk display: connection & permission (2026-10-21)
+
+The session's question: the webserver runs on a *different device*
+than the tablet — how do connection and permission work? The
+design already assumes exactly that split; this section makes the
+operational story explicit.
+
+**6.1 Topology.** The daemon is the server: whichever always-on LAN
+device runs `taskboard` as the daemon (or the kiosk appliance —
+both lifecycles serve, Q5) hosts the dashboard. The tablet is a
+*pure browser client* and runs nothing of ours — no app, no
+account, no agent. The tablet is precisely #234's reason for the
+LAN arm of Q2.
+
+**6.2 Connection management.**
+
+- `[web] bind` points at the LAN (the non-loopback arm; the token
+  gate applies — Q2/Q9). The serving URL is
+  `http://<server>:8787/d/<token>/`.
+- **Address stability**: a DHCP reservation (static lease) for the
+  server device, or a name the LAN's router resolves. mDNS
+  (`.local`) resolution in Android 5's stock browser is not
+  reliably available — the URL should carry the reserved IP or the
+  router-level name; the hands-on test verifies what the tablet's
+  browser actually resolves.
+- Host firewall: port 8787 open for the LAN scope, if the server
+  device runs one.
+- **Setup ceremony** (once per install): (1) enable `[web]` with
+  the LAN bind; (2) on first boot the token file is generated and
+  the full URL logged; (3) the operator reads the URL — boot log
+  over ssh/journal, and K11 may surface the serving URL in the
+  daemon's existing `status` view (read-only, no new verb); (4)
+  enter the URL once on the tablet and save it as a bookmark /
+  home-screen shortcut. From there the page is self-sustaining
+  (meta-refresh) and restarts of the *server* don't change the
+  URL (the token persists in its file).
+
+**6.3 Permission management.**
+
+- **The URL is the credential** — 122 bits of token (Q2). No
+  tablet-side permission, no login, no secret stored on the
+  tablet beyond the bookmark itself. Anyone on the LAN holding
+  the URL can read, in cleartext — the accepted Q2 posture; the
+  reverse-proxy variant (Q2 option 4) remains the documented path
+  for anyone who wants TLS.
+- **Revoke/rotate**: delete the token file and restart — the old
+  URL dies, the new one is logged, re-entered on the tablet once.
+  Rotation is an operator action, never automatic.
+- The tablet's own exposure is a bookmark; a wiped or shared
+  tablet leaks nothing but a dead-or-live URL.
+
+**6.4 Outage behavior — and the one open sub-decision.** With pure
+meta-refresh (Q4 as accepted), a refresh navigation that *fails*
+(server mid-restart, Wi-Fi blip) replaces the document with the
+browser's error page — and an error page carries no refresh
+instruction, so an unattended tablet stays on it until a human
+reloads. Server-side outages are short by design (`Restart=always`
+supervision, sub-second restarts), but the failure window is
+real. Options: (a) accept for v1 exactly as accepted and learn the
+real-world frequency during the on-tablet tests; (b) a ~15-line
+ES5 progressive-enhancement script that, when scripting is
+available (Chrome 37 supports everything needed: XHR, ES5 DOM),
+replaces navigation-refresh with in-page re-fetching plus a
+"reconnecting…" state and automatic retry — the no-JS meta-refresh
+baseline remains for scripting-disabled browsers, so Q7's
+no-JS-required guarantee is unchanged, but Q4's "zero `<script>`
+elements" line would soften to "no JS *required*". This amends an
+accepted item, so it is **not** folded in: **recommendation (b),
+folded into K11's scope — awaiting the user's explicit ruling.**
+
+Also recorded honestly: Android 5 offers no permanent page
+fullscreen without scripting; the tablet display will show the
+browser's URL bar. The hands-on test evaluates whether that
+matters on a desk tablet (the §7 write-surface work, if it ever
+lands, would be the natural moment to revisit).
+
+## 7. Addendum — designing for a future write surface (2026-10-21)
+
+The session accepted the read-only scope *as the first
+implementation* on the explicit condition that forms remain a
+future possibility (start/stop time tracking, marking tasks
+done). The constraints that keep that door open — binding on K11,
+each verifiable in review:
+
+1. **The route table is keyed by (method, path)**; v1 registers
+   GET arms only. POST arms are additive later — no handler
+   re-architecture, no routing rewrite.
+2. **Read handlers stay pure** — (request, `AppState` snapshot) →
+   response. The future write handlers translate form fields into
+   the **existing typed `StateCommand` vocabulary**
+   (`crates/taskboard-domain/src/messages.rs:20`) and send through
+   the same engine command channel the CLI and the desktop UI
+   use; typed refusals render as page states. No parallel
+   mutation path is ever built — ADR 0015's dumb-client rule is
+   extended to an input-capable client, not amended away.
+3. **What already exists**: `SetTaskDone` ("complete or reopen"),
+   `MoveTask`, `UpdateTask`, and the stack/label arms — the
+   "marking tasks done" example needs **zero** domain work. Time
+   tracking (the session's other example) has **no domain surface
+   today** (verified 2026-10-21: no timer/tracking vocabulary in
+   `taskboard-domain`) — it would be a domain feature first and a
+   dashboard form second; this addendum constrains the *web
+   layer* only, it does not pre-build domain arms.
+4. **Write-surface security, recorded now so it is not
+   rediscovered**: plain HTML forms can cross-origin POST without
+   CORS, so CSRF is live for any write arm — the capability token
+   doubles as the CSRF secret (a cross-site attacker does not
+   hold the URL's token). That is adequate for the LAN threat
+   model as accepted, but a write surface deliberately **reopens
+   Q2's threat model** with its own small design pass before any
+   POST arm is implemented.
+5. **Forms do not conflict with the 2014-browser stance**: plain
+   HTML forms predate CSS and need no scripting; the
+   POST-redirect-get pattern keeps meta-refresh semantics intact.
+   The no-JS guarantee (Q7) survives a write surface.
+6. **Card detail stays minimal in v1** (ruled) with widening held
+   until on-tablet practice says what detail/interactivity level
+   suits the endpoint — the per-board page renders cards as one
+   component so widening (labels, due, description) is additive.
+
+## 8. Tracker action on landing
 
 Per the dispatch plan's bookkeeping: landing this design
-**annotates #234** ("design round landed, awaiting the user's
-decision session" — stage 3, MD-4; one comment, no Closes line).
-The issue closes with K11.
+**annotates #234** (stage 3, MD-4; one comment, no Closes line —
+"design round landed and accepted 2026-10-21; K11 dispatches from
+it, one open sub-decision recorded in §6.4"). The issue closes
+with K11.
