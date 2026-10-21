@@ -23,12 +23,14 @@
 //! ([`persistence`]) with the shared batch semantics ([`apply_actions`]),
 //! messages ([`messages`]), local command semantics ([`command`]),
 //! conflict-policy algebra ([`merge`]) and its fixed-order composition
-//! ([`pipeline`]), reminders ([`reminders`]).
+//! ([`pipeline`]), reminders ([`reminders`]), day boundaries
+//! ([`days`]).
 
 #![forbid(unsafe_code)]
 
 pub mod clock;
 pub mod command;
+pub mod days;
 pub mod entities;
 pub mod idgen;
 pub mod ids;
@@ -55,6 +57,7 @@ pub use clock::{Clock, SystemClock};
 pub use command::{
     CommandError, CommandOutcome, CommandPlan, bind_wipe_count, bind_wipe_forecast, plan_command,
 };
+pub use days::day_window;
 pub use entities::{
     Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
 };
