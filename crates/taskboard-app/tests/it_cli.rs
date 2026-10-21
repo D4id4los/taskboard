@@ -303,6 +303,7 @@ async fn j2_remote_create_pull_list(cfg: &LiveCfg) {
                     order: Some(0),
                     description: None,
                     duedate: None,
+                    startdate: None,
                     kind: None,
                 },
             )

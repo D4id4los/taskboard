@@ -90,6 +90,7 @@ async fn harvest_tree(
                 order: Some(0),
                 description: Some("harvested card".into()),
                 duedate: Some(Utc::now() + Duration::days(1)),
+                startdate: None,
                 kind: None,
             },
         )

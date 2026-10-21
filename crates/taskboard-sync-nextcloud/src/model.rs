@@ -121,6 +121,10 @@ pub struct Card {
     /// ISO-8601 deadline (`2020-01-20T09:52:43+00:00`) or `null`.
     #[serde(default, alias = "dueDate", serialize_with = "ser_opt_datetime")]
     pub duedate: Option<DateTime<Utc>>,
+    /// ISO-8601 scheduled start (`startdate` on the wire; the camelCase
+    /// alias tolerates versions returning `startDate`) or `null`.
+    #[serde(default, alias = "startDate", serialize_with = "ser_opt_datetime")]
+    pub startdate: Option<DateTime<Utc>>,
     /// ISO-8601 completion timestamp or `null`.
     #[serde(default, serialize_with = "ser_opt_datetime")]
     pub done: Option<DateTime<Utc>>,

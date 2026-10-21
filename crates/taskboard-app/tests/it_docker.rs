@@ -83,6 +83,7 @@ async fn daemon_journey(cfg: &common::LiveCfg) {
                     order: Some(0),
                     description: None,
                     duedate: None,
+                    startdate: None,
                     kind: None,
                 },
             )
@@ -705,6 +706,7 @@ async fn it_nextcloud_docker_sync_over_ipc() {
                         order: Some(0),
                         description: None,
                         duedate: None,
+                        startdate: None,
                         kind: None,
                     },
                 )
@@ -869,6 +871,7 @@ async fn v0_1_x_additive_upgrade(cfg: &common::LiveCfg) {
                     order: Some(0),
                     description: None,
                     duedate: None,
+                    startdate: None,
                     kind: None,
                 },
             )
@@ -1052,6 +1055,7 @@ async fn two_connector_body(
                     order: Some(0),
                     description: None,
                     duedate: None,
+                    startdate: None,
                     kind: None,
                 },
             )
@@ -1068,6 +1072,7 @@ async fn two_connector_body(
                     order: Some(0),
                     description: None,
                     duedate: None,
+                    startdate: None,
                     kind: None,
                 },
             )
