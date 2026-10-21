@@ -152,8 +152,14 @@ pub async fn spawn_dashboard(
         mode: mode_word(app.app.mode),
     });
     let serving_url = format!("http://{local_addr}/d/{}/", dashboard.token);
-    let (stop, _stop_rx) = watch::channel(false);
-    let accept = tokio::spawn(accept_loop(listener, dashboard, engine, stop.clone()));
+    let (stop, stop_rx) = watch::channel(false);
+    let accept = tokio::spawn(accept_loop(
+        listener,
+        dashboard,
+        engine,
+        stop.clone(),
+        stop_rx,
+    ));
     tracing::info!(
         url = %serving_url,
         bind = %local_addr,
@@ -182,8 +188,12 @@ async fn accept_loop(
     dashboard: Arc<Dashboard>,
     engine: taskboard_state::EngineHandle,
     stop: watch::Sender<bool>,
+    mut stop_rx: watch::Receiver<bool>,
 ) {
-    let mut stop_rx = stop.subscribe();
+    // Created by the spawner, not here: a `Sender::subscribe()` after
+    // the stop was already sent marks the new value seen, and the loop
+    // would wait for a change that never comes (the boot-vs-shutdown
+    // race).
     let mut connections = tokio::task::JoinSet::new();
     loop {
         let accepted = tokio::select! {
