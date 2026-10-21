@@ -21,6 +21,10 @@ SUFFIX="${TASKBOARD_IT_SUFFIX:-}"
 PROJECT="taskboard-it${SUFFIX}"
 CONTAINER="taskboard-it-nextcloud${SUFFIX}"
 PORT="${TASKBOARD_IT_PORT:-8370}"
+# Pinned Deck install (the 1.17.5 contract-fixture gate): empty default =
+# today's `occ app:install deck` (latest app-store version); a tag like
+# `v1.17.5` installs that GitHub release tarball instead.
+DECK_VERSION="${DECK_VERSION:-}"
 # The compose file interpolates the bare names; re-export the
 # taskboard-prefixed overrides under them (empty SUFFIX = the
 # singleton's original names, byte-for-byte).
@@ -73,12 +77,44 @@ app_password_command() {
 }
 
 install_deck() {
+    if [ -n "$DECK_VERSION" ]; then
+        install_deck_pinned
+        return
+    fi
     if occ app:list 2>/dev/null | grep -E '^\s*- deck:' >/dev/null; then
         occ app:enable deck || true
         return
     fi
     # App-store downloads are occasionally flaky; retry once, then fail loud.
     occ app:install deck || occ app:install deck
+}
+
+install_deck_pinned() {
+    # Pinned-release install: download the GitHub release tarball inside
+    # the container (curl is present — the healthcheck uses it), extract
+    # to custom_apps, enable. Fails loud on a failed download or a
+    # version mismatch — never a silently wrong-tier instance.
+    #
+    # The artifact lives in the `nextcloud-releases` org with a
+    # versioned asset name (deck-vX.Y.Z.tar.gz); the app store's
+    # download links point there for all current Deck releases.
+    local expected="${DECK_VERSION#v}"
+    if ! docker compose -p "$PROJECT" -f "$COMPOSE_FILE" exec -T nextcloud bash -c '
+        set -euo pipefail
+        curl -fsSL "$1" -o /tmp/deck.tar.gz
+        rm -rf /var/www/html/custom_apps/deck
+        mkdir -p /var/www/html/custom_apps
+        tar -xzf /tmp/deck.tar.gz -C /var/www/html/custom_apps
+        test -d /var/www/html/custom_apps/deck
+        chown -R www-data:root /var/www/html/custom_apps/deck
+    ' _ "https://github.com/nextcloud-releases/deck/releases/download/${DECK_VERSION}/deck-${DECK_VERSION}.tar.gz"; then
+        die "could not fetch/extract the Deck ${DECK_VERSION} release tarball"
+    fi
+    occ app:enable deck
+    local got
+    got="$(occ app:list | awk '/ - deck:/{print $3; exit}')"
+    [[ "$got" = "$expected" ]] \
+        || die "Deck version mismatch: wanted ${expected}, instance reports '${got}'"
 }
 
 create_it_user() {
