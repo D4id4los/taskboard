@@ -88,6 +88,16 @@ dirs = "7"
 # OS keyring (taskboard-app secrets); platform stores are feature-gated
 # via target-specific deps in the app manifest.
 keyring = { version = "3", default-features = false }
+# AEAD envelope for the file credential store (taskboard-app,
+# `credential_store = "file"`): pure-Rust ChaCha20-Poly1305, constant-
+# time on every CPU with zero hardware-feature dependence (the kiosk
+# lane's i686 target has no AES-NI). The `getrandom` feature stays off —
+# randomness flows through the direct getrandom pin below.
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
+# OS randomness for the credential key file + the per-write AEAD nonce
+# (taskboard-app file credential store); reuses the version already in
+# the release graph (uuid/tempfile/rand).
+getrandom = "0.4"
 
 # Error handling
 thiserror = "2"
