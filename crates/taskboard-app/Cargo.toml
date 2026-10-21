@@ -47,6 +47,10 @@ toml_edit.workspace = true
 interprocess.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# File credential store (`credential_store = "file"`): the AEAD envelope
+# cipher and its randomness source (both pinned once in the workspace).
+chacha20poly1305.workspace = true
+getrandom.workspace = true
 color-eyre.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
