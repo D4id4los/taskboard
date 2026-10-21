@@ -10,6 +10,15 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The day-boundary preference (#345): `[preferences] day_start_time`
+  (default `"00:00"`, device-local, never synced) sets the
+  wall-clock time at which "today" begins — an unparseable value is
+  the typed `invalid-day-start-time` config error, never a silent
+  default — plus the pure domain `day_window(now, day_start_time,
+  offset)` primitive computing the 24h "today" window in any fixed
+  UTC offset (fixed-offset arithmetic per the DST ruling; consumers
+  receive time and offset as data). No consumer wiring yet: the today
+  view and CLI markers hook it up in a later chunk.
 - The task field family (#208, #209): `scheduled` (the "when do I
   intend to begin" half of the deadline split), `effort` (whole-second
   estimate), and `importance`/`urgency` (two distinct five-level enums,
