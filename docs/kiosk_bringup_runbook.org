@@ -23,8 +23,15 @@ The phase-A kiosk round targets two physical units:
 The budget envelope (unchanged from the wave plan): RSS ≤ 200 MB;
 repaint ≤ 50 ms full-frame / ≤ 20 ms partial; cold start ≤ 5 s;
 sync-cycle CPU share recorded (no hard line). The *software* renderer
-is the only viable lane on these gen3 GPUs — no hardware OpenGL on
-modern Mesa, so everything runs through llvmpipe.
+is still the only viable lane on these gen3 GPUs, but the D250 spike
+(2026-10-21) corrected the premise: Debian 12's Mesa 22.3.6 still
+ships the classic i915 driver, so the 945GME *does* expose hardware
+OpenGL 2.1 — Slint's femtovg needs GL ≥ 3.0, so the GL lane lands on
+llvmpipe regardless. On the D250 that fallback is currently reached
+by permission (the =taskboard= appliance user cannot open
+=/dev/dri/card0=; libGL logs =i915 … Permission denied= and falls
+back), not by selection; the sanctioned posture is a spike-exit
+ruling (§8).
 
 * 2. The image
 
@@ -43,7 +50,8 @@ apt install --no-install-recommends \
     xorg xinit libinput-tools \
     libgl1 mesa-utils libegl1 \
     fonts-dejavu-core \
-    python3 python3-minimal
+    python3 python3-minimal \
+    xserver-xorg-video-intel libxkbcommon-x11-0
 #+end_src
 
   For a wayland seat instead, substitute a kiosk compositor
@@ -52,6 +60,14 @@ apt install --no-install-recommends \
   =xinit=).
 - =fonts-dejavu-core= is required: the UI registers its runtime fonts
   from the system set.
+- =xserver-xorg-video-intel= (the intel DDX) is mandatory on the
+  945GME (D250 finding F1): with =--no-install-recommends= the =xorg=
+  metapackage brings only the modesetting driver, which hard-requires
+  glamor, and glamor refuses the GMA 950 (=glamor requires at least
+  128 instructions (64 reported)=) — Xorg dies at ScreenInit.
+- =libxkbcommon-x11-0= is a winit runtime =dlopen= with no package
+  dependency elsewhere in this list; without it the appliance panics
+  on X11 startup (D250 finding F5).
 - =python3= is for the measurement harness (§7).
 
 * 3. Renderer selection — the seam, not a flip
@@ -121,11 +137,21 @@ mismatch fails on-device in one step with a loader error naming the
 missing version (=... version `GLIBC_2.xx' not found=): rebuild
 against an older/matched userland, do not patch the target.
 
-** 5.5 The release-target decision
+The proven lane is the committed container recipe
+(=docker/i686-cross-build/Dockerfile=, image
+=taskboard-build:debian12-i686=), wrapped by
+=scripts/i686-cross-build.sh= with its build cache in
+=<repo-sibling>/target-i686/=. Hygiene (D250 finding F8): never
+cross-build from a live checkout while other rounds are committing —
+a tree moving under the build produced a stale-schema binary on
+2026-10-21; verify a clean tree (=git status=) first.
 
-Whether i686 becomes a release-matrix leg or stays a documented
-self-build rides **spike exit** (§8). Until then, this lane is the
-documented self-build.
+** 5.5 The release-target decision — ruled on-demand
+
+Ruled 2026-10-21 at spike exit: i686 **stays a documented on-demand
+lane** (this §5), not a release-matrix leg — the release workflow
+gains no i686 target. Revisit only if a D250-class unit ever becomes
+a real deployment target.
 
 * 6. Config + unit install
 
@@ -189,6 +215,51 @@ Before the seat session is up, the unit fails its =ExecStartPre=
 display gate and restart-loops every 5 s — the appliance never
 lingers headless on a wall.
 
+** 6.1 The seat session (X11 bring-up default)
+
+The unit's =EnvironmentFile= carries only the display variables; the
+seat session itself is a self-healing getty → startx chain — spelled
+out here per D250 finding F2 (this runbook formerly promised the
+mechanism without specifying it):
+
+#+begin_src sh
+# autologin on tty1 — /etc/systemd/system/getty@tty1.service.d/autologin.conf
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty -a <seat-user> --noclear %I $TERM
+#+end_src
+
+#+begin_src sh
+# ~<seat-user>/.bash_profile — ssh sessions keep a shell; the console boots X
+if [ -n "$SSH_CONNECTION" ] || [ -n "$DISPLAY" ]; then
+    . ~/.profile
+else
+    exec startx -- -nolisten tcp
+fi
+#+end_src
+
+#+begin_src sh
+# ~<seat-user>/.xinitrc — screensaver off, appliance display access, seat WM
+xset s off -dpms
+xsetroot -solid black
+xhost +SI:localuser:taskboard     # the appliance user reaches :0 without the xauth cookie
+x11vnc -localhost -forever -shared -rfbport 5900 -display "$DISPLAY" &  # observation, optional
+exec openbox-session
+#+end_src
+
+An X crash ends the login session, getty respawns, the seat comes
+back — no display manager. Keep the files display-agnostic
+(="$DISPLAY"=): a stale =/tmp/.X0-lock= after a crash loop silently
+migrates X to =:1= and breaks the env file's =DISPLAY=:0= (D250
+finding F4 — clean the lock; the =.xinitrc= above survives it).
+=graphical.target= is the default target.
+
+Operational caution until #386 lands: =taskboard connect= run as
+root tightens =/etc/taskboard/taskboard.toml= to =0600 root:root=,
+which the =taskboard= appliance user cannot read — the unit
+restart-loops with =kind="decode"= in =journalctl=. After any
+root-run =connect=: =chmod 0644 /etc/taskboard/taskboard.toml=.
+
 * 7. On-device measurement — the four budget-verdict slots
 
 Each slot is a fill-in row (device, binary leg, number, verdict,
@@ -207,10 +278,15 @@ annotation. The harnesses are smoke *references*, never gates.
 
 The runbook records *where* each decision lands; it decides nothing:
 
-- The **i686 release-target** decision (release-matrix leg vs
-  documented self-build) — spike exit.
+- The **i686 release-target** decision — *ruled 2026-10-21: stays a
+  documented on-demand lane* (§5.5), no release-matrix leg.
 - **sd_notify** (#160) — ruled at the spike as a comment on the issue;
   it stays open until then. Default today: not needed under
-  =Type=simple= + =Restart=always=.
+  =Type=simple= + =Restart=always= (the D250 ran exactly that
+  configuration: =Restart=always= demonstrably recovered the boot-time
+  failure loops, and tracing → stderr reached journald).
 - The **renderer/backend flip** verdict (=renderer-software= /
-  =backend-fb= build features) — spike exit.
+  =backend-fb= build features) — spike exit. The related posture
+  question (§1: the permission-based software-GL fallback vs explicit
+  selection) is recorded as observed on the D250; its ruling lands
+  here and in the wave exit report.
