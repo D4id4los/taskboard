@@ -30,8 +30,10 @@ OpenGL 2.1 — Slint's femtovg needs GL ≥ 3.0, so the GL lane lands on
 llvmpipe regardless. On the D250 that fallback is currently reached
 by permission (the =taskboard= appliance user cannot open
 =/dev/dri/card0=; libGL logs =i915 … Permission denied= and falls
-back), not by selection; the sanctioned posture is a spike-exit
-ruling (§8).
+back), not by selection — ruled 2026-10-21: *that permission-fallback
+is the sanctioned posture* (ADR 0016 amendment); the user
+deliberately stays out of =video=/=render=, and the measured budget
+verdicts cover exactly this configuration.
 
 * 2. The image
 
@@ -286,7 +288,7 @@ The runbook records *where* each decision lands; it decides nothing:
   configuration: =Restart=always= demonstrably recovered the boot-time
   failure loops, and tracing → stderr reached journald).
 - The **renderer/backend flip** verdict (=renderer-software= /
-  =backend-fb= build features) — spike exit. The related posture
-  question (§1: the permission-based software-GL fallback vs explicit
-  selection) is recorded as observed on the D250; its ruling lands
-  here and in the wave exit report.
+  =backend-fb= build features) — *moot per the 2026-10-21 posture
+  ruling*: the shipped winit + femtovg configuration is sanctioned
+  as-is (ADR 0016 amendment); the permission-based software-GL
+  fallback is the contract, and the on-device verdicts measured it.

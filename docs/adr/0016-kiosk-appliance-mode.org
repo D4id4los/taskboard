@@ -159,3 +159,26 @@ Chunk 2's caveat, verbatim:
   headless fallback lifecycle end to end, and the daemon tail
   (unmodified through the extraction), and review walks the
   mount/watcher choreography.
+
+* Amendment — 2026-10-21: the renderer posture on gen3 GPUs
+
+The D250 spike (netbook test-environment report, PR #387) corrected
+the runbook §1 premise and ruled the posture. Fact: Debian 12's Mesa
+22.3.6 still ships the classic i915 driver, so the 945GME exposes
+*hardware* OpenGL 2.1 — the runbook's original "no hardware OpenGL on
+modern Mesa" was wrong. It does not change the lane: femtovg needs
+GL ≥ 3.0, so the shipped winit + femtovg configuration renders
+through Mesa software GL (llvmpipe) regardless.
+
+*Ruled posture: the permission-based fallback, documented.* The
+=taskboard= appliance user deliberately stays out of =video= and
+=render=, so libGL cannot open =/dev/dri/card0=, logs =i915 …
+Permission denied=, and falls back to llvmpipe. This is exactly the
+configuration the on-device budget verdicts were measured under; the
+fallback being reached "by permission, not selection" is accepted as
+the contract, not an accident to fix. No =LIBGL_ALWAYS_SOFTWARE= pin
+and no =renderer-software=/=backend-fb= build flip: the measured
+configuration ships as-is. A deployment whose group membership drifts
+gains a hardware-GL probe femtovg cannot use; the failure mode is a
+slint backend error at mount, which the unit's =Restart=always=
+supervises the same as any other nonzero exit.
