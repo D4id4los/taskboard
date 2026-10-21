@@ -141,6 +141,7 @@ fn pending_task_intents(
                 p.title = true;
                 p.description = true;
                 p.duedate = true;
+                p.scheduled = true;
                 p.done = true;
                 p.archived = true;
             }
@@ -170,6 +171,7 @@ fn keep_task_intent(merged: &mut Task, local: &Task, task_id: TaskId, p: Pending
             title = p.title,
             description = p.description,
             duedate = p.duedate,
+            scheduled = p.scheduled,
             done = p.done,
             archived = p.archived,
             position = p.position,
@@ -189,6 +191,10 @@ fn keep_task_intent(merged: &mut Task, local: &Task, task_id: TaskId, p: Pending
     if p.duedate {
         merged.duedate = local.duedate;
         merged.clocks.duedate = local.clocks.duedate;
+    }
+    if p.scheduled {
+        merged.scheduled = local.scheduled;
+        merged.clocks.scheduled = local.clocks.scheduled;
     }
     if p.done {
         merged.done = local.done;
@@ -2761,6 +2767,7 @@ mod tests {
                     title: t.title.clone(),
                     description: t.description.clone(),
                     duedate: t.duedate,
+                    scheduled: t.scheduled,
                     done: t.done,
                     stack: r.stack,
                     order: t.order,
@@ -3788,6 +3795,46 @@ mod tests {
     }
 
     // ---- self-clobber guard: ops queued after `read_at` -------------
+
+    #[test]
+    fn a_post_read_scheduled_edit_survives_the_same_cycle_pull() {
+        // The D6 race, scheduled edition: the cycle pushed a title PUT
+        // (advancing Deck's whole-card stamp), and the pull then reported
+        // `scheduled: null` stamped newer than the local edit's clock.
+        // The edit was queued after the cycle's read — the push never
+        // carried it — so the merge must keep value AND clock.
+        let mut local = bound_task(1);
+        local.scheduled = Some(ts(BASE + 120));
+        local.clocks.scheduled = ts(BASE + 120);
+        let state = base_state(local);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(9)),
+            op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
+            queued_at: ts(BASE + 120),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            ts(BASE), // the cycle read before the edit was queued
+            &CountingIds::default(),
+            ts(BASE + 360),
+            &crate::test_support::test_connector(),
+        );
+
+        let state_after = app_into_state(&app);
+        let merged = task_by_card(&state_after, 1);
+        assert_eq!(
+            merged.scheduled,
+            Some(ts(BASE + 120)),
+            "protected intent survives"
+        );
+        assert_eq!(merged.clocks.scheduled, ts(BASE + 120));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 300)));
+    }
 
     #[test]
     fn a_post_read_done_edit_survives_the_same_cycle_pull() {

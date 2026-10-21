@@ -102,6 +102,8 @@ pub struct TaskRow {
     pub description: String,
     /// Due date.
     pub duedate: Option<DateTime<Utc>>,
+    /// Scheduled start.
+    pub scheduled: Option<DateTime<Utc>>,
     /// Completion timestamp.
     pub done: Option<DateTime<Utc>>,
     /// Index into the generated stack list.
@@ -208,19 +210,24 @@ fn label_rows() -> impl Strategy<Value = Vec<LabelRow>> {
 fn task_rows() -> impl Strategy<Value = Vec<TaskRow>> {
     prop::collection::vec(
         (
-            task_id_strategy(),
-            proptest::option::of(remote_number()),
-            string_strategy(),
-            string_strategy(),
-            proptest::option::of(timestamp_strategy()),
-            proptest::option::of(timestamp_strategy()),
-            0_usize..4,
-            -100_i64..=100,
-            prop::collection::vec(0_usize..5, 0..3),
-            // (archived, deleted)
-            (any::<bool>(), any::<bool>()),
-            task_clocks_strategy(),
-            proptest::option::of(timestamp_strategy()),
+            (
+                task_id_strategy(),
+                proptest::option::of(remote_number()),
+                string_strategy(),
+                string_strategy(),
+                proptest::option::of(timestamp_strategy()),
+                proptest::option::of(timestamp_strategy()),
+                proptest::option::of(timestamp_strategy()),
+                0_usize..4,
+            ),
+            (
+                -100_i64..=100,
+                prop::collection::vec(0_usize..5, 0..3),
+                // (archived, deleted)
+                (any::<bool>(), any::<bool>()),
+                task_clocks_strategy(),
+                proptest::option::of(timestamp_strategy()),
+            ),
         ),
         0..12,
     )
@@ -228,24 +235,15 @@ fn task_rows() -> impl Strategy<Value = Vec<TaskRow>> {
         rows.into_iter()
             .map(
                 |(
-                    id,
-                    remote,
-                    title,
-                    description,
-                    duedate,
-                    done,
-                    stack_idx,
-                    order,
-                    label_idxs,
-                    (archived, deleted),
-                    clocks,
-                    remote_seen,
+                    (id, remote, title, description, duedate, scheduled, done, stack_idx),
+                    (order, label_idxs, (archived, deleted), clocks, remote_seen),
                 )| TaskRow {
                     id,
                     remote,
                     title,
                     description,
                     duedate,
+                    scheduled,
                     done,
                     stack_idx,
                     order,
@@ -359,7 +357,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         title: row.title,
                         description: row.description,
                         duedate: row.duedate,
-                        scheduled: None,
+                        scheduled: row.scheduled,
                         done: row.done,
                         stack: stack_id,
                         order: row.order,

@@ -279,6 +279,7 @@ async fn s3_sync_ingestion_binds_and_pulls() {
                     title: "remote card".into(),
                     description: String::new(),
                     duedate: None,
+                    scheduled: None,
                     done: None,
                     stack: taskboard_domain::RemoteStackId(1),
                     order: 1,
