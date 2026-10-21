@@ -414,7 +414,9 @@ async fn it_nextcloud_docker_cli_editing_push() {
     let Some(cfg) = common::live_docker_config() else {
         return; // skip, never fail: tier not configured
     };
-    common::with_deadline(editing_push_journey(&cfg))
+    // Box::pin: the journey future sits just past clippy's
+    // `large_futures` threshold under some feature unifications.
+    common::with_deadline(Box::pin(editing_push_journey(&cfg)))
         .await
         .expect("test must finish within the live deadline");
 }
