@@ -824,7 +824,10 @@ impl AppConfig {
     /// with no parent maps to the process directory.
     #[must_use]
     pub fn credential_base_dir(&self) -> &Path {
-        self.db_path().parent().unwrap_or(Path::new("."))
+        self.db_path()
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
     }
 
     /// The resolved database path. Call after [`AppConfig::load`]
