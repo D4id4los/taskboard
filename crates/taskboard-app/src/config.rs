@@ -57,6 +57,10 @@ pub const DEFAULT_REMINDER_TICK_SECS: u64 = 30;
 /// `[reminders] default_before`: the implicit reminder's offset.
 pub const DEFAULT_REMINDER_BEFORE: &str = "5m";
 
+/// `[preferences] day_start_time`: midnight rollover, the D-F6 default
+/// (a night-owl install sets e.g. `"05:00"`).
+pub const DEFAULT_DAY_START_TIME: &str = "00:00";
+
 /// Fully-resolved, validated application configuration. Secret-free by
 /// construction; `Debug` is safe to log.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -87,6 +91,12 @@ pub struct AppConfig {
     /// its off default so pin-less configs serialize unchanged.
     #[serde(default, skip_serializing_if = "WebSection::is_default")]
     pub web: WebSection,
+    /// Device-local user preferences. Never synced (no document key,
+    /// no lane) until the D5 `settings` section exists; each device
+    /// keeps its own. Overrides via
+    /// `TASKBOARD_PREFERENCES__DAY_START_TIME`.
+    #[serde(default)]
+    pub preferences: PreferencesSection,
 }
 
 /// Which frontend the process runs.
@@ -293,6 +303,35 @@ fn default_reminder_tick() -> u64 {
 
 fn default_reminder_before() -> String {
     DEFAULT_REMINDER_BEFORE.to_owned()
+}
+
+/// `[preferences]` table: device-local user preferences. Like
+/// `[reminders]`, the time-of-day is a raw string parsed in
+/// [`AppConfig::validate`] — a bad value must surface as the typed
+/// `invalid-day-start-time` kind, never a silent default, and the
+/// raw form stays stored so `config print` echoes the user's own
+/// spelling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreferencesSection {
+    /// Local wall-clock time-of-day at which "today" begins (the
+    /// day-boundary rollover; a night-owl sets `"05:00"`). Validated
+    /// typed — an unparseable value is
+    /// [`ConfigError::InvalidDayStartTime`], never a silent default.
+    #[serde(default = "default_day_start_time")]
+    pub day_start_time: String,
+}
+
+impl Default for PreferencesSection {
+    fn default() -> Self {
+        Self {
+            day_start_time: default_day_start_time(),
+        }
+    }
+}
+
+fn default_day_start_time() -> String {
+    DEFAULT_DAY_START_TIME.to_owned()
 }
 
 /// `[ui]` table: presentation-layer settings. The UI crate reads no
@@ -638,6 +677,12 @@ pub enum ConfigError {
         /// The dotted config key that is invalid.
         field: &'static str,
     },
+    /// `[preferences] day_start_time` does not parse as a time-of-day.
+    #[error("day start time invalid")]
+    InvalidDayStartTime {
+        /// The dotted config key that is invalid.
+        field: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -663,6 +708,7 @@ impl ConfigError {
             Self::InvalidConnectorEntry { .. } => "invalid-connector-entry",
             Self::UnknownFixedBoard { .. } => "unknown-fixed-board",
             Self::InvalidWebConfig { .. } => "invalid-web-config",
+            Self::InvalidDayStartTime { .. } => "invalid-day-start-time",
         }
     }
 }
@@ -881,6 +927,16 @@ impl AppConfig {
         if self.reminders.tick_secs == 0 {
             return Err(ConfigError::InvalidDuration {
                 field: "reminders.tick_secs",
+            });
+        }
+        if self
+            .preferences
+            .day_start_time
+            .parse::<chrono::NaiveTime>()
+            .is_err()
+        {
+            return Err(ConfigError::InvalidDayStartTime {
+                field: "preferences.day_start_time",
             });
         }
         if self
@@ -1302,6 +1358,7 @@ mod tests {
         assert!(round.reminders.enabled);
         assert_eq!(round.reminders.tick_secs, DEFAULT_REMINDER_TICK_SECS);
         assert_eq!(round.reminders.default_before, DEFAULT_REMINDER_BEFORE);
+        assert_eq!(round.preferences.day_start_time, DEFAULT_DAY_START_TIME);
     }
 
     #[test]
@@ -1356,6 +1413,61 @@ mod tests {
                 .merge(Toml::string("[reminders]\ntoken = 'x'"))
                 .extract();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_unparseable_day_start_times() {
+        for raw in ["25:00", "5:60", "", "5m", "tomorrow", "024:00", "5 m"] {
+            let mut c = valid();
+            c.preferences.day_start_time = raw.into();
+            assert!(
+                matches!(
+                    c.validate(),
+                    Err(ConfigError::InvalidDayStartTime {
+                        field: "preferences.day_start_time"
+                    })
+                ),
+                "{raw} must be rejected as InvalidDayStartTime"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_day_start_times_decode_and_validate() {
+        for raw in ["05:30", "23:59:59", "05:00"] {
+            let config: Result<AppConfig, _> =
+                Figment::from(Serialized::from(&valid(), "valid-day-start"))
+                    .merge(Toml::string(&format!(
+                        "[preferences]\nday_start_time = '{raw}'"
+                    )))
+                    .extract();
+            let mut decoded = config.expect("a well-formed [preferences] table decodes");
+            decoded.storage.db_path = Some(PathBuf::from("/tmp/taskboard.db"));
+            decoded
+                .validate()
+                .expect("a parseable time-of-day validates");
+            assert_eq!(decoded.preferences.day_start_time, raw);
+        }
+    }
+
+    #[test]
+    fn unknown_key_in_the_preferences_table_is_a_decode_error() {
+        let result: Result<AppConfig, _> =
+            Figment::from(Serialized::defaults(AppConfig::default()))
+                .merge(Toml::string("[preferences]\ntoken = 'x'"))
+                .extract();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn day_start_time_error_kind_is_the_stable_discriminant() {
+        assert_eq!(
+            ConfigError::InvalidDayStartTime {
+                field: "preferences.day_start_time"
+            }
+            .kind(),
+            "invalid-day-start-time"
+        );
     }
 
     #[test]
