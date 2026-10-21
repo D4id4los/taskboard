@@ -114,7 +114,7 @@ pub fn adopt_remote_task(remote: &RemoteTask, id: TaskId, ctx: &RemoteIndex) -> 
         title: remote.title.clone(),
         description: remote.description.clone(),
         duedate: remote.duedate,
-        scheduled: None,
+        scheduled: remote.scheduled,
         done: remote.done,
         stack: stack_id,
         order: remote.order,
@@ -202,6 +202,11 @@ pub fn merge_task(local: &Task, remote: &RemoteTask, ctx: &RemoteIndex) -> Task 
         merged.duedate = remote.duedate;
         merged.clocks.duedate = ts_r;
     }
+    let scheduled_remote_wins = remote_wins(ts_r, local.clocks.scheduled);
+    if scheduled_remote_wins {
+        merged.scheduled = remote.scheduled;
+        merged.clocks.scheduled = ts_r;
+    }
     let done_remote_wins = remote_wins(ts_r, local.clocks.done);
     if done_remote_wins {
         merged.done = remote.done;
@@ -246,6 +251,7 @@ pub fn merge_task(local: &Task, remote: &RemoteTask, ctx: &RemoteIndex) -> Task 
         title_remote_wins,
         description_remote_wins,
         duedate_remote_wins,
+        scheduled_remote_wins,
         done_remote_wins,
         archived_remote_wins,
         labels_remote_wins,
@@ -318,7 +324,7 @@ pub fn adopt_task_after_push(local: &Task, echo: &RemoteTask, ctx: &RemoteIndex)
         title: echo.title.clone(),
         description: echo.description.clone(),
         duedate: echo.duedate,
-        scheduled: None,
+        scheduled: echo.scheduled,
         done: echo.done,
         stack: resolve_local_stack(ctx, echo.id.board, echo.stack).unwrap_or(local.stack),
         order: echo.order,
@@ -948,6 +954,64 @@ mod tests {
         );
         // The delete push is the one path that *clears* (finalize): its
         // clearing is asserted by its own test above.
+    }
+
+    #[test]
+    fn scheduled_merges_per_field_lww_both_directions() {
+        // D-F2 branch A: `scheduled` rides the native `startdate` slot,
+        // so its verdict is duedate's twin — remote strictly newer
+        // adopts, local strictly newer stands (entity-stamp basis).
+        let ctx = RemoteIndex::default();
+
+        // Remote newer ⇒ adopt remote value, stamp ts_r.
+        let mut local = bound_task(1);
+        local.scheduled = Some(ts(BASE - 120));
+        local.clocks.scheduled = ts(BASE - 120);
+        let mut remote = remote_task(1, 1, BASE + 300);
+        remote.scheduled = Some(ts(BASE + 240));
+        let merged = merge_task(&local, &remote, &ctx);
+        assert_eq!(merged.scheduled, Some(ts(BASE + 240)));
+        assert_eq!(merged.clocks.scheduled, ts(BASE + 300));
+
+        // Local newer ⇒ local stands.
+        let mut local = bound_task(1);
+        local.scheduled = Some(ts(BASE + 400));
+        local.clocks.scheduled = ts(BASE + 400);
+        let mut remote = remote_task(1, 1, BASE + 300);
+        remote.scheduled = Some(ts(BASE + 240));
+        let merged = merge_task(&local, &remote, &ctx);
+        assert_eq!(merged.scheduled, Some(ts(BASE + 400)));
+        assert_eq!(merged.clocks.scheduled, ts(BASE + 400));
+    }
+
+    #[test]
+    fn adopt_remote_task_carries_scheduled_with_the_entity_stamp() {
+        let mut remote = remote_task(1, 1, BASE + 300);
+        remote.scheduled = Some(ts(BASE + 60));
+        let mut ctx = RemoteIndex::default();
+        ctx.stack_by_ref
+            .insert(stack_ref(1), StackId::from(uuid::Uuid::from_u128(701)));
+        let id = TaskId::from(uuid::Uuid::from_u128(77));
+        let adopted = adopt_remote_task(&remote, id, &ctx).expect("stack resolves");
+        assert_eq!(adopted.scheduled, Some(ts(BASE + 60)));
+        assert_eq!(adopted.clocks.scheduled, ts(BASE + 300));
+    }
+
+    #[test]
+    fn adopt_task_after_push_takes_the_echo_value_with_the_max_clock() {
+        let ctx = RemoteIndex::default();
+        let mut local = bound_task(1);
+        local.scheduled = Some(ts(BASE - 120));
+        local.clocks.scheduled = ts(BASE - 120);
+        let mut echo = remote_task(1, 1, BASE + 300);
+        echo.scheduled = Some(ts(BASE - 120)); // server normalization echo
+        let adopted = adopt_task_after_push(&local, &echo, &ctx);
+        assert_eq!(adopted.scheduled, Some(ts(BASE - 120)));
+        assert_eq!(
+            adopted.clocks.scheduled,
+            ts(BASE + 300),
+            "clock advances to max(local, echo stamp)"
+        );
     }
 
     #[test]

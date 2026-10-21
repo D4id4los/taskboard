@@ -80,6 +80,8 @@ pub struct RemoteTask {
     pub description: String,
     /// Due date; `None` = none.
     pub duedate: Option<DateTime<Utc>>,
+    /// Scheduled start (Deck's native `startdate`); `None` = none.
+    pub scheduled: Option<DateTime<Utc>>,
     /// Completion timestamp; `None` = open.
     pub done: Option<DateTime<Utc>>,
     /// Owning remote stack.

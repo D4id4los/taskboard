@@ -64,6 +64,7 @@ pub(crate) fn remote_task(stack: u64, card: u64, last_modified: i64) -> RemoteTa
         title: format!("card {card}"),
         description: String::new(),
         duedate: None,
+        scheduled: None,
         done: None,
         stack: RemoteStackId(stack),
         order: card.cast_signed(),

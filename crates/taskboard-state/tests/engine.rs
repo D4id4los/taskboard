@@ -1208,6 +1208,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
         title: "offline draft".into(),
         description: String::new(),
         duedate: None,
+        scheduled: None,
         done: None,
         stack: taskboard_domain::RemoteStackId(9),
         order: 0,

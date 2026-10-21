@@ -149,6 +149,8 @@ pub struct NewCardShape {
     pub description: String,
     /// Due date.
     pub duedate: Option<DateTime<Utc>>,
+    /// Scheduled start (Deck's native `startdate` slot).
+    pub scheduled: Option<DateTime<Utc>>,
     /// Completion timestamp (sent post-create: Deck's card PUT owns `done`).
     pub done: Option<DateTime<Utc>>,
     /// Archived flag (sent post-create via the archive sub-endpoint).
@@ -168,6 +170,8 @@ pub struct CardShape {
     pub description: String,
     /// Due date.
     pub duedate: Option<DateTime<Utc>>,
+    /// Scheduled start (Deck's native `startdate` slot).
+    pub scheduled: Option<DateTime<Utc>>,
     /// Completion timestamp.
     pub done: Option<DateTime<Utc>>,
     /// Sort order within the (fetched) stack.
@@ -185,6 +189,7 @@ impl NewCardShape {
             order: task.order,
             description: task.description.clone(),
             duedate: task.duedate,
+            scheduled: task.scheduled,
             done: task.done,
             archived: task.archived,
             labels: task.labels.clone(),
@@ -198,6 +203,7 @@ impl CardShape {
             title: task.title.clone(),
             description: task.description.clone(),
             duedate: task.duedate,
+            scheduled: task.scheduled,
             done: task.done,
             order: task.order,
             archived: task.archived,
@@ -917,6 +923,34 @@ mod tests {
             panic!("expected an update materialization");
         };
         assert_eq!(card.title, "edited twice");
+    }
+
+    #[test]
+    fn scheduled_rides_both_push_shapes_from_the_task() {
+        // D-F2: the native `startdate` slot materializes into both the
+        // create and the full-send update shapes.
+        let stack = stack_row(1);
+        let mut stacks = BTreeMap::new();
+        stacks.insert(stack.id, stack.clone());
+        let mut task = task_row(10, stack.id);
+        task.scheduled = Some(ts(400));
+        let mut tasks = BTreeMap::new();
+        tasks.insert(task.id, task.clone());
+        let labels = BTreeMap::new();
+
+        let update = vec![op(100, LocalOp::UpdateTask(task.id))];
+        let groups = plan_pushes(&update, tables(&tasks, &stacks, &labels));
+        let MaterializedOp::UpdateTask { card, .. } = &groups[0].materialized else {
+            panic!("expected an update materialization");
+        };
+        assert_eq!(card.scheduled, Some(ts(400)));
+
+        let create = vec![op(101, LocalOp::CreateTask(task.id))];
+        let groups = plan_pushes(&create, tables(&tasks, &stacks, &labels));
+        let MaterializedOp::CreateTask { new_card, .. } = &groups[0].materialized else {
+            panic!("expected a create materialization");
+        };
+        assert_eq!(new_card.scheduled, Some(ts(400)));
     }
 
     #[test]
