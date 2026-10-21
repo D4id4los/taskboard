@@ -37,19 +37,27 @@ tasks:
     title: task 0 (renamed offline)
     description: ""
     duedate: ~
+    scheduled: ~
     done: ~
     stack: 00000000-0000-0000-0000-000000000001
     order: 0
     labels: []
+    effort: ~
+    importance: ~
+    urgency: ~
     archived: false
     deleted: false
     clocks:
       title: "1970-01-01T10:05:00Z"
       description: "1970-01-01T10:02:00Z"
       duedate: "1970-01-01T10:02:00Z"
+      scheduled: "1970-01-01T10:02:00Z"
       done: "1970-01-01T10:02:00Z"
       position: "1970-01-01T10:02:00Z"
       labels: "1970-01-01T10:02:00Z"
+      effort: "1970-01-01T10:02:00Z"
+      importance: "1970-01-01T10:02:00Z"
+      urgency: "1970-01-01T10:02:00Z"
       archived: "1970-01-01T10:02:00Z"
       deleted: "1970-01-01T10:02:00Z"
     remote_seen: ~
@@ -59,19 +67,27 @@ tasks:
     title: task 1
     description: ""
     duedate: ~
+    scheduled: ~
     done: "1970-01-01T10:06:00Z"
     stack: 00000000-0000-0000-0000-000000000001
     order: 1
     labels: []
+    effort: ~
+    importance: ~
+    urgency: ~
     archived: false
     deleted: false
     clocks:
       title: "1970-01-01T10:03:00Z"
       description: "1970-01-01T10:03:00Z"
       duedate: "1970-01-01T10:03:00Z"
+      scheduled: "1970-01-01T10:03:00Z"
       done: "1970-01-01T10:06:00Z"
       position: "1970-01-01T10:03:00Z"
       labels: "1970-01-01T10:03:00Z"
+      effort: "1970-01-01T10:03:00Z"
+      importance: "1970-01-01T10:03:00Z"
+      urgency: "1970-01-01T10:03:00Z"
       archived: "1970-01-01T10:03:00Z"
       deleted: "1970-01-01T10:03:00Z"
     remote_seen: ~
@@ -81,19 +97,27 @@ tasks:
     title: task 2
     description: ""
     duedate: ~
+    scheduled: ~
     done: ~
     stack: 00000000-0000-0000-0000-000000000001
     order: 2
     labels: []
+    effort: ~
+    importance: ~
+    urgency: ~
     archived: false
     deleted: false
     clocks:
       title: "1970-01-01T10:04:00Z"
       description: "1970-01-01T10:04:00Z"
       duedate: "1970-01-01T10:04:00Z"
+      scheduled: "1970-01-01T10:04:00Z"
       done: "1970-01-01T10:04:00Z"
       position: "1970-01-01T10:04:00Z"
       labels: "1970-01-01T10:04:00Z"
+      effort: "1970-01-01T10:04:00Z"
+      importance: "1970-01-01T10:04:00Z"
+      urgency: "1970-01-01T10:04:00Z"
       archived: "1970-01-01T10:04:00Z"
       deleted: "1970-01-01T10:04:00Z"
     remote_seen: ~

@@ -25,6 +25,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::entities::{Board, Label, Stack, Task};
 use crate::idgen::IdGenerator;
@@ -87,16 +88,23 @@ fn op_board_id(op: &LocalOp) -> Option<BoardId> {
 /// silently clobber a newer local edit (the "self-clobber" race). Ops the
 /// cycle *did* see (queued no later than `read_at`) are not protected:
 /// their fields' post-push truth is exactly what the snapshot reports.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)] // one flag per protected task field
-struct PendingTaskIntent {
+pub(crate) struct PendingTaskIntent {
     title: bool,
     description: bool,
     duedate: bool,
+    scheduled: bool,
     done: bool,
     archived: bool,
     position: bool,
     labels: bool,
+    effort: bool,
+    importance: bool,
+    urgency: bool,
+    /// The D-S6 rules flag: the guard's one deliberate non-clock member
+    /// (rules carry their own embedded write clocks, not `TaskClocks`).
+    reminder_rules: bool,
     deleted: bool,
 }
 
@@ -1333,6 +1341,118 @@ mod tests {
     use proptest::prelude::*;
     use std::collections::BTreeSet;
     use uuid;
+
+    /// Lockstep assertion 1 (#244, D-F3): the domain structures agree
+    /// with the `TASK_FIELDS` manifest exactly. Lives here, not in
+    /// `entities.rs`, because `PendingTaskIntent` is private to this
+    /// module — the assertion is the only consumer of its serde derives.
+    #[test]
+    fn task_fields_manifest_pins_the_domain_structures() {
+        use crate::entities::TASK_FIELDS;
+        use crate::messages::TaskChanges;
+
+        let manifest_clocks: BTreeSet<&str> =
+            TASK_FIELDS.iter().map(|(clock, _, _)| *clock).collect();
+
+        // (a) A populated TaskClocks serializes exactly the clock set.
+        let e = crate::entities::BoardClocks::epoch();
+        let clocks = crate::entities::TaskClocks {
+            title: e,
+            description: e,
+            duedate: e,
+            scheduled: e,
+            done: e,
+            position: e,
+            labels: e,
+            effort: e,
+            importance: e,
+            urgency: e,
+            archived: e,
+            deleted: e,
+        };
+        let clock_keys_value = serde_json::to_value(clocks).unwrap();
+        let clock_keys: BTreeSet<&str> = clock_keys_value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(clock_keys, manifest_clocks);
+
+        // (b) An all-true PendingTaskIntent: the guard key set covers the
+        // clock set and differs from it by exactly the deliberate
+        // non-clock `reminder_rules` flag (D-S6).
+        let intent = PendingTaskIntent {
+            title: true,
+            description: true,
+            duedate: true,
+            scheduled: true,
+            done: true,
+            archived: true,
+            position: true,
+            labels: true,
+            effort: true,
+            importance: true,
+            urgency: true,
+            reminder_rules: true,
+            deleted: true,
+        };
+        let intent_keys_value = serde_json::to_value(intent).unwrap();
+        let intent_keys: BTreeSet<&str> = intent_keys_value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let extra: BTreeSet<&str> = intent_keys.difference(&manifest_clocks).copied().collect();
+        assert_eq!(extra, BTreeSet::from(["reminder_rules"]));
+        assert!(manifest_clocks.is_subset(&intent_keys));
+
+        // (d) A fully-populated TaskChanges (every slot `Some`, so
+        // `skip_serializing_if` hides nothing) names only mergeable
+        // fields.
+        let changes = TaskChanges {
+            title: Some("t".into()),
+            description: Some("d".into()),
+            duedate: Some(Some(e)),
+            scheduled: Some(Some(e)),
+            effort: Some(Some(crate::entities::Effort::new(1))),
+            importance: Some(Some(crate::entities::Importance::Low)),
+            urgency: Some(Some(crate::entities::Urgency::Low)),
+            archived: Some(false),
+        };
+        let changes_keys_value = serde_json::to_value(changes).unwrap();
+        let changes_keys: BTreeSet<&str> = changes_keys_value
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert!(changes_keys.is_subset(&manifest_clocks));
+    }
+
+    // Lockstep assertion 1(c): every `Task` serializes at least the
+    // union of the manifest's task fields.
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+
+        #[test]
+        fn task_key_set_covers_the_manifest_task_fields(task in test_support::task_strategy()) {
+            use crate::entities::TASK_FIELDS;
+            let value = serde_json::to_value(task).unwrap();
+            let task_keys: BTreeSet<&str> = value
+                .as_object()
+                .expect("object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            for (_, fields, _) in TASK_FIELDS {
+                for field in *fields {
+                    assert!(task_keys.contains(field), "Task lacks `{field}`");
+                }
+            }
+        }
+    }
 
     #[test]
     fn remote_absence_tombstones_and_cancels_pending_ops() {

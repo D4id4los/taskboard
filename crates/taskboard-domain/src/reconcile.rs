@@ -370,6 +370,11 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
         } else {
             local.duedate
         },
+        scheduled: if bc.scheduled >= lc.scheduled {
+            bound.scheduled
+        } else {
+            local.scheduled
+        },
         done: if bc.done >= lc.done {
             bound.done
         } else {
@@ -390,6 +395,21 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
         } else {
             bound.labels.clone()
         },
+        effort: if bc.effort >= lc.effort {
+            bound.effort
+        } else {
+            local.effort
+        },
+        importance: if bc.importance >= lc.importance {
+            bound.importance
+        } else {
+            local.importance
+        },
+        urgency: if bc.urgency >= lc.urgency {
+            bound.urgency
+        } else {
+            local.urgency
+        },
         archived: if bc.archived >= lc.archived {
             bound.archived
         } else {
@@ -400,9 +420,13 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
             title: lc.title.max(bc.title),
             description: lc.description.max(bc.description),
             duedate: lc.duedate.max(bc.duedate),
+            scheduled: lc.scheduled.max(bc.scheduled),
             done: lc.done.max(bc.done),
             position: lc.position.max(bc.position),
             labels: lc.labels.max(bc.labels),
+            effort: lc.effort.max(bc.effort),
+            importance: lc.importance.max(bc.importance),
+            urgency: lc.urgency.max(bc.urgency),
             archived: lc.archived.max(bc.archived),
             deleted: lc.deleted.max(bc.deleted),
         },
@@ -526,18 +550,26 @@ mod tests {
             description: String::new(),
             duedate: None,
             done: None,
+            scheduled: None,
             stack: stack_id,
             order: 1,
             labels: BTreeSet::default(),
+            effort: None,
+            importance: None,
+            urgency: None,
             archived: false,
             deleted: false,
             clocks: TaskClocks {
                 title: ts(100),
                 description: ts(100),
                 duedate: ts(100),
+                scheduled: ts(100),
                 done: ts(100),
                 position: ts(100),
                 labels: ts(100),
+                effort: ts(100),
+                importance: ts(100),
+                urgency: ts(100),
                 archived: ts(100),
                 deleted: ts(100),
             },
@@ -872,18 +904,26 @@ mod proptests {
             description: String::new(),
             duedate: None,
             done: None,
+            scheduled: None,
             stack,
             order: 1,
             labels: std::collections::BTreeSet::default(),
+            effort: None,
+            importance: None,
+            urgency: None,
             archived: false,
             deleted: false,
             clocks: TaskClocks {
                 title: ts(100),
                 description: ts(100),
                 duedate: ts(100),
+                scheduled: ts(100),
                 done: ts(100),
                 position: ts(100),
                 labels: ts(100),
+                effort: ts(100),
+                importance: ts(100),
+                urgency: ts(100),
                 archived: ts(100),
                 deleted: ts(100),
             },
@@ -1230,9 +1270,13 @@ mod proptest_strategies {
                     description: "d".to_owned(),
                     duedate: None,
                     done: None,
+                    scheduled: None,
                     stack: StackId::from(uuid::Uuid::from_u128(9)),
                     order: 1,
                     labels: std::collections::BTreeSet::default(),
+                    effort: None,
+                    importance: None,
+                    urgency: None,
                     archived: false,
                     deleted: false,
                     clocks,
@@ -1245,9 +1289,13 @@ mod proptest_strategies {
                             title: t,
                             description: d,
                             duedate: due,
+                            scheduled: due,
                             done,
                             position: pos,
                             labels: lab,
+                            effort: lab,
+                            importance: lab,
+                            urgency: lab,
                             archived: arc,
                             deleted: del,
                         },
@@ -1259,9 +1307,13 @@ mod proptest_strategies {
                             title: t + chrono::TimeDelta::try_seconds(7).unwrap(),
                             description: d + chrono::TimeDelta::try_seconds(7).unwrap(),
                             duedate: due + chrono::TimeDelta::try_seconds(7).unwrap(),
+                            scheduled: due + chrono::TimeDelta::try_seconds(7).unwrap(),
                             done: done + chrono::TimeDelta::try_seconds(7).unwrap(),
                             position: pos + chrono::TimeDelta::try_seconds(7).unwrap(),
                             labels: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
+                            effort: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
+                            importance: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
+                            urgency: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
                             archived: arc + chrono::TimeDelta::try_seconds(7).unwrap(),
                             deleted: del + chrono::TimeDelta::try_seconds(7).unwrap(),
                         },

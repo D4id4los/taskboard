@@ -21,17 +21,53 @@ pub fn task_clocks_strategy() -> impl Strategy<Value = TaskClocks> {
         timestamp_strategy(),
         timestamp_strategy(),
         timestamp_strategy(),
+        timestamp_strategy(),
+        timestamp_strategy(),
+        timestamp_strategy(),
+        timestamp_strategy(),
     )
-        .prop_map(|(t, d, du, do_, p, l, a, del)| TaskClocks {
+        .prop_map(|(t, d, du, sc, do_, p, l, ef, im, ur, a, del)| TaskClocks {
             title: t,
             description: d,
             duedate: du,
+            scheduled: sc,
             done: do_,
             position: p,
             labels: l,
+            effort: ef,
+            importance: im,
+            urgency: ur,
             archived: a,
             deleted: del,
         })
+}
+
+/// Bounded effort seconds (`0..=10^9`): values stay inside the storage
+/// codec's `i64` fence by a wide margin.
+pub fn effort_strategy() -> impl Strategy<Value = crate::entities::Effort> {
+    (0_u64..=1_000_000_000).prop_map(crate::entities::Effort::new)
+}
+
+/// All five levels, uniform.
+pub fn importance_strategy() -> impl Strategy<Value = crate::entities::Importance> {
+    prop::sample::select(vec![
+        crate::entities::Importance::VeryLow,
+        crate::entities::Importance::Low,
+        crate::entities::Importance::Normal,
+        crate::entities::Importance::High,
+        crate::entities::Importance::VeryHigh,
+    ])
+}
+
+/// All five levels, uniform.
+pub fn urgency_strategy() -> impl Strategy<Value = crate::entities::Urgency> {
+    prop::sample::select(vec![
+        crate::entities::Urgency::VeryLow,
+        crate::entities::Urgency::Low,
+        crate::entities::Urgency::Normal,
+        crate::entities::Urgency::High,
+        crate::entities::Urgency::VeryHigh,
+    ])
 }
 
 pub fn stack_clocks_strategy() -> impl Strategy<Value = StackClocks> {
@@ -63,43 +99,54 @@ pub fn label_clocks_strategy() -> impl Strategy<Value = LabelClocks> {
 /// A task entity.
 pub fn task_strategy() -> impl Strategy<Value = Task> {
     (
-        super::task_id_strategy(),
-        proptest::option::of(remote_card_ref_strategy()),
-        string_strategy(),
-        string_strategy(),
-        proptest::option::of(timestamp_strategy()),
-        proptest::option::of(timestamp_strategy()),
-        super::stack_id_strategy(),
-        -1_000_i64..=1_000,
-        prop::collection::btree_set(super::label_id_strategy(), 0..3),
-        (any::<bool>(), any::<bool>()),
-        task_clocks_strategy(),
-        proptest::option::of(timestamp_strategy()),
+        (
+            super::task_id_strategy(),
+            proptest::option::of(remote_card_ref_strategy()),
+            string_strategy(),
+            string_strategy(),
+            proptest::option::of(timestamp_strategy()),
+            proptest::option::of(timestamp_strategy()),
+            proptest::option::of(timestamp_strategy()),
+            super::stack_id_strategy(),
+        ),
+        (
+            -1_000_i64..=1_000,
+            prop::collection::btree_set(super::label_id_strategy(), 0..3),
+            proptest::option::of(effort_strategy()),
+            proptest::option::of(importance_strategy()),
+            proptest::option::of(urgency_strategy()),
+            (any::<bool>(), any::<bool>()),
+            task_clocks_strategy(),
+            proptest::option::of(timestamp_strategy()),
+        ),
     )
         .prop_map(
             |(
-                id,
-                remote,
-                title,
-                description,
-                duedate,
-                done,
-                stack,
-                order,
-                labels,
-                (archived, deleted),
-                clocks,
-                remote_seen,
+                (id, remote, title, description, duedate, done, scheduled, stack),
+                (
+                    order,
+                    labels,
+                    effort,
+                    importance,
+                    urgency,
+                    (archived, deleted),
+                    clocks,
+                    remote_seen,
+                ),
             )| Task {
                 id,
                 remote,
                 title,
                 description,
                 duedate,
+                scheduled,
                 done,
                 stack,
                 order,
                 labels,
+                effort,
+                importance,
+                urgency,
                 archived,
                 deleted,
                 clocks,

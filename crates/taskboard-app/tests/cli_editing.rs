@@ -161,6 +161,10 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
             title: Some("renamed".to_owned()),
             description: Some("the body".to_owned()),
             duedate: Some(Some(due)),
+            scheduled: None,
+            effort: None,
+            importance: None,
+            urgency: None,
             archived: None,
         },
     )
@@ -187,6 +191,10 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
             title: None,
             description: None,
             duedate: Some(None),
+            scheduled: None,
+            effort: None,
+            importance: None,
+            urgency: None,
             archived: None,
         },
     )
@@ -206,6 +214,10 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
             title: None,
             description: None,
             duedate: Some(None),
+            scheduled: None,
+            effort: None,
+            importance: None,
+            urgency: None,
             archived: None,
         },
     )

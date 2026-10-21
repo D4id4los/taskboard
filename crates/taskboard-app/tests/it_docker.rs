@@ -545,6 +545,10 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
                     .expect("midnight")
                     .and_utc(),
             )),
+            scheduled: None,
+            effort: None,
+            importance: None,
+            urgency: None,
             archived: None,
         },
     )

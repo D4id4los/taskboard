@@ -42,6 +42,85 @@ impl std::fmt::Display for Color {
     }
 }
 
+/// Estimated effort in whole seconds; `None` on a [`Task`] = unestimated.
+/// Unsigned by construction (negative effort is unrepresentable); the
+/// storage codec rejects values beyond `i64::MAX` at its boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Effort(u64);
+
+impl Effort {
+    /// Wraps a whole-seconds value.
+    #[must_use]
+    pub const fn new(seconds: u64) -> Self {
+        Self(seconds)
+    }
+
+    /// Whole seconds.
+    #[must_use]
+    pub const fn seconds(self) -> u64 {
+        self.0
+    }
+}
+
+/// Importance level for later decision support; `None` on a [`Task`] =
+/// unset (a task outside the matrix must not read as "Normal").
+/// Declaration order = severity order: the derived `Ord` is the sorting
+/// contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Importance {
+    VeryLow,
+    Low,
+    Normal,
+    High,
+    VeryHigh,
+}
+
+/// Urgency level for later decision support; `None` on a [`Task`] =
+/// unset. A distinct type from [`Importance`] on purpose:
+/// cross-assignment is a type error and the matrix view grows them
+/// independently. Declaration order = severity order (derived `Ord`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Urgency {
+    VeryLow,
+    Low,
+    Normal,
+    High,
+    VeryHigh,
+}
+
+/// Which sync lane the Deck connector carries a task field on (#244).
+/// The lane is *the connector's* mapping, not an intrinsic property of
+/// the field — the local data model stays one construct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldFamily {
+    /// Carried on the Deck card itself (entity-stamp LWW).
+    Native,
+    /// Carried on the app-data sidecar document (embedded-clock fold).
+    AppData,
+}
+
+/// The mergeable task-field manifest: the single source the lockstep
+/// assertions pin every structure against (#244). One row per
+/// [`TaskClocks`] slot; `.1` names the [`Task`] members the clock guards
+/// (composites name both); `.2` is the Deck connector's lane.
+pub const TASK_FIELDS: &[(&str, &[&str], FieldFamily)] = &[
+    ("title", &["title"], FieldFamily::Native),
+    ("description", &["description"], FieldFamily::Native),
+    ("duedate", &["duedate"], FieldFamily::Native),
+    ("done", &["done"], FieldFamily::Native),
+    ("position", &["stack", "order"], FieldFamily::Native),
+    ("labels", &["labels"], FieldFamily::Native),
+    ("archived", &["archived"], FieldFamily::Native),
+    ("deleted", &["deleted"], FieldFamily::Native),
+    ("scheduled", &["scheduled"], FieldFamily::Native),
+    ("effort", &["effort"], FieldFamily::AppData),
+    ("importance", &["importance"], FieldFamily::AppData),
+    ("urgency", &["urgency"], FieldFamily::AppData),
+];
+
 /// Per-field write timestamps of a [`Task`] (decision: per-field LWW).
 ///
 /// Local edits touch only the edited fields; remote adoption stamps every
@@ -54,12 +133,20 @@ pub struct TaskClocks {
     pub description: DateTime<Utc>,
     /// Write time of `duedate`.
     pub duedate: DateTime<Utc>,
+    /// Write time of `scheduled`.
+    pub scheduled: DateTime<Utc>,
     /// Write time of `done`.
     pub done: DateTime<Utc>,
     /// Write time of the composite position (`stack` + `order`).
     pub position: DateTime<Utc>,
     /// Write time of the whole label set.
     pub labels: DateTime<Utc>,
+    /// Write time of `effort`.
+    pub effort: DateTime<Utc>,
+    /// Write time of `importance`.
+    pub importance: DateTime<Utc>,
+    /// Write time of `urgency`.
+    pub urgency: DateTime<Utc>,
     /// Write time of `archived`.
     pub archived: DateTime<Utc>,
     /// Write time of the tombstone (`deleted`).
@@ -174,6 +261,10 @@ pub struct Task {
     pub description: String,
     /// Due date; `None` = none.
     pub duedate: Option<DateTime<Utc>>,
+    /// Scheduled start; `None` = unscheduled. The "when do I intend to
+    /// begin" half of the deadline split (`duedate` is "when it must be
+    /// finished").
+    pub scheduled: Option<DateTime<Utc>>,
     /// Completion timestamp; `None` = open.
     pub done: Option<DateTime<Utc>>,
     /// Owning stack — half of the composite position field.
@@ -182,6 +273,12 @@ pub struct Task {
     pub order: i64,
     /// Attached labels (whole-set LWW as one mergeable field).
     pub labels: std::collections::BTreeSet<LabelId>,
+    /// Estimated effort; `None` = unestimated.
+    pub effort: Option<Effort>,
+    /// Importance; `None` = unset.
+    pub importance: Option<Importance>,
+    /// Urgency; `None` = unset.
+    pub urgency: Option<Urgency>,
     /// Archived flag.
     pub archived: bool,
     /// Tombstone flag; `clocks.deleted` is the tombstone's write time.
@@ -243,6 +340,68 @@ mod tests {
             BoardClocks::epoch(),
             "storage decode must accept the epoch"
         );
+    }
+
+    #[test]
+    fn effort_roundtrips_through_serde_as_a_bare_integer() {
+        let effort = Effort::new(900);
+        let json = serde_json::to_value(effort).unwrap();
+        assert_eq!(json, serde_json::json!(900), "transparent integer encoding");
+        let back: Effort = serde_json::from_value(json).unwrap();
+        assert_eq!(back, effort);
+        assert_eq!(back.seconds(), 900);
+    }
+
+    #[test]
+    fn level_enums_serialize_their_serde_unit_names() {
+        let importance_cases = [
+            (Importance::VeryLow, "very_low"),
+            (Importance::Low, "low"),
+            (Importance::Normal, "normal"),
+            (Importance::High, "high"),
+            (Importance::VeryHigh, "very_high"),
+        ];
+        let urgency_cases = [
+            (Urgency::VeryLow, "very_low"),
+            (Urgency::Low, "low"),
+            (Urgency::Normal, "normal"),
+            (Urgency::High, "high"),
+            (Urgency::VeryHigh, "very_high"),
+        ];
+        for (level, name) in importance_cases {
+            let json = serde_json::to_value(level).unwrap();
+            assert_eq!(json, serde_json::json!(name));
+            assert_eq!(serde_json::from_value::<Importance>(json).unwrap(), level);
+        }
+        for (level, name) in urgency_cases {
+            let json = serde_json::to_value(level).unwrap();
+            assert_eq!(json, serde_json::json!(name));
+            assert_eq!(serde_json::from_value::<Urgency>(json).unwrap(), level);
+        }
+    }
+
+    #[test]
+    fn sorted_all_variants_equals_declaration_order() {
+        let importance = [
+            Importance::VeryLow,
+            Importance::Low,
+            Importance::Normal,
+            Importance::High,
+            Importance::VeryHigh,
+        ];
+        let urgency = [
+            Urgency::VeryLow,
+            Urgency::Low,
+            Urgency::Normal,
+            Urgency::High,
+            Urgency::VeryHigh,
+        ];
+        let mut sorted = importance;
+        sorted.sort();
+        assert_eq!(sorted, importance, "derived Ord = declaration order");
+        let mut sorted = urgency;
+        sorted.sort();
+        assert_eq!(sorted, urgency, "derived Ord = declaration order");
     }
 
     proptest! {

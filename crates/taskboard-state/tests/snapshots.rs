@@ -148,6 +148,10 @@ async fn s1_fresh_boot_authoring() {
             title: None,
             description: Some("draft the Q4 report".into()),
             duedate: Some(Some(ts(T0 + 86_400))),
+            scheduled: None,
+            effort: None,
+            importance: None,
+            urgency: None,
             archived: None,
         },
     })

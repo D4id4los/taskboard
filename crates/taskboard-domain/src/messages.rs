@@ -264,6 +264,34 @@ pub struct TaskChanges {
         skip_serializing_if = "Option::is_none"
     )]
     pub duedate: Option<Option<chrono::DateTime<chrono::Utc>>>,
+    /// New scheduled start; `Some(None)` clears it, `None` = untouched.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub scheduled: Option<Option<chrono::DateTime<chrono::Utc>>>,
+    /// New effort estimate; `Some(None)` clears it, `None` = untouched.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effort: Option<Option<crate::entities::Effort>>,
+    /// New importance; `Some(None)` clears it, `None` = untouched.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub importance: Option<Option<crate::entities::Importance>>,
+    /// New urgency; `Some(None)` clears it, `None` = untouched.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub urgency: Option<Option<crate::entities::Urgency>>,
     /// New archived flag.
     pub archived: Option<bool>,
 }
