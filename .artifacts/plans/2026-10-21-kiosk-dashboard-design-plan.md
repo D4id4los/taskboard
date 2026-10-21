@@ -22,15 +22,12 @@
   (§3 Option C — the dashboard as the tablet-path surface, sequenced
   before Option B by §6 Q7); #234 (the tablet's constraints);
   dispatch plan §1/§11 (MD-10, the evidence & artefact mandate).
-- **Status**: **ACCEPTED 2026-10-21** — the user's session ruled
-  every question (§5; the Q1 stack-approval gate is **closed** —
-  hyper approved). Two addenda landed with the rulings: §6 (the
-  tablet deployment path — the session's connectivity question,
-  answered) and §7 (designing for a future write surface — the
-  session's forms condition). §6 carries exactly one **open
-  sub-decision** (the reconnect script) that awaits the user's nod;
-  everything else is ruled. K11 (implementation) dispatches from
-  this document. Evidence base: the worktree at `origin/main` tip
+- **Status**: **ACCEPTED 2026-10-21 — session complete, every item
+  ruled** (two passes: the main session, then the §6/§7 addenda
+  incl. the §6.4 reconnect script, accepted in the second). The
+  Q1 stack-approval gate is **closed** — hyper approved. K11
+  (implementation) dispatches from this document; nothing in it
+  remains open. Evidence base: the worktree at `origin/main` tip
   `e2bc3f7` (2026-10-21; the kiosk round's chunks 1–9 are merged
   there — the metrics surface of K8 is **code on main**, not a plan).
 
@@ -304,9 +301,12 @@ constraint; the tablet's Android 5.0 vintage):
    tables, not flex).
 3. System font stack; no web fonts, no icon fonts; no images beyond
    optional CSS-drawn accents.
-4. **Zero JavaScript** (Q4) — the pages render with scripting
-   fully disabled; no `<noscript>` content needed because nothing
-   degrades.
+4. **No JavaScript required** (Q4, amended by the §6.4 ruling
+   2026-10-21) — the pages render and refresh with scripting fully
+   disabled; the single allowed script is the §6.4 reconnect
+   enhancement (ES5, in-page re-fetch + retry + reconnecting
+   state); no `<noscript>` content needed because nothing degrades
+   without it.
 5. meta-refresh polling only; no `fetch`/XHR/SSE/WebSocket.
 6. Modest CSS only: colours, borders, padding, `border-radius`,
    `box-shadow`, media queries for the tablet's panel and a phone
@@ -413,8 +413,8 @@ normative input: the crate pins (approved §5.1), the
 GET-only page set (index + per-board), the token/bind decode
 rules, the no-JS + checklist constraints, the caching headers, and
 the hands-on-test flag to the user — **plus the §6/§7 addenda**
-(the tablet deployment story, incl. the open reconnect
-sub-decision if ruled in, and the forms-readiness constraints).
+(the tablet deployment story, incl. the **ruled-in** §6.4
+reconnect script, and the forms-readiness constraints).
 K11's stage-1 plan re-locates every symbol at its own start
 (MD-8) — the line numbers here are 2026-10-21 references against
 `e2bc3f7`.
@@ -424,9 +424,9 @@ K11's stage-1 plan re-locates every symbol at its own start
 | Item | Ruling |
 |---|---|
 | Q1 HTTP stack | **Accepted** — the hyper server is approved; the D-K7/MD-10 stack gate is closed. K11 pins `hyper`/`hyper-util`/`http-body-util` once in `[workspace.dependencies]` |
-| Q2 bind + auth | **Accepted in shape**; the session asked how the tablet topology works in practice — the §6 addendum is the answer (deployment, connection, and permission management); the loopback default, the token capability-URL, and the typed non-loopback gate stand as designed |
+| Q2 bind + auth | **Accepted in shape**; the session asked how the tablet topology works in practice — the §6 addendum is the answer (deployment, connection, and permission management) and was **accepted in the second pass**; the loopback default, the token capability-URL, and the typed non-loopback gate stand as designed |
 | Q3 content scope | **Accepted as the first implementation, with a binding design constraint**: a future write surface (forms — start/stop time tracking on tasks, marking tasks done, "or some such") must remain possible without rework — the §7 addendum records the constraints that keep that door open |
-| Q4 refresh | **Accepted** (meta-refresh, no JS). §6.4 derives one scoped amendment candidate (the reconnect script) from the tablet-path analysis — an **open sub-decision**, not folded in |
+| Q4 refresh | **Accepted** (meta-refresh, no JS); the §6.4 amendment (the ES5 reconnect script) **ruled in by the second pass, 2026-10-21** — K11's scope includes it; the no-JS-*required* guarantee stands |
 | Q5 placement | Accepted |
 | Q6 standalone | Accepted |
 | Q7 browser checklist | Accepted |
@@ -498,11 +498,13 @@ ES5 progressive-enhancement script that, when scripting is
 available (Chrome 37 supports everything needed: XHR, ES5 DOM),
 replaces navigation-refresh with in-page re-fetching plus a
 "reconnecting…" state and automatic retry — the no-JS meta-refresh
-baseline remains for scripting-disabled browsers, so Q7's
-no-JS-required guarantee is unchanged, but Q4's "zero `<script>`
-elements" line would soften to "no JS *required*". This amends an
-accepted item, so it is **not** folded in: **recommendation (b),
-folded into K11's scope — awaiting the user's explicit ruling.**
+   baseline remains for scripting-disabled browsers, so Q7's
+   no-JS-required guarantee is unchanged, but Q4's "zero `<script>`
+   elements" line softens to "no JS *required*". **Ruled in by the
+   session's second pass (2026-10-21): option (b) is approved into
+   K11's scope.** The reconnect script is the *only* script the
+   pages may carry; the page must render and refresh correctly with
+   scripting disabled (Q7's guarantee, unchanged).
 
 Also recorded honestly: Android 5 offers no permanent page
 fullscreen without scripting; the tablet display will show the
@@ -531,7 +533,8 @@ each verifiable in review:
    extended to an input-capable client, not amended away.
 3. **What already exists**: `SetTaskDone` ("complete or reopen"),
    `MoveTask`, `UpdateTask`, and the stack/label arms — the
-   "marking tasks done" example needs **zero** domain work. Time
+   "marking tasks done" example needs **zero** domain work. The §7
+addendum itself was accepted in the second pass. Time
    tracking (the session's other example) has **no domain surface
    today** (verified 2026-10-21: no timer/tracking vocabulary in
    `taskboard-domain`) — it would be a domain feature first and a
@@ -558,6 +561,6 @@ each verifiable in review:
 
 Per the dispatch plan's bookkeeping: landing this design
 **annotates #234** (stage 3, MD-4; one comment, no Closes line —
-"design round landed and accepted 2026-10-21; K11 dispatches from
-it, one open sub-decision recorded in §6.4"). The issue closes
-with K11.
+"design round landed and accepted 2026-10-21, all items ruled incl.
+the §6.4 reconnect script; K11 dispatches from it"). The issue
+closes with K11.
