@@ -150,3 +150,16 @@ strip = "symbols"
 # wrap. Runtime cost is one branch per add on timestamp/counter arithmetic
 # — negligible against the map/serde hot paths; kiosk-scale data.
 overflow-checks = true
+
+[profile.bench]
+# `cargo bench` builds with this profile, which inherits `release` —
+# and with it the kiosk runtime's lto = "thin" / codegen-units = 1, the
+# dominant cost of the 8-minute bench-profile CI build (2026-10-21
+# benchmark CI cost analysis §1.3). Release serves the shipped binary;
+# benches trend relative numbers and must not pay its build cost. No
+# Bencher upload has ever succeeded (2026-10-21), so this breaks no
+# trend baseline. Only the two build-cost keys are overridden; `strip`
+# and `overflow-checks` still inherit from `release` (no build-cost
+# impact; overflow panics in benches stay loud).
+lto = false
+codegen-units = 16

@@ -504,7 +504,12 @@ RUSTFLAGS="-Zsanitizer=address" cargo +nightly test \
   =taskboard-domain= and =taskboard-state=. Surviving mutants are recorded
   as =.artifacts/reports/YYYY-MM-DD-mutation-testing-report.md=.
 - *Benchmarks:* =criterion= tracks hot paths (SQLite caching actor, task
-  sorting) across commits to catch performance regressions early.
+  sorting) in the =benchmark.yml= lane — every =main= push plus a weekly
+  Thursday 04:00 UTC run and manual dispatch (off the PR lane since
+  2026-10-21: a 14–19 min job whose per-PR results were discarded; PRs
+  keep =clippy --all-targets= compiling the bench targets). Uploads feed
+  the Bencher =main= trend (=BENCHER_API_TOKEN= secret via the CLI's
+  =BENCHER_API_KEY= env); no thresholds are configured — trends, not alerts.
 
 * 14. Performance Smoke Harnesses (local, manual only)
 
