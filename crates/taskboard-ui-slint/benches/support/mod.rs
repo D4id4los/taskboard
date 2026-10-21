@@ -51,6 +51,10 @@ pub fn has_done(order: i64) -> bool {
     order.rem_euclid(10) == 0
 }
 
+fn has_scheduled(order: i64) -> bool {
+    order % 4 == 1
+}
+
 #[must_use]
 fn ts(secs: i64) -> DateTime<Utc> {
     Utc.timestamp_opt(EPOCH_SECS + secs, 0)
@@ -113,10 +117,14 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
         title: format!("Task {i:05} bench fixture"),
         description: format!("Deterministic bench fixture task number {i}."),
         duedate: has_duedate(order).then(|| ts(order + 1_000_000)),
+        scheduled: has_scheduled(order).then(|| ts(order + 1_500_000)),
         done: has_done(order).then(|| ts(order + 2_000_000)),
         stack: stacks[i % STACK_COUNT].id,
         order,
         labels: BTreeSet::new(),
+        effort: None,
+        importance: None,
+        urgency: None,
         archived: false,
         deleted: false,
         clocks: {
@@ -125,9 +133,13 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
                 title: t,
                 description: t,
                 duedate: t,
+                scheduled: t,
                 done: t,
                 position: t,
                 labels: t,
+                effort: t,
+                importance: t,
+                urgency: t,
                 archived: t,
                 deleted: t,
             }

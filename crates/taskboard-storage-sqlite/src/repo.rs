@@ -272,10 +272,14 @@ fn decode_task(
         title: row.title,
         description: row.description,
         duedate: row.duedate,
+        scheduled: None,
         done: row.done,
         stack: StackId::from(stack),
         order: row.sort_order,
         labels,
+        effort: None,
+        importance: None,
+        urgency: None,
         archived: row.archived,
         deleted: row.deleted,
         clocks: TaskClocks {
@@ -291,6 +295,7 @@ fn decode_task(
                 .ck_duedate
                 .parse()
                 .map_err(|_| RepositoryError::Corrupted)?,
+            scheduled: taskboard_domain::entities::BoardClocks::epoch(),
             done: row
                 .ck_done
                 .parse()
@@ -303,6 +308,9 @@ fn decode_task(
                 .ck_labels
                 .parse()
                 .map_err(|_| RepositoryError::Corrupted)?,
+            effort: taskboard_domain::entities::BoardClocks::epoch(),
+            importance: taskboard_domain::entities::BoardClocks::epoch(),
+            urgency: taskboard_domain::entities::BoardClocks::epoch(),
             archived: row
                 .ck_archived
                 .parse()

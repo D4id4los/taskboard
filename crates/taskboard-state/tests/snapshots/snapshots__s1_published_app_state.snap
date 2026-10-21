@@ -50,20 +50,28 @@ tasks:
     title: write report
     description: draft the Q4 report
     duedate: "1970-01-02T10:00:00Z"
+    scheduled: ~
     done: "1970-01-01T10:04:00Z"
     stack: 00000000-0000-0000-0000-00000000000a
     order: 9
     labels:
       - 00000000-0000-0000-0000-000000000007
+    effort: ~
+    importance: ~
+    urgency: ~
     archived: false
     deleted: true
     clocks:
       title: "1970-01-01T10:02:00Z"
       description: "1970-01-01T10:03:00Z"
       duedate: "1970-01-01T10:03:00Z"
+      scheduled: "1970-01-01T10:02:00Z"
       done: "1970-01-01T10:04:00Z"
       position: "1970-01-01T10:08:00Z"
       labels: "1970-01-01T10:06:00Z"
+      effort: "1970-01-01T10:02:00Z"
+      importance: "1970-01-01T10:02:00Z"
+      urgency: "1970-01-01T10:02:00Z"
       archived: "1970-01-01T10:02:00Z"
       deleted: "1970-01-01T10:09:00Z"
     remote_seen: ~

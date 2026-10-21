@@ -11,14 +11,24 @@ pub fn task_changes_strategy() -> impl Strategy<Value = crate::messages::TaskCha
         prop::option::of(string_strategy()),
         prop::option::of(string_strategy()),
         prop::option::of(prop::option::of(timestamp_strategy())),
+        prop::option::of(prop::option::of(timestamp_strategy())),
+        prop::option::of(prop::option::of(super::entities::effort_strategy())),
+        prop::option::of(prop::option::of(super::entities::importance_strategy())),
+        prop::option::of(prop::option::of(super::entities::urgency_strategy())),
         prop::option::of(any::<bool>()),
     )
         .prop_map(
-            |(title, description, duedate, archived)| crate::messages::TaskChanges {
-                title,
-                description,
-                duedate,
-                archived,
+            |(title, description, duedate, scheduled, effort, importance, urgency, archived)| {
+                crate::messages::TaskChanges {
+                    title,
+                    description,
+                    duedate,
+                    scheduled,
+                    effort,
+                    importance,
+                    urgency,
+                    archived,
+                }
             },
         )
 }

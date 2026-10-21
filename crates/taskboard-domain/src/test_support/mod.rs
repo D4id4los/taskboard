@@ -25,7 +25,8 @@ pub mod remote;
 pub mod state;
 
 pub use entities::{
-    label_clocks_strategy, stack_clocks_strategy, task_clocks_strategy, task_strategy,
+    effort_strategy, importance_strategy, label_clocks_strategy, stack_clocks_strategy,
+    task_clocks_strategy, task_strategy, urgency_strategy,
 };
 pub use messages::{label_changes_strategy, state_command_strategy, task_changes_strategy};
 pub use reminders::{

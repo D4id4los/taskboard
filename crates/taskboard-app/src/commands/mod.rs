@@ -1207,6 +1207,10 @@ fn task_changes(
             crate::cli::DueSpec::Set(dt) => Some(dt),
             crate::cli::DueSpec::Clear => None,
         }),
+        scheduled: None,
+        effort: None,
+        importance: None,
+        urgency: None,
         archived: if archive {
             Some(true)
         } else {
