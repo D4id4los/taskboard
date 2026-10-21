@@ -10,6 +10,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The encrypted-file credential store: `[nextcloud] credential_store =
+  "file"` selects a third `CredentialStore` implementation for kiosk
+  machines without a Secret Service — a machine-generated 0600 key
+  file beside the database plus per-account ChaCha20-Poly1305
+  envelopes under `<db-dir>/credentials/`, with typed failure fences
+  for every corruption shape (missing/insecure/corrupt key file,
+  corrupt envelope, unknown version, auth failure) and no silent
+  fallback (kiosk wave K12, #126/#159; ADR 0008 amendment).
 - The `[kiosk]` config section with `fixed_board`: an optional board
   UUID resolved typed against the live boards at kiosk boot — a pin
   naming no live board refuses the boot with the new

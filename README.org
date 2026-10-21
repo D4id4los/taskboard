@@ -128,10 +128,18 @@ prefixed environment variables (highest priority; =__= nests, e.g.
 
 Config files carry *no secrets* — unknown keys inside a table are a
 hard error, so an =app_password= line cannot even decode. The Nextcloud
-app password is resolved through the OS keyring (default) or, on
-headless machines, the =TASKBOARD_APP_PASSWORD= environment variable
-(set =[nextcloud] credential_store = "env"= explicitly; there is no
-silent fallback).
+app password is resolved through one of three explicitly selected
+stores (there is no silent fallback):
+
+- =keyring= (default) — the OS keyring;
+- =env= — the =TASKBOARD_APP_PASSWORD= escape hatch for headless
+  machines and CI;
+- =file= — the encrypted-file store for kiosk appliances without a
+  Secret Service: a machine-generated =0600= key file beside the
+  database plus ChaCha20-Poly1305-encrypted envelopes under
+  =<db-dir>/credentials/= (see ADR 0008). It protects against other
+  local users and world-readable copies — not against root or
+  full-disk theft; weaker than the keyring where the keyring exists.
 
 Replace every =<placeholder>= below with your own values.
 
@@ -429,6 +437,14 @@ Headless variant: set =[nextcloud] credential_store = "env"= in the
 config and export =TASKBOARD_APP_PASSWORD=<your-app-password>= —
 =login= then succeeds with =stored: "env"= and no secret ever touches
 a file.
+
+Kiosk variant (no Secret Service): set =[nextcloud] credential_store =
+"file"=. =login= generates the key file (=0600=) beside the database
+and stores the password encrypted; unattended boots then work headless
+with the key file present and fail typed without it. If the key
+file's mode is ever weakened, taskboard refuses with
+=KeyFileInsecureMode= — restore =chmod 600 <db-dir>/credential.key=
+(the mode is never corrected automatically).
 
 Then bind the installation to one Deck board and go:
 
