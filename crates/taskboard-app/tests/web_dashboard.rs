@@ -138,6 +138,39 @@ async fn w1_the_dashboard_journey_over_the_real_server() {
         "the index links the live board"
     );
 
+    // Regression: the slash-less index never serves HTML in place — it
+    // redirects to the canonical trailing-slash form, because the
+    // pages' links are relative and a slash-less HTML response would
+    // carry links the browser resolves against `/d/` (broken 404s). A
+    // redirect-obeying client lands on the working index.
+    let redirect_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("redirect client");
+    let slashless = redirect_client.get(&base).send().await.expect("slash-less");
+    assert_eq!(slashless.status(), 302, "{base} must redirect, not serve");
+    assert_eq!(
+        slashless
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .expect("location")
+            .as_bytes(),
+        b"/d/journey-token/".as_slice(),
+        "the redirect targets the canonical index path"
+    );
+    let redirect_post = redirect_client
+        .post(&base)
+        .send()
+        .await
+        .expect("slash-less post");
+    assert_eq!(
+        redirect_post.status(),
+        405,
+        "the slash-less form keeps the method semantics"
+    );
+    let landed = client.get(&base).send().await.expect("redirect followed");
+    assert_eq!(landed.status(), 200);
+
     // Board page: 200 with the board's stacks.
     let board = client
         .get(format!("{base}/board/{}", board_id.as_uuid()))

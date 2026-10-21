@@ -31,6 +31,10 @@ pub enum Resolution {
     /// A known path hit with a non-GET method: the future forms lane's
     /// honest `405`, without serving anything today.
     MethodNotAllowed,
+    /// The bare `/d/<token>` index (no trailing slash) — never served
+    /// as HTML, because the pages' links are relative: the client is
+    /// sent to the canonical `/d/<token>/` first.
+    Redirect,
 }
 
 /// Resolves one request's `(method, path)` against the token. Pure —
@@ -42,7 +46,6 @@ pub fn resolve(method: &str, path: &str, token: &str) -> Resolution {
     let Some(rest) = path.strip_prefix("/d/").filter(|rest| !rest.contains("//")) else {
         return Resolution::NotFound;
     };
-    // The bare `/d/<token>` (no trailing slash) is the index too.
     let (token_segment, rest) = match rest.split_once('/') {
         Some((token, rest)) => (token, Some(rest)),
         None => (rest, None),
@@ -67,6 +70,14 @@ pub fn resolve(method: &str, path: &str, token: &str) -> Resolution {
     match method {
         // HEAD rides the GET arm at the HTTP layer (hyper answers it
         // from the GET handler); every other method is the typed 405.
+        "GET" | "HEAD" if rest.is_none() => {
+            // The bare `/d/<token>` redirects to the canonical
+            // trailing-slash index instead of serving it in place —
+            // the pages' links (`board/…`, `style-v1.css`) are
+            // relative, so a slash-less HTML response would carry
+            // links the browser resolves against `/d/` (broken 404s).
+            Resolution::Redirect
+        }
         "GET" | "HEAD" => Resolution::Serve(route),
         _ => Resolution::MethodNotAllowed,
     }
@@ -99,10 +110,11 @@ mod tests {
             resolve("GET", "/d/abcdef0123456789/", TOKEN),
             Resolution::Serve(Route::Index)
         );
-        // The bare (trailing-slash-less) index is the same arm.
+        // The bare (trailing-slash-less) index redirects to the
+        // canonical form instead of serving HTML in place.
         assert_eq!(
             resolve("GET", "/d/abcdef0123456789", TOKEN),
-            Resolution::Serve(Route::Index)
+            Resolution::Redirect
         );
         let id = uuid::Uuid::nil();
         assert_eq!(
@@ -122,6 +134,7 @@ mod tests {
     fn a_wrong_token_is_404_like_any_other_miss() {
         for path in [
             "/d/wrongtoken/",
+            "/d/wrongtoken",
             &format!("/d/wrongtoken/board/{}", uuid::Uuid::nil()),
             &format!("/d/wrongtoken/{STYLE_SEGMENT}"),
         ] {
@@ -173,5 +186,20 @@ mod tests {
         );
         // A valid path behind a wrong token stays 404 even for these —
         // checked in `a_wrong_token_is_404_like_any_other_miss`.
+    }
+
+    /// The slash-less index is a valid path: non-GET is still the 405,
+    /// HEAD still rides the (redirect) GET arm.
+    #[test]
+    fn the_slashless_index_keeps_the_method_semantics() {
+        let bare = format!("/d/{TOKEN}");
+        for method in ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"] {
+            assert_eq!(
+                resolve(method, &bare, TOKEN),
+                Resolution::MethodNotAllowed,
+                "{method} on the bare index must be 405"
+            );
+        }
+        assert_eq!(resolve("HEAD", &bare, TOKEN), Resolution::Redirect);
     }
 }
