@@ -72,6 +72,12 @@ export component AppWindow inherits Window {
     title: "taskboard";
     preferred-width: Theme.window-default-width;
     preferred-height: Theme.window-default-height;
+    // Round-1 D15: scale-aware minimum floors — the compact layout
+    // stays usable at 480·scale wide, 400·scale tall. No `width:` or
+    // `height:` binding may appear anywhere on the Window (the
+    // review invariant; winit rejects resizes below the floors).
+    min-width: 480px * Theme.base-scale;
+    min-height: 400px * Theme.base-scale;
 
     // ---- The one-way model push surface (D2: models in, indices
     //      back — no ids cross the seam). ---------------------------

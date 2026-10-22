@@ -41,6 +41,9 @@ export component StackView inherits FocusScope {
             RoleText {
                 role: Typography.heading;
                 text: root.stack.title;
+                // A D15 enabler: a long title wraps instead of forcing
+                // the layout min above the window floors.
+                wrap: word-wrap;
             }
 
             if (root.stack.tasks.length == 0 && !root.stack.create-open): EmptyState {
