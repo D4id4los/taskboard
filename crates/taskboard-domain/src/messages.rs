@@ -365,6 +365,43 @@ pub enum SyncCommand {
     Detach,
 }
 
+/// The per-board sidecar document's evidence on a completed cycle
+/// (D-S4): a typed enum, never a bare `Option` — the reason travels
+/// end-to-end so the stranding is loud (the ruled D-S2 addition).
+/// In-process mpsc only; serde lives on the document types in
+/// [`crate::appdata`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppDataEvidence {
+    /// A decoded, format-compatible, board-matching document — the only
+    /// variant the fold (chunk 4) may consume.
+    Document(Box<crate::appdata::AppDataDocument>),
+    /// Nothing to read: no anchor card, no attachment, or only a
+    /// tombstoned attachment. The normal silent state.
+    Absent,
+    /// There was something to read, and reading it failed for a typed
+    /// reason — folds nothing.
+    Unreadable(AppDataUnreadable),
+}
+
+/// Why sidecar evidence could not be read (D-S7's fence rows).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppDataUnreadable {
+    /// The document's `format` is newer than this build's
+    /// [`crate::appdata::APPDATA_FORMAT`] — folds and flushes nothing
+    /// until the device upgrades.
+    FormatTooNew {
+        /// The document's too-new format version.
+        format: u32,
+    },
+    /// The content download failed (transport class, after retries).
+    Transport,
+    /// The body is not decodable (corrupt JSON, missing envelope keys).
+    Decode,
+    /// The decoded `board` is not the cycling board (rode in on a moved
+    /// card).
+    ForeignBoard,
+}
+
 /// Sync actor → engine report (mpsc payload).
 ///
 /// Evidence-then-verdict (phase 4 decision 3): a `Failed` cycle still
@@ -404,6 +441,10 @@ pub enum SyncReport {
         /// later board's duration includes earlier boards' time; the
         /// engine folds the max.
         duration: std::time::Duration,
+        /// The board's sidecar-document evidence (D-S4): `Absent` at
+        /// minimum, never silence-by-erasure. `Failed` carries no
+        /// evidence — a failed cycle folds nothing.
+        app_data: AppDataEvidence,
     },
     /// The cycle failed before producing a snapshot.
     Failed {

@@ -313,6 +313,7 @@ pub fn attributed_board(
         | LocalOp::MoveTask(task)
         | LocalOp::DeleteTask(task)
         | LocalOp::AssignLabel(task, _)
+        | LocalOp::UpdateAppData(task)
         | LocalOp::UnassignLabel(task, _) => tasks
             .get(task)
             .and_then(|t| stacks.get(&t.stack))

@@ -260,7 +260,8 @@ async fn read_scope(
             | taskboard_domain::LocalOp::MoveTask(id)
             | taskboard_domain::LocalOp::DeleteTask(id)
             | taskboard_domain::LocalOp::AssignLabel(id, _)
-            | taskboard_domain::LocalOp::UnassignLabel(id, _) => tasks.contains(&id),
+            | taskboard_domain::LocalOp::UnassignLabel(id, _)
+            | taskboard_domain::LocalOp::UpdateAppData(id) => tasks.contains(&id),
             taskboard_domain::LocalOp::CreateStack(id)
             | taskboard_domain::LocalOp::RenameStack(id)
             | taskboard_domain::LocalOp::MoveStack(id)

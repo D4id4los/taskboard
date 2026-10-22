@@ -666,7 +666,8 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 LocalOp::CreateTask(id)
                 | LocalOp::UpdateTask(id)
                 | LocalOp::MoveTask(id)
-                | LocalOp::DeleteTask(id) => disk.tasks.contains_key(&id),
+                | LocalOp::DeleteTask(id)
+                | LocalOp::UpdateAppData(id) => disk.tasks.contains_key(&id),
                 LocalOp::CreateStack(id)
                 | LocalOp::RenameStack(id)
                 | LocalOp::MoveStack(id)

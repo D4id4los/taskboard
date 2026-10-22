@@ -569,6 +569,7 @@ async fn cycle(
                 pushes,
                 read_at,
                 duration: started.elapsed(),
+                app_data: taskboard_domain::AppDataEvidence::Absent,
             },
         )
         .await;

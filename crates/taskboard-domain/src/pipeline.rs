@@ -133,7 +133,11 @@ fn pending_task_intents(
             | LocalOp::UpdateLabel(_)
             | LocalOp::DeleteLabel(_)
             | LocalOp::UpdateBoard(_)
-            | LocalOp::DeleteBoard(_) => continue,
+            | LocalOp::DeleteBoard(_)
+            // Chunk 4's guard mirror widens the app-field flags for this
+            // op; nothing enqueues it yet (the MD-10 interim), so it
+            // creates no intent now — a fence, not the widened arm.
+            | LocalOp::UpdateAppData(_) => continue,
         });
         match op.op {
             LocalOp::UpdateTask(_) => {
@@ -1063,6 +1067,7 @@ fn apply_push_outcomes(
                     | LocalOp::AssignLabel(..)
                     | LocalOp::UnassignLabel(..)
                     | LocalOp::UpdateBoard(_)
+                    | LocalOp::UpdateAppData(_)
                     | LocalOp::DeleteBoard(_) => {}
                 }
                 match echo {
@@ -1226,6 +1231,13 @@ fn apply_push_outcomes(
                 LocalOp::AssignLabel(..) | LocalOp::UnassignLabel(..) => {
                     op_results.insert(outcome.op, true);
                     tracing::debug!(rule = RULE_R9, op_id = ?outcome.op, "remote missing, assign op finalized");
+                }
+                // Unreachable while nothing enqueues the op (MD-10) — and
+                // even then, a missing document group must never tombstone
+                // its task. Chunk 4's document-group completion owns the
+                // real semantics; this arm is match totality only.
+                LocalOp::UpdateAppData(_) => {
+                    op_results.insert(outcome.op, true);
                 }
             },
             PushResult::Rejected { kind } => {

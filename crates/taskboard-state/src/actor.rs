@@ -699,7 +699,10 @@ async fn ingest_sync_report(
             pushes,
             read_at,
             duration,
-            ..
+            // The sidecar evidence: folding it is chunk 4's
+            // `apply_sync_report` extension (D-S3/D-S4 item 4) — this
+            // acknowledgment is compilation, not fold logic.
+            app_data: _,
         } => {
             let (merged, mut batch) = apply_sync_report(
                 &core.app(),

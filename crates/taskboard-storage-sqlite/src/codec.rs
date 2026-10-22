@@ -111,6 +111,7 @@ pub fn op_kind_to_text(op: &LocalOp) -> &'static str {
         LocalOp::AssignLabel(_, _) => "assign_label",
         LocalOp::UnassignLabel(_, _) => "unassign_label",
         LocalOp::UpdateBoard(_) => "update_board",
+        LocalOp::UpdateAppData(_) => "update_app_data",
         LocalOp::DeleteBoard(_) => "delete_board",
     }
 }
@@ -133,7 +134,8 @@ pub(crate) fn op_to_columns(op: &LocalOp) -> OpColumns {
         LocalOp::CreateTask(task)
         | LocalOp::UpdateTask(task)
         | LocalOp::MoveTask(task)
-        | LocalOp::DeleteTask(task) => OpColumns {
+        | LocalOp::DeleteTask(task)
+        | LocalOp::UpdateAppData(task) => OpColumns {
             task_id: Some(task),
             stack_id: None,
             label_id: None,
@@ -212,6 +214,7 @@ pub fn op_from_columns(
             parse_id(label_id)?,
         )),
         "update_board" => Ok(LocalOp::UpdateBoard(parse_id::<BoardId>(board_id)?)),
+        "update_app_data" => Ok(LocalOp::UpdateAppData(parse_id(task_id)?)),
         "delete_board" => Ok(LocalOp::DeleteBoard(parse_id::<BoardId>(board_id)?)),
         _ => Err(CodecError),
     }
@@ -417,6 +420,7 @@ mod tests {
             LocalOp::UnassignLabel(task, label),
             LocalOp::UpdateBoard(taskboard_domain::ids::BoardId::from(id(9))),
             LocalOp::DeleteBoard(taskboard_domain::ids::BoardId::from(id(9))),
+            LocalOp::UpdateAppData(taskboard_domain::ids::TaskId::from(id(3))),
         ];
         for op in ops {
             let cols = op_to_columns(&op);
@@ -448,6 +452,11 @@ mod tests {
         // Task ops need task_id.
         assert_eq!(
             op_from_columns("create_task", None, None, None, None),
+            Err(CodecError)
+        );
+        // The sidecar op is task-scoped like its siblings.
+        assert_eq!(
+            op_from_columns("update_app_data", None, None, None, None),
             Err(CodecError)
         );
         // assign_label needs both columns.

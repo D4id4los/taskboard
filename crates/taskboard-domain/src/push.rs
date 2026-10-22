@@ -354,6 +354,13 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
             LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => {
                 board_ops.push((id, idx, entry));
             }
+            // Chunk 4's document group: `UpdateAppData` coalesces into
+            // the sidecar flush, not a native wire group. Nothing
+            // enqueues the op yet (the MD-10 interim stands), so this
+            // arm exists for match totality only — it deliberately
+            // buckets into no group and must never misroute as a native
+            // `UpdateTask`.
+            LocalOp::UpdateAppData(_) => {}
         }
     }
 
