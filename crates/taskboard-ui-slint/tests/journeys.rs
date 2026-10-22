@@ -11,6 +11,7 @@
 
 mod support;
 
+use chrono::TimeDelta;
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fake_engine::FakeEngine;
 use support::fixture;
@@ -1925,6 +1926,112 @@ fn the_preset_pick_routes_and_the_reply_swaps_the_keymap_live() {
                     .get_menu_open(),
                 "the swapped keymap resolves vi's colon in the settings chain"
             );
+        },
+    );
+}
+
+/// The rule-list journey leg (chunk 6, D12/D13): the task detail's
+/// composition renders the subject task's rules (rows + the derived
+/// hint) and its seams dispatch the exact typed commands — preset add,
+/// custom add, absorbed parse miss, row remove resolved through the id
+/// tables. Rows-render and hint-presence are asserted here at the
+/// composition's live mount (the component-level read folded in — one
+/// behavior, one test).
+#[test]
+fn the_rule_list_journeys_reach_the_boundary() {
+    let (fixture, mut state) = fixture::journey_state();
+    let task1 = fixture.task1;
+    // Two rules on the focused task, distinct offsets; ids ascend with
+    // insertion order so the row table is deterministic.
+    let rule1 = taskboard_domain::ReminderRule {
+        id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(11)),
+        task: task1,
+        offset: taskboard_domain::ReminderOffset::at_due(),
+        created_at: taskboard_domain::BoardClocks::epoch(),
+        updated_at: taskboard_domain::BoardClocks::epoch(),
+    };
+    let rule2 = taskboard_domain::ReminderRule {
+        id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(12)),
+        task: task1,
+        offset: taskboard_domain::ReminderOffset::before(
+            TimeDelta::try_minutes(-10).expect("-10m"),
+        )
+        .expect("legal offset"),
+        created_at: taskboard_domain::BoardClocks::epoch(),
+        updated_at: taskboard_domain::BoardClocks::epoch(),
+    };
+    state.reminders.rules.insert(rule1.id, rule1);
+    state.reminders.rules.insert(rule2.id, rule2.clone());
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Walk to task1's detail: two item steps land on (0, 1) —
+            // the fixture's second task — then two view steps.
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            assert_eq!(harness.emphasized_card(), Some((0, 1)));
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+            harness.assert_commands(&[]);
+
+            // The composition rendered from state: two rows in rule-id
+            // order and the derived-fact hint present.
+            let task_model = harness.handle.window().get_task_model();
+            assert_eq!(task_model.rules.row_count(), 2, "one row per rule");
+            assert_eq!(
+                task_model.rules.row_data(0).expect("row 0").before,
+                "0s",
+                "the canonical text form"
+            );
+            assert_eq!(task_model.rules.row_data(1).expect("row 1").before, "10m");
+            assert!(
+                !task_model.rules_hint.is_empty(),
+                "a rule set presents the derived hint"
+            );
+            assert_eq!(task_model.rule_presets.row_count(), 4, "the preset chips");
+
+            // Preset add (chip 0 = 5m) routes the exact typed command.
+            harness.handle.window().invoke_rule_add_preset_clicked(0);
+            harness.assert_commands(&[StateCommand::AddReminderRule {
+                task: task1,
+                offset: taskboard_domain::ReminderOffset::before(
+                    TimeDelta::try_minutes(-5).expect("-5m"),
+                )
+                .expect("legal offset"),
+            }]);
+
+            // A custom entry parses at the adapter ("45m").
+            harness
+                .handle
+                .window()
+                .invoke_rule_add_custom_accepted("45m".into());
+            harness.assert_commands(&[StateCommand::AddReminderRule {
+                task: task1,
+                offset: taskboard_domain::ReminderOffset::before(
+                    TimeDelta::try_minutes(-45).expect("-45m"),
+                )
+                .expect("legal offset"),
+            }]);
+
+            // A parse miss dispatches nothing (absorbed — D12).
+            harness
+                .handle
+                .window()
+                .invoke_rule_add_custom_accepted("soon".into());
+            harness.assert_commands(&[]);
+
+            // Row remove resolves the index through the id tables.
+            harness.handle.window().invoke_task_rule_remove_clicked(1);
+            harness.assert_commands(&[StateCommand::RemoveReminderRule { rule: rule2.id }]);
+
+            // A stale row index (past the table) absorbs.
+            harness.handle.window().invoke_task_rule_remove_clicked(9);
+            harness.assert_commands(&[]);
         },
     );
 }

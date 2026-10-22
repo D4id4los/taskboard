@@ -255,6 +255,24 @@ expression: rows
   menu_rank: 120
   description: Silences all reminders on the selected task.
   menu_group: task
+- id: reminder.rule-add
+  label: Add reminder
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 130
+  description: Adds one reminder rule to the subject task.
+  menu_group: task
+- id: reminder.rule-remove
+  label: Remove reminder
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 140
+  description: Removes the selected reminder rule from the subject task.
+  menu_group: task
 - id: menu.next
   label: Next menu entry
   contexts:

@@ -18,7 +18,9 @@ use slint::language::KeyboardModifiers;
 use slint::{ComponentHandle as _, ModelRc, SharedString};
 use tokio::sync::mpsc;
 
-use taskboard_domain::{AppState, BoardId, StackId, StateCommand, TaskId};
+use taskboard_domain::{
+    AppState, BoardId, ReminderOffset, ReminderRuleId, StackId, StateCommand, TaskId,
+};
 
 use tokio::sync::oneshot;
 
@@ -95,6 +97,13 @@ pub(crate) struct Adapter {
     /// next `board.select` dispatch, then cleared (one-shot, the
     /// `reminder_target` precedent).
     board_target: Option<BoardId>,
+    /// The rule-list row's rule (chunk 6, D13); consumed by the next
+    /// `reminder.rule-remove` dispatch, then cleared (one-shot, the
+    /// banner-verb precedent).
+    rule_target: Option<ReminderRuleId>,
+    /// The rule-list add entry's parsed offset (chunk 6, D13); consumed
+    /// by the next `reminder.rule-add` dispatch, then cleared.
+    rule_add_offset: Option<ReminderOffset>,
     /// The id tables of the last refresh pass (D2): index → id.
     tables: IdTables,
     /// The active column drag (round-1 D17): the dragged stack and the
@@ -228,6 +237,10 @@ impl Adapter {
         self.reminder_target = None;
         ctx.board_target = self.board_target;
         self.board_target = None;
+        ctx.rule_target = self.rule_target;
+        self.rule_target = None;
+        ctx.rule_add_offset = self.rule_add_offset;
+        self.rule_add_offset = None;
         let outcome = ActionRouter::dispatch(id, &ctx);
         match outcome {
             DispatchOutcome::Command(command) => {
@@ -1175,6 +1188,8 @@ pub(crate) fn install(
         menu_anchor: MenuAnchor::Hamburger,
         reminder_target: None,
         board_target: None,
+        rule_target: None,
+        rule_add_offset: None,
         tables: IdTables::default(),
         width_drag: None,
         settings: SettingsVm {
@@ -1714,7 +1729,10 @@ fn activate_stack_row(adapter: &mut Adapter, window: &AppWindow, row: i32) {
     adapter.apply_outcomes(window, &outcomes);
 }
 
-/// The task-detail title field: mirror + commit (D14).
+/// The task-detail title field: mirror + commit (D14). The rule-list
+/// composition's seams (chunk 6, D13): index/preset/custom resolution
+/// against the id tables and the domain grammar, then the one-shot +
+/// route — the banner-seam template.
 fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let mirror = Rc::clone(adapter);
     window.on_task_title_edited(move |text| {
@@ -1727,6 +1745,59 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         commit_text(&mut commit.borrow_mut(), &window, &text);
+    });
+
+    let remove = Rc::clone(adapter);
+    let remove_weak = window.as_weak();
+    window.on_task_rule_remove_clicked(move |index| {
+        let Some(window) = remove_weak.upgrade() else {
+            return;
+        };
+        let mut a = remove.borrow_mut();
+        let Some(rule) = a
+            .tables
+            .task_rules
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index against an older tables pass
+        };
+        a.rule_target = Some(rule);
+        a.route(&window, ActionId::ReminderRuleRemove);
+    });
+
+    let preset = Rc::clone(adapter);
+    let preset_weak = window.as_weak();
+    window.on_rule_add_preset_clicked(move |index| {
+        let Some(window) = preset_weak.upgrade() else {
+            return;
+        };
+        let mut a = preset.borrow_mut();
+        let Some(dur) = crate::presentation::RULE_PRESETS
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale preset index
+        };
+        a.rule_add_offset =
+            Some(ReminderOffset::before(-dur).expect("preset magnitudes negate into the domain"));
+        a.route(&window, ActionId::ReminderRuleAdd);
+    });
+
+    let custom = Rc::clone(adapter);
+    let custom_weak = window.as_weak();
+    window.on_rule_add_custom_accepted(move |text| {
+        let Some(window) = custom_weak.upgrade() else {
+            return;
+        };
+        let mut a = custom.borrow_mut();
+        // A parse miss dispatches nothing (absorbed — D12): the UI
+        // owns no error chrome; the CLI owns typed failures.
+        let Some(offset) = ReminderOffset::parse_text_form(&text) else {
+            return;
+        };
+        a.rule_add_offset = Some(offset);
+        a.route(&window, ActionId::ReminderRuleAdd);
     });
 }
 

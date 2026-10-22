@@ -75,6 +75,8 @@ impl KeymapShell {
             focused_stack: self.focused_stack,
             reminder_target: None,
             board_target: None,
+            rule_target: None,
+            rule_add_offset: None,
         }
     }
 

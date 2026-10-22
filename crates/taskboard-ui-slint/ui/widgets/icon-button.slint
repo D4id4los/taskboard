@@ -19,6 +19,8 @@ export enum IconKind {
     plus,
     // The back affordance (round-1 D12): a left chevron.
     chevron-left,
+    // The remove affordance (chunk 6, D12): an x.
+    remove,
 }
 
 export component IconButton inherits Rectangle {
@@ -141,6 +143,24 @@ export component IconButton inherits Rectangle {
                     width: Theme.space-3;
                     height: Theme.space-3;
                     commands: "M 8 1 L 2 6 L 8 11";
+                    stroke: icon-box.icon-color();
+                    stroke-width: Theme.focus-ring-width;
+                    fill: transparent;
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                }
+            }
+        }
+
+        if (root.icon == IconKind.remove): VerticalLayout {
+            // An x: two crossing diagonal strokes (geometric, D19).
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: Theme.space-4;
+                Path {
+                    width: Theme.space-3;
+                    height: Theme.space-3;
+                    commands: "M 2 2 L 10 10 M 10 2 L 2 10";
                     stroke: icon-box.icon-color();
                     stroke-width: Theme.focus-ring-width;
                     fill: transparent;

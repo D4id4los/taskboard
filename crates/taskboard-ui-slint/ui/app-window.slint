@@ -205,6 +205,9 @@ export component AppWindow inherits Window {
                 title-committed(t) => root.task-title-committed(t);
                 title-edited(t) => root.task-title-edited(t);
                 back-clicked() => root.task-back-clicked();
+                rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
+                rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
+                rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
             }
 
             status := StatusBar {
@@ -374,6 +377,11 @@ export component AppWindow inherits Window {
     // The back button (round-1 D12): routes nav.focus-board — no new
     // view-state semantics.
     pure callback task-back-clicked();
+    // The rule-list seams (chunk 6, D12): index-resolved against the
+    // id tables / parsed at the adapter, then routed one-shot.
+    pure callback task-rule-remove-clicked(int);
+    pure callback rule-add-preset-clicked(int);
+    pure callback rule-add-custom-accepted(string);
     pure callback banner-snooze-clicked(int);
     pure callback banner-mute-clicked(int);
     pure callback banner-row-activated(int);
