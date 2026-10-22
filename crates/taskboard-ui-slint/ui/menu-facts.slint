@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The menu panel's rendering facts (round-1 D4): the journeys'
+// containment seam. A separate global because the panel lives in a
+// conditional element the window cannot name — the panel mirrors its
+// realized geometry here through `changed` handlers (the row-selection
+// mirror precedent); values are stale while the menu is closed.
+
+export global MenuPanelFacts {
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <length> width;
+    in-out property <length> height;
+}

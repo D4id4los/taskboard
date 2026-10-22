@@ -561,6 +561,72 @@ fn an_outside_click_dismisses_the_menu() {
     );
 }
 
+fn facts(harness: &Harness) -> taskboard_ui_slint::MenuPanelFacts<'_> {
+    harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::MenuPanelFacts>()
+}
+
+/// D4/P2/P2b — the panel is bounded on all four edges at every window
+/// size, and the narrow fallback engages at 320 px (the panel spans
+/// the window minus the space-2 margins). Structural reads of the
+/// `MenuPanelFacts` rendering facts.
+#[test]
+fn the_menu_panel_stays_inside_the_window_at_every_size() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            for (width, height) in [(1000u32, 800u32), (600, 800), (320, 400)] {
+                harness.driver.set_window_size(width, height);
+                harness.press(ActionId::AppMenu);
+                harness.driver.advance_time(0);
+                assert!(
+                    harness
+                        .handle
+                        .window()
+                        .global::<taskboard_ui_slint::KeyboardState>()
+                        .get_menu_open()
+                );
+                let (x, w) = (facts(&harness).get_x(), facts(&harness).get_width());
+                let margin = 8.0; // Theme.space-2 at scale 1
+                #[allow(clippy::cast_precision_loss)]
+                let (win_w, win_h) = (width as f32, height as f32);
+                assert!(
+                    x >= margin && x + w <= win_w - margin,
+                    "panel [{x}, {}] inside [{margin}, {}] at {width}x{height}",
+                    x + w,
+                    win_w - margin,
+                );
+                let y = facts(&harness).get_y();
+                let h = facts(&harness).get_height();
+                assert!(
+                    y >= margin && y + h <= win_h - margin,
+                    "panel vertically inside at {width}x{height}: y={y} h={h}"
+                );
+                if width == 320 {
+                    assert_eq!(
+                        w, 304.0,
+                        "the narrow fallback spans the window minus margins"
+                    );
+                }
+                harness.stroke(parse("Escape").expect("Escape"));
+                assert!(
+                    !harness
+                        .handle
+                        .window()
+                        .global::<taskboard_ui_slint::KeyboardState>()
+                        .get_menu_open()
+                );
+            }
+        },
+    );
+}
+
 /// D3/F2 — a mouse row invocation routes AND closes: clicking the
 /// "Edit task" row over a focused card navigates to the task detail
 /// and the menu is closed afterwards — the same observable end state

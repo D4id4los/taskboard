@@ -7,6 +7,7 @@
 
 import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
+import { MenuPanelFacts } from "../menu-facts.slint";
 
 export struct MenuEntryModel {
     // The registry id — `""` for a submenu-parent row (the tests'
@@ -33,14 +34,23 @@ export component ActionMenu inherits Rectangle {
     in property <length> available-height;
 
     height: min(self.preferred-height, self.available-height);
+    // The facts mirror (round-1 D4): the realized geometry lands in
+    // the global the journeys read — change handlers, delivered by
+    // the mock clock's handler pass.
+    changed x => { MenuPanelFacts.x = self.x; }
+    changed y => { MenuPanelFacts.y = self.y; }
+    changed width => { MenuPanelFacts.width = self.width; }
+    changed height => { MenuPanelFacts.height = self.height; }
+    init => {
+        MenuPanelFacts.x = self.x;
+        MenuPanelFacts.y = self.y;
+        MenuPanelFacts.width = self.width;
+        MenuPanelFacts.height = self.height;
+    }
     background: Theme.surface-raised;
     border-width: Theme.focus-ring-width;
     border-color: Theme.focus-ring;
     border-radius: Theme.radius-medium;
-    // Usability D6: no min-height — a short menu shrinks to its
-    // content, a long one caps at the host's max-height binding and
-    // the Flickable scrolls the overflow.
-    min-width: 320px * Theme.base-scale;
 
     flick := Flickable {
         // The viewport auto-tracks the content's preferred size; the
