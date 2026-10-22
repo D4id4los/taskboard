@@ -343,10 +343,23 @@ fn board_line(board: &BoardStatusView, indent: &str) -> String {
     let remote = board
         .remote
         .map_or_else(|| "local".to_owned(), |id| format!("remote {id}"));
-    format!(
+    let mut line = format!(
         "\n{indent}board {} \"{}\" ({}) — {}, {} pending",
         board.board, board.title, remote, board.sync.phase, board.sync.pending_ops
-    )
+    );
+    // The loud sidecar fence (D-S2's ruled wording, presentation text
+    // over the typed fact — the JSON view carries the structured reason).
+    if let Some(warning) = &board.sync.sidecar {
+        let detail = warning
+            .format
+            .map_or_else(String::new, |format| format!(" (format {format})"));
+        let _ = write!(
+            line,
+            "\n{indent}  sidecar document unreadable (reason {}{detail}); update this app to the version your other devices use",
+            warning.reason
+        );
+    }
+    line
 }
 
 /// The one emission path for the status answer — the client-side
@@ -434,6 +447,59 @@ mod tests {
         );
         assert_eq!(view.boards.as_ref().expect("some"), &Vec::new());
         let _ = app.shutdown().await;
+    }
+
+    /// T14b (chunk 4's D15): the typed sidecar warning projects through
+    /// every surface — the row view carries the structured reason, the
+    /// serde round-trip (the IPC-relayed answer) keeps it, healthy
+    /// serializes as absent, and the JSON protocol never bumps.
+    #[test]
+    fn sidecar_warning_projects_typed_through_the_view_and_serde() {
+        use crate::commands::output::SidecarHealthView;
+        use taskboard_domain::{AppDataUnreadable, SidecarHealth};
+
+        // FormatTooNew carries the version; healthy is absent.
+        let warning = SyncStatusView::new(&taskboard_domain::SyncStatus {
+            sidecar: SidecarHealth::Unreadable(AppDataUnreadable::FormatTooNew { format: 99 }),
+            ..taskboard_domain::SyncStatus::default()
+        });
+        assert_eq!(
+            warning.sidecar,
+            Some(SidecarHealthView {
+                reason: "format_too_new".to_owned(),
+                format: Some(99),
+            })
+        );
+        let healthy = SyncStatusView::new(&taskboard_domain::SyncStatus::default());
+        assert_eq!(healthy.sidecar, None);
+
+        // The IPC-relayed answer round-trips: `server`→JSON→`parse`
+        // keeps the typed fact (the protocol is additive; no bump).
+        let json = serde_json::to_value(&warning).unwrap();
+        assert_eq!(json["sidecar"]["reason"], "format_too_new");
+        assert_eq!(json["sidecar"]["format"], 99);
+        let back: SyncStatusView = serde_json::from_value(json).unwrap();
+        assert_eq!(back, warning);
+
+        // The board-line rendering is presentation over the typed fact:
+        // it renders only when the warning exists (the array fact is
+        // machine-only; the text assertion here is the clause's own
+        // presence, checked structurally via the marker's existence).
+        let board = BoardStatusView {
+            board: "b".to_owned(),
+            title: "t".to_owned(),
+            remote: None,
+            connector: None,
+            sync: warning.clone(),
+        };
+        let line = super::board_line(&board, "  ");
+        assert!(line.contains("sidecar document unreadable"));
+        assert!(line.contains("format_too_new"));
+        let quiet = BoardStatusView {
+            sync: healthy,
+            ..board
+        };
+        assert!(!super::board_line(&quiet, "  ").contains("sidecar"));
     }
 
     /// T14: the projection carries the folded counters and converts the
@@ -578,6 +644,7 @@ mod tests {
                 failures: 0,
                 offline_episodes: 0,
                 last_cycle_ms: None,
+                sidecar: None,
             },
             boards: Vec::new(),
         }]);
@@ -597,6 +664,7 @@ mod tests {
                 failures: 0,
                 offline_episodes: 0,
                 last_cycle_ms: None,
+                sidecar: None,
             },
         }]);
         // Key order is declaration order — pinned through `to_string`
