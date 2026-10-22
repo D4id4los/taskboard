@@ -20,13 +20,22 @@ use tokio::sync::mpsc;
 
 use taskboard_domain::{AppState, BoardId, StackId, StateCommand, TaskId};
 
+use tokio::sync::oneshot;
+
+use taskboard_domain::ConnectorId;
+
 use crate::actions::{ActionId, ContextId, MenuGroup};
 use crate::keymap::Keymap;
 use crate::menu::{self, MenuEntry};
 use crate::models::IdTables;
 use crate::presentation::ReminderTarget;
+use crate::requests::{
+    ConnectionProfile, ConnectionTarget, ConnectorInfo, KeymapUpdate, Secret, SettingsError,
+    UiRequest,
+};
 use crate::resolver::{KeymapResolver, Resolution};
 use crate::router::{ActionRouter, DispatchOutcome, Mode, UiEffect};
+use crate::settings_form::{self, ConnectionDraft};
 use crate::shell::KeymapShell;
 use crate::view_state::{Flow, FlowOutcome, ViewState};
 use crate::{AppWindow, Breakpoint, KeyFeedback, KeyboardState, Responsive, UiStatus};
@@ -93,6 +102,9 @@ pub(crate) struct Adapter {
     /// drag deltas are absolute since press — idempotent against
     /// dropped events.
     width_drag: Option<(StackId, f32)>,
+    /// The settings view-model (round-1 D7/D8): draft mirror, row
+    /// list, liveness overrides, and the pending reply half.
+    settings: SettingsVm,
     /// The exit-effect counter (the §6 component-test seam: journeys
     /// assert the quit request without killing the platform).
     pub(crate) quit_requests: usize,
@@ -302,6 +314,7 @@ impl Adapter {
         let now = chrono::Utc::now();
         self.tables =
             crate::models::push(window, &state, &self.view_state, &self.keymap, &chain, now);
+        self.push_settings(window);
     }
 
     /// Whether the window is at the compact breakpoint (D17).
@@ -614,6 +627,109 @@ impl Adapter {
     }
 }
 
+/// One in-flight settings operation: the reply half parked until the
+/// drain polls it (the repaint timer's job, D25b — never a blocking
+/// recv on the UI thread).
+#[derive(Debug)]
+enum PendingReply {
+    /// `TestConnection`'s typed outcome.
+    Test(oneshot::Receiver<Result<(), SettingsError>>),
+    /// The list-carrying replies (`SaveConnection`/`RemoveConnection`).
+    List(oneshot::Receiver<Result<Vec<ConnectorInfo>, SettingsError>>),
+    /// `SetKeymapPreset`'s rebuilt keymap.
+    Keymap(oneshot::Receiver<Result<KeymapUpdate, SettingsError>>),
+    /// `SetScale`, with the scale to revert to on an `Err` reply.
+    Scale(oneshot::Receiver<Result<(), SettingsError>>, f64),
+}
+
+/// Which operation is in flight (the form's busy marker; one at a
+/// time — the buttons disable while pending).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingKind {
+    Test,
+    Save,
+    Remove,
+    Preset,
+    Scale,
+}
+
+/// The typed last-outcome marker the model renders structurally
+/// (R5: never message text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SettingsOutcome {
+    #[default]
+    None,
+    Ok,
+    Busy,
+    /// The operation was refused (validation, legacy config, verify
+    /// rejected, persist rejected).
+    Rejected,
+    /// The server/store was unreachable.
+    Unavailable,
+    /// Everything else (store/attach failures).
+    Failed,
+}
+
+/// The settings view-model: the adapter-side state the settings view
+/// renders from. The draft is the `settings_form` mirror (the buffer
+/// precedent); the password clears on send — write-only by
+/// construction (D26b).
+#[derive(Debug, Default)]
+struct SettingsVm {
+    draft: ConnectionDraft,
+    rows: Vec<ConnectorInfo>,
+    /// Connector name → down-override (the `ConnectorLost`/
+    /// `ConnectorRestored` episodes, D8); absent = no override.
+    liveness: BTreeMap<String, bool>,
+    pending: Option<PendingKind>,
+    replies: Vec<PendingReply>,
+    outcome: SettingsOutcome,
+}
+
+impl SettingsVm {
+    /// Whether the draft may save (the Save button's enablement).
+    fn save_enabled(&self) -> bool {
+        self.pending.is_none() && settings_form::draft_valid(&self.draft, &self.rows)
+    }
+
+    /// Sends one request with its reply half parked; a full/closed
+    /// inbox degrades to the typed outcome, never a wedge.
+    fn send(
+        &mut self,
+        requests: &mpsc::Sender<UiRequest>,
+        request: UiRequest,
+        kind: PendingKind,
+        reply: PendingReply,
+    ) {
+        if requests.try_send(request).is_err() {
+            tracing::warn!("request channel full or closed; settings op dropped");
+            self.outcome = SettingsOutcome::Failed;
+            return;
+        }
+        self.pending = Some(kind);
+        self.replies.push(reply);
+    }
+
+    fn outcome_of(err: &SettingsError) -> SettingsOutcome {
+        match err {
+            SettingsError::LegacyConfig
+            | SettingsError::Invalid { .. }
+            | SettingsError::NoSecretStored
+            | SettingsError::StoreUnsupported
+            | SettingsError::VerifyRejected
+            | SettingsError::PersistRejected
+            | SettingsError::Gone => SettingsOutcome::Rejected,
+            SettingsError::VerifyUnreachable | SettingsError::StoreFailed => {
+                SettingsOutcome::Unavailable
+            }
+            SettingsError::VerifyFailed
+            | SettingsError::PersistFailed
+            | SettingsError::AttachBusy
+            | SettingsError::AttachFailed => SettingsOutcome::Failed,
+        }
+    }
+}
+
 /// Converts a delivered key event to a [`crate::keymap::Stroke`]
 /// (D18): `None` for anything that is not exactly one bindable key —
 /// modifier-only/control events are rejected outright so text input
@@ -633,16 +749,396 @@ fn to_stroke(text: &SharedString, modifiers: KeyboardModifiers) -> Option<crate:
     )
 }
 
+/// The settings surface's adapter half (round-1 chunk 3, D7/D8/D9):
+/// the form mirrors, the send seams, the reply drain, and the
+/// liveness overrides. Every reply path is non-blocking — the drain
+/// polls `try_recv` under the repaint timer, and a dead lane
+/// degrades to a cleared pending state (R-reply).
+impl Adapter {
+    /// The drain-side batch form of
+    /// [`Self::record_connector_liveness`].
+    pub(crate) fn record_connector_liveness_batch(
+        &mut self,
+        events: &[taskboard_domain::SystemEvent],
+    ) {
+        for event in events {
+            self.record_connector_liveness(event);
+        }
+    }
+
+    /// Records one connector-liveness episode (the system drain's
+    /// pre-refresh hook, D8).
+    pub(crate) fn record_connector_liveness(&mut self, event: &taskboard_domain::SystemEvent) {
+        use taskboard_domain::SystemEvent as E;
+        match event {
+            E::ConnectorLost(id) => {
+                self.settings.liveness.insert(id.to_string(), true);
+            }
+            E::ConnectorRestored(id) => {
+                self.settings.liveness.insert(id.to_string(), false);
+            }
+            _ => {}
+        }
+    }
+
+    /// Polls every parked reply once (`try_recv` — never a blocking
+    /// recv, F18). A closed receiver (the forwarder died) counts as an
+    /// outcome too: the pending state clears either way (R-reply).
+    /// A `KeymapUpdate` swaps the keymap live and refreshes; a failed
+    /// scale reverts the theme value; persistence is never undone by
+    /// any reply.
+    pub(crate) fn drain_setting_replies(&mut self, window: &AppWindow) {
+        let mut i = 0;
+        let mut drained = false;
+        while i < self.settings.replies.len() {
+            let settled = match &mut self.settings.replies[i] {
+                PendingReply::Test(rx) => match rx.try_recv() {
+                    Ok(outcome) => {
+                        self.settings.outcome = match &outcome {
+                            Ok(()) => SettingsOutcome::Ok,
+                            Err(err) => SettingsVm::outcome_of(err),
+                        };
+                        true
+                    }
+                    Err(oneshot::error::TryRecvError::Empty) => false,
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        self.settings.outcome = SettingsOutcome::Failed;
+                        true
+                    }
+                },
+                PendingReply::List(rx) => match rx.try_recv() {
+                    Ok(Ok(rows)) => {
+                        self.settings.rows = rows;
+                        self.settings.outcome = SettingsOutcome::Ok;
+                        true
+                    }
+                    Ok(Err(err)) => {
+                        self.settings.outcome = SettingsVm::outcome_of(&err);
+                        true
+                    }
+                    Err(oneshot::error::TryRecvError::Empty) => false,
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        self.settings.outcome = SettingsOutcome::Failed;
+                        true
+                    }
+                },
+                PendingReply::Keymap(rx) => match rx.try_recv() {
+                    Ok(Ok(update)) => {
+                        self.apply_keymap_update(window, update);
+                        self.settings.outcome = SettingsOutcome::Ok;
+                        true
+                    }
+                    Ok(Err(err)) => {
+                        self.settings.outcome = SettingsVm::outcome_of(&err);
+                        true
+                    }
+                    Err(oneshot::error::TryRecvError::Empty) => false,
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        self.settings.outcome = SettingsOutcome::Failed;
+                        true
+                    }
+                },
+                PendingReply::Scale(rx, previous) => match rx.try_recv() {
+                    Ok(Ok(())) => {
+                        self.settings.outcome = SettingsOutcome::Ok;
+                        true
+                    }
+                    Ok(Err(err)) => {
+                        self.settings.outcome = SettingsVm::outcome_of(&err);
+                        // The live-apply revert (D9): the theme value
+                        // goes back to the previous setting.
+                        #[allow(clippy::cast_possible_truncation)]
+                        window
+                            .global::<crate::Theme>()
+                            .set_base_scale(*previous as f32);
+                        true
+                    }
+                    Err(oneshot::error::TryRecvError::Empty) => false,
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        self.settings.outcome = SettingsOutcome::Failed;
+                        true
+                    }
+                },
+            };
+            if settled {
+                let _ = self.settings.replies.remove(i);
+                self.settings.pending = None;
+                drained = true;
+            } else {
+                i += 1;
+            }
+        }
+        if drained {
+            self.push_settings(window);
+            self.refresh(window);
+        }
+    }
+
+    /// The live keymap swap (D9): the new map drives resolution, menu
+    /// hints, and tooltips from the next refresh on; the findings
+    /// counter updates the status read.
+    fn apply_keymap_update(&mut self, window: &AppWindow, update: KeymapUpdate) {
+        self.keymap = update.keymap;
+        window
+            .global::<crate::UiStatus>()
+            .set_startup_keymap_findings(i32::try_from(update.findings).unwrap_or(i32::MAX));
+    }
+
+    /// Pushes the settings view-model onto the window global (the
+    /// refresh pass's settings half; rows fold liveness + the bound
+    /// boards' phases, D8).
+    pub(crate) fn push_settings(&self, window: &AppWindow) {
+        use crate::SettingsRowStatus as Row;
+        let state = self.state.load();
+        let rows: Vec<crate::ConnectionRow> = self
+            .settings
+            .rows
+            .iter()
+            .map(|row| {
+                let id = ConnectorId::from(row.name.clone());
+                let down = self.settings.liveness.get(row.name.as_str()).copied();
+                let status =
+                    crate::presentation::connector_row_status(&state, &id, down.unwrap_or(false));
+                crate::ConnectionRow {
+                    name: row.name.clone().into(),
+                    server: row.server_url.clone().into(),
+                    username: row.username.clone().into(),
+                    status: match status {
+                        crate::presentation::ConnectorStatus::Idle => Row::Idle,
+                        crate::presentation::ConnectorStatus::Syncing => Row::Syncing,
+                        crate::presentation::ConnectorStatus::Offline => Row::Offline,
+                        crate::presentation::ConnectorStatus::Failed => Row::Failed,
+                        crate::presentation::ConnectorStatus::Down => Row::Down,
+                    },
+                }
+            })
+            .collect();
+        let global = window.global::<crate::SettingsModel>();
+        global.set_rows(ModelRc::new(slint::VecModel::from(rows)));
+        global.set_draft_name(self.settings.draft.name.clone().into());
+        global.set_draft_server(self.settings.draft.server_url.clone().into());
+        global.set_draft_username(self.settings.draft.username.clone().into());
+        global.set_save_enabled(self.settings.save_enabled());
+        global.set_last_outcome(match self.settings.outcome {
+            SettingsOutcome::None => crate::SettingsOutcome::None,
+            SettingsOutcome::Ok => crate::SettingsOutcome::Ok,
+            SettingsOutcome::Busy => crate::SettingsOutcome::Busy,
+            SettingsOutcome::Rejected => crate::SettingsOutcome::Rejected,
+            SettingsOutcome::Unavailable => crate::SettingsOutcome::Unavailable,
+            SettingsOutcome::Failed => crate::SettingsOutcome::Failed,
+        });
+    }
+
+    /// Mirrors one edited field into the draft (the buffer precedent);
+    /// engages insert mode once — the D18 text-input contract (a
+    /// focused field must receive printables untouched).
+    pub(crate) fn settings_field_edited(&mut self, field: usize, text: &str, window: &AppWindow) {
+        let target = match field {
+            0 => &mut self.settings.draft.name,
+            1 => &mut self.settings.draft.server_url,
+            2 => &mut self.settings.draft.username,
+            3 => {
+                // The password mirror: write-only — it never enters the
+                // pushed model (the draft never renders it back).
+                self.settings.draft.password.clear();
+                self.settings.draft.password.push_str(text);
+                self.settings_field_insert_engage(window);
+                return;
+            }
+            _ => return,
+        };
+        target.clear();
+        target.push_str(text);
+        self.settings_field_insert_engage(window);
+    }
+
+    fn settings_field_insert_engage(&mut self, window: &AppWindow) {
+        if self.shell.mode != crate::router::Mode::Insert {
+            self.shell
+                .apply(&UiEffect::SetMode(crate::router::Mode::Insert), 0);
+            self.sync(window);
+        }
+        self.push_settings(window);
+    }
+
+    /// Leaves the insert engagement (a field commit): back to Normal
+    /// so the settings chain resolves again.
+    pub(crate) fn settings_field_committed(&mut self, window: &AppWindow) {
+        if self.shell.mode == crate::router::Mode::Insert {
+            self.shell
+                .apply(&UiEffect::SetMode(crate::router::Mode::Normal), 0);
+            self.sync(window);
+        }
+    }
+
+    /// The Save seam: mirror the final field texts (the commit
+    /// callbacks carry them), then send the verify-first ceremony
+    /// request. The password clears off the draft after the send —
+    /// write-only (D26b).
+    pub(crate) fn settings_save(
+        &mut self,
+        window: &AppWindow,
+        name: &str,
+        server: &str,
+        username: &str,
+        password: &str,
+    ) {
+        self.settings_field_committed(window);
+        let draft = ConnectionDraft {
+            name: name.to_owned(),
+            server_url: server.to_owned(),
+            username: username.to_owned(),
+            password: password.to_owned(),
+        };
+        if self.settings.pending.is_some()
+            || !settings_form::draft_valid(&draft, &self.settings.rows)
+        {
+            self.settings.outcome = SettingsOutcome::Rejected;
+            self.push_settings(window);
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SaveConnection {
+            profile: ConnectionProfile {
+                name: draft.name.clone(),
+                server_url: draft.server_url.clone(),
+                username: draft.username.clone(),
+                password: Secret(draft.password.clone()),
+            },
+            reply,
+        };
+        self.settings.draft.password.clear();
+        self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::Save,
+            PendingReply::List(reply_rx),
+        );
+        self.settings.outcome = SettingsOutcome::Busy;
+        self.push_settings(window);
+    }
+
+    /// The per-row Test seam: verify the row's stored secret (DEV-3 —
+    /// no retyping). A stale row index is absorbed silently.
+    pub(crate) fn settings_test_row(&mut self, window: &AppWindow, row: usize) {
+        let Some(entry) = self.settings.rows.get(row).cloned() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::TestConnection {
+            target: ConnectionTarget {
+                server_url: entry.server_url,
+                username: entry.username,
+            },
+            reply,
+        };
+        self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::Test,
+            PendingReply::Test(reply_rx),
+        );
+        self.settings.outcome = SettingsOutcome::Busy;
+        self.push_settings(window);
+    }
+
+    /// The per-row Remove seam (a stale index is absorbed silently).
+    pub(crate) fn settings_remove_row(&mut self, window: &AppWindow, row: usize) {
+        let Some(entry) = self.settings.rows.get(row).cloned() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::RemoveConnection {
+            name: entry.name,
+            reply,
+        };
+        self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::Remove,
+            PendingReply::List(reply_rx),
+        );
+        self.settings.outcome = SettingsOutcome::Busy;
+        self.push_settings(window);
+    }
+
+    /// The preset picker seam: the optimistic marker, then the request
+    /// (the reply swaps the keymap live, D9).
+    pub(crate) fn settings_preset_picked(&mut self, window: &AppWindow, index: usize) {
+        let Some(preset) = [
+            crate::keymap::Preset::Standard,
+            crate::keymap::Preset::Emacs,
+            crate::keymap::Preset::Vi,
+        ]
+        .get(index)
+        .copied() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SetKeymapPreset { preset, reply };
+        self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::Preset,
+            PendingReply::Keymap(reply_rx),
+        );
+        self.settings.outcome = SettingsOutcome::Busy;
+        self.push_settings(window);
+    }
+
+    /// The scale commit seam: live-apply first (the mount precedent),
+    /// then persist over the lane; an `Err` reply reverts (D9).
+    pub(crate) fn settings_scale_committed(&mut self, window: &AppWindow, text: &str) {
+        self.settings_field_committed(window);
+        let Ok(scale) = text.parse::<f64>() else {
+            self.settings.outcome = SettingsOutcome::Rejected;
+            self.push_settings(window);
+            return;
+        };
+        if self.settings.pending.is_some() || !scale.is_finite() || !(0.5..=3.0).contains(&scale) {
+            self.settings.outcome = SettingsOutcome::Rejected;
+            self.push_settings(window);
+            return;
+        }
+        let previous = f64::from(window.global::<crate::Theme>().get_base_scale());
+        #[allow(clippy::cast_possible_truncation)]
+        window.global::<crate::Theme>().set_base_scale(scale as f32);
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SetScale { scale, reply };
+        self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::Scale,
+            PendingReply::Scale(reply_rx, previous),
+        );
+        self.settings.outcome = SettingsOutcome::Busy;
+        self.push_settings(window);
+    }
+}
+
 /// Installs the interception callbacks on a fresh window and returns
 /// the shared adapter (also held by [`crate::UiHandle`] for the
 /// chunk-3 focus seam).
+#[allow(clippy::too_many_arguments)] // the mount hand-over, one bundle
+#[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
 pub(crate) fn install(
     window: &AppWindow,
     keymap: Keymap,
+    preset: crate::keymap::Preset,
     startup: StartupWarnings,
     commands: mpsc::Sender<StateCommand>,
     requests: mpsc::Sender<crate::requests::UiRequest>,
     stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+    connectors: Vec<ConnectorInfo>,
     state: Arc<ArcSwap<AppState>>,
 ) -> Rc<RefCell<Adapter>> {
     // The load path (round-1 D16): the uuid-keyed settings map
@@ -682,12 +1178,24 @@ pub(crate) fn install(
         board_target: None,
         tables: IdTables::default(),
         width_drag: None,
+        settings: SettingsVm {
+            rows: connectors,
+            ..SettingsVm::default()
+        },
         quit_requests: 0,
     }));
     // Startup warnings are pure input (Q15): pushed once at mount.
     window
         .global::<UiStatus>()
         .set_startup_keymap_findings(i32::try_from(startup.keymap_findings).unwrap_or(i32::MAX));
+    // The settings picker's initial selection (round-1 D9).
+    window
+        .global::<crate::SettingsModel>()
+        .set_preset_index(match preset {
+            crate::keymap::Preset::Standard => 0,
+            crate::keymap::Preset::Emacs => 1,
+            crate::keymap::Preset::Vi => 2,
+        });
 
     {
         let adapter = Rc::clone(&adapter);
@@ -775,6 +1283,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_stack_context_seam(window, adapter);
     install_stack_width_seams(window, adapter);
     install_banner_seams(window, adapter);
+    install_settings_seams(window, adapter);
 }
 
 /// The column resize drag seams (round-1 D17): press captures the
@@ -1279,6 +1788,86 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.reminder_target = Some(banner_row.target);
         a.route(&window, ActionId::ReminderMute);
     });
+}
+
+/// The settings seams (round-1 chunk 3, D7/D9): the form's mirror and
+/// send callbacks resolve straight onto the [`Adapter`] settings VM —
+/// never ad-hoc logic.
+fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_field_edited(move |field, text| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(field) = usize::try_from(field) else {
+                return;
+            };
+            adapter
+                .borrow_mut()
+                .settings_field_edited(field, &text, &window);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_save_clicked(move |name, server, username, password| {
+            let Some(window) = weak.upgrade() else { return };
+            adapter
+                .borrow_mut()
+                .settings_save(&window, &name, &server, &username, &password);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_test_clicked(move |row| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(row) = usize::try_from(row) else {
+                return;
+            };
+            adapter.borrow_mut().settings_test_row(&window, row);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_remove_clicked(move |row| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(row) = usize::try_from(row) else {
+                return;
+            };
+            adapter.borrow_mut().settings_remove_row(&window, row);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_preset_picked(move |index| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            adapter.borrow_mut().settings_preset_picked(&window, index);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_field_committed(move || {
+            let Some(window) = weak.upgrade() else { return };
+            adapter.borrow_mut().settings_field_committed(&window);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_scale_committed(move |text| {
+            let Some(window) = weak.upgrade() else { return };
+            adapter
+                .borrow_mut()
+                .settings_scale_committed(&window, &text);
+        });
+    }
 }
 
 /// The chunk-3 focus seam surface (D16/D17): sets the view context /

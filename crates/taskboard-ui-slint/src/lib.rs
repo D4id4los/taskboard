@@ -28,6 +28,7 @@ pub mod requests;
 pub mod resolver;
 pub mod responsive;
 pub mod router;
+pub mod settings_form;
 pub mod shell;
 pub mod tooltip;
 pub mod view_state;
@@ -187,10 +188,12 @@ pub fn mount(
     let adapter = adapter::install(
         &window,
         settings.keymap,
+        settings.keymap_preset,
         settings.startup,
         commands,
         requests,
         settings.stack_widths,
+        settings.connectors,
         Arc::clone(&state),
     );
     let tooltip_timer = install_tooltip_delay(&window);
@@ -338,12 +341,17 @@ fn start_repaint_driver(
                     ) => break,
                 }
             }
+            let mut events = Vec::new();
             loop {
                 match system.try_recv() {
                     // `Shutdown` is inert here (the app-side exit
                     // watcher owns quit); the rest are refresh
-                    // triggers only — sync truth renders from state.
-                    Ok(_) => dirty = true,
+                    // triggers — and the connector episodes feed the
+                    // settings liveness map (round-1 D8).
+                    Ok(event) => {
+                        events.push(event);
+                        dirty = true;
+                    }
                     Err(broadcast::error::TryRecvError::Lagged(_)) => {
                         dirty = true;
                         break;
@@ -354,6 +362,14 @@ fn start_repaint_driver(
                     ) => break,
                 }
             }
+            if !events.is_empty() {
+                adapter
+                    .borrow_mut()
+                    .record_connector_liveness_batch(&events);
+            }
+            // The settings reply drain (D25b): the non-blocking poll
+            // under the same cadence — a settled reply refreshes.
+            adapter.borrow_mut().drain_setting_replies(&window);
             let wall_minute = chrono::Utc::now().timestamp() / 60;
             if minute.get() != Some(wall_minute) {
                 minute.set(Some(wall_minute));
@@ -383,6 +399,29 @@ impl UiHandle {
     #[must_use]
     pub fn quit_requests(&self) -> usize {
         self.adapter.borrow().quit_requests
+    }
+
+    /// The settings reply drain (round-1 chunk 3, D25b): the same
+    /// non-blocking poll the repaint timer runs every cadence tick.
+    /// Public for the component journeys (the established
+    /// [`UiHandle`]-seam pattern): the test plays the app half by
+    /// answering a drained request's oneshot, then drives the drain.
+    pub fn drain_setting_replies(&self) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            self.adapter.borrow_mut().drain_setting_replies(&window);
+        }
+    }
+
+    /// One connector-liveness episode (round-1 chunk 3, D8): the same
+    /// record-then-refresh path the system drain's pre-refresh hook
+    /// runs. Public for the component journeys (broadcast injection
+    /// needs a live engine; the journeys' harness has none).
+    pub fn observe_connector_episode(&self, event: &taskboard_domain::SystemEvent) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            let mut adapter = self.adapter.borrow_mut();
+            adapter.record_connector_liveness(event);
+            adapter.refresh(&window);
+        }
     }
 
     /// The window component's read seam for the integration-test

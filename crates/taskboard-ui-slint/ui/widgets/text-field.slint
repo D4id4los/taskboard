@@ -13,6 +13,9 @@ export component TextField inherits Rectangle {
     in property <string> label;
     in property <string> initial-text;
     in property <bool> selected-on-focus: false;
+    // The settings form's write-only secret field (round-1 D26b): echo
+    // off. The a11y label stays the field's address, never the value.
+    in property <bool> secret: false;
     in-out property <string> text <=> input.text;
     callback edited(string);
     callback accepted(string);
@@ -50,6 +53,7 @@ export component TextField inherits Rectangle {
             // the theme cannot reach into a primitive's input. The
             // colour still flows from tokens.
             color: Theme.text-primary;
+            input-type: root.secret ? InputType.password : InputType.text;
             vertical-alignment: center;
             edited() => root.edited(input.text);
             accepted() => root.accepted(input.text);

@@ -1,17 +1,132 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The settings view (round-1 D24b/D7): the connections form, the
-// connector list with live status, the keymap preset, and the UI
-// scale. Commit-5 stub: the surface mounts and offers the back
-// affordance (D6.6) — the form/list composition lands with the
-// settings-view commit (plan §4.6).
+// The settings view (round-1 D24b/D7): the connections form (write-only
+// secret field), the connector list with live status, the keymap preset
+// picker, and the UI scale. All labels/tone decisions are markup-owned;
+// the model carries typed data only (D18). Text entry rides the D18
+// insert-mask contract: a focused field engages insert mode via the
+// adapter's edited seams; commit returns to Normal.
 
-import { Theme, Typography, RoleText } from "../theme.slint";
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TextField } from "../widgets/text-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+export enum SettingsRowStatus {
+    idle,
+    syncing,
+    offline,
+    failed,
+    down,
+}
+
+export enum SettingsOutcome {
+    none,
+    ok,
+    busy,
+    rejected,
+    unavailable,
+    failed,
+}
+
+
+export struct ConnectionRow {
+    name: string,
+    server: string,
+    username: string,
+    status: SettingsRowStatus,
+}
+
+
+export global SettingsModel {
+    in-out property <[ConnectionRow]> rows: [];
+    in-out property <string> draft-name: "";
+    in-out property <string> draft-server: "";
+    in-out property <string> draft-username: "";
+    in-out property <int> preset-index: 0;
+    in-out property <bool> save-enabled: false;
+    in-out property <SettingsOutcome> last-outcome: SettingsOutcome.none;
+}
+
+
+// The tone of the row-status dot (D18: markup owns colour mapping).
+component RowDot inherits Rectangle {
+    in property <SettingsRowStatus> status: SettingsRowStatus.idle;
+    width: Theme.space-2;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: root.status == SettingsRowStatus.down ? Semantic.danger
+        : root.status == SettingsRowStatus.failed ? Semantic.danger
+        : root.status == SettingsRowStatus.offline ? Semantic.warning
+        : root.status == SettingsRowStatus.syncing ? Semantic.focus-ring
+        : Semantic.success;
+}
+
+component SettingsButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked();
+    border-radius: Theme.radius-small;
+    background: enabled ? Theme.surface-raised : Theme.surface;
+    border-width: touch.has-hover ? Theme.focus-ring-width : 0;
+    border-color: Semantic.focus-ring;
+    min-width: Theme.space-6;
+    min-height: label.preferred-height + 2 * Theme.space-2;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.text;
+    touch := TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+    label := RoleText {
+        role: Typography.body;
+        text: root.text;
+        text-color: root.enabled ? Theme.text-primary : Theme.text-secondary;
+        horizontal-alignment: center;
+    }
+}
+
+component LabeledField inherits HorizontalLayout {
+    spacing: Theme.space-2;
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> secret: false;
+    in property <int> field-index;
+    in-out property <string> text;
+    callback edited(int, string);
+    callback committed();
+    RoleText {
+        role: Typography.body;
+        text: root.label;
+        min-width: Theme.space-8;
+        vertical-alignment: center;
+    }
+    TextField {
+        placeholder: root.placeholder;
+        label: root.label;
+        secret: root.secret;
+        text <=> root.text;
+        edited(t) => {
+            root.edited(root.field-index, t);
+        }
+        accepted(t) => {
+            root.edited(root.field-index, t);
+            root.committed();
+        }
+    }
+}
 
 export component SettingsView inherits FocusScope {
     // D6.6: the back affordance routes the same close path as Escape
     // (the adapter's dedicated `settings-back-clicked` seam).
     callback back-clicked();
+    callback field-edited(int, string);
+    callback field-committed();
+    callback save-clicked(string, string, string, string);
+    callback test-clicked(int);
+    callback remove-clicked(int);
+    callback preset-picked(int);
+    callback scale-committed(string);
 
     VerticalLayout {
         padding: Theme.space-4;
@@ -31,6 +146,185 @@ export component SettingsView inherits FocusScope {
                 text: "Settings";
                 vertical-alignment: center;
             }
+        }
+
+        // -- connections ------------------------------------------------
+        RoleText {
+            role: Typography.title;
+            text: "Connections";
+        }
+
+        for row[index] in SettingsModel.rows: Rectangle {
+            background: Theme.surface;
+            border-radius: Theme.radius-small;
+            min-height: row-layout.min-height + 2 * Theme.space-2;
+            row-layout := HorizontalLayout {
+                padding: Theme.space-2;
+                spacing: Theme.space-2;
+                VerticalLayout {
+                    RowDot {
+                        status: row.status;
+                    }
+                }
+                VerticalLayout {
+                    spacing: 0;
+                    RoleText {
+                        role: Typography.body;
+                        text: row.name;
+                    }
+                    RoleText {
+                        role: Typography.body;
+                        text: row.username + " @ " + row.server;
+                        text-color: Theme.text-secondary;
+                    }
+                }
+                SettingsButton {
+                    text: "Test";
+                    clicked => {
+                        root.test-clicked(index);
+                    }
+                }
+                SettingsButton {
+                    text: "Remove";
+                    clicked => {
+                        root.remove-clicked(index);
+                    }
+                }
+            }
+        }
+
+        // -- the add/edit form ------------------------------------------
+        // The four field texts are the fields' own state (write-only
+        // for the password, D26b); the edited seams mirror into the
+        // adapter's draft.
+        LabeledField {
+            label: "Name";
+            placeholder: "work";
+            field-index: 0;
+            text <=> SettingsModel.draft-name;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed() => {
+                root.field-committed();
+            }
+        }
+        LabeledField {
+            label: "Server";
+            placeholder: "https://cloud.example.com";
+            field-index: 1;
+            text <=> SettingsModel.draft-server;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed() => {
+                root.field-committed();
+            }
+        }
+        LabeledField {
+            label: "Username";
+            placeholder: "alice";
+            field-index: 2;
+            text <=> SettingsModel.draft-username;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed() => {
+                root.field-committed();
+            }
+        }
+        password-field := LabeledField {
+            label: "App password";
+            placeholder: "write-only; never shown";
+            secret: true;
+            field-index: 3;
+            edited(i, t) => {
+                root.field-edited(i, t);
+            }
+            committed() => {
+                root.field-committed();
+            }
+        }
+        SettingsButton {
+            text: "Save";
+            enabled: SettingsModel.save-enabled;
+            clicked => {
+                // The password rides the callback args only — it never
+                // lands on any pushed model property (D26b).
+                root.save-clicked(
+                    SettingsModel.draft-name,
+                    SettingsModel.draft-server,
+                    SettingsModel.draft-username,
+                    password-field.text,
+                );
+            }
+        }
+
+        // -- keymap preset (D27b: live-apply + persist) -----------------
+        RoleText {
+            role: Typography.title;
+            text: "Keymap";
+        }
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            SettingsButton {
+                text: "Standard";
+                enabled: SettingsModel.preset-index != 0;
+                clicked => {
+                    root.preset-picked(0);
+                }
+            }
+            SettingsButton {
+                text: "Emacs";
+                enabled: SettingsModel.preset-index != 1;
+                clicked => {
+                    root.preset-picked(1);
+                }
+            }
+            SettingsButton {
+                text: "Vi";
+                enabled: SettingsModel.preset-index != 2;
+                clicked => {
+                    root.preset-picked(2);
+                }
+            }
+        }
+
+        // -- UI scale (D27b: live-apply at commit, persist over the
+        //    lane, revert on a typed Err reply) --------------------------
+        RoleText {
+            role: Typography.title;
+            text: "Interface scale";
+        }
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            RoleText {
+                role: Typography.body;
+                text: "Scale (0.5–3.0)";
+                min-width: Theme.space-8;
+                vertical-alignment: center;
+            }
+            TextField {
+                placeholder: "1.0";
+                label: "Scale";
+                edited(t) => {
+                    root.scale-committed(t);
+                }
+                accepted(t) => {
+                    root.scale-committed(t);
+                }
+            }
+        }
+
+        // The typed outcome marker (R5: structural rendering only —
+        // the tones, never message text).
+        Rectangle {
+            visible: SettingsModel.last-outcome != SettingsOutcome.none;
+            background: SettingsModel.last-outcome == SettingsOutcome.ok ? Semantic.success
+                : SettingsModel.last-outcome == SettingsOutcome.busy ? Theme.surface-raised
+                : Semantic.danger;
+            border-radius: Theme.radius-small;
+            min-height: Theme.space-3;
         }
     }
 }

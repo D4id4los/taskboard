@@ -17,7 +17,14 @@ import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
-import { SettingsView } from "views/settings-view.slint";
+import {
+    SettingsView,
+    SettingsModel,
+    ConnectionRow,
+    SettingsRowStatus,
+    SettingsOutcome,
+} from "views/settings-view.slint";
+export { SettingsModel, ConnectionRow, SettingsRowStatus, SettingsOutcome }
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { MenuPanelFacts } from "menu-facts.slint";
 
@@ -94,9 +101,15 @@ export component AppWindow inherits Window {
     // The stack.wider binding hint for the header tooltips (D18).
     in-out property <[string]> stack-header-hint;
     in-out property <View> current-view: View.board;
-    // The settings back affordance (round-1 D6.6): the dedicated close
-    // seam (the adapter's `settings-back-clicked`).
+    // The settings seams (round-1 chunk 3, D6.6/D7/D9).
     callback settings-back-clicked();
+    callback settings-field-edited(int, string);
+    callback settings-field-committed();
+    callback settings-save-clicked(string, string, string, string);
+    callback settings-test-clicked(int);
+    callback settings-remove-clicked(int);
+    callback settings-preset-picked(int);
+    callback settings-scale-committed(string);
     in-out property <BoardModel> board-model;
     in-out property <BoardBarModel> board-bar-model;
     in-out property <StackDetailModel> stack-model;
@@ -178,6 +191,13 @@ export component AppWindow inherits Window {
             }
             if (root.current-view == View.settings): SettingsView {
                 back-clicked() => root.settings-back-clicked();
+                field-edited(f, t) => root.settings-field-edited(f, t);
+                field-committed() => root.settings-field-committed();
+                save-clicked(n, s, u, p) => root.settings-save-clicked(n, s, u, p);
+                test-clicked(i) => root.settings-test-clicked(i);
+                remove-clicked(i) => root.settings-remove-clicked(i);
+                preset-picked(i) => root.settings-preset-picked(i);
+                scale-committed(t) => root.settings-scale-committed(t);
             }
             if (root.current-view == View.task-detail): TaskView {
                 task: root.task-model;
