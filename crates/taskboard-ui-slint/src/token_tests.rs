@@ -136,6 +136,7 @@ impl MinRatio {
 const BACKGROUND: TokenName = ("Theme", "background");
 const SURFACE: TokenName = ("Theme", "surface");
 const SURFACE_RAISED: TokenName = ("Theme", "surface-raised");
+const SURFACE_HOVER: TokenName = ("Theme", "surface-hover");
 
 /// `(foreground token, surface token, class)` — every text-bearing
 /// foreground × every surface it renders on, plus the non-text pairs.
@@ -146,11 +147,15 @@ const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
     (("Theme", "text-primary"), BACKGROUND, MinRatio::Body),
     (("Theme", "text-primary"), SURFACE, MinRatio::Body),
     (("Theme", "text-primary"), SURFACE_RAISED, MinRatio::Body),
+    (("Theme", "text-primary"), SURFACE_HOVER, MinRatio::Body),
     // Large: display/title ride text-primary over the window background.
     (("Theme", "text-primary"), BACKGROUND, MinRatio::Large),
     (("Theme", "text-secondary"), BACKGROUND, MinRatio::Body),
     (("Theme", "text-secondary"), SURFACE, MinRatio::Body),
     (("Theme", "text-secondary"), SURFACE_RAISED, MinRatio::Body),
+    // Hover is a surface: the interactive icon/text colours that lift
+    // onto it must stay readable while the hover cue shows.
+    (("Theme", "text-secondary"), SURFACE_HOVER, MinRatio::Body),
     (("Semantic", "success"), BACKGROUND, MinRatio::Body),
     (("Semantic", "success"), SURFACE, MinRatio::Body),
     (("Semantic", "warning"), BACKGROUND, MinRatio::Body),
@@ -255,6 +260,7 @@ fn extractor_finds_every_declared_theme_token() {
         "Theme.background",
         "Theme.surface",
         "Theme.surface-raised",
+        "Theme.surface-hover",
         "Theme.text-primary",
         "Theme.text-secondary",
         "Theme.border",
@@ -277,6 +283,36 @@ fn extractor_finds_every_declared_theme_token() {
         names.len(),
         expected.len(),
         "no unaccounted extras: {names:?}"
+    );
+}
+
+#[test]
+fn hover_token_is_distinct_from_its_parents() {
+    // The structural lock against the invisible-hover bug (the old
+    // hover colour equalled the toolbar's surface) and against an
+    // imperceptible step: the hover cue over either parent surface
+    // must be at least as visible as the existing selection step.
+    let tokens = extract_colors(THEME_SOURCE);
+    let hex = |name: &str| -> String {
+        tokens
+            .iter()
+            .find(|(g, n, _)| g == "Theme" && n == name)
+            .map(|(_, _, hex)| hex.clone())
+            .unwrap_or_default()
+    };
+    let hover = hex("surface-hover");
+    assert!(!hover.is_empty(), "surface-hover is declared");
+    for parent in ["background", "surface", "surface-raised"] {
+        assert_ne!(hover, hex(parent), "hover must differ from {parent}");
+    }
+    let raised_step = contrast_ratio(&hex("surface"), &hex("surface-raised"));
+    assert!(
+        contrast_ratio(&hex("surface"), &hover) >= raised_step,
+        "the surface→hover step must be at least the surface→raised step"
+    );
+    assert!(
+        contrast_ratio(&hex("surface-raised"), &hover) >= raised_step,
+        "the raised→hover step must be at least the surface→raised step"
     );
 }
 
