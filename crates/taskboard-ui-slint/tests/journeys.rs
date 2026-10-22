@@ -699,3 +699,52 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
         },
     );
 }
+
+/// G8/G9 — the stack-create flow has a visible surface, and the
+/// on-board New-stack button is the click equivalent of the `S` key
+/// (usability pass D7, dispatch issue 6): both routes open the same
+/// flow state and land the same typed command at the boundary.
+#[test]
+fn stack_create_has_a_visible_click_equal_flow() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let create_open =
+                |harness: &Harness| harness.handle.window().get_board_model().stack_create_open;
+
+            // (a) The keyboard route: `S` opens the flow's field.
+            harness.press(ActionId::StackCreate);
+            assert!(create_open(&harness), "the flow's field is visible");
+            harness.assert_commands(&[]);
+            harness.type_text("s");
+            harness.stroke(parse("Return").expect("Return"));
+            assert!(!create_open(&harness), "the commit closed the flow");
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CreateStack { title, order, .. }] => {
+                    assert_eq!(title.as_str(), "s");
+                    assert_eq!(*order, 2, "append after the fixture's two stacks");
+                }
+                other => panic!("the create-stack command reached the boundary, got {other:?}"),
+            }
+
+            // (b) The click route: the on-board button opens the same
+            // flow state and the same commit path fires — click ≡ key
+            // at the observed boundary (§7.1).
+            harness.driver.click_by_label("New stack");
+            assert!(create_open(&harness), "the button opens the same flow");
+            harness.type_text("s");
+            harness.stroke(parse("Return").expect("Return"));
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CreateStack { title, order, .. }] => {
+                    assert_eq!(title.as_str(), "s");
+                    assert_eq!(*order, 2, "the same command shape");
+                }
+                other => panic!("the click route's command reached the boundary, got {other:?}"),
+            }
+        },
+    );
+}

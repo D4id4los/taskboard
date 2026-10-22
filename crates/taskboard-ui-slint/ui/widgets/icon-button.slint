@@ -9,12 +9,14 @@
 import { Theme, Semantic, Tone } from "../theme.slint";
 import { TooltipState } from "tooltip.slint";
 
-// The closed icon vocabulary (D19): grows only with a theme decision.
+// The closed icon vocabulary (D19): grows only with a theme decision
+// — `plus` joined for the usability pass's New-stack buttons.
 export enum IconKind {
     menu,
     snooze,
     mute,
     warn,
+    plus,
 }
 
 export component IconButton inherits Rectangle {
@@ -44,6 +46,9 @@ export component IconButton inherits Rectangle {
         focus-on-tab-navigation: true;
         accessible-role: AccessibleRole.button;
         accessible-label: root.label;
+        // The AT/keyboard activation lands on the same callback the
+        // TouchArea's click hits (§7.1's equivalence, D15).
+        accessible-action-default => { root.clicked(); }
     }
 
     icon-box := VerticalLayout {
@@ -117,6 +122,23 @@ export component IconButton inherits Rectangle {
             spacing: Theme.space-1 / 2;
             Rectangle { vertical-stretch: 4; min-height: Theme.space-2; background: icon-box.icon-color(); }
             Rectangle { vertical-stretch: 1; min-height: Theme.space-1 / 2; background: icon-box.icon-color(); }
+        }
+
+        if (root.icon == IconKind.plus): Rectangle {
+            // A plus: one horizontal and one vertical bar crossing
+            // centred (geometric, D19 — no icon font).
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 100%;
+                height: Theme.focus-ring-width;
+                background: icon-box.icon-color();
+            }
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                height: 100%;
+                width: Theme.focus-ring-width;
+                background: icon-box.icon-color();
+            }
         }
     }
 

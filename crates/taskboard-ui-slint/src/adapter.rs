@@ -477,6 +477,7 @@ pub(crate) fn install(
 fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_toolbar_seam(window, adapter);
     install_board_bar_seam(window, adapter);
+    install_stack_create_seams(window, adapter);
     install_board_seams(window, adapter);
     install_stack_seams(window, adapter);
     install_task_seam(window, adapter);
@@ -514,6 +515,32 @@ fn install_board_bar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         };
         a.board_target = Some(board);
         a.route(&window, ActionId::BoardSelect);
+    });
+}
+
+/// The on-board New-stack button routes the `stack.create` action —
+/// the click equivalent of its keyboard binding (§7.1) — and the
+/// flow's field mirrors/commits like every other text flow (D9).
+fn install_stack_create_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let route = Rc::clone(adapter);
+    let route_weak = window.as_weak();
+    window.on_board_new_stack_clicked(move || {
+        let Some(window) = route_weak.upgrade() else {
+            return;
+        };
+        route.borrow_mut().route(&window, ActionId::StackCreate);
+    });
+    let mirror = Rc::clone(adapter);
+    window.on_board_stack_create_edited(move |text| {
+        mirror.borrow_mut().view_state.set_buffer(text.to_string());
+    });
+    let commit = Rc::clone(adapter);
+    let commit_weak = window.as_weak();
+    window.on_board_stack_create_committed(move |text| {
+        let Some(window) = commit_weak.upgrade() else {
+            return;
+        };
+        commit_text(&mut commit.borrow_mut(), &window, &text);
     });
 }
 

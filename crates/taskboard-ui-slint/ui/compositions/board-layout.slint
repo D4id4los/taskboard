@@ -14,6 +14,7 @@ import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { Badge } from "../widgets/badge.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { BoardBar, BoardBarModel } from "board-bar.slint";
 
 // One kanban column (rule B: a display model, not a bag of strings).
@@ -41,6 +42,12 @@ export component BoardLayout inherits Rectangle {
     // (keyboard switching still works).
     in property <BoardBarModel> board-bar;
     callback board-bar-activated(int);
+    // The stack-create flow (usability D7): the on-board button and
+    // the field's mirror/commit seams; open is board-level.
+    in property <bool> stack-create-open;
+    callback new-stack-activated();
+    callback stack-create-committed(string);
+    callback stack-create-edited(string);
 
     // The rendering fact for tests and reviews (§6 test 2): compact
     // mode is active — switcher visible, single column, collapsed
@@ -52,9 +59,21 @@ export component BoardLayout inherits Rectangle {
         root.stacks[root.selected-stack]
     }
 
-    if (root.stacks.length == 0): EmptyState {
-        text: "No stacks yet";
-        hint: "Add the first column: menu \u{203a} New stack";
+    // The empty board (usability D7): the same New-stack button the
+    // populated board bar carries — EmptyState stays a pure text
+    // primitive (Rule E), the composition owns the affordance.
+    if (root.stacks.length == 0): VerticalLayout {
+        alignment: center;
+        spacing: Theme.space-3;
+        EmptyState {
+            text: "No stacks yet";
+            hint: "Create the first stack with the button below";
+        }
+        IconButton {
+            icon: IconKind.plus;
+            label: "New stack";
+            clicked => root.new-stack-activated();
+        }
     }
 
     if (root.stacks.length > 0 && !root.compact-active): VerticalLayout {
@@ -66,6 +85,7 @@ export component BoardLayout inherits Rectangle {
         BoardBar {
             bar: root.board-bar;
             segment-activated(index) => root.board-bar-activated(index);
+            create-activated() => root.new-stack-activated();
         }
 
         HorizontalLayout {
@@ -125,6 +145,15 @@ export component BoardLayout inherits Rectangle {
                 }
             }
         }
+
+        // The stack-create flow's field (usability D7): board-level,
+        // at the end of the columns row, auto-focused on mount.
+        if (root.stack-create-open): TextField {
+            placeholder: "New stack name";
+            label: "New stack name";
+            accepted(text) => root.stack-create-committed(text);
+            edited(text) => root.stack-create-edited(text);
+        }
     }
 
     if (root.stacks.length > 0 && root.compact-active): VerticalLayout {
@@ -173,6 +202,14 @@ export component BoardLayout inherits Rectangle {
                     clicked => root.switcher-activated(column-index);
                 }
             }
+        }
+
+        // The stack-create flow's field (usability D7), compact leg.
+        if (root.stack-create-open): TextField {
+            placeholder: "New stack name";
+            label: "New stack name";
+            accepted(text) => root.stack-create-committed(text);
+            edited(text) => root.stack-create-edited(text);
         }
 
         // The selected stack's single column, tertiary decorations

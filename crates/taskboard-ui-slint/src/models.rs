@@ -205,6 +205,8 @@ fn push_board(
     }
     window.set_board_model(BoardModel {
         stacks: ModelRc::new(columns),
+        // The stack-create flow's visible field (usability D7).
+        stack_create_open: matches!(flow, Flow::CreateStack),
         selected_stack: i32::try_from(
             vs.selected_stack()
                 .and_then(|s| stack_ids.iter().position(|c| c == &s))

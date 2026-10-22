@@ -14,6 +14,9 @@ export struct BoardModel {
     stacks: [StackColumnModel],
     selected-stack: int,
     move-target: int, // stack index, −1 = no move flow
+    // The stack-create flow's visible field (usability D7), open or
+    // closed — board-level, not per column.
+    stack-create-open: bool,
 }
 
 export component BoardView inherits FocusScope {
@@ -28,6 +31,11 @@ export component BoardView inherits FocusScope {
     callback switcher-activated(int);
     callback create-committed(int, string);
     callback create-edited(int, string);
+    // The stack-create flow (usability D7): the on-board button and
+    // the field's mirror/commit seams.
+    callback new-stack-activated();
+    callback stack-create-committed(string);
+    callback stack-create-edited(string);
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -50,6 +58,7 @@ export component BoardView inherits FocusScope {
                 stacks: root.board.stacks;
                 selected-stack: root.board.selected-stack;
                 move-target: root.board.move-target;
+                stack-create-open: root.board.stack-create-open;
                 board-bar: root.board-bar;
                 board-bar-activated(i) => root.board-bar-activated(i);
                 task-activated(c, r) => root.task-activated(c, r);
@@ -58,6 +67,9 @@ export component BoardView inherits FocusScope {
                 switcher-activated(c) => root.switcher-activated(c);
                 create-committed(c, t) => root.create-committed(c, t);
                 create-edited(c, t) => root.create-edited(c, t);
+                new-stack-activated() => root.new-stack-activated();
+                stack-create-committed(t) => root.stack-create-committed(t);
+                stack-create-edited(t) => root.stack-create-edited(t);
             }
         }
     }
