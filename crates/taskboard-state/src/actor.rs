@@ -24,10 +24,11 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use taskboard_domain::{
-    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, Notification, PersistedState,
-    PersistenceAction, ReminderFiring, RepositoryError, StateCommand, SyncCommand, SyncCounters,
-    SyncPhase, SyncStateReader, SyncStates, SyncStatus, SystemEvent, TaskRepository, ValidatorKey,
-    apply_push_report, apply_sync_report, notifications_for, plan_command,
+    AppState, Clock, CommandOutcome, DeckFeatures, EngineSignal, IdGenerator, Notification,
+    PersistedState, PersistenceAction, ReminderFiring, RepositoryError, SidecarHealth,
+    StateCommand, SyncCommand, SyncCounters, SyncPhase, SyncStateReader, SyncStates, SyncStatus,
+    SystemEvent, TaskRepository, ValidatorKey, apply_push_report, apply_sync_report,
+    notifications_for, plan_command,
 };
 
 use crate::config::ReminderEngineConfig;
@@ -699,10 +700,8 @@ async fn ingest_sync_report(
             pushes,
             read_at,
             duration,
-            // The sidecar evidence: folding it is chunk 4's
-            // `apply_sync_report` extension (D-S3/D-S4 item 4) — this
-            // acknowledgment is compilation, not fold logic.
-            app_data: _,
+            app_data,
+            features,
         } => {
             let (merged, mut batch) = apply_sync_report(
                 &core.app(),
@@ -713,6 +712,8 @@ async fn ingest_sync_report(
                 ids,
                 now,
                 &connector,
+                &app_data,
+                features,
             );
             append_status_if_changed(core, &mut batch, &merged.sync);
             // The binding may have been adopted by this very batch, so the
@@ -761,14 +762,18 @@ async fn ingest_sync_report(
             let actions = bound
                 .iter()
                 .map(|board| {
-                    let last_success = core.sync_status(*board).and_then(|row| row.last_success);
+                    let current = core.sync_status(*board);
                     PersistenceAction::UpsertSyncStatus(
                         *board,
                         SyncStatus {
                             phase: SyncPhase::Failed { last_error: kind },
-                            last_success,
-                            pending_ops: 0, // ignored: derived at apply time
-                            counters: SyncCounters::default(),
+                            last_success: current.and_then(|row| row.last_success),
+                            // The memory-only fields (counters, sidecar,
+                            // features) are never persisted; the verdict
+                            // row carries the last derived values over.
+                            sidecar: current.map_or(SidecarHealth::default(), |row| row.sidecar),
+                            features: current.map_or(DeckFeatures::default(), |row| row.features),
+                            ..SyncStatus::default()
                         },
                     )
                 })
@@ -789,10 +794,18 @@ async fn ingest_sync_report(
             read_at,
             board,
             duration,
+            features,
             ..
         } => {
-            let (merged, mut batch) =
-                apply_push_report(&core.app(), core.outbox(), &pushes, read_at, ids, now);
+            let (merged, mut batch) = apply_push_report(
+                &core.app(),
+                core.outbox(),
+                &pushes,
+                read_at,
+                ids,
+                now,
+                features,
+            );
             append_status_if_changed(core, &mut batch, &merged.sync);
             // Board-scoped verdict: the report names its failing board.
             let delta = SyncCounters {
@@ -975,14 +988,16 @@ async fn go_offline(
     let actions: Vec<PersistenceAction> = targets
         .into_iter()
         .map(|board| {
-            let last_success = core.sync_status(board).and_then(|row| row.last_success);
+            let current = core.sync_status(board);
             PersistenceAction::UpsertSyncStatus(
                 board,
                 SyncStatus {
                     phase: SyncPhase::Offline,
-                    last_success,
-                    pending_ops: 0, // ignored: derived at apply time
-                    counters: SyncCounters::default(),
+                    last_success: current.and_then(|row| row.last_success),
+                    // Memory-only fields carry over (see above).
+                    sidecar: current.map_or(SidecarHealth::default(), |row| row.sidecar),
+                    features: current.map_or(DeckFeatures::default(), |row| row.features),
+                    ..SyncStatus::default()
                 },
             )
         })

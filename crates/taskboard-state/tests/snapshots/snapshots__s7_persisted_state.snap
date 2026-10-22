@@ -99,6 +99,9 @@ sync:
       failures: 0
       offline_episodes: 0
       last_cycle: ~
+    sidecar: Healthy
+    features:
+      card_startdate: false
   00000000-0000-0000-0000-000000000002:
     phase: Idle
     last_success: ~
@@ -110,6 +113,9 @@ sync:
       failures: 0
       offline_episodes: 0
       last_cycle: ~
+    sidecar: Healthy
+    features:
+      card_startdate: false
 reminders:
   rules: {}
   deliveries: []

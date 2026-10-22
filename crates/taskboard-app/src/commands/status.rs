@@ -697,6 +697,7 @@ mod tests {
             phase,
             last_success: None,
             pending_ops: pending,
+            ..SyncStatus::default()
         })
     }
 

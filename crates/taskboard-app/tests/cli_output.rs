@@ -159,6 +159,7 @@ fn o2_sync_status_view_phase_table() {
             phase,
             last_success: None,
             pending_ops: 0,
+            ..taskboard_domain::SyncStatus::default()
         }))
         .unwrap()
     }

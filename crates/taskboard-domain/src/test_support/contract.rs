@@ -17,7 +17,7 @@ use crate::outbox::{LocalOp, OpId, PendingOp};
 use crate::persistence::{
     PersistedState, PersistenceAction, SyncValidators, TaskRepository, ValidatorKey,
 };
-use crate::state::{SyncCounters, SyncStatus};
+use crate::state::SyncStatus;
 
 /// Runs the full contract against `repo`, awaiting futures with the caller's
 /// runtime (real IO implementations need a reactor; the in-memory fake is
@@ -189,7 +189,9 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         phase: crate::state::SyncPhase::Offline,
         last_success: Some(Utc.timestamp_opt(1_700_000_000, 0).unwrap()),
         pending_ops: 999, // stored payload drift; must be ignored on load
-        counters: SyncCounters::default(),
+        // The memory-only fields are storage-shape defaults here; the
+        // codec never persists them.
+        ..SyncStatus::default()
     };
     repo.apply(vec![PersistenceAction::UpsertSyncStatus(
         board.id,

@@ -1131,6 +1131,7 @@ mod connector_module_tests {
             },
             pushes: Vec::new(),
             read_at: chrono::Utc.timestamp_opt(1_700_000_001, 0).unwrap(),
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         };
         let module: Arc<dyn ConnectorModule> =
             Arc::new(FakeModule::new("fakemodule", vec![completed]));
@@ -1193,6 +1194,7 @@ mod connector_module_tests {
             validators: completed_validators(),
             pushes: Vec::new(),
             read_at: at,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         }
     }
 

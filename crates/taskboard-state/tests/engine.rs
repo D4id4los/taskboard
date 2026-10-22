@@ -447,6 +447,7 @@ async fn a5_completed_report_ingestion_publishes() {
             validators: test_validators(),
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -482,6 +483,7 @@ async fn a6_failed_report_sets_typed_phase() {
             pushes: vec![],
 
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -1006,6 +1008,7 @@ async fn completed_report_persists_validators_under_the_board_binding() {
             validators: validators.clone(),
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -1154,6 +1157,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
             validators: test_validators(),
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -1234,6 +1238,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
             }],
 
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -1267,6 +1272,7 @@ fn failed_report() -> SyncReport {
         kind: SyncErrorKind::Network,
         pushes: vec![],
         read_at: ts(T0),
+        features: taskboard_domain::DeckFeatures::CONSERVATIVE,
     }
 }
 
@@ -1838,6 +1844,42 @@ fn etag_validators() -> taskboard_domain::BoardPullValidators {
 
 /// The fixture `Completed` report: board 77, no stacks/tasks/labels,
 /// etag validators, fixed `read_at` — byte-identical on every call.
+/// Chunk 4's engine-side fold wiring: the sidecar evidence and the
+/// probed flags pass through ingestion and land on the report's board
+/// row — the published `AppState` carries the typed warning (F3's
+/// engine half) without the app layer re-deriving anything.
+#[tokio::test]
+async fn completed_report_derives_sidecar_health_and_features_on_the_row() {
+    let h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(
+            common::seed_bound_board_state("board"),
+        )),
+        ..Spawner::default()
+    })
+    .await;
+    let evidence = taskboard_domain::AppDataEvidence::Unreadable(
+        taskboard_domain::AppDataUnreadable::FormatTooNew { format: 99 },
+    );
+    let mut report = completed_report();
+    let taskboard_domain::SyncReport::Completed {
+        ref mut app_data, ..
+    } = report
+    else {
+        unreachable!("fixture");
+    };
+    *app_data = evidence;
+    h.report_tx.send(report).await.expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.sync.iter().any(|(_, row)| {
+            row.sidecar
+                == taskboard_domain::SidecarHealth::Unreadable(
+                    taskboard_domain::AppDataUnreadable::FormatTooNew { format: 99 },
+                )
+        })
+    })
+    .await;
+}
+
 fn completed_report() -> SyncReport {
     completed_report_for(RemoteBoardId(77), etag_validators())
 }
@@ -1868,6 +1910,7 @@ fn completed_report_for(
         validators,
         pushes: vec![],
         read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+        features: taskboard_domain::DeckFeatures::CONSERVATIVE,
     }
 }
 
@@ -1932,6 +1975,7 @@ async fn identical_completed_report_appends_nothing() {
             kind: SyncErrorKind::Auth,
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -2016,6 +2060,7 @@ async fn failed_report_keeps_the_last_success_stamp() {
             kind: SyncErrorKind::Network,
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -2245,6 +2290,7 @@ fn counter_report(board: RemoteBoardId, duration: std::time::Duration) -> SyncRe
             result: taskboard_domain::PushResult::Applied { echo: None },
         }],
         read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+        features: taskboard_domain::DeckFeatures::CONSERVATIVE,
     }
 }
 
@@ -2330,6 +2376,7 @@ async fn k3_a_connector_wide_failure_counts_every_connector_board() {
             read_at: ts(T0),
             board: None,
             duration: std::time::Duration::from_millis(100),
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -2384,6 +2431,7 @@ async fn k4_a_board_scoped_failure_counts_only_the_failing_board() {
             read_at: ts(T0),
             board: Some(RemoteBoardId(9)),
             duration: std::time::Duration::from_millis(40),
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");

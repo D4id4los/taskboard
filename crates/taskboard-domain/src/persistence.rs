@@ -277,9 +277,17 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 state.validators.insert(*key, validators.clone());
             }
             PersistenceAction::UpsertSyncStatus(board, status) => {
+                // The stored part is phase + last success; the row's
+                // memory-only fields (sidecar health, capability flags)
+                // ride the in-memory map too — they are derivations the
+                // engine published with this very batch, never persisted.
                 state
                     .sync
                     .set_stored(*board, status.phase, status.last_success);
+                if let Some(row) = state.sync.get_mut(*board) {
+                    row.sidecar = status.sidecar;
+                    row.features = status.features;
+                }
             }
             PersistenceAction::DeleteSyncStatus(board) => {
                 state.sync.remove(*board);
@@ -613,6 +621,7 @@ mod tests {
                     last_success: Some(ts(400)),
                     pending_ops: 9999, // ignored: derived, never stored
                     counters: crate::state::SyncCounters::default(),
+                    ..SyncStatus::default()
                 },
             )],
         );
@@ -663,6 +672,7 @@ mod tests {
                         last_success: Some(ts(400)),
                         pending_ops: 0,
                         counters: crate::state::SyncCounters::default(),
+                        ..SyncStatus::default()
                     },
                 )],
             );
@@ -898,6 +908,7 @@ mod tests {
                         last_success: Some(ts(300)),
                         pending_ops: 0,
                         counters: crate::state::SyncCounters::default(),
+                        ..SyncStatus::default()
                     },
                 ),
             ],

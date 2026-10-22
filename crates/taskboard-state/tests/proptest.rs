@@ -158,6 +158,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
                 phase: SyncPhase::Offline,
                 last_success: None,
                 pending_ops: 0,
+                ..taskboard_domain::SyncStatus::default()
             },
         )),
     ]
@@ -230,6 +231,8 @@ proptest! {
             &ids,
             now(),
             &taskboard_domain::ConnectorId::from("nextcloud"),
+            &taskboard_domain::AppDataEvidence::Absent,
+            taskboard_domain::DeckFeatures::CONSERVATIVE,
         );
         // The engine appends the status action iff phase or last_success
         // changed — the same rule the actor applies.

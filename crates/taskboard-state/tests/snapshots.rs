@@ -293,6 +293,7 @@ async fn s3_sync_ingestion_binds_and_pulls() {
             validators: test_validators(),
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -390,6 +391,7 @@ async fn s4_sync_resolution_drains_outbox() {
             pushes,
             validators: test_validators(),
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -525,6 +527,7 @@ async fn s6_network_lost_restored_cycle() {
             pushes: vec![],
 
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");
@@ -801,6 +804,7 @@ async fn s10_boards_reset() {
             validators: warm_validators(),
             pushes: vec![],
             read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
         })
         .await
         .expect("report channel open");

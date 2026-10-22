@@ -36,8 +36,9 @@ use crate::merge::{
     RULE_R1, RULE_R3, RULE_R4, RULE_R5, RULE_R6, RULE_R9, adopt_board_after_delete_push,
     adopt_board_after_push, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
     adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, adopt_task_after_push,
-    finalize_pushed_task_delete, merge_board, merge_label, merge_stack, merge_task, remote_wins,
-    tombstone_board, tombstone_label, tombstone_stack, tombstone_task, utc_min,
+    finalize_pushed_task_delete, fold_reminder_rules, fold_task_app_data, merge_board, merge_label,
+    merge_stack, merge_task, remote_wins, tombstone_board, tombstone_label, tombstone_stack,
+    tombstone_task, utc_min,
 };
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
@@ -118,6 +119,21 @@ fn pending_task_intents(
         if op.queued_at <= read_at {
             continue;
         }
+        // The D-S6 guard mirror for the document lane: a queued
+        // `UpdateAppData` op the cycle never saw protects all four
+        // app-field flags *and* the task's rules (coarse by design —
+        // the mirror mirrors both lanes; D-V2 needs no change here).
+        // Same boundary convention as the native lanes: `queued_at >
+        // read_at` only; `==` was seen by the cycle.
+        if let LocalOp::UpdateAppData(task) = op.op {
+            let p = map.entry(task).or_default();
+            p.effort = true;
+            p.importance = true;
+            p.urgency = true;
+            p.scheduled = true;
+            p.reminder_rules = true;
+            continue;
+        }
         let entry = map.entry(match op.op {
             LocalOp::UpdateTask(t)
             | LocalOp::MoveTask(t)
@@ -133,11 +149,9 @@ fn pending_task_intents(
             | LocalOp::UpdateLabel(_)
             | LocalOp::DeleteLabel(_)
             | LocalOp::UpdateBoard(_)
-            | LocalOp::DeleteBoard(_)
-            // Chunk 4's guard mirror widens the app-field flags for this
-            // op; nothing enqueues it yet (the MD-10 interim), so it
-            // creates no intent now — a fence, not the widened arm.
-            | LocalOp::UpdateAppData(_) => continue,
+            | LocalOp::DeleteBoard(_) => continue,
+            // Filtered by the guard arm above; the compiler cannot see it.
+            LocalOp::UpdateAppData(_) => unreachable!("handled above"),
         });
         match op.op {
             LocalOp::UpdateTask(_) => {
@@ -400,6 +414,8 @@ pub fn apply_sync_report(
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
     connector: &crate::ids::ConnectorId,
+    app_data: &crate::messages::AppDataEvidence,
+    features: crate::capabilities::DeckFeatures,
 ) -> (AppState, Vec<PersistenceAction>) {
     let _span = tracing::debug_span!(
         "apply_sync_report",
@@ -433,6 +449,7 @@ pub fn apply_sync_report(
         &mut ctx,
         now,
         read_at,
+        features,
     );
 
     // The card→local matching map, built from the *post-echo* task map:
@@ -597,7 +614,7 @@ pub fn apply_sync_report(
                 remote.last_modified,
                 local.remote_seen.unwrap_or_else(utc_min),
             ) {
-                let mut merged = merge_task(&local, remote, &ctx);
+                let mut merged = merge_task(&local, remote, &ctx, features.card_startdate);
                 keep_task_intent(
                     &mut merged,
                     &local,
@@ -644,6 +661,49 @@ pub fn apply_sync_report(
                 ctx.task_by_ref.insert(remote.id, id);
                 newly_adopted.insert(key, id);
                 tracing::debug!(rule = RULE_R1, task_id = ?id, fresh_id = ?id, card = ?remote.id, "task adopted");
+            }
+        }
+    }
+
+    // ---- 5b. The sidecar fold (D-S3) --------------------------------
+    // Only `Document` evidence folds (a failed cycle folds nothing; the
+    // unreadable fences fold nothing louder). Position: after the
+    // task-merge loop (the fold's `merged` input is the post-merge
+    // truth, guard flags already applied to the native fields) and
+    // before R3 — the fold feeds R3 nothing (no presence facts).
+    let mut rule_actions: Vec<PersistenceAction> = Vec::new();
+    let mut folded_rules: Option<
+        std::collections::BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
+    > = None;
+    if let crate::messages::AppDataEvidence::Document(document) = app_data {
+        let task_intents = pending_task_intents(outbox, read_at);
+        for remote in &snapshot.tasks {
+            let Some(&task_id) = task_by_board_card.get(&(remote.id.board, remote.id.card)) else {
+                continue; // an unresolvable card never reaches the fold
+            };
+            let card_key = remote.id.card.get().to_string();
+            let local = &tasks[&task_id];
+            let intent = task_intents.get(&task_id).copied().unwrap_or_default();
+            if let Some(entries) = &document.sections.tasks
+                && let Some(entry) = entries.get(&card_key)
+            {
+                let mut merged = local.clone();
+                fold_task_app_data(&mut merged, local, entry, intent, features.card_startdate);
+                if merged != *local {
+                    tasks.insert(task_id, merged);
+                }
+            }
+            if let Some(entries) = &document.sections.reminder_rules
+                && let Some(entry) = entries.get(&card_key)
+            {
+                let rules = folded_rules.get_or_insert_with(|| current.reminders.rules.clone());
+                let changes = fold_reminder_rules(rules, task_id, entry, intent.reminder_rules);
+                for rule in changes.upserts {
+                    rule_actions.push(PersistenceAction::UpsertReminderRule(rule));
+                }
+                for rule_id in changes.deletes {
+                    rule_actions.push(PersistenceAction::DeleteReminderRule(rule_id));
+                }
             }
         }
     }
@@ -748,6 +808,9 @@ pub fn apply_sync_report(
 
     // ---- 7. Sync-status transition + persistence batch ---------------
     let mut actions = actions_for_changed_entities(current, &boards, &stacks, &labels, &tasks);
+    // The rules fold's deltas ride the same batch: the persistence view
+    // and the memory view below are the same deltas by construction.
+    actions.extend(rule_actions);
     // Outbox order, not the HashMap's: equal inputs must yield equal
     // batches (the convergence property; the map is a lookup index).
     for entry in outbox {
@@ -774,14 +837,26 @@ pub fn apply_sync_report(
     // The report's board row transitions; every other row carries over.
     let mut sync = current.sync.clone();
     sync.set_stored(board_id, phase, Some(now));
+    // The sidecar health and the connector's capability flags ride the
+    // report's board row (memory-only; `append_status_if_changed`
+    // compares only phase/last_success, so this never touches the
+    // persisted batch).
+    if let Some(row) = sync.get_mut(board_id) {
+        row.sidecar = crate::state::derive_sidecar_health(app_data);
+        row.features = features;
+    }
     let mut state = AppState {
         boards,
         stacks,
         tasks,
         labels,
-        // v1: no reminder data enters the sync path — carried through
-        // untouched.
-        reminders: current.reminders.clone(),
+        // No reminder data enters the *native* sync path: the rules
+        // section rode the app-data document lane (the fold above);
+        // everything else carries through untouched.
+        reminders: crate::reminders::ReminderState {
+            rules: folded_rules.unwrap_or_else(|| current.reminders.rules.clone()),
+            ..current.reminders.clone()
+        },
         sync,
         // Sync ingestion is an engine mutation from a foreign source:
         // stamp it like a local command would be.
@@ -893,6 +968,7 @@ pub fn apply_push_report(
     read_at: DateTime<Utc>,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
+    features: crate::capabilities::DeckFeatures,
 ) -> (AppState, Vec<PersistenceAction>) {
     let _ = ids;
     let _span = tracing::debug_span!(
@@ -922,6 +998,7 @@ pub fn apply_push_report(
         &mut ctx,
         now,
         read_at,
+        features,
     );
 
     let mut actions = actions_for_changed_entities(current, &boards, &stacks, &labels, &tasks);
@@ -966,14 +1043,21 @@ pub fn apply_push_report(
             phase,
             if any_rejected { carried } else { Some(now) },
         );
+        // Each affected board's row carries *its* connector's flags
+        // (a board's row is only written by reports for that board);
+        // the sidecar verdict is not re-derived here — a push-only
+        // cycle produces no fresh evidence, the last one stands.
+        if let Some(row) = sync.get_mut(*board) {
+            row.features = features;
+        }
     }
     let mut state = AppState {
         boards,
         stacks,
         tasks,
         labels,
-        // v1: no reminder data enters the push path — carried through
-        // untouched.
+        // No reminder data enters the *native* push path; rules ride
+        // the app-data document lane (a push-only cycle folds nothing).
         reminders: current.reminders.clone(),
         sync,
         last_updated: Some(now),
@@ -1011,6 +1095,7 @@ fn apply_push_outcomes(
     ctx: &mut RemoteIndex,
     now: DateTime<Utc>,
     read_at: DateTime<Utc>,
+    features: crate::capabilities::DeckFeatures,
 ) -> HashMap<OpId, bool> {
     let mut op_results: HashMap<OpId, bool> = HashMap::new();
     // The self-clobber guard applies to echo adoption too: an echo carries
@@ -1075,7 +1160,8 @@ fn apply_push_outcomes(
                         if let LocalOp::CreateTask(id) | LocalOp::UpdateTask(id) = op.op
                             && let Some(local) = tasks.get(&id)
                         {
-                            let mut merged = adopt_task_after_push(local, echo, ctx);
+                            let mut merged =
+                                adopt_task_after_push(local, echo, ctx, features.card_startdate);
                             keep_task_intent(
                                 &mut merged,
                                 local,
@@ -1472,6 +1558,345 @@ mod tests {
         }
     }
 
+    // ---- chunk 4: the sidecar fold through apply_sync_report ----------
+
+    use crate::appdata::{
+        AppDataDocument, AppDataSections, ModeledValue, RuleEntry, RulesEntry, TaskEntry,
+        TaskFieldWrite,
+    };
+    use crate::capabilities::DeckFeatures;
+    use crate::messages::AppDataEvidence;
+
+    fn fw(value: ModeledValue, clock: i64) -> TaskFieldWrite {
+        TaskFieldWrite {
+            value,
+            clock: ts(clock),
+        }
+    }
+
+    fn document_with(
+        entries: &[(u64, TaskEntry)],
+        rules: Option<&[(u64, RulesEntry)]>,
+    ) -> AppDataEvidence {
+        let mut tasks_map = std::collections::BTreeMap::new();
+        for (card, entry) in entries {
+            tasks_map.insert(card.to_string(), entry.clone());
+        }
+        let rules_map = rules.map(|rs| {
+            let mut m = std::collections::BTreeMap::new();
+            for (card, entry) in rs {
+                m.insert(card.to_string(), entry.clone());
+            }
+            m
+        });
+        AppDataEvidence::Document(Box::new(AppDataDocument {
+            format: crate::appdata::APPDATA_FORMAT,
+            board: board(REMOTE_BOARD_NUM),
+            sections: AppDataSections {
+                tasks: (!tasks_map.is_empty()).then_some(tasks_map),
+                reminder_rules: rules_map,
+                unknown: std::collections::BTreeMap::new(),
+            },
+            unknown: std::collections::BTreeMap::new(),
+        }))
+    }
+
+    fn fold_report(
+        state: &AppState,
+        outbox: &[crate::outbox::PendingOp],
+        snapshot: &RemoteBoardSnapshot,
+        evidence: &AppDataEvidence,
+        features: DeckFeatures,
+        read_at: i64,
+    ) -> (AppState, Vec<PersistenceAction>) {
+        apply_sync_report(
+            state,
+            outbox,
+            snapshot,
+            &[],
+            ts(read_at),
+            &CountingIds::default(),
+            ts(read_at),
+            &crate::test_support::test_connector(),
+            evidence,
+            features,
+        )
+    }
+
+    #[test]
+    fn the_fold_adopts_newer_document_app_fields_and_records_the_row_facts() {
+        let task = bound_task(1);
+        let state = base_state(task);
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let entry = TaskEntry {
+            fields: [(
+                "effort".to_owned(),
+                fw(
+                    ModeledValue::Effort(Some(crate::entities::Effort::new(900))),
+                    BASE + 300,
+                ),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        let evidence = document_with(&[(1, entry)], None);
+        let (app, _actions) = fold_report(
+            &state,
+            &[],
+            &snap,
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        let merged = task_by_card(&app, 1);
+        assert_eq!(merged.effort, Some(crate::entities::Effort::new(900)));
+        assert_eq!(merged.clocks.effort, ts(BASE + 300));
+        let row = app.sync.get(*state.boards.keys().next().unwrap()).unwrap();
+        assert_eq!(row.sidecar, crate::state::SidecarHealth::Healthy);
+        assert_eq!(row.features, DeckFeatures::CONSERVATIVE);
+    }
+
+    #[test]
+    fn the_rules_fold_lands_deltas_in_state_and_batch() {
+        use crate::reminders::ReminderRule;
+        let task = bound_task(1);
+        let mut state = base_state(task);
+        let existing = ReminderRule {
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+            task: state.tasks.values().next().unwrap().id,
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: ts(BASE),
+            updated_at: ts(BASE),
+        };
+        state.reminders.rules.insert(existing.id, existing.clone());
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let rules_entry = RulesEntry {
+            rules: [
+                // A strictly newer tombstone for the existing rule.
+                (
+                    "00000000-0000-0000-0000-00000000000a".to_owned(),
+                    RuleEntry::Tombstone {
+                        clock: ts(BASE + 300),
+                    },
+                ),
+                // A fresh rule the local side never had: adopted verbatim.
+                (
+                    "00000000-0000-0000-0000-00000000000b".to_owned(),
+                    RuleEntry::Rule {
+                        offset: crate::reminders::ReminderOffset::before(
+                            chrono::TimeDelta::try_minutes(-15).unwrap(),
+                        )
+                        .unwrap(),
+                        created: ts(BASE + 100),
+                        clock: ts(BASE + 100),
+                    },
+                ),
+            ]
+            .into(),
+            unknown: std::collections::BTreeMap::new(),
+        };
+        let evidence = document_with(&[], Some(&[(1, rules_entry)]));
+        let (app, actions) = fold_report(
+            &state,
+            &[],
+            &snap,
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        // Memory view: the tombstone removed, the document rule adopted.
+        assert!(!app.reminders.rules.contains_key(&existing.id));
+        let adopted_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xb));
+        let adopted = app.reminders.rules.get(&adopted_id).expect("adopted");
+        assert_eq!(adopted.task, existing.task);
+        assert_eq!(adopted.updated_at, ts(BASE + 100));
+        // Batch: the same deltas, by construction.
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            PersistenceAction::DeleteReminderRule(id) if *id == existing.id
+        )));
+        assert!(
+            actions.iter().any(
+                |a| matches!(a, PersistenceAction::UpsertReminderRule(r) if r.id == adopted_id)
+            )
+        );
+    }
+
+    #[test]
+    fn the_guard_protects_a_post_read_app_edit_value_and_clock_through_the_fold() {
+        // D3's clock-copy rationale: a flush that failed (its op stays
+        // queued, stamped after read_at) plus a concurrent remote write
+        // must not adopt the remote value one cycle late — the guard's
+        // clock copy makes the next fold's comparison honest.
+        let task = bound_task(1);
+        let state = base_state(task);
+        let task_id = task_by_card(&state, 1).id;
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(555)),
+            op: LocalOp::UpdateAppData(task_id),
+            queued_at: ts(BASE + 10), // after read_at: never seen by the cycle
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let entry = TaskEntry {
+            fields: [(
+                "effort".to_owned(),
+                fw(
+                    ModeledValue::Effort(Some(crate::entities::Effort::new(900))),
+                    BASE + 300,
+                ),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        let evidence = document_with(&[(1, entry)], None);
+        let (app, actions) = fold_report(
+            &state,
+            &[op],
+            &snap,
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE,
+        );
+        let merged = task_by_card(&app, 1);
+        assert_eq!(merged.effort, None, "the protected local truth stands");
+        assert_eq!(merged.clocks.effort, ts(BASE), "the clock copies too");
+        // The op the cycle never saw is not settled by the fold.
+        assert!(
+            !actions.iter().any(|a| matches!(
+                a,
+                PersistenceAction::CompleteOp(id) | PersistenceAction::FailOp(id)
+                if *id == crate::outbox::OpId(uuid::Uuid::from_u128(555))
+            )),
+            "the fold completes nothing"
+        );
+    }
+
+    #[test]
+    fn the_guard_boundary_sees_ops_queued_no_later_than_read_at() {
+        let task = bound_task(1);
+        let state = base_state(task);
+        let task_id = task_by_card(&state, 1).id;
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(556)),
+            op: LocalOp::UpdateAppData(task_id),
+            queued_at: ts(BASE), // == read_at: seen by the cycle
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let entry = TaskEntry {
+            fields: [(
+                "effort".to_owned(),
+                fw(
+                    ModeledValue::Effort(Some(crate::entities::Effort::new(900))),
+                    BASE + 300,
+                ),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        let evidence = document_with(&[(1, entry)], None);
+        let (app, _actions) = fold_report(
+            &state,
+            &[op],
+            &snap,
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE,
+        );
+        assert_eq!(
+            task_by_card(&app, 1).effort,
+            Some(crate::entities::Effort::new(900)),
+            "an op the cycle saw is not protected"
+        );
+    }
+
+    #[test]
+    fn unreadable_evidence_folds_nothing_and_warns_on_the_row() {
+        let task = bound_task(1);
+        let mut state = base_state(task);
+        let task_id = task_by_card(&state, 1).id;
+        // A local app value the fold must not disturb.
+        let mut seeded = state.tasks.get(&task_id).unwrap().clone();
+        seeded.effort = Some(crate::entities::Effort::new(7));
+        seeded.clocks.effort = ts(BASE);
+        state.tasks.insert(task_id, seeded);
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let evidence =
+            AppDataEvidence::Unreadable(crate::messages::AppDataUnreadable::FormatTooNew {
+                format: 99,
+            });
+        let (app, _actions) = fold_report(
+            &state,
+            &[],
+            &snap,
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        assert_eq!(
+            task_by_card(&app, 1).effort,
+            Some(crate::entities::Effort::new(7))
+        );
+        let row = app.sync.get(*state.boards.keys().next().unwrap()).unwrap();
+        assert_eq!(
+            row.sidecar,
+            crate::state::SidecarHealth::Unreadable(
+                crate::messages::AppDataUnreadable::FormatTooNew { format: 99 }
+            )
+        );
+        // Absent evidence is healthy silence.
+        let (app, _) = fold_report(
+            &state,
+            &[],
+            &snap,
+            &AppDataEvidence::Absent,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        let row = app.sync.get(*state.boards.keys().next().unwrap()).unwrap();
+        assert_eq!(row.sidecar, crate::state::SidecarHealth::Healthy);
+    }
+
+    #[test]
+    fn a_failed_push_report_folds_nothing() {
+        // The `Failed` path's fold ban: apply_push_report has no
+        // evidence parameter — app fields and rules ride through
+        // untouched, the last verdict stands on the row.
+        let task = bound_task(1);
+        let mut state = base_state(task);
+        let task_id = task_by_card(&state, 1).id;
+        let mut seeded = state.tasks.get(&task_id).unwrap().clone();
+        seeded.effort = Some(crate::entities::Effort::new(7));
+        seeded.clocks.effort = ts(BASE);
+        state.tasks.insert(task_id, seeded);
+        // One completed op: the report's affected-board set is exactly
+        // the boards of the ops that got outcomes.
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(557)),
+            op: LocalOp::UpdateTask(task_id),
+            queued_at: ts(BASE),
+        };
+        let outcome = crate::remote::PushOutcome {
+            op: op.op_id,
+            result: crate::remote::PushResult::Applied { echo: None },
+        };
+        let (app, _actions) = apply_push_report(
+            &state,
+            &[op],
+            &[outcome],
+            ts(BASE),
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            DeckFeatures::NATIVE,
+        );
+        assert_eq!(
+            task_by_card(&app, 1).effort,
+            Some(crate::entities::Effort::new(7))
+        );
+        assert!(app.reminders.rules.is_empty());
+        let row = app.sync.get(*state.boards.keys().next().unwrap()).unwrap();
+        assert_eq!(row.features, DeckFeatures::NATIVE, "the flags ride the row");
+    }
+
     #[test]
     fn remote_absence_tombstones_and_cancels_pending_ops() {
         let task = bound_task(1);
@@ -1492,6 +1917,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 3_600),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -1535,6 +1962,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 600),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         let merged_task = app.0.tasks.values().next().unwrap();
         assert!(merged_task.deleted, "stack tombstone cascades to its tasks");
@@ -1558,6 +1987,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 3_600),
             &crate::ids::ConnectorId::from("beta"),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(app.0.boards.len(), 2, "adoption, not a merge");
@@ -1596,7 +2027,7 @@ mod tests {
         echo.title = "untidied".into(); // server-trimmed
 
         let ctx = RemoteIndex::default();
-        let merged = adopt_task_after_push(&local, &echo, &ctx);
+        let merged = adopt_task_after_push(&local, &echo, &ctx, true);
 
         // Unconditional adoption, not LWW: the normalization lands even
         // though the echo timestamp is not "newer" than the local edit.
@@ -1617,6 +2048,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 3_660),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
             app.1
@@ -1649,6 +2082,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(
@@ -1686,6 +2121,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = app.0.tasks.values().next().unwrap();
@@ -1718,6 +2155,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
@@ -1740,6 +2179,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert_eq!(
             app.0.sync.aggregate().pending_ops,
@@ -1790,6 +2231,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let adopted_label = app
@@ -1831,6 +2274,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         let second_state = app_into_state(&first);
         let second = apply_sync_report(
@@ -1842,6 +2287,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 180),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(
@@ -1887,6 +2334,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 3_660),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let state_after = app_into_state(&app);
@@ -1923,6 +2372,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         // R9a echo adoption applies to create/update pushes only; a move
@@ -1968,6 +2419,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let state_after = app_into_state(&app);
@@ -2022,6 +2475,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 420),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(
@@ -2064,6 +2519,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(
@@ -2143,6 +2600,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(
@@ -2192,6 +2651,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 180),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert_eq!(
             app.0.stacks[&stack_id].title, "locally newer",
@@ -2225,6 +2686,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 90),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(
@@ -2292,6 +2755,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(
@@ -2350,6 +2815,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 3_660),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let state_after = app_into_state(&app);
@@ -2386,6 +2852,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(
@@ -2424,6 +2891,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(
@@ -2459,6 +2927,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
             actions.contains(&PersistenceAction::FailOp(op_id)),
@@ -2493,6 +2962,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
             !actions
@@ -2525,6 +2995,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
             !actions
@@ -2559,6 +3030,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
             !actions
@@ -2569,153 +3041,156 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(test_support::proptest_config(256))]
+            #![proptest_config(test_support::proptest_config(256))]
 
-        #[test]
-        fn apply_push_report_equals_the_pipeline_push_phase(
-            state in test_support::persisted_state_strategy().prop_filter(
-                "bound board and seen baselines",
-                |state| {
-                    // Equivalence holds when the snapshot mirrors the bound
-                    // state exactly (so the merge/reconciliation phases are
-                    // no-ops) and no board cascade can fire.
-                    let bound_board = state
-                        .boards
-                        .values()
-                        .find(|b| b.remote.is_some());
-                    let Some(board) = bound_board else { return false };
-                    board.remote_seen.is_some()
-                        && !board.deleted
-                        && state.stacks.values().filter(|s| s.remote.is_some())
-                            .all(|s| s.remote_seen.is_some())
-                        && state.labels.values().filter(|l| l.remote.is_some())
-                            .all(|l| l.remote_seen.is_some())
-                        && state.tasks.values().filter(|t| t.remote.is_some())
-                            .all(|t| t.remote_seen.is_some())
-                        // Push evidence must reference real outbox ops.
-                        && !state.outbox.is_empty()
-                },
-            ),
-            pushes in proptest::collection::vec(
-                (
-                    test_support::op_id_strategy(),
-                    proptest::option::of(
-                        test_support::remote_task_strategy().prop_map(crate::remote::RemoteEcho::Task),
-                    ),
-                )
-                    .prop_map(|(op, echo)| crate::remote::PushOutcome {
-                        op,
-                        result: crate::remote::PushResult::Applied { echo },
-                    }),
-                0..6,
-            )
-            .prop_filter("the push phase needs board evidence", |pushes| !pushes.is_empty())
-        ) {
-            let Some(mut snapshot) = mirror_snapshot(&state) else {
-                prop_assume!(false, "bound board available");
-                return Ok(());
-            };
-            // A real cycle's push outcomes reference the outbox ops the
-            // cycle planned, and its create-echoes bind cards the next
-            // pull actually contains. The mirror cannot know a fresh
-            // echo, so echoes are kept only where they restate a ref the
-            // state already binds (an update echo); junk op references
-            // carry no board attribution. Both pipelines receive the
-            // same evidence either way — the equivalence under test.
-            let outbox_ids: Vec<crate::outbox::OpId> =
-                state.outbox.iter().map(|entry| entry.op_id).collect();
-            let bound_refs: std::collections::BTreeSet<_> = state
-                .tasks
-                .values()
-                .filter_map(|t| Some((t.remote?.board, t.remote?.card)))
-                .collect();
-            let pushes: Vec<crate::remote::PushOutcome> = pushes
-                .into_iter()
-                .enumerate()
-                .map(|(i, outcome)| crate::remote::PushOutcome {
-                    op: outbox_ids[i % outbox_ids.len()],
-                    result: match outcome.result {
-                        crate::remote::PushResult::Applied { echo } => {
-                            let mirror_bound = echo.as_ref().is_some_and(|echo| {
-                                let task_ref = match echo {
-                                    crate::remote::RemoteEcho::Task(t) => t.id,
-                                    _ => return false,
-                                };
-                                bound_refs.contains(&(task_ref.board, task_ref.card))
-                            });
-                            crate::remote::PushResult::Applied {
-                                echo: if mirror_bound { echo } else { None },
-                            }
-                        }
-                        other => other,
+            #[test]
+            fn apply_push_report_equals_the_pipeline_push_phase(
+                state in test_support::persisted_state_strategy().prop_filter(
+                    "bound board and seen baselines",
+                    |state| {
+                        // Equivalence holds when the snapshot mirrors the bound
+                        // state exactly (so the merge/reconciliation phases are
+                        // no-ops) and no board cascade can fire.
+                        let bound_board = state
+                            .boards
+                            .values()
+                            .find(|b| b.remote.is_some());
+                        let Some(board) = bound_board else { return false };
+                        board.remote_seen.is_some()
+                            && !board.deleted
+                            && state.stacks.values().filter(|s| s.remote.is_some())
+                                .all(|s| s.remote_seen.is_some())
+                            && state.labels.values().filter(|l| l.remote.is_some())
+                                .all(|l| l.remote_seen.is_some())
+                            && state.tasks.values().filter(|t| t.remote.is_some())
+                                .all(|t| t.remote_seen.is_some())
+                            // Push evidence must reference real outbox ops.
+                            && !state.outbox.is_empty()
                     },
-                })
-                .collect();
-            // The mirror is the *post-push* server truth: a Deck listing
-            // never returns tombstoned resources, and a delete pushed in
-            // this very cycle is already server-side gone. Drop tombstones
-            // and the refs this cycle's applied deletes finalized.
-            let op_by_id: std::collections::HashMap<_, _> = state
-                .outbox
-                .iter()
-                .map(|entry| (entry.op_id, &entry.op))
-                .collect();
-            let pushed_stack_deletes: std::collections::BTreeSet<_> = pushes
-                .iter()
-                .filter_map(|outcome| match outcome.result {
-                    crate::remote::PushResult::Applied { .. } => op_by_id.get(&outcome.op),
-                    _ => None,
-                })
-                .filter_map(|op| match op {
-                    LocalOp::DeleteStack(id) => state.stacks.get(id).and_then(|s| s.remote),
-                    _ => None,
-                })
-                .collect();
-            let pushed_label_deletes: std::collections::BTreeSet<_> = pushes
-                .iter()
-                .filter_map(|outcome| match outcome.result {
-                    crate::remote::PushResult::Applied { .. } => op_by_id.get(&outcome.op),
-                    _ => None,
-                })
-                .filter_map(|op| match op {
-                    LocalOp::DeleteLabel(id) => state.labels.get(id).and_then(|l| l.remote),
-                    _ => None,
-                })
-                .collect();
-            let pushed_task_deletes: std::collections::BTreeSet<_> = pushes
-                .iter()
-                .filter_map(|outcome| match outcome.result {
-                    crate::remote::PushResult::Applied { .. } => op_by_id.get(&outcome.op),
-                    _ => None,
-                })
-                .filter_map(|op| match op {
-                    LocalOp::DeleteTask(id) => {
-                        state.tasks.get(id).and_then(|t| t.remote.map(|r| (r.board, r.card)))
-                    }
-                    _ => None,
-                })
-                .collect();
-            snapshot.stacks.retain(|s| {
-                s.deleted_at.is_none() && !pushed_stack_deletes.contains(&s.id)
-            });
-            snapshot.labels.retain(|l| {
-                l.deleted_at.is_none() && !pushed_label_deletes.contains(&l.id)
-            });
-            snapshot.tasks.retain(|t| {
-                !pushed_task_deletes.contains(&(t.id.board, t.id.card))
-            });
+                ),
+                pushes in proptest::collection::vec(
+                    (
+                        test_support::op_id_strategy(),
+                        proptest::option::of(
+                            test_support::remote_task_strategy().prop_map(crate::remote::RemoteEcho::Task),
+                        ),
+                    )
+                        .prop_map(|(op, echo)| crate::remote::PushOutcome {
+                            op,
+                            result: crate::remote::PushResult::Applied { echo },
+                        }),
+                    0..6,
+                )
+                .prop_filter("the push phase needs board evidence", |pushes| !pushes.is_empty())
+            ) {
+                let Some(mut snapshot) = mirror_snapshot(&state) else {
+                    prop_assume!(false, "bound board available");
+                    return Ok(());
+                };
+                // A real cycle's push outcomes reference the outbox ops the
+                // cycle planned, and its create-echoes bind cards the next
+                // pull actually contains. The mirror cannot know a fresh
+                // echo, so echoes are kept only where they restate a ref the
+                // state already binds (an update echo); junk op references
+                // carry no board attribution. Both pipelines receive the
+                // same evidence either way — the equivalence under test.
+                let outbox_ids: Vec<crate::outbox::OpId> =
+                    state.outbox.iter().map(|entry| entry.op_id).collect();
+                let bound_refs: std::collections::BTreeSet<_> = state
+                    .tasks
+                    .values()
+                    .filter_map(|t| Some((t.remote?.board, t.remote?.card)))
+                    .collect();
+                let pushes: Vec<crate::remote::PushOutcome> = pushes
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, outcome)| crate::remote::PushOutcome {
+                        op: outbox_ids[i % outbox_ids.len()],
+                        result: match outcome.result {
+                            crate::remote::PushResult::Applied { echo } => {
+                                let mirror_bound = echo.as_ref().is_some_and(|echo| {
+                                    let task_ref = match echo {
+                                        crate::remote::RemoteEcho::Task(t) => t.id,
+                                        _ => return false,
+                                    };
+                                    bound_refs.contains(&(task_ref.board, task_ref.card))
+                                });
+                                crate::remote::PushResult::Applied {
+                                    echo: if mirror_bound { echo } else { None },
+                                }
+                            }
+                            other => other,
+                        },
+                    })
+                    .collect();
+                // The mirror is the *post-push* server truth: a Deck listing
+                // never returns tombstoned resources, and a delete pushed in
+                // this very cycle is already server-side gone. Drop tombstones
+                // and the refs this cycle's applied deletes finalized.
+                let op_by_id: std::collections::HashMap<_, _> = state
+                    .outbox
+                    .iter()
+                    .map(|entry| (entry.op_id, &entry.op))
+                    .collect();
+                let pushed_stack_deletes: std::collections::BTreeSet<_> = pushes
+                    .iter()
+                    .filter_map(|outcome| match outcome.result {
+                        crate::remote::PushResult::Applied { .. } => op_by_id.get(&outcome.op),
+                        _ => None,
+                    })
+                    .filter_map(|op| match op {
+                        LocalOp::DeleteStack(id) => state.stacks.get(id).and_then(|s| s.remote),
+                        _ => None,
+                    })
+                    .collect();
+                let pushed_label_deletes: std::collections::BTreeSet<_> = pushes
+                    .iter()
+                    .filter_map(|outcome| match outcome.result {
+                        crate::remote::PushResult::Applied { .. } => op_by_id.get(&outcome.op),
+                        _ => None,
+                    })
+                    .filter_map(|op| match op {
+                        LocalOp::DeleteLabel(id) => state.labels.get(id).and_then(|l| l.remote),
+                        _ => None,
+                    })
+                    .collect();
+                let pushed_task_deletes: std::collections::BTreeSet<_> = pushes
+                    .iter()
+                    .filter_map(|outcome| match outcome.result {
+                        crate::remote::PushResult::Applied { .. } => op_by_id.get(&outcome.op),
+                        _ => None,
+                    })
+                    .filter_map(|op| match op {
+                        LocalOp::DeleteTask(id) => {
+                            state.tasks.get(id).and_then(|t| t.remote.map(|r| (r.board, r.card)))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                snapshot.stacks.retain(|s| {
+                    s.deleted_at.is_none() && !pushed_stack_deletes.contains(&s.id)
+                });
+                snapshot.labels.retain(|l| {
+                    l.deleted_at.is_none() && !pushed_label_deletes.contains(&l.id)
+                });
+                snapshot.tasks.retain(|t| {
+                    !pushed_task_deletes.contains(&(t.id.board, t.id.card))
+                });
 
-            let app: AppState = state.clone().into();
-            let now = ts(2_000_000_000);
-            let (pushed_state, pushed_actions) = apply_push_report(
-                &app, &state.outbox, &pushes, chrono::DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now);
-            let (full_state, full_actions) = apply_sync_report(
-                &app, &state.outbox, &snapshot, &pushes, DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
-            &crate::test_support::test_connector());
-            prop_assert_eq!(pushed_state, full_state);
-            prop_assert_eq!(pushed_actions, full_actions);
+                let app: AppState = state.clone().into();
+                let now = ts(2_000_000_000);
+                let (pushed_state, pushed_actions) = apply_push_report(
+                    &app, &state.outbox, &pushes, chrono::DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
+                    crate::capabilities::DeckFeatures::CONSERVATIVE);
+                let (full_state, full_actions) = apply_sync_report(
+                    &app, &state.outbox, &snapshot, &pushes, DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
+                &crate::test_support::test_connector(),
+                    &crate::messages::AppDataEvidence::Absent,
+    crate::capabilities::DeckFeatures::CONSERVATIVE);
+                prop_assert_eq!(pushed_state, full_state);
+                prop_assert_eq!(pushed_actions, full_actions);
+            }
         }
-    }
 
     /// Builds a snapshot that mirrors every bound entity of `state`
     /// (P2 helper): same fields, `last_modified` equal to each entity's
@@ -2827,6 +3302,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 180),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = app.0.tasks.get(&task_id).expect("same local task");
@@ -2909,6 +3386,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let task_id = task_by_card(&state, 1).id;
@@ -2958,6 +3437,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.stacks[stack_id];
@@ -2998,6 +3479,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.labels[&label_id];
@@ -3050,6 +3533,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(app.0.stacks[&stack_id].deleted);
@@ -3097,6 +3582,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(app.0.stacks[&stack_id].deleted);
@@ -3152,6 +3639,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(app.0.tasks[&task_id].deleted);
@@ -3200,6 +3689,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(app.0.tasks[&task_id].deleted);
@@ -3248,6 +3739,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.stacks[&stack_id];
@@ -3272,6 +3765,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.labels[&label_id];
@@ -3312,6 +3807,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(app.0.boards.values().all(|b| b.deleted));
@@ -3353,6 +3850,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let task_id = task_by_card(&state, 1).id;
@@ -3387,6 +3886,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 420),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let state_after = app_into_state(&app);
@@ -3418,6 +3919,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
             first
@@ -3445,6 +3948,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 180),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         let adopted = second
             .tasks
@@ -3481,6 +3986,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let draft = app
@@ -3515,6 +4022,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let adopted = app
@@ -3546,6 +4055,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let adopted = app
@@ -3576,6 +4087,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(
@@ -3603,6 +4116,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(app.0.labels[&label_id].title, "label 7 renamed");
@@ -3628,6 +4143,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         // Deliberately not `assert!(app.1.is_empty())`: CI's newer stable
@@ -3766,6 +4283,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 60),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         // No ghost entity was fabricated into state; every ghost op is
@@ -3785,26 +4304,30 @@ mod tests {
     }
 
     proptest! {
-    #[test]
-    fn equal_replicas_converge(
-        remote_last_modified in 0_i64..10_000,
-        local_title_edit in 0_i64..10_000,
-        card in 1_u64..100,
-    ) {
-        let mut local = bound_task(card);
-        local.title = format!("local {local_title_edit}");
-        local.clocks.title = ts(local_title_edit);
-        let state = base_state(local);
-        let remote = remote_task(1, card, remote_last_modified);
-        let snap = single_stack_snapshot(vec![remote], remote_last_modified.max(BASE));
+        #[test]
+        fn equal_replicas_converge(
+            remote_last_modified in 0_i64..10_000,
+            local_title_edit in 0_i64..10_000,
+            card in 1_u64..100,
+        ) {
+            let mut local = bound_task(card);
+            local.title = format!("local {local_title_edit}");
+            local.clocks.title = ts(local_title_edit);
+            let state = base_state(local);
+            let remote = remote_task(1, card, remote_last_modified);
+            let snap = single_stack_snapshot(vec![remote], remote_last_modified.max(BASE));
 
-        let a = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
-            &crate::test_support::test_connector());
-        let b = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
-            &crate::test_support::test_connector());
-        prop_assert_eq!(a.0.tasks, b.0.tasks);
-    }
-    }
+            let a = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
+                &crate::test_support::test_connector(),
+                &crate::messages::AppDataEvidence::Absent,
+    crate::capabilities::DeckFeatures::CONSERVATIVE);
+            let b = apply_sync_report(&state, &[], &snap, &[], DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), ts(20_000),
+                &crate::test_support::test_connector(),
+                &crate::messages::AppDataEvidence::Absent,
+    crate::capabilities::DeckFeatures::CONSERVATIVE);
+            prop_assert_eq!(a.0.tasks, b.0.tasks);
+        }
+        }
 
     // ---- self-clobber guard: ops queued after `read_at` -------------
 
@@ -3835,6 +4358,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let state_after = app_into_state(&app);
@@ -3877,6 +4402,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let state_after = app_into_state(&app);
@@ -3918,6 +4445,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let state_after = app_into_state(&app);
@@ -3951,6 +4480,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let state_after = app_into_state(&app);
@@ -3988,6 +4519,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let state_after = app_into_state(&app);
@@ -4027,6 +4560,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = app.0.stacks[&local.id].clone();
@@ -4064,6 +4599,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = app.0.stacks[&local.id].clone();
@@ -4101,6 +4638,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = app.0.boards[&local.id].clone();
@@ -4138,6 +4677,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.labels[&label_id];
@@ -4175,6 +4716,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged_board = &app.0.boards[&board_id];
@@ -4226,6 +4768,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 360),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.boards[&board_id];
@@ -4279,6 +4822,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 360),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.boards[&board_id];
@@ -4314,6 +4858,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 360),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(app.0.boards[&board_id].deleted);
@@ -4351,6 +4896,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert!(
@@ -4399,6 +4946,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let final_state = app_into_state(&app);
@@ -4459,6 +5008,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 120),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.tasks[&task_id];
@@ -4509,6 +5060,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let final_state = app_into_state(&app);
@@ -4545,6 +5098,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let final_state = app_into_state(&app);
@@ -4579,6 +5134,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.stacks[&local.id];
@@ -4610,6 +5167,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let merged = &app.0.labels[&local.id];
@@ -4640,6 +5199,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         let final_state = app_into_state(&app);
@@ -4675,6 +5236,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(
@@ -4706,6 +5269,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(
@@ -4735,6 +5300,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(
@@ -4774,6 +5341,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(
@@ -4811,6 +5380,8 @@ mod tests {
             &CountingIds::default(),
             ts(BASE + 360),
             &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
         assert_eq!(

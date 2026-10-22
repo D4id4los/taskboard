@@ -642,6 +642,7 @@ async fn delete_sync_status_roundtrip() {
         last_success: Some(ts(400)),
         pending_ops: 0, // derived, never stored
         counters: taskboard_domain::SyncCounters::default(),
+        ..taskboard_domain::SyncStatus::default()
     };
     repo.apply(vec![
         PersistenceAction::UpsertBoard(first.clone()),

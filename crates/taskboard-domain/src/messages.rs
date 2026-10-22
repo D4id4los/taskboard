@@ -384,7 +384,7 @@ pub enum AppDataEvidence {
 }
 
 /// Why sidecar evidence could not be read (D-S7's fence rows).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AppDataUnreadable {
     /// The document's `format` is newer than this build's
     /// [`crate::appdata::APPDATA_FORMAT`] — folds and flushes nothing
@@ -445,6 +445,12 @@ pub enum SyncReport {
         /// minimum, never silence-by-erasure. `Failed` carries no
         /// evidence — a failed cycle folds nothing.
         app_data: AppDataEvidence,
+        /// The connector's probed capability flags: they ride every
+        /// report (both variants — a failure streak after an actor
+        /// respawn must still refresh the engine's recorded flags), and
+        /// the engine records them on the report's board row. In-process
+        /// mpsc only; the actor probes at construction.
+        features: crate::capabilities::DeckFeatures,
     },
     /// The cycle failed before producing a snapshot.
     Failed {
@@ -467,6 +473,9 @@ pub enum SyncReport {
         /// Wall duration of the cycle up to this report (see
         /// `Completed::duration`).
         duration: std::time::Duration,
+        /// The connector's probed capability flags (see
+        /// `Completed::features` — the same ride-both-variants rule).
+        features: crate::capabilities::DeckFeatures,
     },
 }
 
