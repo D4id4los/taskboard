@@ -243,6 +243,20 @@ id-addressed — DF-1's "task-scoped commands stay id-addressed").
 
 ### 3.2 D-F2 — THE native-`startdate` ruling (open for the session)
 
+> **Amended 2026-10-22 (ruled):** branch A stands as the
+> *capability-true* lane. Deck 1.17.5 — the live production tier — has
+> no `startdate` support at all (create ignores it, PUT silently
+> drops it, reads lack the key; measured,
+> `.artifacts/reports/2026-10-22-deck-1175-transport-characterization-report.md`).
+> Per the version-capabilities addendum
+> (`.artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md`
+> §2, D-V2): native when the connector's `CARD_STARTDATE` flag is
+> true, the sidecar document lane otherwise (`scheduled` becomes a
+> fourth modeled document key in fallback mode — the "never a
+> scheduled key" statements here and in doc 1 §7 are superseded for
+> that mode); the native merge verdict is skipped while the flag is
+> false (the always-absent remote must never clobber local state).
+
 **Anchors.** Roundtrip §4's consequence ("Deck cards carry a native
 `startdate` … a free, LWW-merging slot the field-family plan should
 evaluate for scheduled-start *before* defaulting it into the sidecar")
