@@ -26,12 +26,13 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use taskboard_domain::{
-    BoardPullValidators, Clock, DeckFeatures, EntityTables, PushOutcome, RemoteBoard,
-    RemoteBoardId, RemoteBoardSnapshot, RemoteLabel, RemoteStack, RemoteStackId, RemoteTask,
-    SyncCommand, SyncErrorKind, SyncReport, SyncStateReader, SyncValidators, SystemEvent,
-    ValidatorKey, flags_for, plan_pushes,
+    AppDataEvidence, AppDataUnreadable, BoardPullValidators, Clock, DeckFeatures, EntityTables,
+    PushOutcome, RemoteBoard, RemoteBoardId, RemoteBoardSnapshot, RemoteCardRef, RemoteLabel,
+    RemoteStack, RemoteStackId, RemoteTask, SyncCommand, SyncErrorKind, SyncReport,
+    SyncStateReader, SyncValidators, SystemEvent, ValidatorKey, flags_for, plan_pushes,
 };
 
+use crate::anchor::{self, AnchorAction};
 use crate::client::{DeckClient, Fetch, Validators};
 use crate::error::DeckError;
 use crate::mapping;
@@ -176,6 +177,23 @@ struct LoopState {
     /// on any probe failure. In-memory like everything else here; an
     /// actor respawn (reconnect / re-attach) re-probes.
     features: DeckFeatures,
+    /// Per-board sidecar document cache: the attachment metadata pair of
+    /// the last successful ingest plus the parsed document (in-memory
+    /// only — D-S4 item 3; no new `ValidatorKey` kind: attachment
+    /// content has no HTTP validators, so the persisted validator table
+    /// is the wrong home). Retention mirrors the pull cache.
+    documents: std::collections::BTreeMap<RemoteBoardId, CachedAppData>,
+}
+
+/// One board's last successful document ingest (D11). Only a
+/// `Document`-class evidence inserts or refreshes an entry; every
+/// failure form leaves the cache untouched — the next cycle re-GETs,
+/// the honest retry.
+#[derive(Debug, Clone)]
+struct CachedAppData {
+    last_modified: i64,
+    filesize: i64,
+    document: taskboard_domain::AppDataDocument,
 }
 
 #[allow(
@@ -201,6 +219,7 @@ async fn run(
         offline: false,
         retry_after_floor: Duration::ZERO,
         features: probe_features(&client).await,
+        documents: std::collections::BTreeMap::new(),
     };
     // First cycle fires immediately; an empty derived set is a silent
     // skip on poll ticks (no `NoBoard` report — decision 10).
@@ -420,6 +439,7 @@ async fn cycle(
     st.cache
         .stacks_archived
         .retain(|board, _| live.contains(board));
+    st.documents.retain(|board, _| live.contains(board));
 
     let tables = EntityTables {
         tasks: &persisted.tasks,
@@ -531,7 +551,7 @@ async fn cycle(
             cfg.clock.as_ref(),
         )
         .await;
-        let (snapshot, validators) = match pull {
+        let pulled = match pull {
             Ok(pulled) => pulled,
             Err(err) => {
                 let kind = classify_read(&err);
@@ -558,7 +578,45 @@ async fn cycle(
             }
         };
 
-        // ---- report (one per board; `SyncReport` is unchanged — DF-1) ---
+        // ---- sidecar evidence (D10): discovery + download ---------------
+        // The snapshot and pushes are unaffected evidence: no download or
+        // decode row below may fail the cycle (D-S7's invariant).
+        let snapshot = pulled.snapshot;
+        let validators = pulled.validators;
+        let app_data = match sidecar_evidence(
+            client,
+            target,
+            &snapshot,
+            pulled.detail_attachments,
+            st,
+        )
+        .await
+        {
+            Ok(evidence) => evidence,
+            Err(err) => {
+                let kind = classify_read(&err);
+                let network = matches!(kind, SyncErrorKind::Network);
+                fail_cycle(
+                    id,
+                    st,
+                    reports,
+                    system,
+                    kind,
+                    advertised_floor(&err),
+                    Some(target),
+                    started,
+                    pushes,
+                    read_at,
+                )
+                .await;
+                if network {
+                    return;
+                }
+                continue;
+            }
+        };
+
+        // ---- report (one per board) -------------------------------------
         any_completed = true;
         let sent = send_report(
             reports,
@@ -569,7 +627,7 @@ async fn cycle(
                 pushes,
                 read_at,
                 duration: started.elapsed(),
-                app_data: taskboard_domain::AppDataEvidence::Absent,
+                app_data,
             },
         )
         .await;
@@ -660,11 +718,112 @@ async fn send_report(reports: &mpsc::Sender<SyncReport>, report: SyncReport) -> 
     true
 }
 
+/// The per-board sidecar evidence (D10): scan the pulled snapshot for
+/// exact-title anchor matches, fetch the missing card details (one GET
+/// per unbound match — normally zero), apply the ceremony's action face,
+/// and download the document only when the metadata pair says the
+/// content changed (D11's cache). Success-only caching: only
+/// `Document`-class evidence touches `LoopState.documents`.
+async fn sidecar_evidence(
+    client: &DeckClient,
+    target: RemoteBoardId,
+    snapshot: &RemoteBoardSnapshot,
+    mut details: std::collections::HashMap<RemoteCardRef, Vec<crate::model::Attachment>>,
+    st: &mut LoopState,
+) -> Result<AppDataEvidence, crate::error::DeckError> {
+    // A dead board's reads answer 404/403: the ceremony is skipped
+    // entirely, evidence `Absent` (D10 item 1).
+    if snapshot.board.deleted_at.is_some() {
+        return Ok(AppDataEvidence::Absent);
+    }
+    let mut discovery = anchor::scan_snapshot(snapshot, &details);
+    for card_ref in discovery.unconfirmed.clone() {
+        if details.contains_key(&card_ref) {
+            continue;
+        }
+        match client
+            .card(target.get(), card_ref.stack.get(), card_ref.card.get())
+            .await
+        {
+            Ok(detail) => {
+                details.insert(card_ref, detail.attachments);
+            }
+            // A vanished match keeps the discovery honest without failing
+            // the cycle (the detail-refresh 404 carve-out's precedent).
+            Err(crate::error::DeckError::NotFound | crate::error::DeckError::Forbidden) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    discovery = anchor::scan_snapshot(snapshot, &details);
+    let action = anchor::anchor_action(&discovery, false);
+    let AnchorAction::Use(candidate) = action else {
+        // No work exists yet (no flush this chunk): `None`, or the
+        // tombstoned-carrier `Use` whose evidence is `Absent` with no
+        // download (the decision table's silent state).
+        return Ok(AppDataEvidence::Absent);
+    };
+    if candidate.tombstoned {
+        return Ok(AppDataEvidence::Absent);
+    }
+    if let Some(cached) = st.documents.get(&target)
+        && cached.last_modified == candidate.last_modified
+        && cached.filesize == candidate.filesize
+    {
+        // Metadata equal ⇒ skip the content GET; re-folding the cached
+        // document is idempotent (chunk 4's guarantee).
+        return Ok(AppDataEvidence::Document(Box::new(cached.document.clone())));
+    }
+    match client
+        .download_attachment(
+            target.get(),
+            candidate.card.stack.get(),
+            candidate.card.card.get(),
+            candidate.attachment_id,
+        )
+        .await
+    {
+        Ok(bytes) => {
+            let evidence = anchor::build_evidence(&bytes, target);
+            if let AppDataEvidence::Document(document) = &evidence {
+                st.documents.insert(
+                    target,
+                    CachedAppData {
+                        last_modified: candidate.last_modified,
+                        filesize: candidate.filesize,
+                        document: (**document).clone(),
+                    },
+                );
+            }
+            Ok(evidence)
+        }
+        Err(err) => {
+            // The reason travels typed, never silence (the loud fence's
+            // point); the snapshot and pushes are unaffected evidence.
+            tracing::warn!(
+                board = target.get(),
+                ?err,
+                "sidecar document download failed; folding nothing this cycle"
+            );
+            Ok(AppDataEvidence::Unreadable(AppDataUnreadable::Transport))
+        }
+    }
+}
+
 /// Assembles the complete board snapshot from three conditional reads
 /// (decisions 9 and 11). All-or-nothing: any read failing after retries
 /// fails the whole pull — never a partial snapshot.
 #[allow(clippy::too_many_lines)] // three endpoints + confirm/synthesis, one order
 #[allow(clippy::too_many_arguments)]
+/// The pull's products: the complete snapshot, the conditional-read
+/// validators, and the attachment metadata captured from every bound
+/// card's detail refresh (D10 item 1 — zero marginal GETs).
+struct Pulled {
+    snapshot: RemoteBoardSnapshot,
+    validators: BoardPullValidators,
+    detail_attachments: std::collections::HashMap<RemoteCardRef, Vec<crate::model::Attachment>>,
+}
+
+#[allow(clippy::too_many_lines)] // three endpoints + confirm/synthesis + detail capture, one order
 async fn pull_snapshot(
     client: &DeckClient,
     target: RemoteBoardId,
@@ -673,7 +832,7 @@ async fn pull_snapshot(
     local_board: Option<(String, String)>,
     local_cards: &LocalCardStamps,
     clock: &dyn Clock,
-) -> Result<(RemoteBoardSnapshot, BoardPullValidators), crate::error::DeckError> {
+) -> Result<Pulled, crate::error::DeckError> {
     let boards_v = persisted
         .get(&ValidatorKey::Boards)
         .map(|v| Validators {
@@ -842,6 +1001,10 @@ async fn pull_snapshot(
     // answers 404/403 (tier-2 verified), the tombstone snapshot is valid
     // from the empty listings alone, and per-card details would fail the
     // cycle forever — the cascade could never land.
+    let mut detail_attachments: std::collections::HashMap<
+        RemoteCardRef,
+        Vec<crate::model::Attachment>,
+    > = std::collections::HashMap::new();
     if !dead_board {
         for view in &mut tasks {
             let Some(&(local_archived, _)) = local_cards.get(&(view.id.board, view.id.card)) else {
@@ -852,6 +1015,7 @@ async fn pull_snapshot(
                 .await
             {
                 Ok(detail) => {
+                    detail_attachments.insert(view.id, detail.attachments.clone());
                     let mut refreshed = mapping::map_card(&detail, target);
                     if refreshed.archived != local_archived {
                         refreshed.last_modified = refreshed.last_modified.max(clock.now());
@@ -875,7 +1039,11 @@ async fn pull_snapshot(
         tasks,
         labels,
     };
-    Ok((snapshot, validators))
+    Ok(Pulled {
+        snapshot,
+        validators,
+        detail_attachments,
+    })
 }
 
 /// One stacks listing with cache fill and the dead-board 404 carve-out

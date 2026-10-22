@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod actor;
+pub mod anchor;
 pub mod backoff;
 pub mod client;
 pub mod color;
