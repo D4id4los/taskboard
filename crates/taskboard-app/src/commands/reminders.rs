@@ -206,6 +206,7 @@ pub async fn mute_on(
 /// # Errors
 ///
 /// Never fails today; `Result` keeps the session seam shape.
+#[must_use]
 pub fn list_on(app: &crate::App) -> RemindersList {
     let state = app.engine.shared_state().load_full();
     RemindersList {

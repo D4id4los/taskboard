@@ -127,6 +127,214 @@ struct SyncActor {
     join: JoinHandle<()>,
 }
 
+/// The cloneable connector-lifecycle capability (round-1 chunk 3,
+/// DEV-1): attach/detach/registry-query over the *shared* registry,
+/// engine, reports fan-in, and authority — everything the connector
+/// actors need, none of the process-shell ownership (storage, lock,
+/// shutdown). The UI settings request handler runs in a spawned task
+/// and cannot borrow `&App`; `Arc<App>` + `try_unwrap` would put
+/// graceful shutdown at the mercy of task-drop timing, so this split
+/// (process shell vs connector lifecycle) is the seam. Bodies moved
+/// verbatim from `App` (every REPL/CLI/daemon call site untouched —
+/// the `App` methods are one-line delegates now).
+#[derive(Clone)]
+pub struct ConnectorControl {
+    connectors: Arc<std::sync::Mutex<Vec<SyncActor>>>,
+    engine: EngineHandle,
+    reports: mpsc::Sender<SyncReport>,
+    system: broadcast::Sender<SystemEvent>,
+    actor_config: taskboard_sync_nextcloud::SyncActorConfig,
+    shutdown_timeout_secs: u64,
+    authority: crate::authority::AuthorityHandle,
+}
+
+impl ConnectorControl {
+    /// Assembles the handle over the booted graph's shared halves
+    /// (bootstrap's construction site; `App::connector_control` hands
+    /// out clones).
+    fn new(
+        connectors: Arc<std::sync::Mutex<Vec<SyncActor>>>,
+        engine: EngineHandle,
+        reports: mpsc::Sender<SyncReport>,
+        system: broadcast::Sender<SystemEvent>,
+        actor_config: taskboard_sync_nextcloud::SyncActorConfig,
+        shutdown_timeout_secs: u64,
+        authority: crate::authority::AuthorityHandle,
+    ) -> Self {
+        Self {
+            connectors,
+            engine,
+            reports,
+            system,
+            actor_config,
+            shutdown_timeout_secs,
+            authority,
+        }
+    }
+
+    /// Whether any connector is registered — moved verbatim from
+    /// `App::connector_attached`.
+    ///
+    /// # Panics
+    ///
+    /// Only if the connector-lifecycle mutex is poisoned by a panic while
+    /// held (unreachable: the critical sections never panic).
+    #[must_use]
+    pub fn connector_attached(&self) -> bool {
+        !self.connectors.lock().expect("connector lock").is_empty()
+    }
+
+    /// The named lookup for any targeted send (design §3.3 option (b)'s
+    /// accessor): the connector's inbox sender when the name is
+    /// registered, else `None`. The routing table is the registry; the
+    /// engine fan-out stays broadcast-only.
+    ///
+    /// # Panics
+    ///
+    /// Only if the connector-lifecycle mutex is poisoned by a panic
+    /// while held (unreachable: the critical sections never panic).
+    #[must_use]
+    pub fn connector_commands(
+        &self,
+        id: &taskboard_domain::ConnectorId,
+    ) -> Option<mpsc::Sender<SyncCommand>> {
+        self.connectors
+            .lock()
+            .expect("connector lock")
+            .iter()
+            .find(|actor| &actor.id == id)
+            .map(|actor| actor.commands.clone())
+    }
+
+    /// Named detach (D5-7): stops only the named connector — the
+    /// session/settings swap uses it so a second live connector
+    /// survives the rewrite of the default entry. Unknown name ⇒
+    /// [`DetachOutcome::NoConnector`] (idempotent). Moved verbatim from
+    /// `App::detach_connector_named`.
+    ///
+    /// # Panics
+    ///
+    /// Only if the connector-lifecycle mutex is poisoned by a panic
+    /// while held (unreachable: the critical sections never panic).
+    pub async fn detach_connector_named(
+        &self,
+        id: &taskboard_domain::ConnectorId,
+    ) -> DetachOutcome {
+        // One lock scope for the lookup and the removal: the position is
+        // never stale (a concurrent attach/detach cannot slip between).
+        let actor = {
+            let mut registry = self.connectors.lock().expect("connector lock");
+            registry
+                .iter()
+                .position(|actor| &actor.id == id)
+                .map(|position| registry.remove(position))
+        };
+        let Some(actor) = actor else {
+            tracing::info!(connector = %id, "detach: no connector under that name");
+            return DetachOutcome::NoConnector;
+        };
+        let timeout = Duration::from_secs(self.shutdown_timeout_secs);
+        let aborted = stop_actor(actor, timeout).await;
+        // Registry hook: the membership shrinks.
+        self.authority.detach(id);
+        if aborted {
+            DetachOutcome::TimedOut
+        } else {
+            tracing::info!(connector = %id, "detach: connector dropped");
+            DetachOutcome::Detached
+        }
+    }
+
+    /// Attaches a fresh sync connector under `name` (the registry key;
+    /// the mirror of [`ConnectorControl::detach_connector_named`]):
+    /// guards the name, rewires the engine's nudge registry (push + FIFO
+    /// ack), spawns the actor over a fresh command pair and a clone of
+    /// the permanently parked reports sender, and registers it. The
+    /// actor derives its board set from the persisted bindings tagged
+    /// `name` and fires its first cycle immediately; awaiting settling
+    /// (bounded, offline-first) is the caller's job, not the primitive's.
+    /// Moved verbatim from `App::attach_connector`.
+    ///
+    /// # Errors
+    ///
+    /// [`AttachError::ConnectorNameInUse`] when `name` is already
+    /// registered (detach first — re-attach after detach is permitted);
+    /// [`AttachError::Engine`] when the engine could not take the push;
+    /// [`AttachError::Draining`] when it declined one (a raced shutdown).
+    ///
+    /// # Panics
+    ///
+    /// Only if the connector-lifecycle mutex is poisoned by a panic
+    /// while held (unreachable: the critical sections never panic).
+    pub async fn attach_connector(
+        &self,
+        name: taskboard_domain::ConnectorId,
+        client: DeckClient,
+    ) -> Result<(), AttachError> {
+        // 1. Guard: the name is free (lock released at the statement's
+        //    end — never across the awaits below).
+        if let Err(err) = ensure_name_free(&self.connectors, &name) {
+            tracing::info!(connector = %name, "attach: refused, the name is in use");
+            return Err(err);
+        }
+
+        // 2. Fresh command pair for the new actor (the boot pair belongs
+        //    to the boot actor; a detached one is dead).
+        let (commands, commands_rx) = mpsc::channel(SYNC_COMMAND_CAPACITY);
+
+        // 3. Engine rewire: push + ack (FIFO — nudges fan out to this
+        //    sender from the ack onward).
+        let receipt = match self.engine.attach_connector(commands.clone()).await {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                tracing::warn!("attach: the state engine is unavailable");
+                return Err(AttachError::Engine(err));
+            }
+        };
+        match receipt {
+            AttachReceipt::Attached => {}
+            AttachReceipt::Draining => {
+                tracing::info!("attach: declined, the engine is draining");
+                return Err(AttachError::Draining);
+            }
+        }
+
+        // 4. Spawn over the fan-in clone, tagged with the registered
+        //    name (D-7: the attach path holds a ceremony-built client;
+        //    the module factory is the boot path's constructor).
+        let join = spawn_sync_actor(
+            name.clone(),
+            client,
+            Arc::new(self.engine.clone()) as Arc<dyn SyncStateReader>,
+            commands_rx,
+            self.reports.clone(),
+            self.system.clone(),
+            self.actor_config.clone(),
+        );
+
+        // 5. Register — the vacancy may have been lost to a concurrent
+        //    attach while the engine ack was in flight; the refused
+        //    actor is unwound outside the lock (the engine's now-dead
+        //    entry self-prunes on the next fan-out).
+        let timeout = Duration::from_secs(self.shutdown_timeout_secs);
+        let actor = SyncActor {
+            id: name.clone(),
+            commands,
+            join,
+        };
+        if let Some(unwound) = try_register(&self.connectors, actor) {
+            tracing::info!(connector = %name, "attach: the name was taken while the engine ack was in flight; unwinding");
+            stop_actor(unwound, timeout).await;
+            return Err(AttachError::ConnectorNameInUse(name));
+        }
+        // Registry hook: membership grows; a set that was
+        // all-down-nonempty closes loudly.
+        self.authority.attach(&name);
+        tracing::info!(connector = %name, "attach: connector attached");
+        Ok(())
+    }
+}
+
 /// A running taskboard core. Not `Clone` — the shutdown sequence
 /// consumes it exactly once.
 pub struct App {
@@ -138,11 +346,17 @@ pub struct App {
     pub system: broadcast::Sender<SystemEvent>,
     /// The attached sync connectors (WI-J widened WI-H's
     /// `Option<SyncActor>` slot). The v1 invariant is length ≤ 1,
-    /// enforced by [`App::attach_connector`]'s guard and by bootstrap
-    /// (zero or one at boot). Lifecycle bookkeeping only — the mutex is
-    /// never held across `.await`, and actor messaging stays the typed
-    /// `mpsc` `SyncCommand` channel (AGENTS §3).
-    connectors: std::sync::Mutex<Vec<SyncActor>>,
+    /// enforced by [`ConnectorControl::attach_connector`]'s guard and by
+    /// bootstrap (zero or one at boot). Lifecycle bookkeeping only — the
+    /// mutex is never held across `.await`, and actor messaging stays
+    /// the typed `mpsc` `SyncCommand` channel (AGENTS §3). Shared with
+    /// the [`ConnectorControl`] handle (round-1 DEV-1) so the request
+    /// forwarder's spawned task can drive the connector lifecycle
+    /// without an `App` reference.
+    connectors: Arc<std::sync::Mutex<Vec<SyncActor>>>,
+    /// The cloneable connector-lifecycle capability (round-1 DEV-1):
+    /// the seam the UI settings forwarder holds.
+    control: ConnectorControl,
     /// The twin of the engine's permanent reports receiver (design
     /// §4.2.3): every attached actor spawns with a `clone()`, N actors
     /// sharing one fan-in inbox, so the engine's select loop needs no
@@ -173,10 +387,19 @@ impl std::fmt::Debug for App {
 }
 
 impl App {
+    /// The cloneable connector-lifecycle handle (round-1 DEV-1): the
+    /// seam the spawned request forwarder holds — cheap to clone, no
+    /// `App` reference, no shutdown ownership.
+    #[must_use]
+    pub fn connector_control(&self) -> ConnectorControl {
+        self.control.clone()
+    }
+
     /// Whether the sync connector is still attached (WI-H): `false`
     /// under `standalone` or after [`App::detach_connector`]. The
     /// daemon-side `status` answer reports it so a detached daemon does
-    /// not masquerade as a syncing one.
+    /// not masquerade as a syncing one. A one-line delegate onto the
+    /// [`ConnectorControl`] body (round-1 DEV-1: moved verbatim).
     ///
     /// # Panics
     ///
@@ -184,7 +407,7 @@ impl App {
     /// held (unreachable: the critical sections never panic).
     #[must_use]
     pub fn connector_attached(&self) -> bool {
-        !self.connectors.lock().expect("connector lock").is_empty()
+        self.control.connector_attached()
     }
 
     /// Connector-only detach (WI-H option b): takes the sync actor out,
@@ -256,7 +479,9 @@ impl App {
     /// [`App::detach_connector`]): stops only the named connector — the
     /// session swap uses it so a second live connector survives the
     /// rewrite of the default entry. Unknown name ⇒
-    /// [`DetachOutcome::NoConnector`] (idempotent).
+    /// [`DetachOutcome::NoConnector`] (idempotent). A one-line delegate
+    /// onto the [`ConnectorControl`] body (round-1 DEV-1: moved
+    /// verbatim).
     ///
     /// # Panics
     ///
@@ -266,39 +491,13 @@ impl App {
         &self,
         id: &taskboard_domain::ConnectorId,
     ) -> DetachOutcome {
-        // One lock scope for the lookup and the removal: the position is
-        // never stale (a concurrent attach/detach cannot slip between).
-        let actor = {
-            let mut registry = self.connectors.lock().expect("connector lock");
-            registry
-                .iter()
-                .position(|actor| &actor.id == id)
-                .map(|position| registry.remove(position))
-        };
-        let Some(actor) = actor else {
-            tracing::info!(connector = %id, "detach: no connector under that name");
-            return DetachOutcome::NoConnector;
-        };
-        let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
-        let aborted = stop_actor(actor, timeout).await;
-        // Registry hook: the membership shrinks.
-        self.authority.detach(id);
-        if aborted {
-            DetachOutcome::TimedOut
-        } else {
-            tracing::info!(connector = %id, "detach: connector dropped");
-            DetachOutcome::Detached
-        }
+        self.control.detach_connector_named(id).await
     }
 
     /// Attaches a fresh sync connector under `name` (the registry key;
-    /// the mirror of [`App::detach_connector_named`]): guards the name,
-    /// rewires the engine's nudge registry (push + FIFO ack), spawns the
-    /// actor over a fresh command pair and a clone of the permanently
-    /// parked reports sender, and registers it. The actor derives its
-    /// board set from the persisted bindings tagged `name` and fires its
-    /// first cycle immediately; awaiting settling (bounded,
-    /// offline-first) is the caller's job, not the primitive's.
+    /// the mirror of [`App::detach_connector_named`]). A one-line
+    /// delegate onto the [`ConnectorControl`] body (round-1 DEV-1:
+    /// moved verbatim).
     ///
     /// # Errors
     ///
@@ -316,67 +515,7 @@ impl App {
         name: taskboard_domain::ConnectorId,
         client: DeckClient,
     ) -> Result<(), AttachError> {
-        // 1. Guard: the name is free (lock released at the statement's
-        //    end — never across the awaits below).
-        if let Err(err) = ensure_name_free(&self.connectors, &name) {
-            tracing::info!(connector = %name, "attach: refused, the name is in use");
-            return Err(err);
-        }
-
-        // 2. Fresh command pair for the new actor (the boot pair belongs
-        //    to the boot actor; a detached one is dead).
-        let (commands, commands_rx) = mpsc::channel(SYNC_COMMAND_CAPACITY);
-
-        // 3. Engine rewire: push + ack (FIFO — nudges fan out to this
-        //    sender from the ack onward).
-        let receipt = match self.engine.attach_connector(commands.clone()).await {
-            Ok(receipt) => receipt,
-            Err(err) => {
-                tracing::warn!("attach: the state engine is unavailable");
-                return Err(AttachError::Engine(err));
-            }
-        };
-        match receipt {
-            AttachReceipt::Attached => {}
-            AttachReceipt::Draining => {
-                tracing::info!("attach: declined, the engine is draining");
-                return Err(AttachError::Draining);
-            }
-        }
-
-        // 4. Spawn over the fan-in clone, tagged with the registered
-        //    name (D-7: the attach path holds a ceremony-built client;
-        //    the module factory is the boot path's constructor).
-        let join = spawn_sync_actor(
-            name.clone(),
-            client,
-            Arc::new(self.engine.clone()) as Arc<dyn SyncStateReader>,
-            commands_rx,
-            self.reports.clone(),
-            self.system.clone(),
-            self.config.sync_actor_config(),
-        );
-
-        // 5. Register — the vacancy may have been lost to a concurrent
-        //    attach while the engine ack was in flight; the refused
-        //    actor is unwound outside the lock (the engine's now-dead
-        //    entry self-prunes on the next fan-out).
-        let timeout = Duration::from_secs(self.config.app.shutdown_timeout_secs);
-        let actor = SyncActor {
-            id: name.clone(),
-            commands,
-            join,
-        };
-        if let Some(unwound) = try_register(&self.connectors, actor) {
-            tracing::info!(connector = %name, "attach: the name was taken while the engine ack was in flight; unwinding");
-            stop_actor(unwound, timeout).await;
-            return Err(AttachError::ConnectorNameInUse(name));
-        }
-        // Registry hook: membership grows; a set that was
-        // all-down-nonempty closes loudly.
-        self.authority.attach(&name);
-        tracing::info!(connector = %name, "attach: connector attached");
-        Ok(())
+        self.control.attach_connector(name, client).await
     }
 
     /// The graceful shutdown sequence (ADR 0008 §5): engine flush →
@@ -402,6 +541,7 @@ impl App {
             engine,
             system,
             connectors,
+            control,
             reports,
             storage,
             storage_join,
@@ -434,6 +574,12 @@ impl App {
         // the bounded join only bounds a wedged task. Ordering: actors
         // → authority → reports drop → engine (D5-13).
         join_bounded(authority_join, timeout, "authority").await;
+
+        // The control handle holds clones of the reports sender and the
+        // engine handle; it dies here so the ordering contract below
+        // holds (any stray control clone outliving shutdown degrades to
+        // the engine join's bounded abort, never a hang forever).
+        drop(control);
 
         // THE ordering contract: App is the last holder of the reports
         // inbox's parked sender — every actor's clone died with its join
@@ -811,11 +957,23 @@ async fn bootstrap_with_modules(
     }
     tracing::info!("actor graph spawned: storage, state engine, notifier");
 
+    let connectors = Arc::new(std::sync::Mutex::new(connectors));
+    let control = ConnectorControl::new(
+        Arc::clone(&connectors),
+        engine.clone(),
+        reports.clone(),
+        system.clone(),
+        config.sync_actor_config(),
+        config.app.shutdown_timeout_secs,
+        authority.clone(),
+    );
+
     Ok(App {
         config,
         engine,
         system,
-        connectors: std::sync::Mutex::new(connectors),
+        connectors,
+        control,
         reports,
         storage,
         storage_join,
@@ -1200,6 +1358,64 @@ mod connector_module_tests {
 
     fn any_client() -> DeckClient {
         DeckClient::new("https://nc.example", "u", "t").expect("client")
+    }
+
+    /// A12 (round-1 chunk 3, DEV-1): the `ConnectorControl` handle
+    /// drives the same attach/detach flow without an `&App` borrow —
+    /// the spawned settings forwarder's shape. The `App` methods stay
+    /// untouched (they are covered by the suites above); this covers
+    /// the handle itself, and the clean shutdown after dropping it pins
+    /// the reports-sender ordering.
+    #[tokio::test]
+    async fn the_control_handle_drives_attach_and_detach_without_an_app_reference() {
+        use taskboard_domain::{CommandOutcome, StateCommand};
+        let mut config = AppConfig::default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        // Standalone: an empty registry to attach into.
+        config.sync.backend = Some(SyncBackend::Standalone);
+        config.validate().expect("config valid");
+
+        let app = bootstrap_with_modules(
+            config,
+            Arc::new(RefusingStore),
+            Arc::new(crate::notifications::LogSink),
+            Vec::new(),
+        )
+        .await
+        .expect("standalone boot");
+        assert!(!app.connector_attached());
+
+        let control = app.connector_control();
+        let name = taskboard_domain::ConnectorId::from("nextcloud");
+        control
+            .attach_connector(name.clone(), any_client())
+            .await
+            .expect("attach through the handle");
+        assert!(control.connector_attached());
+        assert!(control.connector_commands(&name).is_some());
+
+        assert_eq!(
+            control.detach_connector_named(&name).await,
+            DetachOutcome::Detached
+        );
+        assert_eq!(
+            control.detach_connector_named(&name).await,
+            DetachOutcome::NoConnector,
+            "idempotent through the handle"
+        );
+        // The handle dies before shutdown: the reports-sender ordering
+        // contract stays with `App` (the drop-before-engine-join pin).
+        drop(control);
+
+        let outcome = app
+            .engine
+            .execute(StateCommand::RequestSync)
+            .await
+            .expect("nudge accepted");
+        assert_eq!(outcome, CommandOutcome::NoOp, "standalone fail-closed");
+        let outcome = app.shutdown().await;
+        assert!(!outcome.actor_aborted);
     }
 
     /// Polls a predicate against the shared state with a wall-clock
