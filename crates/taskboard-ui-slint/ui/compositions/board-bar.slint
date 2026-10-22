@@ -7,6 +7,7 @@
 // business (§5.1 — the callback routes through the adapter seam).
 
 import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
 
 // One board-bar segment (a display model, not a bag of strings). The
 // segment set is the live boards — an archived board is unreachable
@@ -26,6 +27,9 @@ export struct BoardBarModel {
 export component BoardBar inherits Rectangle {
     in property <BoardBarModel> bar;
     callback segment-activated(int);
+    // The on-board New-stack button (usability D7): the click
+    // equivalent of the `stack.create` action (§7.1).
+    callback create-activated();
 
     // A zero-segment model (a never-booted install) renders no row.
     if (root.bar.segments.length > 0): HorizontalLayout {
@@ -67,6 +71,16 @@ export component BoardBar inherits Rectangle {
                 // rest background reads this while hovered.
                 clicked => root.segment-activated(segment-index);
             }
+        }
+
+        // The New-stack button: right-aligned after a stretching
+        // spacer (usability D7); the a11y label is the registry
+        // label, and the click routes the same registry action.
+        Rectangle { horizontal-stretch: 1; }
+        IconButton {
+            icon: IconKind.plus;
+            label: "New stack";
+            clicked => root.create-activated();
         }
     }
 }

@@ -69,6 +69,10 @@ pub trait JourneyDriver {
     /// Finds the first element whose accessible label equals `label`
     /// (labels are element *addresses*, never assertion text).
     fn find_by_label(&self, label: &str) -> Option<Element>;
+    /// Delivers a real click to the labelled element's accessible
+    /// default action (§7.1's click-equivalence seam — no coordinate
+    /// arithmetic).
+    fn click_by_label(&mut self, label: &str);
 }
 
 /// One addressed element: an [`ElementHandle`] behind only the a11y
@@ -83,6 +87,12 @@ impl Element {
     #[must_use]
     pub fn label(&self) -> Option<String> {
         self.handle.accessible_label().map(Into::into)
+    }
+
+    /// Invokes the element's accessible default action (the click
+    /// equivalence seam, §7.1).
+    pub fn invoke_default_action(&self) {
+        self.handle.invoke_accessible_default_action();
     }
 }
 
@@ -165,6 +175,13 @@ impl JourneyDriver for SlintDriver {
         ElementHandle::find_by_accessible_label(&window, label)
             .next()
             .map(|handle| Element { handle })
+    }
+
+    fn click_by_label(&mut self, label: &str) {
+        let element = self
+            .find_by_label(label)
+            .unwrap_or_else(|| panic!("the labelled element {label:?} is present"));
+        element.invoke_default_action();
     }
 }
 
