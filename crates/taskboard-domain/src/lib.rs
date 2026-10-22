@@ -28,6 +28,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod capabilities;
 pub mod clock;
 pub mod command;
 pub mod days;
@@ -53,6 +54,7 @@ pub mod test_support;
 #[cfg(test)]
 pub(crate) mod merge_testutil;
 
+pub use capabilities::{DeckFeatures, flags_for};
 pub use clock::{Clock, SystemClock};
 pub use command::{
     CommandError, CommandOutcome, CommandPlan, bind_wipe_count, bind_wipe_forecast, plan_command,
