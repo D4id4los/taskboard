@@ -30,6 +30,7 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 
+use crate::capabilities::DeckFeatures;
 use crate::entities::{Label, Stack, Task, TaskClocks};
 use crate::idgen::IdGenerator;
 use crate::ids::{BoardId, LabelId, ReminderRuleId, RemoteBoardId, StackId, TaskId};
@@ -370,24 +371,33 @@ pub fn plan_command(
                 updated.archived = archived;
                 updated.clocks.archived = now;
             }
-            // Lane split (impl-plan §5 interim, MD-10): a native slot in
-            // the changeset full-sends `UpdateTask`; an app-only edit
-            // stays local — `UpdateAppData` does not exist yet, and
-            // enqueueing a full-send card write with no native change is
-            // a no-op push. Chunk 4 reverses exactly the app-slot half.
-            let native = changes.title.is_some()
+            // The lane split (D-F3's enqueue contract, chunk 4): native
+            // slots ride `UpdateTask` (full-send), the app slots ride
+            // `UpdateAppData`, `scheduled` is flag-routed per D-V2, and
+            // a mixed changeset enqueues both ops — full-send covers
+            // both lanes.
+            let board = app.stacks.get(&task.stack).map(|s| s.board);
+            let features = board.map_or(DeckFeatures::default(), |b| board_features(app, b));
+            let native_native = changes.title.is_some()
                 || changes.description.is_some()
                 || changes.duedate.is_some()
-                || changes.scheduled.is_some()
-                || changes.archived.is_some();
-            if native {
-                Ok(applied_task(&updated, ids, now))
-            } else {
-                Ok(CommandPlan {
-                    actions: vec![PersistenceAction::UpsertTask(updated)],
-                    outcome: CommandOutcome::Applied,
-                })
+                || changes.archived.is_some()
+                || (changes.scheduled.is_some() && features.card_startdate);
+            let app_edit = changes.effort.is_some()
+                || changes.importance.is_some()
+                || changes.urgency.is_some()
+                || (changes.scheduled.is_some() && !features.card_startdate);
+            let mut actions = vec![PersistenceAction::UpsertTask(updated)];
+            if native_native {
+                actions.push(enqueue(LocalOp::UpdateTask(*id), ids, now));
             }
+            if app_edit {
+                actions.push(enqueue(LocalOp::UpdateAppData(*id), ids, now));
+            }
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::Applied,
+            })
         }
         StateCommand::SetTaskDone { id, done } => {
             let task = live_task(app, *id)?;
@@ -1109,9 +1119,11 @@ pub fn plan_command(
             // not a meaningless-redundant repeat.
             live_task(app, *task)?;
             // Replace-all: the task's existing rules are tombstoned by
-            // id (the same delete cascade `DeleteTask` uses), then the
-            // fresh rule is upserted. Rules are local-only — no outbox
-            // op is enqueued (reminder sync is out of scope).
+            // id (the same delete cascade `DeleteTask` uses; the flush
+            // derives their document tombstones, D8), then the fresh
+            // rule is upserted with both stamps at `now` (D9). Rules
+            // ride the app-data document lane: the op is the flush
+            // trigger, never a native card write.
             let mut actions: Vec<PersistenceAction> = task_rule_deletes(app, *task).collect();
             let rule = crate::reminders::ReminderRule {
                 id: ids.new_reminder_rule_id(),
@@ -1121,6 +1133,7 @@ pub fn plan_command(
                 updated_at: now,
             };
             actions.push(PersistenceAction::UpsertReminderRule(rule.clone()));
+            actions.push(enqueue(LocalOp::UpdateAppData(*task), ids, now));
             Ok(CommandPlan {
                 actions,
                 outcome: CommandOutcome::ReminderSet { rule: rule.id },
@@ -1133,8 +1146,12 @@ pub fn plan_command(
                 return Ok(no_op());
             }
             let removed = deletes.len();
+            let mut actions = deletes;
+            // The removals become flush-time tombstones (D8); an empty
+            // clear stayed a no-op above.
+            actions.push(enqueue(LocalOp::UpdateAppData(*task), ids, now));
             Ok(CommandPlan {
-                actions: deletes,
+                actions,
                 outcome: CommandOutcome::ReminderCleared { removed },
             })
         }
@@ -1268,6 +1285,17 @@ fn no_op() -> CommandPlan {
         actions: Vec::new(),
         outcome: CommandOutcome::NoOp,
     }
+}
+
+/// The task's board's recorded capability flags (D6's routing input):
+/// the same entity chain the planner walks (`task → stack → board`).
+/// No row (an unbound board, a not-yet-reported one) is the D-V1
+/// fallback — `CONSERVATIVE` routes `scheduled` to the document lane.
+fn board_features(app: &AppState, board: BoardId) -> DeckFeatures {
+    app.sync
+        .get(board)
+        .map(|row| row.features)
+        .unwrap_or_default()
 }
 
 /// An applied task edit: the upsert plus the generic `UpdateTask` op (all
@@ -1421,7 +1449,10 @@ mod tests {
                 .into_iter()
                 .collect(),
             reminders: crate::reminders::ReminderState::default(),
-            sync: crate::state::SyncStates::new(),
+            sync: crate::state::SyncStates::with_row(
+                BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
+                crate::state::SyncStatus::default(),
+            ),
             last_updated: None,
         };
         let task_id = TaskId::from(uuid::Uuid::from_u128(u128::from(TASK)));
@@ -1702,10 +1733,9 @@ mod tests {
     }
 
     #[test]
-    fn app_field_edits_stay_local_until_the_appdata_lane_lands() {
-        // Interim (implementation-plan §5 / MD-10): effort/importance/
-        // urgency persist and stamp, but enqueue no sync op — an
-        // `UpdateTask` full-send with no native change is a no-op push.
+    fn app_field_edits_enqueue_the_appdata_lane() {
+        // Chunk 4's lane reversal: effort/importance/urgency ride
+        // `UpdateAppData` — never a native card write.
         let (app, outbox) = base();
         let plan = run(
             &app,
@@ -1722,14 +1752,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.outcome, CommandOutcome::Applied);
-        assert_eq!(plan.actions.len(), 1, "upsert only, no enqueue");
+        assert_eq!(plan.actions.len(), 2, "upsert + one enqueue");
         assert!(matches!(plan.actions[0], PersistenceAction::UpsertTask(_)));
+        let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert!(matches!(op.op, LocalOp::UpdateAppData(id) if id == task_id()));
     }
 
     #[test]
-    fn scheduled_edit_rides_the_native_update_op() {
-        // `scheduled` is native (D-F2 branch A): it full-sends UpdateTask
-        // like every other native slot.
+    fn scheduled_is_flag_routed_and_mixed_changesets_enqueue_both_ops() {
+        // D-V2's lane rule + D-F3's mixed contract: the unreported
+        // board's CONSERVATIVE default routes `scheduled` to the
+        // document lane; a native slot beside it adds the `UpdateTask`
+        // full-send.
         let (app, outbox) = base();
         let plan = run(
             &app,
@@ -1743,12 +1779,63 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(plan.actions.len(), 2);
-        assert!(matches!(plan.actions[0], PersistenceAction::UpsertTask(_)));
+        let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert!(matches!(op.op, LocalOp::UpdateAppData(id) if id == task_id()));
+
+        // The capability-true board row routes the same edit natively.
+        let (mut app, outbox) = base();
+        let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
+        app.sync.get_mut(board_id).unwrap().features = crate::capabilities::DeckFeatures::NATIVE;
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: TaskChanges {
+                    scheduled: Some(Some(ts(T0 + 86_400))),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
         let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
             panic!("second action must be the enqueue");
         };
         assert!(matches!(op.op, LocalOp::UpdateTask(id) if id == task_id()));
+
+        // Mixed: one native slot + one app slot ⇒ both ops.
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: TaskChanges {
+                    title: Some("renamed".into()),
+                    effort: Some(Some(crate::entities::Effort::new(5))),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        let ops: Vec<LocalOp> = plan
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::EnqueueOp(op) => Some(op.op),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops.len(), 2, "mixed changeset enqueues both ops");
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, LocalOp::UpdateTask(id) if *id == task_id()))
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, LocalOp::UpdateAppData(id) if *id == task_id()))
+        );
     }
 
     #[test]
@@ -4171,11 +4258,8 @@ mod tests {
         let CommandOutcome::ReminderSet { rule } = plan.outcome else {
             panic!("expected ReminderSet, got {:?}", plan.outcome);
         };
-        let [PersistenceAction::UpsertReminderRule(stored)] = &plan.actions[..] else {
-            panic!(
-                "expected exactly one UpsertReminderRule, got {:?}",
-                plan.actions
-            );
+        let PersistenceAction::UpsertReminderRule(stored) = &plan.actions[0] else {
+            panic!("expected UpsertReminderRule, got {:?}", plan.actions);
         };
         assert_eq!(stored.id, rule);
         assert_eq!(stored.task, task_id());
@@ -4185,6 +4269,12 @@ mod tests {
             now(),
             "the rule stamp is the injected now"
         );
+        assert_eq!(stored.updated_at, stored.created_at, "creation stamps both");
+        // The document-lane trigger rides the set (chunk 4's D7 row 5).
+        let PersistenceAction::EnqueueOp(op) = plan.actions.last().expect("enqueue") else {
+            panic!("last action must be the enqueue");
+        };
+        assert!(matches!(op.op, LocalOp::UpdateAppData(id) if id == task_id()));
     }
 
     #[test]
@@ -4218,10 +4308,19 @@ mod tests {
             vec![own1.id, own2.id],
             "exactly the task's own rules are deleted, foreign rules untouched"
         );
-        assert!(matches!(
-            plan.actions.last(),
-            Some(PersistenceAction::UpsertReminderRule(_))
-        ));
+        assert!(
+            plan.actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::UpsertReminderRule(_)))
+        );
+        // One document-lane trigger for the whole replace.
+        assert_eq!(
+            plan.actions
+                .iter()
+                .filter(|a| matches!(a, PersistenceAction::EnqueueOp(op) if matches!(op.op, LocalOp::UpdateAppData(id) if id == task_id())))
+                .count(),
+            1
+        );
     }
 
     #[test]
