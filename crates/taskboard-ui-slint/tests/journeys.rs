@@ -173,6 +173,13 @@ fn model_snapshot(harness: &Harness) -> Vec<String> {
         .collect()
 }
 
+fn facts(harness: &Harness) -> taskboard_ui_slint::MenuPanelFacts<'_> {
+    harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::MenuPanelFacts>()
+}
+
 fn dummy_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
     let (_tx, rx) = tokio::sync::broadcast::channel(4);
     rx
@@ -561,11 +568,139 @@ fn an_outside_click_dismisses_the_menu() {
     );
 }
 
-fn facts(harness: &Harness) -> taskboard_ui_slint::MenuPanelFacts<'_> {
-    harness
-        .handle
-        .window()
-        .global::<taskboard_ui_slint::MenuPanelFacts>()
+/// D6 — the two-tier menu in both presentation modes: a parent row's
+/// invocation opens the group's page (fly-out at regular width — its
+/// facts land beside the root panel's; replace + a "Back" address at
+/// compact width), `menu.next` walks the submenu, a leaf invocation
+/// routes and closes, and Escape walks back level by level.
+#[test]
+#[allow(clippy::too_many_lines)] // the two-mode walk is the contract's length
+fn the_two_tier_menu_navigates_levels_in_both_modes() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Walk the cursor to the first submenu-parent row (the
+            // quick rows precede the parents on the root page).
+            let open_at_parent = |harness: &mut Harness| {
+                harness.press(ActionId::AppMenu);
+                let parent_index = (0..{
+                    let entries = keyboard(harness).get_menu_entries();
+                    entries.row_count()
+                })
+                    .find(|i| {
+                        keyboard(harness)
+                            .get_menu_entries()
+                            .row_data(*i)
+                            .expect("row")
+                            .submenu
+                    })
+                    .expect("the root page carries submenu parents");
+                for _ in 0..parent_index {
+                    harness.press(ActionId::MenuNext);
+                }
+                harness.press(ActionId::MenuInvoke);
+                assert!(
+                    keyboard(harness).get_menu_active_group() >= 0,
+                    "the parent invocation opened the group's page"
+                );
+                assert!(
+                    keyboard(harness).get_menu_submenu_entries().row_count() > 0,
+                    "the submenu model is mounted"
+                );
+            };
+
+            // -- regular/expansive: the fly-out beside the root panel --
+            harness.driver.set_window_size(1000, 900);
+            open_at_parent(&mut harness);
+            assert!(
+                facts(&harness).get_flyout_width() > 0.0,
+                "the fly-out panel is mounted"
+            );
+            assert!(
+                facts(&harness).get_flyout_x() + facts(&harness).get_flyout_width()
+                    <= facts(&harness).get_x(),
+                "the fly-out sits left of the root panel, clear of it"
+            );
+            assert!(
+                facts(&harness).get_flyout_x() >= 8.0,
+                "the fly-out stays inside the window"
+            );
+            // `menu.next` walks the submenu; invoking the first leaf
+            // (task.create over the board chain) routes and closes.
+            harness.press(ActionId::MenuInvoke);
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .get_board_model()
+                    .stacks
+                    .row_data(0)
+                    .expect("col")
+                    .create_open,
+                "the leaf invocation routed (the create row opened)"
+            );
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the leaf invocation closed the menu"
+            );
+            harness.stroke(parse("Escape").expect("Escape")); // discard the flow
+
+            // Escape walks back level by level.
+            open_at_parent(&mut harness);
+            harness.stroke(parse("Escape").expect("Escape"));
+            assert!(
+                keyboard(&harness).get_menu_open()
+                    && keyboard(&harness).get_menu_active_group() == -1,
+                "Escape at a submenu returns to the root page"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "Escape at the root closes"
+            );
+
+            // -- compact: replace mode with the Back address --
+            harness.driver.set_window_size(600, 800);
+            open_at_parent(&mut harness);
+            // Compact replaces: the Back row (chrome above the list)
+            // exists only in this mode.
+            harness.driver.click_by_label("Back");
+            assert!(
+                keyboard(&harness).get_menu_open()
+                    && keyboard(&harness).get_menu_active_group() == -1,
+                "the back row returned to the root page"
+            );
+            // The replaced page's rows dispatch: the root cursor was
+            // preserved on the parent row, so re-entering is one
+            // invoke; the second invoke fires the submenu's first leaf
+            // (task.create over the board chain).
+            harness.press(ActionId::MenuInvoke);
+            assert!(
+                keyboard(&harness).get_menu_active_group() >= 0,
+                "re-entered"
+            );
+            harness.press(ActionId::MenuInvoke);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the compact leaf invocation closed the menu"
+            );
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .get_board_model()
+                    .stacks
+                    .row_data(0)
+                    .expect("col")
+                    .create_open,
+                "the compact leaf invocation routed"
+            );
+        },
+    );
 }
 
 /// D4/P2/P2b — the panel is bounded on all four edges at every window

@@ -6,6 +6,7 @@
 // §7.1). Layout only — no domain knowledge (Rule E).
 
 import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
+import { Responsive, Breakpoint } from "../responsive.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 import { MenuPanelFacts } from "../menu-facts.slint";
 
@@ -24,9 +25,34 @@ export struct MenuEntryModel {
 }
 
 export component ActionMenu inherits Rectangle {
+    // The root page (round-1 D6); `entries` is the page this panel
+    // renders at the root level and, in compact replace mode, is
+    // superseded by `submenu-entries` while a group is open.
     in property <[MenuEntryModel]> entries;
+    in property <[MenuEntryModel]> submenu-entries;
     in property <int> selected-index;
+    in property <int> root-selected-index: 0;
+    // The open group as its parent row's root-page index (−1 = root).
+    in property <int> active-group: -1;
+    // Compact replace mode (round-1 D6): the panel shows the active
+    // page with a back row instead of hosting the fly-out.
+    in property <bool> compact: Responsive.current-breakpoint == Breakpoint.compact;
+    // True for the fly-out instance: its facts mirror into the
+    // global's flyout-* slots (round-1 D6).
+    in property <bool> is-flyout: false;
     callback invoke-entry(int);
+    callback invoke-submenu-entry(int);
+    callback level-back();
+
+    // The visible page and its cursor (round-1 D6): replace mode
+    // renders the submenu page; the fly-out host passes active-group
+    // −1 and renders `entries` directly.
+    in property <[MenuEntryModel]> page:
+        root.compact && root.active-group >= 0 ? root.submenu-entries : root.entries;
+    in property <int> page-cursor:
+        root.compact && root.active-group >= 0 ? root.selected-index
+        : root.active-group >= 0 ? root.root-selected-index
+        : root.selected-index;
     // Usability D6: the space between toolbar and status bar, pushed
     // by the host — the cap the panel fills up to (max-height on the
     // instantiation is not honoured for a Flickable-hosted panel, so
@@ -37,15 +63,28 @@ export component ActionMenu inherits Rectangle {
     // The facts mirror (round-1 D4): the realized geometry lands in
     // the global the journeys read — change handlers, delivered by
     // the mock clock's handler pass.
-    changed x => { MenuPanelFacts.x = self.x; }
-    changed y => { MenuPanelFacts.y = self.y; }
-    changed width => { MenuPanelFacts.width = self.width; }
-    changed height => { MenuPanelFacts.height = self.height; }
     init => {
-        MenuPanelFacts.x = self.x;
-        MenuPanelFacts.y = self.y;
-        MenuPanelFacts.width = self.width;
-        MenuPanelFacts.height = self.height;
+        self.mirror-facts();
+    }
+    changed x => { self.mirror-facts(); }
+    changed y => { self.mirror-facts(); }
+    changed width => { self.mirror-facts(); }
+    changed height => { self.mirror-facts(); }
+
+    // One mirror for both instances: the fly-out writes the flyout-*
+    // slots, the root panel the plain ones.
+    public function mirror-facts() {
+        if (root.is-flyout) {
+            MenuPanelFacts.flyout-x = self.x;
+            MenuPanelFacts.flyout-y = self.y;
+            MenuPanelFacts.flyout-width = self.width;
+            MenuPanelFacts.flyout-height = self.height;
+        } else {
+            MenuPanelFacts.x = self.x;
+            MenuPanelFacts.y = self.y;
+            MenuPanelFacts.width = self.width;
+            MenuPanelFacts.height = self.height;
+        }
     }
     background: Theme.surface-raised;
     border-width: Theme.focus-ring-width;
@@ -59,8 +98,36 @@ export component ActionMenu inherits Rectangle {
             padding: Theme.space-2;
             spacing: Theme.space-1;
 
-            for entry[entry-index] in entries: Rectangle {
-                border-width: root.selected-index == entry-index ? Theme.focus-ring-width : 0;
+            // The replace mode's back row (round-1 D6): chrome above
+            // the list — the cursor only ever addresses entries; the
+            // label is the element's address.
+            if (root.compact && root.active-group >= 0): Rectangle {
+                border-radius: Theme.radius-small;
+                background: back-hit.has-hover ? Theme.surface-hover : transparent;
+                back-row := FocusScope {
+                    width: 100%;
+                    height: 100%;
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: "Back";
+                    accessible-action-default => root.level-back();
+                    back-hit := TouchArea {
+                        clicked => root.level-back();
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-2;
+                    RoleText {
+                        role: Typography.body-emphasized;
+                        text-color: Theme.text-secondary;
+                        text: "Back";
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            for entry[entry-index] in root.page: Rectangle {
+                border-width: root.page-cursor == entry-index ? Theme.focus-ring-width : 0;
                 border-color: Semantic.focus-ring;
                 border-radius: Theme.radius-small;
                 // Hover lightens over the raised panel; the selection
@@ -84,17 +151,17 @@ export component ActionMenu inherits Rectangle {
                     }
                 }
                 background: row-hit.has-hover ? Theme.surface-hover
-                    : root.selected-index == entry-index ? Theme.surface
+                    : root.page-cursor == entry-index ? Theme.surface
                     : transparent;
                 // The changed-callback mirror: `changed` only takes a
                 // same-element identifier, so each row mirrors the
                 // root's selection through its own bound property.
-                in property <int> watch: root.selected-index;
+                in property <int> watch: root.page-cursor;
                 // The keyboard path stays complete at any size
                 // (§7.3): the selection scrolling into view moves the
                 // viewport so this row is fully inside it.
                 changed watch => {
-                    if (root.selected-index == entry-index) {
+                    if (root.page-cursor == entry-index) {
                         if (self.y < -flick.viewport-y) {
                             flick.viewport-y = -self.y;
                         } else if (self.y + self.height > -flick.viewport-y + flick.height) {

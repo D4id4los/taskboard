@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use taskboard_domain::{AppState, BoardId, StackId, StateCommand, TaskId};
 
-use crate::actions::{ActionId, ContextId};
+use crate::actions::{ActionId, ContextId, MenuGroup};
 use crate::keymap::Keymap;
 use crate::menu::{self, MenuEntry};
 use crate::models::IdTables;
@@ -52,9 +52,17 @@ pub(crate) struct Adapter {
     pub(crate) view_state: ViewState,
     state: Arc<ArcSwap<AppState>>,
     commands: mpsc::Sender<StateCommand>,
-    /// The open menu's entries (the D19 projection snapshot the
-    /// cursor indexes into and `InvokeSelected` re-dispatches).
+    /// The ACTIVE menu page's entries (root page at the root level;
+    /// the open group's page inside a submenu — round-1 D6). The
+    /// cursor indexes into it and `InvokeSelected` re-dispatches it.
     menu_entries: Vec<MenuEntry>,
+    /// The root page (never mutated while the menu is open): the
+    /// fly-out/replace presentation and the `MenuBack` restore read it.
+    root_entries: Vec<MenuEntry>,
+    /// The pre-menu context chain (round-1 D6): every page projection
+    /// resolves against it — the menu context must not mask the chain
+    /// the pages are computed from.
+    menu_chain: Vec<ContextId>,
     /// The banner row target set by row activation (D4); consumed by
     /// the next snooze/mute dispatch, then cleared (one-shot).
     reminder_target: Option<ReminderTarget>,
@@ -79,6 +87,54 @@ impl Adapter {
         keyboard.set_menu_open(self.shell.menu.open);
         keyboard
             .set_menu_selected_index(i32::try_from(self.shell.menu.selected).unwrap_or(i32::MAX));
+        keyboard.set_menu_root_selected_index(
+            i32::try_from(self.shell.menu.root_selected).unwrap_or(i32::MAX),
+        );
+        keyboard.set_menu_active_group(match self.shell.menu.active_group {
+            None => -1,
+            Some(group) => self
+                .root_entries
+                .iter()
+                .position(|entry| entry.submenu == Some(group))
+                .and_then(|i| i32::try_from(i).ok())
+                .unwrap_or(-1),
+        });
+    }
+
+    /// The two-tier menu models (round-1 D6): the root page model
+    /// stays mounted for the whole open lifecycle; the submenu model
+    /// carries the active group's page (empty at the root).
+    fn sync_menu_models(&self, window: &AppWindow) {
+        let keyboard = window.global::<KeyboardState>();
+        keyboard.set_menu_entries(Self::menu_model(&self.root_entries));
+        keyboard.set_menu_submenu_entries(Self::menu_model(&self.menu_entries));
+    }
+
+    /// One page as the slint model rows.
+    fn menu_model(entries: &[MenuEntry]) -> ModelRc<crate::MenuEntryModel> {
+        ModelRc::from(
+            entries
+                .iter()
+                .map(|entry| crate::MenuEntryModel {
+                    action: entry
+                        .action
+                        .map_or(String::new(), |id| id.id().to_owned())
+                        .into(),
+                    label: entry.label.into(),
+                    description: entry.description.into(),
+                    enabled: entry.enabled,
+                    submenu: entry.submenu.is_some(),
+                    hint: ModelRc::new(slint::VecModel::from(
+                        entry
+                            .hint
+                            .iter()
+                            .map(|stroke| SharedString::from(stroke.as_str()))
+                            .collect::<Vec<_>>(),
+                    )),
+                })
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
     }
 
     /// The capture-phase entry point (D18): slint event → `Stroke` →
@@ -314,32 +370,11 @@ impl Adapter {
                 // (the active context's actions, §5.9); the menu
                 // context itself masks the chain once open (D11).
                 let chain = self.shell.chain();
-                self.menu_entries = menu::root_page(&self.keymap, &chain);
-                let models: Vec<crate::MenuEntryModel> = self
-                    .menu_entries
-                    .iter()
-                    .map(|entry| crate::MenuEntryModel {
-                        action: entry
-                            .action
-                            .map_or(String::new(), |id| id.id().to_owned())
-                            .into(),
-                        label: entry.label.into(),
-                        description: entry.description.into(),
-                        enabled: entry.enabled,
-                        submenu: entry.submenu.is_some(),
-                        hint: ModelRc::new(slint::VecModel::from(
-                            entry
-                                .hint
-                                .iter()
-                                .map(|stroke| SharedString::from(stroke.as_str()))
-                                .collect::<Vec<_>>(),
-                        )),
-                    })
-                    .collect();
-                window
-                    .global::<KeyboardState>()
-                    .set_menu_entries(ModelRc::from(models.as_slice()));
+                self.menu_chain = chain;
+                self.root_entries = menu::root_page(&self.keymap, &self.menu_chain);
+                self.menu_entries = self.root_entries.clone();
                 self.shell.apply(&effect, self.menu_entries.len());
+                self.sync_menu_models(window);
             }
             UiEffect::InvokeSelected => {
                 // Close first, then one re-dispatch — bounded (D16);
@@ -348,10 +383,22 @@ impl Adapter {
                 if let Some(index) = self.shell.selected_entry() {
                     self.invoke_entry(window, index);
                 } else {
-                    self.shell.apply(&UiEffect::CloseMenu, 0);
+                    self.apply_close_menu(window);
                 }
             }
-            UiEffect::CloseMenu | UiEffect::MenuNext | UiEffect::MenuPrevious => {
+            UiEffect::CloseMenu => self.apply_close_menu(window),
+            UiEffect::MenuBack => {
+                let was_submenu = self.shell.menu.active_group.is_some();
+                self.shell.apply(&effect, self.root_entries.len());
+                if was_submenu {
+                    // Restored to the root page: the active page is the
+                    // root page again.
+                    self.menu_entries = self.root_entries.clone();
+                    self.sync_menu_models(window);
+                    self.sync(window);
+                }
+            }
+            UiEffect::MenuNext | UiEffect::MenuPrevious => {
                 self.shell.apply(&effect, self.menu_entries.len());
             }
             UiEffect::SetMode(_)
@@ -370,22 +417,68 @@ impl Adapter {
         }
     }
 
-    /// The `menu.invoke` projection (D16): the entry at `index` is
-    /// re-dispatched through the same router, on both input paths —
-    /// keyboard `InvokeSelected` and the mouse row click land here.
-    /// The close comes first on both (round-1 D3): the routed action
-    /// resolves against the post-menu chain, and the menu is closed
-    /// after a mouse invoke exactly as after a keyboard invoke
-    /// (every click affordance has an action equivalent, §7.1).
+    /// The full close shared by every path that means "close the
+    /// menu": the shell state and both page models clear (round-1 D6).
+    fn apply_close_menu(&mut self, window: &AppWindow) {
+        self.shell.apply(&UiEffect::CloseMenu, 0);
+        self.menu_entries.clear();
+        self.root_entries.clear();
+        self.menu_chain.clear();
+        self.sync_menu_models(window);
+        // The direct callers (toggle, dismissal layer, mouse invoke)
+        // bypass `route`'s trailing sync.
+        self.sync(window);
+    }
+
+    /// Activating a parent row (round-1 D6, keyboard `InvokeSelected`
+    /// or a root-panel click): park the root cursor, open the group's
+    /// page as the active one. A parent row never dispatches.
+    fn activate_parent(&mut self, window: &AppWindow, group: MenuGroup) {
+        self.shell.menu.root_selected = self.shell.menu.selected;
+        self.shell.menu.selected = 0;
+        self.shell.menu.active_group = Some(group);
+        self.menu_entries = menu::group_page(&self.keymap, &self.menu_chain, group);
+        self.shell.menu.len = self.menu_entries.len();
+        self.sync_menu_models(window);
+    }
+
+    /// The ACTIVE page's invocation (keyboard `menu.invoke`, and the
+    /// rendered page's mouse rows): a parent row opens its group's
+    /// page, a leaf closes the menu and re-dispatches through the same
+    /// router (round-1 D3: close first, route second).
     fn invoke_entry(&mut self, window: &AppWindow, index: usize) {
-        let Some(entry) = self.menu_entries.get(index) else {
+        let page = self.menu_entries.clone();
+        let Some(entry) = page.get(index) else {
             return;
         };
-        self.shell.apply(&UiEffect::CloseMenu, 0);
-        // A submenu-parent row never dispatches (round-1 D6).
+        if let Some(group) = entry.submenu {
+            self.activate_parent(window, group);
+            return;
+        }
         let Some(action) = entry.action else {
             return;
         };
+        self.apply_close_menu(window);
+        self.route(window, action);
+    }
+
+    /// A root-panel row's invocation (round-1 D6): identical to
+    /// [`Self::invoke_entry`] at the root level; inside a submenu the
+    /// root panel stays mounted (fly-out), so its rows resolve against
+    /// the root page — a parent switches the open group, a quick row
+    /// like Quit dispatches.
+    fn invoke_root_entry(&mut self, window: &AppWindow, index: usize) {
+        let submenu = self.root_entries.get(index).and_then(|entry| entry.submenu);
+        if let Some(group) = submenu {
+            self.shell.menu.selected = index;
+            self.activate_parent(window, group);
+            return;
+        }
+        let action = self.root_entries.get(index).and_then(|entry| entry.action);
+        let Some(action) = action else {
+            return;
+        };
+        self.apply_close_menu(window);
         self.route(window, action);
     }
 }
@@ -427,6 +520,8 @@ pub(crate) fn install(
         state,
         commands,
         menu_entries: Vec::new(),
+        root_entries: Vec::new(),
+        menu_chain: Vec::new(),
         reminder_target: None,
         board_target: None,
         tables: IdTables::default(),
@@ -457,7 +552,29 @@ pub(crate) fn install(
             let Ok(index) = usize::try_from(index) else {
                 return;
             };
+            adapter.borrow_mut().invoke_root_entry(&window, index);
+        });
+    }
+    {
+        let adapter = Rc::clone(&adapter);
+        let weak = window.as_weak();
+        window.on_menu_submenu_entry_invoked(move |index: i32| {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
             adapter.borrow_mut().invoke_entry(&window, index);
+        });
+    }
+    {
+        let adapter = Rc::clone(&adapter);
+        let weak = window.as_weak();
+        window.on_menu_level_back(move || {
+            let Some(window) = weak.upgrade() else { return };
+            let mut a = adapter.borrow_mut();
+            a.apply_effect(&window, UiEffect::MenuBack);
         });
     }
     {
@@ -510,7 +627,8 @@ fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let Some(window) = weak.upgrade() else { return };
         let mut a = adapter.borrow_mut();
         if a.shell.menu.open {
-            a.route(&window, ActionId::MenuDismiss);
+            // The toggle is a full close from any level (round-1 D6).
+            a.apply_effect(&window, UiEffect::CloseMenu);
         } else {
             a.route(&window, ActionId::AppMenu);
         }
@@ -524,7 +642,11 @@ fn install_menu_dismiss_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     let weak = window.as_weak();
     window.on_menu_dismiss_requested(move || {
         let Some(window) = weak.upgrade() else { return };
-        adapter.borrow_mut().route(&window, ActionId::MenuDismiss);
+        // An outside click is a full dismissal, not a level-up
+        // (round-1 D6: `CloseMenu`, the layer and the toggle share it).
+        adapter
+            .borrow_mut()
+            .apply_effect(&window, UiEffect::CloseMenu);
     });
 }
 
