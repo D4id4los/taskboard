@@ -332,6 +332,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::AmbiguousStack { .. } => "ambiguous-stack",
             CommandError::UnknownLabel(_) => "unknown-label",
             CommandError::AmbiguousLabel { .. } => "ambiguous-label",
+            CommandError::UnknownReminderRule(_) => "unknown-reminder-rule",
+            CommandError::AmbiguousReminderRule { .. } => "ambiguous-reminder-rule",
             CommandError::NoStacks => "no-stacks",
             CommandError::AmbiguousBoard { .. } => "ambiguous-board",
             CommandError::SyncFailed(_) => "sync-failed",
@@ -392,6 +394,10 @@ fn o3_error_kinds_cover_every_variant() {
         CommandError::UnknownStack("col".to_owned()),
         CommandError::AmbiguousStack {
             candidates: vec!["a".to_owned(), "b".to_owned()],
+        },
+        CommandError::UnknownReminderRule("30m".to_owned()),
+        CommandError::AmbiguousReminderRule {
+            candidates: vec!["r1".to_owned(), "r2".to_owned()],
         },
         CommandError::NoStacks,
         CommandError::SyncFailed(SyncErrorKind::Server),

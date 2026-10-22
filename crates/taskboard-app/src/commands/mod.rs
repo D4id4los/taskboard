@@ -178,6 +178,16 @@ pub enum CommandError {
         /// The live stack titles (deterministic board order).
         candidates: Vec<String>,
     },
+    /// No reminder rule of the target task matches the selector.
+    #[error("no such reminder rule")]
+    UnknownReminderRule(String),
+    /// The rule selector matches several of the task's rules; carries
+    /// their full uuids (deterministic rule-id order).
+    #[error("rule selector matches several rules — pass one of {}", candidates.join(" | "))]
+    AmbiguousReminderRule {
+        /// The matched rules' full uuids.
+        candidates: Vec<String>,
+    },
     /// There is no stack to target.
     #[error("no stacks to target")]
     NoStacks,
@@ -385,6 +395,8 @@ impl CommandError {
             Self::AmbiguousStack { .. } => "ambiguous-stack",
             Self::UnknownLabel(_) => "unknown-label",
             Self::AmbiguousLabel { .. } => "ambiguous-label",
+            Self::UnknownReminderRule(_) => "unknown-reminder-rule",
+            Self::AmbiguousReminderRule { .. } => "ambiguous-reminder-rule",
             Self::NoStacks => "no-stacks",
             Self::AmbiguousBoard { .. } => "ambiguous-board",
             Self::SyncFailed(_) => "sync-failed",
@@ -436,13 +448,14 @@ impl CommandError {
             Self::BoardAlreadyBound { board, current } => {
                 Some(format!("{board} (bound remote {current})"))
             }
-            Self::UnknownTask(sel) | Self::UnknownStack(sel) | Self::UnknownLabel(sel) => {
-                Some(sel.clone())
-            }
-            Self::AmbiguousTask { candidates } | Self::AmbiguousStack { candidates } => {
-                Some(candidates.join(", "))
-            }
-            Self::AmbiguousBoard { candidates } => Some(candidates.join(", ")),
+            Self::UnknownTask(sel)
+            | Self::UnknownStack(sel)
+            | Self::UnknownLabel(sel)
+            | Self::UnknownReminderRule(sel) => Some(sel.clone()),
+            Self::AmbiguousTask { candidates }
+            | Self::AmbiguousStack { candidates }
+            | Self::AmbiguousReminderRule { candidates }
+            | Self::AmbiguousBoard { candidates } => Some(candidates.join(", ")),
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
             Self::IpcVersion { server_v } => Some(server_v.to_string()),
             Self::ConfirmationRequired { verb, .. } => Some(verb.clone()),

@@ -117,12 +117,6 @@ pub enum CommandOutcome {
     CreatedLabel(LabelId),
     /// The command created the board with this id.
     CreatedBoard(BoardId),
-    /// The command replaced a task's reminder rules; carries the new
-    /// rule's id.
-    ReminderSet {
-        /// The fresh rule.
-        rule: ReminderRuleId,
-    },
     /// The command removed a task's reminder rules.
     ReminderCleared {
         /// How many rules were deleted.
@@ -1126,31 +1120,6 @@ pub fn plan_command(
                     task: *task,
                     muted: *muted,
                 },
-            })
-        }
-        StateCommand::SetReminderRule { task, offset } => {
-            // Edit-style intent: reminding a dead task is a rejection,
-            // not a meaningless-redundant repeat.
-            live_task(app, *task)?;
-            // Replace-all: the task's existing rules are tombstoned by
-            // id (the same delete cascade `DeleteTask` uses; the flush
-            // derives their document tombstones, D8), then the fresh
-            // rule is upserted with both stamps at `now` (D9). Rules
-            // ride the app-data document lane: the op is the flush
-            // trigger, never a native card write.
-            let mut actions: Vec<PersistenceAction> = task_rule_deletes(app, *task).collect();
-            let rule = crate::reminders::ReminderRule {
-                id: ids.new_reminder_rule_id(),
-                task: *task,
-                offset: *offset,
-                created_at: now,
-                updated_at: now,
-            };
-            actions.push(PersistenceAction::UpsertReminderRule(rule.clone()));
-            actions.push(enqueue(LocalOp::UpdateAppData(*task), ids, now));
-            Ok(CommandPlan {
-                actions,
-                outcome: CommandOutcome::ReminderSet { rule: rule.id },
             })
         }
         StateCommand::AddReminderRule { task, offset } => {
@@ -4312,7 +4281,7 @@ mod tests {
         );
     }
 
-    // ---- SetReminderRule / ClearReminderRules --------------------------
+    // ---- AddReminderRule / RemoveReminderRule / ClearReminderRules -----
 
     fn offset_before(secs: i64) -> crate::reminders::ReminderOffset {
         crate::reminders::ReminderOffset::before(
@@ -4320,145 +4289,6 @@ mod tests {
         )
         .expect("negative duration is a legal offset")
     }
-
-    #[test]
-    fn set_rule_plans_a_new_rule_for_a_live_task() {
-        let (app, outbox) = base();
-        let offset = offset_before(600);
-        let plan = run(
-            &app,
-            &outbox,
-            &StateCommand::SetReminderRule {
-                task: task_id(),
-                offset,
-            },
-        )
-        .unwrap();
-        let CommandOutcome::ReminderSet { rule } = plan.outcome else {
-            panic!("expected ReminderSet, got {:?}", plan.outcome);
-        };
-        let PersistenceAction::UpsertReminderRule(stored) = &plan.actions[0] else {
-            panic!("expected UpsertReminderRule, got {:?}", plan.actions);
-        };
-        assert_eq!(stored.id, rule);
-        assert_eq!(stored.task, task_id());
-        assert_eq!(stored.offset, offset);
-        assert_eq!(
-            stored.created_at,
-            now(),
-            "the rule stamp is the injected now"
-        );
-        assert_eq!(stored.updated_at, stored.created_at, "creation stamps both");
-        // The document-lane trigger rides the set (chunk 4's D7 row 5).
-        let PersistenceAction::EnqueueOp(op) = plan.actions.last().expect("enqueue") else {
-            panic!("last action must be the enqueue");
-        };
-        assert!(matches!(op.op, LocalOp::UpdateAppData(id) if id == task_id()));
-    }
-
-    #[test]
-    fn set_rule_replaces_the_tasks_existing_rules() {
-        let (mut app, outbox) = base();
-        let own1 = reminder_rule(61, task_id());
-        let own2 = reminder_rule(62, task_id());
-        let stranger = TaskId::from(uuid::Uuid::from_u128(4245));
-        let foreign = reminder_rule(63, stranger);
-        with_rules(&mut app, &[own1.clone(), own2.clone(), foreign.clone()]);
-        let plan = run(
-            &app,
-            &outbox,
-            &StateCommand::SetReminderRule {
-                task: task_id(),
-                offset: offset_before(300),
-            },
-        )
-        .unwrap();
-        let mut deletes: Vec<crate::ids::ReminderRuleId> = plan
-            .actions
-            .iter()
-            .filter_map(|a| match a {
-                PersistenceAction::DeleteReminderRule(id) => Some(*id),
-                _ => None,
-            })
-            .collect();
-        deletes.sort();
-        assert_eq!(
-            deletes,
-            vec![own1.id, own2.id],
-            "exactly the task's own rules are deleted, foreign rules untouched"
-        );
-        assert!(
-            plan.actions
-                .iter()
-                .any(|a| matches!(a, PersistenceAction::UpsertReminderRule(_)))
-        );
-        // One document-lane trigger for the whole replace.
-        assert_eq!(
-            plan.actions
-                .iter()
-                .filter(|a| matches!(a, PersistenceAction::EnqueueOp(op) if matches!(op.op, LocalOp::UpdateAppData(id) if id == task_id())))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn set_rule_rejects_unknown_and_deleted_tasks() {
-        let (app, outbox) = base();
-        let stranger = TaskId::from(uuid::Uuid::from_u128(4245));
-        assert!(matches!(
-            run(
-                &app,
-                &outbox,
-                &StateCommand::SetReminderRule {
-                    task: stranger,
-                    offset: offset_before(60)
-                }
-            ),
-            Err(CommandError::UnknownTask(_))
-        ));
-        let mut dead = app;
-        let mut tombstone = task(TASK, stack_id(), true);
-        tombstone.deleted = true;
-        dead.tasks.insert(tombstone.id, tombstone);
-        assert!(matches!(
-            run(
-                &dead,
-                &outbox,
-                &StateCommand::SetReminderRule {
-                    task: task_id(),
-                    offset: offset_before(60)
-                }
-            ),
-            Err(CommandError::TaskDeleted(_))
-        ));
-    }
-
-    #[test]
-    fn set_rule_on_a_task_without_a_duedate_is_legal() {
-        // The base fixture task carries no duedate: the rule arms when a
-        // duedate arrives (due-anchored occurrence arithmetic).
-        let (app, outbox) = base();
-        assert!(
-            app.tasks
-                .get(&task_id())
-                .expect("fixture")
-                .duedate
-                .is_none()
-        );
-        let plan = run(
-            &app,
-            &outbox,
-            &StateCommand::SetReminderRule {
-                task: task_id(),
-                offset: offset_before(60),
-            },
-        )
-        .unwrap();
-        assert!(matches!(plan.outcome, CommandOutcome::ReminderSet { .. }));
-    }
-
-    // ---- AddReminderRule / RemoveReminderRule --------------------------
 
     fn add_at(secs: i64) -> StateCommand {
         StateCommand::AddReminderRule {
@@ -4468,48 +4298,29 @@ mod tests {
     }
 
     #[test]
-    fn add_rule_on_a_rule_less_task_plans_what_the_set_path_plans() {
-        // The identity pin: on a rule-less task the add plans exactly the
-        // set path's action list (its deletes were empty) — the
-        // first-remind flow is behaviorally identical.
+    fn add_rule_on_a_rule_less_task_plans_mint_and_one_enqueue() {
+        // The first-remind flow: mint + upsert + exactly one enqueue —
+        // byte-shape-identical to what the retired replace path planned
+        // on the same rule-less fixture (the identity pin, snapshot-proven
+        // by s10's verb swap with no diff).
         let (app, outbox) = base();
         let add = run(&app, &outbox, &add_at(600)).unwrap();
-        let set = run(
-            &app,
-            &outbox,
-            &StateCommand::SetReminderRule {
-                task: task_id(),
-                offset: offset_before(600),
-            },
-        )
-        .unwrap();
-        assert_eq!(add.actions.len(), set.actions.len());
-        for (a, s) in add.actions.iter().zip(&set.actions) {
-            match (a, s) {
-                (
-                    PersistenceAction::UpsertReminderRule(a),
-                    PersistenceAction::UpsertReminderRule(s),
-                ) => {
-                    assert_eq!(a.task, s.task);
-                    assert_eq!(a.offset, s.offset);
-                    assert_eq!(a.created_at, s.created_at, "the injected now");
-                    assert_eq!(a.updated_at, s.updated_at, "creation stamps both");
-                }
-                (PersistenceAction::EnqueueOp(a), PersistenceAction::EnqueueOp(s)) => {
-                    assert_eq!(a.op, s.op);
-                }
-                _ => panic!("action-kind mismatch: {a:?} vs {s:?}"),
-            }
-        }
         let CommandOutcome::ReminderRuleAdded { rule, added: true } = add.outcome else {
             panic!("expected ReminderRuleAdded, got {:?}", add.outcome);
         };
+        assert_eq!(add.actions.len(), 2, "upsert + exactly one enqueue");
         let PersistenceAction::UpsertReminderRule(stored) = &add.actions[0] else {
             panic!("expected UpsertReminderRule, got {:?}", add.actions);
         };
         assert_eq!(stored.id, rule);
         assert_eq!(stored.task, task_id());
         assert_eq!(stored.offset, offset_before(600));
+        assert_eq!(
+            stored.created_at,
+            now(),
+            "the rule stamp is the injected now"
+        );
+        assert_eq!(stored.updated_at, stored.created_at, "creation stamps both");
         let PersistenceAction::EnqueueOp(op) = add.actions.last().expect("enqueue") else {
             panic!("last action must be the enqueue");
         };

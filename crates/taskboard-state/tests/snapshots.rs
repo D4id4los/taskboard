@@ -770,7 +770,7 @@ async fn s10_boards_reset() {
     else {
         panic!("wrong receipt");
     };
-    s.run(StateCommand::SetReminderRule {
+    s.run(StateCommand::AddReminderRule {
         task,
         offset: taskboard_domain::ReminderOffset::at_due(),
     })
