@@ -10,6 +10,30 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The app-data sidecar fold, flush, and rules section (#207 + #244,
+  chunk 4): app-field edits and rule mutations now enqueue the
+  `UpdateAppData` op (mixed edits enqueue both lanes; `scheduled` is
+  flag-routed per the capability seam) and converge through the
+  document lane end to end — the engine folds the downloaded document
+  into local state behind the self-clobber guard (value **and** clock
+  copy; a rule's remote identity is its UUID; absence is never a
+  deletion; a too-new/corrupt/foreign document folds nothing louder),
+  and the sync actor flushes local truth back as a read-modify-write
+  union between each cycle's pull and its report (one PUT per board,
+  embedded-clock LWW with verbatim preservation, lane GC while the
+  connector owns `startdate`, snapshot-absence GC; rebuild triggers
+  re-seed the document from local state; the lazy gate keeps
+  native-only boards anchor-free). Fence rows land typed: transport,
+  decode, format-too-new, and moved-card evidence never re-encodes
+  the document and warns through CLI `status`
+  (`sidecar.reason`, additive — no protocol bump); permanent
+  bad-requests dead-letter as counted `FailOp`s. The per-board anchor
+  card is guarded app-layer against rename/delete
+  (`anchor-task-reserved`). Manifest assertion 4 pins every
+  `TASK_FIELDS` row's lane through the planner; tier-2 convergence
+  fixtures (two engine+actor pairs on one board) cover the field,
+  rule, echo-idempotence, and Deck-1.17.5 `scheduled` fallback
+  journeys.
 - The app-data sidecar transport + the Deck capability seam (#207,
   chunk 3): one capabilities probe per sync-actor lifetime
   (`GET ocs/v2.php/cloud/capabilities`) derives a typed
