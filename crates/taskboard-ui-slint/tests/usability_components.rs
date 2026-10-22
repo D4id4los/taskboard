@@ -294,6 +294,50 @@ fn the_tooltip_hand_off_places_inside_the_window_and_carries_parts() {
     );
 }
 
+/// Round-1 D7/D8 — the row tooltip: hovering somewhere over the open
+/// menu's rows arms the generalized trigger whose description is
+/// non-empty and whose keys are the row's binding hint (structural;
+/// the text itself is never asserted).
+#[test]
+fn hovering_a_menu_row_arms_the_entry_tooltip() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let handle = mount_populated(driver, 1.0, 1000, 900);
+            let tooltip = handle.window().global::<taskboard_ui_slint::TooltipState>();
+            handle.window().invoke_toolbar_menu_clicked();
+            driver.advance_time(0);
+
+            let facts = handle
+                .window()
+                .global::<taskboard_ui_slint::MenuPanelFacts>();
+            let (px, pw) = (facts.get_x(), facts.get_width());
+            let (py, ph) = (facts.get_y(), facts.get_height());
+            let mut armed = false;
+            // Scan the panel's interior: some enabled row engages
+            // hover and arms the trigger.
+            let mut y = py + 8.0;
+            while y < py + ph - 8.0 {
+                driver.hover_at(px + pw / 2.0, y);
+                driver.advance_time(0);
+                if tooltip.get_pending() {
+                    armed = true;
+                    break;
+                }
+                y += 6.0;
+            }
+            assert!(armed, "a row hover arms the tooltip");
+            assert!(
+                !tooltip.get_description().is_empty(),
+                "the armed tooltip carries the entry's description"
+            );
+            tooltip.invoke_unhover();
+        },
+    );
+}
+
 /// The focus-ring colour, Theme.focus-ring #7aa2f7 — the menu panel's
 /// border and the selected row's ring are the only renderers of it.
 const FOCUS_RING: [u8; 3] = [0x7a, 0xa2, 0xf7];

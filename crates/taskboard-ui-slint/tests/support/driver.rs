@@ -65,6 +65,9 @@ pub trait JourneyDriver {
     /// window position — the dismissal layer's and the context menu's
     /// coordinate-space seam (round-1 D2/D13).
     fn click_at(&mut self, x: f32, y: f32);
+    /// Delivers a pointer move (hover) at the logical window
+    /// position — the tooltip trigger's seam (round-1 D8).
+    fn hover_at(&mut self, x: f32, y: f32);
     /// Sets the window size in logical px (scale factor 1 → also
     /// physical); drives the `Responsive` breakpoints.
     fn set_window_size(&mut self, width: u32, height: u32);
@@ -168,6 +171,14 @@ impl JourneyDriver for SlintDriver {
         ] {
             window.dispatch_event(event);
         }
+    }
+
+    fn hover_at(&mut self, x: f32, y: f32) {
+        let component = self.window();
+        let window = component.window();
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(x, y),
+        });
     }
 
     fn set_window_size(&mut self, width: u32, height: u32) {
