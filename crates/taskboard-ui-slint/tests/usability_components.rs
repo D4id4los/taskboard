@@ -14,6 +14,8 @@ use support::golden_compare::Rgba8Image;
 
 use std::sync::Arc;
 
+use slint::ComponentHandle as _;
+
 use arc_swap::ArcSwap;
 use taskboard_ui_slint::UiSettings;
 
@@ -118,4 +120,69 @@ fn the_hamburger_bar_holds_its_token_derived_square_at_every_geometry() {
             },
         );
     }
+}
+
+/// G4 — the tooltip state machine (plan D3): hover arms a 600 ms
+/// delay, the mock clock fires it, unhover dismisses, an empty label
+/// never arms, and a re-hover inside the delay window restarts it.
+/// Typed state only — the `TooltipState` global's accessors.
+#[test]
+fn the_tooltip_delay_dismissal_and_restart_behave() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let handle = mount_populated(driver, 1.0, 1000, 900);
+            let tooltip = handle.window().global::<taskboard_ui_slint::TooltipState>();
+
+            // The delay: visible only after 600 ms of hover. The arm
+            // is invocation-driven, so the restart below is exact.
+            tooltip.invoke_hover("New stack".into(), 10.0, 10.0, 32.0, 32.0);
+            driver.advance_time(599);
+            assert!(!tooltip.get_visible(), "still inside the delay window");
+            driver.advance_time(1);
+            assert!(tooltip.get_visible(), "the delay fired");
+
+            // Dismissal: unhover hides and disarms.
+            tooltip.invoke_unhover();
+            assert!(!tooltip.get_visible());
+
+            // An empty label never arms (a control without a label
+            // never shows a tooltip).
+            tooltip.invoke_hover("".into(), 10.0, 10.0, 32.0, 32.0);
+            driver.advance_time(600);
+            assert!(!tooltip.get_visible(), "empty label stays hidden");
+
+            // Re-hover inside the delay window restarts it.
+            tooltip.invoke_hover("Command menu".into(), 40.0, 10.0, 32.0, 32.0);
+            driver.advance_time(599);
+            tooltip.invoke_hover("Command menu".into(), 40.0, 10.0, 32.0, 32.0);
+            driver.advance_time(599);
+            assert!(!tooltip.get_visible(), "the restart reset the delay window");
+            driver.advance_time(1);
+            assert!(tooltip.get_visible());
+            tooltip.invoke_unhover();
+
+            // Dismissal: unhover hides and disarms.
+            tooltip.invoke_unhover();
+            assert!(!tooltip.get_visible());
+
+            // An empty label never arms (a control without a label
+            // never shows a tooltip).
+            tooltip.invoke_hover("".into(), 10.0, 10.0, 32.0, 32.0);
+            driver.advance_time(600);
+            assert!(!tooltip.get_visible(), "empty label stays hidden");
+
+            // Re-hover inside the delay window restarts it.
+            tooltip.invoke_hover("Command menu".into(), 40.0, 10.0, 32.0, 32.0);
+            driver.advance_time(599);
+            tooltip.invoke_hover("Command menu".into(), 40.0, 10.0, 32.0, 32.0);
+            driver.advance_time(599);
+            assert!(!tooltip.get_visible(), "the restart reset the delay window");
+            driver.advance_time(1);
+            assert!(tooltip.get_visible());
+            tooltip.invoke_unhover();
+        },
+    );
 }

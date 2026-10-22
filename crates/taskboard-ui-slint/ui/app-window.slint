@@ -17,10 +17,11 @@ import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
+import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive }
+export { Theme, Typography, Semantic, Responsive, TooltipState }
 export { BoardBarModel, BoardSegmentModel }
 
 export enum KeyFeedback {
@@ -144,13 +145,30 @@ export component AppWindow inherits Window {
         }
 
         // The generated menu host (§5.9): keyed to the shell's menu
-        // state, no key handlers of its own.
+        // state, no key handlers of its own. Mounting dismisses any
+        // pending tooltip (the menu is the modal context now).
         if (KeyboardState.menu-open): ActionMenu {
+            init => TooltipState.unhover();
             x: Theme.space-8;
             y: Theme.space-8;
             entries: KeyboardState.menu-entries;
             selected-index: KeyboardState.menu-selected-index;
             invoke-entry(index) => root.menu-entry-invoked(index);
+        }
+
+        // The tooltip host (usability D3): after the menu host, so a
+        // concurrent menu paints over it. Placement defaults below
+        // the anchor and flips above only when the below placement's
+        // bottom edge would cross the status bar's top edge
+        // (`status.y`, window coords — the inner layouts sit at the
+        // origin) *and* there is room above the anchor; x is centred
+        // and clamped to the margins.
+        if (TooltipState.visible): TooltipPanel {
+            x: max(Theme.space-2, min(TooltipState.anchor-x + TooltipState.anchor-width / 2 - self.width / 2, root.width - self.width - Theme.space-2));
+            y: TooltipState.anchor-y + TooltipState.anchor-height + Theme.space-1 + self.height > status.y
+                    && TooltipState.anchor-y >= self.height + Theme.space-1
+                ? TooltipState.anchor-y - Theme.space-1 - self.height
+                : TooltipState.anchor-y + TooltipState.anchor-height + Theme.space-1;
         }
     }
 

@@ -119,6 +119,12 @@ pub struct UiHandle {
     /// refresh). Started by `mount`; never fires without a running
     /// event loop (the tests call `refresh` directly).
     timer: slint::Timer,
+    /// The tooltip delay driver (usability D3). Arming is
+    /// invocation-driven so a repeated hover restarts the window.
+    /// Never read: the closures hold the working handles; this field
+    /// owns the timer's lifetime alongside the window.
+    #[allow(dead_code)]
+    tooltip_timer: std::rc::Rc<slint::Timer>,
 }
 
 /// Creates the window and applies the theme state (theme init is a
@@ -163,11 +169,13 @@ pub fn mount(
         commands,
         Arc::clone(&state),
     );
+    let tooltip_timer = install_tooltip_delay(&window);
     let handle = UiHandle {
         window,
         adapter,
         state,
         timer: slint::Timer::default(),
+        tooltip_timer,
     };
     start_repaint_driver(&handle, signals, system);
     // The first paint is a refresh, not a timer wait (D1's
@@ -186,6 +194,42 @@ pub fn mount(
     );
     Ok(handle)
 }
+
+/// Arms the tooltip delay driver (usability pass D3): a one-shot
+/// slint timer restarted on every `delay-requested` invocation — the
+/// invocation path (not property changes) is what makes a re-hover
+/// inside the delay window restart it. Fires under the testing
+/// backend's mock clock, so the component tests are deterministic.
+fn install_tooltip_delay(window: &AppWindow) -> std::rc::Rc<slint::Timer> {
+    let tooltip = window.global::<TooltipState>();
+    let weak = window.as_weak();
+    let timer = std::rc::Rc::new(slint::Timer::default());
+    let arm = std::rc::Rc::clone(&timer);
+    let fire_weak = weak.clone();
+    tooltip.on_delay_requested(move || {
+        let fire_weak = fire_weak.clone();
+        arm.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(TOOLTIP_DELAY_MS),
+            move || {
+                if let Some(window) = fire_weak.upgrade() {
+                    let tooltip = window.global::<TooltipState>();
+                    tooltip.set_visible(true);
+                    tooltip.set_pending(false);
+                }
+            },
+        );
+    });
+    let dismiss_timer = std::rc::Rc::clone(&timer);
+    tooltip.on_dismiss_requested(move || {
+        dismiss_timer.stop();
+    });
+    timer
+}
+
+/// The tooltip delay (usability D3): a duration, not a layout
+/// dimension.
+pub const TOOLTIP_DELAY_MS: u64 = 600;
 
 /// Starts the D1 repaint driver: a repeating slint `Timer` on the
 /// slint thread that drains the engine-signal and system-event

@@ -7,6 +7,7 @@
 // keys).
 
 import { Theme, Semantic, Tone } from "../theme.slint";
+import { TooltipState } from "tooltip.slint";
 
 // The closed icon vocabulary (D19): grows only with a theme decision.
 export enum IconKind {
@@ -120,7 +121,19 @@ export component IconButton inherits Rectangle {
     }
 
     touch := TouchArea {
+        // The tooltip trigger (usability D3): enter arms the delay,
+        // leave and click dismiss — the label is the same property
+        // the a11y layer reads, so the tooltip never says anything
+        // the accessible tree doesn't.
+        changed has-hover => {
+            if (self.has-hover) {
+                TooltipState.hover(root.label, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+            } else {
+                TooltipState.unhover();
+            }
+        }
         clicked => {
+            TooltipState.unhover();
             focus-surface.focus();
             root.clicked();
         }
