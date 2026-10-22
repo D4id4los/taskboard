@@ -17,6 +17,7 @@ import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
+import { SettingsView } from "views/settings-view.slint";
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { MenuPanelFacts } from "menu-facts.slint";
 
@@ -37,6 +38,7 @@ export enum View {
     board,
     stack-detail,
     task-detail,
+    settings,
 }
 
 // The keymap layer's window-facing state (D18), pushed one-way from
@@ -92,6 +94,9 @@ export component AppWindow inherits Window {
     // The stack.wider binding hint for the header tooltips (D18).
     in-out property <[string]> stack-header-hint;
     in-out property <View> current-view: View.board;
+    // The settings back affordance (round-1 D6.6): the dedicated close
+    // seam (the adapter's `settings-back-clicked`).
+    callback settings-back-clicked();
     in-out property <BoardModel> board-model;
     in-out property <BoardBarModel> board-bar-model;
     in-out property <StackDetailModel> stack-model;
@@ -170,6 +175,9 @@ export component AppWindow inherits Window {
                 task-context(i, x, y) => root.stack-task-context-requested(i, x, y);
                 create-committed(t) => root.stack-create-committed(t);
                 create-edited(t) => root.stack-create-edited(t);
+            }
+            if (root.current-view == View.settings): SettingsView {
+                back-clicked() => root.settings-back-clicked();
             }
             if (root.current-view == View.task-detail): TaskView {
                 task: root.task-model;

@@ -140,7 +140,8 @@ impl KeymapShell {
             | UiEffect::BoardPrevious
             | UiEffect::BoardSelect(_)
             | UiEffect::StackWider
-            | UiEffect::StackNarrower => {}
+            | UiEffect::StackNarrower
+            | UiEffect::OpenSettings => {}
         }
         true
     }

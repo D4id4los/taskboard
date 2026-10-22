@@ -43,9 +43,9 @@ expression: rows
   contexts:
     - global
   category: application
-  enabled: false
+  enabled: true
   menu_rank: 10
-  description: Opens the settings view. Not yet available — lands with the settings chunk.
+  description: "Opens or closes the settings view: sync connections, keymap preset, UI scale."
   menu_group: ~
 - id: app.help
   label: Open help

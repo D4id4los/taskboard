@@ -96,6 +96,11 @@ expression: rows
         - sequence:
             - Down
           action: nav.next-item
+    - context: settings
+      bindings:
+        - sequence:
+            - Escape
+          action: app.settings
     - context: menu
       bindings:
         - sequence:
@@ -216,6 +221,11 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: nav.prev-item
+    - context: settings
+      bindings:
+        - sequence:
+            - Escape
+          action: app.settings
     - context: menu
       bindings:
         - sequence:
@@ -240,6 +250,11 @@ expression: rows
           action: mode.normal
 - preset: vi
   contexts:
+    - context: settings
+      bindings:
+        - sequence:
+            - Escape
+          action: app.settings
     - context: menu
       bindings:
         - sequence:

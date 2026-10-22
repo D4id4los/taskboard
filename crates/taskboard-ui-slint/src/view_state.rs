@@ -28,6 +28,9 @@ pub enum ViewId {
     Board,
     StackDetail,
     TaskDetail,
+    /// The settings surface (round-1 D5/D24b): reachable only through
+    /// `open_settings` — never a member of the `step_view` cycle.
+    Settings,
 }
 
 /// The active flow (D9): at most one — edit (create row or title) XOR
@@ -89,6 +92,11 @@ pub struct ViewState {
     /// forever — never a domain type (DF-2); `reconcile` leaves it
     /// alone (liveness pruning is the app forwarder's write-time job).
     stack_widths: BTreeMap<BoardId, BTreeMap<StackId, u32>>,
+    /// The view to restore when Settings closes (round-1 D5): only the
+    /// three cycle views are ever stored; `close_settings` takes it —
+    /// "returns to the exact previous view" is this snapshot, not a
+    /// cycle walk.
+    settings_return: Option<ViewId>,
 }
 
 /// The canonical append position in `stack`: max canonical order + 1.
@@ -135,6 +143,7 @@ impl ViewState {
             flow: Flow::None,
             buffer: String::new(),
             stack_widths: BTreeMap::new(),
+            settings_return: None,
         }
     }
 
@@ -212,6 +221,7 @@ impl ViewState {
             ViewId::Board => ContextId::Board,
             ViewId::StackDetail => ContextId::StackDetail,
             ViewId::TaskDetail => ContextId::TaskDetail,
+            ViewId::Settings => ContextId::Settings,
         }
     }
 
@@ -246,13 +256,37 @@ impl ViewState {
 
     /// `nav.next-view`: the one cycle with subject validation — a
     /// view without a subject is skipped (an empty board stays put).
+    /// Inert while Settings is open (round-1 D5: the cycle never
+    /// passes through the settings surface).
     pub fn next_view(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        if self.view == ViewId::Settings {
+            return Vec::new();
+        }
         self.step_view(state, 1)
     }
 
-    /// `nav.prev-view`: the cycle backwards.
+    /// `nav.prev-view`: the cycle backwards; inert while Settings is
+    /// open (round-1 D5).
     pub fn prev_view(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        if self.view == ViewId::Settings {
+            return Vec::new();
+        }
         self.step_view(state, -1)
+    }
+
+    /// Opens the settings surface (round-1 D6): records the current
+    /// view for the exact restore and enters Settings.
+    pub fn open_settings(&mut self) -> Vec<FlowOutcome> {
+        self.settings_return = Some(self.view);
+        self.view = ViewId::Settings;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Closes the settings surface: restores the recorded return view,
+    /// the board when none was recorded.
+    pub fn close_settings(&mut self) -> Vec<FlowOutcome> {
+        self.view = self.settings_return.take().unwrap_or(ViewId::Board);
+        vec![FlowOutcome::RefreshNow]
     }
 
     fn step_view(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
@@ -306,6 +340,9 @@ impl ViewState {
                     None => false,
                 }
             }
+            // The settings surface never enters through the cycle
+            // (round-1 D5): only `open_settings` reaches it.
+            ViewId::Settings => false,
         }
     }
 
@@ -524,6 +561,8 @@ impl ViewState {
                 .subject_task
                 .and_then(|t| state.tasks.get(&t))
                 .map(|t| t.stack),
+            // The settings surface hosts no create flow (round-1 D5).
+            ViewId::Settings => None,
         }
     }
 
@@ -1802,5 +1841,109 @@ mod tests {
             Vec::new()
         );
         let _ = b1;
+    }
+}
+
+#[cfg(test)]
+mod settings_surface_tests {
+    use super::*;
+
+    fn one_board() -> AppState {
+        let board = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let epoch = taskboard_domain::BoardClocks::epoch();
+        state.boards.insert(
+            board,
+            taskboard_domain::Board {
+                id: board,
+                remote: None,
+                title: "board".into(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: epoch,
+                    color: epoch,
+                    archived: epoch,
+                    deleted: epoch,
+                },
+                remote_seen: None,
+            },
+        );
+        state
+    }
+
+    fn editing_state(stack: StackId) -> AppState {
+        let mut state = one_board();
+        let epoch = taskboard_domain::BoardClocks::epoch();
+        state.stacks.insert(
+            stack,
+            taskboard_domain::Stack {
+                id: stack,
+                remote: None,
+                board: *state.boards.keys().next().expect("board"),
+                title: "stack".into(),
+                order: 0,
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::StackClocks {
+                    title: epoch,
+                    order: epoch,
+                    deleted: epoch,
+                },
+                remote_seen: None,
+            },
+        );
+        state
+    }
+
+    /// T2 — open records the return view; close restores it exactly
+    /// (the board when nothing was recorded); the cycle verbs are
+    /// inert while open; the context is `Settings`; reconcile keeps it
+    /// open and still normalizes the board.
+    #[test]
+    fn the_settings_surface_choreography_is_exact() {
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let state = editing_state(stack);
+
+        // From StackDetail: open → context + record; close → exact
+        // restore.
+        let mut vs = ViewState::new();
+        vs.reconcile(&state); // seeds the board selection (the refresh-time rule)
+        assert!(vs.enter(&state, ViewId::StackDetail));
+        assert_eq!(vs.context(), ContextId::StackDetail);
+        assert_eq!(vs.open_settings(), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.view(), ViewId::Settings);
+        assert_eq!(vs.context(), ContextId::Settings);
+        assert_eq!(vs.close_settings(), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.view(), ViewId::StackDetail);
+
+        // The board default: closing with nothing recorded lands on
+        // the board.
+        let mut vs = ViewState::new();
+        vs.open_settings();
+        vs.close_settings();
+        assert_eq!(vs.view(), ViewId::Board);
+
+        // The cycle verbs are inert while open (both directions).
+        let mut vs = ViewState::new();
+        vs.open_settings();
+        assert_eq!(vs.next_view(&state), Vec::new());
+        assert_eq!(vs.prev_view(&state), Vec::new());
+        assert_eq!(vs.view(), ViewId::Settings);
+
+        // Reconcile while open: stays open, still normalizes the board
+        // selection (the seed rule ran — the board is live).
+        vs.reconcile(&state);
+        assert_eq!(vs.view(), ViewId::Settings);
+        assert!(vs.board().is_some());
+
+        // The surface never enters through the cycle (the enter-guard
+        // arm): the ring walk from the board never reaches Settings.
+        let mut vs = ViewState::new();
+        for _ in 0..4 {
+            vs.next_view(&state);
+            assert_ne!(vs.view(), ViewId::Settings);
+        }
     }
 }

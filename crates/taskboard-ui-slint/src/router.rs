@@ -79,6 +79,10 @@ pub enum UiEffect {
     StackWider,
     /// Narrow the focused stack's column by one step.
     StackNarrower,
+    // --- round-1 chunk 3 (D28b): the settings surface — a `ViewId`
+    // excluded from the view cycle; the adapter toggles it.
+    /// Open the settings view (or close it — toggle semantics).
+    OpenSettings,
 }
 
 /// What dispatching an action produced (D16).
@@ -188,10 +192,11 @@ impl ActionRouter {
             },
             ActionId::StackWider => DispatchOutcome::UiEffect(UiEffect::StackWider),
             ActionId::StackNarrower => DispatchOutcome::UiEffect(UiEffect::StackNarrower),
+            // Round-1 chunk 3 (D28b): the settings opener is live.
+            ActionId::AppSettings => DispatchOutcome::UiEffect(UiEffect::OpenSettings),
             // Reserved (§5.8) — the only disabled rows left (D6).
             ActionId::AppUndo
             | ActionId::AppRedo
-            | ActionId::AppSettings
             | ActionId::AppHelp
             | ActionId::CaptureQuick
             | ActionId::PaletteSearch => DispatchOutcome::Disabled,
