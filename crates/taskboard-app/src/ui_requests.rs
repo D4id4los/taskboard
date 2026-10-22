@@ -279,7 +279,7 @@ async fn test_connection(
         .map_err(map_credential_error)?;
     crate::connections::verify_credentials(&target.server_url, &target.username, password.expose())
         .await
-        .map_err(map_verify_error)
+        .map_err(map_ceremony_error)
 }
 
 /// The Save ceremony (plan D3, in order; nothing persists before
@@ -310,7 +310,7 @@ async fn save_connection(
         &profile.password.0,
     )
     .await
-    .map_err(map_verify_error)?;
+    .map_err(map_ceremony_error)?;
 
     // The rotation target: the replaced entry's identity, only when an
     // entry under this name existed and its identity differs.
@@ -334,7 +334,7 @@ async fn save_connection(
         &profile.password.0,
         old,
     )
-    .map_err(map_verify_error)?;
+    .map_err(map_ceremony_error)?;
 
     // Detach-first, then attach (the session ceremony's swap rule).
     let id = ConnectorId::from(profile.name.clone());
@@ -509,9 +509,10 @@ fn map_config_error(err: &ConfigError) -> SettingsError {
     }
 }
 
-/// The verification error's mapping (the `map_deck_error` classes the
-/// extracted ceremony produces).
-fn map_verify_error(err: CommandError) -> SettingsError {
+/// The extracted ceremony's error mapping (the `map_deck_error`
+/// classes `verify_credentials` produces; the store/rotate path's
+/// credential arm rides the same table).
+fn map_ceremony_error(err: CommandError) -> SettingsError {
     match err {
         CommandError::InvalidCredentials => SettingsError::VerifyRejected,
         CommandError::Unreachable => SettingsError::VerifyUnreachable,
@@ -1057,15 +1058,15 @@ mod tests {
 
         // verify classes
         assert_eq!(
-            map_verify_error(CommandError::InvalidCredentials),
+            map_ceremony_error(CommandError::InvalidCredentials),
             E::VerifyRejected
         );
         assert_eq!(
-            map_verify_error(CommandError::Unreachable),
+            map_ceremony_error(CommandError::Unreachable),
             E::VerifyUnreachable
         );
         assert_eq!(
-            map_verify_error(CommandError::Deck(Box::new(
+            map_ceremony_error(CommandError::Deck(Box::new(
                 taskboard_sync_nextcloud::DeckError::BadRequest
             ))),
             E::VerifyFailed
