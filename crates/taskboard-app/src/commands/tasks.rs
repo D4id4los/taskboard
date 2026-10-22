@@ -138,9 +138,13 @@ fn stack_groups(state: &AppState, selector: Option<&str>) -> Result<Vec<StackGro
             id: s.id.as_uuid().to_string(),
             title: s.title.clone(),
             order: s.order,
+            // The anchor card is hidden from list surfaces (DDF-5, the
+            // presentation-layer exact-title filter); every derived
+            // count follows because the filter sits at the row source.
             tasks: state
                 .tasks_in_stack(s.id)
                 .iter()
+                .filter(|t| t.title != taskboard_domain::ANCHOR_CARD_TITLE)
                 .map(|t| task_row(state, t, &due))
                 .collect(),
         })

@@ -697,15 +697,19 @@ async fn e10_anchor_title_guard_refuses_rename_and_delete() {
     .await
     .expect("the identical title re-assertion passes");
 
-    // The anchor survives everything above.
+    // The anchor survives everything above. (Its list row is hidden
+    // since chunk 5's presentation filter — DDF-5 — so survival is
+    // proven structurally: the identical-title no-op above resolved
+    // the live anchor through the engine.)
     let list = tasks::list(config.clone(), forbidden_store(), None)
         .await
         .expect("list");
     assert!(
-        list.stacks[0]
+        !list.stacks[0]
             .tasks
             .iter()
-            .any(|row| row.title == taskboard_domain::ANCHOR_CARD_TITLE)
+            .any(|row| row.title == taskboard_domain::ANCHOR_CARD_TITLE),
+        "the anchor is filtered from the list (DDF-5), not deleted"
     );
 
     // Non-anchor tasks pass untouched (both verbs).
@@ -728,4 +732,140 @@ async fn e10_anchor_title_guard_refuses_rename_and_delete() {
         .await
         .expect("non-anchor deletes pass");
     let _ = CommandError::AnchorTaskReserved; // the variant is the typed fact
+}
+
+/// E11: the field-family edits round-trip the CLI lane — set, then
+/// clear — with the typed `TaskRow` fields as the assertion surface
+/// (plan §3.7; the flag→changeset mapping is unit-tested, this is the
+/// round-trip).
+#[tokio::test]
+async fn e11_field_edits_round_trip_and_clear() {
+    use taskboard_domain::{Effort, Importance, TaskChanges, Urgency};
+
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e11.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+    tasks::add(config.clone(), forbidden_store(), "estimated", None)
+        .await
+        .expect("task");
+
+    let start: chrono::DateTime<chrono::Utc> = chrono::NaiveDate::from_ymd_opt(2026, 10, 25)
+        .and_then(|d| d.and_hms_opt(9, 0, 0))
+        .expect("9am")
+        .and_utc();
+    tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        "estimated",
+        TaskChanges {
+            scheduled: Some(Some(start)),
+            effort: Some(Some(Effort::new(5400))),
+            importance: Some(Some(Importance::High)),
+            urgency: Some(Some(Urgency::VeryLow)),
+            ..TaskChanges::default()
+        },
+    )
+    .await
+    .expect("field edit");
+
+    let list = tasks::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list");
+    let row = &list.stacks[0].tasks[0];
+    assert_eq!(row.scheduled, Some(start));
+    assert_eq!(row.effort, Some(5400));
+    assert_eq!(row.importance.as_deref(), Some("high"));
+    assert_eq!(row.urgency.as_deref(), Some("very-low"));
+
+    // Clear everything (the `none` sentinels) in one edit.
+    tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        "estimated",
+        TaskChanges {
+            scheduled: Some(None),
+            effort: Some(None),
+            importance: Some(None),
+            urgency: Some(None),
+            ..TaskChanges::default()
+        },
+    )
+    .await
+    .expect("clear edit");
+    let list = tasks::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list after clear");
+    let row = &list.stacks[0].tasks[0];
+    assert_eq!(row.scheduled, None);
+    assert_eq!(row.effort, None);
+    assert_eq!(row.importance, None);
+    assert_eq!(row.urgency, None);
+}
+
+/// E12: the anchor task is hidden from `tasks list` (the presentation
+/// filter, DDF-5) while staying resolvable — a near-miss title stays
+/// visible, and an edit attempt on the anchor yields the typed
+/// `anchor-task-reserved`, proving both halves in one journey.
+#[tokio::test]
+async fn e12_anchor_hides_from_the_list_but_stays_resolvable() {
+    use taskboard_app::commands::CommandError;
+    use taskboard_domain::TaskChanges;
+
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e12.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+    tasks::add(config.clone(), forbidden_store(), "plain", None)
+        .await
+        .expect("plain task");
+    // A visible near-miss: a trailing space is not the anchor title.
+    tasks::add(
+        config.clone(),
+        forbidden_store(),
+        "[taskboard] app-data ",
+        None,
+    )
+    .await
+    .expect("near-miss task");
+    tasks::add(
+        config.clone(),
+        forbidden_store(),
+        taskboard_domain::ANCHOR_CARD_TITLE,
+        None,
+    )
+    .await
+    .expect("anchor-titled task");
+
+    let list = tasks::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list");
+    let titles: Vec<&str> = list.stacks[0]
+        .tasks
+        .iter()
+        .map(|row| row.title.as_str())
+        .collect();
+    assert!(
+        !titles.contains(&taskboard_domain::ANCHOR_CARD_TITLE),
+        "the anchor is filtered from the list rows"
+    );
+    assert!(
+        titles.contains(&"[taskboard] app-data "),
+        "the near-miss stays visible (byte-exact filtering)"
+    );
+    assert!(titles.contains(&"plain"));
+    assert_eq!(titles.len(), 2, "no other row is filtered with the anchor");
+
+    // Still resolvable by exact title: the guard fires (not
+    // unknown-task), proving resolution reached the anchor.
+    let err = tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        taskboard_domain::ANCHOR_CARD_TITLE,
+        TaskChanges {
+            title: Some("sneaky rename".to_owned()),
+            ..TaskChanges::default()
+        },
+    )
+    .await
+    .expect_err("the anchor edit is refused");
+    assert!(matches!(err, CommandError::AnchorTaskReserved));
 }

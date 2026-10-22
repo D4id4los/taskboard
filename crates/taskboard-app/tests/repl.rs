@@ -1038,6 +1038,52 @@ async fn r12_session_arms_route_success_end_to_end() {
             .await,
             0
         );
+        // The field flags ride the same arm (the REPL mirror): one
+        // line sets scheduled/effort/importance and clears urgency;
+        // the booted core's list shows the round-trip.
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 10, 25)
+            .and_then(|d| d.and_hms_opt(9, 0, 0))
+            .expect("9am")
+            .and_utc();
+        assert_eq!(
+            route_line(
+                &session,
+                &app,
+                Command::Tasks {
+                    cmd: TasksCmd::Edit {
+                        task: "t2-renamed".to_owned(),
+                        title: None,
+                        description: None,
+                        due: None,
+                        scheduled: Some(taskboard_app::cli::DueSpec::Set(start)),
+                        effort: Some(taskboard_app::cli::EffortSpec::Set(
+                            taskboard_domain::Effort::new(5400)
+                        )),
+                        importance: Some(taskboard_app::cli::ImportanceSpec::Set(
+                            taskboard_domain::Importance::High
+                        )),
+                        urgency: Some(taskboard_app::cli::UrgencySpec::Clear),
+                        archive: false,
+                        unarchive: false,
+                    },
+                },
+                &mut io,
+            )
+            .await,
+            0
+        );
+        let list = tasks::list_on(&app, None).expect("list on the session core");
+        let row = list
+            .stacks
+            .iter()
+            .flat_map(|g| g.tasks.iter())
+            .find(|row| row.title == "t2-renamed")
+            .expect("the edited row");
+        assert_eq!(row.scheduled, Some(start));
+        assert_eq!(row.effort, Some(5400));
+        assert_eq!(row.importance.as_deref(), Some("high"));
+        assert_eq!(row.urgency, None, "the clear sentinel left it unset");
+
         assert_eq!(
             route_line(
                 &session,
