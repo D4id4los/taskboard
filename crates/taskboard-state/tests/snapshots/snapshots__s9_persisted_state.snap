@@ -165,6 +165,9 @@ sync:
       failures: 0
       offline_episodes: 0
       last_cycle: ~
+    sidecar: Healthy
+    features:
+      card_startdate: false
 reminders:
   rules: {}
   deliveries: []

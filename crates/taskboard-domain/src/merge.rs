@@ -175,7 +175,12 @@ fn map_remote_labels(
 /// resurrected iff the remote write is strictly newer than the tombstone
 /// (R5); otherwise the tombstone stands and its pending delete re-pushes.
 #[must_use]
-pub fn merge_task(local: &Task, remote: &RemoteTask, ctx: &RemoteIndex) -> Task {
+pub fn merge_task(
+    local: &Task,
+    remote: &RemoteTask,
+    ctx: &RemoteIndex,
+    native_scheduled: bool,
+) -> Task {
     let ts_r = remote.last_modified;
     tracing::trace!(
         task_id = ?local.id,
@@ -202,7 +207,11 @@ pub fn merge_task(local: &Task, remote: &RemoteTask, ctx: &RemoteIndex) -> Task 
         merged.duedate = remote.duedate;
         merged.clocks.duedate = ts_r;
     }
-    let scheduled_remote_wins = remote_wins(ts_r, local.clocks.scheduled);
+    // D-V2's sharp edge: while the connector lacks native `startdate`
+    // writes, *nothing native* touches `scheduled` — the always-absent
+    // remote value must never clobber local state via "remote wins,
+    // value null". The field belongs exclusively to the sidecar fold.
+    let scheduled_remote_wins = native_scheduled && remote_wins(ts_r, local.clocks.scheduled);
     if scheduled_remote_wins {
         merged.scheduled = remote.scheduled;
         merged.clocks.scheduled = ts_r;
@@ -516,7 +525,12 @@ pub fn tombstone_task(local: &Task, observed_at: DateTime<Utc>) -> Task {
 /// be "newer" than the just-made local edit, yet its normalization must
 /// land.
 #[must_use]
-pub fn adopt_task_after_push(local: &Task, echo: &RemoteTask, ctx: &RemoteIndex) -> Task {
+pub fn adopt_task_after_push(
+    local: &Task,
+    echo: &RemoteTask,
+    ctx: &RemoteIndex,
+    native_scheduled: bool,
+) -> Task {
     let lm = echo.last_modified;
     tracing::trace!(
         task_id = ?local.id,
@@ -532,13 +546,24 @@ pub fn adopt_task_after_push(local: &Task, echo: &RemoteTask, ctx: &RemoteIndex)
         stack_fallback,
         "task echo adopted"
     );
+    // The echo-path half of D-V2's invariant: while the flag is false,
+    // the echo's `startdate` is null *because our own capability-gated
+    // write sent null* — adopting it (with its clock advanced) would
+    // clobber local `scheduled` on every full-send card push echo.
+    // The echo-path clobber hazard: value and clock both keep the
+    // local truth while the flag is false.
+    let (echo_scheduled, echo_scheduled_clock) = if native_scheduled {
+        (echo.scheduled, max_ts(local.clocks.scheduled, lm))
+    } else {
+        (local.scheduled, local.clocks.scheduled)
+    };
     Task {
         id: local.id,
         remote: Some(echo.id),
         title: echo.title.clone(),
         description: echo.description.clone(),
         duedate: echo.duedate,
-        scheduled: echo.scheduled,
+        scheduled: echo_scheduled,
         done: echo.done,
         stack: resolve_local_stack(ctx, echo.id.board, echo.stack).unwrap_or(local.stack),
         order: echo.order,
@@ -552,7 +577,7 @@ pub fn adopt_task_after_push(local: &Task, echo: &RemoteTask, ctx: &RemoteIndex)
             title: max_ts(local.clocks.title, lm),
             description: max_ts(local.clocks.description, lm),
             duedate: max_ts(local.clocks.duedate, lm),
-            scheduled: max_ts(local.clocks.scheduled, lm),
+            scheduled: echo_scheduled_clock,
             done: max_ts(local.clocks.done, lm),
             position: max_ts(local.clocks.position, lm),
             labels: max_ts(local.clocks.labels, lm),
@@ -1183,7 +1208,7 @@ mod tests {
         local.clocks.scheduled = ts(BASE - 120);
         let mut remote = remote_task(1, 1, BASE + 300);
         remote.scheduled = Some(ts(BASE + 240));
-        let merged = merge_task(&local, &remote, &ctx);
+        let merged = merge_task(&local, &remote, &ctx, true);
         assert_eq!(merged.scheduled, Some(ts(BASE + 240)));
         assert_eq!(merged.clocks.scheduled, ts(BASE + 300));
 
@@ -1193,7 +1218,7 @@ mod tests {
         local.clocks.scheduled = ts(BASE + 400);
         let mut remote = remote_task(1, 1, BASE + 300);
         remote.scheduled = Some(ts(BASE + 240));
-        let merged = merge_task(&local, &remote, &ctx);
+        let merged = merge_task(&local, &remote, &ctx, true);
         assert_eq!(merged.scheduled, Some(ts(BASE + 400)));
         assert_eq!(merged.clocks.scheduled, ts(BASE + 400));
     }
@@ -1219,7 +1244,7 @@ mod tests {
         local.clocks.scheduled = ts(BASE - 120);
         let mut echo = remote_task(1, 1, BASE + 300);
         echo.scheduled = Some(ts(BASE - 120)); // server normalization echo
-        let adopted = adopt_task_after_push(&local, &echo, &ctx);
+        let adopted = adopt_task_after_push(&local, &echo, &ctx, true);
         assert_eq!(adopted.scheduled, Some(ts(BASE - 120)));
         assert_eq!(
             adopted.clocks.scheduled,
@@ -1237,7 +1262,7 @@ mod tests {
         remote.description = "edited remotely".into();
 
         let ctx = RemoteIndex::default();
-        let merged = merge_task(&local, &remote, &ctx);
+        let merged = merge_task(&local, &remote, &ctx, true);
 
         assert_eq!(merged.title, "edited locally");
         assert_eq!(merged.description, "edited remotely");
@@ -1251,7 +1276,7 @@ mod tests {
         let remote = remote_task(1, 1, BASE + 360); // 10:06:00, description edit
 
         let ctx = RemoteIndex::default();
-        let merged = merge_task(&local, &remote, &ctx);
+        let merged = merge_task(&local, &remote, &ctx, true);
 
         // The unchanged remote title wins over the newer local edit —
         // Deck's entity-level granularity. Pinned as intentional (ADR 0004).
@@ -1273,7 +1298,7 @@ mod tests {
         remote.archived = false;
 
         let ctx = RemoteIndex::default();
-        let merged = merge_task(&local, &remote, &ctx);
+        let merged = merge_task(&local, &remote, &ctx, true);
 
         assert_eq!(merged.title, "local title");
         assert_eq!(merged.description, "local description");
@@ -1303,7 +1328,7 @@ mod tests {
         let remote = remote_task(1, 1, BASE + 360); // remote edit at 10:06
 
         let ctx = RemoteIndex::default();
-        let merged = merge_task(&local, &remote, &ctx);
+        let merged = merge_task(&local, &remote, &ctx, true);
 
         assert!(!merged.deleted, "newer remote edit resurrects");
         assert_eq!(merged.remote, Some(card_ref(1, 1)));
@@ -1317,7 +1342,7 @@ mod tests {
         let remote = remote_task(1, 1, BASE + 180); // remote edit at 10:03
 
         let ctx = RemoteIndex::default();
-        let merged = merge_task(&local, &remote, &ctx);
+        let merged = merge_task(&local, &remote, &ctx, true);
 
         assert!(merged.deleted, "older remote edit cannot resurrect");
     }
@@ -1621,7 +1646,7 @@ mod tests {
         let mut remote = remote_task(1, 1, BASE + 60);
         remote.order = 77;
 
-        let merged = merge_task(&local, &remote, &ctx);
+        let merged = merge_task(&local, &remote, &ctx, true);
         assert_eq!(
             merged.stack, local.stack,
             "remote stack maps to the local one"
@@ -1634,7 +1659,7 @@ mod tests {
         unmapped
             .stack_by_ref
             .insert(stack_ref(9), StackId::from(uuid::Uuid::from_u128(5)));
-        let kept = merge_task(&local, &remote, &unmapped);
+        let kept = merge_task(&local, &remote, &unmapped, true);
         assert_eq!(kept.stack, local.stack);
         assert_eq!(kept.order, 42, "unmapped stack keeps the whole position");
     }
@@ -1729,6 +1754,58 @@ mod tests {
             "the binding clears on confirmation"
         );
         assert_eq!(finalized.remote_seen, Some(ts(BASE + 120)));
+    }
+
+    // ---- chunk 4: the native-scheduled gates (D5 flag-arm matrix) ------
+
+    #[test]
+    fn merge_task_scheduled_verdict_runs_only_while_native() {
+        // The `true` arm is the pre-chunk pin: the remote stamp adopts.
+        let mut local = bound_task(1);
+        local.clocks.scheduled = ts(BASE - 120);
+        let mut remote = remote_task(1, 1, BASE + 300);
+        remote.scheduled = Some(ts(BASE + 240));
+        let merged = merge_task(&local, &remote, &ctx_of(), true);
+        assert_eq!(merged.scheduled, Some(ts(BASE + 240)));
+
+        // The `false` arm: the always-absent remote value must never
+        // clobber local state via "remote wins, value null".
+        let mut local = bound_task(1);
+        local.scheduled = Some(ts(BASE + 100));
+        local.clocks.scheduled = ts(BASE + 100);
+        let remote = remote_task(1, 1, BASE + 300); // scheduled: None, stamp newer
+        let merged = merge_task(&local, &remote, &ctx_of(), false);
+        assert_eq!(merged.scheduled, Some(ts(BASE + 100)));
+        assert_eq!(merged.clocks.scheduled, ts(BASE + 100));
+    }
+
+    #[test]
+    fn adopt_task_after_push_keeps_local_scheduled_while_not_native() {
+        let ctx = RemoteIndex::default();
+        let mut local = bound_task(1);
+        local.scheduled = Some(ts(BASE + 100));
+        local.clocks.scheduled = ts(BASE + 100);
+        // Our capability-gated write sent null: the echo carries None
+        // with a newer stamp — adopting it would clobber the local value.
+        let mut echo = remote_task(1, 1, BASE + 300);
+        echo.scheduled = None;
+        let adopted = adopt_task_after_push(&local, &echo, &ctx, false);
+        assert_eq!(adopted.scheduled, Some(ts(BASE + 100)));
+        assert_eq!(
+            adopted.clocks.scheduled,
+            ts(BASE + 100),
+            "the clock keeps the local truth too (a later fold must see it)"
+        );
+        // The `true` arm: the server's normalization lands (existing pin's shape).
+        let mut echo = remote_task(1, 1, BASE + 300);
+        echo.scheduled = Some(ts(BASE - 120));
+        let adopted = adopt_task_after_push(&local, &echo, &ctx, true);
+        assert_eq!(adopted.scheduled, Some(ts(BASE - 120)));
+        assert_eq!(adopted.clocks.scheduled, ts(BASE + 300));
+    }
+
+    fn ctx_of() -> RemoteIndex {
+        RemoteIndex::default()
     }
 
     // ---- chunk 4: the sidecar fold primitives -------------------------
@@ -2214,7 +2291,7 @@ mod tests {
             let remote = remote_task(1, card, remote_ts);
 
             let ctx = RemoteIndex::default();
-            let merged = merge_task(&local, &remote, &ctx);
+            let merged = merge_task(&local, &remote, &ctx, true);
 
             prop_assert!(merged.clocks.title >= local.clocks.title);
             prop_assert!(merged.clocks.description >= local.clocks.description);
@@ -2241,7 +2318,7 @@ mod tests {
             remote.title = remote_title.clone();
 
             let ctx = RemoteIndex::default();
-            let merged = merge_task(&local, &remote, &ctx);
+            let merged = merge_task(&local, &remote, &ctx, true);
             // Total: no panic. Tie-break: strict `>` — equal timestamps keep
             // the local value (this kills `>=` mutants).
             let expected = if remote_ts > local_title_clock {
@@ -2252,7 +2329,7 @@ mod tests {
             prop_assert_eq!(merged.title.clone(), expected);
 
             // Idempotence: merging again with the same remote changes nothing.
-            let again = merge_task(&merged, &remote, &ctx);
+            let again = merge_task(&merged, &remote, &ctx, true);
             prop_assert_eq!(again, merged);
         }
 
@@ -2272,7 +2349,7 @@ mod tests {
             remote.title = "remote title".into();
 
             let ctx = RemoteIndex::default();
-            let merged = merge_task(&local, &remote, &ctx);
+            let merged = merge_task(&local, &remote, &ctx, true);
 
             prop_assert!(merged.clocks.title >= local.clocks.title);
             prop_assert!(merged.clocks.description >= local.clocks.description);
@@ -2290,7 +2367,7 @@ mod tests {
             };
             prop_assert_eq!(merged.title.clone(), expected_title, "strict-newer-wins tie-break");
 
-            let again = merge_task(&merged, &remote, &ctx);
+            let again = merge_task(&merged, &remote, &ctx, true);
             prop_assert_eq!(again, merged, "idempotent at the extremes");
         }
 

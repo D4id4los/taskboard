@@ -71,6 +71,7 @@ mod tests {
                     last_success: None,
                     pending_ops: 0,
                     counters: taskboard_domain::SyncCounters::default(),
+                    ..taskboard_domain::SyncStatus::default()
                 },
             ),
         ])

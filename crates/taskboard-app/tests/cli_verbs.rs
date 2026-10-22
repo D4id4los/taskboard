@@ -544,6 +544,7 @@ async fn v11_select_ignores_a_stale_persisted_failure() {
             },
             last_success: None,
             pending_ops: 0,
+            ..taskboard_domain::SyncStatus::default()
         },
     )
     .await;
@@ -592,6 +593,7 @@ async fn v12_select_surfaces_a_fresh_failure_typed() {
             },
             last_success: None,
             pending_ops: 0,
+            ..taskboard_domain::SyncStatus::default()
         },
     )
     .await;

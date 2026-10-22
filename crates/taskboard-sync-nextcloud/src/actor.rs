@@ -422,6 +422,7 @@ async fn cycle(
                     read_at: cfg.clock.now(),
                     board: None,
                     duration: started.elapsed(),
+                    features: st.features,
                 },
             )
             .await;
@@ -628,6 +629,7 @@ async fn cycle(
                 read_at,
                 duration: started.elapsed(),
                 app_data,
+                features: st.features,
             },
         )
         .await;
@@ -703,6 +705,7 @@ async fn fail_cycle(
             read_at,
             board,
             duration: started.elapsed(),
+            features: st.features,
         },
     )
     .await;

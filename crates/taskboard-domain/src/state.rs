@@ -58,6 +58,44 @@ pub struct SyncStatus {
     /// the serde `default` is what every hydrated row carries.
     #[serde(default)]
     pub counters: SyncCounters,
+    /// The board's sidecar-document health, derived from the last
+    /// completed cycle's evidence (chunk 4's D14). Memory-only like
+    /// `counters`: a restart re-derives from the first cycle's fresh
+    /// evidence, so memory-only is honest.
+    #[serde(default)]
+    pub sidecar: SidecarHealth,
+    /// The reporting connector's probed capability flags, recorded by
+    /// the last report for this board (chunk 4's D6). Memory-only: a
+    /// restart re-learns from the first report (actors probe at
+    /// construction).
+    #[serde(default)]
+    pub features: crate::capabilities::DeckFeatures,
+}
+
+/// The board's sidecar-document health (chunk 4's D14): `Absent` and
+/// `Document` evidence are both healthy — absent is the ruled *silence*;
+/// only the typed unreadable reasons warn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SidecarHealth {
+    /// The document was read, or there is nothing to read (the normal
+    /// silent state).
+    #[default]
+    Healthy,
+    /// There was something to read and reading it failed for a typed
+    /// reason — the loud fence's subject.
+    Unreadable(crate::messages::AppDataUnreadable),
+}
+
+/// Derives a board's [`SidecarHealth`] from its cycle evidence (a total
+/// match; the pipeline's one derivation site).
+#[must_use]
+pub fn derive_sidecar_health(evidence: &crate::messages::AppDataEvidence) -> SidecarHealth {
+    match evidence {
+        // Absent is the ruled silence, a read document is success.
+        crate::messages::AppDataEvidence::Document(_)
+        | crate::messages::AppDataEvidence::Absent => SidecarHealth::Healthy,
+        crate::messages::AppDataEvidence::Unreadable(reason) => SidecarHealth::Unreadable(*reason),
+    }
 }
 
 /// Process-lifetime sync activity facts for one board.
@@ -409,6 +447,7 @@ mod sync_states_tests {
             last_success,
             pending_ops: pending,
             counters: SyncCounters::default(),
+            ..SyncStatus::default()
         }
     }
 

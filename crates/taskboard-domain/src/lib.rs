@@ -104,6 +104,6 @@ pub use remote::{
     RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
 pub use state::{
-    AppState, SyncCounters, SyncErrorKind, SyncPhase, SyncStates, SyncStatus, aggregate_rows,
-    attributed_board, derive_sync_states,
+    AppState, SidecarHealth, SyncCounters, SyncErrorKind, SyncPhase, SyncStates, SyncStatus,
+    aggregate_rows, attributed_board, derive_sidecar_health, derive_sync_states,
 };
