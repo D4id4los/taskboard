@@ -534,35 +534,12 @@ pub const WEB_REFRESH_MIN_SECS: u64 = 5;
 /// with the CLI `--before` flag): a non-empty sequence of
 /// `<unsigned-int><unit>` components, unit ∈ `s | m | h | d`, no sign, no
 /// spaces; the total must fit a `TimeDelta` (`"0s"`, `"30s"`, `"5m"`,
-/// `"1h30m"`, `"2d"`).
+/// `"1h30m"`, `"2d"`). The grammar itself lives in the domain
+/// (`ReminderOffset::parse_text_form` — the UI parses the same form);
+/// this wrapper negates the parsed offset back into the before-magnitude.
 #[must_use]
 pub fn parse_before(raw: &str) -> Option<chrono::TimeDelta> {
-    if raw.is_empty() {
-        return None;
-    }
-    let bytes = raw.as_bytes();
-    let mut total: i64 = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        let digits_start = i;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        if i == digits_start {
-            return None; // a component without its number
-        }
-        let value = i64::try_from(raw[digits_start..i].parse::<u64>().ok()?).ok()?;
-        let unit_secs = match bytes.get(i)? {
-            b's' => 1,
-            b'm' => 60,
-            b'h' => 3_600,
-            b'd' => 86_400,
-            _ => return None,
-        };
-        i += 1;
-        total = total.checked_add(value.checked_mul(unit_secs)?)?;
-    }
-    chrono::TimeDelta::try_seconds(total)
+    taskboard_domain::ReminderOffset::parse_text_form(raw).map(|offset| -offset.as_duration())
 }
 
 /// The XDG read-path candidate, pure over an injected base dir:

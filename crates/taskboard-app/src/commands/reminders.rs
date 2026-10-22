@@ -20,28 +20,6 @@ use crate::commands::output::{
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
 
-/// The canonical text form of a due-anchored offset (`<h>h<m>m<s>s`,
-/// zero components omitted, `"0s"` for zero) — one formatter shared by
-/// the list rows and the receipts.
-#[must_use]
-pub fn format_before(offset: ReminderOffset) -> String {
-    // The offset is non-positive by construction; the text form renders
-    // the before-magnitude.
-    let secs = offset.as_duration().num_seconds().abs();
-    let (h, m, s) = (secs / 3_600, (secs % 3_600) / 60, secs % 60);
-    let mut out = String::new();
-    if h > 0 {
-        let _ = write!(out, "{h}h");
-    }
-    if m > 0 {
-        let _ = write!(out, "{m}m");
-    }
-    if s > 0 || out.is_empty() {
-        let _ = write!(out, "{s}s");
-    }
-    out
-}
-
 /// Boots the core and runs one remind mode (the one-shot lane).
 ///
 /// # Errors
@@ -137,7 +115,7 @@ pub async fn set_on(
         rule_id: rule.as_uuid().to_string(),
         task_id: task_id.as_uuid().to_string(),
         task_title,
-        before: format_before(offset),
+        before: offset.text_form(),
     })
 }
 
@@ -232,7 +210,7 @@ fn reminder_rows(state: &AppState) -> Vec<ReminderRow> {
                 id: rule.id.as_uuid().to_string(),
                 task_id: task.id.as_uuid().to_string(),
                 task_title: task.title.clone(),
-                before: format_before(rule.offset),
+                before: rule.offset.text_form(),
                 created_at: rule.created_at,
                 task_muted: state.reminders.muted.contains(&task.id),
             });

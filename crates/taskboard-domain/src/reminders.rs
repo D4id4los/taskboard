@@ -55,6 +55,73 @@ impl ReminderOffset {
     pub fn as_duration(self) -> chrono::TimeDelta {
         self.0
     }
+
+    /// The canonical text form: the before-magnitude rendered as
+    /// `<h>h<m>m<s>s`, zero components omitted, `"0s"` for zero
+    /// (`"10m"`, `"1h30m"`, `"48h"` for two days). One definition site
+    /// shared by the list rows, the receipts, and the UI rule list; the
+    /// [`parse_text_form`](Self::parse_text_form) inverse round-trips it.
+    ///
+    /// The form is defined on whole seconds: sub-second offsets —
+    /// constructible only outside the grammar/config/document surfaces —
+    /// truncate.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        use std::fmt::Write as _;
+        // The offset is non-positive by construction; the text form
+        // renders the before-magnitude.
+        let secs = self.0.num_seconds().abs();
+        let (h, m, s) = (secs / 3_600, (secs % 3_600) / 60, secs % 60);
+        let mut out = String::new();
+        if h > 0 {
+            let _ = write!(out, "{h}h");
+        }
+        if m > 0 {
+            let _ = write!(out, "{m}m");
+        }
+        if s > 0 || out.is_empty() {
+            let _ = write!(out, "{s}s");
+        }
+        out
+    }
+
+    /// Parses the offset text form — the one grammar of
+    /// `[reminders] default_before` and the CLI `--before` flag: a
+    /// non-empty sequence of `<unsigned-int><unit>` components, unit ∈
+    /// `s | m | h | d`, no sign, no spaces; the total must fit a
+    /// `TimeDelta`. The before-magnitude is negated into the offset's
+    /// sign domain (`"10m"` → −600 s, `"0s"` → [`at_due`](Self::at_due));
+    /// canonical forms are content, not input echoes (`"2d"` parses to
+    /// the same offset [`text_form`](Self::text_form) renders `"48h"`).
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        if raw.is_empty() {
+            return None;
+        }
+        let bytes = raw.as_bytes();
+        let mut total: i64 = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            let digits_start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i == digits_start {
+                return None; // a component without its number
+            }
+            let value = i64::try_from(raw[digits_start..i].parse::<u64>().ok()?).ok()?;
+            let unit_secs = match bytes.get(i)? {
+                b's' => 1,
+                b'm' => 60,
+                b'h' => 3_600,
+                b'd' => 86_400,
+                _ => return None,
+            };
+            i += 1;
+            total = total.checked_add(value.checked_mul(unit_secs)?)?;
+        }
+        Self::before(chrono::TimeDelta::try_seconds(-total)?).ok()
+    }
 }
 
 /// `dur > zero` — positive offsets are not constructible.
@@ -606,6 +673,67 @@ mod tests {
         expected
     }
 
+    // ---- Offset text form ---------------------------------------------
+
+    fn offset_before(secs: i64) -> ReminderOffset {
+        ReminderOffset::before(chrono::TimeDelta::try_seconds(-secs).expect("valid offset"))
+            .expect("negative duration is a legal offset")
+    }
+
+    #[test]
+    fn text_form_renders_the_canonical_forms() {
+        assert_eq!(ReminderOffset::at_due().text_form(), "0s");
+        assert_eq!(offset_before(600).text_form(), "10m");
+        assert_eq!(offset_before(5_400).text_form(), "1h30m");
+        // Canonical forms are content, not input echoes: two days
+        // renders as 48 hours.
+        assert_eq!(offset_before(2 * 86_400).text_form(), "48h");
+    }
+
+    #[test]
+    fn parse_text_form_accepts_the_grammar_and_canonicalizes() {
+        assert_eq!(
+            ReminderOffset::parse_text_form("0s"),
+            Some(ReminderOffset::at_due())
+        );
+        assert_eq!(
+            ReminderOffset::parse_text_form("10m"),
+            Some(offset_before(600))
+        );
+        assert_eq!(
+            ReminderOffset::parse_text_form("1h30m"),
+            Some(offset_before(5_400))
+        );
+        assert_eq!(
+            ReminderOffset::parse_text_form("2d"),
+            Some(offset_before(2 * 86_400))
+        );
+        assert_eq!(
+            ReminderOffset::parse_text_form("90s"),
+            Some(offset_before(90))
+        );
+    }
+
+    #[test]
+    fn parse_text_form_rejects_garbage_and_overflow() {
+        for raw in [
+            "",
+            "5min",
+            "10 m",
+            "m",
+            "10",
+            "-10m",
+            "+10m",
+            "10x",
+            "9223372036854775807d9223372036854775807s",
+        ] {
+            assert!(
+                ReminderOffset::parse_text_form(raw).is_none(),
+                "{raw} must be rejected"
+            );
+        }
+    }
+
     proptest! {
         #![proptest_config(test_support::proptest_config(256))]
 
@@ -745,6 +873,17 @@ mod tests {
             let banner: BTreeSet<TaskId> =
                 overdue_tasks(&tasks, now).into_iter().map(|t| t.id).collect();
             prop_assert_eq!(banner, overdue.into_iter().collect::<BTreeSet<_>>());
+        }
+
+        #[test]
+        fn p9_text_form_roundtrips_grammar_magnitudes(
+            secs in 0_i64..=400 * 86_400,
+        ) {
+            let offset = ReminderOffset::before(
+                chrono::TimeDelta::try_seconds(-secs).unwrap(),
+            )
+            .unwrap();
+            prop_assert_eq!(ReminderOffset::parse_text_form(&offset.text_form()), Some(offset));
         }
     }
 
