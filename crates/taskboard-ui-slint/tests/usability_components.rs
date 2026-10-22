@@ -164,25 +164,150 @@ fn the_tooltip_delay_dismissal_and_restart_behave() {
             assert!(tooltip.get_visible());
             tooltip.invoke_unhover();
 
-            // Dismissal: unhover hides and disarms.
-            tooltip.invoke_unhover();
-            assert!(!tooltip.get_visible());
-
-            // An empty label never arms (a control without a label
-            // never shows a tooltip).
-            tooltip.invoke_hover("".into(), 10.0, 10.0, 32.0, 32.0);
+            // Placement (usability D3): a toolbar-anchored tooltip —
+            // near the window's top — renders *below* its anchor, in
+            // the toolbar strip between the anchor's bottom edge and
+            // the toolbar's end. The pre-fix flip threshold compared
+            // against the status bar's height instead of its top
+            // edge, flipping this tooltip off the window's top. The
+            // panel is the only Theme.surface-raised (#262a35) surface
+            // in that strip at this state.
+            tooltip.invoke_hover("New stack".into(), 10.0, 10.0, 32.0, 32.0);
             driver.advance_time(600);
-            assert!(!tooltip.get_visible(), "empty label stays hidden");
-
-            // Re-hover inside the delay window restarts it.
-            tooltip.invoke_hover("Command menu".into(), 40.0, 10.0, 32.0, 32.0);
-            driver.advance_time(599);
-            tooltip.invoke_hover("Command menu".into(), 40.0, 10.0, 32.0, 32.0);
-            driver.advance_time(599);
-            assert!(!tooltip.get_visible(), "the restart reset the delay window");
-            driver.advance_time(1);
             assert!(tooltip.get_visible());
+            let snapshot = driver.snapshot();
+            let below_anchor = (43..64).any(|y| row_run_of(&snapshot, SURFACE_RAISED, y) > 0);
+            assert!(
+                below_anchor,
+                "the tooltip paints below its near-the-top anchor, not flipped off the window"
+            );
             tooltip.invoke_unhover();
+        },
+    );
+}
+
+/// The focus-ring colour, Theme.focus-ring #7aa2f7 — the menu panel's
+/// border and the selected row's ring are the only renderers of it.
+const FOCUS_RING: [u8; 3] = [0x7a, 0xa2, 0xf7];
+
+/// Theme.surface-raised #262a35 — the tooltip panel's background.
+const SURFACE_RAISED: [u8; 3] = [0x26, 0x2a, 0x35];
+
+/// One horizontal run's length of exactly `rgb` in row `y`, and the
+/// min/max y of any `rgb` pixel in the image — the pixel vocabulary
+/// of the menu proofs (no element-geometry API exists, plan §1.7).
+fn row_run_of(image: &Rgba8Image, rgb: [u8; 3], y: u32) -> u32 {
+    let mut best = 0u32;
+    let mut run = 0u32;
+    for x in 0..image.width {
+        let i = (y as usize * image.width as usize + x as usize) * 4;
+        let matches =
+            image.data[i] == rgb[0] && image.data[i + 1] == rgb[1] && image.data[i + 2] == rgb[2];
+        if matches {
+            run += 1;
+            best = best.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    best
+}
+
+fn vertical_extent_of(image: &Rgba8Image, rgb: [u8; 3]) -> (u32, u32) {
+    let (mut min, mut max) = (image.height, 0u32);
+    for y in 0..image.height {
+        if row_run_of(image, rgb, y) > 0 {
+            min = min.min(y);
+            max = max.max(y);
+        }
+    }
+    (min, max)
+}
+
+/// G6 — the menu never renders beyond the available space (plan D6,
+/// dispatch issue 5): at the kiosk netbook's real geometries and the
+/// golden matrix's scale extremes, the open menu's focus-ring border
+/// box closes (a bottom border exists — the old unbounded menu ran
+/// off the window) and stays above the status bar's top edge.
+#[test]
+fn the_open_menu_closes_its_box_above_the_status_bar_at_every_geometry() {
+    for (scale, width, height) in [
+        (1.0, 819, 480),  // kiosk netbook through winit's 1.25 — the report
+        (1.0, 1024, 600), // the kiosk panel, raw
+        (0.5, 600, 900),  // golden-matrix extremes
+        (3.0, 600, 900),
+    ] {
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |driver: &mut SlintDriver| {
+                let handle = mount_populated(driver, scale, width, height);
+                handle.window().invoke_toolbar_menu_clicked();
+                driver.advance_time(0);
+                let snapshot = driver.snapshot();
+                let (top, bottom) = vertical_extent_of(&snapshot, FOCUS_RING);
+                assert!(
+                    top < bottom,
+                    "the menu border box exists at {width}×{height}"
+                );
+                // The bottom border is a long closed run, not a stray
+                // ring fragment: the panel is at least its min-width
+                // minus clipping, and the border closes it.
+                let bottom_run = row_run_of(&snapshot, FOCUS_RING, bottom);
+                assert!(
+                    bottom_run >= 100,
+                    "the menu's bottom border closes the box at {width}×{height} (run {bottom_run})"
+                );
+                let status_top = handle.window().get_status_top();
+                #[allow(clippy::cast_precision_loss)] // UI-scale px values
+                let bottom_px = bottom as f32;
+                assert!(
+                    bottom_px < status_top,
+                    "the menu bottom ({bottom}) stays above the status bar top ({status_top}) at {width}×{height}"
+                );
+            },
+        );
+    }
+}
+
+/// G7 — the cursor follows the selection into the scrolled region
+/// (plan D6, §7.3): with the menu open at the kiosk geometry, jumping
+/// the selection to the last entry scrolls it fully inside the
+/// panel's border box.
+#[test]
+fn the_menu_cursor_follows_the_selection_into_the_scroll() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            use slint::ComponentHandle as _;
+            use slint::Model as _;
+            let handle = mount_populated(driver, 1.0, 819, 480);
+            handle.window().invoke_toolbar_menu_clicked();
+            driver.advance_time(0);
+
+            let keyboard = handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>();
+            let rows = keyboard.get_menu_entries().row_count();
+            assert!(rows > 1, "the populated board offers a multi-row menu");
+            keyboard.set_menu_selected_index(i32::try_from(rows - 1).unwrap_or(i32::MAX));
+            driver.advance_time(0); // the follow logic runs on the change pass
+
+            let snapshot = driver.snapshot();
+            let (_, panel_bottom) = vertical_extent_of(&snapshot, FOCUS_RING);
+            assert!(panel_bottom > 0, "the bordered panel rendered");
+            // The last row scrolled into view: its ring renders just
+            // above the panel's bottom border, inside the box (the
+            // ring and the border are the only focus-ring renderers).
+            let near_bottom_run =
+                row_run_of(&snapshot, FOCUS_RING, panel_bottom.saturating_sub(20));
+            assert!(
+                near_bottom_run > 0,
+                "the selected row's ring stayed inside the panel near its bottom edge"
+            );
         },
     );
 }

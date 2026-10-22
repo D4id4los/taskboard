@@ -78,6 +78,10 @@ export component AppWindow inherits Window {
     // The rendering fact for tests and reviews (§6 test 2): compact
     // mode is active (board degeneration, D8/D17).
     out property <bool> compact-active: Responsive.current-breakpoint == Breakpoint.compact;
+    // The rendering fact the menu sizing (usability D6) and the
+    // tooltip flip (D3) are proved against: the status bar's top edge
+    // in window coordinates (the inner layouts sit at the origin).
+    out property <length> status-top: status.y;
 
     // The single key path (§5.1): capture-phase tunneling hits this
     // scope before any focused element; accepting consumes the event.
@@ -151,6 +155,10 @@ export component AppWindow inherits Window {
             init => TooltipState.unhover();
             x: Theme.space-8;
             y: Theme.space-8;
+            // Usability D6: fill only the space between the toolbar
+            // and the status bar; the Flickable inside scrolls the
+            // overflow — never cut off, never taller than needed.
+            available-height: root.height - self.y - status.height - Theme.space-2;
             entries: KeyboardState.menu-entries;
             selected-index: KeyboardState.menu-selected-index;
             invoke-entry(index) => root.menu-entry-invoked(index);
