@@ -239,7 +239,8 @@ impl SyncStates {
     /// The map's own write face for tests and seeding: one row in.
     #[cfg(any(test, feature = "test-support"))]
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn with_row(board: BoardId, status: SyncStatus) -> Self {
+    #[must_use]
+    pub fn with_row(board: BoardId, status: SyncStatus) -> Self {
         Self([(board, status)].into_iter().collect())
     }
 
