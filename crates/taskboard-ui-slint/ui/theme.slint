@@ -30,6 +30,11 @@ export global Theme {
     out property <color> background: #14161c;
     out property <color> surface: #1d2028;
     out property <color> surface-raised: #262a35;
+    // The hover surface (usability pass D1): always lighter than every
+    // parent it can be painted over — the hover step is at least the
+    // surface→surface-raised step against both parents (locked by the
+    // token tests' distinctness guard).
+    out property <color> surface-hover: #303545;
     out property <color> text-primary: #e8eaf0;
     out property <color> text-secondary: #a6abbd;
     out property <color> border: #646c85;
