@@ -89,7 +89,7 @@ async fn it_nextcloud_docker_conditional_read_cycle() {
 mod d_common {
     // The engine+actor harness lives with the other shared helpers; alias
     // the pieces the D-tests need here to keep the test bodies tight.
-    pub(crate) use super::common::sync_pair::{boot_pair, eventually};
+    pub(crate) use super::common::sync_pair::{SyncPair, boot_pair, eventually};
     pub(crate) use super::common::{LiveCfg, deck_client, retrying_server_errors as retry, run_id};
     pub(crate) use taskboard_sync_nextcloud::{DeckClient, DeckColor, NewCard, StackFilter};
 }
@@ -554,6 +554,301 @@ mod d {
         pair.shutdown().await;
         assert!(deleted.is_ok());
     }
+
+    // ---- chunk 4: the sidecar convergence suite (C1–C4) ----------------
+
+    /// Shared scaffolding: one fresh board + stack, two full engine+actor
+    /// pairs (two devices) bound to it, and one locally-created task on
+    /// A whose binding both sides learn. Returns everything C1/C2/C3 need.
+    struct Convergence {
+        client: DeckClient,
+        board: u64,
+        a: SyncPair,
+        b: SyncPair,
+        task_id: taskboard_domain::TaskId,
+        card: u64,
+    }
+
+    async fn boot_convergence(cfg: &LiveCfg) -> Convergence {
+        let client = deck_client(cfg);
+        let run = run_id();
+        let board = retry(|| async {
+            client
+                .create_board(&run, &DeckColor::from_hex("00c2e0").unwrap())
+                .await
+        })
+        .await
+        .expect("board creation must succeed");
+        let _stack = retry(|| async { client.create_stack(board.id, "col", 0).await })
+            .await
+            .expect("stack creation must succeed");
+
+        let a = boot_pair(client.clone()).await;
+        a.set_board(board.id).await;
+        let b = boot_pair(client.clone()).await;
+        b.set_board(board.id).await;
+
+        // A authors the task; the echo binds it; B adopts it next cycle.
+        let taskboard_domain::CommandOutcome::CreatedTask(task_id) = a
+            .engine
+            .execute(taskboard_domain::StateCommand::CreateTask {
+                title: format!("{run}-task"),
+                stack: *a
+                    .engine
+                    .shared_state()
+                    .load_full()
+                    .stacks
+                    .keys()
+                    .next()
+                    .unwrap(),
+                order: 0,
+            })
+            .await
+            .expect("accepted")
+        else {
+            panic!("wrong receipt");
+        };
+        eventually(&a, |app| {
+            app.tasks.get(&task_id).is_some_and(|t| t.remote.is_some())
+        })
+        .await;
+        let card = a.engine.shared_state().load_full().tasks[&task_id]
+            .remote
+            .expect("bound")
+            .card
+            .get();
+        eventually(&b, |app| {
+            app.tasks
+                .values()
+                .any(|t| t.remote.is_some_and(|r| r.card.get() == card))
+        })
+        .await;
+        Convergence {
+            client,
+            board: board.id,
+            a,
+            b,
+            task_id,
+            card,
+        }
+    }
+
+    impl Convergence {
+        fn b_task(&self) -> taskboard_domain::TaskId {
+            self.b
+                .engine
+                .shared_state()
+                .load_full()
+                .tasks
+                .values()
+                .find(|t| t.remote.is_some_and(|r| r.card.get() == self.card))
+                .map(|t| t.id)
+                .expect("B adopted the task")
+        }
+
+        async fn anchor_exists_on_server(&self) -> bool {
+            let stacks =
+                retry(|| async { self.client.stacks(self.board, StackFilter::Active).await })
+                    .await
+                    .expect("server listing");
+            let anchor = stacks
+                .iter()
+                .flat_map(|s| &s.cards)
+                .find(|c| c.title == taskboard_domain::ANCHOR_CARD_TITLE);
+            let Some(anchor) = anchor else {
+                return false;
+            };
+            // Confirmed: the detail carries the reserved-filename attachment.
+            let detail = retry(|| async {
+                self.client
+                    .card(self.board, anchor.stack_id, anchor.id)
+                    .await
+            })
+            .await
+            .expect("anchor detail");
+            detail.attachments.iter().any(|att| {
+                att.extended_data
+                    .as_ref()
+                    .is_some_and(|d| d.file_name == "taskboard-appdata.json")
+            })
+        }
+
+        async fn teardown(self) {
+            let deleted = retry(|| async { self.client.delete_board(self.board).await }).await;
+            self.a.shutdown().await;
+            self.b.shutdown().await;
+            assert!(deleted.is_ok(), "board teardown must succeed");
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Field {
+        Effort,
+        Scheduled,
+    }
+
+    async fn set_field(
+        pair: &SyncPair,
+        task: taskboard_domain::TaskId,
+        field: Field,
+        value: Option<i64>,
+    ) {
+        let scheduled =
+            value.map(|secs| chrono::Utc::now() + chrono::TimeDelta::try_seconds(secs).unwrap());
+        pair.engine
+            .execute(taskboard_domain::StateCommand::UpdateTask {
+                id: task,
+                changes: taskboard_domain::TaskChanges {
+                    effort: match field {
+                        Field::Effort => value.map(|secs| {
+                            Some(taskboard_domain::entities::Effort::new(
+                                u64::try_from(secs).unwrap(),
+                            ))
+                        }),
+                        Field::Scheduled => None,
+                    },
+                    scheduled: match field {
+                        Field::Scheduled => Some(scheduled),
+                        Field::Effort => None,
+                    },
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            })
+            .await
+            .expect("accepted");
+        pair.sync_now().await;
+    }
+
+    /// C1 — app-field convergence: A's effort edit flushes (the anchor
+    /// is created server-side), B discovers, downloads, and folds it;
+    /// the cleared-field write then converges as `{v: null}` end to end.
+    pub(crate) async fn app_field_convergence(cfg: &LiveCfg) {
+        let c = boot_convergence(cfg).await;
+        set_field(&c.a, c.task_id, Field::Effort, Some(900)).await;
+
+        // A's flush created the confirmed anchor on the server.
+        tokio::time::timeout(super::common::LIVE_DEADLINE, async {
+            loop {
+                if c.anchor_exists_on_server().await {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        })
+        .await
+        .expect("the anchor appears within the deadline");
+
+        // B folds the effort.
+        let b_task = c.b_task();
+        eventually(&c.b, |app| {
+            app.tasks[&b_task].effort == Some(taskboard_domain::entities::Effort::new(900))
+        })
+        .await;
+
+        // The cleared-field write converges as null.
+        set_field(&c.a, c.task_id, Field::Effort, None).await;
+        eventually(&c.b, |app| app.tasks[&b_task].effort.is_none()).await;
+
+        c.teardown().await;
+    }
+
+    /// C2 — rule add → tombstone → converge: the document is the rule's
+    /// remote identity (B holds a rule with A's UUID), and the removal
+    /// tombstone wins by clock end to end.
+    pub(crate) async fn rule_convergence(cfg: &LiveCfg) {
+        use taskboard_domain::reminders::ReminderOffset;
+        let c = boot_convergence(cfg).await;
+
+        let taskboard_domain::CommandOutcome::ReminderSet { rule } =
+            c.a.engine
+                .execute(taskboard_domain::StateCommand::SetReminderRule {
+                    task: c.task_id,
+                    offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
+                        .unwrap(),
+                })
+                .await
+                .expect("accepted")
+        else {
+            panic!("wrong receipt");
+        };
+        c.a.sync_now().await;
+        // A's flush carries the rule; B adopts it under the same UUID.
+        let b_task = c.b_task();
+        eventually(&c.b, |app| {
+            app.reminders
+                .rules
+                .values()
+                .any(|r| r.task == b_task && r.id == rule)
+        })
+        .await;
+
+        // A clears: the tombstone wins on B's next fold.
+        c.a.engine
+            .execute(taskboard_domain::StateCommand::ClearReminderRules { task: c.task_id })
+            .await
+            .expect("accepted");
+        c.a.sync_now().await;
+        eventually(&c.b, |app| {
+            !app.reminders.rules.values().any(|r| r.id == rule)
+        })
+        .await;
+
+        c.teardown().await;
+    }
+
+    /// C3 — the guard mirror's echo-idempotence half (tier 1 owns the
+    /// deterministic race): after A's flush, A's next cycle re-folds its
+    /// own document and the value survives with its clock unchanged.
+    pub(crate) async fn echo_idempotence(cfg: &LiveCfg) {
+        let c = boot_convergence(cfg).await;
+        set_field(&c.a, c.task_id, Field::Effort, Some(900)).await;
+        let before = c.a.engine.shared_state().load_full().tasks[&c.task_id].clone();
+        assert_eq!(
+            before.effort,
+            Some(taskboard_domain::entities::Effort::new(900))
+        );
+
+        // A few of A's own cycles re-fold the document it wrote.
+        for _ in 0..3 {
+            c.a.sync_now().await;
+        }
+        let after = c.a.engine.shared_state().load_full().tasks[&c.task_id].clone();
+        assert_eq!(
+            after.effort,
+            Some(taskboard_domain::entities::Effort::new(900)),
+            "the value survives its own echo"
+        );
+        assert_eq!(
+            after.clocks.effort, before.clocks.effort,
+            "the write clock never moves backwards through the fold"
+        );
+
+        c.teardown().await;
+    }
+
+    /// C4 — the deck1175 variant: the `scheduled` fallback lane end to
+    /// end on a `card_startdate == false` server (the native verdict
+    /// skip + document fold + flush emission all conservative).
+    pub(crate) async fn scheduled_fallback_convergence(cfg: &LiveCfg) {
+        let c = boot_convergence(cfg).await;
+        set_field(&c.a, c.task_id, Field::Scheduled, Some(86_400)).await;
+
+        tokio::time::timeout(super::common::LIVE_DEADLINE, async {
+            loop {
+                if c.anchor_exists_on_server().await {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        })
+        .await
+        .expect("the anchor appears within the deadline");
+
+        let b_task = c.b_task();
+        eventually(&c.b, |app| app.tasks[&b_task].scheduled.is_some()).await;
+
+        c.teardown().await;
+    }
 }
 
 #[tokio::test]
@@ -618,6 +913,50 @@ async fn it_nextcloud_docker_sync_card_field_writes() {
         return;
     };
     with_deadline(d::card_field_writes_round_trip(&cfg))
+        .await
+        .expect("test must finish within the outer deadline");
+}
+
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_sync_app_field_convergence() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(d::app_field_convergence(&cfg))
+        .await
+        .expect("test must finish within the outer deadline");
+}
+
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_sync_rule_convergence() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(d::rule_convergence(&cfg))
+        .await
+        .expect("test must finish within the outer deadline");
+}
+
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_sync_echo_idempotence() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(d::echo_idempotence(&cfg))
+        .await
+        .expect("test must finish within the outer deadline");
+}
+
+#[tokio::test]
+#[ignore = "requires the pinned Deck 1.17.5 gate tier (nextcloud_it_setup.sh with DECK_VERSION=v1.17.5)"]
+async fn it_nextcloud_docker_deck1175_scheduled_fallback_convergence() {
+    let Some(cfg) = live_docker_deck1175_config() else {
+        return; // honest skip: the gate tier runs locally, CI does not wire it
+    };
+    with_deadline(d::scheduled_fallback_convergence(&cfg))
         .await
         .expect("test must finish within the outer deadline");
 }
