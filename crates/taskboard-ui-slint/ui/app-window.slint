@@ -79,6 +79,10 @@ export component AppWindow inherits Window {
     in-out property <[string]> toolbar-menu-hint;
     // The nav.focus-board binding (round-1 D12; a keymap projection).
     in-out property <[string]> nav-back-hint;
+    // The board.select / task.edit hints (round-1 D21b/D8; keymap
+    // projections pushed per refresh).
+    in-out property <[string]> board-segment-hint;
+    in-out property <[string]> task-card-hint;
     in-out property <View> current-view: View.board;
     in-out property <BoardModel> board-model;
     in-out property <BoardBarModel> board-bar-model;
@@ -133,6 +137,8 @@ export component AppWindow inherits Window {
             if (root.current-view == View.board): BoardView {
                 board: root.board-model;
                 board-bar: root.board-bar-model;
+                board-segment-hint: root.board-segment-hint;
+                task-card-hint: root.task-card-hint;
                 board-bar-activated(i) => root.board-bar-segment-activated(i);
                 task-activated(c, r) => root.board-task-activated(c, r);
                 task-clicked(c, r) => root.board-task-clicked(c, r);

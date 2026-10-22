@@ -24,6 +24,8 @@ export component BoardView inherits FocusScope {
     // The board bar's model + activation (design §3.8), threaded
     // window → view → layout.
     in property <BoardBarModel> board-bar;
+    in property <[string]> board-segment-hint;
+    in property <[string]> task-card-hint;
     callback board-bar-activated(int);
     callback task-activated(int, int);
     callback task-clicked(int, int);
@@ -61,6 +63,8 @@ export component BoardView inherits FocusScope {
                 move-target: root.board.move-target;
                 stack-create-open: root.board.stack-create-open;
                 board-bar: root.board-bar;
+                board-segment-hint: root.board-segment-hint;
+                task-card-hint: root.task-card-hint;
                 board-bar-activated(i) => root.board-bar-activated(i);
                 task-activated(c, r) => root.task-activated(c, r);
                 task-clicked(c, r) => root.task-clicked(c, r);

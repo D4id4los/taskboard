@@ -1121,6 +1121,29 @@ fn the_context_menu_focuses_and_routes_the_card() {
     );
 }
 
+/// D22 — the compact add-stack affordance: at the compact width the
+/// relocated trailing button opens the same stack-create flow (the
+/// click equivalent of stack.create, §7.1).
+#[test]
+fn the_compact_add_stack_affordance_opens_the_flow() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(600, 800);
+            assert!(harness.handle.window().get_compact_active());
+            harness.driver.click_by_label("New stack");
+            assert!(
+                harness.handle.window().get_board_model().stack_create_open,
+                "the compact button opens the stack-create flow"
+            );
+        },
+    );
+}
+
 /// G8/G9 — the stack-create flow has a visible surface, and the
 /// on-board New-stack button is the click equivalent of the `S` key
 /// (usability pass D7, dispatch issue 6): both routes open the same

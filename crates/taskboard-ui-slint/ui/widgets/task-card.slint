@@ -7,6 +7,7 @@
 // selection ring uses the focus tokens while never holding focus.
 
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
+import { TooltipState } from "tooltip.slint";
 
 // The rule-D decoration vocabulary (D21): future surfaces (W1
 // importance/urgency, habits, reminders) ride this slot.
@@ -43,6 +44,8 @@ export component TaskCard inherits Rectangle {
     // in window coordinates (the card's absolute position + the local
     // mouse position).
     callback context-requested(float, float);
+    // The task.edit binding hint (round-1 D8; a keymap projection).
+    in property <[string]> hint-keys;
 
     // Hover stays distinct from the emphasis ring (focus ≠ hover,
     // both may coexist — usability D2).
@@ -59,6 +62,17 @@ export component TaskCard inherits Rectangle {
         : "\{root.model.title} (\{root.model.due-phrase})";
 
     touch := TouchArea {
+        // The D8 card tooltip (round 1): the full title as the label,
+        // the task.edit hint from the keymap projection.
+        changed has-hover => {
+            if (self.has-hover) {
+                TooltipState.hover(root.model.title, "", root.hint-keys,
+                    self.absolute-position.x, self.absolute-position.y,
+                    self.width, self.height);
+            } else {
+                TooltipState.unhover();
+            }
+        }
         double-clicked => root.activated();
         clicked => root.clicked();
         // P3: pointer-event fires on right presses; the design's
