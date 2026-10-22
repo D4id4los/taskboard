@@ -38,6 +38,10 @@ pub enum PushTarget {
     Stack(StackId),
     /// A label entity.
     Label(LabelId),
+    /// A board's sidecar document (the flush; one per board per cycle,
+    /// always the last group — the entries key on remote card ids that
+    /// exist only after the cycle's creates echoed).
+    Document(BoardId),
 }
 
 /// The surviving client intent of one [`PushGroup`].
@@ -123,6 +127,15 @@ pub enum MaterializedOp {
     DeleteLabel {
         /// The label to delete.
         label: LabelId,
+    },
+    /// The board's sidecar flush (one PUT of the unioned document).
+    /// Carries no content: the flush materializes from the sync actor's
+    /// state + cache at execution time (between the cycle's pull and its
+    /// report), like every shape carries "current local state at plan
+    /// time" and the executor maps it.
+    FlushAppData {
+        /// The owning local board.
+        board: BoardId,
     },
     /// Nothing to send: every op of the group completes synthetically.
     Noop,
@@ -334,6 +347,7 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
     let mut stack_ops: Vec<(StackId, usize, &PendingOp)> = Vec::new();
     let mut label_ops: Vec<(LabelId, usize, &PendingOp)> = Vec::new();
     let mut board_ops: Vec<(BoardId, usize, &PendingOp)> = Vec::new();
+    let mut document_ops: Vec<(BoardId, usize, &PendingOp)> = Vec::new();
     for (idx, entry) in outbox.iter().enumerate() {
         match entry.op {
             LocalOp::CreateTask(id)
@@ -354,13 +368,22 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
             LocalOp::UpdateBoard(id) | LocalOp::DeleteBoard(id) => {
                 board_ops.push((id, idx, entry));
             }
-            // Chunk 4's document group: `UpdateAppData` coalesces into
-            // the sidecar flush, not a native wire group. Nothing
-            // enqueues the op yet (the MD-10 interim stands), so this
-            // arm exists for match totality only — it deliberately
-            // buckets into no group and must never misroute as a native
-            // `UpdateTask`.
-            LocalOp::UpdateAppData(_) => {}
+            // The document lane: `UpdateAppData` coalesces into the
+            // board's sidecar flush, never a native wire group. The
+            // owning board resolves through the entity graph; an
+            // unresolvable op (its task row wiped) buckets into no
+            // group — no outcome ⇒ it stays queued (the delete
+            // cascades cancel it by target, D7 row 7).
+            LocalOp::UpdateAppData(task_id) => {
+                if let Some(board) = entities
+                    .tasks
+                    .get(&task_id)
+                    .and_then(|task| entities.stacks.get(&task.stack))
+                    .map(|stack| stack.board)
+                {
+                    document_ops.push((board, idx, entry));
+                }
+            }
         }
     }
 
@@ -369,21 +392,49 @@ pub fn plan_pushes(outbox: &[PendingOp], entities: EntityTables<'_>) -> Vec<Push
     groups.extend(plan_stack_groups(&stack_ops, entities.stacks));
     groups.extend(plan_label_groups(&label_ops, entities.labels));
     groups.extend(plan_task_groups(&task_ops, entities.tasks));
+    groups.extend(plan_document_groups(&document_ops));
 
-    // Stacks → labels → tasks, then queue position within a kind.
+    // Boards → stacks → labels → tasks → the document flush last (the
+    // flush's entries key on remote card ids that exist only post-echo),
+    // then queue position within a kind.
     groups.sort_by_key(|(first_idx, group)| (kind_rank(group.target), *first_idx));
     groups.into_iter().map(|(_, group)| group).collect()
 }
 
 /// The cross-entity dependency rank: board first (a board write precedes
-/// its children's), then stacks, labels, tasks.
+/// its children's), then stacks, labels, tasks, and the document flush
+/// strictly last (its entries key on remote card ids that exist only
+/// after this cycle's creates echoed).
 fn kind_rank(target: PushTarget) -> u8 {
     match target {
         PushTarget::Board(_) => 0,
         PushTarget::Stack(_) => 1,
         PushTarget::Label(_) => 2,
         PushTarget::Task(_) => 3,
+        PushTarget::Document(_) => 4,
     }
+}
+
+/// The document lane's coalescing rule (D10): all of a board's pending
+/// `UpdateAppData` ops bucket into ONE flush group — `primary` is the
+/// first in queue order, `subsumed` the rest. One PUT per flush; the
+/// partition property holds (every op id appears exactly once).
+fn plan_document_groups(ops: &[(BoardId, usize, &PendingOp)]) -> Vec<(usize, PushGroup)> {
+    grouped(ops)
+        .into_iter()
+        .map(|(board, members)| {
+            let primary = members[0].1.op_id;
+            let group = PushGroup {
+                target: PushTarget::Document(board),
+                materialized: MaterializedOp::FlushAppData { board },
+                primary,
+                subsumed: others(&members, primary),
+            };
+            // The group's first op's queue position (the sort key).
+            let first_idx = members[0].0;
+            (first_idx, group)
+        })
+        .collect()
 }
 
 /// Partitions a bucket into per-entity groups, ordered by first-op queue
@@ -820,6 +871,9 @@ mod tests {
 
     static EMPTY: std::sync::LazyLock<BTreeMap<crate::ids::BoardId, Board>> =
         std::sync::LazyLock::new(BTreeMap::new);
+    static EMPTY_LABELS: std::sync::LazyLock<
+        BTreeMap<crate::ids::LabelId, crate::entities::Label>,
+    > = std::sync::LazyLock::new(BTreeMap::new);
 
     fn tables<'a>(
         tasks: &'a BTreeMap<TaskId, Task>,
@@ -1161,6 +1215,167 @@ mod tests {
         // a rename of a stack the planner cannot see degrades to Noop.
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].materialized, MaterializedOp::Noop);
+    }
+
+    // ---- chunk 4: the document push group ------------------------------
+
+    fn bound_task_fixture(raw: u128, stack: StackId) -> Task {
+        Task {
+            id: task_id(raw),
+            remote: Some(crate::ids::RemoteCardRef {
+                board: crate::ids::RemoteBoardId(7),
+                stack: crate::ids::RemoteStackId(1),
+                card: crate::ids::RemoteCardId(u64::try_from(raw).unwrap()),
+            }),
+            title: "t".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack,
+            order: 0,
+            labels: BTreeSet::new(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            archived: false,
+            deleted: false,
+            clocks: clocks(100),
+            remote_seen: Some(ts(100)),
+        }
+    }
+
+    fn stack_fixture(raw: u128, board: crate::ids::BoardId) -> crate::entities::Stack {
+        crate::entities::Stack {
+            id: stack_id(raw),
+            remote: None,
+            board,
+            title: "s".into(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: ts(100),
+                order: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        }
+    }
+
+    #[test]
+    fn document_ops_coalesce_into_one_group_per_board_ordered_last() {
+        let board_a = crate::ids::BoardId::from(uuid(500));
+        let board_b = crate::ids::BoardId::from(uuid(501));
+        let stack_a = stack_id(900);
+        let stack_b = stack_id(901);
+        let mut tasks = BTreeMap::new();
+        tasks.insert(task_id(1), bound_task_fixture(1, stack_a));
+        tasks.insert(task_id(2), bound_task_fixture(2, stack_a));
+        tasks.insert(task_id(3), bound_task_fixture(3, stack_b));
+        let mut stacks = BTreeMap::new();
+        stacks.insert(stack_a, stack_fixture(900, board_a));
+        stacks.insert(stack_b, stack_fixture(901, board_b));
+
+        let outbox = vec![
+            op(10, LocalOp::UpdateAppData(task_id(1))),
+            op(11, LocalOp::UpdateAppData(task_id(3))),
+            op(12, LocalOp::UpdateAppData(task_id(2))),
+        ];
+        let groups = plan_pushes(
+            &outbox,
+            EntityTables {
+                tasks: &tasks,
+                stacks: &stacks,
+                labels: &EMPTY_LABELS,
+                boards: &EMPTY,
+            },
+        );
+        // Two flush groups: one per board, primary first-in-queue-order.
+        let documents: Vec<&PushGroup> = groups
+            .iter()
+            .filter(|g| matches!(g.target, PushTarget::Document(_)))
+            .collect();
+        assert_eq!(documents.len(), 2);
+        let group_a = documents
+            .iter()
+            .find(|g| matches!(g.materialized, MaterializedOp::FlushAppData { board } if board == board_a))
+            .unwrap();
+        assert_eq!(group_a.primary, OpId(uuid(10)));
+        assert_eq!(group_a.subsumed, vec![OpId(uuid(12))]);
+        let group_b = documents
+            .iter()
+            .find(|g| matches!(g.materialized, MaterializedOp::FlushAppData { board } if board == board_b))
+            .unwrap();
+        assert_eq!(group_b.primary, OpId(uuid(11)));
+        assert_eq!(group_b.subsumed, Vec::new());
+
+        // Last position: behind every native group of the cycle.
+        let document_rank = groups
+            .iter()
+            .position(|g| matches!(g.target, PushTarget::Document(_)))
+            .unwrap();
+        assert_eq!(document_rank, groups.len() - 2, "flushes are the tail");
+    }
+
+    #[test]
+    fn document_ops_partition_and_an_unresolvable_op_buckets_into_nothing() {
+        let board = crate::ids::BoardId::from(uuid(500));
+        let stack = stack_id(900);
+        let mut tasks = BTreeMap::new();
+        tasks.insert(task_id(1), bound_task_fixture(1, stack));
+        let mut stacks = BTreeMap::new();
+        stacks.insert(stack, stack_fixture(900, board));
+
+        let outbox = vec![
+            op(10, LocalOp::UpdateAppData(task_id(1))),
+            op(11, LocalOp::UpdateAppData(task_id(99))), // task row wiped
+        ];
+        let groups = plan_pushes(
+            &outbox,
+            EntityTables {
+                tasks: &tasks,
+                stacks: &stacks,
+                labels: &EMPTY_LABELS,
+                boards: &EMPTY,
+            },
+        );
+        // Partition: the resolvable op appears exactly once, the
+        // unresolvable one in no group (no outcome ⇒ stays queued).
+        let ids: Vec<OpId> = groups
+            .iter()
+            .flat_map(|g| std::iter::once(g.primary).chain(g.subsumed.iter().copied()))
+            .collect();
+        assert_eq!(ids, vec![OpId(uuid(10))]);
+    }
+
+    #[test]
+    fn flush_groups_come_after_task_create_groups() {
+        // The ruling's hard form: entries key on remote card ids, which
+        // exist only post-echo — the flush must be the cycle's last
+        // group even against creates.
+        let board = crate::ids::BoardId::from(uuid(500));
+        let stack = stack_id(900);
+        let mut tasks = BTreeMap::new();
+        tasks.insert(task_id(1), bound_task_fixture(1, stack));
+        let mut stacks = BTreeMap::new();
+        stacks.insert(stack, stack_fixture(900, board));
+        let outbox = vec![
+            op(10, LocalOp::CreateTask(task_id(2))),
+            op(11, LocalOp::UpdateAppData(task_id(1))),
+        ];
+        let groups = plan_pushes(
+            &outbox,
+            EntityTables {
+                tasks: &tasks,
+                stacks: &stacks,
+                labels: &EMPTY_LABELS,
+                boards: &EMPTY,
+            },
+        );
+        assert_eq!(groups.len(), 2);
+        assert!(matches!(groups[0].target, PushTarget::Task(_)));
+        assert!(matches!(groups[1].target, PushTarget::Document(_)));
     }
 
     proptest! {

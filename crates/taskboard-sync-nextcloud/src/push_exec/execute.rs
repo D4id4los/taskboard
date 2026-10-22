@@ -60,6 +60,12 @@ impl<'a> PushExecutor<'a> {
     ) -> GroupOutcome {
         tracing::trace!(?group, "executing push group");
         match group.materialized.clone() {
+            // The flush is deferred by design (D-S4 item 4's position
+            // ruling): the actor stashes document groups and executes
+            // them between the cycle's pull and its report. This arm
+            // exists so the match stays total — the actor never relies
+            // on it ("empty means deferred to the next cycle").
+            MaterializedOp::FlushAppData { .. } => GroupOutcome::Outcomes(Vec::new()),
             MaterializedOp::Noop => GroupOutcome::Outcomes(all_applied(group)),
             MaterializedOp::CreateTask {
                 task,
