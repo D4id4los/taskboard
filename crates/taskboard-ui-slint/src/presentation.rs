@@ -16,7 +16,9 @@
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, TimeDelta, Utc};
-use taskboard_domain::{AppState, Board, BoardId, ReminderRef, Stack, SyncPhase, Task, TaskId};
+use taskboard_domain::{
+    AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, SyncPhase, Task, TaskId,
+};
 
 /// The due-soon window (design §4): a presentation constant, not
 /// config — Q22 fixes the v0.1.0 `[ui]` surface at scale + keymap
@@ -135,6 +137,46 @@ pub fn due_phrase(kind: DueKind, duedate: Option<DateTime<Utc>>, now: DateTime<U
     }
 }
 
+/// The display phrase for a scheduled start (mono role): empty when the
+/// field is absent (the `due_phrase` convention); otherwise
+/// self-describing — unlike due, no tone carries the direction, so the
+/// words do (`starts now` / `starts in {q}` / `started {q} ago`). The
+/// bucketing edges are `duration_bucket`'s tested contract.
+#[must_use]
+pub fn scheduled_phrase(scheduled: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    let Some(scheduled) = scheduled else {
+        return String::new();
+    };
+    let delta = scheduled - now;
+    let bucket = duration_bucket(delta.abs());
+    match (delta < TimeDelta::zero(), bucket) {
+        (_, DurationBucket::Now) => "starts now".to_owned(),
+        (false, DurationBucket::Minutes(n)) => format!("starts in {n}m"),
+        (false, DurationBucket::Hours(n)) => format!("starts in {n}h"),
+        (false, DurationBucket::Days(n)) => format!("starts in {n}d"),
+        (true, DurationBucket::Minutes(n)) => format!("started {n}m ago"),
+        (true, DurationBucket::Hours(n)) => format!("started {n}h ago"),
+        (true, DurationBucket::Days(n)) => format!("started {n}d ago"),
+    }
+}
+
+/// The display phrase for an estimated effort: empty when absent, else
+/// the domain's canonical text form — the UI wraps the domain formatter,
+/// never re-implements the grammar.
+#[must_use]
+pub fn effort_phrase(effort: Option<Effort>) -> String {
+    effort.map_or(String::new(), Effort::text_form)
+}
+
+/// The anchor-card test (DDF-5, the presentation-side half): an exact
+/// byte-equal title match — no trim, no case-fold, no normalization (a
+/// trailing space is a visible near-miss, and must stay visible).
+/// Never enters the domain crate; resolution keeps resolving the anchor.
+#[must_use]
+pub fn is_anchor_task(task: &Task) -> bool {
+    task.title == taskboard_domain::ANCHOR_CARD_TITLE
+}
+
 /// The sync phase as the UI badge vocabulary (slint-free).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncPhaseUi {
@@ -150,6 +192,9 @@ pub enum SyncPhaseUi {
 pub struct SyncBadge {
     pub phase: SyncPhaseUi,
     pub pending: u32,
+    /// The selected board's derived sidecar health (the loud fence's
+    /// subject); `Healthy` (the default) renders nothing.
+    pub sidecar: SidecarHealth,
 }
 
 /// Maps the *selected* board's sync row onto the badge (design §3.2,
@@ -173,6 +218,30 @@ pub fn sync_badge_for_board(
     SyncBadge {
         phase,
         pending: status.pending_ops,
+        sidecar: status.sidecar,
+    }
+}
+
+/// The sidecar warning caption (D-S2's loud fence): empty for healthy
+/// (absent evidence is the ruled silence); an unreadable reason renders
+/// the "update this app" warning class with the typed reason tag. The
+/// wording is presentation-edge text — the `status` CLI's precedent.
+#[must_use]
+pub fn sidecar_caption(health: SidecarHealth) -> String {
+    match health {
+        SidecarHealth::Healthy => String::new(),
+        SidecarHealth::Unreadable(taskboard_domain::AppDataUnreadable::FormatTooNew { format }) => {
+            format!("board data unreadable (format {format} is too new) — update this app")
+        }
+        SidecarHealth::Unreadable(reason) => {
+            let tag = match reason {
+                taskboard_domain::AppDataUnreadable::Transport => "transport",
+                taskboard_domain::AppDataUnreadable::Decode => "decode",
+                taskboard_domain::AppDataUnreadable::ForeignBoard => "foreign-board",
+                taskboard_domain::AppDataUnreadable::FormatTooNew { .. } => unreachable!(),
+            };
+            format!("board data unreadable ({tag}) — update this app")
+        }
     }
 }
 
@@ -205,6 +274,9 @@ pub struct BannerRow {
 pub fn banner_rows(state: &AppState, now: DateTime<Utc>) -> Vec<BannerRow> {
     taskboard_domain::overdue_tasks(&state.tasks, now)
         .into_iter()
+        // The anchor card is never a banner row (DDF-5: the exact-title
+        // filter is presentation-layer; `banner_overflow` follows).
+        .filter(|task| !is_anchor_task(task))
         .map(|task| {
             let (reminder, occurrence) = snooze_target(state, task);
             BannerRow {
@@ -277,7 +349,9 @@ pub fn live_board(state: &AppState) -> Option<&Board> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use taskboard_domain::{BoardClocks, ReminderOffset, ReminderRule, StackId, TaskClocks};
+    use taskboard_domain::{
+        BoardClocks, Effort, ReminderOffset, ReminderRule, SidecarHealth, StackId, TaskClocks,
+    };
 
     /// Local fixture clocks (the domain's `test_support` is
     /// feature-gated; these tests need only epoch stamps).
@@ -479,26 +553,30 @@ mod tests {
             sync_badge_for_board(&states, Some(b1)),
             SyncBadge {
                 phase: SyncPhaseUi::Syncing,
-                pending: 2
+                pending: 2,
+                sidecar: SidecarHealth::Healthy
             }
         );
         assert_eq!(
             sync_badge_for_board(&states, Some(b2)),
             SyncBadge {
                 phase: SyncPhaseUi::Offline,
-                pending: 0
+                pending: 0,
+                sidecar: SidecarHealth::Healthy
             }
         );
         assert_eq!(
             sync_badge_for_board(&states, Some(b3)),
             SyncBadge {
                 phase: SyncPhaseUi::Failed,
-                pending: 0
+                pending: 0,
+                sidecar: SidecarHealth::Healthy
             }
         );
         let default = SyncBadge {
             phase: SyncPhaseUi::Idle,
             pending: 0,
+            sidecar: SidecarHealth::Healthy,
         };
         assert_eq!(sync_badge_for_board(&states, None), default, "no boards");
         let unknown = BoardId::from_uuid(uuid::Uuid::from_u128(0xFEED));
@@ -629,6 +707,90 @@ mod tests {
         let rows = banner_rows(&state, now);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].task, ruleless);
+    }
+
+    #[test]
+    fn scheduled_phrase_is_empty_when_absent_and_directional_when_set() {
+        // Structural facts only (AGENTS §5), the `due_phrase` precedent:
+        // the words are presentation wording, the direction is the
+        // behavior — pinned as future ≠ past at the same bucket.
+        let now = chrono::TimeZone::timestamp_opt(&Utc, 1_700_000_000, 0)
+            .single()
+            .expect("ts");
+        assert_eq!(scheduled_phrase(None, now), "");
+        assert!(
+            !scheduled_phrase(Some(now), now).is_empty(),
+            "the boundary bucket renders"
+        );
+        let future = scheduled_phrase(Some(now + TimeDelta::hours(2)), now);
+        let past = scheduled_phrase(Some(now - TimeDelta::hours(2)), now);
+        assert_ne!(future, "", "the future phrase renders");
+        assert_ne!(past, "", "the past phrase renders");
+        assert_ne!(future, past, "the direction is carried at one bucket");
+    }
+
+    #[test]
+    fn effort_phrase_wraps_the_domain_text_form() {
+        assert_eq!(effort_phrase(None), "");
+        assert_eq!(
+            effort_phrase(Some(Effort::new(5400))),
+            Effort::new(5400).text_form()
+        );
+        assert_eq!(effort_phrase(Some(Effort::new(0))), "0s");
+    }
+
+    #[test]
+    fn is_anchor_task_matches_the_exact_title_only() {
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let mut anchor = task(TaskId::from_uuid(uuid::Uuid::now_v7()), stack, 0);
+        anchor.title = taskboard_domain::ANCHOR_CARD_TITLE.to_owned();
+        assert!(is_anchor_task(&anchor));
+        for near_miss in [
+            "[taskboard] app-data ",
+            " [taskboard] app-data",
+            "[taskboard] app-data.",
+            "[TASKBOARD] APP-DATA",
+        ] {
+            let mut t = task(TaskId::from_uuid(uuid::Uuid::now_v7()), stack, 1);
+            t.title = near_miss.to_owned();
+            assert!(!is_anchor_task(&t), "{near_miss:?} is a visible near-miss");
+        }
+    }
+
+    #[test]
+    fn banner_rows_exclude_the_anchor() {
+        let now = chrono::TimeZone::timestamp_opt(&Utc, 1_700_000_000, 0)
+            .single()
+            .expect("ts");
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mut overdue = task(TaskId::from_uuid(uuid::Uuid::now_v7()), stack, 0);
+        overdue.duedate = Some(now - TimeDelta::hours(2));
+        state.tasks.insert(overdue.id, overdue);
+        let mut anchor = task(TaskId::from_uuid(uuid::Uuid::now_v7()), stack, 1);
+        anchor.title = taskboard_domain::ANCHOR_CARD_TITLE.to_owned();
+        anchor.duedate = Some(now - TimeDelta::hours(3));
+        let anchor_id = anchor.id;
+        state.tasks.insert(anchor_id, anchor);
+        let rows = banner_rows(&state, now);
+        assert_eq!(rows.len(), 1, "the anchor is filtered from the banner");
+        assert!(!rows.iter().any(|r| r.task == anchor_id));
+    }
+
+    #[test]
+    fn sidecar_caption_is_silent_when_healthy_and_typed_when_not() {
+        assert_eq!(sidecar_caption(SidecarHealth::Healthy), "");
+        let too_new = sidecar_caption(SidecarHealth::Unreadable(
+            taskboard_domain::AppDataUnreadable::FormatTooNew { format: 2 },
+        ));
+        assert!(too_new.contains('2'), "the too-new format rides along");
+        for reason in [
+            taskboard_domain::AppDataUnreadable::Transport,
+            taskboard_domain::AppDataUnreadable::Decode,
+            taskboard_domain::AppDataUnreadable::ForeignBoard,
+        ] {
+            assert_ne!(sidecar_caption(SidecarHealth::Unreadable(reason)), "");
+        }
     }
 
     proptest! {
