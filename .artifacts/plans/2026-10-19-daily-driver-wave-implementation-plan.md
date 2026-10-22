@@ -107,6 +107,14 @@ fact cites its ruling; per-chunk sections reference "DDF-N".
    merge basis (identical loss window to `duedate`'s today); Deck-side
    date-granularity normalization on Deck-side edits (last writer
    wins, adopted).
+   **Amended 2026-10-22 (ruled):** Deck 1.17.5 (the live tier) has no
+   `startdate` support (measured — see the characterization report).
+   Branch A is the *capability-true* lane: native when the
+   connector's `CARD_STARTDATE` flag holds, the sidecar document lane
+   otherwise (`scheduled` = a fourth modeled key in fallback mode;
+   the never-a-scheduled-key sentence above is superseded for that
+   mode; native merge verdict skipped while false). Normative:
+   `.artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md` §2.
 3. **DDF-3 — the lockstep seam** (doc 2 D-F3, ACCEPTED; issue #244).
    One exported `TASK_FIELDS: &[(&str, &[&str], FieldFamily)]`
    manifest in the domain crate (clock / task fields / family;
@@ -248,6 +256,15 @@ fact cites its ruling; per-chunk sections reference "DDF-N".
     gate). A behavioral divergence on 1.17.5 is a **stop-and-report
     finding** (the design's expected-degraded stance stands until the
     user rules), never a silent adaptation.
+    **Amended 2026-10-22 (ruled):** the gate ran and found exactly two
+    divergences (attachment create's required `data` param; no
+    `startdate` support); the ruling replaced the expected-degraded
+    stance with **version-specific parity** — the connector adapts via
+    the capability seam (addendum `.artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md`,
+    evidence `.artifacts/reports/2026-10-22-deck-1175-transport-characterization-report.md`).
+    The gate's revised fixture set pins the *workaround* behavior
+    green on both tiers; the protocol stays: future divergences on
+    unknown versions stop-and-report, then extend the flag table.
 11. **DDF-11 — the day window** (doc 2 D-F6, ACCEPTED). `[preferences]
     day_start_time` config section (default `"00:00"`; typed
     validation — must parse as a time-of-day, never silently

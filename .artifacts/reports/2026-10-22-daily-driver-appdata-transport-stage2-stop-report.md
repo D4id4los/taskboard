@@ -1,5 +1,14 @@
 # [Report] Daily-Driver Chunk 3 Stage 2 — STOP: two Deck 1.17.5 contract divergences
 
+> **Resolved 2026-10-22 (ruled):** the user rejected degradation and
+> ruled for version-specific parity — a capability-seamed connector
+> and `scheduled` native-when-available/sidecar-fallback. Normative
+> follow-ups: the design addendum
+> `.artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md`
+> and the full-surface characterization
+> `.artifacts/reports/2026-10-22-deck-1175-transport-characterization-report.md`
+> (§5's options below are superseded by that ruling).
+
 - **Date**: 2026-10-22
 - **Kind**: stage-2 implementation report — **stopped at the gate** (MD-5/DDF-10/D5).
 - **Branch**: `feat/sync-appdata-transport` @ `332c89b` (worktree

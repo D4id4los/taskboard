@@ -28,6 +28,14 @@
   issue #350). Record in §6. The one tracker edit (that issue) was
   ordered by the ruling; otherwise zero production code — this file
   is the chunk's entire diff.
+  **Amended 2026-10-22** (ruled): the transport is version-seamed via
+  a Deck capability probe, and `scheduled`'s lane becomes dynamic
+  (native when the server supports it, sidecar fallback otherwise).
+  This supersedes the "the document's tasks section never gains a
+  `scheduled` key" statements here (D-S2, §7 doc-2 interface) *in
+  fallback mode*. Normative addendum:
+  `.artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md`
+  (evidence: `.artifacts/reports/2026-10-22-deck-1175-transport-characterization-report.md`).
 
 ---
 
