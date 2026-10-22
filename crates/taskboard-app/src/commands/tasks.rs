@@ -594,6 +594,24 @@ pub fn render_text_list(list: &TaskList, standalone: bool) -> String {
                     None => {}
                 }
             }
+            // The field-family segments: each omitted when absent, the
+            // canonical domain text forms (never re-spelled here).
+            if let Some(scheduled) = task.scheduled {
+                let _ = write!(line, "  (starts {scheduled})");
+            }
+            if let Some(effort) = task.effort {
+                let _ = write!(
+                    line,
+                    "  {}",
+                    taskboard_domain::Effort::new(effort).text_form()
+                );
+            }
+            if let Some(importance) = &task.importance {
+                let _ = write!(line, "  {importance}");
+            }
+            if let Some(urgency) = &task.urgency {
+                let _ = write!(line, "  {urgency}");
+            }
             lines.push(line);
         }
     }
