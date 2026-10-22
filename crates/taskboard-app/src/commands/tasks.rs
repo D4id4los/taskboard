@@ -386,9 +386,10 @@ pub(crate) async fn label_on(
     Ok(mutation_receipt(&state, task))
 }
 
-/// Edits a task's fields (sparse changeset; at least one flag required —
-/// enforced by clap as a usage error). A repeated identical edit is an
-/// accepted no-op (`NoOp`, exit 0).
+/// Edits a task's fields (sparse changeset). A zero-flag edit is a
+/// typed no-op (`no_op`, exit 0) — no clap group enforces a flag
+/// minimum; a repeated identical edit is likewise an accepted no-op
+/// (`NoOp`, exit 0).
 ///
 /// # Errors
 ///

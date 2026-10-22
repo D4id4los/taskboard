@@ -928,11 +928,25 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                     title,
                     description,
                     due,
+                    scheduled,
+                    effort,
+                    importance,
+                    urgency,
                     archive,
                     unarchive,
                 },
         } => {
-            let changes = task_changes(title, description, due, archive, unarchive);
+            let changes = task_changes(
+                title,
+                description,
+                due,
+                scheduled,
+                effort,
+                importance,
+                urgency,
+                archive,
+                unarchive,
+            );
             run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
                 tasks::edit(config, store, &task, changes).await
             })
@@ -1199,11 +1213,17 @@ async fn sync_command(
 
 /// Maps the `tasks edit` flags onto the domain's sparse changeset:
 /// `DueSpec::Clear` becomes `Some(None)` (the clear-vs-untouched
-/// distinction), `--archive`/`--unarchive` are mutually exclusive (clap).
+/// distinction), the wrapper flag types (`Option<Option<_>>`) map by
+/// identity, `--archive`/`--unarchive` are mutually exclusive (clap).
+#[allow(clippy::too_many_arguments)]
 fn task_changes(
     title: Option<String>,
     description: Option<String>,
     due: Option<crate::cli::DueSpec>,
+    scheduled: Option<crate::cli::DueSpec>,
+    effort: Option<crate::cli::EffortSpec>,
+    importance: Option<crate::cli::ImportanceSpec>,
+    urgency: Option<crate::cli::UrgencySpec>,
     archive: bool,
     unarchive: bool,
 ) -> taskboard_domain::TaskChanges {
@@ -1214,10 +1234,25 @@ fn task_changes(
             crate::cli::DueSpec::Set(dt) => Some(dt),
             crate::cli::DueSpec::Clear => None,
         }),
-        scheduled: None,
-        effort: None,
-        importance: None,
-        urgency: None,
+        scheduled: scheduled.map(|spec| match spec {
+            crate::cli::DueSpec::Set(dt) => Some(dt),
+            crate::cli::DueSpec::Clear => None,
+        }),
+        // The spec enums share `DueSpec`'s shape: `Clear` becomes
+        // `Some(None)` (clear-and-stamp), `Set` becomes `Some(Some(_))`
+        // (set-and-stamp), an absent flag stays `None` (untouched).
+        effort: effort.map(|spec| match spec {
+            crate::cli::EffortSpec::Set(e) => Some(e),
+            crate::cli::EffortSpec::Clear => None,
+        }),
+        importance: importance.map(|spec| match spec {
+            crate::cli::ImportanceSpec::Set(level) => Some(level),
+            crate::cli::ImportanceSpec::Clear => None,
+        }),
+        urgency: urgency.map(|spec| match spec {
+            crate::cli::UrgencySpec::Set(level) => Some(level),
+            crate::cli::UrgencySpec::Clear => None,
+        }),
         archived: if archive {
             Some(true)
         } else {
@@ -1572,10 +1607,24 @@ async fn tasks_line(
             title,
             description,
             due,
+            scheduled,
+            effort,
+            importance,
+            urgency,
             archive,
             unarchive,
         } => {
-            let changes = task_changes(title, description, due, archive, unarchive);
+            let changes = task_changes(
+                title,
+                description,
+                due,
+                scheduled,
+                effort,
+                importance,
+                urgency,
+                archive,
+                unarchive,
+            );
             emit_result(
                 io,
                 tasks::edit_on(app, &task, changes).await,
@@ -1938,5 +1987,62 @@ mod connector_resolution_tests {
                 .error_kind(),
             "unknown-connector"
         );
+    }
+}
+
+#[cfg(test)]
+mod task_field_mapping_tests {
+    use crate::cli::{DueSpec, EffortSpec, ImportanceSpec, UrgencySpec};
+    use crate::commands::task_changes;
+    use taskboard_domain::{Effort, Importance, Urgency};
+
+    #[test]
+    fn the_field_flags_map_onto_their_changeset_slots() {
+        let due = chrono::Utc::now();
+        let changes = task_changes(
+            None,
+            None,
+            Some(DueSpec::Set(due)),
+            Some(DueSpec::Clear),
+            Some(EffortSpec::Set(Effort::new(5400))),
+            Some(ImportanceSpec::Clear),
+            Some(UrgencySpec::Set(Urgency::High)),
+            false,
+            false,
+        );
+        assert_eq!(changes.duedate, Some(Some(due)));
+        assert_eq!(changes.scheduled, Some(None), "--scheduled none clears");
+        assert_eq!(changes.effort, Some(Some(Effort::new(5400))));
+        assert_eq!(
+            changes.importance,
+            Some(None),
+            "--importance none clears while the rest set"
+        );
+        assert_eq!(changes.urgency, Some(Some(Urgency::High)));
+        assert_eq!(changes.archived, None);
+    }
+
+    #[test]
+    fn absent_flags_are_untouched_slots() {
+        let changes = task_changes(None, None, None, None, None, None, None, false, false);
+        assert_eq!(changes, taskboard_domain::TaskChanges::default());
+    }
+
+    #[test]
+    fn importance_maps_the_distinct_type() {
+        let changes = task_changes(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(ImportanceSpec::Set(Importance::VeryLow)),
+            None,
+            true,
+            false,
+        );
+        assert_eq!(changes.importance, Some(Some(Importance::VeryLow)));
+        assert_eq!(changes.urgency, None, "urgency is a distinct slot");
+        assert_eq!(changes.archived, Some(true));
     }
 }

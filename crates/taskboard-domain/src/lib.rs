@@ -67,7 +67,8 @@ pub use command::{
 };
 pub use days::day_window;
 pub use entities::{
-    Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
+    Board, BoardClocks, Color, Effort, Importance, Label, LabelClocks, Stack, StackClocks, Task,
+    TaskClocks, Urgency,
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
