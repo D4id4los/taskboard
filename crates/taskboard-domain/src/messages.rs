@@ -217,6 +217,26 @@ pub enum StateCommand {
         /// The single new rule's due-anchored offset.
         offset: crate::reminders::ReminderOffset,
     },
+    /// Add one reminder rule to the task's rule set — unless a rule at
+    /// this exact offset already exists, in which case nothing is
+    /// planned and the receipt names the surviving rule (the dedup is
+    /// sound because `(task, offset)` fully determines firing semantics:
+    /// `occurrence_of` is pure in `(offset, duedate)`). Legal on a task
+    /// without a duedate (the rule arms when a duedate arrives —
+    /// occurrence arithmetic is due-anchored).
+    AddReminderRule {
+        /// The task the rule watches.
+        task: TaskId,
+        /// The new rule's due-anchored offset.
+        offset: crate::reminders::ReminderOffset,
+    },
+    /// Remove the named reminder rule (deliveries and snooze links are
+    /// pruned by the persistence cascade; the sidecar flush derives the
+    /// document tombstone). An unknown rule id is a typed rejection.
+    RemoveReminderRule {
+        /// The rule to remove.
+        rule: crate::ids::ReminderRuleId,
+    },
     /// Remove all of the task's explicit reminder rules. Zero existing
     /// rules is an accepted no-op (idempotent repeat).
     ClearReminderRules {
