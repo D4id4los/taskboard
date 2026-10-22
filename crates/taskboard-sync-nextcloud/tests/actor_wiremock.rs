@@ -2672,3 +2672,405 @@ async fn a33_the_probe_gates_the_card_writes_scheduled() {
         );
     }
 }
+
+// ---- D16: sidecar evidence ingestion (chunk 3's ceremony half) --------
+
+/// The reserved anchor title/filename/filesize the S-series fixtures use.
+mod sidecar {
+    use super::*;
+
+    pub(crate) const TITLE: &str = "[taskboard] app-data";
+    pub(crate) const FILENAME: &str = "taskboard-appdata.json";
+    pub(crate) const CARD: u64 = 55;
+    pub(crate) const ATTACHMENT: u64 = 11;
+
+    /// A document body for board 42 (or a foreign one when `board` differs).
+    pub(crate) fn document_json(board: u64, format: u32) -> String {
+        serde_json::json!({
+            "format": format,
+            "board": board,
+            "sections": {
+                "tasks": { "55": { "fields": {
+                    "effort": { "v": 900, "clock": "2026-01-01T00:00:00Z" }
+                } } }
+            }
+        })
+        .to_string()
+    }
+
+    pub(crate) fn anchor_card_json(card: u64, stamp: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": card, "title": TITLE, "stackId": super::STACK, "type": "plain",
+            "order": 0, "lastModified": stamp, "labels": [], "archived": false,
+            "duedate": null, "done": null
+        })
+    }
+
+    /// The anchor card's *detail* payload: identical to the listing view
+    /// plus the inline attachments array (the reserved-filename
+    /// attachment the scan confirms on).
+    pub(crate) fn detail_json(card: u64, stamp: i64, deleted: bool) -> String {
+        detail_json_with_attachment(card, stamp, deleted, ATTACHMENT)
+    }
+
+    pub(crate) fn detail_json_with_attachment(
+        card: u64,
+        stamp: i64,
+        deleted: bool,
+        attachment_id: u64,
+    ) -> String {
+        let mut detail = anchor_card_json(card, stamp);
+        detail["attachments"] = serde_json::json!([{
+            "id": attachment_id, "type": "deck_file", "cardId": card,
+            "createdAt": stamp, "lastModified": stamp,
+            "deletedAt": if deleted { stamp } else { 0 },
+            "extendedData": {
+                "fileName": FILENAME, "filesize": 25,
+                "mimetype": "application/json", "mtime": stamp
+            }
+        }]);
+        detail.to_string()
+    }
+
+    /// Mounts the card-detail GET (the bound-card refresh's read).
+    pub(crate) async fn mount_detail(server: &MockServer, card: u64, deleted: bool) {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{}/stacks/{}/cards/{}",
+                super::BOARD,
+                super::STACK,
+                card
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_string(detail_json(
+                card,
+                super::T,
+                deleted,
+            )))
+            .mount(server)
+            .await;
+    }
+
+    /// Mounts the attachment-content download route.
+    pub(crate) async fn mount_download(server: &MockServer, body: String, status: u16) {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{}/stacks/{}/cards/{}/attachments/{}",
+                super::BOARD,
+                super::STACK,
+                CARD,
+                ATTACHMENT
+            )))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(server)
+            .await;
+    }
+
+    /// The repo seed: the bound board/stack plus one *bound* local task
+    /// carrying the anchor card's remote ref (so the detail refresh —
+    /// and with it the attachment capture — covers the anchor).
+    pub(crate) fn repo_with_bound_anchor() -> Arc<InMemoryRepository> {
+        let mut state = PersistedState::default();
+        let board = bound_board();
+        state.boards.insert(board.id, board);
+        let stack = bound_stack(2, STACK);
+        state.stacks.insert(stack.id, stack);
+        let (mut task, _) = draft(100, 2, "the anchor task");
+        task.remote = Some(taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(BOARD),
+            stack: taskboard_domain::RemoteStackId(STACK),
+            card: taskboard_domain::RemoteCardId(CARD),
+        });
+        task.remote_seen = Some(ts(T));
+        state.tasks.insert(task.id, task);
+        Arc::new(InMemoryRepository::with_state(state))
+    }
+
+    /// The download hit count (the cache/pick observables ride it).
+    pub(crate) async fn download_hits(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().contains("/attachments/"))
+            .count()
+    }
+}
+
+/// S-1: a confirmed live carrier's document travels as typed `Document`
+/// evidence on the completed report.
+#[tokio::test(start_paused = true)]
+async fn a34_document_evidence_travels_on_the_report() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+
+    let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { app_data, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    let taskboard_domain::AppDataEvidence::Document(document) = app_data else {
+        for r in server.received_requests().await.unwrap() {
+            eprintln!("REQ {} {}", r.method, r.url.path());
+        }
+        panic!("expected Document evidence, got {app_data:?}");
+    };
+    assert_eq!(document.board, RemoteBoardId(BOARD));
+    assert_eq!(document.format, 1);
+    let task = &document.sections.tasks.as_ref().unwrap()["55"];
+    assert_eq!(
+        task.fields["effort"].value,
+        taskboard_domain::appdata::ModeledValue::Effort(Some(
+            taskboard_domain::entities::Effort::new(900)
+        ))
+    );
+}
+
+/// S-2: no anchor-titled card ⇒ `Absent`, and not a single attachment
+/// request rides the cycle.
+#[tokio::test(start_paused = true)]
+async fn a35_no_anchor_is_absent_silence() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(&server, serde_json::json!([card_json(56, "a plain card")])).await;
+    // Card 56 is unbound: no detail refresh, no anchor anywhere.
+    let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { app_data, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(matches!(
+        app_data,
+        taskboard_domain::AppDataEvidence::Absent
+    ));
+    assert_eq!(sidecar::download_hits(&server).await, 0);
+}
+
+/// S-3: every `Unreadable` variant triggers typed — Decode
+/// (undecodable body), `FormatTooNew`, `ForeignBoard` — and none of them
+/// fails the cycle.
+#[tokio::test(start_paused = true)]
+async fn a36_unreadable_variants_travel_typed() {
+    for (body, expected) in [
+        ("{not json".to_owned(), "Decode"),
+        (sidecar::document_json(BOARD, 99), "FormatTooNew"),
+        (sidecar::document_json(43, 1), "ForeignBoard"),
+    ] {
+        let server = start_server().await;
+        mount_capabilities(&server, Some("1.19.0")).await;
+        mount_standard_pull(
+            &server,
+            serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+        )
+        .await;
+        sidecar::mount_detail(&server, sidecar::CARD, false).await;
+        sidecar::mount_download(&server, body, 200).await;
+
+        let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
+        let report = nudge_and_report(&mut actor).await;
+        let SyncReport::Completed { app_data, .. } = report else {
+            panic!("expected a Completed report");
+        };
+        let matches_variant = match (&app_data, expected) {
+            (taskboard_domain::AppDataEvidence::Unreadable(v), "Decode") => {
+                matches!(v, taskboard_domain::AppDataUnreadable::Decode)
+            }
+            (
+                taskboard_domain::AppDataEvidence::Unreadable(
+                    taskboard_domain::AppDataUnreadable::FormatTooNew { format },
+                ),
+                "FormatTooNew",
+            ) => *format == 99,
+            (taskboard_domain::AppDataEvidence::Unreadable(v), "ForeignBoard") => {
+                matches!(v, taskboard_domain::AppDataUnreadable::ForeignBoard)
+            }
+            _ => false,
+        };
+        assert!(matches_variant, "expected {expected}, got {app_data:?}");
+        // The download landed in the cache's failure forms: untouched.
+        assert_eq!(sidecar::download_hits(&server).await, 1);
+    }
+}
+
+/// S-4: a failing download never fails the cycle — `Unreadable(Transport)`
+/// travels, the report still completes.
+#[tokio::test(start_paused = true)]
+async fn a37_download_failure_folds_nothing_and_still_completes() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, String::new(), 500).await;
+
+    let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { app_data, .. } = report else {
+        panic!("the cycle must complete despite the download failure");
+    };
+    assert!(matches!(
+        app_data,
+        taskboard_domain::AppDataEvidence::Unreadable(
+            taskboard_domain::AppDataUnreadable::Transport
+        )
+    ));
+    assert!(
+        actor.system_rx.try_recv().is_err(),
+        "a document download failure is not a lost network"
+    );
+}
+
+/// S-5: the metadata cache — the second cycle serves the document from
+/// `LoopState` and downloads the content exactly once across both.
+#[tokio::test(start_paused = true)]
+async fn a38_cache_downloads_the_content_exactly_once() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+
+    let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
+    let first = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed {
+        app_data: first_evidence,
+        ..
+    } = first
+    else {
+        panic!("expected a Completed report");
+    };
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let second = next_report(&mut actor).await;
+    let SyncReport::Completed {
+        app_data: second_evidence,
+        ..
+    } = second
+    else {
+        panic!("expected a second Completed report");
+    };
+    // Both reports carry the same typed document; the wire saw one GET.
+    assert_eq!(first_evidence, second_evidence);
+    assert_eq!(sidecar::download_hits(&server).await, 1);
+}
+
+/// S-6: two confirmed carriers — only the newest-stamp winner is
+/// downloaded (the pick rule observed via request counts).
+#[tokio::test(start_paused = true)]
+async fn a39_two_carriers_only_the_winner_downloads() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    // Card 55 carries the older stamp, card 56 the newest — 56 wins.
+    mount_standard_pull(
+        &server,
+        serde_json::json!([
+            { "id": 55, "title": sidecar::TITLE, "stackId": STACK, "type": "plain",
+              "order": 0, "lastModified": T, "labels": [], "archived": false,
+              "duedate": null, "done": null },
+            { "id": 56, "title": sidecar::TITLE, "stackId": STACK, "type": "plain",
+              "order": 1, "lastModified": T + 500, "labels": [], "archived": false,
+              "duedate": null, "done": null }
+        ]),
+    )
+    .await;
+    sidecar::mount_detail(&server, 55, false).await;
+    // Card 56's detail carries the newer attachment stamp.
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/56"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            sidecar::detail_json_with_attachment(56, T + 500, false, sidecar::ATTACHMENT + 1),
+        ))
+        .mount(&server)
+        .await;
+    // Only the winner's content route exists: a 56 hit is the evidence.
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/56/attachments/{}",
+            sidecar::ATTACHMENT + 1
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sidecar::document_json(BOARD, 1)))
+        .mount(&server)
+        .await;
+
+    let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { app_data, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    eprintln!("DBG a39 evidence: {app_data:?}");
+    assert!(
+        matches!(app_data, taskboard_domain::AppDataEvidence::Document(_)),
+        "the winner's document is the evidence"
+    );
+    let hits: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().contains("/attachments/"))
+        .map(|r| r.url.path().to_owned())
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "exactly one download: {hits:?} — the loser is never fetched"
+    );
+    assert!(hits[0].contains("/cards/56/"));
+}
+
+/// S-7: a case/whitespace-mutated title never matches the convention —
+/// no confirmation, no download, `Absent`.
+#[tokio::test(start_paused = true)]
+async fn a40_mutated_title_never_matches() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([{ "id": 55, "title": " [Taskboard] app-data ",
+                             "stackId": STACK, "type": "plain", "order": 0,
+                             "lastModified": T, "labels": [], "archived": false,
+                             "duedate": null, "done": null }]),
+    )
+    .await;
+    // The detail is authoritative (it overwrites the listing view), so
+    // the mutated title rides the detail payload too.
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/55"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            sidecar::detail_json(55, T, false).replace(
+                &format!("\"title\":\"{}\"", sidecar::TITLE),
+                "\"title\":\" [Taskboard] app-data \"",
+            ),
+        ))
+        .mount(&server)
+        .await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+
+    let mut actor = spawn(&server, sidecar::repo_with_bound_anchor());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { app_data, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(matches!(
+        app_data,
+        taskboard_domain::AppDataEvidence::Absent
+    ));
+    assert_eq!(sidecar::download_hits(&server).await, 0);
+}
