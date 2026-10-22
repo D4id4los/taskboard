@@ -761,6 +761,112 @@ pub(crate) mod suite {
         Ok(())
     }
 
+    /// The Deck 1.17.5 gate pin (DDF-10 as amended, characterization
+    /// §2B): the server is the fixed party — create with a startdate
+    /// answers 200 but ignores the field; a full-send card PUT with a
+    /// valued startdate answers 200 and silently drops it (no 400, no
+    /// effect). This is the capability table's measured evidence, not
+    /// behavior debt of ours.
+    pub(crate) async fn startdate_unsupported_on_deck1175(client: &DeckClient) {
+        let run = run_id();
+        let color =
+            taskboard_sync_nextcloud::DeckColor::from_hex("00c2e0").expect("valid lifecycle color");
+
+        let board = client
+            .create_board(&run, &color)
+            .await
+            .expect("board creation must succeed");
+
+        let result = startdate_unsupported_body(client, board.id, &run).await;
+
+        let deleted = client.delete_board(board.id).await;
+        match (result, deleted) {
+            (Ok(()), Ok(d)) => assert!(!d.is_live(), "DELETE payload must stamp deletedAt"),
+            (Err(body_err), _) => panic!("startdate gate pin failed: {body_err:?}"),
+            (Ok(()), Err(teardown_err)) => panic!("board teardown failed: {teardown_err}"),
+        }
+    }
+
+    async fn startdate_unsupported_body(
+        client: &DeckClient,
+        board_id: u64,
+        run: &str,
+    ) -> Result<(), taskboard_sync_nextcloud::DeckError> {
+        use chrono::SubsecRound as _;
+        use taskboard_sync_nextcloud::NewCard;
+
+        let stack = super::retrying_server_errors(|| async {
+            client
+                .create_stack(board_id, &format!("{run}-stack"), 0)
+                .await
+        })
+        .await?;
+
+        let start = (chrono::Utc::now() + chrono::Duration::days(3)).trunc_subsecs(0);
+        // Create with a startdate: 200, but the field is ignored.
+        let card = super::retrying_server_errors(|| async {
+            client
+                .create_card(
+                    board_id,
+                    stack.id,
+                    &NewCard {
+                        title: format!("{run}-started"),
+                        order: Some(0),
+                        description: None,
+                        duedate: None,
+                        startdate: Some(start),
+                        kind: None,
+                    },
+                )
+                .await
+        })
+        .await?;
+        let read = client.card(board_id, stack.id, card.id).await?;
+        assert_eq!(
+            read.startdate, None,
+            "1.17.5 create must ignore the startdate field"
+        );
+
+        // Full-send card PUT with a valued startdate: 200, silent drop.
+        let mut fetched = client.card(board_id, stack.id, card.id).await?;
+        fetched.startdate = Some(start);
+        super::retrying_server_errors(|| async { client.update_card(board_id, &fetched).await })
+            .await?;
+        let updated = client.card(board_id, stack.id, card.id).await?;
+        assert_eq!(
+            updated.startdate, None,
+            "1.17.5 must silently drop the PUT startdate (no 400, no effect)"
+        );
+        Ok(())
+    }
+
+    /// The D-V1 seam pinned end-to-end against a real server: the
+    /// capabilities probe decodes the Deck version and the derived flag
+    /// matches the tier's pinned expectation. `expected_version` is the
+    /// tier's measured Deck version; `expect_startdate` its measured
+    /// `card_startdate` row.
+    pub(crate) async fn capabilities_probe(
+        client: &DeckClient,
+        expected_version: &str,
+        expect_startdate: bool,
+    ) {
+        let caps = client
+            .capabilities()
+            .await
+            .expect("the capabilities probe must succeed against a real server");
+        assert_eq!(
+            caps.deck_version.as_deref(),
+            Some(expected_version),
+            "the probe must decode the deck section's version"
+        );
+        let features =
+            taskboard_domain::flags_for(caps.deck_version.as_deref().expect("checked above"));
+        assert_eq!(
+            features.card_startdate, expect_startdate,
+            "the derived flag must match the tier's pinned capability row"
+        );
+    }
+
     /// Deleting a missing board yields a typed error. Nextcloud 35 answers
     /// Forbidden (not `NotFound`) for boards that do not exist or are not
     /// ours; a plausible-but-absent id is used because huge ids overflow

@@ -241,7 +241,7 @@ struct DeckSection {
 #[derive(Clone)]
 enum CallBody {
     Json(serde_json::Value),
-    Multipart(AttachmentUpload, bool),
+    Multipart(AttachmentUpload),
 }
 
 /// Payload for uploading a card attachment, or for replacing an existing
@@ -263,15 +263,14 @@ pub struct AttachmentUpload {
 ///
 /// Field names are fixed by the D1 spike §3.2 wire evidence: `type`
 /// (hardcoded `deck_file`) and `file` (the content, with `file_name` as the
-/// client filename and `mime_type` as the part's content type). The update
-/// form additionally carries `data` — the app-level route validates it
-/// non-empty, while the *stored* filename stays the file part's client
-/// filename. Local input validation happens here, before any HTTP: an empty
-/// `file_name` or unparseable `mime_type` yields [`DeckError::InvalidUpload`].
-fn multipart_form(
-    upload: &AttachmentUpload,
-    for_update: bool,
-) -> Result<multipart::Form, DeckError> {
+/// part's client filename and `mime_type` as the part's content type). The
+/// form **unconditionally** carries `data` (D-V3.1, value = the client
+/// filename): required by Deck 1.17.5, tolerated by 1.19.0 — one request
+/// form for every measured version; the *stored* filename stays the file
+/// part's client filename either way. Local input validation happens here,
+/// before any HTTP: an empty `file_name` or unparseable `mime_type` yields
+/// [`DeckError::InvalidUpload`].
+fn multipart_form(upload: &AttachmentUpload) -> Result<multipart::Form, DeckError> {
     if upload.file_name.is_empty() {
         return Err(DeckError::InvalidUpload);
     }
@@ -279,13 +278,10 @@ fn multipart_form(
         .file_name(upload.file_name.clone())
         .mime_str(&upload.mime_type)
         .map_err(|_| DeckError::InvalidUpload)?;
-    let form = multipart::Form::new().text("type", ATTACHMENT_KIND);
-    let form = if for_update {
-        form.text("data", upload.file_name.clone())
-    } else {
-        form
-    };
-    Ok(form.part("file", file))
+    Ok(multipart::Form::new()
+        .text("type", ATTACHMENT_KIND)
+        .text("data", upload.file_name.clone())
+        .part("file", file))
 }
 
 /// One raw successful response: status, validators from the headers, and
@@ -702,7 +698,6 @@ impl DeckClient {
             &format!("boards/{board_id}/stacks/{stack_id}/cards/{card_id}/attachments"),
             Scope::OcsApi,
             upload,
-            false,
             |result: &CallResult<Attachment>| match result {
                 Ok(attachment) => {
                     tracing::info!(attachment_id = attachment.id, "deck attachment uploaded");
@@ -870,7 +865,6 @@ impl DeckClient {
             &format!("cards/{card_id}/attachment/deck_file:{attachment_id}?boardId={board_id}"),
             Scope::App,
             upload,
-            true,
             |result: &CallResult<Attachment>| match result {
                 Ok(attachment) => tracing::info!(
                     attachment_id = attachment.id,
@@ -1429,15 +1423,14 @@ impl DeckClient {
     }
 
     /// Multipart sibling of [`DeckClient::call`] for the two
-    /// attachment-content routes; `scope`/`for_update` carry the
-    /// app-level update route's shape (D1 spike §3.2).
+    /// attachment-content routes; `scope` carries the app-level update
+    /// route's shape (D1 spike §3.2).
     async fn call_multipart<T, L>(
         &self,
         method: Method,
         resource: &str,
         scope: Scope,
         upload: &AttachmentUpload,
-        for_update: bool,
         log: L,
     ) -> Result<T, DeckError>
     where
@@ -1448,7 +1441,7 @@ impl DeckClient {
             method,
             resource: resource.to_owned(),
             scope,
-            body: Some(CallBody::Multipart(upload.clone(), for_update)),
+            body: Some(CallBody::Multipart(upload.clone())),
             validators: None,
         };
         let result = self
@@ -1592,8 +1585,8 @@ impl DeckClient {
             .basic_auth(self.credentials_user(), Some(self.credentials_token()));
         match &call.body {
             Some(CallBody::Json(value)) => request = request.json(value),
-            Some(CallBody::Multipart(upload, for_update)) => {
-                let form = multipart_form(upload, *for_update)?;
+            Some(CallBody::Multipart(upload)) => {
+                let form = multipart_form(upload)?;
                 request = request.multipart(form);
             }
             None => {}
@@ -1817,11 +1810,11 @@ mod tests {
     #[test]
     fn upload_form_rejects_empty_filename_and_bad_mime_before_any_http() {
         assert!(matches!(
-            multipart_form(&upload("", "application/json"), false),
+            multipart_form(&upload("", "application/json")),
             Err(DeckError::InvalidUpload)
         ));
         assert!(matches!(
-            multipart_form(&upload("f.json", "bogus"), false),
+            multipart_form(&upload("f.json", "bogus")),
             Err(DeckError::InvalidUpload)
         ));
     }

@@ -346,7 +346,7 @@ pub struct Attachment {
     /// the object form (the server manages this field on writes).
     #[serde(default, deserialize_with = "data_from_object_or_string")]
     pub data: Option<ExtendedData>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "extended_data_normalized")]
     pub extended_data: Option<ExtendedData>,
 }
 
@@ -365,9 +365,34 @@ where
             ..ExtendedData::default()
         })),
         Some(value) => serde_json::from_value(value)
+            .map(normalize_file_name)
             .map(Some)
             .map_err(serde::de::Error::custom),
     }
+}
+
+/// Decode-side twin of `data_from_object_or_string` for the plain-derived
+/// `extendedData` payload (D20).
+fn extended_data_normalized<'de, D>(deserializer: D) -> Result<Option<ExtendedData>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<ExtendedData>::deserialize(deserializer)?.map(normalize_file_name))
+}
+
+/// The 1.17.5 create/update echo carries the stored filename under
+/// `extendedData.info.filename` with no `fileName` key (measured);
+/// 1.19.0 carries `fileName` directly. Normalizing at *both* decode
+/// paths means every decoded [`ExtendedData`] answers
+/// `.file_name` with the stored filename regardless of the server's
+/// echo shape — consumers never branch on the version.
+fn normalize_file_name(mut data: ExtendedData) -> ExtendedData {
+    if data.file_name.is_empty()
+        && let Some(info) = &data.info
+    {
+        data.file_name = info.file_name.clone();
+    }
+    data
 }
 
 /// Embedded file information of an attachment; every field optional because
@@ -377,6 +402,11 @@ where
 pub struct ExtendedData {
     #[serde(default)]
     pub file_name: String,
+    /// Deck 1.17.5's create/update echo nests the stored filename under
+    /// `info.filename` while leaving `fileName` empty; folded into
+    /// `file_name` at decode (D20). Unknown `info` keys are ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info: Option<ExtensionInfo>,
     /// Wire field `size`; the attachment tier additionally sends
     /// `extendedData.filesize` (same fact, older name).
     #[serde(default, alias = "filesize")]
@@ -385,6 +415,15 @@ pub struct ExtendedData {
     pub mimetype: String,
     #[serde(default)]
     pub mtime: i64,
+}
+
+/// The `info` sub-object of an attachment's `extendedData` (Deck 1.17.5's
+/// echo shape carries the stored filename here).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionInfo {
+    #[serde(default, rename = "filename")]
+    pub file_name: String,
 }
 
 /// Deck serializes some empty collections as `null` (e.g. a stack's
@@ -591,6 +630,54 @@ mod tests {
         assert_eq!(data.file_name, "sidecar_v1.json");
         assert_eq!(data.size, 0, "the string form carries no size");
         assert_eq!(data.mimetype, "");
+    }
+
+    #[test]
+    fn echo_decode_normalizes_both_server_shapes() {
+        // 1.19.0's echo: the stored filename rides `fileName` directly;
+        // `info` is absent.
+        let modern: Attachment = serde_json::from_str(
+            r#"{"id": 1, "extendedData": {"fileName": "sidecar_v1.json", "filesize": 5}}"#,
+        )
+        .unwrap();
+        let modern_data = modern.extended_data.as_ref().unwrap();
+        assert_eq!(modern_data.file_name, "sidecar_v1.json");
+        assert!(modern_data.info.is_none());
+
+        // 1.17.5's echo: `fileName` empty, the stored filename nested
+        // under `info.filename` (characterization §2A). The fallback
+        // folds it into `file_name` — consumers never branch per version.
+        let legacy: Attachment = serde_json::from_str(
+            r#"{"id": 1, "extendedData":
+                {"fileName": "", "filesize": 5,
+                 "info": {"filename": "sidecar_v1.json", "mtime": 7}}}"#,
+        )
+        .unwrap();
+        let legacy_data = legacy.extended_data.as_ref().unwrap();
+        assert_eq!(legacy_data.file_name, "sidecar_v1.json");
+        assert_eq!(legacy_data.size, 5, "the sibling fields survive");
+        assert_eq!(
+            legacy_data.info.as_ref().unwrap().file_name,
+            "sidecar_v1.json",
+            "the nested fact is carried too (unknown info keys are ignored)"
+        );
+
+        // The same shape inside the string-or-object `data` payload.
+        let legacy_data_field: Attachment = serde_json::from_str(
+            r#"{"id": 1, "data":
+                {"fileName": "", "info": {"filename": "sidecar_v1.json"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy_data_field.data.as_ref().unwrap().file_name,
+            "sidecar_v1.json"
+        );
+
+        // Absent `info` and absent both keys stay empty — the fallback
+        // never fabricates a name.
+        let bare: Attachment =
+            serde_json::from_str(r#"{"id": 1, "extendedData": {"size": 5}}"#).unwrap();
+        assert_eq!(bare.extended_data.as_ref().unwrap().file_name, "");
     }
 
     #[test]
