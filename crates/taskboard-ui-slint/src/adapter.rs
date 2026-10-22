@@ -612,6 +612,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_board_seams(window, adapter);
     install_stack_seams(window, adapter);
     install_task_seam(window, adapter);
+    install_task_back_seam(window, adapter);
     install_banner_seams(window, adapter);
 }
 
@@ -647,6 +648,18 @@ fn install_menu_dismiss_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
         adapter
             .borrow_mut()
             .apply_effect(&window, UiEffect::CloseMenu);
+    });
+}
+
+/// The task-detail back button (round-1 D12): routes
+/// `nav.focus-board` — the existing `focus_board` outcome, no new
+/// view-state semantics.
+fn install_task_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let adapter = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_task_back_clicked(move || {
+        let Some(window) = weak.upgrade() else { return };
+        adapter.borrow_mut().route(&window, ActionId::NavFocusBoard);
     });
 }
 
