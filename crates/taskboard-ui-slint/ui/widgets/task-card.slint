@@ -39,6 +39,10 @@ export component TaskCard inherits Rectangle {
     in property <bool> compact: false;
     callback activated();
     callback clicked();
+    // The right-click context request (round-1 D13): pointer coords
+    // in window coordinates (the card's absolute position + the local
+    // mouse position).
+    callback context-requested(float, float);
 
     // Hover stays distinct from the emphasis ring (focus ≠ hover,
     // both may coexist — usability D2).
@@ -57,6 +61,16 @@ export component TaskCard inherits Rectangle {
     touch := TouchArea {
         double-clicked => root.activated();
         clicked => root.clicked();
+        // P3: pointer-event fires on right presses; the design's
+        // `button == right` seam (its identity is a real-backend
+        // property — the Tier-4 probe checks it).
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                root.context-requested(self.absolute-position.x / 1px + self.mouse-x / 1px,
+                                       self.absolute-position.y / 1px + self.mouse-y / 1px);
+            }
+        }
     }
 
     pure function due-color() -> color {
