@@ -52,7 +52,7 @@ pub(crate) async fn with_core<T>(
     // A connector-less core can never run a cycle: skip the boot-pull
     // wait entirely (it would only burn the shutdown budget).
     if !standalone {
-        crate::bootstrap::wait_for_boot_pull(&app, timeout).await;
+        crate::bootstrap::wait_for_boot_pull(&app.engine, timeout).await;
     }
     let result = body(&app).await;
     let _ = app.shutdown().await;

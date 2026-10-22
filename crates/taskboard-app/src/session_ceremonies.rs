@@ -126,7 +126,7 @@ async fn connect_session(
     // 5. Settle (D8): the boot wait's exact mirror — bounded,
     //    offline-first, degrade-to-local.
     let timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs.max(1));
-    crate::bootstrap::wait_for_boot_pull(app, timeout).await;
+    crate::bootstrap::wait_for_boot_pull(&app.engine, timeout).await;
 
     receipt.attached = Some(true);
     Ok(receipt)
@@ -335,6 +335,6 @@ pub(crate) async fn attach_from_persisted(
     // 6. Settle: the REPL's exact mirror — bounded, offline-first,
     //    degrade-to-local; freshness rides later poll cycles.
     let timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs.max(1));
-    crate::bootstrap::wait_for_boot_pull(app, timeout).await;
+    crate::bootstrap::wait_for_boot_pull(&app.engine, timeout).await;
     W::Attached
 }

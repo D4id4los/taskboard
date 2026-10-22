@@ -1058,12 +1058,12 @@ pub fn spawn_system_event_logger(
 /// only ever skip silently (`NoBoard`), so it returns immediately; a
 /// deadline expiry degrades gracefully — offline-first: local data
 /// serves the command.
-pub(crate) async fn wait_for_boot_pull(app: &App, timeout: Duration) {
-    let mut signals = app.engine.subscribe();
+pub(crate) async fn wait_for_boot_pull(engine: &EngineHandle, timeout: Duration) {
+    let mut signals = engine.subscribe();
     let deadline = tokio::time::Instant::now() + timeout;
     let mut seen_syncing = false;
     loop {
-        let state = app.engine.shared_state().load_full();
+        let state = engine.shared_state().load_full();
         match state.sync.aggregate().phase {
             SyncPhase::Syncing => seen_syncing = true,
             _ if seen_syncing => return,
