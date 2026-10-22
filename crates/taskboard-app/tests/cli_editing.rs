@@ -630,3 +630,102 @@ async fn e8_logout_deletes_and_strips_iff_auto() {
     assert_eq!(err.error_kind(), "not-configured");
     let _ = std::io::stdout().flush();
 }
+
+/// E10 (chunk 4's D16): the anchor-title guard — a rename or delete of
+/// the sidecar anchor card is refused typedly, in both lanes (the CLI
+/// and the REPL dispatch through the same `*_on` seams, so one test per
+/// verb covers both). Re-asserting the identical title is a no-op edit;
+/// non-anchor tasks pass untouched.
+#[tokio::test]
+async fn e10_anchor_title_guard_refuses_rename_and_delete() {
+    use taskboard_app::commands::CommandError;
+    use taskboard_domain::TaskChanges;
+
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "e10.db");
+    board_with_stack(&config, "Personal", "Todo").await;
+    // `tasks add` with the reserved title is out of the guard's scope
+    // (the ceremony tolerates ambiguous matches by creating its own
+    // carrier) — the anchor task is authored like any other here.
+    let created = tasks::add(
+        config.clone(),
+        forbidden_store(),
+        taskboard_domain::ANCHOR_CARD_TITLE,
+        None,
+    )
+    .await
+    .expect("anchor-titled task");
+
+    // Rename: refused typedly.
+    let renamed = tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        taskboard_domain::ANCHOR_CARD_TITLE,
+        TaskChanges {
+            title: Some("innocent rename".to_owned()),
+            ..TaskChanges::default()
+        },
+    )
+    .await
+    .expect_err("the anchor rename is refused");
+    assert_eq!(renamed.error_kind(), "anchor-task-reserved");
+
+    // Delete: refused typedly — including by exact uuid.
+    let deleted = tasks::delete(
+        config.clone(),
+        forbidden_store(),
+        taskboard_domain::ANCHOR_CARD_TITLE,
+    )
+    .await
+    .expect_err("the anchor delete is refused");
+    assert_eq!(deleted.error_kind(), "anchor-task-reserved");
+    let deleted_by_id = tasks::delete(config.clone(), forbidden_store(), &created.id)
+        .await
+        .expect_err("the anchor delete by uuid is refused too");
+    assert_eq!(deleted_by_id.error_kind(), "anchor-task-reserved");
+
+    // Re-asserting the identical title is a no-op edit, not an error.
+    tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        taskboard_domain::ANCHOR_CARD_TITLE,
+        TaskChanges {
+            title: Some(taskboard_domain::ANCHOR_CARD_TITLE.to_owned()),
+            ..TaskChanges::default()
+        },
+    )
+    .await
+    .expect("the identical title re-assertion passes");
+
+    // The anchor survives everything above.
+    let list = tasks::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list");
+    assert!(
+        list.stacks[0]
+            .tasks
+            .iter()
+            .any(|row| row.title == taskboard_domain::ANCHOR_CARD_TITLE)
+    );
+
+    // Non-anchor tasks pass untouched (both verbs).
+    let plain = tasks::add(config.clone(), forbidden_store(), "plain", None)
+        .await
+        .expect("plain task");
+    let receipt = tasks::edit(
+        config.clone(),
+        forbidden_store(),
+        "plain",
+        TaskChanges {
+            title: Some("plain renamed".to_owned()),
+            ..TaskChanges::default()
+        },
+    )
+    .await
+    .expect("non-anchor edits pass");
+    assert_eq!(receipt.title, "plain renamed");
+    let _deleted = tasks::delete(config.clone(), forbidden_store(), &plain.id)
+        .await
+        .expect("non-anchor deletes pass");
+    let _ = CommandError::AnchorTaskReserved; // the variant is the typed fact
+}

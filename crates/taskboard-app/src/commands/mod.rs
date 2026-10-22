@@ -152,6 +152,12 @@ pub enum CommandError {
         /// The matched tasks' titles.
         candidates: Vec<String>,
     },
+    /// The resolved task is the sidecar anchor card: renaming or
+    /// deleting it would break the per-board app-data document. The
+    /// guard lives app-layer by ruling — the engine never learns of it.
+    /// Re-asserting the identical title is a no-op edit and passes.
+    #[error("this task is the app-data anchor card and cannot be renamed or deleted")]
+    AnchorTaskReserved,
     /// No stack matches the selector.
     #[error("no such stack")]
     UnknownStack(String),
@@ -368,6 +374,7 @@ impl CommandError {
                 taskboard_state::ExecuteError::Rejected(rejected) => domain_error_kind(rejected),
                 _ => "engine",
             },
+            Self::AnchorTaskReserved => "anchor-task-reserved",
             Self::InvalidCredentials => "invalid-credentials",
             Self::Unreachable => "unreachable",
             Self::UnknownBoard(_) => "unknown-board",
