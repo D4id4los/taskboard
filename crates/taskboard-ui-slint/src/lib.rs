@@ -28,6 +28,7 @@ pub mod resolver;
 pub mod responsive;
 pub mod router;
 pub mod shell;
+pub mod tooltip;
 pub mod view_state;
 
 use std::cell::RefCell;
@@ -205,9 +206,26 @@ fn install_tooltip_delay(window: &AppWindow) -> std::rc::Rc<slint::Timer> {
     let weak = window.as_weak();
     let timer = std::rc::Rc::new(slint::Timer::default());
     let arm = std::rc::Rc::clone(&timer);
+    // The measured tip size (the size hand-off, round-1 D10): shared
+    // by the observation callback and the delay fire, so placement
+    // lands whenever both facts are present, whichever comes last.
+    let tip_size: std::rc::Rc<std::cell::Cell<Option<(f32, f32)>>> =
+        std::rc::Rc::new(std::cell::Cell::new(None));
+    {
+        let weak = weak.clone();
+        let tip_size = std::rc::Rc::clone(&tip_size);
+        tooltip.on_size_observed(move |w, h| {
+            tip_size.set(Some((w, h)));
+            if let Some(window) = weak.upgrade() {
+                place_tooltip(&window, &tip_size);
+            }
+        });
+    }
     let fire_weak = weak.clone();
+    let fire_tip = std::rc::Rc::clone(&tip_size);
     tooltip.on_delay_requested(move || {
         let fire_weak = fire_weak.clone();
+        let fire_tip = std::rc::Rc::clone(&fire_tip);
         arm.start(
             slint::TimerMode::SingleShot,
             std::time::Duration::from_millis(TOOLTIP_DELAY_MS),
@@ -216,6 +234,7 @@ fn install_tooltip_delay(window: &AppWindow) -> std::rc::Rc<slint::Timer> {
                     let tooltip = window.global::<TooltipState>();
                     tooltip.set_visible(true);
                     tooltip.set_pending(false);
+                    place_tooltip(&window, &fire_tip);
                 }
             },
         );
@@ -225,6 +244,39 @@ fn install_tooltip_delay(window: &AppWindow) -> std::rc::Rc<slint::Timer> {
         dismiss_timer.stop();
     });
     timer
+}
+
+/// The placement hand-off (round-1 D10): when the tooltip is visible
+/// and its size is known, compute the top-left with the pure
+/// [`tooltip::place`] math and mark it placed. Either input may
+/// arrive last — both call sites run this.
+fn place_tooltip(window: &AppWindow, tip_size: &std::cell::Cell<Option<(f32, f32)>>) {
+    let Some((tip_w, tip_h)) = tip_size.get() else {
+        return;
+    };
+    let tooltip = window.global::<TooltipState>();
+    if !tooltip.get_visible() {
+        return;
+    }
+    let scale = window.global::<Theme>().get_base_scale();
+    let input = tooltip::TooltipInput {
+        // Slint lengths cross the boundary as plain f32 logical px.
+        anchor: (
+            tooltip.get_anchor_x(),
+            tooltip.get_anchor_y(),
+            tooltip.get_anchor_width(),
+            tooltip.get_anchor_height(),
+        ),
+        tip: (tip_w, tip_h),
+        window: (window.get_window_w(), window.get_window_h()),
+        status_top: window.get_status_top(),
+        margin: 8.0 * scale,
+        gap: 4.0 * scale,
+    };
+    let (x, y) = tooltip::place(&input);
+    tooltip.set_tip_x(x);
+    tooltip.set_tip_y(y);
+    tooltip.set_placed(true);
 }
 
 /// The tooltip delay (usability D3): a duration, not a layout

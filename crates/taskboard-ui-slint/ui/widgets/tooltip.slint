@@ -1,43 +1,63 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The tooltip mechanism (usability pass D3): the TooltipState global
-// lives here so primitives (icon-button) and the window host import
-// the same file — no app-window cycle. The delay is the AppWindow's
-// Timer (600 ms); the text is always the control's a11y label, so a
-// tooltip never carries information unavailable elsewhere. Keyboard
-// and touch reach every action through the keymap — the tooltip is
-// redundant eye-candy by construction, never the only carrier.
+// The tooltip mechanism (usability pass D3, generalized by round-1
+// D8/D9/D10): the TooltipState global lives here so primitives
+// (icon-button) and the window host import the same file — no
+// app-window cycle. The delay is the AppWindow's Timer (600 ms); the
+// trigger carries label, description and shortcut keys, so a tooltip
+// never carries information unavailable elsewhere (label + a11y
+// description + the keymap's binding). Keyboard and touch reach every
+// action through the keymap — the tooltip is redundant eye-candy by
+// construction, never the only carrier. Placement is computed in Rust
+// (`src/tooltip.rs`); the panel mounts while content exists (so it
+// can measure itself) but stays opacity-0 until the placement
+// hand-off (`placed`) — no first-frame flicker at the origin.
 
 import { Theme, Typography, RoleText } from "../theme.slint";
+import { KbdHint } from "kbd-hint.slint";
 
 export global TooltipState {
     in-out property <string> text;
+    // The description part (round-1 D7): empty renders nothing.
+    in-out property <string> description;
+    // The shortcut part (round-1 D11): shown only when non-empty.
+    in-out property <[string]> keys;
     // pending: hovered and inside the delay window; visible: the
-    // delay fired. hover/unhover are the only writers.
+    // delay fired. placed: the Rust placement landed (the hand-off).
     in-out property <bool> pending: false;
     in-out property <bool> visible: false;
+    in-out property <bool> placed: false;
     in-out property <length> anchor-x;
     in-out property <length> anchor-y;
     in-out property <length> anchor-width;
     in-out property <length> anchor-height;
+    // The placed top-left (Rust-written, D10).
+    in-out property <length> tip-x;
+    in-out property <length> tip-y;
 
     // Installed by the window crate at mount: the delay timer (the
     // arm/dismiss must restart per *invocation* — property-change
     // callbacks collapse within one event turn, a repeated hover
-    // would not restart a markup Timer).
+    // would not restart a markup Timer) and the size hand-off.
     callback delay-requested();
     callback dismiss-requested();
+    callback size-observed(length, length);
 
-    // A control without a label never shows a tooltip.
-    public function hover(label: string, x: length, y: length, w: length, h: length) {
+    // A control without a label never shows a tooltip; empty
+    // description / keys simply render no part.
+    public function hover(label: string, description: string,
+                          keys: [string], x: length, y: length, w: length, h: length) {
         if (label == "") {
             return;
         }
         self.text = label;
+        self.description = description;
+        self.keys = keys;
         self.anchor-x = x;
         self.anchor-y = y;
         self.anchor-width = w;
         self.anchor-height = h;
         self.visible = false;
+        self.placed = false;
         self.pending = true;
         self.delay-requested();
     }
@@ -45,28 +65,64 @@ export global TooltipState {
     public function unhover() {
         self.pending = false;
         self.visible = false;
+        self.placed = false;
         self.dismiss-requested();
     }
 }
 
 // The display-only panel: no TouchArea (clicks pass through), no
-// focusability — it can never steal the keyboard.
+// focusability — it can never steal the keyboard. Mounted while
+// content exists so the size hand-off can measure it; opacity gates
+// the actual show until `visible && placed`.
 export component TooltipPanel inherits Rectangle {
+    in property <length> window-width;
+    opacity: TooltipState.visible && TooltipState.placed ? 1 : 0;
+    x: TooltipState.tip-x;
+    y: TooltipState.tip-y;
+    // Round-1 D9/D10: content-hugging width under the caps — 60% of
+    // the window and an absolute 420·scale, whichever is smaller. The
+    // natural width comes from the caption's own unwrapped preferred
+    // width (wrap does not change it, probe P5) — binding the panel to
+    // the layout's preferred width would cycle through the children's
+    // explicit width bindings.
+    width: min(caption.preferred-width + 2 * Theme.space-2,
+               min(root.window-width * 0.6, 420px * Theme.base-scale));
+    height: layout.preferred-height;
     background: Theme.surface-raised;
     border-width: Theme.focus-ring-width;
     border-color: Theme.border;
     border-radius: Theme.radius-small;
 
-    HorizontalLayout {
+    changed width => { TooltipState.size-observed(self.width, self.height); }
+    changed height => { TooltipState.size-observed(self.width, self.height); }
+    init => { TooltipState.size-observed(self.width, self.height); }
+
+    layout := VerticalLayout {
         padding-left: Theme.space-2;
         padding-right: Theme.space-2;
         padding-top: Theme.space-1;
         padding-bottom: Theme.space-1;
+        spacing: Theme.space-1;
 
-        RoleText {
+        // The explicit width binding is what makes the wrapped
+        // preferred-height honest (probe P5): a free implicit child
+        // measures at its natural width.
+        caption := RoleText {
             role: Typography.caption;
             text-color: Theme.text-primary;
             text: TooltipState.text;
+            wrap: word-wrap;
+            width: root.width - 2 * Theme.space-2;
+        }
+        if (TooltipState.description != ""): RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: TooltipState.description;
+            wrap: word-wrap;
+            width: root.width - 2 * Theme.space-2;
+        }
+        if (TooltipState.keys.length > 0): KbdHint {
+            keys: TooltipState.keys;
         }
     }
 }

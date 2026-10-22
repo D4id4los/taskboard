@@ -24,6 +24,10 @@ export component IconButton inherits Rectangle {
     in property <Tone> tone: Tone.neutral;
     // The a11y label — the registry label of the routed action (D16).
     in property <string> label;
+    // The generalized tooltip trigger's parts (round-1 D8): empty
+    // defaults keep every existing call site unchanged.
+    in property <string> description;
+    in property <[string]> hint-keys;
     callback clicked();
 
     background: touch.pressed || touch.has-hover ? Theme.surface-hover
@@ -149,7 +153,7 @@ export component IconButton inherits Rectangle {
         // the accessible tree doesn't.
         changed has-hover => {
             if (self.has-hover) {
-                TooltipState.hover(root.label, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                TooltipState.hover(root.label, root.description, root.hint-keys, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
             } else {
                 TooltipState.unhover();
             }
