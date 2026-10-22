@@ -304,6 +304,48 @@ impl Adapter {
         window.global::<Responsive>().get_current_breakpoint() == Breakpoint::Compact
     }
 
+    /// The keyboard resize's rendered-px ceiling (round-1 D18): the
+    /// window width minus the *other* live columns' effective minimums
+    /// (user width if set, else the floor) minus the row's fixed
+    /// furniture (one `space-3` gap per inter-column boundary plus the
+    /// add-column affordance's `space-6 + space-2`), via the pure
+    /// [`crate::widths::width_ceiling`]. All values are rendered slint
+    /// px — the space `window-w` and the drag deltas share.
+    fn stack_width_ceiling(&self, state: &AppState, window: &AppWindow) -> u32 {
+        use crate::widths::{STACK_WIDTH_MIN_PX, width_ceiling};
+        // The furniture tokens are Theme constants — logical px scaled
+        // by the root multiplier the window already carries (reading
+        // `base-scale`, not slint lengths).
+        let scale = f64::from(window.global::<crate::Theme>().get_base_scale());
+        let stack_ids = self.view_state.stack_ids(state);
+        let board = self.view_state.board();
+        let count = stack_ids.len();
+        let gaps = count.saturating_sub(1);
+        #[allow(clippy::cast_precision_loss)] // a px sum, far below f64 mantissa reach
+        let chrome: f64 = scale * (12.0 * gaps as f64 + 32.0 + 8.0);
+        let target = self.view_state.keyboard_resize_target(state);
+        let others: u64 = stack_ids
+            .iter()
+            .filter(|stack| Some(**stack) != target)
+            .map(|stack| {
+                u64::from(
+                    board
+                        .and_then(|board| self.view_state.stack_width(board, *stack))
+                        .unwrap_or(STACK_WIDTH_MIN_PX),
+                )
+            })
+            .sum();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let window_w = (f64::from(window.get_window_w()).max(0.0)) as u32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let chrome_px = chrome.max(0.0) as u32;
+        width_ceiling(
+            window_w,
+            u32::try_from(others).unwrap_or(u32::MAX),
+            chrome_px,
+        )
+    }
+
     /// The D9 interpretation table: one `match (flow, effect)` whose
     /// arms route to `view_state` methods named by what they do.
     fn interpret(&mut self, window: &AppWindow, effect: UiEffect) {
@@ -389,6 +431,14 @@ impl Adapter {
             (_, UiEffect::BoardNext) => self.view_state.next_board(&state),
             (_, UiEffect::BoardPrevious) => self.view_state.previous_board(&state),
             (_, UiEffect::BoardSelect(board)) => self.view_state.select_board(&state, board),
+            (_, UiEffect::StackWider) => {
+                let ceiling = self.stack_width_ceiling(&state, window);
+                self.view_state.resize_focused_stack(&state, 1, ceiling)
+            }
+            (_, UiEffect::StackNarrower) => {
+                let ceiling = self.stack_width_ceiling(&state, window);
+                self.view_state.resize_focused_stack(&state, -1, ceiling)
+            }
             // A mode flip with no view meaning stays plain shell
             // state (D10) — e.g. Escape out of an empty insert.
             (_, UiEffect::SetMode(mode)) => {
@@ -453,6 +503,8 @@ impl Adapter {
             | UiEffect::BeginCreateStack
             | UiEffect::Activate
             | UiEffect::RequestMove
+            | UiEffect::StackWider
+            | UiEffect::StackNarrower
             | UiEffect::BoardNext
             | UiEffect::BoardPrevious
             | UiEffect::BoardSelect(_) => self.interpret(window, effect),

@@ -436,6 +436,8 @@ mod tests {
             ActionId::NavPrevView,
             ActionId::BoardNext,
             ActionId::BoardPrevious,
+            ActionId::StackWider,
+            ActionId::StackNarrower,
             ActionId::TaskCreate,
             ActionId::TaskEdit,
             ActionId::TaskComplete,
@@ -471,6 +473,23 @@ mod tests {
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let keymap = Keymap::from_preset(preset);
             for verb in [ActionId::BoardNext, ActionId::BoardPrevious] {
+                assert!(
+                    keymap.first_binding_display(verb, &chain).is_some(),
+                    "{preset:?} does not resolve {verb} in the board chain"
+                );
+            }
+        }
+    }
+
+    /// Round-1 chunk 2 (D18): every preset resolves both stack-width
+    /// verbs in the `[Board, ViNormal, Global]` chain — standard/emacs
+    /// bind them in `Board`, vi in `ViNormal`.
+    #[test]
+    fn every_preset_resolves_the_stack_width_verbs_in_the_board_chain() {
+        let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for verb in [ActionId::StackWider, ActionId::StackNarrower] {
                 assert!(
                     keymap.first_binding_display(verb, &chain).is_some(),
                     "{preset:?} does not resolve {verb} in the board chain"

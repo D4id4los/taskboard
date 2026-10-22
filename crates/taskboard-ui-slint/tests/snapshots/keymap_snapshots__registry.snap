@@ -159,6 +159,24 @@ expression: rows
   menu_rank: 80
   description: Switches to the board picked from the board bar (click a board segment).
   menu_group: board-stack
+- id: stack.wider
+  label: Widen stack
+  contexts:
+    - board
+  category: navigation
+  enabled: true
+  menu_rank: 100
+  description: "Widens the focused stack's column; the width is saved per device."
+  menu_group: board-stack
+- id: stack.narrower
+  label: Narrow stack
+  contexts:
+    - board
+  category: navigation
+  enabled: true
+  menu_rank: 110
+  description: "Narrows the focused stack's column; the width is saved per device."
+  menu_group: board-stack
 - id: task.create
   label: New task
   contexts:
