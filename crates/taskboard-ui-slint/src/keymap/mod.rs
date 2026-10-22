@@ -447,6 +447,10 @@ mod tests {
             ActionId::MenuPrevious,
             ActionId::MenuInvoke,
             ActionId::MenuDismiss,
+            // Round-1 chunk 3 (D28b): the settings opener ships bound
+            // in every preset (global) and closes via Escape in the
+            // Settings context.
+            ActionId::AppSettings,
         ];
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let bound: std::collections::BTreeSet<ActionId> =
@@ -495,6 +499,23 @@ mod tests {
                     "{preset:?} does not resolve {verb} in the board chain"
                 );
             }
+        }
+    }
+
+    /// Round-1 chunk 3 (D28b): every preset resolves the settings
+    /// opener in the settings surface's own chain — the Escape binding
+    /// in `Settings` closes it; the opener rows stay global.
+    #[test]
+    fn every_preset_resolves_the_settings_close_in_the_settings_chain() {
+        let chain = [ContextId::Settings, ContextId::ViNormal, ContextId::Global];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            assert!(
+                keymap
+                    .first_binding_display(ActionId::AppSettings, &chain)
+                    .is_some(),
+                "{preset:?} does not resolve the settings close in the settings chain"
+            );
         }
     }
 

@@ -102,6 +102,9 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // D5: insert-mode exit — the same single key vi has (the insert
     // chain masks the view context; printables reach the field).
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
+    // Round-1 chunk 3 (D28b): Escape closes the settings surface
+    // (dialog semantics; the opener is the global Ctrl+, route).
+    (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
@@ -158,6 +161,8 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuDismiss, ContextId::Menu, &["Escape"]),
     // D5: insert-mode exit (see standard's note).
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
+    // Round-1 chunk 3 (D28b): Escape closes the settings surface.
+    (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest
@@ -205,4 +210,6 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuPrevious, ContextId::Menu, &["k"]),
     (ActionId::MenuInvoke, ContextId::Menu, &["Return"]),
     (ActionId::MenuDismiss, ContextId::Menu, &["Escape"]),
+    // Round-1 chunk 3 (D28b): Escape closes the settings surface.
+    (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
 ];

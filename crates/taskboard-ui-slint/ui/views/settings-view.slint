@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The settings view (round-1 D24b/D7): the connections form, the
+// connector list with live status, the keymap preset, and the UI
+// scale. Commit-5 stub: the surface mounts and offers the back
+// affordance (D6.6) — the form/list composition lands with the
+// settings-view commit (plan §4.6).
+
+import { Theme, Typography, RoleText } from "../theme.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+
+export component SettingsView inherits FocusScope {
+    // D6.6: the back affordance routes the same close path as Escape
+    // (the adapter's dedicated `settings-back-clicked` seam).
+    callback back-clicked();
+
+    VerticalLayout {
+        padding: Theme.space-4;
+        spacing: Theme.space-3;
+
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            back := IconButton {
+                icon: IconKind.chevron-left;
+                label: "Back";
+                clicked => {
+                    root.back-clicked();
+                }
+            }
+            RoleText {
+                role: Typography.title;
+                text: "Settings";
+                vertical-alignment: center;
+            }
+        }
+    }
+}

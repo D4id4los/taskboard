@@ -464,6 +464,16 @@ impl Adapter {
                 let ceiling = self.stack_width_ceiling(&state, window);
                 self.view_state.resize_focused_stack(&state, -1, ceiling)
             }
+            // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
+            // menu row, `Ctrl+,`, and a second press all close an open
+            // settings surface.
+            (_, UiEffect::OpenSettings) => {
+                if self.view_state.view() == crate::view_state::ViewId::Settings {
+                    self.view_state.close_settings()
+                } else {
+                    self.view_state.open_settings()
+                }
+            }
             // A mode flip with no view meaning stays plain shell
             // state (D10) — e.g. Escape out of an empty insert.
             (_, UiEffect::SetMode(mode)) => {
@@ -530,6 +540,7 @@ impl Adapter {
             | UiEffect::RequestMove
             | UiEffect::StackWider
             | UiEffect::StackNarrower
+            | UiEffect::OpenSettings
             | UiEffect::BoardNext
             | UiEffect::BoardPrevious
             | UiEffect::BoardSelect(_) => self.interpret(window, effect),
@@ -759,6 +770,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_stack_seams(window, adapter);
     install_task_seam(window, adapter);
     install_task_back_seam(window, adapter);
+    install_settings_back_seam(window, adapter);
     install_board_context_seam(window, adapter);
     install_stack_context_seam(window, adapter);
     install_stack_width_seams(window, adapter);
@@ -955,6 +967,22 @@ fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let outcomes = a.view_state.activate_card(task, stack);
         a.apply_outcomes(&window, &outcomes);
         a.open_task_context_menu(&window, x, y);
+    });
+}
+
+/// The settings back affordance (round-1 D6.6): the dedicated seam
+/// routing the same close path the Escape binding takes — an adapter
+/// method, not a registry action (closing is not a routable intent).
+fn install_settings_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let adapter = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_settings_back_clicked(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let mut a = adapter.borrow_mut();
+        let outcomes = a.view_state.close_settings();
+        a.apply_outcomes(&window, &outcomes);
+        a.sync_view_context();
+        a.sync(&window);
     });
 }
 
@@ -1266,6 +1294,7 @@ impl crate::UiHandle {
                 ContextId::Board => crate::view_state::ViewId::Board,
                 ContextId::StackDetail => crate::view_state::ViewId::StackDetail,
                 ContextId::TaskDetail => crate::view_state::ViewId::TaskDetail,
+                ContextId::Settings => crate::view_state::ViewId::Settings,
                 ContextId::Global | ContextId::Menu | ContextId::ViNormal | ContextId::ViInsert => {
                     return;
                 }

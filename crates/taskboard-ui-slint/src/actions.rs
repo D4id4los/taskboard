@@ -28,6 +28,7 @@ pub enum ContextId {
     Board,
     StackDetail,
     TaskDetail,
+    Settings,
     Menu,
     ViNormal,
     ViInsert,
@@ -42,6 +43,7 @@ impl ContextId {
             Self::Board => "board",
             Self::StackDetail => "stack-detail",
             Self::TaskDetail => "task-detail",
+            Self::Settings => "settings",
             Self::Menu => "menu",
             Self::ViNormal => "vi-normal",
             Self::ViInsert => "vi-insert",
@@ -341,9 +343,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         label: "Open settings",
         contexts: GLOBAL,
         category: Category::Application,
-        enabled: false,
+        enabled: true,
         menu_rank: 10,
-        description: "Opens the settings view. Not yet available — lands with the settings chunk.",
+        description: "Opens or closes the settings view: sync connections, keymap preset, UI scale.",
         menu_group: None,
     },
     ActionEntry {
@@ -726,7 +728,9 @@ mod tests {
             ActionId::AppRedo,
             ActionId::CaptureQuick,
             ActionId::PaletteSearch,
-            ActionId::AppSettings,
+            // AppSettings left this set in round-1 chunk 3 (D28b): the
+            // enabled bit and the router arm are pinned by the router
+            // tests and the registry snapshot.
             ActionId::AppHelp,
         ] {
             let row = entry(id);
@@ -788,7 +792,6 @@ mod tests {
         std::collections::BTreeSet::from([
             ActionId::AppUndo,
             ActionId::AppRedo,
-            ActionId::AppSettings,
             ActionId::AppHelp,
             ActionId::CaptureQuick,
             ActionId::PaletteSearch,

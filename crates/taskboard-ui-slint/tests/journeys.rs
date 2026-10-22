@@ -96,6 +96,7 @@ impl Harness {
             View::Board => Some(ContextId::Board),
             View::StackDetail => Some(ContextId::StackDetail),
             View::TaskDetail => Some(ContextId::TaskDetail),
+            View::Settings => Some(ContextId::Settings),
         };
         let mut chain = Vec::with_capacity(3);
         chain.extend(view);
@@ -1480,6 +1481,190 @@ fn the_sidecar_warning_renders_only_when_the_health_says_so() {
             let sync = harness.handle.window().get_sync_model();
             assert_eq!(sync.sidecar_warning, "", "healthy is silent");
             harness.assert_commands(&[]);
+        },
+    );
+}
+
+// ---------------------------------------------------------------------
+// Round-1 chunk 3 (D5/D28b): the settings surface
+// ---------------------------------------------------------------------
+
+/// J1 — `Ctrl+,` from the board opens Settings; Escape closes onto the
+/// board; the back affordance closes too. The opener is a toggle (D6.3)
+/// — a second dispatch closes.
+#[test]
+fn settings_open_closes_and_toggles() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(harness.handle.window().get_current_view(), View::Board);
+
+            // The opener action through the same resolve-and-inject
+            // path every journey uses (Ctrl+, in the standard preset).
+            harness.press(ActionId::AppSettings);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Settings,
+                "the opener opened the settings surface"
+            );
+            assert_eq!(
+                harness.chain(),
+                vec![ContextId::Settings, ContextId::ViNormal, ContextId::Global],
+                "the settings context heads the chain"
+            );
+
+            // Escape (the Settings-context binding) closes onto the
+            // return view.
+            harness.stroke(parse("Escape").expect("Escape"));
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Board,
+                "Escape restored the exact previous view"
+            );
+
+            // Re-open, then the toggle: a second opener dispatch closes.
+            harness.press(ActionId::AppSettings);
+            assert_eq!(harness.handle.window().get_current_view(), View::Settings);
+            harness.press(ActionId::AppSettings);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Board,
+                "the opener toggles"
+            );
+
+            // Re-open, then the back affordance closes too.
+            harness.press(ActionId::AppSettings);
+            assert_eq!(harness.handle.window().get_current_view(), View::Settings);
+            harness.driver.click_by_label("Back");
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Board,
+                "the back affordance routed the close"
+            );
+        },
+    );
+}
+
+/// J2 — the menu row invocation: the menu closes first, then Settings
+/// opens (the D3 × D28b close-then-route rule).
+#[test]
+fn the_menu_row_closes_the_menu_then_opens_settings() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppMenu);
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_menu_open()
+            );
+
+            // The "Open settings" row: index-resolved through the
+            // window's pushed root model (the D2 id-table rule — no
+            // text matching).
+            let entries = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_entries();
+            let index = (0..entries.row_count())
+                .find(|i| {
+                    entries
+                        .row_data(*i)
+                        .is_some_and(|row| row.action == "app.settings")
+                })
+                .unwrap_or_else(|| panic!("the settings row is in the root page"));
+            harness
+                .handle
+                .window()
+                .invoke_menu_entry_invoked(index.try_into().expect("index fits"));
+
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_menu_open(),
+                "the menu closed first"
+            );
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Settings,
+                "then the settings surface opened"
+            );
+        },
+    );
+}
+
+/// J3 — from `StackDetail`: open → close returns to the **exact
+/// previous view** (the recorded snapshot, not a cycle walk).
+#[test]
+fn settings_closes_onto_the_exact_previous_view() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextView);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::StackDetail
+            );
+
+            harness.press(ActionId::AppSettings);
+            assert_eq!(harness.handle.window().get_current_view(), View::Settings);
+            harness.press(ActionId::AppSettings);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::StackDetail,
+                "the close restored StackDetail exactly"
+            );
+        },
+    );
+}
+
+/// J4 — cycle exclusion: with Settings open, the next/prev-view verbs
+/// change nothing; from the return view, the full cycle never lands on
+/// Settings.
+#[test]
+fn the_view_cycle_never_passes_through_settings() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            harness.press(ActionId::AppSettings);
+            assert_eq!(harness.handle.window().get_current_view(), View::Settings);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavPrevView);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Settings,
+                "the cycle verbs are inert while Settings is open"
+            );
+            harness.press(ActionId::AppSettings);
+
+            // A full cycle walk from the board: Settings is never a
+            // member.
+            for expected in [View::StackDetail, View::TaskDetail, View::Board] {
+                harness.press(ActionId::NavNextView);
+                assert_eq!(harness.handle.window().get_current_view(), expected);
+            }
         },
     );
 }
