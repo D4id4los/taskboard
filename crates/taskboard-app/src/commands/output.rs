@@ -106,6 +106,15 @@ pub struct TaskRow {
     pub stack_title: String,
     /// Attached label titles (deterministic set order).
     pub labels: Vec<String>,
+    /// Scheduled start (ISO-8601) or `None`.
+    pub scheduled: Option<DateTime<Utc>>,
+    /// Estimated effort in whole seconds, or `None` (unestimated).
+    pub effort: Option<u64>,
+    /// The canonical hyphenated importance level name (`"very-low"` …),
+    /// or `None` (unset).
+    pub importance: Option<String>,
+    /// The canonical hyphenated urgency level name, or `None` (unset).
+    pub urgency: Option<String>,
 }
 
 /// One stack group of the task list.
@@ -733,6 +742,16 @@ pub fn task_row(state: &AppState, task: &Task, due: &DueContext) -> TaskRow {
             .filter_map(|id| state.labels.get(id))
             .map(|l| l.title.clone())
             .collect(),
+        scheduled: task.scheduled,
+        effort: task.effort.map(taskboard_domain::Effort::seconds),
+        importance: task
+            .importance
+            .map(taskboard_domain::Importance::text_form)
+            .map(str::to_owned),
+        urgency: task
+            .urgency
+            .map(taskboard_domain::Urgency::text_form)
+            .map(str::to_owned),
     }
 }
 

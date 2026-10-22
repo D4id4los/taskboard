@@ -31,6 +31,10 @@ fn task_row(id: &str, title: &str, done: bool, order: i64, stack: &str) -> TaskR
         stack_id: stack.to_owned(),
         stack_title: "col".to_owned(),
         labels: vec![],
+        scheduled: None,
+        effort: None,
+        importance: None,
+        urgency: None,
     }
 }
 
@@ -75,6 +79,95 @@ fn o1_task_list_payload_is_structurally_correct() {
     // The marker field is always present (null when neither overdue nor
     // due soon) — `TaskRow` never skips fields.
     assert!(task["due_marker"].is_null());
+    // The field-family projections: absent = null, present = typed.
+    assert!(task["scheduled"].is_null());
+    assert!(task["effort"].is_null());
+    assert!(task["importance"].is_null());
+    assert!(task["urgency"].is_null());
+
+    let start = Utc.timestamp_opt(1_700_000_500, 0).single().unwrap();
+    let mut row = task_row(
+        "0193a1a2-7b3f-7cc2-9c31-4f8a1c2d3e50",
+        "decorated",
+        false,
+        4,
+        "0193a1a2-0000-7000-8000-000000000001",
+    );
+    row.scheduled = Some(start);
+    row.effort = Some(5400);
+    row.importance = Some("high".to_owned());
+    row.urgency = Some("very-low".to_owned());
+    let v: Value = serde_json::to_value(&TaskList {
+        stacks: vec![taskboard_app::commands::output::StackGroup {
+            id: "0193a1a2-0000-7000-8000-000000000001".to_owned(),
+            title: "col".to_owned(),
+            order: 0,
+            tasks: vec![row],
+        }],
+        sync: SyncStatusView::new(&taskboard_domain::SyncStatus::default()),
+    })
+    .unwrap();
+    let task = &v["stacks"][0]["tasks"][0];
+    let parsed = chrono::DateTime::parse_from_rfc3339(task["scheduled"].as_str().unwrap())
+        .expect("ISO-8601 scheduled");
+    assert_eq!(parsed.timestamp(), 1_700_000_500);
+    assert_eq!(task["effort"], 5400, "effort is whole seconds");
+    assert_eq!(task["importance"], "high", "the canonical level name");
+    assert_eq!(task["urgency"], "very-low", "the canonical level name");
+}
+
+/// The human list render carries the field segments in the canonical
+/// text forms (the spellings are the contract); absent fields stay
+/// silent.
+#[test]
+fn render_text_list_carries_the_field_segments() {
+    use taskboard_app::commands::tasks::render_text_list;
+
+    let start = Utc.timestamp_opt(1_700_000_500, 0).single().unwrap();
+    let mut row = task_row(
+        "0193a1a2-7b3f-7cc2-9c31-4f8a1c2d3e51",
+        "decorated",
+        false,
+        0,
+        "s",
+    );
+    row.duedate = Some(start);
+    row.scheduled = Some(start);
+    row.effort = Some(5400);
+    row.importance = Some("very-high".to_owned());
+    row.urgency = Some("low".to_owned());
+    let bare = task_row(
+        "0193a1a2-7b3f-7cc2-9c31-4f8a1c2d3e52",
+        "bare",
+        false,
+        1,
+        "s",
+    );
+    let list = TaskList {
+        stacks: vec![taskboard_app::commands::output::StackGroup {
+            id: "s".to_owned(),
+            title: "col".to_owned(),
+            order: 0,
+            tasks: vec![row, bare],
+        }],
+        sync: SyncStatusView::new(&taskboard_domain::SyncStatus::default()),
+    };
+    let text = render_text_list(&list, false);
+    let decorated = text
+        .lines()
+        .find(|l| l.contains("decorated"))
+        .expect("row line");
+    assert!(decorated.contains("1h30m"), "the canonical effort form");
+    assert!(decorated.contains("very-high") && decorated.contains("low"));
+    assert!(
+        decorated.contains("(starts "),
+        "mirrors the (due …) segment"
+    );
+    let bare_line = text
+        .lines()
+        .find(|l| l.contains("bare"))
+        .expect("bare line");
+    assert!(!bare_line.contains("1h30m") && !bare_line.contains("starts"));
 }
 
 /// O1b: boards/mutation/login receipts serialize their documented
