@@ -53,6 +53,11 @@ export global KeyboardState {
     in-out property <int> menu-active-group: -1;
     in-out property <[MenuEntryModel]> menu-submenu-entries: [];
     in-out property <[MenuEntryModel]> menu-entries: [];
+    // The context menu's pointer anchor (round-1 D13): the card menu
+    // opens at the pointer; the hamburger anchor is the default.
+    in-out property <bool> menu-pointer-anchored: false;
+    in-out property <length> menu-pointer-x: 0;
+    in-out property <length> menu-pointer-y: 0;
     // The §5.7 status signal: prefix-pending / prefix-abort feedback.
     in-out property <KeyFeedback> last-feedback: KeyFeedback.none;
 }
@@ -131,6 +136,7 @@ export component AppWindow inherits Window {
                 board-bar-activated(i) => root.board-bar-segment-activated(i);
                 task-activated(c, r) => root.board-task-activated(c, r);
                 task-clicked(c, r) => root.board-task-clicked(c, r);
+                task-context(c, r, x, y) => root.board-task-context-requested(c, r, x, y);
                 header-activated(c) => root.board-header-activated(c);
                 switcher-activated(c) => root.board-switcher-activated(c);
                 create-committed(c, t) => root.board-create-committed(c, t);
@@ -143,6 +149,7 @@ export component AppWindow inherits Window {
                 stack: root.stack-model;
                 task-activated(i) => root.stack-task-activated(i);
                 task-clicked(i) => root.stack-task-clicked(i);
+                task-context(i, x, y) => root.stack-task-context-requested(i, x, y);
                 create-committed(t) => root.stack-create-committed(t);
                 create-edited(t) => root.stack-create-edited(t);
             }
@@ -194,17 +201,25 @@ export component AppWindow inherits Window {
             width: min(root.width - 2 * Theme.space-2,
                        max(320px * Theme.base-scale,
                            min(self.preferred-width, 560px * Theme.base-scale)));
+            // The anchor rect: the hamburger, or the context menu's
+            // pointer point (round-1 D13) — same clamp formula.
             x: max(Theme.space-2,
-                   min(toolbar.menu-anchor-x + toolbar.menu-anchor-width - self.width,
+                   min((KeyboardState.menu-pointer-anchored
+                            ? KeyboardState.menu-pointer-x - self.width / 2
+                            : toolbar.menu-anchor-x + toolbar.menu-anchor-width - self.width),
                        root.width - self.width - Theme.space-2));
             y: max(Theme.space-2,
-                   min(toolbar.menu-anchor-y + toolbar.menu-anchor-height + Theme.space-1,
+                   min((KeyboardState.menu-pointer-anchored
+                            ? KeyboardState.menu-pointer-y + Theme.space-1
+                            : toolbar.menu-anchor-y + toolbar.menu-anchor-height + Theme.space-1),
                        status.y - self.height - Theme.space-1));
             // Usability D6: fill only the space between the anchor and
             // the status bar; the Flickable inside scrolls the overflow.
             // The cap reads the anchor, not the final y — no cycle.
             available-height: max(0px,
-                status.y - toolbar.menu-anchor-y - toolbar.menu-anchor-height
+                status.y - (KeyboardState.menu-pointer-anchored
+                            ? KeyboardState.menu-pointer-y
+                            : toolbar.menu-anchor-y + toolbar.menu-anchor-height)
                     - Theme.space-1 - 2 * Theme.space-2);
             entries: KeyboardState.menu-entries;
             submenu-entries: KeyboardState.menu-submenu-entries;
@@ -288,6 +303,9 @@ export component AppWindow inherits Window {
     pure callback board-bar-segment-activated(int);
     pure callback board-task-activated(int, int);
     pure callback board-task-clicked(int, int);
+    // The right-click context menu seams (round-1 D13).
+    pure callback board-task-context-requested(int, int, float, float);
+    pure callback stack-task-context-requested(int, float, float);
     pure callback board-header-activated(int);
     pure callback board-switcher-activated(int);
     pure callback board-create-committed(int, string);

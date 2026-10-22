@@ -1065,6 +1065,62 @@ fn the_back_button_returns_to_the_board() {
     );
 }
 
+/// D13 — the right-click task context menu: opening focuses the
+/// addressed card, the entries are the Task group's flat page (no
+/// parents, no Quit), and invoking "Complete task" routes the exact
+/// typed command for the card's task and closes the menu.
+#[test]
+fn the_context_menu_focuses_and_routes_the_card() {
+    let (fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The fixture's known card: stack a's second task.
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(
+                keyboard(&harness).get_menu_open(),
+                "the context request opened the menu"
+            );
+            assert!(
+                keyboard(&harness).get_menu_pointer_anchored(),
+                "the menu is anchored at the pointer"
+            );
+
+            // The entries are the Task group's flat page: no parent
+            // rows, no Quit, Complete task present.
+            let entries = keyboard(&harness).get_menu_entries();
+            let rows: Vec<_> = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .collect();
+            assert!(rows.iter().all(|r| !r.submenu), "flat: no parents");
+            assert!(rows.iter().all(|r| r.action != "app.exit"), "no Quit");
+            assert!(
+                rows.iter().any(|r| r.action == "task.complete"),
+                "the card context offers Complete task"
+            );
+
+            // Invoke it: the exact typed command at the boundary, menu
+            // closed.
+            harness.driver.click_by_label("Complete task");
+            harness.assert_commands(&[StateCommand::SetTaskDone {
+                id: fixture.task1,
+                done: true,
+            }]);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the invocation closed the menu"
+            );
+        },
+    );
+}
+
 /// G8/G9 — the stack-create flow has a visible surface, and the
 /// on-board New-stack button is the click equivalent of the `S` key
 /// (usability pass D7, dispatch issue 6): both routes open the same

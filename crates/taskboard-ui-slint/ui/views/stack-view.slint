@@ -18,6 +18,7 @@ export component StackView inherits FocusScope {
     in property <StackDetailModel> stack;
     callback task-activated(int);
     callback task-clicked(int);
+    callback task-context(int, float, float);
     callback create-committed(string);
     callback create-edited(string);
 
@@ -54,6 +55,7 @@ export component StackView inherits FocusScope {
                     model: task;
                     activated => root.task-activated(task-index);
                     clicked => root.task-clicked(task-index);
+                    context-requested(x, y) => root.task-context(task-index, x, y);
                 }
 
                 if (root.stack.create-open): TextField {

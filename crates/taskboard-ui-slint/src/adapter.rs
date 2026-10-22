@@ -41,6 +41,16 @@ pub struct StartupWarnings {
     pub keymap_findings: u32,
 }
 
+/// The open menu's anchor (round-1 D13): the hamburger rect (the
+/// markup reads the Toolbar's out properties) or the context menu's
+/// pointer point (synced onto `KeyboardState`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) enum MenuAnchor {
+    #[default]
+    Hamburger,
+    Pointer(f32, f32),
+}
+
 /// The adapter state: the validated keymap (applied at UI start, one
 /// way), the shell, the resolver, the router, the view-state machine
 /// (D3), the lock-free state read (D1), and the command channel out.
@@ -63,6 +73,8 @@ pub(crate) struct Adapter {
     /// resolves against it — the menu context must not mask the chain
     /// the pages are computed from.
     menu_chain: Vec<ContextId>,
+    /// The open menu's anchor (round-1 D13).
+    menu_anchor: MenuAnchor,
     /// The banner row target set by row activation (D4); consumed by
     /// the next snooze/mute dispatch, then cleared (one-shot).
     reminder_target: Option<ReminderTarget>,
@@ -90,6 +102,16 @@ impl Adapter {
         keyboard.set_menu_root_selected_index(
             i32::try_from(self.shell.menu.root_selected).unwrap_or(i32::MAX),
         );
+        match self.menu_anchor {
+            MenuAnchor::Hamburger => {
+                keyboard.set_menu_pointer_anchored(false);
+            }
+            MenuAnchor::Pointer(x, y) => {
+                keyboard.set_menu_pointer_anchored(true);
+                keyboard.set_menu_pointer_x(x);
+                keyboard.set_menu_pointer_y(y);
+            }
+        }
         keyboard.set_menu_active_group(match self.shell.menu.active_group {
             None => -1,
             Some(group) => self
@@ -370,6 +392,7 @@ impl Adapter {
                 // (the active context's actions, §5.9); the menu
                 // context itself masks the chain once open (D11).
                 let chain = self.shell.chain();
+                self.menu_anchor = MenuAnchor::Hamburger;
                 self.menu_chain = chain;
                 self.root_entries = menu::root_page(&self.keymap, &self.menu_chain);
                 self.menu_entries = self.root_entries.clone();
@@ -424,6 +447,7 @@ impl Adapter {
         self.menu_entries.clear();
         self.root_entries.clear();
         self.menu_chain.clear();
+        self.menu_anchor = MenuAnchor::Hamburger;
         self.sync_menu_models(window);
         // The direct callers (toggle, dismissal layer, mouse invoke)
         // bypass `route`'s trailing sync.
@@ -522,6 +546,7 @@ pub(crate) fn install(
         menu_entries: Vec::new(),
         root_entries: Vec::new(),
         menu_chain: Vec::new(),
+        menu_anchor: MenuAnchor::Hamburger,
         reminder_target: None,
         board_target: None,
         tables: IdTables::default(),
@@ -613,6 +638,8 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_stack_seams(window, adapter);
     install_task_seam(window, adapter);
     install_task_back_seam(window, adapter);
+    install_board_context_seam(window, adapter);
+    install_stack_context_seam(window, adapter);
     install_banner_seams(window, adapter);
 }
 
@@ -648,6 +675,75 @@ fn install_menu_dismiss_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
         adapter
             .borrow_mut()
             .apply_effect(&window, UiEffect::CloseMenu);
+    });
+}
+
+/// The right-click context menu opener (round-1 D13): focus the
+/// addressed card (right-click selects like left-click), then open the
+/// shared menu pipeline over the task's context — the Task group's
+/// flat page over `[TaskDetail, Global]`, anchored at the pointer.
+/// Stale indices against an older tables pass are absorbed silently.
+impl Adapter {
+    fn open_task_context_menu(&mut self, window: &AppWindow, x: f32, y: f32) {
+        let chain = [ContextId::TaskDetail, ContextId::Global].to_vec();
+        self.menu_anchor = MenuAnchor::Pointer(x, y);
+        self.menu_chain = chain;
+        self.root_entries = menu::context_entries(&self.keymap, &self.menu_chain);
+        self.menu_entries = self.root_entries.clone();
+        self.shell.menu = crate::shell::MenuState {
+            open: true,
+            selected: 0,
+            len: self.menu_entries.len(),
+            active_group: None,
+            root_selected: 0,
+        };
+        self.sync_menu_models(window);
+        self.sync(window);
+    }
+}
+
+/// A board card's right click (round-1 D13): resolve, focus, open.
+fn install_board_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let adapter = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_board_task_context_requested(move |column, row, x, y| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+            return;
+        };
+        let mut a = adapter.borrow_mut();
+        let Some((stack, task)) = a.tables.board_task(column, row) else {
+            return;
+        };
+        let outcomes = a.view_state.activate_card(task, stack);
+        a.apply_outcomes(&window, &outcomes);
+        a.open_task_context_menu(&window, x, y);
+    });
+}
+
+/// A stack-detail card's right click (round-1 D13).
+fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let adapter = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_stack_task_context_requested(move |row, x, y| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let Ok(row) = usize::try_from(row) else {
+            return;
+        };
+        let mut a = adapter.borrow_mut();
+        let Some(task) = a.tables.stack_task(row) else {
+            return;
+        };
+        let Some(stack) = a.view_state.subject_stack() else {
+            return;
+        };
+        let outcomes = a.view_state.activate_card(task, stack);
+        a.apply_outcomes(&window, &outcomes);
+        a.open_task_context_menu(&window, x, y);
     });
 }
 

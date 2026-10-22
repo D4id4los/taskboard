@@ -33,6 +33,8 @@ export component BoardLayout inherits Rectangle {
     in property <int> move-target;
     callback task-activated(int, int);
     callback task-clicked(int, int);
+    // The right-click context request (round-1 D13).
+    callback task-context(int, int, float, float);
     callback header-activated(int);
     callback switcher-activated(int);
     callback create-committed(int, string);
@@ -132,6 +134,7 @@ export component BoardLayout inherits Rectangle {
                         model: task;
                         activated => root.task-activated(column-index, task-index);
                         clicked => root.task-clicked(column-index, task-index);
+                        context-requested(x, y) => root.task-context(column-index, task-index, x, y);
                     }
 
                     // The inline create row (D8): single-line field,
@@ -227,6 +230,7 @@ export component BoardLayout inherits Rectangle {
                     compact: true;
                     activated => root.task-activated(root.selected-stack, task-index);
                     clicked => root.task-clicked(root.selected-stack, task-index);
+                    context-requested(x, y) => root.task-context(root.selected-stack, task-index, x, y);
                 }
 
                 if (column.create-open): TextField {

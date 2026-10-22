@@ -27,6 +27,7 @@ export component BoardView inherits FocusScope {
     callback board-bar-activated(int);
     callback task-activated(int, int);
     callback task-clicked(int, int);
+    callback task-context(int, int, float, float);
     callback header-activated(int);
     callback switcher-activated(int);
     callback create-committed(int, string);
@@ -63,6 +64,7 @@ export component BoardView inherits FocusScope {
                 board-bar-activated(i) => root.board-bar-activated(i);
                 task-activated(c, r) => root.task-activated(c, r);
                 task-clicked(c, r) => root.task-clicked(c, r);
+                task-context(c, r, x, y) => root.task-context(c, r, x, y);
                 header-activated(c) => root.header-activated(c);
                 switcher-activated(c) => root.switcher-activated(c);
                 create-committed(c, t) => root.create-committed(c, t);
