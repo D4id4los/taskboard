@@ -236,6 +236,13 @@ impl SyncStates {
         row.pending_ops = 0;
     }
 
+    /// The map's own write face for tests and seeding: one row in.
+    #[cfg(any(test, feature = "test-support"))]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn with_row(board: BoardId, status: SyncStatus) -> Self {
+        Self([(board, status)].into_iter().collect())
+    }
+
     /// Drops one board's row entirely — the [`PersistenceAction::
     /// DeleteSyncStatus`](crate::PersistenceAction::DeleteSyncStatus)
     /// arm. For a board still present in the entity maps, the batch-end
