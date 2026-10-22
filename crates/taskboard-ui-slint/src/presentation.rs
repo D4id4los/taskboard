@@ -919,3 +919,141 @@ mod tests {
         }
     }
 }
+
+/// A connector row's live status (round-1 D8): the down-override wins;
+/// otherwise the bound boards' phases fold with the badge ordering
+/// (`Syncing > Failed > Offline > Idle`, the `sync_badge_for_board`
+/// precedent); no bound boards → `Idle` ("attached, nothing to do").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectorStatus {
+    Idle,
+    Syncing,
+    Offline,
+    Failed,
+    /// The `ConnectorLost` episode override (the liveness map, D8).
+    Down,
+}
+
+/// The fold. Pure over the state snapshot plus the override flag —
+/// unit-pinned (T4).
+#[must_use]
+pub fn connector_row_status(
+    state: &AppState,
+    connector: &taskboard_domain::ConnectorId,
+    down: bool,
+) -> ConnectorStatus {
+    if down {
+        return ConnectorStatus::Down;
+    }
+    let mut worst = ConnectorStatus::Idle;
+    for board in state.bound_boards_of(connector) {
+        let Some(status) = state.sync.get(board) else {
+            continue;
+        };
+        let phase = match status.phase {
+            SyncPhase::Syncing => ConnectorStatus::Syncing,
+            SyncPhase::Failed { .. } => ConnectorStatus::Failed,
+            SyncPhase::Offline => ConnectorStatus::Offline,
+            SyncPhase::Idle => ConnectorStatus::Idle,
+        };
+        if phase_rank(phase) > phase_rank(worst) {
+            worst = phase;
+        }
+    }
+    worst
+}
+
+/// The badge ordering: `Syncing > Failed > Offline > Idle`.
+fn phase_rank(phase: ConnectorStatus) -> u8 {
+    match phase {
+        ConnectorStatus::Idle => 0,
+        ConnectorStatus::Offline => 1,
+        ConnectorStatus::Failed => 2,
+        ConnectorStatus::Syncing => 3,
+        ConnectorStatus::Down => 4,
+    }
+}
+
+#[cfg(test)]
+mod connector_status_tests {
+    use super::*;
+    use taskboard_domain::{Board, BoardClocks, BoardId, ConnectorId, RemoteBoardBinding};
+
+    fn bound_state(connector: &str, board: BoardId, phase: SyncPhase) -> AppState {
+        let mut state = AppState::default();
+        let epoch = BoardClocks::epoch();
+        state.boards.insert(
+            board,
+            Board {
+                id: board,
+                remote: Some(RemoteBoardBinding {
+                    board: taskboard_domain::RemoteBoardId(1),
+                    connector: ConnectorId::from(connector),
+                }),
+                title: "b".into(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: epoch,
+                    color: epoch,
+                    archived: epoch,
+                    deleted: epoch,
+                },
+                remote_seen: None,
+            },
+        );
+        set_stored(&mut state, board, phase);
+        state
+    }
+
+    fn set_stored(state: &mut AppState, board: BoardId, phase: SyncPhase) {
+        let mut states = taskboard_domain::SyncStates::new();
+        states.set_stored(board, phase, None);
+        state.sync = states;
+    }
+
+    /// T4 — the down-override wins; the phases fold with the badge
+    /// ordering; empty bindings → Idle.
+    #[test]
+    fn the_row_status_folds_bound_phases_and_the_down_override_wins() {
+        let board = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let connector = ConnectorId::from("nextcloud");
+
+        // No boards at all: attached, nothing to do.
+        let empty = AppState::default();
+        assert_eq!(
+            connector_row_status(&empty, &connector, false),
+            ConnectorStatus::Idle
+        );
+
+        // The down override wins over any fold.
+        let mut state = bound_state("nextcloud", board, SyncPhase::Syncing);
+        assert_eq!(
+            connector_row_status(&state, &connector, false),
+            ConnectorStatus::Syncing
+        );
+        assert_eq!(
+            connector_row_status(&state, &connector, true),
+            ConnectorStatus::Down
+        );
+
+        // The ordering: Failed beats Offline; Syncing beats Failed.
+        set_stored(&mut state, board, SyncPhase::Offline);
+        assert_eq!(
+            connector_row_status(&state, &connector, false),
+            ConnectorStatus::Offline
+        );
+        set_stored(
+            &mut state,
+            board,
+            SyncPhase::Failed {
+                last_error: taskboard_domain::SyncErrorKind::Network,
+            },
+        );
+        assert_eq!(
+            connector_row_status(&state, &connector, false),
+            ConnectorStatus::Failed
+        );
+    }
+}

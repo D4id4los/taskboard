@@ -48,6 +48,12 @@ impl Harness {
     /// do) — no engine, no app crate. The request lane's halves are
     /// drained by the tests through `requests_drain`.
     fn mount(driver: SlintDriver, state: AppState) -> Self {
+        Self::mount_with_settings(driver, state, UiSettings::default())
+    }
+
+    /// The settings journeys' variant: the hand-over carries the
+    /// configured connectors (the settings row list's seed).
+    fn mount_with_settings(driver: SlintDriver, state: AppState, settings: UiSettings) -> Self {
         let state = Arc::new(ArcSwap::from_pointee(state));
         let (commands, engine) = FakeEngine::channel(Arc::clone(&state));
         let (requests_tx, requests_rx) = tokio::sync::mpsc::channel(16);
@@ -57,7 +63,7 @@ impl Harness {
             dummy_system_receiver(),
             commands,
             requests_tx,
-            UiSettings::default(), // the standard preset
+            settings,
         )
         .expect("mount succeeds on the testing backend");
         let mut harness = Self {
@@ -1665,6 +1671,234 @@ fn the_view_cycle_never_passes_through_settings() {
                 harness.press(ActionId::NavNextView);
                 assert_eq!(harness.handle.window().get_current_view(), expected);
             }
+        },
+    );
+}
+
+/// J5 — the form journey: the field mirrors ride the edited seams, the
+/// Save click routes `SaveConnection` on the drained lane with the
+/// typed payload (field reads, never message text); the request's
+/// `Debug` shows no secret; a second Save with the same name is an
+/// edit (the upsert payload). A save with an invalid draft routes
+/// nothing (the form's enablement gate).
+#[test]
+fn the_settings_form_routes_the_save_ceremony() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+
+            // An invalid draft (empty name): the Save click is
+            // absorbed — nothing on the lane.
+            harness.handle.window().invoke_settings_save_clicked(
+                "".into(),
+                "https://c.example".into(),
+                "alice".into(),
+                "pw".into(),
+            );
+            assert!(harness.drain_requests().is_empty(), "the gate held");
+
+            // Fill the fields through the edited seams (the mirror
+            // path the real fields drive).
+            let window = harness.handle.window();
+            window.invoke_settings_field_edited(0, "home".into());
+            window.invoke_settings_field_edited(1, "https://c.example".into());
+            window.invoke_settings_field_edited(2, "alice".into());
+            window.invoke_settings_field_edited(3, "hunter2-secret".into());
+
+            window.invoke_settings_save_clicked(
+                "home".into(),
+                "https://c.example".into(),
+                "alice".into(),
+                "hunter2-secret".into(),
+            );
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "one SaveConnection routed");
+            assert!(
+                matches!(
+                    &requests[0],
+                    taskboard_ui_slint::requests::UiRequest::SaveConnection {
+                        profile,
+                        ..
+                    } if profile.name == "home"
+                        && profile.server_url == "https://c.example"
+                        && profile.username == "alice"
+                        && profile.password.0 == "hunter2-secret"
+                ),
+                "the typed payload carries the draft"
+            );
+            assert!(
+                !format!("{:?}", requests[0]).contains("hunter2-secret"),
+                "the request Debug never carries the secret"
+            );
+
+            // The app half answers (the A6 choreography); the drain
+            // clears the pending state and lands the fresh rows.
+            let taskboard_ui_slint::requests::UiRequest::SaveConnection { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the save request routed");
+            };
+            reply
+                .send(Ok(vec![taskboard_ui_slint::requests::ConnectorInfo {
+                    name: "home".into(),
+                    server_url: "https://c.example".into(),
+                    username: "alice".into(),
+                }]))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            let rows = window
+                .global::<taskboard_ui_slint::SettingsModel>()
+                .get_rows();
+            assert_eq!(rows.row_count(), 1, "the reply's fresh list landed");
+            assert_eq!(
+                rows.row_data(0).expect("row").name,
+                "home",
+                "the reply payload is the secret-free row shape"
+            );
+
+            // A second save with the same name is an edit (the same
+            // keyed payload — the upsert semantics, plan D7).
+            window.invoke_settings_save_clicked(
+                "home".into(),
+                "https://other.example".into(),
+                "alice".into(),
+                "pw2".into(),
+            );
+            let requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            assert!(matches!(
+                &requests[0],
+                taskboard_ui_slint::requests::UiRequest::SaveConnection {
+                    profile,
+                    ..
+                } if profile.name == "home"
+                    && profile.server_url == "https://other.example"
+            ));
+        },
+    );
+}
+
+/// J6 — the live status projection (D8): the row's status flips on
+/// `ConnectorLost` and restores on `ConnectorRestored` (the down
+/// override wins; the restore falls back to the bound-phases fold).
+#[test]
+fn connector_episodes_flip_the_row_status() {
+    use taskboard_ui_slint::SettingsRowStatus;
+    let (_fixture, state) = fixture::golden_state();
+    let settings = UiSettings {
+        connectors: vec![taskboard_ui_slint::requests::ConnectorInfo {
+            name: "nextcloud".into(),
+            server_url: "https://c.example".into(),
+            username: "alice".into(),
+        }],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            assert_eq!(harness.handle.window().get_current_view(), View::Settings);
+
+            let row_status = |harness: &Harness| {
+                let rows = harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::SettingsModel>()
+                    .get_rows();
+                let row = rows.row_data(0).expect("the seeded row");
+                row.status
+            };
+            assert_eq!(row_status(&harness), SettingsRowStatus::Idle);
+
+            harness.handle.observe_connector_episode(
+                &taskboard_domain::SystemEvent::ConnectorLost(taskboard_domain::ConnectorId::from(
+                    "nextcloud",
+                )),
+            );
+            assert_eq!(row_status(&harness), SettingsRowStatus::Down);
+
+            harness.handle.observe_connector_episode(
+                &taskboard_domain::SystemEvent::ConnectorRestored(
+                    taskboard_domain::ConnectorId::from("nextcloud"),
+                ),
+            );
+            assert_eq!(
+                row_status(&harness),
+                SettingsRowStatus::Idle,
+                "the restore falls back to the fold (no bound boards → Idle)"
+            );
+        },
+    );
+}
+
+/// J7 — the preset flow's two halves: the pick routes
+/// `SetKeymapPreset` on the lane; applying the reply through the drain
+/// swaps the keymap live — vi's colon opener resolves in the settings
+/// chain right after (T3's journey half).
+#[test]
+fn the_preset_pick_routes_and_the_reply_swaps_the_keymap_live() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            #[allow(unused_mut)]
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            assert_eq!(harness.handle.window().get_current_view(), View::Settings);
+
+            // Before: the standard preset has no colon binding — the
+            // stroke falls through (unhandled) and the menu stays shut.
+            harness.stroke(parse(":").expect("colon"));
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_menu_open()
+            );
+
+            // The pick routes the request.
+            harness.handle.window().invoke_settings_preset_picked(2);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let taskboard_ui_slint::requests::UiRequest::SetKeymapPreset { preset, reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the preset request routed");
+            };
+            assert_eq!(preset, taskboard_ui_slint::keymap::Preset::Vi);
+
+            // The app half answers; the drain applies the swap live.
+            reply
+                .send(Ok(taskboard_ui_slint::requests::KeymapUpdate {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(
+                        taskboard_ui_slint::keymap::Preset::Vi,
+                    ),
+                    findings: 0,
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+
+            // After: vi's colon opens the menu through the same
+            // settings-context chain (the live-apply fact, D9).
+            harness.stroke(parse(":").expect("colon"));
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_menu_open(),
+                "the swapped keymap resolves vi's colon in the settings chain"
+            );
         },
     );
 }

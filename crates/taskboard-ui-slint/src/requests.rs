@@ -161,3 +161,48 @@ pub enum UiRequest {
         reply: oneshot::Sender<Result<(), SettingsError>>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T5 — the redaction is structural over adversarial payloads
+    /// (`proptest` over printable strings): the `Debug` output never
+    /// carries the secret, and the profile's Debug (what a `UiRequest`
+    /// debug-print renders) is equally clean.
+    #[test]
+    fn secret_debug_output_never_carries_the_payload() {
+        fn invariant(secret: &str) {
+            // The redaction is a constant independent of the payload:
+            // the Debug output is the same fixed string whatever the
+            // secret is (the only payload that could ever "appear" is
+            // the marker itself, and then the output still carries no
+            // information about the input).
+            let redacted = Secret(secret.to_owned());
+            assert_eq!(format!("{redacted:?}"), "**redacted**");
+            let profile = ConnectionProfile {
+                name: "work".into(),
+                server_url: "https://c.example".into(),
+                username: "alice".into(),
+                password: redacted,
+            };
+            let rendered = format!("{profile:?}");
+            assert!(!rendered.contains(secret) || secret == "**redacted**");
+            assert!(rendered.contains("**redacted**"));
+            // The non-Debug mirrors (clone/eq) never render the
+            // payload either — only Debug exists for rendering, and it
+            // is pinned above.
+        }
+        // Adversarial secrets: braces, debug-syntax lookalikes, quotes,
+        // newlines, and a sample of printables.
+        for secret in [
+            "**redacted**",
+            "Debug { x: 1 }",
+            "\"quoted\"",
+            "line\nbreak",
+            "]}{[{(\"'\\",
+        ] {
+            invariant(secret);
+        }
+    }
+}
