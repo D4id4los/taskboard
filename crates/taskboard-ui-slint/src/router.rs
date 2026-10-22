@@ -31,6 +31,9 @@ pub enum UiEffect {
     Exit,
     OpenMenu,
     CloseMenu,
+    /// Level-aware menu back (round-1 D6): a submenu steps back one
+    /// level, the root closes.
+    MenuBack,
     MenuNext,
     MenuPrevious,
     /// The adapter closes the menu and re-dispatches the selected
@@ -125,7 +128,10 @@ impl ActionRouter {
             ActionId::MenuNext => DispatchOutcome::UiEffect(UiEffect::MenuNext),
             ActionId::MenuPrevious => DispatchOutcome::UiEffect(UiEffect::MenuPrevious),
             ActionId::MenuInvoke => DispatchOutcome::UiEffect(UiEffect::InvokeSelected),
-            ActionId::MenuDismiss => DispatchOutcome::UiEffect(UiEffect::CloseMenu),
+            // Level-aware (round-1 D6): Escape steps back level by
+            // level. The full close is the dismissal layer's and the
+            // toggle's — the adapter applies `CloseMenu` directly.
+            ActionId::MenuDismiss => DispatchOutcome::UiEffect(UiEffect::MenuBack),
             // Mode flips (D10): ordinary ui-internal actions.
             ActionId::ModeInsert => DispatchOutcome::UiEffect(UiEffect::SetMode(Mode::Insert)),
             ActionId::ModeNormal => DispatchOutcome::UiEffect(UiEffect::SetMode(Mode::Normal)),
@@ -350,7 +356,12 @@ mod tests {
         );
         assert_eq!(
             ActionRouter::dispatch(ActionId::MenuDismiss, &ctx),
-            DispatchOutcome::UiEffect(UiEffect::CloseMenu)
+            DispatchOutcome::UiEffect(UiEffect::MenuBack),
+            "menu.dismiss is the level-aware back (round-1 D6)"
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::MenuNext, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::MenuNext)
         );
         assert_eq!(
             ActionRouter::dispatch(ActionId::ModeInsert, &ctx),

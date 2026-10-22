@@ -5,18 +5,28 @@
 //! vi mode, and the focused-entity seam. No slint types; the lib
 //! adapter is the only code that syncs this onto window properties.
 
-use crate::actions::ContextId;
+use crate::actions::{ContextId, MenuGroup};
 use crate::router::{Mode, UiEffect};
 
-/// Menu cursor state: the generated entries live in the window model;
-/// the shell tracks openness and the selection index only.
+/// Menu cursor state (round-1 D6): the generated entries live in the
+/// window model; the shell tracks openness, the active page, and the
+/// cursors. `selected`/`len` always describe the ACTIVE page;
+/// `root_selected` preserves the root page's cursor across a submenu
+/// round-trip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MenuState {
     pub open: bool,
     pub selected: usize,
-    /// The entry count of the open menu (wrapping bound for the
+    /// The entry count of the ACTIVE page (wrapping bound for the
     /// cursor; 0 while closed).
     pub len: usize,
+    /// `Some(group)`: a submenu page is active (fly-out or replace);
+    /// `None`: the root page. The fly-out's anchor is presentation
+    /// geometry (the activated row's position in the panel) and lives
+    /// in the markup, not here.
+    pub active_group: Option<MenuGroup>,
+    /// The root page's cursor, preserved across a submenu round-trip.
+    pub root_selected: usize,
 }
 
 /// The shell state (D17): mode, menu, the active view context
@@ -81,9 +91,23 @@ impl KeymapShell {
                     open: true,
                     selected: 0,
                     len: menu_len,
+                    active_group: None,
+                    root_selected: 0,
                 };
             }
             UiEffect::CloseMenu => self.menu = MenuState::default(),
+            UiEffect::MenuBack => {
+                // Level-aware (round-1 D6): a submenu page steps back
+                // to the root with the cursor restored on the parent
+                // row; at the root it is the full close.
+                if self.menu.active_group.is_some() {
+                    self.menu.active_group = None;
+                    self.menu.selected = self.menu.root_selected;
+                    self.menu.len = menu_len;
+                } else {
+                    self.menu = MenuState::default();
+                }
+            }
             UiEffect::MenuNext => {
                 if self.menu.len > 0 {
                     self.menu.selected = (self.menu.selected + 1) % self.menu.len;
@@ -177,7 +201,9 @@ mod tests {
             MenuState {
                 open: true,
                 selected: 0,
-                len: 3
+                len: 3,
+                active_group: None,
+                root_selected: 0
             }
         );
         assert_eq!(shell.selected_entry(), Some(0));
@@ -214,6 +240,41 @@ mod tests {
         shell.apply(&UiEffect::MenuNext, 0);
         shell.apply(&UiEffect::MenuPrevious, 0);
         assert_eq!(shell.selected_entry(), None);
+    }
+
+    /// T-9 — the level-aware menu back (round-1 D6): at a submenu it
+    /// returns to the root with the root cursor restored; at the root
+    /// it fully closes; a full close clears every level from anywhere.
+    #[test]
+    fn menu_back_steps_levels_and_close_clears() {
+        use crate::actions::MenuGroup;
+        let mut shell = KeymapShell::default();
+        shell.apply(&UiEffect::OpenMenu, 10);
+        // Step into a submenu: root cursor parked, submenu cursor at 0.
+        shell.menu.root_selected = 4;
+        shell.menu.selected = 0;
+        shell.menu.active_group = Some(MenuGroup::Task);
+        shell.menu.len = 7;
+        assert!(shell.apply(&UiEffect::MenuBack, 10));
+        assert_eq!(
+            shell.menu,
+            MenuState {
+                open: true,
+                selected: 4,
+                len: 10,
+                active_group: None,
+                root_selected: 4
+            },
+            "back restores the root page and its cursor"
+        );
+        assert!(shell.apply(&UiEffect::MenuBack, 0));
+        assert_eq!(shell.menu, MenuState::default(), "back at the root closes");
+
+        // A full close clears any level.
+        shell.apply(&UiEffect::OpenMenu, 5);
+        shell.menu.active_group = Some(MenuGroup::Mode);
+        shell.apply(&UiEffect::CloseMenu, 0);
+        assert_eq!(shell.menu, MenuState::default());
     }
 
     /// Design §3.8 — the board effects are view intents: the shell
