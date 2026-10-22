@@ -275,6 +275,19 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- **Reminder rules are N-rule additive** (#204, chunk 6) — a semantic
+  change to a live verb: `tasks remind <task> --before <dur>` (and the
+  REPL/UI equivalents) now **adds** one reminder rule instead of
+  replacing the task's rules; a rule at the same offset is unique (a
+  repeat add is a no-op naming the surviving rule, `added: false` in
+  the `--json` receipt — `ReminderSetReceipt` renames to
+  `ReminderAddReceipt` and gains `added`), a different offset grows a
+  second rule, and removal is explicit: `--remove <task> <selector>`
+  (rule uuid | unique ≥8-char prefix | the offset text form, e.g.
+  `30m`), `--clear` removes all N. A rule-less task's first remind is
+  behaviorally identical; the overdue banner and per-firing snooze are
+  untouched. The UI task editor grows the rule-list composition
+  (preset chips + custom offset + per-row remove).
 - `boards select` and the sync actor no longer exchange a targeted
   `SetBoard` command (multi-board wave): the binding tags + per-cycle
   derived board sets replace it entirely (the broadcast `SyncNow`
