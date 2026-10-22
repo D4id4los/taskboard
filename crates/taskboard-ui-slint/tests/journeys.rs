@@ -164,6 +164,18 @@ impl Harness {
             .collect()
     }
 
+    /// The pushed rendered width of column `column` (round-1 D16):
+    /// ≤ 0 = auto.
+    fn column_width_px(&self, column: usize) -> f32 {
+        self.handle
+            .window()
+            .get_board_model()
+            .stacks
+            .row_data(column)
+            .expect("column")
+            .width_px
+    }
+
     /// The emphasized card, resolved through the id tables' ordering:
     /// `Some((column, row))` of the card whose model carries the
     /// focus bit.
@@ -1210,6 +1222,151 @@ fn stack_create_has_a_visible_click_equal_flow() {
                 }
                 other => panic!("the click route's command reached the boundary, got {other:?}"),
             }
+        },
+    );
+}
+
+/// Round-1 chunk 2 (D18, T-10) — the keyboard resize journey: wider
+/// steps the model's rendered width by the scaled step, narrower clamps
+/// at the readable floor, and every step's full-snapshot request
+/// reaches the lane typed (exactly the `StackWidthsChanged` payloads,
+/// latest snapshot wins).
+#[test]
+fn keyboard_resize_steps_clamps_and_requests_persistence() {
+    let (fixture, state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // One full-snapshot request per key press, drained per
+            // step (the lane is drop-on-full by design — the journey
+            // never gives it a reason to drop).
+            let expect_snapshot = |harness: &Harness, width: u32| {
+                let requests = harness.drain_requests();
+                assert_eq!(requests.len(), 1, "one request per key press");
+                match &requests[0] {
+                    taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
+                        board: payload_board,
+                        widths,
+                    } => {
+                        assert_eq!(*payload_board, board);
+                        assert_eq!(
+                            widths.as_slice(),
+                            &[(fixture.stack_a, width)],
+                            "the typed snapshot carries the model's width"
+                        );
+                    }
+                }
+            };
+
+            harness.press(ActionId::StackWider);
+            assert_eq!(
+                harness.column_width_px(0),
+                280.0 + 32.0,
+                "the first keyboard step seeds DEFAULT and adds STEP (scale 1)"
+            );
+            expect_snapshot(&harness, 312);
+
+            harness.press(ActionId::StackNarrower);
+            assert_eq!(harness.column_width_px(0), 280.0, "back to the seed");
+            expect_snapshot(&harness, 280);
+
+            // Narrowing clamps at the readable floor and keeps
+            // reporting the clamped snapshot.
+            for step in 1..=8u32 {
+                harness.press(ActionId::StackNarrower);
+                let expected = 280u32.saturating_sub(32 * step).max(96);
+                // px values, far below f32's mantissa reach.
+                #[allow(clippy::cast_precision_loss)]
+                let expected_px = expected as f32;
+                assert_eq!(harness.column_width_px(0), expected_px);
+                expect_snapshot(&harness, expected);
+            }
+        },
+    );
+}
+/// Round-1 chunk 2 (D17, T-11) — the mouse drag journey: press
+/// captures the pre-drag base, drag re-renders live (clamped), a stale
+/// column index is absorbed, and exactly one request lands on release.
+#[test]
+fn drag_seam_resizes_live_and_persists_on_release() {
+    let (fixture, state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            let window = harness.handle.window();
+
+            window.invoke_board_stack_width_press(0, 300.0);
+            window.invoke_board_stack_width_drag(0, -50.0);
+            assert_eq!(
+                harness.column_width_px(0),
+                250.0,
+                "the column re-rendered live at base + delta"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "drag ticks never persist (release only)"
+            );
+
+            // A stale index (tables moved between press and tick) is
+            // absorbed silently.
+            window.invoke_board_stack_width_drag(9, 500.0);
+            assert_eq!(harness.column_width_px(0), 250.0, "stale tick ignored");
+
+            window.invoke_board_stack_width_release(0);
+            let requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one request on release");
+            match &requests[0] {
+                taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
+                    board: payload_board,
+                    widths,
+                } => {
+                    assert_eq!(*payload_board, board);
+                    assert_eq!(widths.as_slice(), &[(fixture.stack_a, 250u32)]);
+                }
+            }
+
+            // Release without a press is inert (no request).
+            window.invoke_board_stack_width_release(0);
+            assert_eq!(harness.drain_requests(), Vec::new());
+        },
+    );
+}
+
+/// Round-1 chunk 2 (D16, T-12) — the auto-board guarantee: a
+/// never-resized board pushes the `−1.0` sentinel on every column and
+/// refreshes alone never emit a persistence request (the goldens'
+/// auto-layout proof's journey half).
+#[test]
+fn never_resized_board_pushes_auto_widths_and_no_requests() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            let board_model = harness.handle.window().get_board_model();
+            for column in 0..board_model.stacks.row_count() {
+                assert!(
+                    harness.column_width_px(column) <= 0.0,
+                    "column {column} stays auto"
+                );
+            }
+            harness.handle.refresh();
+            harness.handle.refresh();
+            assert!(
+                harness.drain_requests().is_empty(),
+                "refreshes alone never persist"
+            );
         },
     );
 }

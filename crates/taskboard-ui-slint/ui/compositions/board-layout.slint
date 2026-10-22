@@ -9,6 +9,7 @@
 // are the action layer's business (§5.1).
 
 import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
 import { Responsive, Breakpoint } from "../responsive.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
@@ -23,6 +24,12 @@ export struct StackColumnModel {
     tasks: [TaskCardModel],
     // The inline create row of this column (D8), open or closed.
     create-open: bool,
+    // The user-set rendered column width (round-1 D16); ≤ 0 = auto —
+    // the conditional layout clamps below never engage and the column
+    // keeps the untouched distribution (the goldens' auto-layout
+    // guarantee). Rust-authoritative: pushed by the models, never
+    // owned by a slint binding during a drag.
+    width-px: length,
 }
 
 export component BoardLayout inherits Rectangle {
@@ -47,6 +54,15 @@ export component BoardLayout inherits Rectangle {
     in property <[string]> board-segment-hint;
     // The task.edit binding hint for the card tooltips (D8).
     in property <[string]> task-card-hint;
+    // The stack.wider binding hint for the header tooltips (D18).
+    in property <[string]> stack-header-hint;
+    // The drag seams (round-1 D17): press captures the pre-drag base
+    // width, drag reports the absolute delta since press (idempotent
+    // against dropped events), release persists. Button-agnostic — a
+    // dedicated handle cannot conflict with card clicks.
+    callback stack-width-press(int, float);
+    callback stack-width-drag(int, float);
+    callback stack-width-release(int);
     callback board-bar-activated(int);
     // The stack-create flow (usability D7): the on-board button and
     // the field's mirror/commit seams; open is board-level.
@@ -96,8 +112,20 @@ export component BoardLayout inherits Rectangle {
 
         HorizontalLayout {
             spacing: Theme.space-3;
-            for column[column-index] in root.stacks: VerticalLayout {
+            for column[column-index] in root.stacks: column-body := VerticalLayout {
                 spacing: Theme.space-1;
+                // The user-set width (round-1 D16): the min carries the
+                // width and the stretch is dropped, so the column is
+                // exactly that wide (spare space flows to the auto
+                // columns); ≤ 0 keeps the untouched auto distribution —
+                // the sentinel arms are inert in the constraint solver,
+                // and the unregenerated goldens prove it (an explicit
+                // max-width binding perturbs the solver even in its
+                // sentinel arm, probe-recorded).
+                min-width: column.width-px > 0 * Theme.space-1
+                    ? column.width-px
+                    : 0 * Theme.space-1;
+                horizontal-stretch: column.width-px > 0 * Theme.space-1 ? 0 : 1;
                 // The D16 address: the column is a list labelled by its
                 // stack title.
                 accessible-role: AccessibleRole.list;
@@ -108,8 +136,49 @@ export component BoardLayout inherits Rectangle {
                 header := Rectangle {
                     accessible-role: AccessibleRole.button;
                     accessible-label: column.title;
+                    // A shrunken column's content stays inside its bounds.
+                    clip: true;
                     header-hit := TouchArea {
                         clicked => root.header-activated(column-index);
+                        // The D8/D11/D18 header tooltip: the stack title
+                        // plus the stack.wider binding hint (a keymap
+                        // projection pushed per refresh).
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                TooltipState.hover(column.title, "",
+                                    root.stack-header-hint,
+                                    self.absolute-position.x, self.absolute-position.y,
+                                    self.width, self.height);
+                            } else {
+                                TooltipState.unhover();
+                            }
+                        }
+                    }
+                    // The column resize handle (round-1 D17): the builtin
+                    // tableview's exact pattern — a 10 px-wide TouchArea
+                    // with the ew-resize cursor at the column's right
+                    // edge (the inter-column gap visually belongs to
+                    // it). Full header height.
+                    resize-handle := TouchArea {
+                        x: parent.width - self.width;
+                        width: Theme.resize-handle-width;
+                        height: 100%;
+                        mouse-cursor: ew-resize;
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down) {
+                                root.stack-width-press(column-index,
+                                    column-body.width / 1px);
+                            }
+                            if (event.kind == PointerEventKind.up) {
+                                root.stack-width-release(column-index);
+                            }
+                        }
+                        moved => {
+                            if (self.pressed) {
+                                root.stack-width-drag(column-index,
+                                    (self.mouse-x - self.pressed-x) / 1px);
+                            }
+                        }
                     }
                     background: header-hit.has-hover ? Theme.surface-hover
                         : column-index == root.move-target ? Theme.surface-raised
@@ -126,8 +195,11 @@ export component BoardLayout inherits Rectangle {
                             // The D19 mechanical half (round-1 §5): a
                             // long stack title may not force the
                             // layout min above the window floors. The
-                            // conditional engagement (elide only under
-                            // a user-set width) is chunk 2.
+                            // conditional engagement resolved as
+                            // recorded debt: elide stays unconditional
+                            // (chunk 1's window-floor requirement), the
+                            // auto-layout guarantee rides only on the
+                            // width-px binding above (plan §9.1).
                             overflow: elide;
                         }
                         Badge {

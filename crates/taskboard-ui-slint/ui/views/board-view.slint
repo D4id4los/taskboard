@@ -26,6 +26,12 @@ export component BoardView inherits FocusScope {
     in property <BoardBarModel> board-bar;
     in property <[string]> board-segment-hint;
     in property <[string]> task-card-hint;
+    // The stack.wider binding hint for the header tooltips (D18).
+    in property <[string]> stack-header-hint;
+    // The drag seams (round-1 D17), threaded window → view → layout.
+    callback stack-width-press(int, float);
+    callback stack-width-drag(int, float);
+    callback stack-width-release(int);
     callback board-bar-activated(int);
     callback task-activated(int, int);
     callback task-clicked(int, int);
@@ -65,6 +71,10 @@ export component BoardView inherits FocusScope {
                 board-bar: root.board-bar;
                 board-segment-hint: root.board-segment-hint;
                 task-card-hint: root.task-card-hint;
+                stack-header-hint: root.stack-header-hint;
+                stack-width-press(c, w) => root.stack-width-press(c, w);
+                stack-width-drag(c, d) => root.stack-width-drag(c, d);
+                stack-width-release(c) => root.stack-width-release(c);
                 board-bar-activated(i) => root.board-bar-activated(i);
                 task-activated(c, r) => root.task-activated(c, r);
                 task-clicked(c, r) => root.task-clicked(c, r);
