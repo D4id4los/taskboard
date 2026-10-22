@@ -74,6 +74,13 @@ pub struct UiSettings {
     /// (serde-native shape; the domain newtypes deliberately carry no
     /// serde impls); `adapter::install` converts once.
     pub stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+    /// The configured connectors, secret-free (round-1 D2): resolved
+    /// app-side via `configured_connectors` at hand-over, so the
+    /// settings list is populated before the first open.
+    pub connectors: Vec<requests::ConnectorInfo>,
+    /// The `[ui.keymap] preset` word's typed value (round-1 D9): the
+    /// settings picker's initial selection.
+    pub keymap_preset: keymap::Preset,
 }
 
 impl Default for UiSettings {
@@ -84,6 +91,8 @@ impl Default for UiSettings {
             startup: adapter::StartupWarnings::default(),
             kiosk: false,
             stack_widths: BTreeMap::new(),
+            connectors: Vec::new(),
+            keymap_preset: keymap::Preset::Standard,
         }
     }
 }

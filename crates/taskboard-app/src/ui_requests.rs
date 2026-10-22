@@ -17,8 +17,18 @@ use arc_swap::ArcSwap;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use taskboard_domain::AppState;
-use taskboard_ui_slint::requests::UiRequest;
+use taskboard_domain::{AppState, ConnectorId};
+use taskboard_state::EngineHandle;
+use taskboard_sync_nextcloud::DeckClient;
+use taskboard_ui_slint::requests::{
+    ConnectionProfile, ConnectionTarget, ConnectorInfo, Field, InvalidKind, KeymapUpdate,
+    SettingsError, UiRequest,
+};
+
+use crate::bootstrap::ConnectorControl;
+use crate::commands::CommandError;
+use crate::config::{AppConfig, ConfigError, ConnectorCfg, SyncBackend};
+use crate::secrets::{CredentialError, CredentialStore};
 
 /// Capacity of the UI → app request channel: human-input scale (the
 /// `UI_COMMAND_CAPACITY` rationale at a smaller budget — a resize
@@ -38,52 +48,83 @@ pub fn ui_request_channel() -> (mpsc::Sender<UiRequest>, mpsc::Receiver<UiReques
     mpsc::channel(UI_REQUEST_CAPACITY)
 }
 
-/// Spawns the stack-widths forwarder: merges `requests` into the
-/// pending map, debounces [`UI_REQUEST_DEBOUNCE`], then flushes the
-/// pruned snapshot into the config overlay. On channel close (the UI
-/// side dropped) one final flush lands a resize sent right before
-/// quit, then the task exits. The caller owns the handle's retirement.
+/// The settings handlers' dependencies (round-1 chunk 3, plan D3): the
+/// config write target, the credential store, and the connector
+/// lifecycle — everything a spawned task can own without an `App`
+/// reference. Built once by each UI lifecycle (desktop and kiosk) and
+/// moved into the forwarder.
+pub struct ConnectionWorkspace {
+    /// The resolved config write path (the overlay target).
+    pub config_write_path: PathBuf,
+    /// The process's resolved credential store.
+    pub store: Arc<dyn CredentialStore>,
+    /// The connector lifecycle capability (round-1 DEV-1).
+    pub control: ConnectorControl,
+    /// The engine handle — the boot-pull settle reads it
+    /// (`wait_for_boot_pull(&EngineHandle, ..)`).
+    pub engine: EngineHandle,
+}
+
+/// Spawns the UI request forwarder: width snapshots merge into the
+/// pending map and debounce into one config flush (chunk 2's path,
+/// byte-for-byte semantics); every settings request is handled
+/// immediately — one-shot actions with replies are never debounced,
+/// including ones arriving inside a width quiet window (plan D3).
+/// On channel close (the UI side dropped) one final flush lands a
+/// resize sent right before quit, then the task exits. The caller owns
+/// the handle's retirement.
 pub fn spawn_ui_request_forwarder(
     mut requests: mpsc::Receiver<UiRequest>,
-    config_write_path: PathBuf,
     state: Arc<ArcSwap<AppState>>,
+    workspace: ConnectionWorkspace,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut pending: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>> = BTreeMap::new();
         loop {
             let Some(request) = requests.recv().await else {
-                flush(&mut pending, &config_write_path, &state.load());
+                flush(&mut pending, &workspace.config_write_path, &state.load());
                 tracing::info!("ui request channel closed; forwarder exiting");
                 return;
             };
-            merge_request(request, &mut pending);
-            // The debounce quiet window: a late message merges and
-            // restarts it; close flushes; elapsed falls through to the
-            // flush.
-            loop {
-                match tokio::time::timeout(UI_REQUEST_DEBOUNCE, requests.recv()).await {
-                    Ok(Some(request)) => merge_request(request, &mut pending),
-                    Ok(None) => {
-                        flush(&mut pending, &config_write_path, &state.load());
-                        tracing::info!("ui request channel closed; forwarder exiting");
-                        return;
+            match request {
+                UiRequest::StackWidthsChanged { board, widths } => {
+                    merge_widths(board, widths, &mut pending);
+                    // The debounce quiet window: a late width snapshot
+                    // merges and restarts it; a settings request is
+                    // executed on the spot (never debounced); close
+                    // flushes; elapsed falls through to the flush.
+                    loop {
+                        match tokio::time::timeout(UI_REQUEST_DEBOUNCE, requests.recv()).await {
+                            Ok(Some(UiRequest::StackWidthsChanged { board, widths })) => {
+                                merge_widths(board, widths, &mut pending);
+                            }
+                            Ok(Some(settings)) => {
+                                handle_settings(settings, &workspace).await;
+                            }
+                            Ok(None) => {
+                                flush(&mut pending, &workspace.config_write_path, &state.load());
+                                tracing::info!("ui request channel closed; forwarder exiting");
+                                return;
+                            }
+                            Err(_elapsed) => break,
+                        }
                     }
-                    Err(_elapsed) => break,
+                    flush(&mut pending, &workspace.config_write_path, &state.load());
                 }
+                settings => handle_settings(settings, &workspace).await,
             }
-            flush(&mut pending, &config_write_path, &state.load());
         }
     })
 }
 
-/// Merges one request into the pending map: a board's snapshot
+/// Merges one width snapshot into the pending map: a board's snapshot
 /// *replaces* that board's entry (full-snapshot semantics, idempotent
 /// under re-send).
-fn merge_request(
-    request: UiRequest,
+fn merge_widths(
+    board: taskboard_domain::BoardId,
+    widths: Vec<(taskboard_domain::StackId, u32)>,
     pending: &mut BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
 ) {
-    let UiRequest::StackWidthsChanged { board, widths } = request;
     pending.insert(
         board.as_uuid(),
         widths
@@ -192,11 +233,390 @@ fn overlay_stack_widths(
     crate::config::write_owner_only_atomic(path, doc.to_string().as_str())
 }
 
+/// The bounded, offline-first settle after a settings save (the boot
+/// ceremonies' budget; plan F-C2/D3).
+const SAVE_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Dispatches one settings request (never debounced — plan D3). Every
+/// reply is fire-and-forget-honest: a dropped receiver (a stale form)
+/// is at most a log line, never a panic, and persistence is never
+/// undone by a failed reply.
+async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
+    match request {
+        UiRequest::StackWidthsChanged { .. } => {
+            unreachable!("width snapshots take the debounce path")
+        }
+        UiRequest::TestConnection { target, reply } => {
+            let outcome = test_connection(workspace, &target).await;
+            let _ = reply.send(outcome);
+        }
+        UiRequest::SaveConnection { profile, reply } => {
+            let outcome = save_connection(workspace, &profile).await;
+            let _ = reply.send(outcome);
+        }
+        UiRequest::RemoveConnection { name, reply } => {
+            let outcome = remove_connection(workspace, &name).await;
+            let _ = reply.send(outcome);
+        }
+        UiRequest::SetKeymapPreset { preset, reply } => {
+            let _ = reply.send(set_keymap_preset(workspace, preset));
+        }
+        UiRequest::SetScale { scale, reply } => {
+            let _ = reply.send(set_scale(workspace, scale));
+        }
+    }
+}
+
+/// The per-row Test (DEV-3): load the stored secret, verify it against
+/// the row's server. Nothing is ever persisted.
+async fn test_connection(
+    workspace: &ConnectionWorkspace,
+    target: &ConnectionTarget,
+) -> Result<(), SettingsError> {
+    let password = workspace
+        .store
+        .load(&target.server_url, &target.username)
+        .map_err(map_credential_error)?;
+    crate::connections::verify_credentials(&target.server_url, &target.username, password.expose())
+        .await
+        .map_err(map_verify_error)
+}
+
+/// The Save ceremony (plan D3, in order; nothing persists before
+/// verify): authoritative re-validation → `verify_credentials` →
+/// overlay upsert → secret store/rotate → detach-first → attach with
+/// the draft credentials (the exact credentials just verified — not a
+/// store load-back, which an env store cannot answer) → settle → reply
+/// the fresh list.
+async fn save_connection(
+    workspace: &ConnectionWorkspace,
+    profile: &ConnectionProfile,
+) -> Result<Vec<ConnectorInfo>, SettingsError> {
+    let raw = read_raw_config(workspace)?;
+    if raw.sync.connectors.is_none() {
+        return Err(SettingsError::LegacyConfig);
+    }
+    if profile.password.0.trim().is_empty() {
+        return Err(SettingsError::Invalid {
+            field: Field::Password,
+            kind: InvalidKind::Empty,
+        });
+    }
+    let draft = validated_draft(&raw, profile)?;
+
+    crate::connections::verify_credentials(
+        &profile.server_url,
+        &profile.username,
+        &profile.password.0,
+    )
+    .await
+    .map_err(map_verify_error)?;
+
+    // The rotation target: the replaced entry's identity, only when an
+    // entry under this name existed and its identity differs.
+    let old = raw
+        .sync
+        .connectors
+        .iter()
+        .flatten()
+        .find(|entry| entry.name == profile.name)
+        .filter(|entry| {
+            entry.server_url != profile.server_url || entry.username != profile.username
+        })
+        .map(|entry| (entry.server_url.as_str(), entry.username.as_str()));
+
+    crate::connections::overlay_upsert_connector(&workspace.config_write_path, &draft)
+        .map_err(|err| map_io_error(&err))?;
+    crate::connections::store_and_rotate_secret(
+        &workspace.store,
+        &profile.server_url,
+        &profile.username,
+        &profile.password.0,
+        old,
+    )
+    .map_err(map_verify_error)?;
+
+    // Detach-first, then attach (the session ceremony's swap rule).
+    let id = ConnectorId::from(profile.name.clone());
+    let _ = workspace.control.detach_connector_named(&id).await;
+    let client = DeckClient::new(&profile.server_url, &profile.username, &profile.password.0)
+        .map_err(|err| {
+            tracing::warn!(variant = %err, "settings save: the draft client was refused");
+            SettingsError::AttachFailed
+        })?;
+    workspace
+        .control
+        .attach_connector(id, client)
+        .await
+        .map_err(map_attach_error)?;
+    crate::bootstrap::wait_for_boot_pull(&workspace.engine, SAVE_SETTLE).await;
+    Ok(current_connectors(workspace))
+}
+
+/// The Remove choreography (plan D3): typed legacy refusal → overlay
+/// remove → idempotent named detach → best-effort secret delete of the
+/// removed identity. Board bindings to the connector stay (the detach
+/// semantic: local operation continues).
+async fn remove_connection(
+    workspace: &ConnectionWorkspace,
+    name: &str,
+) -> Result<Vec<ConnectorInfo>, SettingsError> {
+    let raw = read_raw_config(workspace)?;
+    if raw.sync.connectors.is_none() {
+        return Err(SettingsError::LegacyConfig);
+    }
+    let identity = raw
+        .sync
+        .connectors
+        .iter()
+        .flatten()
+        .find(|entry| entry.name == name)
+        .map(|entry| (entry.server_url.clone(), entry.username.clone()));
+    crate::connections::overlay_remove_connector(&workspace.config_write_path, name)
+        .map_err(|err| map_io_error(&err))?;
+    let _ = workspace
+        .control
+        .detach_connector_named(&ConnectorId::from(name.to_owned()))
+        .await;
+    if let Some((server, user)) = identity {
+        match workspace.store.delete(&server, &user) {
+            Ok(()) | Err(CredentialError::NotFound | CredentialError::Unsupported) => {}
+            Err(err) => {
+                tracing::warn!(error = %err, "settings remove: the stored secret survived");
+            }
+        }
+    }
+    Ok(current_connectors(workspace))
+}
+
+/// Persists the preset word and replies with the rebuilt keymap: the
+/// config's overrides re-resolved under the chosen preset (plan D9).
+fn set_keymap_preset(
+    workspace: &ConnectionWorkspace,
+    preset: taskboard_ui_slint::keymap::Preset,
+) -> Result<KeymapUpdate, SettingsError> {
+    crate::connections::overlay_set_keymap_preset(&workspace.config_write_path, preset.name())
+        .map_err(|err| map_io_error(&err))?;
+    let raw = read_raw_config(workspace)?;
+    let built = taskboard_ui_slint::keymap::build(&taskboard_ui_slint::keymap::RawKeymap {
+        preset,
+        overrides: raw
+            .ui
+            .keymap
+            .overrides
+            .iter()
+            .map(|(id, spec)| (id.clone(), spec.to_sequences()))
+            .collect(),
+    });
+    Ok(KeymapUpdate {
+        keymap: built.keymap,
+        findings: u32::try_from(built.findings.len()).unwrap_or(u32::MAX),
+    })
+}
+
+/// Validates typed (finite, `0.5–3.0` — the config's own rule) and
+/// persists (plan D9).
+fn set_scale(workspace: &ConnectionWorkspace, scale: f64) -> Result<(), SettingsError> {
+    if !scale.is_finite() {
+        return Err(SettingsError::Invalid {
+            field: Field::Scale,
+            kind: InvalidKind::NotFinite,
+        });
+    }
+    if !(0.5..=3.0).contains(&scale) {
+        return Err(SettingsError::Invalid {
+            field: Field::Scale,
+            kind: InvalidKind::OutOfRange,
+        });
+    }
+    crate::connections::overlay_set_ui_scale(&workspace.config_write_path, scale)
+        .map_err(|err| map_io_error(&err))
+}
+
+/// The raw config at the write path (the same read the REPL ceremonies
+/// run — env included; R6's re-read-per-request rule).
+fn read_raw_config(workspace: &ConnectionWorkspace) -> Result<AppConfig, SettingsError> {
+    AppConfig::extract_raw(Some(&workspace.config_write_path)).map_err(|err| map_config_error(&err))
+}
+
+/// The fresh secret-free list for the reply (the `configured_connectors`
+/// source, resolved through the raw config).
+fn current_connectors(workspace: &ConnectionWorkspace) -> Vec<ConnectorInfo> {
+    match AppConfig::extract_raw(Some(&workspace.config_write_path)) {
+        Ok(raw) => crate::ui::resolve_connector_infos(&raw),
+        Err(err) => {
+            tracing::warn!(error = %err, "settings: the fresh connector list is unreadable");
+            Vec::new()
+        }
+    }
+}
+
+/// The authoritative re-validation (plan F-D2): the draft shaped into
+/// the config's connector list (upsert semantics) and run through
+/// `AppConfig::validate` — the config rules stay the single source; the
+/// UI form's mirror only flags fields early.
+fn validated_draft(
+    raw: &AppConfig,
+    profile: &ConnectionProfile,
+) -> Result<ConnectorCfg, SettingsError> {
+    let draft = ConnectorCfg {
+        name: profile.name.clone(),
+        backend: SyncBackend::Nextcloud,
+        server_url: profile.server_url.clone(),
+        username: profile.username.clone(),
+    };
+    let mut entries = raw.sync.connectors.clone().unwrap_or_default();
+    match entries.iter().position(|entry| entry.name == draft.name) {
+        Some(position) => entries[position] = draft.clone(),
+        None => entries.push(draft.clone()),
+    }
+    let mut candidate = raw.clone();
+    candidate.sync.connectors = Some(entries);
+    candidate.validate().map_err(|err| map_config_error(&err))?;
+    Ok(draft)
+}
+
+/// The config-rule → typed-field mapping (the UI mirror's authority;
+/// pinned exhaustively over the reachable rejections).
+fn map_config_error(err: &ConfigError) -> SettingsError {
+    match &err {
+        ConfigError::InvalidConnectorName { .. } => SettingsError::Invalid {
+            field: Field::Name,
+            kind: InvalidKind::NotKebab,
+        },
+        ConfigError::DuplicateConnectorName { .. } => SettingsError::Invalid {
+            field: Field::Name,
+            kind: InvalidKind::Duplicate,
+        },
+        ConfigError::InvalidConnectorEntry { field, .. } if field == &"server_url" => {
+            SettingsError::Invalid {
+                field: Field::ServerUrl,
+                kind: InvalidKind::BadUrl,
+            }
+        }
+        ConfigError::InvalidConnectorEntry { field, .. } if field == &"username" => {
+            SettingsError::Invalid {
+                field: Field::Username,
+                kind: InvalidKind::Empty,
+            }
+        }
+        // Every other config rejection is a pre-existing-file property,
+        // not a field the form owns: the typed persist refusal.
+        _ => {
+            tracing::debug!(error = %err, "settings save: the config layer rejected the shape");
+            SettingsError::PersistRejected
+        }
+    }
+}
+
+/// The verification error's mapping (the `map_deck_error` classes the
+/// extracted ceremony produces).
+fn map_verify_error(err: CommandError) -> SettingsError {
+    match err {
+        CommandError::InvalidCredentials => SettingsError::VerifyRejected,
+        CommandError::Unreachable => SettingsError::VerifyUnreachable,
+        CommandError::Deck(_) => SettingsError::VerifyFailed,
+        CommandError::ConfigWrite(_) => SettingsError::PersistFailed,
+        CommandError::Credential(source) => map_credential_error(source),
+        // Unreachable from the settings path (the extracted ceremony
+        // surfaces only the classes above); typed anyway.
+        other => {
+            tracing::debug!(error = %other, "settings: an unexpected ceremony error class");
+            SettingsError::VerifyFailed
+        }
+    }
+}
+
+/// The attach refusal's mapping (plan D3's `AttachBusy`/`AttachFailed`
+/// split).
+fn map_attach_error(err: crate::bootstrap::AttachError) -> SettingsError {
+    use crate::bootstrap::AttachError as A;
+    match err {
+        A::ConnectorNameInUse(_) | A::Draining => SettingsError::AttachBusy,
+        A::Engine(_) | A::Client(_) => SettingsError::AttachFailed,
+        A::Credential(source) => map_credential_error(source),
+    }
+}
+
+/// The credential store's mapping (the three typed arms).
+fn map_credential_error(err: CredentialError) -> SettingsError {
+    match err {
+        CredentialError::NotFound => SettingsError::NoSecretStored,
+        CredentialError::Unsupported => SettingsError::StoreUnsupported,
+        other => {
+            tracing::warn!(error = %other, "credential store failed");
+            SettingsError::StoreFailed
+        }
+    }
+}
+
+/// The overlay writer's mapping: shape refusals are typed persist
+/// rejections, IO failures persist failures.
+fn map_io_error(err: &std::io::Error) -> SettingsError {
+    if err.kind() == std::io::ErrorKind::InvalidData {
+        SettingsError::PersistRejected
+    } else {
+        SettingsError::PersistFailed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use figment::providers::Format as _;
     use taskboard_domain::{BoardClocks, BoardId, StackClocks, StackId};
+
+    /// A workspace over a real (standalone, module-less) booted core:
+    /// the width tests never touch the connector path, but the
+    /// workspace is a plain value, not a mock — fakes over mocks.
+    async fn test_workspace(path: PathBuf) -> ConnectionWorkspace {
+        let mut config = AppConfig::default();
+        let dir = tempfile::tempdir().expect("tempdir");
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        config.sync.backend = Some(SyncBackend::Standalone);
+        config.validate().expect("config valid");
+        let app = crate::bootstrap::bootstrap(
+            config,
+            Arc::new(RefusingStore),
+            Arc::new(crate::notifications::LogSink),
+        )
+        .await
+        .expect("standalone boot");
+        ConnectionWorkspace {
+            config_write_path: path,
+            store: Arc::new(RefusingStore),
+            control: app.connector_control(),
+            engine: app.engine.clone(),
+        }
+        // The core deliberately leaks for the test's lifetime (the
+        // actors idle on a standalone, boardless db); the workspace
+        // holds only clones.
+    }
+
+    /// A credential-refusing store (the bootstrap test's shape): the
+    /// width paths never consult it.
+    struct RefusingStore;
+    impl std::fmt::Debug for RefusingStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("RefusingStore")
+        }
+    }
+    impl CredentialStore for RefusingStore {
+        fn load(&self, _: &str, _: &str) -> Result<crate::secrets::AppPassword, CredentialError> {
+            Err(CredentialError::NotFound)
+        }
+        fn store(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::secrets::AppPassword,
+        ) -> Result<(), CredentialError> {
+            Err(CredentialError::Unsupported)
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), CredentialError> {
+            Err(CredentialError::Unsupported)
+        }
+    }
 
     fn epoch() -> chrono::DateTime<chrono::Utc> {
         BoardClocks::epoch()
@@ -472,15 +892,22 @@ mod tests {
     /// the quiet window collapse into exactly one write carrying the
     /// merged latest; a late message extends the window; close flushes
     /// pending; a failing path is survived and a later retry lands.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn debounces_bursts_and_flushes_on_close() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
         let (state, board, stack_a, stack_b) = fixture_state();
         let (tx, rx) = ui_request_channel();
-        let forwarder =
-            spawn_ui_request_forwarder(rx, path.clone(), Arc::new(ArcSwap::from_pointee(state)));
+        let forwarder = spawn_ui_request_forwarder(
+            rx,
+            Arc::new(ArcSwap::from_pointee(state)),
+            test_workspace(path.clone()).await,
+        );
+        // The debounce is deterministic under the paused clock; the
+        // core above booted on the real one (sqlx needs it), so the
+        // pause starts here (plan T-17's semantics unchanged).
+        tokio::time::pause();
 
         let send = |tx: &mpsc::Sender<UiRequest>, stack: uuid::Uuid, px: u32| {
             tx.try_send(UiRequest::StackWidthsChanged {
@@ -553,7 +980,7 @@ mod tests {
 
     /// T-17 — the never-crash rule: a failing write path is warned and
     /// survived; the task outlives it and completes a later good write.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_failing_write_path_is_survived_and_retried() {
         let dir = tempfile::tempdir().expect("tempdir");
         // The config "path" is a directory: every read/write fails.
@@ -561,8 +988,12 @@ mod tests {
         std::fs::create_dir(&cursed).expect("dir");
         let (state, board, stack_a, _) = fixture_state();
         let (tx, rx) = ui_request_channel();
-        let forwarder =
-            spawn_ui_request_forwarder(rx, cursed.clone(), Arc::new(ArcSwap::from_pointee(state)));
+        let forwarder = spawn_ui_request_forwarder(
+            rx,
+            Arc::new(ArcSwap::from_pointee(state)),
+            test_workspace(cursed.clone()).await,
+        );
+        tokio::time::pause();
         tx.try_send(UiRequest::StackWidthsChanged {
             board: BoardId::from_uuid(board),
             widths: vec![(StackId::from_uuid(stack_a), 240)],
@@ -594,7 +1025,7 @@ mod tests {
 
     /// An empty pending map at flush time (a close with nothing ever
     /// received) writes nothing — the never-create rule.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_close_without_requests_writes_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
@@ -602,11 +1033,119 @@ mod tests {
         let (tx, rx) = ui_request_channel();
         let forwarder = spawn_ui_request_forwarder(
             rx,
-            path.clone(),
             Arc::new(ArcSwap::from_pointee(AppState::default())),
+            test_workspace(path.clone()).await,
         );
+        // The debounce is deterministic under the paused clock; the
+        // core above booted on the real one (sqlx needs it), so the
+        // pause starts here (plan T-17's semantics unchanged).
+        tokio::time::pause();
         drop(tx);
         forwarder.await.expect("forwarder joins cleanly");
         assert!(!path.exists(), "no write at all when nothing was received");
+    }
+    // -- A10: the mapping tables ------------------------------------------
+
+    /// A10 — every reachable `CommandError` class from the extracted
+    /// ceremony maps to its typed variant; the config rejections map to
+    /// their fields.
+    #[test]
+    fn the_settings_error_mapping_table_covers_every_reachable_arm() {
+        use crate::bootstrap::AttachError;
+        use crate::config::ConfigError;
+        use taskboard_ui_slint::requests::{Field, InvalidKind, SettingsError as E};
+
+        // verify classes
+        assert_eq!(
+            map_verify_error(CommandError::InvalidCredentials),
+            E::VerifyRejected
+        );
+        assert_eq!(
+            map_verify_error(CommandError::Unreachable),
+            E::VerifyUnreachable
+        );
+        assert_eq!(
+            map_verify_error(CommandError::Deck(Box::new(
+                taskboard_sync_nextcloud::DeckError::BadRequest
+            ))),
+            E::VerifyFailed
+        );
+        // config classes
+        assert_eq!(
+            map_config_error(&ConfigError::InvalidConnectorName {
+                name: "Work".into()
+            }),
+            E::Invalid {
+                field: Field::Name,
+                kind: InvalidKind::NotKebab
+            }
+        );
+        assert_eq!(
+            map_config_error(&ConfigError::DuplicateConnectorName { name: "w".into() }),
+            E::Invalid {
+                field: Field::Name,
+                kind: InvalidKind::Duplicate
+            }
+        );
+        assert_eq!(
+            map_config_error(&ConfigError::InvalidConnectorEntry {
+                name: "w".into(),
+                field: "server_url"
+            }),
+            E::Invalid {
+                field: Field::ServerUrl,
+                kind: InvalidKind::BadUrl
+            }
+        );
+        assert_eq!(
+            map_config_error(&ConfigError::InvalidConnectorEntry {
+                name: "w".into(),
+                field: "username"
+            }),
+            E::Invalid {
+                field: Field::Username,
+                kind: InvalidKind::Empty
+            }
+        );
+        // attach classes
+        assert_eq!(
+            map_attach_error(AttachError::ConnectorNameInUse(ConnectorId::from("w"))),
+            E::AttachBusy
+        );
+        assert_eq!(map_attach_error(AttachError::Draining), E::AttachBusy);
+        assert!(matches!(
+            map_attach_error(AttachError::Engine(
+                taskboard_state::AttachError::EngineGone
+            )),
+            E::AttachFailed
+        ));
+        // credential classes
+        assert_eq!(
+            map_credential_error(CredentialError::NotFound),
+            E::NoSecretStored
+        );
+        assert_eq!(
+            map_credential_error(CredentialError::Unsupported),
+            E::StoreUnsupported
+        );
+    }
+
+    /// T5's app-side twin (the redaction proof lives in the UI crate;
+    /// this pins the request `Debug` structurally through a full
+    /// profile payload).
+    #[test]
+    fn a_save_request_debug_output_never_carries_the_secret() {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let request = UiRequest::SaveConnection {
+            profile: taskboard_ui_slint::requests::ConnectionProfile {
+                name: "work".into(),
+                server_url: "https://c.example".into(),
+                username: "alice".into(),
+                password: taskboard_ui_slint::requests::Secret("hunter2-secret".into()),
+            },
+            reply: tx,
+        };
+        let rendered = format!("{request:?}");
+        assert!(!rendered.contains("hunter2-secret"));
     }
 }

@@ -1248,19 +1248,17 @@ fn keyboard_resize_steps_clamps_and_requests_persistence() {
             let expect_snapshot = |harness: &Harness, width: u32| {
                 let requests = harness.drain_requests();
                 assert_eq!(requests.len(), 1, "one request per key press");
-                match &requests[0] {
-                    taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
-                        board: payload_board,
-                        widths,
-                    } => {
-                        assert_eq!(*payload_board, board);
-                        assert_eq!(
-                            widths.as_slice(),
-                            &[(fixture.stack_a, width)],
-                            "the typed snapshot carries the model's width"
-                        );
-                    }
-                }
+                assert!(
+                    matches!(
+                        &requests[0],
+                        taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
+                            board: payload_board,
+                            widths,
+                        } if *payload_board == board
+                            && widths.as_slice() == [(fixture.stack_a, width)]
+                    ),
+                    "the typed snapshot carries the model's width"
+                );
             };
 
             harness.press(ActionId::StackWider);
@@ -1324,19 +1322,21 @@ fn drag_seam_resizes_live_and_persists_on_release() {
             window.invoke_board_stack_width_release(0);
             let requests = harness.drain_requests();
             assert_eq!(requests.len(), 1, "exactly one request on release");
-            match &requests[0] {
-                taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
-                    board: payload_board,
-                    widths,
-                } => {
-                    assert_eq!(*payload_board, board);
-                    assert_eq!(widths.as_slice(), &[(fixture.stack_a, 250u32)]);
-                }
-            }
+            assert!(
+                matches!(
+                    &requests[0],
+                    taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
+                        board: payload_board,
+                        widths,
+                    } if *payload_board == board
+                        && widths.as_slice() == [(fixture.stack_a, 250u32)]
+                ),
+                "the release snapshot carries the dragged width"
+            );
 
             // Release without a press is inert (no request).
             window.invoke_board_stack_width_release(0);
-            assert_eq!(harness.drain_requests(), Vec::new());
+            assert!(harness.drain_requests().is_empty());
         },
     );
 }

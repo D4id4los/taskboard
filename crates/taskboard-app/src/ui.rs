@@ -213,8 +213,33 @@ pub fn resolve_ui_settings(
         // The device-local widths (round-1 D16): copied verbatim —
         // uuid-keyed both sides, the mount converts to domain newtypes.
         stack_widths: ui.stack_widths.clone(),
+        connectors: Vec::new(), // filled by the lifecycle (spawn sites) from the full config
+        keymap_preset: match ui.keymap.preset {
+            crate::config::KeymapPreset::Standard => taskboard_ui_slint::keymap::Preset::Standard,
+            crate::config::KeymapPreset::Emacs => taskboard_ui_slint::keymap::Preset::Emacs,
+            crate::config::KeymapPreset::Vi => taskboard_ui_slint::keymap::Preset::Vi,
+        },
     };
     (settings, built.findings)
+}
+
+/// The secret-free connector list for the settings hand-over (round-1
+/// D2): `configured_connectors` (F-C4, the single source of "which
+/// connectors exist") mapped onto the UI crate's row type. Resolved by
+/// both UI lifecycles from the full config — `resolve_ui_settings`
+/// deliberately sees only the `[ui]` table.
+#[must_use]
+pub fn resolve_connector_infos(
+    config: &crate::config::AppConfig,
+) -> Vec<taskboard_ui_slint::requests::ConnectorInfo> {
+    crate::connectors::configured_connectors(config)
+        .into_iter()
+        .map(|spec| taskboard_ui_slint::requests::ConnectorInfo {
+            name: spec.name.to_string(),
+            server_url: spec.server_url,
+            username: spec.username,
+        })
+        .collect()
 }
 
 /// The OS-DPI escape hatch (§6.2, D13): reads `SLINT_SCALE_FACTOR`
@@ -283,7 +308,7 @@ pub async fn run_desktop(
     // D13: the env var is read before anything slint-side.
     observe_scale_escape_hatch();
 
-    let (ui_settings, keymap_findings) = resolve_ui_settings(&config.ui);
+    let (mut ui_settings, keymap_findings) = resolve_ui_settings(&config.ui);
     surface_keymap_findings(&keymap_findings);
     let store = crate::secrets::resolve_credential_store(
         config.nextcloud.credential_store,
@@ -299,10 +324,19 @@ pub async fn run_desktop(
     let (requests_tx, requests_rx) = crate::ui_requests::ui_request_channel();
     let request_forwarder = crate::ui_requests::spawn_ui_request_forwarder(
         requests_rx,
-        config_write_path,
         app.engine.shared_state(),
+        crate::ui_requests::ConnectionWorkspace {
+            config_write_path,
+            store: crate::secrets::resolve_credential_store(
+                app.config.nextcloud.credential_store,
+                app.config.credential_base_dir(),
+            ),
+            control: app.connector_control(),
+            engine: app.engine.clone(),
+        },
     );
 
+    ui_settings.connectors = resolve_connector_infos(&app.config);
     let handle = taskboard_ui_slint::mount(
         app.engine.shared_state(),
         app.engine.subscribe(),

@@ -502,6 +502,7 @@ async fn run_kiosk(
             let (mut ui_settings, keymap_findings) =
                 taskboard_app::ui::resolve_ui_settings(&app.config.ui);
             ui_settings.kiosk = true;
+            ui_settings.connectors = taskboard_app::ui::resolve_connector_infos(&app.config);
             taskboard_app::ui::surface_keymap_findings(&keymap_findings);
             let (commands_tx, commands_rx) = taskboard_app::ui::ui_command_channel();
             let forwarder =
@@ -509,8 +510,16 @@ async fn run_kiosk(
             let (requests_tx, requests_rx) = taskboard_app::ui_requests::ui_request_channel();
             let request_forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
                 requests_rx,
-                config_write_path,
                 app.engine.shared_state(),
+                taskboard_app::ui_requests::ConnectionWorkspace {
+                    config_write_path,
+                    store: taskboard_app::secrets::resolve_credential_store(
+                        app.config.nextcloud.credential_store,
+                        app.config.credential_base_dir(),
+                    ),
+                    control: app.connector_control(),
+                    engine: app.engine.clone(),
+                },
             );
 
             let handle = match taskboard_ui_slint::mount(
