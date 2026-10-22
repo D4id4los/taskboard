@@ -89,6 +89,8 @@ export component AppWindow inherits Window {
     // projections pushed per refresh).
     in-out property <[string]> board-segment-hint;
     in-out property <[string]> task-card-hint;
+    // The stack.wider binding hint for the header tooltips (D18).
+    in-out property <[string]> stack-header-hint;
     in-out property <View> current-view: View.board;
     in-out property <BoardModel> board-model;
     in-out property <BoardBarModel> board-bar-model;
@@ -145,6 +147,10 @@ export component AppWindow inherits Window {
                 board-bar: root.board-bar-model;
                 board-segment-hint: root.board-segment-hint;
                 task-card-hint: root.task-card-hint;
+                stack-header-hint: root.stack-header-hint;
+                stack-width-press(c, w) => root.board-stack-width-press(c, w);
+                stack-width-drag(c, d) => root.board-stack-width-drag(c, d);
+                stack-width-release(c) => root.board-stack-width-release(c);
                 board-bar-activated(i) => root.board-bar-segment-activated(i);
                 task-activated(c, r) => root.board-task-activated(c, r);
                 task-clicked(c, r) => root.board-task-clicked(c, r);
@@ -317,6 +323,10 @@ export component AppWindow inherits Window {
     pure callback board-task-clicked(int, int);
     // The right-click context menu seams (round-1 D13).
     pure callback board-task-context-requested(int, int, float, float);
+    // The column resize drag seams (round-1 D17).
+    pure callback board-stack-width-press(int, float);
+    pure callback board-stack-width-drag(int, float);
+    pure callback board-stack-width-release(int);
     pure callback stack-task-context-requested(int, float, float);
     pure callback board-header-activated(int);
     pure callback board-switcher-activated(int);

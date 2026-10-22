@@ -88,6 +88,11 @@ pub(crate) struct Adapter {
     board_target: Option<BoardId>,
     /// The id tables of the last refresh pass (D2): index → id.
     tables: IdTables,
+    /// The active column drag (round-1 D17): the dragged stack and the
+    /// pre-drag base width in rendered px, captured at press. The
+    /// drag deltas are absolute since press — idempotent against
+    /// dropped events.
+    width_drag: Option<(StackId, f32)>,
     /// The exit-effect counter (the §6 component-test seam: journeys
     /// assert the quit request without killing the platform).
     pub(crate) quit_requests: usize,
@@ -312,6 +317,19 @@ impl Adapter {
     /// [`crate::widths::width_ceiling`]. All values are rendered slint
     /// px — the space `window-w` and the drag deltas share.
     fn stack_width_ceiling(&self, state: &AppState, window: &AppWindow) -> u32 {
+        let target = self.view_state.keyboard_resize_target(state);
+        self.stack_width_ceiling_excluding(state, window, target)
+    }
+
+    /// [`Self::stack_width_ceiling`] over an explicit excluded column
+    /// (the drag path excludes the dragged column, which need not be
+    /// the keyboard target).
+    fn stack_width_ceiling_excluding(
+        &self,
+        state: &AppState,
+        window: &AppWindow,
+        excluded: Option<StackId>,
+    ) -> u32 {
         use crate::widths::{STACK_WIDTH_MIN_PX, width_ceiling};
         // The furniture tokens are Theme constants — logical px scaled
         // by the root multiplier the window already carries (reading
@@ -323,16 +341,23 @@ impl Adapter {
         let gaps = count.saturating_sub(1);
         #[allow(clippy::cast_precision_loss)] // a px sum, far below f64 mantissa reach
         let chrome: f64 = scale * (12.0 * gaps as f64 + 32.0 + 8.0);
-        let target = self.view_state.keyboard_resize_target(state);
         let others: u64 = stack_ids
             .iter()
-            .filter(|stack| Some(**stack) != target)
+            .filter(|stack| Some(**stack) != excluded)
             .map(|stack| {
-                u64::from(
-                    board
-                        .and_then(|board| self.view_state.stack_width(board, *stack))
-                        .unwrap_or(STACK_WIDTH_MIN_PX),
-                )
+                // The stored widths are logical px — the same
+                // `× base-scale` conversion the model push applies
+                // (`stack_width_px`); everything in this sum is
+                // rendered px, like `window_w` and `chrome`.
+                #[allow(clippy::cast_precision_loss)] // a px value
+                let effective = scale
+                    * f64::from(
+                        board
+                            .and_then(|board| self.view_state.stack_width(board, *stack))
+                            .unwrap_or(STACK_WIDTH_MIN_PX),
+                    );
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                u64::from(effective.max(0.0) as u32)
             })
             .sum();
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -645,6 +670,7 @@ pub(crate) fn install(
         reminder_target: None,
         board_target: None,
         tables: IdTables::default(),
+        width_drag: None,
         quit_requests: 0,
     }));
     // Startup warnings are pure input (Q15): pushed once at mount.
@@ -735,7 +761,97 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_task_back_seam(window, adapter);
     install_board_context_seam(window, adapter);
     install_stack_context_seam(window, adapter);
+    install_stack_width_seams(window, adapter);
     install_banner_seams(window, adapter);
+}
+
+/// The column resize drag seams (round-1 D17): press captures the
+/// pre-drag base width against the addressed stack, drag clamps
+/// base+delta into the live bounds and re-renders (the models push the
+/// new width), release persists the full snapshot over the request
+/// lane. A stale column index against an older tables pass is absorbed
+/// silently (the `board_target` precedent).
+fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let press = Rc::clone(adapter);
+    let press_weak = window.as_weak();
+    window.on_board_stack_width_press(move |column, base| {
+        if press_weak.upgrade().is_none() {
+            return;
+        }
+        let Ok(column) = usize::try_from(column) else {
+            return;
+        };
+        let mut a = press.borrow_mut();
+        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+            return;
+        };
+        a.width_drag = Some((stack, base));
+    });
+    let drag = Rc::clone(adapter);
+    let drag_weak = window.as_weak();
+    window.on_board_stack_width_drag(move |column, delta| {
+        let Some(window) = drag_weak.upgrade() else {
+            return;
+        };
+        let Ok(column) = usize::try_from(column) else {
+            return;
+        };
+        let mut a = drag.borrow_mut();
+        let Some((stack, base)) = a.width_drag else {
+            return;
+        };
+        // A tables pass that reordered the columns makes the index
+        // stale: only proceed when it still addresses the dragged
+        // stack.
+        if a.tables.stack_ids.get(column) != Some(&stack) {
+            return;
+        }
+        let Some(board) = a.view_state.board() else {
+            return;
+        };
+        let scale = f64::from(window.global::<crate::Theme>().get_base_scale()).max(0.001);
+        let min_rendered = f64::from(crate::widths::STACK_WIDTH_MIN_PX) * scale;
+        let ceiling = a.stack_width_ceiling_excluding(&a.state.load(), &window, Some(stack));
+        let ceiling_rendered = f64::from(ceiling);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let requested_px = (f64::from(base) + f64::from(delta)) as i64;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let min_px = min_rendered as u32;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let max_px = ceiling_rendered as u32;
+        let rendered = crate::widths::clamp_width(requested_px, min_px, max_px);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let stored =
+            u32::try_from((f64::from(rendered) / scale).round() as i64).unwrap_or(rendered);
+        a.view_state.set_stack_width(board, stack, stored);
+        a.refresh(&window);
+    });
+    let release = Rc::clone(adapter);
+    let release_weak = window.as_weak();
+    window.on_board_stack_width_release(move |column| {
+        let Some(_window) = release_weak.upgrade() else {
+            return;
+        };
+        let Ok(_column) = usize::try_from(column) else {
+            return;
+        };
+        let mut a = release.borrow_mut();
+        // Persist on release only (the drag path never sends): one
+        // full-snapshot request, warn-and-drop on a full inbox.
+        if a.width_drag.take().is_none() {
+            return;
+        }
+        let Some(board) = a.view_state.board() else {
+            return;
+        };
+        let request = crate::requests::UiRequest::StackWidthsChanged {
+            board,
+            widths: a.view_state.stack_widths_of(board),
+        };
+        if a.requests.try_send(request).is_err() {
+            tracing::warn!("request channel full or closed; dropped");
+        }
+    });
 }
 
 /// The toolbar's menu button is a stateful toggle (round-1 D1): open

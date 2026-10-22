@@ -23,7 +23,7 @@ use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DueKind as SlintDueKind, FlowHintModel, Responsive,
     StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel,
-    TaskDetailModel, View,
+    TaskDetailModel, Theme, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -188,6 +188,32 @@ fn push_chrome(
             .first_binding_display(ActionId::TaskEdit, chain)
             .unwrap_or_default(),
     ));
+    // The stack-header hint (round-1 D18): the stack.wider binding —
+    // the header tooltip's discoverability carrier.
+    window.set_stack_header_hint(string_model(
+        &keymap
+            .first_binding_display(ActionId::StackWider, chain)
+            .unwrap_or_default(),
+    ));
+}
+
+/// The per-column `width-px` model value (round-1 D16): the user-set
+/// stored logical px converted to rendered px (`× base-scale`), or the
+/// `−1.0` auto sentinel — never-resized boards push the sentinel on
+/// every column, so the markup's conditional clamps never engage.
+#[must_use]
+pub fn stack_width_px(
+    board: Option<BoardId>,
+    stack: StackId,
+    vs: &ViewState,
+    base_scale: f32,
+) -> f32 {
+    let stored = board.and_then(|board| vs.stack_width(board, stack));
+    match stored {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        Some(px) => px as f32 * base_scale.max(0.0),
+        None => -1.0,
+    }
 }
 
 /// The board model: one column per live stack, the flow's create row
@@ -220,6 +246,12 @@ fn push_board(
             tasks: ModelRc::new(cards),
             // The create row opens in the flow's stack only (D8).
             create_open: matches!(&flow, Flow::Create { stack } if stack == stack_id),
+            width_px: stack_width_px(
+                vs.board(),
+                *stack_id,
+                vs,
+                window.global::<Theme>().get_base_scale(),
+            ),
         });
     }
     window.set_board_model(BoardModel {
@@ -412,5 +444,34 @@ pub fn current_breakpoint(window: &AppWindow) -> Breakpoint {
         SlintBreakpoint::Compact => Breakpoint::Compact,
         SlintBreakpoint::Regular => Breakpoint::Regular,
         SlintBreakpoint::Expansive => Breakpoint::Expansive,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T-5 — the model sentinel: a set column carries the scaled user
+    /// width, an unset one the `−1.0` auto sentinel (the goldens'
+    /// auto-layout guarantee rides on it).
+    #[test]
+    fn stack_width_px_scales_set_columns_and_sends_the_auto_sentinel() {
+        let board = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let set = StackId::from_uuid(uuid::Uuid::now_v7());
+        let unset = StackId::from_uuid(uuid::Uuid::now_v7());
+        let mut vs = ViewState::default();
+        vs.set_stack_width(board, set, 240);
+        assert_eq!(stack_width_px(Some(board), set, &vs, 2.0), 480.0);
+        assert_eq!(stack_width_px(Some(board), unset, &vs, 2.0), -1.0);
+        assert_eq!(
+            stack_width_px(None, set, &vs, 2.0),
+            -1.0,
+            "no board, no width"
+        );
+        assert_eq!(
+            stack_width_px(Some(board), set, &vs, 0.5),
+            120.0,
+            "sub-unity scales shrink the rendered value"
+        );
     }
 }
