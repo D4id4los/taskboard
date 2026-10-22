@@ -3089,6 +3089,12 @@ mod flush_seed {
         with_op: bool,
         scheduled: bool,
     ) -> Arc<InMemoryRepository> {
+        Arc::new(InMemoryRepository::with_state(flush_work_state(
+            effort, with_op, scheduled,
+        )))
+    }
+
+    fn flush_work_state(effort: bool, with_op: bool, scheduled: bool) -> PersistedState {
         let mut state = PersistedState::default();
         let board = bound_board();
         state.boards.insert(board.id, board);
@@ -3117,6 +3123,24 @@ mod flush_seed {
                 queued_at: ts(T + 30),
             });
         }
+        state
+    }
+
+    /// [`Self::repo_with_flush_work`] plus a second bound task carrying
+    /// app-data (card 56) with **no** queued op — the bystander a
+    /// rebuild-scope flush must carry even though the group omits it.
+    pub(crate) fn repo_with_flush_work_and_bystander() -> Arc<InMemoryRepository> {
+        let mut state = flush_work_state(true, true, false);
+        let (mut bystander, _) = draft(200, 2, "the bystander");
+        bystander.remote = Some(taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(BOARD),
+            stack: taskboard_domain::RemoteStackId(STACK),
+            card: taskboard_domain::RemoteCardId(56),
+        });
+        bystander.remote_seen = Some(ts(T));
+        bystander.effort = Some(taskboard_domain::entities::Effort::new(300));
+        bystander.clocks.effort = ts(T + 40);
+        state.tasks.insert(bystander.id, bystander);
         Arc::new(InMemoryRepository::with_state(state))
     }
 
@@ -3612,6 +3636,73 @@ async fn f14_foreign_board_replaces_with_rebuild() {
     assert!(
         body.contains("\"board\":42"),
         "the rebuild re-encodes for our own board, not the foreign key"
+    );
+}
+
+/// D11's scope rule when a rebuild trigger and a queued group coexist:
+/// the foreign document carries no usable content, so the flush must
+/// widen to ALL local app-data tasks — the bystander task (card 56, no
+/// queued op) rides the same upload; a group-scoped flush over the
+/// empty base would drop its entry from the document.
+#[tokio::test(start_paused = true)]
+async fn f19_rebuild_trigger_widens_the_scope_past_the_group() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([
+            sidecar::anchor_card_json(sidecar::CARD, T),
+            serde_json::json!({
+                "id": 56, "title": "the bystander", "stackId": STACK,
+                "type": "plain", "order": 1, "lastModified": T,
+                "labels": [], "archived": false, "duedate": null, "done": null
+            })
+        ]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    // The bystander's bound-card detail refresh: a plain card, no
+    // attachments (it must not read as a second anchor carrier).
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/56"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(
+                serde_json::json!({
+                    "id": 56, "title": "the bystander", "stackId": STACK,
+                    "type": "plain", "order": 1, "lastModified": T,
+                    "labels": [], "archived": false, "duedate": null, "done": null,
+                    "attachments": []
+                })
+                .to_string(),
+            ),
+        )
+        .mount(&server)
+        .await;
+    sidecar::mount_download(&server, sidecar::document_json(43, 1), 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work_and_bystander());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { .. } = report else {
+        panic!("the cycle completes");
+    };
+    let requests = server.received_requests().await.unwrap();
+    let put = requests
+        .iter()
+        .find(|r| r.url.path().contains("/attachment/deck_file:"))
+        .unwrap();
+    // The upload is multipart; the document JSON is the file part.
+    // Streaming parse: exactly one value from the part's start.
+    let raw = String::from_utf8_lossy(&put.body);
+    let json_start = raw.find("{\"format\"").unwrap();
+    let mut de = serde_json::Deserializer::from_str(&raw[json_start..]);
+    let body: serde_json::Value = serde::Deserialize::deserialize(&mut de).unwrap();
+    let tasks = body["sections"]["tasks"].as_object().unwrap();
+    assert!(
+        tasks.contains_key("55") && tasks.contains_key("56"),
+        "the rebuild carries the group's task AND the bystander: {tasks:?}"
     );
 }
 
