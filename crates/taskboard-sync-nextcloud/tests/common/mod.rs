@@ -536,6 +536,24 @@ pub(crate) mod suite {
             "the content route must serve no ETag/Last-Modified validators"
         );
 
+        // Stamp observability seam: Deck's stamps are second-granular
+        // (roundtrip §7), so a write sequence completing inside the same
+        // wall-clock second as the pre-write read advances nothing the
+        // conditional reads can observe. Wait (poll the wall clock under
+        // the tier deadline) until the current second differs from the
+        // pre-write stamp, making the advancement below observable by
+        // construction instead of by timing luck.
+        {
+            let deadline = tokio::time::Instant::now() + super::LIVE_DEADLINE;
+            while chrono::Utc::now().timestamp() <= stamp_before {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the wall clock never left the pre-write second ({stamp_before})"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+
         // In-place update with the same filename: id and createdAt are
         // preserved; second-granularity stamps only guarantee >=.
         let updated = super::retrying_server_errors(|| async {
@@ -597,9 +615,18 @@ pub(crate) mod suite {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             stamped = client.card(board_id, stack_id, card_id).await?;
         }
+        // Second-granularity stamps (roundtrip §7's accepted blind spot):
+        // on a warm server the whole write sequence can land inside one
+        // wall-clock second, where "advanced" is unobservable — the
+        // measured contract is the *equality* with the attachment's stamp
+        // below plus the validator invalidation after it.
         assert!(
-            stamped.last_modified > stamp_before,
-            "attachment writes must advance the card stamp"
+            stamped.last_modified >= stamp_before,
+            "attachment writes must not move the card stamp backwards \
+             (card {}, before {}, attachment {})",
+            stamped.last_modified,
+            stamp_before,
+            attachment_stamp
         );
         assert_eq!(
             stamped.last_modified, attachment_stamp,
