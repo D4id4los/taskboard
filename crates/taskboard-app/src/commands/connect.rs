@@ -11,12 +11,10 @@ use std::io::{ErrorKind as IoErrorKind, IsTerminal as _, Write as _};
 use std::path::Path;
 use std::sync::Arc;
 
-use taskboard_sync_nextcloud::{DeckClient, DeckError};
-
+use crate::commands::CommandError;
 use crate::commands::output::{ConnectReceipt, DaemonAttachState};
-use crate::commands::{CommandError, map_deck_error};
 use crate::config::{AppConfig, SyncBackend};
-use crate::secrets::{AppPassword, CredentialError, CredentialStore};
+use crate::secrets::CredentialStore;
 
 /// The connect ceremony's flag bundle. `login`'s dispatch arm builds
 /// the same bundle with `switch_backend = false, force = false,
@@ -390,17 +388,12 @@ async fn decide_repoint<P: PromptReader>(
 }
 
 /// Verifies the credentials against the server (`boards()` is the
-/// verification call) before anything is persisted.
+/// verification call) before anything is persisted. The ceremony's
+/// one-line delegate onto the extracted core (round-1 plan D1): the
+/// shared home is `crate::connections`.
 async fn verify(identity: &Identity) -> Result<(), CommandError> {
-    let client = DeckClient::new(&identity.server, &identity.user, &identity.password)
-        .map_err(map_deck_error)?;
-    match client.boards().await {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            tracing::info!(variant = deck_variant(&err), "connect verification failed");
-            Err(map_deck_error(err))
-        }
-    }
+    crate::connections::verify_credentials(&identity.server, &identity.user, &identity.password)
+        .await
 }
 
 /// Persists the non-secrets: the in-memory merge (backend word iff
@@ -453,24 +446,14 @@ fn store_secret(
     identity: &Identity,
     repoint: Option<&(String, String)>,
 ) -> Result<String, CommandError> {
-    // A read-only store (env) is a *successful* connect with
-    // `stored: "env"`; no secret is ever written to any file.
-    let stored = match store.store(
+    let old = repoint.map(|(server, user)| (server.as_str(), user.as_str()));
+    crate::connections::store_and_rotate_secret(
+        store,
         &identity.server,
         &identity.user,
-        AppPassword::new(identity.password.clone()),
-    ) {
-        Ok(()) => "keyring",
-        Err(CredentialError::Unsupported) => "env",
-        Err(err) => return Err(CommandError::Credential(err)),
-    };
-    if let Some((old_server, old_user)) = repoint {
-        match store.delete(old_server, old_user) {
-            Ok(()) | Err(CredentialError::NotFound | CredentialError::Unsupported) => {}
-            Err(err) => return Err(CommandError::Credential(err)),
-        }
-    }
-    Ok(stored.to_owned())
+        &identity.password,
+        old,
+    )
 }
 
 /// The human-readable one-line receipt.
@@ -656,26 +639,6 @@ pub(crate) async fn nudge_daemon_attach(
         Ok(outcome) => AttachNudgeOutcome::Answered(outcome),
         Err(CommandError::IpcVersion { .. }) => AttachNudgeOutcome::Version,
         Err(_) => AttachNudgeOutcome::Transport,
-    }
-}
-
-/// The bare variant name of a `DeckError` (log-only; never the secret,
-/// never a wire payload).
-fn deck_variant(err: &DeckError) -> &'static str {
-    match err {
-        DeckError::InvalidBaseUrl => "InvalidBaseUrl",
-        DeckError::InvalidUpload => "InvalidUpload",
-        DeckError::Transport(_) => "Transport",
-        DeckError::Envelope(_) => "Envelope",
-        DeckError::Unauthorized => "Unauthorized",
-        DeckError::Forbidden => "Forbidden",
-        DeckError::NotFound => "NotFound",
-        DeckError::BadRequest => "BadRequest",
-        DeckError::Conflict => "Conflict",
-        DeckError::PreconditionFailed => "PreconditionFailed",
-        DeckError::RateLimited { .. } => "RateLimited",
-        DeckError::Server(_) => "Server",
-        DeckError::Unavailable => "Unavailable",
     }
 }
 
