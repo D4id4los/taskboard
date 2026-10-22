@@ -18,10 +18,11 @@ import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
+import { MenuPanelFacts } from "menu-facts.slint";
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts }
 export { BoardBarModel, BoardSegmentModel }
 
 export enum KeyFeedback {
@@ -169,12 +170,28 @@ export component AppWindow inherits Window {
         // pending tooltip (the menu is the modal context now).
         if (KeyboardState.menu-open): ActionMenu {
             init => TooltipState.unhover();
-            x: Theme.space-8;
-            y: Theme.space-8;
-            // Usability D6: fill only the space between the toolbar
-            // and the status bar; the Flickable inside scrolls the
-            // overflow — never cut off, never taller than needed.
-            available-height: root.height - self.y - status.height - Theme.space-2;
+            // Round-1 D4: right-aligned under the hamburger, bounded on
+            // all four edges. The width expression is the probe-settled
+            // shape (P2/P2b): floor 320·scale, cap 560·scale over the
+            // natural preferred width, narrow fallback = window minus
+            // margins — one expression, since `width` and `min-width`
+            // cannot coexist. The x/y clamps keep the panel inside the
+            // window (status bar included) at any size.
+            width: min(root.width - 2 * Theme.space-2,
+                       max(320px * Theme.base-scale,
+                           min(self.preferred-width, 560px * Theme.base-scale)));
+            x: max(Theme.space-2,
+                   min(toolbar.menu-anchor-x + toolbar.menu-anchor-width - self.width,
+                       root.width - self.width - Theme.space-2));
+            y: max(Theme.space-2,
+                   min(toolbar.menu-anchor-y + toolbar.menu-anchor-height + Theme.space-1,
+                       status.y - self.height - Theme.space-1));
+            // Usability D6: fill only the space between the anchor and
+            // the status bar; the Flickable inside scrolls the overflow.
+            // The cap reads the anchor, not the final y — no cycle.
+            available-height: max(0px,
+                status.y - toolbar.menu-anchor-y - toolbar.menu-anchor-height
+                    - Theme.space-1 - 2 * Theme.space-2);
             entries: KeyboardState.menu-entries;
             selected-index: KeyboardState.menu-selected-index;
             invoke-entry(index) => root.menu-entry-invoked(index);

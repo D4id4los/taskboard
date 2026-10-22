@@ -18,6 +18,14 @@ export component Toolbar inherits Rectangle {
     background: Theme.surface;
     height: Theme.space-8;
 
+    // The hamburger button's window rect (round-1 D4): the menu
+    // panel's anchor — the same window-coordinate space the tooltip
+    // trigger reads (`absolute-position`).
+    out property <length> menu-anchor-x: menu-button.absolute-position.x;
+    out property <length> menu-anchor-y: menu-button.absolute-position.y;
+    out property <length> menu-anchor-width: menu-button.width;
+    out property <length> menu-anchor-height: menu-button.height;
+
     HorizontalLayout {
         padding-left: Theme.space-4;
         padding-right: Theme.space-4;
