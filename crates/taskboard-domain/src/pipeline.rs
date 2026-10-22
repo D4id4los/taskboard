@@ -91,21 +91,21 @@ fn op_board_id(op: &LocalOp) -> Option<BoardId> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)] // one flag per protected task field
 pub(crate) struct PendingTaskIntent {
-    title: bool,
-    description: bool,
-    duedate: bool,
-    scheduled: bool,
-    done: bool,
-    archived: bool,
-    position: bool,
-    labels: bool,
-    effort: bool,
-    importance: bool,
-    urgency: bool,
+    pub(crate) title: bool,
+    pub(crate) description: bool,
+    pub(crate) duedate: bool,
+    pub(crate) scheduled: bool,
+    pub(crate) done: bool,
+    pub(crate) archived: bool,
+    pub(crate) position: bool,
+    pub(crate) labels: bool,
+    pub(crate) effort: bool,
+    pub(crate) importance: bool,
+    pub(crate) urgency: bool,
     /// The D-S6 rules flag: the guard's one deliberate non-clock member
     /// (rules carry their own embedded write clocks, not `TaskClocks`).
-    reminder_rules: bool,
-    deleted: bool,
+    pub(crate) reminder_rules: bool,
+    pub(crate) deleted: bool,
 }
 
 /// Collects per-task pending intents from one pass over the outbox.

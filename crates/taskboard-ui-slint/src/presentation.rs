@@ -596,6 +596,7 @@ mod tests {
             task: ruled,
             offset: ReminderOffset::before(TimeDelta::minutes(-30)).expect("valid offset"),
             created_at: now,
+            updated_at: now,
         };
         state.reminders.rules.insert(rule.id, rule);
         let mut t2 = task(ruleless, stack, 1);
@@ -701,6 +702,7 @@ mod tests {
                         offset: ReminderOffset::before(TimeDelta::minutes(-15))
                             .expect("valid offset"),
                         created_at: now,
+                        updated_at: now,
                     };
                     state.reminders.rules.insert(rule.id, rule);
                 }

@@ -820,6 +820,7 @@ mod tests {
             task,
             offset: crate::reminders::ReminderOffset::at_due(),
             created_at: ts(100),
+            updated_at: ts(100),
         };
         let mut state = PersistedState::default();
         apply_actions(
@@ -975,6 +976,7 @@ mod tests {
             task: crate::ids::TaskId::from(uuid::Uuid::from_u128(raw + 1)),
             offset: crate::reminders::ReminderOffset::at_due(),
             created_at: ts(100),
+            updated_at: ts(100),
         }
     }
 

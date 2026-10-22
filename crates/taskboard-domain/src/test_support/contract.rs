@@ -275,6 +275,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         )
         .unwrap(),
         created_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+        updated_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
     };
     repo.apply(vec![PersistenceAction::UpsertReminderRule(rule.clone())])
         .await

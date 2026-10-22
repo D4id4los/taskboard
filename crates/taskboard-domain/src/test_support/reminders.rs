@@ -58,6 +58,7 @@ pub fn reminder_rule_strategy() -> impl Strategy<Value = ReminderRule> {
             id,
             task,
             offset,
+            updated_at: created_at,
             created_at,
         })
 }
@@ -190,6 +191,7 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
                         id: row.rule,
                         task,
                         offset: row.offset,
+                        updated_at: row.created_at,
                         created_at: row.created_at,
                     };
                     rule_ids.push(rule.id);

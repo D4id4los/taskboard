@@ -207,6 +207,7 @@ fn fixture_rule(k: usize, tasks: &[Task]) -> ReminderRule {
         offset: ReminderOffset::before(TimeDelta::minutes(-15))
             .expect("negative delta is before due"),
         created_at: ts(ix(k) + 4_000_000),
+        updated_at: ts(ix(k) + 4_000_000),
     }
 }
 
