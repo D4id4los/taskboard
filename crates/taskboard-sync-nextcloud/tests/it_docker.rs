@@ -18,8 +18,9 @@
 mod common;
 
 use common::suite::{
-    attachment_content_lifecycle, board_lifecycle, conditional_read_cycle,
+    attachment_content_lifecycle, board_lifecycle, capabilities_probe, conditional_read_cycle,
     delete_missing_board_is_typed_error, full_tree_lifecycle, lists_boards, startdate_round_trip,
+    startdate_unsupported_on_deck1175,
 };
 use common::{deck_client, live_docker_config, live_docker_deck1175_config, with_deadline};
 
@@ -660,13 +661,40 @@ async fn it_nextcloud_docker_deck1175_attachment_content_lifecycle() {
         .expect("test must finish within the live deadline");
 }
 
+/// The Deck 1.17.5 gate pin: the *measured* server behavior (create
+/// ignores the field, the full-send PUT silently drops it) — the
+/// capability table's evidence, never adapted around (D23).
 #[tokio::test]
 #[ignore = "requires the pinned Deck 1.17.5 gate tier (nextcloud_it_setup.sh with DECK_VERSION=v1.17.5)"]
-async fn it_nextcloud_docker_deck1175_startdate_round_trip() {
+async fn it_nextcloud_docker_deck1175_startdate_unsupported() {
     let Some(cfg) = live_docker_deck1175_config() else {
         return;
     };
-    with_deadline(startdate_round_trip(&deck_client(&cfg)))
+    with_deadline(startdate_unsupported_on_deck1175(&deck_client(&cfg)))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+/// The D-V1 seam pinned against the capability-true tier (Deck 1.19.0).
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_capabilities() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(capabilities_probe(&deck_client(&cfg), "1.19.0", true))
+        .await
+        .expect("test must finish within the live deadline");
+}
+
+/// The D-V1 seam pinned against the gate tier (Deck 1.17.5).
+#[tokio::test]
+#[ignore = "requires the pinned Deck 1.17.5 gate tier (nextcloud_it_setup.sh with DECK_VERSION=v1.17.5)"]
+async fn it_nextcloud_docker_deck1175_capabilities() {
+    let Some(cfg) = live_docker_deck1175_config() else {
+        return;
+    };
+    with_deadline(capabilities_probe(&deck_client(&cfg), "1.17.5", false))
         .await
         .expect("test must finish within the live deadline");
 }

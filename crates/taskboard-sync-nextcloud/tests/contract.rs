@@ -1305,14 +1305,22 @@ async fn upload_attachment_posts_multipart_with_type_and_file_parts() {
 
     let parts = parse_multipart(&content_type, &req.body);
     let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["type", "file"]);
+    // The `data` part rides every attachment-create form (D-V3.1:
+    // required by 1.17.5, tolerated by 1.19.0).
+    assert_eq!(names, ["type", "data", "file"]);
     let kind = &parts[0];
     assert_eq!(kind.body, b"deck_file");
     assert!(
         kind.filename.is_none(),
         "the kind part is a plain text field"
     );
-    let file = &parts[1];
+    let data = &parts[1];
+    assert_eq!(data.body, b"sidecar_v1.json", "data = the client filename");
+    assert!(
+        data.filename.is_none(),
+        "the data part is a plain text field"
+    );
+    let file = &parts[2];
     assert_eq!(file.filename.as_deref(), Some("sidecar_v1.json"));
     assert_eq!(file.content_type.as_deref(), Some("application/json"));
     assert_eq!(file.body, b"{\"fields\":{}}");
