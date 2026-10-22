@@ -307,9 +307,8 @@ export component SettingsView inherits FocusScope {
             TextField {
                 placeholder: "1.0";
                 label: "Scale";
-                edited(t) => {
-                    root.scale-committed(t);
-                }
+                // Commit on Return only (D9): a per-keystroke commit
+                // would live-apply half-typed values and spam the lane.
                 accepted(t) => {
                     root.scale-committed(t);
                 }
