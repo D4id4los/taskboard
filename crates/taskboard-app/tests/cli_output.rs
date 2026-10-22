@@ -228,6 +228,7 @@ fn o3_error_kinds_cover_every_variant() {
                 ) => "unknown-label",
                 _ => "engine",
             },
+            CommandError::AnchorTaskReserved => "anchor-task-reserved",
             CommandError::InvalidCredentials => "invalid-credentials",
             CommandError::Unreachable => "unreachable",
             CommandError::UnknownBoard(_) => "unknown-board",

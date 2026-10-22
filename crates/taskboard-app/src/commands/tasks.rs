@@ -414,6 +414,18 @@ pub(crate) async fn edit_on(
 ) -> Result<MutationReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
     let task_id = resolve_task(&state, task)?;
+    // The anchor-title guard (chunk 4's D16): a rename of the app-data
+    // anchor is refused before the engine sees it. Re-asserting the
+    // identical title stays a no-op edit (the engine's no-op path).
+    if let Some(new_title) = &changes.title
+        && state
+            .tasks
+            .get(&task_id)
+            .is_some_and(|task| task.title == taskboard_domain::ANCHOR_CARD_TITLE)
+        && new_title != taskboard_domain::ANCHOR_CARD_TITLE
+    {
+        return Err(CommandError::AnchorTaskReserved);
+    }
     drop(state);
     app.engine
         .execute(StateCommand::UpdateTask {
@@ -463,6 +475,16 @@ pub(crate) async fn delete_on(
         CommandError::UnknownTask(_) => resolve_task_exact_any(&state, task),
         other => Err(other),
     })?;
+    // The anchor-title guard (D16): deleting the app-data anchor is
+    // refused typedly — exact-uuid-any resolution included, which is
+    // exactly the accident the guard exists for.
+    if state
+        .tasks
+        .get(&task_id)
+        .is_some_and(|task| task.title == taskboard_domain::ANCHOR_CARD_TITLE)
+    {
+        return Err(CommandError::AnchorTaskReserved);
+    }
     // Resolution guarantees the row exists (the live cascade or the
     // exact-uuid-any fallback both hit `contains_key`).
     let snapshot = state
