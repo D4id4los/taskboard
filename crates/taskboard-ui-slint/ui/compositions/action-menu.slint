@@ -36,14 +36,17 @@ export component ActionMenu {
                 border-width: root.selected-index == entry-index ? Theme.focus-ring-width : 0;
                 border-color: Semantic.focus-ring;
                 border-radius: Theme.radius-small;
-                background: root.selected-index == entry-index ? Theme.surface : transparent;
-                // Disabled rows stay visible (menu generation is
-                // total, §5.8); enabled rows are clickable and hit
-                // the same path as the `menu.invoke` action.
-                TouchArea {
+                // Hover lightens over the raised panel; the selection
+                // keeps its inset + ring (usability D2). Disabled rows
+                // never hover: their TouchArea is disabled, so
+                // has-hover cannot engage.
+                row-hit := TouchArea {
                     enabled: entry.enabled;
                     clicked => root.invoke-entry(entry-index);
                 }
+                background: row-hit.has-hover ? Theme.surface-hover
+                    : root.selected-index == entry-index ? Theme.surface
+                    : transparent;
                 HorizontalLayout {
                     padding-left: Theme.space-2;
                     padding-right: Theme.space-2;

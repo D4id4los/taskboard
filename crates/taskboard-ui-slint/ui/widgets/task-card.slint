@@ -40,7 +40,11 @@ export component TaskCard inherits Rectangle {
     callback activated();
     callback clicked();
 
-    background: root.model.done ? Theme.background : Theme.surface;
+    // Hover stays distinct from the emphasis ring (focus ≠ hover,
+    // both may coexist — usability D2).
+    background: touch.has-hover ? Theme.surface-hover
+        : root.model.done ? Theme.background
+        : Theme.surface;
     border-radius: Theme.radius-medium;
     border-width: root.model.emphasis ? Theme.focus-ring-width : 0;
     border-color: Semantic.focus-ring;

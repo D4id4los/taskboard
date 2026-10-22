@@ -103,6 +103,7 @@ export component StatusBar inherits Rectangle {
                             border-width: row-scope.has-focus ? Theme.focus-ring-width : 0;
                             border-color: Semantic.focus-ring;
                             border-radius: Theme.radius-small;
+                            background: touch.has-hover ? Theme.surface-hover : transparent;
 
                             list := ListRow {
                                 text: row.title;
