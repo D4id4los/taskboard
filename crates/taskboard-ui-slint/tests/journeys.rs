@@ -1370,3 +1370,116 @@ fn never_resized_board_pushes_auto_widths_and_no_requests() {
         },
     );
 }
+
+/// DDF-5 — the anchor card is hidden from the board's list surfaces:
+/// board card counts (and, on the same single pass, the stack-detail
+/// cards) exclude the exact-title anchor; a byte-level near-miss stays
+/// visible.
+#[test]
+fn the_anchor_card_is_hidden_from_the_board() {
+    let (fixture, mut state) = fixture::golden_state();
+    // Clone stack a's first task, retitle it to the exact anchor title,
+    // and plant it back into stack a.
+    let stack_a = fixture.stack_a;
+    let source = state
+        .tasks_in_stack(stack_a)
+        .first()
+        .copied()
+        .expect("fixture task")
+        .clone();
+    let mut anchor = source.clone();
+    anchor.id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+    anchor.title = taskboard_domain::ANCHOR_CARD_TITLE.to_owned();
+    state.tasks.insert(anchor.id, anchor);
+    // The near-miss rides stack a too: same words, trailing space.
+    let mut near_miss = source;
+    near_miss.id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+    near_miss.title = format!("{} ", taskboard_domain::ANCHOR_CARD_TITLE);
+    state.tasks.insert(near_miss.id, near_miss);
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(
+                harness.board_shape(),
+                vec![3, 1],
+                "the anchor is filtered; the near-miss and the rest stay"
+            );
+            let cards = harness.handle.window().get_board_model().stacks;
+            let first = cards.row_data(0).expect("stack a");
+            let titles: Vec<String> = (0..first.tasks.row_count())
+                .map(|row| first.tasks.row_data(row).expect("card").title.to_string())
+                .collect();
+            assert!(
+                !titles
+                    .iter()
+                    .any(|title| title == taskboard_domain::ANCHOR_CARD_TITLE),
+                "no anchor card in the model"
+            );
+            assert!(
+                titles
+                    .iter()
+                    .any(|title| { title == &format!("{} ", taskboard_domain::ANCHOR_CARD_TITLE) }),
+                "the near-miss stays visible (byte-exact filtering)"
+            );
+
+            // The stack-detail surface (the second half of the same
+            // pass): navigate there and count again.
+            harness.press(ActionId::NavNextView);
+            let stack_model = harness.handle.window().get_stack_model();
+            assert_eq!(
+                stack_model.tasks.row_count(),
+                3,
+                "stack detail filters the anchor in the same pass"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// D-S2 — the loud fence on the status bar: a selected-board row
+/// carrying `Unreadable` evidence renders a non-empty sidecar warning
+/// (typed model read — the caption wording is data, never asserted);
+/// a healthy row renders nothing.
+#[test]
+fn the_sidecar_warning_renders_only_when_the_health_says_so() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state.sync.get_mut(board).expect("sync row").sidecar =
+        taskboard_domain::SidecarHealth::Unreadable(
+            taskboard_domain::AppDataUnreadable::FormatTooNew { format: 2 },
+        );
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let sync = harness.handle.window().get_sync_model();
+            assert_ne!(
+                sync.sidecar_warning, "",
+                "the unreadable evidence renders the warning"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+
+    // The healthy baseline: the same fixture without the evidence —
+    // absent evidence is the ruled silence.
+    let (_fixture, healthy) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), healthy);
+            let sync = harness.handle.window().get_sync_model();
+            assert_eq!(sync.sidecar_warning, "", "healthy is silent");
+            harness.assert_commands(&[]);
+        },
+    );
+}
