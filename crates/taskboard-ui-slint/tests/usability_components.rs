@@ -128,6 +128,7 @@ fn the_hamburger_bar_holds_its_token_derived_square_at_every_geometry() {
 /// Typed state only — the `TooltipState` global's accessors.
 #[test]
 fn the_tooltip_delay_dismissal_and_restart_behave() {
+    use slint::ModelRc;
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -138,7 +139,15 @@ fn the_tooltip_delay_dismissal_and_restart_behave() {
 
             // The delay: visible only after 600 ms of hover. The arm
             // is invocation-driven, so the restart below is exact.
-            tooltip.invoke_hover("New stack".into(), 10.0, 10.0, 32.0, 32.0);
+            tooltip.invoke_hover(
+                "New stack".into(),
+                "".into(),
+                ModelRc::default(),
+                10.0,
+                10.0,
+                32.0,
+                32.0,
+            );
             driver.advance_time(599);
             assert!(!tooltip.get_visible(), "still inside the delay window");
             driver.advance_time(1);
@@ -150,14 +159,38 @@ fn the_tooltip_delay_dismissal_and_restart_behave() {
 
             // An empty label never arms (a control without a label
             // never shows a tooltip).
-            tooltip.invoke_hover("".into(), 10.0, 10.0, 32.0, 32.0);
+            tooltip.invoke_hover(
+                "".into(),
+                "".into(),
+                ModelRc::default(),
+                10.0,
+                10.0,
+                32.0,
+                32.0,
+            );
             driver.advance_time(600);
             assert!(!tooltip.get_visible(), "empty label stays hidden");
 
             // Re-hover inside the delay window restarts it.
-            tooltip.invoke_hover("Command menu".into(), 40.0, 10.0, 32.0, 32.0);
+            tooltip.invoke_hover(
+                "Command menu".into(),
+                "".into(),
+                ModelRc::default(),
+                40.0,
+                10.0,
+                32.0,
+                32.0,
+            );
             driver.advance_time(599);
-            tooltip.invoke_hover("Command menu".into(), 40.0, 10.0, 32.0, 32.0);
+            tooltip.invoke_hover(
+                "Command menu".into(),
+                "".into(),
+                ModelRc::default(),
+                40.0,
+                10.0,
+                32.0,
+                32.0,
+            );
             driver.advance_time(599);
             assert!(!tooltip.get_visible(), "the restart reset the delay window");
             driver.advance_time(1);
@@ -172,7 +205,15 @@ fn the_tooltip_delay_dismissal_and_restart_behave() {
             // edge, flipping this tooltip off the window's top. The
             // panel is the only Theme.surface-raised (#262a35) surface
             // in that strip at this state.
-            tooltip.invoke_hover("New stack".into(), 10.0, 10.0, 32.0, 32.0);
+            tooltip.invoke_hover(
+                "New stack".into(),
+                "".into(),
+                ModelRc::default(),
+                10.0,
+                10.0,
+                32.0,
+                32.0,
+            );
             driver.advance_time(600);
             assert!(tooltip.get_visible());
             let snapshot = driver.snapshot();
@@ -181,6 +222,73 @@ fn the_tooltip_delay_dismissal_and_restart_behave() {
                 below_anchor,
                 "the tooltip paints below its near-the-top anchor, not flipped off the window"
             );
+            tooltip.invoke_unhover();
+        },
+    );
+}
+
+/// Round-1 D8/D10 — the generalized trigger's parts and the placement
+/// hand-off: an over-wide label at a small window lands placed, inside
+/// the window margins; the keys part is present exactly when handed a
+/// non-empty model; `placed` never precedes the delay firing.
+#[test]
+fn the_tooltip_hand_off_places_inside_the_window_and_carries_parts() {
+    use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let handle = mount_populated(driver, 1.0, 400, 300);
+            let tooltip = handle.window().global::<taskboard_ui_slint::TooltipState>();
+
+            // While pending: armed but neither visible nor placed.
+            let keys = ModelRc::new(VecModel::from(vec![SharedString::from("Ctrl+K")]));
+            tooltip.invoke_hover(
+                "an absurdly long tooltip label that cannot possibly fit a 400 px window without wrapping somewhere"
+                    .into(),
+                "".into(),
+                keys,
+                200.0,
+                20.0,
+                32.0,
+                32.0,
+            );
+            assert!(tooltip.get_pending());
+            assert!(!tooltip.get_visible());
+            assert!(!tooltip.get_placed(), "nothing places before the delay");
+
+            driver.advance_time(600);
+            driver.advance_time(0); // the size hand-off's change pass
+            assert!(tooltip.get_visible());
+            assert!(tooltip.get_placed(), "the placement landed");
+            let (x, y) = (tooltip.get_tip_x(), tooltip.get_tip_y());
+            assert!(x >= 8.0 && y >= 8.0, "tip at the margins or past: {x},{y}");
+            tooltip.invoke_unhover();
+
+            // The keys part is carried verbatim and empties on the
+            // next hover without one (shown only when a binding
+            // exists).
+            assert_eq!(
+                tooltip.get_keys().row_count(),
+                1,
+                "the handed model is carried"
+            );
+            tooltip.invoke_hover(
+                "plain".into(),
+                "a description".into(),
+                ModelRc::default(),
+                200.0,
+                20.0,
+                32.0,
+                32.0,
+            );
+            assert_eq!(
+                tooltip.get_keys().row_count(),
+                0,
+                "an empty keys model renders no hint part"
+            );
+            assert_eq!(tooltip.get_description(), "a description");
             tooltip.invoke_unhover();
         },
     );

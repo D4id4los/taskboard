@@ -85,6 +85,10 @@ export component AppWindow inherits Window {
     // The rendering fact for tests and reviews (§6 test 2): compact
     // mode is active (board degeneration, D8/D17).
     out property <bool> compact-active: Responsive.current-breakpoint == Breakpoint.compact;
+    // The window dims in logical px (round-1 D10): the Rust placement
+    // reads them.
+    out property <float> window-w: root.width / 1px;
+    out property <float> window-h: root.height / 1px;
     // The rendering fact the menu sizing (usability D6) and the
     // tooltip flip (D3) are proved against: the status bar's top edge
     // in window coordinates (the inner layouts sit at the origin).
@@ -235,19 +239,12 @@ export component AppWindow inherits Window {
             invoke-entry(index) => root.menu-submenu-entry-invoked(index);
         }
 
-        // The tooltip host (usability D3): after the menu host, so a
-        // concurrent menu paints over it. Placement defaults below
-        // the anchor and flips above only when the below placement's
-        // bottom edge would cross the status bar's top edge
-        // (`status.y`, window coords — the inner layouts sit at the
-        // origin) *and* there is room above the anchor; x is centred
-        // and clamped to the margins.
-        if (TooltipState.visible): TooltipPanel {
-            x: max(Theme.space-2, min(TooltipState.anchor-x + TooltipState.anchor-width / 2 - self.width / 2, root.width - self.width - Theme.space-2));
-            y: TooltipState.anchor-y + TooltipState.anchor-height + Theme.space-1 + self.height > status.y
-                    && TooltipState.anchor-y >= self.height + Theme.space-1
-                ? TooltipState.anchor-y - Theme.space-1 - self.height
-                : TooltipState.anchor-y + TooltipState.anchor-height + Theme.space-1;
+        // The tooltip host (usability D3, round-1 D9/D10): mounted
+        // while content exists so the size hand-off can measure it;
+        // opacity-0 until the Rust placement lands (`placed`), then
+        // shown at the computed top-left.
+        if (TooltipState.pending || TooltipState.visible): TooltipPanel {
+            window-width: root.width;
         }
     }
 
