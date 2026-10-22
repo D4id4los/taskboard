@@ -210,9 +210,9 @@ pub fn resolve_ui_settings(
         },
         keymap: built.keymap,
         kiosk: false, // the desktop hand-over; the kiosk appliance (K3) sets this
-        // The config section rides with the settings chunk's serde
-        // extension; the desktop hand-over stays width-less until then.
-        stack_widths: std::collections::BTreeMap::new(),
+        // The device-local widths (round-1 D16): copied verbatim —
+        // uuid-keyed both sides, the mount converts to domain newtypes.
+        stack_widths: ui.stack_widths.clone(),
     };
     (settings, built.findings)
 }
@@ -495,6 +495,7 @@ mod keymap_resolution_tests {
         // conflict with the preset — plus one valid override.
         let ui = crate::config::UiSection {
             scale: 1.25,
+            stack_widths: BTreeMap::new(),
             keymap: KeymapSection {
                 preset: KeymapPreset::Standard,
                 overrides: BTreeMap::from([
@@ -568,6 +569,27 @@ mod keymap_resolution_tests {
             ),
             Some(taskboard_ui_slint::actions::ActionId::AppMenu),
             "vi preset bound app.menu in the normal-mode context"
+        );
+    }
+
+    /// T-18's app half — the resolved hand-over carries the config's
+    /// width map verbatim (the mount's uuid→newtype conversion is the
+    /// T-13 load path).
+    #[test]
+    fn resolve_copies_the_stack_width_map() {
+        let board = uuid::Uuid::from_u128(0x1001);
+        let stack = uuid::Uuid::from_u128(0x2001);
+        let ui = crate::config::UiSection {
+            stack_widths: BTreeMap::from([(board, BTreeMap::from([(stack, 240u32)]))]),
+            ..crate::config::UiSection::default()
+        };
+        let (settings, _) = resolve_ui_settings(&ui);
+        assert_eq!(
+            settings
+                .stack_widths
+                .get(&board)
+                .and_then(|s| s.get(&stack)),
+            Some(&240u32)
         );
     }
 }
