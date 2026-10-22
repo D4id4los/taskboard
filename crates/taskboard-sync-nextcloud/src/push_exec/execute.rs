@@ -3,8 +3,9 @@
 //! (stratum 2).
 
 use taskboard_domain::{
-    CardShape, EntityTables, LocalOp, MaterializedOp, PendingOp, PushGroup, PushOutcome,
-    PushResult, RemoteBoardId, RemoteCardRef, RemoteEcho, RemoteLabelId, RemoteStackId,
+    CardShape, DeckFeatures, EntityTables, LocalOp, MaterializedOp, PendingOp, PushGroup,
+    PushOutcome, PushResult, RemoteBoardId, RemoteCardRef, RemoteEcho, RemoteLabelId,
+    RemoteStackId,
 };
 
 use crate::client::DeckClient;
@@ -24,13 +25,20 @@ use super::overlay::BindingOverlay;
 pub struct PushExecutor<'a> {
     client: &'a DeckClient,
     overlay: BindingOverlay,
+    features: DeckFeatures,
 }
 
 impl<'a> PushExecutor<'a> {
-    /// Builds an executor seeded with the read state's bindings.
+    /// Builds an executor seeded with the read state's bindings and the
+    /// actor's probed [`DeckFeatures`] (the capability-gated `scheduled`
+    /// conversion reads them; D-V2/D21).
     #[must_use]
-    pub fn new(client: &'a DeckClient, overlay: BindingOverlay) -> Self {
-        Self { client, overlay }
+    pub fn new(client: &'a DeckClient, overlay: BindingOverlay, features: DeckFeatures) -> Self {
+        Self {
+            client,
+            overlay,
+            features,
+        }
     }
 
     /// The (echo-extended) overlay, for the actor's post-cycle state.
@@ -341,7 +349,7 @@ impl<'a> PushExecutor<'a> {
             .create_card(
                 self.overlay.board.get(),
                 stack_num.get(),
-                &mapping::new_card_from(new_card),
+                &mapping::new_card_from(new_card, self.features),
             )
             .await
         {
@@ -637,7 +645,7 @@ impl<'a> PushExecutor<'a> {
         // is response-only serialization. A PUT can thus never clear or
         // set server-side labels; the only writes are the sub-endpoints
         // below, so "assigned" is decided against the *fetched* set.
-        let body = mapping::apply_card_shape(&fetched, shape, Some(&[]));
+        let body = mapping::apply_card_shape(&fetched, shape, Some(&[]), self.features);
         let updated = match self.client.update_card(card_ref.board.get(), &body).await {
             Ok(updated) => updated,
             // A 2xx write whose echo failed to decode still landed.

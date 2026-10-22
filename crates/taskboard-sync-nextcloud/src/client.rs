@@ -14,7 +14,7 @@ use reqwest::{
     header::{self, ACCEPT},
     multipart,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::backoff::BackoffPolicy;
 use crate::color::DeckColor;
@@ -179,8 +179,8 @@ struct Call {
     validators: Option<Validators>,
 }
 
-/// Route scope of a [`Call`]: under the versioned Deck API prefix or under
-/// the app's own route namespace.
+/// Route scope of a [`Call`]: under the versioned Deck API prefix, under
+/// the app's own route namespace, or under the server-wide OCS wrapper.
 #[derive(Debug, Clone, Copy)]
 enum Scope {
     /// `index.php/apps/deck/api/v1.0` — the documented OCS API.
@@ -190,6 +190,10 @@ enum Scope {
     /// does not parse multipart PUT bodies), while the frontend's own
     /// app-level route works (D1 spike §3.2).
     App,
+    /// `ocs/v2.php` — the server-wide OCS wrapper. The capabilities
+    /// probe is the one consumer: it lives outside both Deck scopes but
+    /// joins against the same base URL with the same auth headers.
+    Ocs,
 }
 
 impl Scope {
@@ -197,8 +201,37 @@ impl Scope {
         match self {
             Scope::OcsApi => DECK_API_PATH,
             Scope::App => "index.php/apps/deck",
+            Scope::Ocs => "ocs/v2.php",
         }
     }
+}
+
+/// Decoded result of the capabilities probe (D-V1): the Deck section's
+/// version when the server advertises one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeckCapabilities {
+    /// `capabilities.deck.version` (e.g. `"1.19.0"`); `None` when the
+    /// `deck` key is absent — Deck not installed or an ancient build.
+    /// Transport/HTTP failure is a typed [`DeckError`], not a `None`.
+    pub deck_version: Option<String>,
+}
+
+/// The capabilities payload's consumed subset; unknown fields are
+/// ignored (the `ocs.rs` rule).
+#[derive(Debug, Deserialize)]
+struct CapabilitiesPayload {
+    capabilities: CapabilitiesSection,
+}
+
+#[derive(Debug, Deserialize)]
+struct CapabilitiesSection {
+    #[serde(default)]
+    deck: Option<DeckSection>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeckSection {
+    version: String,
 }
 
 /// Request body of a [`Call`]: the JSON payloads every OCS endpoint takes,
@@ -755,6 +788,47 @@ impl DeckClient {
             Ok(raw.validators)
         })
         .await
+    }
+
+    /// Probes the server's capability document
+    /// (`GET ocs/v2.php/cloud/capabilities`, D-V1) and decodes the Deck
+    /// section's version. One GET per client/actor lifetime, before the
+    /// first sync cycle; the derived [`DeckFeatures`] fall back to the
+    /// conservative arm on any failure (`actor.rs`).
+    ///
+    /// # Errors
+    ///
+    /// See [`DeckError`] — a missing `deck` key is *not* an error (it
+    /// decodes as [`DeckCapabilities::deck_version`]'s `None`).
+    pub async fn capabilities(&self) -> Result<DeckCapabilities, DeckError> {
+        tracing::debug!("probing server capabilities");
+        let call = Call {
+            method: Method::GET,
+            resource: "cloud/capabilities".to_owned(),
+            scope: Scope::Ocs,
+            body: None,
+            validators: None,
+        };
+        let result = self
+            .send_with_retries(call, |raw| {
+                map_status(&raw)?;
+                let payload: CapabilitiesPayload = decode_envelope(&raw.body)?;
+                Ok(DeckCapabilities {
+                    deck_version: payload.capabilities.deck.map(|deck| deck.version),
+                })
+            })
+            .await;
+        match &result {
+            Ok(caps) => {
+                if let Some(version) = &caps.deck_version {
+                    tracing::info!(deck_version = %version, "capabilities probed");
+                } else {
+                    tracing::info!("capabilities probed: no deck section");
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "capabilities probe failed"),
+        }
+        result
     }
 
     /// Replaces an attachment's content in place.

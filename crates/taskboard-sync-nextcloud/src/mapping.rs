@@ -14,9 +14,9 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Utc};
 
 use taskboard_domain::{
-    CardShape, NewCardShape, PushResult, RemoteBoard, RemoteBoardId, RemoteCardRef, RemoteEcho,
-    RemoteLabel, RemoteLabelId, RemoteLabelRef, RemoteStack, RemoteStackId, RemoteStackRef,
-    RemoteTask, SyncErrorKind,
+    CardShape, DeckFeatures, NewCardShape, PushResult, RemoteBoard, RemoteBoardId, RemoteCardRef,
+    RemoteEcho, RemoteLabel, RemoteLabelId, RemoteLabelRef, RemoteStack, RemoteStackId,
+    RemoteStackRef, RemoteTask, SyncErrorKind,
 };
 
 use crate::client::{LabelChanges, NewCard, StackChanges};
@@ -209,14 +209,19 @@ pub fn classify_read(err: &DeckError) -> SyncErrorKind {
 }
 
 /// Builds the create-card payload from the planner's shape.
+///
+/// The `scheduled` field is capability-gated (D-V2's push half): it maps
+/// to the wire `startdate` only when the server supports native
+/// `startdate` writes; the conservative arm maps `None` (create omits
+/// the key — 1.17.5's create ignores it anyway).
 #[must_use]
-pub fn new_card_from(shape: &NewCardShape) -> NewCard {
+pub fn new_card_from(shape: &NewCardShape, features: DeckFeatures) -> NewCard {
     NewCard {
         title: shape.title.clone(),
         order: Some(shape.order),
         description: Some(shape.description.clone()),
         duedate: shape.duedate,
-        startdate: shape.scheduled,
+        startdate: features.card_startdate.then_some(shape.scheduled).flatten(),
         kind: None,
     }
 }
@@ -265,17 +270,23 @@ pub fn label_changes_from(label: &taskboard_domain::Label) -> Option<LabelChange
 /// Builds the round-trip PUT body: the *fetched* wire card with the local
 /// fields applied. `resolved_labels: None` keeps the fetched label list
 /// (the caller defers when only unresolvable labels would have changed).
+///
+/// The `scheduled` field is capability-gated (D-V2's push half): under
+/// the conservative arm the PUT carries `startdate: null` (the
+/// measured-silent no-op that keeps the wire honest about what the
+/// server does with the field), never the local value.
 #[must_use]
 pub fn apply_card_shape(
     fetched: &Card,
     shape: &CardShape,
     resolved_labels: Option<&[u64]>,
+    features: DeckFeatures,
 ) -> Card {
     let mut card = fetched.clone();
     card.title.clone_from(&shape.title);
     card.description.clone_from(&shape.description);
     card.duedate = shape.duedate;
-    card.startdate = shape.scheduled;
+    card.startdate = features.card_startdate.then_some(shape.scheduled).flatten();
     card.done = shape.done;
     card.order = shape.order;
     card.archived = shape.archived;
@@ -406,8 +417,26 @@ mod tests {
             archived: false,
             labels: BTreeSet::default(),
         };
-        // Create payload: the shape's scheduled becomes the wire startdate.
-        assert_eq!(new_card_from(&shape).startdate, Some(ts(1_800_000_000)));
+        // Create payload: the shape's scheduled becomes the wire startdate
+        // on a capability-true server; the conservative arm maps None
+        // (create omits the key — 1.17.5's create ignores it anyway).
+        assert_eq!(
+            new_card_from(&shape, DeckFeatures::NATIVE).startdate,
+            Some(ts(1_800_000_000))
+        );
+        assert_eq!(
+            new_card_from(&shape, DeckFeatures::CONSERVATIVE).startdate,
+            None
+        );
+        // A cleared scheduled is unchanged either way.
+        let unscheduled_shape = taskboard_domain::NewCardShape {
+            scheduled: None,
+            ..shape.clone()
+        };
+        assert_eq!(
+            new_card_from(&unscheduled_shape, DeckFeatures::CONSERVATIVE).startdate,
+            None
+        );
 
         // Update path: apply_card_shape writes the fetched wire card's
         // startdate (the full-send PUT body then carries it, null
@@ -426,6 +455,31 @@ mod tests {
                 labels: BTreeSet::default(),
             },
             None,
+            DeckFeatures::NATIVE,
+        );
+        // The conservative arm serializes `startdate: null` — the
+        // measured-silent no-op that keeps the wire honest (D-V2).
+        let gated = apply_card_shape(
+            &fetched,
+            &taskboard_domain::CardShape {
+                title: "renamed".into(),
+                description: String::new(),
+                duedate: None,
+                scheduled: Some(ts(1_800_000_000)),
+                done: None,
+                order: 0,
+                archived: false,
+                labels: BTreeSet::default(),
+            },
+            None,
+            DeckFeatures::CONSERVATIVE,
+        );
+        assert_eq!(gated.startdate, None);
+        let json = serde_json::to_value(&gated).unwrap();
+        assert_eq!(
+            json["startdate"],
+            serde_json::Value::Null,
+            "the PUT carries the explicit null, never the local value"
         );
         assert_eq!(card.startdate, Some(ts(1_800_000_000)));
     }
@@ -568,7 +622,7 @@ mod tests {
             archived: true,
             labels: BTreeSet::new(),
         };
-        let card = apply_card_shape(&fetched, &shape, Some(&[7, 11]));
+        let card = apply_card_shape(&fetched, &shape, Some(&[7, 11]), DeckFeatures::NATIVE);
         assert_eq!(card.title, "renamed");
         assert_eq!(card.description, "desc");
         assert_eq!(card.duedate, None);
@@ -585,7 +639,7 @@ mod tests {
         assert_eq!(card.id, 5, "wire identity untouched");
         assert_eq!(card.stack_id, 9, "location comes from the fetched card");
         // None keeps the fetched label list (deferral path).
-        let untouched = apply_card_shape(&fetched, &shape, None);
+        let untouched = apply_card_shape(&fetched, &shape, None, DeckFeatures::NATIVE);
         assert_eq!(untouched.labels, fetched.labels);
     }
 
