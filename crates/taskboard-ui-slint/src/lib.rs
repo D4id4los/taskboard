@@ -30,6 +30,7 @@ pub mod router;
 pub mod shell;
 pub mod tooltip;
 pub mod view_state;
+pub mod widths;
 
 use std::cell::RefCell;
 use std::rc::Rc;
