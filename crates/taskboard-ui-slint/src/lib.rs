@@ -1331,6 +1331,23 @@ mod view_component_tests {
                 handle.adapter.borrow().quit_requests > 0,
                 "the exit effect fired over the edit flow"
             );
+            // The D3 reconciliation (round 1): the mouse invoke closed
+            // the menu (F2's fix) while the underlying edit flow stayed
+            // intact — the menu lifecycle never disturbs the flow.
+            assert!(
+                !handle.window.global::<KeyboardState>().get_menu_open(),
+                "the mouse invoke closed the menu"
+            );
+            assert!(
+                handle
+                    .window
+                    .get_board_model()
+                    .stacks
+                    .row_data(0)
+                    .expect("col")
+                    .create_open,
+                "the edit flow survived open/invoke/close"
+            );
         });
     }
 

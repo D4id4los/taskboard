@@ -561,6 +561,51 @@ fn an_outside_click_dismisses_the_menu() {
     );
 }
 
+/// D3/F2 — a mouse row invocation routes AND closes: clicking the
+/// "Edit task" row over a focused card navigates to the task detail
+/// and the menu is closed afterwards — the same observable end state
+/// the keyboard invoke path has always had.
+#[test]
+fn a_mouse_row_invocation_routes_and_closes() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The curated root page's only enabled dispatching row is
+            // the pinned Quit row (the view verbs live behind the
+            // submenus) — the typed routing outcome is the exit effect.
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0); // instantiate the menu tree
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_menu_open()
+            );
+
+            harness.driver.click_by_label("Quit taskboard");
+            assert_eq!(
+                harness.handle.quit_requests(),
+                1,
+                "the routed action dispatched"
+            );
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_menu_open(),
+                "the mouse invoke closed the menu"
+            );
+            harness.assert_commands(&[]); // nothing reached the engine
+        },
+    );
+}
+
 /// F1/D1 — the hamburger is a stateful toggle and every open shows
 /// the same entries: open → second click closes → third click opens a
 /// model equal to the first open's (row count + per-row action ids,

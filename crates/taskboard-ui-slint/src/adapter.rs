@@ -342,11 +342,13 @@ impl Adapter {
                 self.shell.apply(&effect, self.menu_entries.len());
             }
             UiEffect::InvokeSelected => {
-                let selected = self.shell.selected_entry();
-                self.shell.apply(&UiEffect::CloseMenu, 0);
-                // Close first, then one re-dispatch — bounded (D16).
-                if let Some(index) = selected {
+                // Close first, then one re-dispatch — bounded (D16);
+                // the close itself lives in `invoke_entry` so the mouse
+                // path shares it (round-1 D3).
+                if let Some(index) = self.shell.selected_entry() {
                     self.invoke_entry(window, index);
+                } else {
+                    self.shell.apply(&UiEffect::CloseMenu, 0);
                 }
             }
             UiEffect::CloseMenu | UiEffect::MenuNext | UiEffect::MenuPrevious => {
@@ -369,13 +371,17 @@ impl Adapter {
     }
 
     /// The `menu.invoke` projection (D16): the entry at `index` is
-    /// re-dispatched through the same router. The mouse click path
-    /// lands here too — every click affordance has an action
-    /// equivalent (§7.1).
+    /// re-dispatched through the same router, on both input paths —
+    /// keyboard `InvokeSelected` and the mouse row click land here.
+    /// The close comes first on both (round-1 D3): the routed action
+    /// resolves against the post-menu chain, and the menu is closed
+    /// after a mouse invoke exactly as after a keyboard invoke
+    /// (every click affordance has an action equivalent, §7.1).
     fn invoke_entry(&mut self, window: &AppWindow, index: usize) {
         let Some(entry) = self.menu_entries.get(index) else {
             return;
         };
+        self.shell.apply(&UiEffect::CloseMenu, 0);
         // A submenu-parent row never dispatches (round-1 D6).
         let Some(action) = entry.action else {
             return;
