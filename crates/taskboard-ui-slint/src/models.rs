@@ -12,7 +12,7 @@ use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
 use chrono::{DateTime, TimeDelta, Utc};
 
-use taskboard_domain::{AppState, BoardId, StackId, Task, TaskId};
+use taskboard_domain::{AppState, BoardId, ReminderRuleId, StackId, Task, TaskId};
 
 use crate::actions::{ActionId, ContextId};
 use crate::keymap::Keymap;
@@ -22,8 +22,8 @@ use crate::view_state::{Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DueKind as SlintDueKind, FlowHintModel,
-    Responsive, StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel,
-    TaskDecoration, TaskDetailModel, Theme, Tone, View,
+    Responsive, RuleRowModel, StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi,
+    TaskCardModel, TaskDecoration, TaskDetailModel, Theme, Tone, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -47,6 +47,9 @@ pub struct IdTables {
     /// The banner rows (targets included, index-aligned with the
     /// pushed banner model up to the cap).
     pub banner: Vec<presentation::BannerRow>,
+    /// The task-detail view's reminder rules in id order (chunk 6,
+    /// D12): the rule-list row indices resolve against this pass.
+    pub task_rules: Vec<ReminderRuleId>,
 }
 
 impl IdTables {
@@ -149,7 +152,7 @@ pub fn push(
     };
     push_board(window, state, vs, &sets, &stack_ids, &mut tables, now);
     push_stack_detail(window, state, vs, &sets, &mut tables, now);
-    push_task_detail(window, state, vs, &sets, now);
+    push_task_detail(window, state, vs, &sets, &mut tables, now);
     push_status_bar(window, state, vs, keymap, chain, now, &mut tables);
     tables
 }
@@ -323,10 +326,33 @@ fn push_task_detail(
     state: &AppState,
     vs: &ViewState,
     sets: &DueSets,
+    tables: &mut IdTables,
     now: DateTime<Utc>,
 ) {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
     let editing = matches!(vs.flow(), Flow::EditTitle { task } if vs.subject_task().is_some_and(|s| *task == s));
+    // The subject task's rules in id order (the table and the row
+    // model agree by construction — D12).
+    let task_rules: Vec<taskboard_domain::ReminderRuleId> = vs
+        .subject_task()
+        .map(|task| {
+            state
+                .reminders
+                .rules
+                .values()
+                .filter(|rule| rule.task == task)
+                .map(|rule| rule.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    let rule_rows: Vec<RuleRowModel> = task_rules
+        .iter()
+        .filter_map(|id| state.reminders.rules.get(id))
+        .map(|rule| RuleRowModel {
+            before: SharedString::from(rule.offset.text_form()),
+            created: SharedString::from(rule.created_at.to_rfc3339()),
+        })
+        .collect();
     window.set_task_model(TaskDetailModel {
         title: SharedString::from(subject.map_or(String::new(), |t| t.title.clone())),
         stack_title: SharedString::from(
@@ -348,7 +374,16 @@ fn push_task_detail(
         } else {
             String::new()
         }),
+        rules: ModelRc::new(VecModel::from(rule_rows)),
+        rule_presets: ModelRc::new(VecModel::from(
+            presentation::rule_preset_labels()
+                .into_iter()
+                .map(SharedString::from)
+                .collect::<Vec<_>>(),
+        )),
+        rules_hint: SharedString::from(presentation::rule_list_hint(task_rules.len())),
     });
+    tables.task_rules = task_rules;
 }
 
 /// The status bar: sync badge, the capped banner rows, the flow hint

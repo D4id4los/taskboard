@@ -6,7 +6,7 @@
 //! over the mpsc and applies [`UiEffect`]s to the shell state.
 
 use chrono::TimeDelta;
-use taskboard_domain::{BoardId, StackId, StateCommand, TaskId};
+use taskboard_domain::{BoardId, ReminderOffset, ReminderRuleId, StackId, StateCommand, TaskId};
 
 use crate::actions::{ActionId, entry as registry_entry};
 use crate::presentation::ReminderTarget;
@@ -116,6 +116,14 @@ pub struct DispatchCtx {
     /// when a segment is activated; `board.select` routes from it
     /// (`NoTarget` without one — a menu invocation carries no target).
     pub board_target: Option<BoardId>,
+    /// The rule-list row's rule (chunk 6, D11): set by the adapter when
+    /// a row's remove affordance activates; `reminder.rule-remove`
+    /// routes from it (`NoTarget` without one).
+    pub rule_target: Option<ReminderRuleId>,
+    /// The rule-list add entry's parsed offset (chunk 6, D11): set by
+    /// the adapter (preset or custom); `reminder.rule-add` routes from
+    /// it together with the focused task (`NoTarget` without both).
+    pub rule_add_offset: Option<ReminderOffset>,
 }
 
 /// The pure dispatch table. Every [`ActionId`] variant is matched —
@@ -172,6 +180,19 @@ impl ActionRouter {
                 }),
                 None => DispatchOutcome::NoTarget,
             },
+            // The rule-list verbs (chunk 6, D11): the banner-verb
+            // pattern — concrete one-shot targets only; a menu
+            // invocation carries neither.
+            ActionId::ReminderRuleAdd => match (ctx.focused_task, ctx.rule_add_offset) {
+                (Some(task), Some(offset)) => {
+                    DispatchOutcome::Command(StateCommand::AddReminderRule { task, offset })
+                }
+                _ => DispatchOutcome::NoTarget,
+            },
+            ActionId::ReminderRuleRemove => match ctx.rule_target {
+                Some(rule) => DispatchOutcome::Command(StateCommand::RemoveReminderRule { rule }),
+                None => DispatchOutcome::NoTarget,
+            },
             // The chunk-3 view intents (D6): the adapter resolves the
             // effects against the view-state model.
             ActionId::NavNextView => DispatchOutcome::UiEffect(UiEffect::NextView),
@@ -216,6 +237,8 @@ mod tests {
             focused_stack: None,
             reminder_target: None,
             board_target: None,
+            rule_target: None,
+            rule_add_offset: None,
         }
     }
 
@@ -256,6 +279,54 @@ mod tests {
         );
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskDelete, &ctx),
+            DispatchOutcome::NoTarget
+        );
+    }
+
+    /// Chunk 6 (D11): the rule-list verbs follow the banner-verb
+    /// pattern — exact typed commands from the one-shot targets,
+    /// `NoTarget` without them (a menu invocation carries neither).
+    #[test]
+    fn rule_verbs_route_from_their_targets() {
+        let mut ctx = ctx(true);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderRuleAdd, &ctx),
+            DispatchOutcome::NoTarget,
+            "no offset"
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderRuleRemove, &ctx),
+            DispatchOutcome::NoTarget,
+            "no rule target"
+        );
+        ctx.rule_add_offset = Some(
+            taskboard_domain::ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
+                .unwrap(),
+        );
+        let task = ctx.focused_task.expect("set");
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderRuleAdd, &ctx),
+            DispatchOutcome::Command(StateCommand::AddReminderRule {
+                task,
+                offset: ctx.rule_add_offset.expect("set")
+            })
+        );
+        let rule = taskboard_domain::ReminderRuleId::from_uuid(Uuid::now_v7());
+        ctx.rule_target = Some(rule);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderRuleRemove, &ctx),
+            DispatchOutcome::Command(StateCommand::RemoveReminderRule { rule })
+        );
+    }
+
+    /// Chunk 6 (D11): the add verb needs focus AND offset — focus alone
+    /// is `NoTarget`.
+    #[test]
+    fn rule_add_without_focus_or_offset_is_no_target() {
+        let mut ctx = ctx(false);
+        ctx.rule_add_offset = Some(taskboard_domain::ReminderOffset::at_due());
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::ReminderRuleAdd, &ctx),
             DispatchOutcome::NoTarget
         );
     }

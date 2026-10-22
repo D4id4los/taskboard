@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The task-editor rule-list composition (chunk 6, D12): one row per
+// reminder rule (the offset in the canonical text form, the created
+// stamp, a remove affordance), the derived-fact hint, and the add
+// affordance (preset chips plus a custom offset entry). Indices
+// resolve against the refresh pass's id tables — no ids cross the
+// seam (D2). A parse-missed custom entry dispatches nothing: the
+// adapter absorbs it (the CLI owns typed failures, D12).
+
+import { Theme, Typography, Semantic, RoleText } from "../theme.slint";
+import { TextField } from "../widgets/text-field.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+
+// One rule row: the offset text form and the created stamp — display
+// strings only (D12: ids stay in the adapter's tables).
+export struct RuleRowModel {
+    before: string,
+    created: string,
+}
+
+export component RuleList inherits VerticalLayout {
+    in property <[RuleRowModel]> rules;
+    // The preset offsets' canonical labels (`"5m"`, `"30m"`, …) —
+    // derived in the projection, never hand-written (D12).
+    in property <[string]> presets;
+    // The derived-fact hint; empty means no rules (nothing to present).
+    in property <string> hint;
+    callback remove-clicked(int);
+    callback add-preset-clicked(int);
+    callback add-custom-accepted(string);
+
+    RoleText {
+        role: Typography.caption;
+        text-color: Theme.text-secondary;
+        text: "Reminders";
+    }
+
+    if (root.hint != ""): RoleText {
+        role: Typography.caption;
+        text-color: Theme.text-secondary;
+        text: root.hint;
+        wrap: word-wrap;
+    }
+
+    for row[i] in root.rules: HorizontalLayout {
+        spacing: Theme.space-3;
+        alignment: start;
+        RoleText {
+            role: Typography.mono;
+            text: row.before;
+            vertical-alignment: center;
+        }
+        RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: row.created;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        IconButton {
+            icon: IconKind.remove;
+            label: "Remove reminder";
+            description: "Removes this reminder rule.";
+            clicked => root.remove-clicked(i);
+        }
+    }
+
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        alignment: start;
+        for label[i] in root.presets: preset-chip := Rectangle {
+            border-radius: Theme.radius-small;
+            border-width: Theme.focus-ring-width;
+            border-color: touch.has-hover ? Semantic.focus-ring : Theme.text-secondary;
+            min-height: Theme.space-5;
+            touch := TouchArea {
+                clicked => { root.add-preset-clicked(i); }
+            }
+            RoleText {
+                role: Typography.mono;
+                text-color: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                text: label;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
+        }
+    }
+
+    TextField {
+        placeholder: "Custom offset, e.g. 45m";
+        label: "Custom reminder offset";
+        accepted(text) => { root.add-custom-accepted(text); }
+    }
+}

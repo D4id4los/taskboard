@@ -233,6 +233,8 @@ mod tests {
             ActionId::TaskDelete,
             ActionId::ReminderSnooze,
             ActionId::ReminderMute,
+            ActionId::ReminderRuleAdd,
+            ActionId::ReminderRuleRemove,
         ];
         assert_eq!(
             ids(&rows),

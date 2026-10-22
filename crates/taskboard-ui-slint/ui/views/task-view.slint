@@ -8,6 +8,7 @@
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
 
 // The task-detail model (D22).
 export struct TaskDetailModel {
@@ -19,6 +20,11 @@ export struct TaskDetailModel {
     description: string,
     edit-open: bool,
     initial-text: string,
+    // The subject task's reminder rules (chunk 6, D12): display rows
+    // plus the derived-fact hint; ids stay in the adapter's tables.
+    rules: [RuleRowModel],
+    rule-presets: [string],
+    rules-hint: string,
 }
 
 export component TaskView inherits FocusScope {
@@ -29,6 +35,11 @@ export component TaskView inherits FocusScope {
     callback title-committed(string);
     callback title-edited(string);
     callback back-clicked();
+    // The rule-list composition's seams (chunk 6, D12): forwarded to
+    // the window, resolved against the id tables there.
+    callback rule-remove-clicked(int);
+    callback rule-add-preset-clicked(int);
+    callback rule-add-custom-accepted(string);
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -129,6 +140,18 @@ export component TaskView inherits FocusScope {
                         text: root.task.done ? "Completed" : "Open";
                     }
                 }
+            }
+
+            // The rule list (chunk 6, D12): mounted inside the editor
+            // after the metadata row — extends the editor surface, no
+            // new view family (D-R4).
+            RuleList {
+                rules: root.task.rules;
+                presets: root.task.rule-presets;
+                hint: root.task.rules-hint;
+                remove-clicked(i) => root.rule-remove-clicked(i);
+                add-preset-clicked(i) => root.rule-add-preset-clicked(i);
+                add-custom-accepted(text) => root.rule-add-custom-accepted(text);
             }
 
             // The description (read-only body text — markup rendering

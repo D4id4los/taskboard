@@ -258,6 +258,47 @@ pub struct ReminderTarget {
     pub occurrence: DateTime<Utc>,
 }
 
+/// The rule-list add affordance's preset offsets (chunk 6, D12):
+/// presentation const data — the labels are derived through
+/// `ReminderOffset::text_form`, never hand-written strings.
+pub const RULE_PRESETS: &[chrono::TimeDelta] = &[
+    chrono::TimeDelta::try_minutes(5).expect("5m fits"),
+    chrono::TimeDelta::try_minutes(30).expect("30m fits"),
+    chrono::TimeDelta::try_hours(1).expect("1h fits"),
+    chrono::TimeDelta::try_hours(24).expect("24h fits"),
+];
+
+/// The preset buttons' labels, derived from [`RULE_PRESETS`] through the
+/// domain's canonical text form (`"5m"`, `"30m"`, `"1h"`, `"24h"`).
+///
+/// # Panics
+///
+/// Only via `expect` on the offset construction: the preset magnitudes
+/// are const negative durations by construction.
+#[must_use]
+pub fn rule_preset_labels() -> Vec<String> {
+    RULE_PRESETS
+        .iter()
+        .map(|dur| {
+            taskboard_domain::ReminderOffset::before(-*dur)
+                .expect("preset magnitudes negate into the offset domain")
+                .text_form()
+        })
+        .collect()
+}
+
+/// The rule-list's derived-fact hint (chunk 6, D12): while any explicit
+/// rule exists, the implicit default never fires (`due_firings`'s
+/// rules-replace-default derivation). Empty for a rule-less task.
+#[must_use]
+pub fn rule_list_hint(rule_count: usize) -> String {
+    if rule_count == 0 {
+        String::new()
+    } else {
+        "Explicit rules replace the task's default reminder: only these rules fire.".to_owned()
+    }
+}
+
 /// One overdue-banner row (D12): the task truth plus its snooze
 /// target. Visibility never consults mute/snooze/deliveries — board
 /// truth, not nagging policy.
