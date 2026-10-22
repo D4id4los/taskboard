@@ -85,7 +85,9 @@ export component BoardLayout inherits Rectangle {
                     header-hit := TouchArea {
                         clicked => root.header-activated(column-index);
                     }
-                    background: column-index == root.move-target ? Theme.surface-raised : transparent;
+                    background: header-hit.has-hover ? Theme.surface-hover
+                        : column-index == root.move-target ? Theme.surface-raised
+                        : transparent;
                     border-radius: Theme.radius-small;
                     HorizontalLayout {
                         padding-left: Theme.space-2;
@@ -144,7 +146,8 @@ export component BoardLayout inherits Rectangle {
                     width: 100%;
                     height: 100%;
                     border-radius: Theme.radius-small;
-                    background: column-index == root.selected-stack ? Theme.surface-raised
+                    background: segment-hover.has-hover ? Theme.surface-hover
+                        : column-index == root.selected-stack ? Theme.surface-raised
                         : column-index == root.move-target ? Theme.surface
                         : transparent;
                     border-width: segment.has-focus || column-index == root.move-target
@@ -165,7 +168,8 @@ export component BoardLayout inherits Rectangle {
                         }
                     }
                 }
-                TouchArea {
+                // The hover cue's owner (usability D2).
+                segment-hover := TouchArea {
                     clicked => root.switcher-activated(column-index);
                 }
             }

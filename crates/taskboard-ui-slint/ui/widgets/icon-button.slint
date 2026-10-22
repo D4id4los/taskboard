@@ -23,8 +23,7 @@ export component IconButton inherits Rectangle {
     in property <string> label;
     callback clicked();
 
-    background: touch.pressed ? Theme.surface-raised
-        : touch.has-hover ? Theme.surface
+    background: touch.pressed || touch.has-hover ? Theme.surface-hover
         : transparent;
     border-radius: Theme.radius-small;
     border-width: focus-surface.has-focus ? Theme.focus-ring-width : 0;
@@ -50,7 +49,11 @@ export component IconButton inherits Rectangle {
         padding: Theme.space-2;
 
         pure function icon-color() -> color {
-            root.tone == Tone.neutral ? Theme.text-secondary
+            // The neutral icon lifts to text-primary while hovered —
+            // the background alone carries the cue for the semantic
+            // tones (usability D2).
+            root.tone == Tone.neutral
+                ? (touch.has-hover ? Theme.text-primary : Theme.text-secondary)
             : root.tone == Tone.info ? Theme.text-primary
             : root.tone == Tone.success ? Semantic.success
             : root.tone == Tone.warning ? Semantic.warning
