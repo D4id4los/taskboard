@@ -314,15 +314,19 @@ impl Adapter {
                 // (the active context's actions, §5.9); the menu
                 // context itself masks the chain once open (D11).
                 let chain = self.shell.chain();
-                self.menu_entries = menu::entries(&self.keymap, &chain);
+                self.menu_entries = menu::root_page(&self.keymap, &chain);
                 let models: Vec<crate::MenuEntryModel> = self
                     .menu_entries
                     .iter()
                     .map(|entry| crate::MenuEntryModel {
-                        action: entry.action.id().into(),
+                        action: entry
+                            .action
+                            .map_or(String::new(), |id| id.id().to_owned())
+                            .into(),
                         label: entry.label.into(),
+                        description: entry.description.into(),
                         enabled: entry.enabled,
-                        section_title: entry.section_title.into(),
+                        submenu: entry.submenu.is_some(),
                         hint: ModelRc::new(slint::VecModel::from(
                             entry
                                 .hint
@@ -372,7 +376,10 @@ impl Adapter {
         let Some(entry) = self.menu_entries.get(index) else {
             return;
         };
-        let action = entry.action;
+        // A submenu-parent row never dispatches (round-1 D6).
+        let Some(action) = entry.action else {
+            return;
+        };
         self.route(window, action);
     }
 }

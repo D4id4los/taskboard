@@ -1,80 +1,120 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The generated action menu (chunk decision D19, design §5.9): a
-//! pure projection of the registry over keymap data for a context
-//! chain. Menus, hints, and the future keymap visualiser are
-//! projections of data, never hand-written (§5.9).
+//! The generated action menu (chunk decision D19, design §5.9; the
+//! round-1 two-tier rework, D5–D7/D10): pure projections of the
+//! registry over keymap data for a context chain. Menus, hints, and
+//! descriptions are projections of data, never hand-written (§5.9).
+//! The presentation-only `menu_rank` / `menu_group` columns order the
+//! pages; keymap resolution never reads them (resolution is built
+//! from the preset tables alone, so the "resolution order untouched"
+//! guarantee is structural).
 
-use crate::actions::{Category, ContextId, REGISTRY};
+use crate::actions::{ActionId, ContextId, MenuGroup, REGISTRY};
 use crate::keymap::Keymap;
 
-/// One generated menu row (D19): the registry entry plus its first
-/// chain-visible binding rendered as canonical display strings (the
-/// kbd-hint text source). Disabled entries are included — menu
-/// generation stays total and documents the reservations (§5.8).
+/// One generated menu row (D19, extended by round-1 D5/D7): the
+/// registry entry plus its first chain-visible binding rendered as
+/// canonical display strings (the kbd-hint text source). Disabled
+/// entries are included — menu generation stays total and documents
+/// the reservations (§5.8).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuEntry {
-    pub action: crate::actions::ActionId,
+    /// `None` for a synthesized submenu-parent row (it never
+    /// dispatches; activating it opens the group's page).
+    pub action: Option<ActionId>,
     pub label: &'static str,
+    /// The row's tooltip / a11y description (round-1 D7); every
+    /// registry row carries one, parent rows too.
+    pub description: &'static str,
     pub enabled: bool,
     /// The first chain-visible binding, one display string per stroke.
     pub hint: Vec<String>,
-    /// The section heading to render above this row (usability D5):
-    /// the row category's label at a category boundary (always on the
-    /// first row), empty otherwise. Derived from the same stable sort
-    /// as the row order — never hand-written (§5.9).
-    pub section_title: &'static str,
+    /// `Some(group)` for a submenu-parent row (round-1 D6).
+    pub submenu: Option<MenuGroup>,
 }
 
-/// Generates the menu rows for `chain` (D19): registry entries whose
-/// availability intersects the chain (`Global`-tagged always),
-/// ordered by category then registry order.
-#[must_use]
-pub fn entries(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
-    let mut rows: Vec<(usize, (Category, MenuEntry))> = REGISTRY
+/// The registry rows whose availability intersects `chain`
+/// (`Global`-tagged always), as `(registry index, entry)` in registry
+/// order — the shared filter of all three page projections.
+fn chain_visible(chain: &[ContextId]) -> Vec<(usize, &'static crate::actions::ActionEntry)> {
+    REGISTRY
         .iter()
         .enumerate()
         .filter(|(_, entry)| {
             entry.contexts.contains(&ContextId::Global)
                 || entry.contexts.iter().any(|c| chain.contains(c))
         })
-        .map(|(index, entry)| {
-            let hint = keymap
-                .first_binding_display(entry.id, chain)
-                .unwrap_or_default();
-            (
-                index,
-                (
-                    entry.category,
-                    MenuEntry {
-                        action: entry.id,
-                        label: entry.label,
-                        enabled: entry.enabled,
-                        hint,
-                        section_title: "",
-                    },
-                ),
-            )
-        })
-        .collect();
-    // Stable sort by (category, registry order): `Category` orders by
-    // its declaration (the documented menu order).
-    rows.sort_by_key(|(index, (category, _))| (*category, *index));
-    // The section boundaries are derived data (usability D5): a row
-    // heading is its category's label exactly where the category
-    // changes (the first row always opens its section).
-    let mut previous = Option::<Category>::None;
-    rows.into_iter()
-        .map(|(_, (category, mut row))| {
-            row.section_title = if previous == Some(category) {
-                ""
-            } else {
-                category.section_label()
-            };
-            previous = Some(category);
-            row
-        })
         .collect()
+}
+
+fn row(keymap: &Keymap, chain: &[ContextId], entry: &crate::actions::ActionEntry) -> MenuEntry {
+    MenuEntry {
+        action: Some(entry.id),
+        label: entry.label,
+        description: entry.description,
+        enabled: entry.enabled,
+        hint: keymap
+            .first_binding_display(entry.id, chain)
+            .unwrap_or_default(),
+        submenu: None,
+    }
+}
+
+/// The root page (round-1 D5/D10): the top-level quick rows
+/// (`menu_group == None`, registry visibility over `chain`) in
+/// `menu_rank` order, then one submenu-parent row per group whose
+/// page is non-empty for the chain (group declaration order), then
+/// `app.exit` pinned last regardless of its rank.
+#[must_use]
+pub fn root_page(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
+    let visible = chain_visible(chain);
+    let mut quick: Vec<(u16, usize, MenuEntry)> = visible
+        .iter()
+        .filter(|(_, entry)| entry.menu_group.is_none() && entry.id != ActionId::AppExit)
+        .map(|(index, entry)| (entry.menu_rank, *index, row(keymap, chain, entry)))
+        .collect();
+    quick.sort_by_key(|(rank, index, _)| (*rank, *index));
+
+    let mut page: Vec<MenuEntry> = quick.into_iter().map(|(_, _, entry)| entry).collect();
+    for group in MenuGroup::all() {
+        if !group_page(keymap, chain, *group).is_empty() {
+            page.push(MenuEntry {
+                action: None,
+                label: group.label(),
+                description: "Opens this group of actions.",
+                enabled: true,
+                hint: Vec::new(),
+                submenu: Some(*group),
+            });
+        }
+    }
+    if let Some((_, exit)) = visible
+        .iter()
+        .find(|(_, entry)| entry.id == ActionId::AppExit)
+    {
+        page.push(row(keymap, chain, exit));
+    }
+    page
+}
+
+/// One group's page (round-1 D6): the group's chain-visible rows in
+/// `(menu_rank, registry order)`.
+#[must_use]
+pub fn group_page(keymap: &Keymap, chain: &[ContextId], group: MenuGroup) -> Vec<MenuEntry> {
+    let mut rows: Vec<(u16, usize, MenuEntry)> = chain_visible(chain)
+        .iter()
+        .filter(|(_, entry)| entry.menu_group == Some(group))
+        .map(|(index, entry)| (entry.menu_rank, *index, row(keymap, chain, entry)))
+        .collect();
+    rows.sort_by_key(|(rank, index, _)| (*rank, *index));
+    rows.into_iter().map(|(_, _, entry)| entry).collect()
+}
+
+/// The task-card context menu (round-1 D13): the Task group's
+/// chain-visible rows, flat (no parents), no Quit pin.
+#[must_use]
+pub fn context_entries(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
+    group_page(keymap, chain, MenuGroup::Task)
 }
 
 #[cfg(test)]
@@ -92,68 +132,239 @@ mod tests {
         .keymap
     }
 
-    /// T24 — filtering: availability intersects the chain
-    /// (`Global`-tagged always); a view chain offers the view's verbs
-    /// but no `menu.*` rows, and nothing appears twice.
+    fn ids(rows: &[MenuEntry]) -> Vec<Option<ActionId>> {
+        rows.iter().map(|e| e.action).collect()
+    }
+
+    fn board_chain() -> Vec<ContextId> {
+        vec![ContextId::Board, ContextId::ViNormal, ContextId::Global]
+    }
+
+    /// T-1 — the curated root page: the four quick rows in rank
+    /// order, then the parent rows in group order (every group's page
+    /// is non-empty over the board chain), then Quit last.
     #[test]
-    fn entries_filter_to_the_chain_and_global() {
+    fn root_page_is_curated_quick_rows_parents_quit() {
         let keymap = standard_keymap();
-        let board = entries(&keymap, &[ContextId::Board, ContextId::Global]);
-        let ids: Vec<_> = board.iter().map(|e| e.action).collect();
+        let rows = root_page(&keymap, &board_chain());
+        let mut actions = rows.iter().filter_map(|e| e.action);
+        for id in [
+            ActionId::AppSettings,
+            ActionId::CaptureQuick,
+            ActionId::AppUndo,
+            ActionId::AppRedo,
+        ] {
+            assert_eq!(actions.next(), Some(id), "quick row order");
+        }
+        // Then five parent rows (no action), then Quit.
+        let parents: Vec<_> = rows
+            .iter()
+            .filter(|e| e.action.is_none())
+            .map(|e| e.submenu)
+            .collect();
+        assert_eq!(
+            parents,
+            MenuGroup::all()
+                .iter()
+                .copied()
+                .map(Some)
+                .collect::<Vec<_>>(),
+            "one parent per group, in group order"
+        );
+        assert_eq!(
+            *rows.last().expect("non-empty"),
+            MenuEntry {
+                action: Some(ActionId::AppExit),
+                label: "Quit taskboard",
+                description: "Quits the application; local state is already saved.",
+                enabled: true,
+                hint: vec!["Ctrl+Q".to_owned()],
+                submenu: None,
+            },
+            "Quit pinned last"
+        );
+    }
+
+    /// T-2 — `app.exit` is the last root-page row for every chain.
+    #[test]
+    fn quit_is_last_on_every_root_page() {
+        let keymap = standard_keymap();
+        for chain in [
+            vec![ContextId::Board, ContextId::ViNormal, ContextId::Global],
+            vec![
+                ContextId::StackDetail,
+                ContextId::ViNormal,
+                ContextId::Global,
+            ],
+            vec![
+                ContextId::TaskDetail,
+                ContextId::ViNormal,
+                ContextId::Global,
+            ],
+            vec![ContextId::Global],
+        ] {
+            let rows = root_page(&keymap, &chain);
+            assert_eq!(
+                rows.last().expect("non-empty").action,
+                Some(ActionId::AppExit),
+                "Quit last over {chain:?}"
+            );
+            assert_eq!(
+                ids(&rows)
+                    .iter()
+                    .filter(|a| **a == Some(ActionId::AppExit))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    /// T-3 — the Task group page carries exactly the Task-group rows,
+    /// enabled bits preserved, hints resolved.
+    #[test]
+    fn group_page_projects_the_groups_rows_with_hints() {
+        let keymap = standard_keymap();
+        let rows = group_page(&keymap, &board_chain(), MenuGroup::Task);
+        let expected = [
+            ActionId::TaskCreate,
+            ActionId::TaskEdit,
+            ActionId::TaskComplete,
+            ActionId::TaskMove,
+            ActionId::TaskDelete,
+            ActionId::ReminderSnooze,
+            ActionId::ReminderMute,
+        ];
+        assert_eq!(
+            ids(&rows),
+            expected.iter().map(|id| Some(*id)).collect::<Vec<_>>()
+        );
+        assert!(rows.iter().all(|e| e.submenu.is_none()), "flat page");
+        let complete = rows
+            .iter()
+            .find(|e| e.action == Some(ActionId::TaskComplete))
+            .expect("row");
+        assert!(complete.enabled);
+        assert_eq!(complete.hint, vec!["Space".to_owned()]);
+    }
+
+    /// T-4 — the context projection over `[TaskDetail, Global]` is the
+    /// Task group only, flat, no parents, no `app.exit`.
+    #[test]
+    fn context_entries_are_the_task_group_flat_without_quit() {
+        let keymap = standard_keymap();
+        let rows = context_entries(&keymap, &[ContextId::TaskDetail, ContextId::Global]);
+        assert_eq!(
+            ids(&rows),
+            group_page(
+                &keymap,
+                &[ContextId::TaskDetail, ContextId::Global],
+                MenuGroup::Task
+            )
+            .iter()
+            .map(|e| e.action)
+            .collect::<Vec<_>>()
+        );
+        assert!(rows.iter().all(|e| e.action != Some(ActionId::AppExit)));
+        assert!(rows.iter().all(|e| e.submenu.is_none()), "no parent rows");
+        // `task.complete` is Board/TaskDetail-tagged: present over the
+        // task-detail chain.
+        assert!(
+            rows.iter()
+                .any(|e| e.action == Some(ActionId::TaskComplete))
+        );
+    }
+
+    /// T-5 — parent-row shape: no action, submenu set, label non-empty
+    /// (structural); a group with an empty page renders no parent.
+    #[test]
+    fn parent_rows_carry_the_group_and_no_action() {
+        let keymap = standard_keymap();
+        let rows = root_page(&keymap, &board_chain());
+        for parent in rows.iter().filter(|e| e.action.is_none()) {
+            assert!(parent.submenu.is_some(), "a parent names its group");
+            assert_ne!(parent.label, "");
+            assert_ne!(parent.description, "");
+            assert!(parent.hint.is_empty(), "a parent carries no binding");
+        }
+        // An empty group's parent is absent: the parents on the page
+        // are exactly the groups whose group page is non-empty for
+        // the same chain.
+        let page_groups: Vec<_> = rows.iter().filter_map(|e| e.submenu).collect();
+        let non_empty: Vec<_> = MenuGroup::all()
+            .iter()
+            .copied()
+            .filter(|g| !group_page(&keymap, &[ContextId::Global], *g).is_empty())
+            .collect();
+        assert_eq!(page_groups, non_empty);
+    }
+
+    /// T-11 — filtering rebased on the pages: a view chain offers the
+    /// view's verbs but no `menu.*` rows anywhere, and nothing appears
+    /// twice; a Global-only chain still gets the global rows (the
+    /// menu generation stays total, §5.8).
+    #[test]
+    fn pages_filter_to_the_chain_and_global() {
+        let keymap = standard_keymap();
+        let chain = board_chain();
+        let mut all: Vec<MenuEntry> = root_page(&keymap, &chain);
+        for group in MenuGroup::all() {
+            all.extend(group_page(&keymap, &chain, *group));
+        }
+        let ids: Vec<_> = all.iter().filter_map(|e| e.action).collect();
         assert!(ids.contains(&ActionId::TaskComplete), "board verb offered");
         assert!(
             !ids.contains(&ActionId::MenuNext),
-            "menu cursor not in a view menu"
+            "menu cursor never offered"
         );
         assert_eq!(
             ids.len(),
-            std::collections::BTreeSet::<_>::from_iter(ids.iter()).len()
+            std::collections::BTreeSet::<_>::from_iter(ids.iter()).len(),
+            "nothing twice"
         );
 
-        // A Global-only chain (chunk-2 sessions) still gets the
-        // global rows — the menu generation stays total (§5.8).
-        let global = entries(&keymap, &[ContextId::Global]);
-        assert!(global.iter().any(|e| e.action == ActionId::AppExit));
-        assert!(!global.iter().any(|e| e.action == ActionId::TaskComplete));
+        let global = root_page(&keymap, &[ContextId::Global]);
+        assert!(global.iter().any(|e| e.action == Some(ActionId::AppExit)));
+        let task = group_page(&keymap, &[ContextId::Global], MenuGroup::Task);
+        // The Global-tagged reminder rows survive; the view-only task
+        // verbs do not.
+        assert!(
+            task.iter()
+                .any(|e| e.action == Some(ActionId::ReminderSnooze))
+        );
+        assert!(
+            !task
+                .iter()
+                .any(|e| e.action == Some(ActionId::TaskComplete))
+        );
     }
 
-    /// T24 — ordering: by category (declaration order) then registry
-    /// order; rows carry the first chain-visible binding as display
-    /// strings; disabled entries are included (greyed, §5.8).
+    /// Ordering/hints over the pages: group-page order is rank order
+    /// (registry order on ties); disabled rows stay hinted; emacs
+    /// chords hint stroke-by-stroke.
     #[test]
-    fn entries_are_ordered_carry_hints_and_disabled_rows() {
+    fn pages_are_ordered_and_disabled_rows_stay_hinted() {
         let keymap = standard_keymap();
-        let board = entries(&keymap, &[ContextId::Board, ContextId::Global]);
-
-        let categories: Vec<Category> = board
-            .iter()
-            .map(|e| {
-                REGISTRY
-                    .iter()
-                    .find(|r| r.id == e.action)
-                    .expect("row")
-                    .category
-            })
-            .collect();
-        let mut sorted = categories.clone();
-        sorted.sort();
-        assert_eq!(categories, sorted, "category-ordered");
-
-        let exit = board
-            .iter()
-            .find(|e| e.action == ActionId::AppExit)
-            .expect("global");
-        assert!(exit.enabled);
-        assert_eq!(exit.hint, vec!["Ctrl+Q".to_owned()]);
-
-        let undo = board
-            .iter()
-            .find(|e| e.action == ActionId::AppUndo)
-            .expect("reserved");
-        assert!(!undo.enabled, "reserved rows read disabled");
+        let rows = group_page(&keymap, &board_chain(), MenuGroup::ViewNav);
+        let expected = [
+            ActionId::PaletteSearch,
+            ActionId::NavNextView,
+            ActionId::NavPrevView,
+            ActionId::NavFocusBoard,
+            ActionId::NavNextItem,
+            ActionId::NavPrevItem,
+        ];
         assert_eq!(
-            undo.hint,
-            vec!["Ctrl+Z".to_owned()],
+            ids(&rows),
+            expected.iter().map(|id| Some(*id)).collect::<Vec<_>>()
+        );
+        let search = rows
+            .iter()
+            .find(|e| e.action == Some(ActionId::PaletteSearch))
+            .expect("row");
+        assert!(!search.enabled, "reserved rows read disabled");
+        assert_eq!(
+            search.hint,
+            vec!["Ctrl+F".to_owned()],
             "bound-but-disabled still hinted"
         );
 
@@ -162,11 +373,11 @@ mod tests {
             overrides: BTreeMap::new(),
         })
         .keymap;
-        let board = entries(&emacs, &[ContextId::Board, ContextId::Global]);
-        let exit = board
+        let rows = root_page(&emacs, &board_chain());
+        let exit = rows
             .iter()
-            .find(|e| e.action == ActionId::AppExit)
-            .expect("global");
+            .find(|e| e.action == Some(ActionId::AppExit))
+            .expect("row");
         assert_eq!(
             exit.hint,
             vec!["Ctrl+x".to_owned(), "Ctrl+c".to_owned()],
@@ -174,21 +385,20 @@ mod tests {
         );
     }
 
-    /// The projection over the real chunk-2 session chain: the mode
-    /// context is always a chain member (D10/D11) and standard/emacs
-    /// leave it unbound — hints must still resolve from Global.
+    /// Hints resolve over the mode-context session chain: standard
+    /// and emacs leave the mode context unbound — the walk skips it.
     #[test]
-    fn entries_carry_hints_over_the_mode_context_session_chain() {
+    fn pages_carry_hints_over_the_mode_context_session_chain() {
         for preset in [Preset::Standard, Preset::Emacs] {
             let keymap = build(&RawKeymap {
                 preset,
                 overrides: BTreeMap::new(),
             })
             .keymap;
-            let rows = entries(&keymap, &[ContextId::ViNormal, ContextId::Global]);
+            let rows = root_page(&keymap, &[ContextId::ViNormal, ContextId::Global]);
             let exit = rows
                 .iter()
-                .find(|e| e.action == ActionId::AppExit)
+                .find(|e| e.action == Some(ActionId::AppExit))
                 .expect("app.exit is global-tagged");
             assert!(
                 !exit.hint.is_empty(),
@@ -196,69 +406,24 @@ mod tests {
             );
         }
     }
-}
 
-#[cfg(test)]
-mod section_tests {
-    use super::*;
-    use crate::actions::ActionId;
-    use crate::keymap::{Preset, RawKeymap, build};
-    use std::collections::BTreeMap;
-
-    /// G5 — sections are derived data (usability D5): a row carries a
-    /// non-empty section title exactly at a category boundary (and on
-    /// the first row), and the section count equals the count of
-    /// distinct categories present. The menu stays a projection —
-    /// nothing hand-written.
+    /// Every projected row (registry rows included, parents excluded)
+    /// carries a non-empty description — the tooltip source (T-6's
+    /// totality, re-checked at the projection).
     #[test]
-    fn entries_carry_section_titles_at_category_boundaries() {
-        let keymap = build(&RawKeymap {
-            preset: Preset::Standard,
-            overrides: BTreeMap::new(),
-        })
-        .keymap;
-        let rows = entries(&keymap, &[ContextId::Board, ContextId::Global]);
-        assert_ne!(rows, [] as [MenuEntry; 0]);
-        let mut previous = Option::<Category>::None;
-        let mut titled = 0;
-        for row in &rows {
-            let category = REGISTRY
-                .iter()
-                .find(|r| r.id == row.action)
-                .expect("row")
-                .category;
-            let boundary = previous != Some(category);
-            assert_eq!(
-                row.section_title.is_empty(),
-                !boundary,
-                "section title exactly at the {category:?} boundary"
-            );
-            assert_eq!(
-                row.section_title,
-                if boundary {
-                    category.section_label()
-                } else {
-                    ""
-                }
-            );
-            previous = Some(category);
-            titled += usize::from(!row.section_title.is_empty());
-        }
-        let categories: std::collections::BTreeSet<Category> = rows
+    fn projected_rows_carry_descriptions() {
+        let keymap = standard_keymap();
+        let chain = board_chain();
+        for row in root_page(&keymap, &chain)
             .iter()
-            .map(|row| {
-                REGISTRY
-                    .iter()
-                    .find(|r| r.id == row.action)
-                    .expect("row")
-                    .category
-            })
-            .collect();
-        assert_eq!(titled, categories.len(), "one section per present category");
-        assert!(
-            rows.iter().any(|row| row.action == ActionId::AppExit
-                && row.section_title == Category::Application.section_label()),
-            "the first row always opens its section"
-        );
+            .filter(|e| e.action.is_some())
+        {
+            assert_ne!(row.description, "");
+        }
+        for group in MenuGroup::all() {
+            for row in group_page(&keymap, &chain, *group) {
+                assert_ne!(row.description, "");
+            }
+        }
     }
 }

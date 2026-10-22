@@ -99,6 +99,46 @@ impl Category {
     }
 }
 
+/// The two-tier menu's submenu vocabulary (GUI review round 1, D6/D10;
+/// stage-1 finalization of "grouping stage 1 finalizes"). Declaration
+/// order is the parent rows' order on the root page — presentation
+/// only: keymap resolution never reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MenuGroup {
+    Task,
+    BoardStack,
+    ViewNav,
+    Mode,
+    Help,
+}
+
+impl MenuGroup {
+    /// The parent row's label on the root page.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Task => "Task actions",
+            Self::BoardStack => "Board & stack",
+            Self::ViewNav => "View & navigation",
+            Self::Mode => "Mode",
+            Self::Help => "Help",
+        }
+    }
+
+    /// Every group in declaration order (the root page's parent-row
+    /// order).
+    #[must_use]
+    pub const fn all() -> &'static [MenuGroup] {
+        &[
+            MenuGroup::Task,
+            MenuGroup::BoardStack,
+            MenuGroup::ViewNav,
+            MenuGroup::Mode,
+            MenuGroup::Help,
+        ]
+    }
+}
+
 /// A dispatchable action: the dotted `scope.verb` vocabulary (design
 /// §5.2) as a closed field-less enum. The string form lives in the
 /// registry table — string ↔ enum conversion goes through
@@ -210,6 +250,20 @@ pub struct ActionEntry {
     /// are `false`: they dispatch a disabled no-op and read as
     /// disabled in the dumped registry.
     pub enabled: bool,
+    /// Presentation-only display priority (round-1 D5): lower =
+    /// earlier on a page. Spaces of 10 leave room for insertions.
+    /// Keymap resolution never reads it.
+    pub menu_rank: u16,
+    /// One or two sentences: what the function does and its effect;
+    /// disabled rows state that they are not yet available (round-1
+    /// D10). Rendered as the row tooltip (D8) and the a11y
+    /// description. Empty is allowed by the type; the registry
+    /// review requires every row to carry one.
+    pub description: &'static str,
+    /// The submenu that owns this row in the two-tier menu (D6/D10);
+    /// `None` = top-level (quick rows, Quit, the menu cursor verbs).
+    /// Presentation-only.
+    pub menu_group: Option<MenuGroup>,
 }
 
 const GLOBAL: &[ContextId] = &[ContextId::Global];
@@ -232,7 +286,9 @@ const GLOBAL_VIEW_NAV: &[ContextId] = &[
 /// `app.exit`, `task.complete`, `task.delete`, the `menu.*` cursor
 /// actions, and the `mode.*` flips dispatch for real in this chunk;
 /// everything else is reserved or chunk-3 staged and reads as
-/// disabled.
+/// disabled. The round-1 curation (D5/D10) adds the presentation-only
+/// `menu_rank` / `description` / `menu_group` columns: the two-tier
+/// menu is generated from them, never hand-written.
 pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::AppExit,
@@ -240,6 +296,11 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Application,
         enabled: true,
+        // The Quit-pinned-last guarantee is the projection rule, not
+        // this number (a Tier-1 test pins the position).
+        menu_rank: 1000,
+        description: "Quits the application; local state is already saved.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::AppMenu,
@@ -247,6 +308,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Application,
         enabled: true,
+        menu_rank: 60,
+        description: "Opens or closes the command menu, the keyboard's way into every action.",
+        menu_group: Some(MenuGroup::Help),
     },
     ActionEntry {
         id: ActionId::AppUndo,
@@ -254,6 +318,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Application,
         enabled: false,
+        menu_rank: 30,
+        description: "Undoes the last change. Not yet available — tracked as backlog #356.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::AppRedo,
@@ -261,6 +328,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Application,
         enabled: false,
+        menu_rank: 40,
+        description: "Re-applies the last undone change. Not yet available — tracked as backlog #353.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::AppSettings,
@@ -268,6 +338,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Application,
         enabled: false,
+        menu_rank: 10,
+        description: "Opens the settings view. Not yet available — lands with the settings chunk.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::AppHelp,
@@ -275,6 +348,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Application,
         enabled: false,
+        menu_rank: 70,
+        description: "Shows the keymap and usage help. Not yet available — reserved.",
+        menu_group: Some(MenuGroup::Help),
     },
     ActionEntry {
         id: ActionId::CaptureQuick,
@@ -282,6 +358,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Capture,
         enabled: false,
+        menu_rank: 20,
+        description: "Captures a thought into the inbox from anywhere. Not yet available — tracked as backlog #347.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::PaletteSearch,
@@ -289,6 +368,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Search,
         enabled: false,
+        menu_rank: 50,
+        description: "Searches tasks across all boards. Not yet available — reserved.",
+        menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
         id: ActionId::NavNextView,
@@ -296,6 +378,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Navigation,
         enabled: true,
+        menu_rank: 60,
+        description: "Moves to the next view in the board → stack → task cycle.",
+        menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
         id: ActionId::NavPrevView,
@@ -303,6 +388,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Navigation,
         enabled: true,
+        menu_rank: 70,
+        description: "Moves to the previous view in the board → stack → task cycle.",
+        menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
         id: ActionId::NavFocusBoard,
@@ -310,6 +398,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Navigation,
         enabled: true,
+        menu_rank: 80,
+        description: "Returns to the board view from any deeper view.",
+        menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
         id: ActionId::NavNextItem,
@@ -317,6 +408,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: VIEW_NAV,
         category: Category::Navigation,
         enabled: true,
+        menu_rank: 90,
+        description: "Moves the focus to the next card or switcher entry in reading order.",
+        menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
         id: ActionId::NavPrevItem,
@@ -324,6 +418,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: VIEW_NAV,
         category: Category::Navigation,
         enabled: true,
+        menu_rank: 100,
+        description: "Moves the focus to the previous card or switcher entry in reading order.",
+        menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
         id: ActionId::BoardNext,
@@ -331,6 +428,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL_VIEW_NAV,
         category: Category::Navigation,
         enabled: true,
+        menu_rank: 60,
+        description: "Switches to the next board in canonical order.",
+        menu_group: Some(MenuGroup::BoardStack),
     },
     ActionEntry {
         id: ActionId::BoardPrevious,
@@ -338,6 +438,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL_VIEW_NAV,
         category: Category::Navigation,
         enabled: true,
+        menu_rank: 70,
+        description: "Switches to the previous board in canonical order.",
+        menu_group: Some(MenuGroup::BoardStack),
     },
     ActionEntry {
         id: ActionId::BoardSelect,
@@ -345,6 +448,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL_VIEW_NAV,
         category: Category::Navigation,
         enabled: true,
+        menu_rank: 80,
+        description: "Switches to the board picked from the board bar (click a board segment).",
+        menu_group: Some(MenuGroup::BoardStack),
     },
     ActionEntry {
         id: ActionId::TaskCreate,
@@ -352,6 +458,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Board, ContextId::StackDetail],
         category: Category::Task,
         enabled: true,
+        menu_rank: 60,
+        description: "Opens the inline create row and puts it into insert mode.",
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::StackCreate,
@@ -359,6 +468,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Board, ContextId::StackDetail],
         category: Category::Task,
         enabled: true,
+        menu_rank: 90,
+        description: "Opens the new-stack field on the current board.",
+        menu_group: Some(MenuGroup::BoardStack),
     },
     ActionEntry {
         id: ActionId::TaskEdit,
@@ -366,6 +478,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
+        menu_rank: 70,
+        description: "Opens the focused task's detail view with the title selected for editing.",
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::TaskComplete,
@@ -373,6 +488,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
+        menu_rank: 80,
+        description: "Marks the focused task as done.",
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::TaskMove,
@@ -380,6 +498,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
+        menu_rank: 90,
+        description: "Starts the move flow: pick a target stack, then confirm to move the focused task.",
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::TaskDelete,
@@ -387,6 +508,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
+        menu_rank: 100,
+        description: "Deletes the focused task immediately (no confirmation step).",
+        menu_group: Some(MenuGroup::Task),
     },
     // Q23's banner verbs (chunk-3 D4): menu-reachable via `app.menu`;
     // preset bindings are recorded backlog debt with the reminders-UI
@@ -397,6 +521,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
+        menu_rank: 110,
+        description: "Pushes the selected reminder's due moment out by one hour.",
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::ReminderMute,
@@ -404,6 +531,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
+        menu_rank: 120,
+        description: "Silences all reminders on the selected task.",
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::MenuNext,
@@ -411,6 +541,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Menu],
         category: Category::Menu,
         enabled: true,
+        menu_rank: 900,
+        description: "Moves the menu cursor to the next row of the active page.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::MenuPrevious,
@@ -418,6 +551,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Menu],
         category: Category::Menu,
         enabled: true,
+        menu_rank: 900,
+        description: "Moves the menu cursor to the previous row of the active page.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::MenuInvoke,
@@ -425,6 +561,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Menu],
         category: Category::Menu,
         enabled: true,
+        menu_rank: 900,
+        description: "Activates the menu row under the cursor.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::MenuDismiss,
@@ -432,6 +571,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: &[ContextId::Menu],
         category: Category::Menu,
         enabled: true,
+        menu_rank: 900,
+        description: "Steps the menu back one level, or closes it at the top level.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::ModeInsert,
@@ -439,6 +581,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Mode,
         enabled: true,
+        menu_rank: 60,
+        description: "Opens the view's editing flow in insert mode.",
+        menu_group: Some(MenuGroup::Mode),
     },
     ActionEntry {
         id: ActionId::ModeNormal,
@@ -446,6 +591,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Mode,
         enabled: true,
+        menu_rank: 70,
+        description: "Ends the active editing flow and returns to normal mode (Escape).",
+        menu_group: Some(MenuGroup::Mode),
     },
 ];
 
@@ -573,6 +721,38 @@ mod tests {
             } else {
                 assert!(row.enabled, "{} must be enabled", row.id);
             }
+        }
+    }
+
+    /// Round-1 D7 totality: every registry row carries a non-empty
+    /// description (the row tooltip / a11y description source), and
+    /// the top-level quick rows' ranks are strictly spaced (the
+    /// documented insertion room).
+    #[test]
+    fn every_row_carries_a_description_and_spaced_top_ranks() {
+        for row in REGISTRY {
+            assert!(
+                !row.description.is_empty(),
+                "{} lacks a description",
+                row.id
+            );
+        }
+        let top: Vec<u16> = REGISTRY
+            .iter()
+            .filter(|row| {
+                row.menu_group.is_none()
+                    && row.id != ActionId::AppExit
+                    // The menu-cursor rows never render on a page; only
+                    // the projected quick rows must be rank-ordered.
+                    && !row.contexts.contains(&ContextId::Menu)
+            })
+            .map(|row| row.menu_rank)
+            .collect();
+        for pair in top.windows(2) {
+            assert!(
+                pair[1].abs_diff(pair[0]) >= 10,
+                "ranks spaced by 10: {pair:?}"
+            );
         }
     }
 

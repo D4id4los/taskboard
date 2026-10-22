@@ -1552,25 +1552,26 @@ mod view_component_tests {
     }
 
     /// §6 test 7 — the Board chain's generated menu offers the enabled
-    /// task verbs and the reminder actions (row-count + enabled bits;
-    /// the snapshot covers the dump).
+    /// task verbs and the reminder actions (enabled bits over the
+    /// pages; the snapshot covers the dump).
     #[test]
     fn board_menu_offers_the_enabled_verbs() {
-        use crate::actions::ActionId;
+        use crate::actions::{ActionId, MenuGroup};
         use crate::menu;
         let keymap = UiSettings::default().keymap;
-        let rows = menu::entries(
-            &keymap,
-            &[ContextId::Board, ContextId::ViNormal, ContextId::Global],
-        );
-        let enabled = |id: ActionId| rows.iter().any(|r| r.action == id && r.enabled);
+        let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        let mut rows = menu::root_page(&keymap, &chain);
+        for group in MenuGroup::all() {
+            rows.extend(menu::group_page(&keymap, &chain, *group));
+        }
+        let enabled = |id: ActionId| rows.iter().any(|r| r.action == Some(id) && r.enabled);
         assert!(enabled(ActionId::TaskComplete));
         assert!(enabled(ActionId::TaskCreate));
         assert!(enabled(ActionId::TaskMove));
         assert!(enabled(ActionId::ReminderSnooze));
         assert!(enabled(ActionId::ReminderMute));
         assert!(
-            rows.iter().all(|r| r.action != ActionId::MenuNext),
+            rows.iter().all(|r| r.action != Some(ActionId::MenuNext)),
             "menu cursor rows never appear in a view menu"
         );
     }
