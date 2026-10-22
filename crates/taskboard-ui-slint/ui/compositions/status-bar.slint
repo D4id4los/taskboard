@@ -17,6 +17,9 @@ export struct SyncBadgeModel {
     phase: SyncPhaseUi,
     pending: int,
     recency: string,
+    // The selected board's sidecar warning (empty = healthy — the
+    // ruled silence); the caption text is presentation-side.
+    sidecar-warning: string,
 }
 
 // One overdue-banner row (D12): the task truth plus its due phrase.
@@ -179,6 +182,19 @@ export component StatusBar inherits Rectangle {
                     text-color: Theme.text-secondary;
                     text: root.sync.recency;
                     vertical-alignment: center;
+                }
+                // The sidecar warning (D-S2's loud fence): warning-toned
+                // caption + badge next to the sync indicator, exactly the
+                // startup-findings shape.
+                if (root.sync.sidecar-warning != ""): RoleText {
+                    role: Typography.caption;
+                    text-color: Semantic.warning;
+                    text: root.sync.sidecar-warning;
+                    vertical-alignment: center;
+                }
+                if (root.sync.sidecar-warning != ""): Badge {
+                    text: "!";
+                    tone: Tone.warning;
                 }
             }
 

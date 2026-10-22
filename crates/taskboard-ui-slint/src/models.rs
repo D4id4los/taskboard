@@ -21,9 +21,9 @@ use crate::responsive::Breakpoint;
 use crate::view_state::{Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
-    Breakpoint as SlintBreakpoint, DueKind as SlintDueKind, FlowHintModel, Responsive,
-    StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel,
-    TaskDetailModel, Theme, View,
+    Breakpoint as SlintBreakpoint, DecorationKind, DueKind as SlintDueKind, FlowHintModel,
+    Responsive, StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel,
+    TaskDecoration, TaskDetailModel, Theme, Tone, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -236,7 +236,12 @@ fn push_board(
         let tasks = state.tasks_in_stack(*stack_id);
         let mut task_ids = Vec::with_capacity(tasks.len());
         let cards = VecModel::default();
+        // The anchor card is hidden from list surfaces (DDF-5): filtered
+        // once, before the loop, so cards and the id table stay in sync.
         for task in tasks {
+            if presentation::is_anchor_task(task) {
+                continue;
+            }
             task_ids.push(task.id);
             cards.push(task_card_model(task, sets, vs, now));
         }
@@ -289,7 +294,11 @@ fn push_stack_detail(
         .map(|stack| state.tasks_in_stack(stack))
         .unwrap_or_default();
     let detail_tasks = VecModel::default();
+    // The same single-pass anchor filter as `push_board` (DDF-5).
     for task in &tasks {
+        if presentation::is_anchor_task(task) {
+            continue;
+        }
         tables.stack_tasks.push(task.id);
         detail_tasks.push(task_card_model(task, sets, vs, now));
     }
@@ -369,6 +378,7 @@ fn push_status_bar(
         },
         pending: i32::try_from(badge.pending).unwrap_or(i32::MAX),
         recency: SharedString::from(recency_caption(last_success, now)),
+        sidecar_warning: SharedString::from(presentation::sidecar_caption(badge.sidecar)),
     });
 
     let banner = presentation::banner_rows(state, now);
@@ -403,6 +413,44 @@ fn push_status_bar(
     });
 }
 
+/// The visual-only monotone level→tone mapping over existing tokens
+/// (D-F5: decoration visuals via the existing token system). The input
+/// is the domain's canonical level text form — one vocabulary, the
+/// same string the chips render.
+fn level_tone(level: &str) -> Tone {
+    match level {
+        "low" => Tone::Info,
+        "normal" => Tone::Success,
+        "high" => Tone::Warning,
+        "very-high" => Tone::Danger,
+        // `very-low` and anything unrecognized sit at the bottom.
+        _ => Tone::Neutral,
+    }
+}
+
+/// The field decorations of one task (doc 4 §7 item 3): importance and
+/// urgency ride the card's existing decorations slot — labels come from
+/// the domain text forms, tones from the monotone mapping. No effort/
+/// scheduled chips (their phrases carry them).
+fn field_decorations(task: &Task) -> Vec<TaskDecoration> {
+    let mut out = Vec::new();
+    if let Some(level) = task.importance {
+        out.push(TaskDecoration {
+            kind: DecorationKind::Importance,
+            label: level.text_form().into(),
+            tone: level_tone(level.text_form()),
+        });
+    }
+    if let Some(level) = task.urgency {
+        out.push(TaskDecoration {
+            kind: DecorationKind::Urgency,
+            label: level.text_form().into(),
+            tone: level_tone(level.text_form()),
+        });
+    }
+    out
+}
+
 fn task_card_model(
     task: &Task,
     sets: &DueSets,
@@ -413,12 +461,12 @@ fn task_card_model(
     TaskCardModel {
         title: SharedString::from(task.title.clone()),
         due_phrase: SharedString::from(presentation::due_phrase(kind, task.duedate, now)),
+        scheduled_phrase: SharedString::from(presentation::scheduled_phrase(task.scheduled, now)),
+        effort_phrase: SharedString::from(presentation::effort_phrase(task.effort)),
         due_kind: to_slint_due_kind(kind),
         done: task.done.is_some(),
         emphasis: vs.focused_task().is_some_and(|f| f == task.id),
-        // v0.1.0 passes `[]` everywhere (D21): the slot exists, no
-        // speculative decoration content.
-        decorations: ModelRc::new(VecModel::default()),
+        decorations: ModelRc::new(VecModel::from(field_decorations(task))),
     }
 }
 
@@ -450,6 +498,9 @@ pub fn current_breakpoint(window: &AppWindow) -> Breakpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    use taskboard_domain::{Importance, TaskClocks, Urgency};
 
     /// T-5 — the model sentinel: a set column carries the scaled user
     /// width, an unset one the `−1.0` auto sentinel (the goldens'
@@ -473,5 +524,94 @@ mod tests {
             120.0,
             "sub-unity scales shrink the rendered value"
         );
+    }
+
+    fn task() -> Task {
+        Task {
+            id: TaskId::from_uuid(uuid::Uuid::now_v7()),
+            remote: None,
+            title: "t".to_owned(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: StackId::from_uuid(uuid::Uuid::now_v7()),
+            order: 0,
+            labels: BTreeSet::default(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: epoch(),
+                description: epoch(),
+                duedate: epoch(),
+                scheduled: epoch(),
+                done: epoch(),
+                position: epoch(),
+                labels: epoch(),
+                effort: epoch(),
+                importance: epoch(),
+                urgency: epoch(),
+                archived: epoch(),
+                deleted: epoch(),
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn epoch() -> chrono::DateTime<chrono::Utc> {
+        taskboard_domain::BoardClocks::epoch()
+    }
+
+    #[test]
+    fn field_decorations_carry_kind_tone_and_the_domain_label() {
+        let mut t = task();
+        t.importance = Some(Importance::High);
+        t.urgency = Some(Urgency::VeryLow);
+        let decorations = field_decorations(&t);
+        assert_eq!(decorations.len(), 2);
+        assert!(matches!(decorations[0].kind, DecorationKind::Importance));
+        assert!(matches!(decorations[0].tone, Tone::Warning));
+        assert!(matches!(decorations[1].kind, DecorationKind::Urgency));
+        assert!(matches!(decorations[1].tone, Tone::Neutral));
+        // The label is the domain text form verbatim — one vocabulary.
+        assert_eq!(decorations[0].label, Importance::High.text_form());
+        assert_eq!(decorations[1].label, Urgency::VeryLow.text_form());
+    }
+
+    #[test]
+    fn the_tone_mapping_is_monotone_in_severity() {
+        let rank = |t: &Tone| -> u8 {
+            match t {
+                Tone::Neutral => 0,
+                Tone::Info => 1,
+                Tone::Success => 2,
+                Tone::Warning => 3,
+                Tone::Danger => 4,
+                _ => panic!("levels map onto the severity tokens only"),
+            }
+        };
+        let ladder = [
+            Importance::VeryLow,
+            Importance::Low,
+            Importance::Normal,
+            Importance::High,
+            Importance::VeryHigh,
+        ];
+        for pair in ladder.windows(2) {
+            assert!(
+                rank(&level_tone(pair[0].text_form())) < rank(&level_tone(pair[1].text_form())),
+                "{:?} must rank below {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn unset_levels_decorate_nothing() {
+        assert_eq!(field_decorations(&task()), [] as [TaskDecoration; 0]);
     }
 }
