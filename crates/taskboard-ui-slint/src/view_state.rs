@@ -565,6 +565,17 @@ impl ViewState {
             .unwrap_or_default()
     }
 
+    /// The keyboard resize's target stack: focused → selected → first
+    /// (the `create_target_stack` Board-view resolution). The adapter
+    /// reads it to size the ceiling's "other columns" sum; the resize
+    /// verb itself resolves through it too — one home.
+    #[must_use]
+    pub fn keyboard_resize_target(&self, state: &AppState) -> Option<StackId> {
+        self.focused_stack(state)
+            .or(self.selected_stack)
+            .or_else(|| self.stack_ids(state).first().copied())
+    }
+
     /// The keyboard resize verb (round-1 D18): resolves the target
     /// stack (focused → selected → first, `create_target_stack`'s
     /// Board-view resolution), seeds an absent entry at
@@ -578,11 +589,7 @@ impl ViewState {
         direction: i32,
         ceiling: u32,
     ) -> Vec<FlowOutcome> {
-        let Some(target) = self
-            .focused_stack(state)
-            .or(self.selected_stack)
-            .or_else(|| self.stack_ids(state).first().copied())
-        else {
+        let Some(target) = self.keyboard_resize_target(state) else {
             return Vec::new();
         };
         let Some(board) = self.board else {

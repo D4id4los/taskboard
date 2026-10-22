@@ -72,6 +72,13 @@ pub enum UiEffect {
     BoardPrevious,
     /// Select the parameterized board (`DispatchCtx::board_target`).
     BoardSelect(BoardId),
+    // --- round-1 chunk 2 (D18): the keyboard stack-width verbs —
+    // pure view intents (the BoardNext precedent); the adapter
+    // computes the live ceiling and routes to the view state.
+    /// Widen the focused stack's column by one step.
+    StackWider,
+    /// Narrow the focused stack's column by one step.
+    StackNarrower,
 }
 
 /// What dispatching an action produced (D16).
@@ -179,6 +186,8 @@ impl ActionRouter {
                 Some(board) => DispatchOutcome::UiEffect(UiEffect::BoardSelect(board)),
                 None => DispatchOutcome::NoTarget,
             },
+            ActionId::StackWider => DispatchOutcome::UiEffect(UiEffect::StackWider),
+            ActionId::StackNarrower => DispatchOutcome::UiEffect(UiEffect::StackNarrower),
             // Reserved (§5.8) — the only disabled rows left (D6).
             ActionId::AppUndo
             | ActionId::AppRedo

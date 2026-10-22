@@ -125,7 +125,8 @@ impl KeymapShell {
             }
             UiEffect::SetMode(mode) => self.mode = mode,
             // The chunk-3 view intents (D6/D9) live in `view_state`;
-            // the shell records nothing for them.
+            // the shell records nothing for them. The round-1 stack
+            // width verbs (D18) likewise live in `view_state`.
             UiEffect::FocusNext
             | UiEffect::FocusPrev
             | UiEffect::NextView
@@ -137,7 +138,9 @@ impl KeymapShell {
             | UiEffect::RequestMove
             | UiEffect::BoardNext
             | UiEffect::BoardPrevious
-            | UiEffect::BoardSelect(_) => {}
+            | UiEffect::BoardSelect(_)
+            | UiEffect::StackWider
+            | UiEffect::StackNarrower => {}
         }
         true
     }

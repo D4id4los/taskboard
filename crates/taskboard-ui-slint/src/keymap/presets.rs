@@ -83,6 +83,10 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskDelete, ContextId::Board, &["Delete"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
+    // Round-1 chunk 2 (D18): the stack-width verbs share the CUA
+    // Ctrl+arrows in the Board context.
+    (ActionId::StackWider, ContextId::Board, &["Ctrl+Right"]),
+    (ActionId::StackNarrower, ContextId::Board, &["Ctrl+Left"]),
     // StackDetail
     (ActionId::NavNextItem, ContextId::StackDetail, &["Down"]),
     (ActionId::NavPrevItem, ContextId::StackDetail, &["Up"]),
@@ -135,6 +139,10 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskDelete, ContextId::Board, &["Ctrl+d"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
+    // Round-1 chunk 2 (D18): no emacs-authentic candidate exists, so
+    // the pair shares the CUA strokes (the design's recorded rule).
+    (ActionId::StackWider, ContextId::Board, &["Ctrl+Right"]),
+    (ActionId::StackNarrower, ContextId::Board, &["Ctrl+Left"]),
     // StackDetail
     (ActionId::NavNextItem, ContextId::StackDetail, &["Ctrl+n"]),
     (ActionId::NavPrevItem, ContextId::StackDetail, &["Ctrl+p"]),
@@ -172,6 +180,14 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskMove, ContextId::ViNormal, &["g", "m"]),
     (ActionId::BoardNext, ContextId::ViNormal, &["b"]),
     (ActionId::BoardPrevious, ContextId::ViNormal, &["B"]),
+    // Round-1 chunk 2 (D18): vim's own window-resize family; `Ctrl+w`
+    // alone is unbound, so the prefix-shadow pass stays clean.
+    (ActionId::StackWider, ContextId::ViNormal, &["Ctrl+w", ">"]),
+    (
+        ActionId::StackNarrower,
+        ContextId::ViNormal,
+        &["Ctrl+w", "<"],
+    ),
     (ActionId::ModeInsert, ContextId::ViNormal, &["i"]),
     (ActionId::ModeInsert, ContextId::ViNormal, &["a"]),
     (ActionId::AppUndo, ContextId::ViNormal, &["u"]),

@@ -71,6 +71,12 @@ expression: rows
         - sequence:
             - Down
           action: nav.next-item
+        - sequence:
+            - Ctrl+Left
+          action: stack.narrower
+        - sequence:
+            - Ctrl+Right
+          action: stack.wider
     - context: stack-detail
       bindings:
         - sequence:
@@ -185,6 +191,12 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: nav.prev-item
+        - sequence:
+            - Ctrl+Left
+          action: stack.narrower
+        - sequence:
+            - Ctrl+Right
+          action: stack.wider
     - context: stack-detail
       bindings:
         - sequence:
@@ -318,6 +330,14 @@ expression: rows
         - sequence:
             - u
           action: app.undo
+        - sequence:
+            - Ctrl+w
+            - "<"
+          action: stack.narrower
+        - sequence:
+            - Ctrl+w
+            - ">"
+          action: stack.wider
         - sequence:
             - F1
           action: app.help
