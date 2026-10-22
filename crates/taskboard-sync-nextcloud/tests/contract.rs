@@ -1513,3 +1513,74 @@ async fn restore_attachment_puts_the_restore_route() {
     server.verify().await;
     assert_eq!(attachment.deleted_at, 0);
 }
+
+// ---- D-V1: the capabilities probe -------------------------------------
+
+const CAPABILITIES_PATH: &str = "/ocs/v2.php/cloud/capabilities";
+
+fn capabilities_body(deck: &serde_json::Value) -> String {
+    serde_json::json!({
+        "ocs": {
+            "meta": { "statuscode": 200 },
+            "data": { "version": { "major": 35, "minor": 0, "subminor": 1 },
+                      "capabilities": deck },
+        }
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn capabilities_probe_decodes_the_deck_version() {
+    let server = MockServer::start().await;
+    // The captured two-tier shape: the payload carries capabilities.deck
+    // .version plus a pile of ignored siblings.
+    Mock::given(method("GET"))
+        .and(path(CAPABILITIES_PATH))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(capabilities_body(
+                &serde_json::json!({ "deck": { "version": "1.19.0", "apiVersion": "1.19.0" } }),
+            )),
+        )
+        .mount(&server)
+        .await;
+    let caps = client_for(&server).capabilities().await.unwrap();
+    assert_eq!(caps.deck_version.as_deref(), Some("1.19.0"));
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "one GET");
+    assert_eq!(requests[0].url.path(), CAPABILITIES_PATH);
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("OCS-APIRequest")
+            .and_then(|v| v.to_str().ok()),
+        Some("true"),
+        "the OCS wrapper route needs the header like every other call"
+    );
+}
+
+#[tokio::test]
+async fn capabilities_without_a_deck_section_decode_as_none() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(CAPABILITIES_PATH))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(capabilities_body(
+                &serde_json::json!({ "core": { "webdav-root": "remote.php/webdav" } }),
+            )),
+        )
+        .mount(&server)
+        .await;
+    let caps = client_for(&server).capabilities().await.unwrap();
+    assert_eq!(
+        caps.deck_version, None,
+        "a deck-less server is a None, never an error"
+    );
+}
+
+#[tokio::test]
+async fn capabilities_http_failure_is_a_typed_error() {
+    let server = MockServer::start().await;
+    // No stub: wiremock answers 404 (the route absent / stripped case).
+    let err = client_for(&server).capabilities().await.unwrap_err();
+    assert!(matches!(err, DeckError::NotFound));
+}

@@ -60,7 +60,8 @@ use taskboard_sync_nextcloud::mapping::{
 
 use support::{N_SIZES, build_fixture, card_shape, new_card_shape, steady_count};
 
-#[must_use]
+const FEATURES: taskboard_domain::DeckFeatures = taskboard_domain::DeckFeatures::NATIVE;
+
 fn element_throughput(n: usize) -> Throughput {
     Throughput::Elements(u64::try_from(n).expect("element count fits u64"))
 }
@@ -123,7 +124,12 @@ fn bench_write_builders(c: &mut Criterion) {
         let shapes: Vec<NewCardShape> = f.tasks.iter().map(new_card_shape).collect();
         group.throughput(element_throughput(n));
         group.bench_function(format!("{n}"), |b| {
-            b.iter(|| shapes.iter().map(new_card_from).collect::<Vec<_>>());
+            b.iter(|| {
+                shapes
+                    .iter()
+                    .map(|s| new_card_from(s, FEATURES))
+                    .collect::<Vec<_>>()
+            });
         });
     }
     group.finish();
@@ -151,7 +157,7 @@ fn bench_write_builders(c: &mut Criterion) {
                     .zip(&shapes)
                     .zip(&resolved)
                     .map(|((fetched, shape), labels)| {
-                        apply_card_shape(fetched, shape, Some(labels))
+                        apply_card_shape(fetched, shape, Some(labels), FEATURES)
                     })
                     .collect::<Vec<_>>()
             });

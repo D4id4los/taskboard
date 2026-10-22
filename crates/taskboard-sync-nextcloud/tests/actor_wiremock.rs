@@ -357,8 +357,8 @@ async fn a2_unchanged_poll_ticks_on_304s_from_the_cache() {
     );
     assert_eq!(
         server.received_requests().await.unwrap().len(),
-        8,
-        "4 reads per cycle (3 conditional + the board-detail labels read)"
+        9,
+        "the probe plus 4 reads per cycle (3 conditional + the board-detail labels read)"
     );
 }
 
@@ -379,8 +379,8 @@ async fn a3_nudge_storm_collapse_into_one_rerun() {
     let _ = next_report(&mut actor).await; // cycle 3: the storm coalesces into one rerun
     assert_eq!(
         server.received_requests().await.unwrap().len(),
-        12,
-        "exactly three cycles (4 reads each): initial + first nudge + one coalesced rerun"
+        13,
+        "the probe plus exactly three cycles (4 reads each): initial + first nudge + one coalesced rerun"
     );
     // And then silence: five nudges never mean five cycles. Advancing five
     // simulated seconds (still inside the 3 600 s poll horizon) must not
@@ -723,8 +723,10 @@ async fn a10_304_with_a_cold_cache_refetches_unconditionally() {
         panic!("expected a Completed report");
     };
     assert_eq!(snapshot.board.id, RemoteBoardId(BOARD));
-    // 3 conditional 304s + 3 unconditional refetches + 1 board detail.
-    assert_eq!(server.received_requests().await.unwrap().len(), 7);
+    // 3 conditional 304s + 3 unconditional refetches + 1 board detail,
+    // plus the actor-start capabilities probe (unstubbed ⇒ 404 ⇒
+    // conservative flags; D18's audited +1).
+    assert_eq!(server.received_requests().await.unwrap().len(), 8);
     assert_eq!(
         validators.boards.etag.as_deref(),
         Some("\"gen-1\""),
@@ -1072,8 +1074,8 @@ async fn a15_detail_500_fails_the_cycle_without_a_tombstone() {
     );
     assert_eq!(
         server.received_requests().await.unwrap().len(),
-        2,
-        "the cycle stopped at the detail failure: listing + detail, no stacks reads"
+        3,
+        "the cycle stopped at the detail failure: probe + listing + detail, no stacks reads"
     );
     assert!(
         actor.system_rx.try_recv().is_err(),
@@ -1131,8 +1133,8 @@ async fn a16_forbidden_detail_while_listed_synthesizes_the_tombstone() {
     assert!(snapshot.stacks.is_empty() && snapshot.tasks.is_empty());
     assert_eq!(
         server.received_requests().await.unwrap().len(),
-        4,
-        "listing, detail, and both stacks reads: the pull ran through the dead-board path"
+        5,
+        "probe, listing, detail, and both stacks reads: the pull ran through the dead-board path"
     );
 }
 
@@ -1181,8 +1183,8 @@ async fn a17_stacks_404_on_a_live_board_fails_the_cycle() {
     );
     assert_eq!(
         server.received_requests().await.unwrap().len(),
-        3,
-        "listing, detail, active stacks — the archived read is never reached"
+        4,
+        "probe, listing, detail, active stacks — the archived read is never reached"
     );
     assert!(
         actor.system_rx.try_recv().is_err(),
@@ -1894,6 +1896,20 @@ async fn a26_unreadable_state_backs_off_then_recovers() {
     let repo = repo_with(&[(2, STACK)], &[]);
     let mut actor = spawn(&server, repo.clone());
 
+    // The actor-start capabilities probe (D18) is the one request the
+    // store failure cannot influence — wait for it, then baseline; every
+    // request beyond the baseline during the failure window would be a
+    // read-failure path leaking network traffic.
+    let deadline = std::time::Instant::now() + WALL_DEADLINE;
+    let baseline = loop {
+        let count = server.received_requests().await.unwrap().len();
+        if count >= 1 {
+            break count;
+        }
+        assert!(std::time::Instant::now() < deadline, "probe never landed");
+        tokio::time::advance(Duration::from_millis(10)).await;
+    };
+
     repo.set_read_failure(true);
     actor.commands.send(SyncCommand::SyncNow).await.unwrap();
     let failure_window_start = tokio::time::Instant::now();
@@ -1902,15 +1918,16 @@ async fn a26_unreadable_state_backs_off_then_recovers() {
             actor.reports.try_recv().is_err(),
             "a read failure produces no report"
         );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            baseline,
+            "the read precedes every cycle wire call: a storage failure is not network traffic"
+        );
         tokio::time::advance(Duration::from_millis(10)).await;
     }
     assert!(
         failure_window_start.elapsed() >= cfg().backoff_initial,
         "the failing cycle consumed the backoff window"
-    );
-    assert!(
-        server.received_requests().await.unwrap().is_empty(),
-        "the read precedes every wire call: a storage failure is not network traffic"
     );
     assert!(
         actor.system_rx.try_recv().is_err(),
@@ -2574,4 +2591,84 @@ async fn reports_carry_duration_and_the_failing_board() {
     };
     assert_eq!(kind, SyncErrorKind::NoBoard);
     assert_eq!(board, None);
+}
+
+// ---- D18: the capability probe and the gated card write ---------------
+
+/// Mounts the capabilities route (D18's harness helper): `Some(version)`
+/// answers the captured two-tier shape with that Deck version; `None`
+/// answers a deck-less capabilities document. Unmounted (404) is the
+/// probe-failure form the conservative-arm tests rely on.
+async fn mount_capabilities(server: &MockServer, version: Option<&str>) {
+    let deck = match version {
+        Some(v) => serde_json::json!({ "deck": { "version": v } }),
+        None => serde_json::json!({}),
+    };
+    let body = serde_json::json!({
+        "ocs": {
+            "meta": { "statuscode": 200 },
+            "data": { "version": { "major": 33 }, "capabilities": deck },
+        }
+    });
+    Mock::given(method("GET"))
+        .and(path("/ocs/v2.php/cloud/capabilities"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// The probe pins the lane end-to-end: a 1.19.0 probe makes the offline
+/// create carry its `scheduled` onto the wire `startdate`; an unstubbed
+/// (404 ⇒ conservative) probe omits it. The body of the create POST is
+/// the observable.
+#[tokio::test(start_paused = true)]
+async fn a33_the_probe_gates_the_card_writes_scheduled() {
+    for (version, carried) in [(Some("1.19.0"), true), (None, false)] {
+        let server = start_server().await;
+        mount_capabilities(&server, version).await;
+        mount_standard_pull(
+            &server,
+            serde_json::json!([card_json(55, "created offline")]),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards"
+            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(card_json(55, "created offline")),
+            )
+            .mount(&server)
+            .await;
+
+        // A draft carrying a scheduled start.
+        let mut state = PersistedState::default();
+        let board = bound_board();
+        state.boards.insert(board.id, board);
+        let stack = bound_stack(2, STACK);
+        state.stacks.insert(stack.id, stack);
+        let (mut task, op) = draft(100, 2, "created offline");
+        task.scheduled = Some(ts(T + 5));
+        state.tasks.insert(task.id, task);
+        state.outbox.push(op);
+        let mut actor = spawn(&server, Arc::new(InMemoryRepository::with_state(state)));
+
+        let report = nudge_and_report(&mut actor).await;
+        assert!(
+            matches!(report, SyncReport::Completed { .. }),
+            "the cycle completes on both lanes"
+        );
+        let requests = server.received_requests().await.unwrap();
+        let create = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/cards") && r.method == "POST")
+            .expect("the create POST ran");
+        let body: serde_json::Value = serde_json::from_slice(&create.body).unwrap();
+        assert_eq!(
+            body.get("startdate").is_some_and(|v| !v.is_null()),
+            carried,
+            "probe {version:?}: scheduled {} the wire startdate",
+            if carried { "rides" } else { "never touches" }
+        );
+    }
 }

@@ -26,10 +26,10 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use taskboard_domain::{
-    BoardPullValidators, Clock, EntityTables, PushOutcome, RemoteBoard, RemoteBoardId,
-    RemoteBoardSnapshot, RemoteLabel, RemoteStack, RemoteStackId, RemoteTask, SyncCommand,
-    SyncErrorKind, SyncReport, SyncStateReader, SyncValidators, SystemEvent, ValidatorKey,
-    plan_pushes,
+    BoardPullValidators, Clock, DeckFeatures, EntityTables, PushOutcome, RemoteBoard,
+    RemoteBoardId, RemoteBoardSnapshot, RemoteLabel, RemoteStack, RemoteStackId, RemoteTask,
+    SyncCommand, SyncErrorKind, SyncReport, SyncStateReader, SyncValidators, SystemEvent,
+    ValidatorKey, flags_for, plan_pushes,
 };
 
 use crate::client::{DeckClient, Fetch, Validators};
@@ -171,6 +171,11 @@ struct LoopState {
     /// autonomous poll backoff. Overwritten by every failure observation,
     /// ignored on success (the streak resets, so `poll_interval` wins).
     retry_after_floor: Duration,
+    /// The connector's derived capability flags (D18): probed once per
+    /// actor lifetime before the select loop, [`DeckFeatures::CONSERVATIVE`]
+    /// on any probe failure. In-memory like everything else here; an
+    /// actor respawn (reconnect / re-attach) re-probes.
+    features: DeckFeatures,
 }
 
 #[allow(
@@ -195,6 +200,7 @@ async fn run(
         failure_streak: 0,
         offline: false,
         retry_after_floor: Duration::ZERO,
+        features: probe_features(&client).await,
     };
     // First cycle fires immediately; an empty derived set is a silent
     // skip on poll ticks (no `NoBoard` report — decision 10).
@@ -271,6 +277,35 @@ async fn run(
         if st.rerun_requested {
             st.rerun_requested = false;
             deadline = tokio::time::Instant::now();
+        }
+    }
+}
+
+/// One capabilities probe per actor lifetime (D18): `Ok` + a Deck
+/// version ⇒ the derived flags; `Ok` without a deck section, or any
+/// typed error, ⇒ the conservative arm with one typed warning — the
+/// degraded lane is *correct*, never a surfaced error. Awaited once at
+/// actor start, before the select loop; an actor respawn re-probes.
+async fn probe_features(client: &DeckClient) -> DeckFeatures {
+    match client.capabilities().await {
+        Ok(caps) => {
+            if let Some(version) = caps.deck_version {
+                let features = flags_for(&version);
+                tracing::info!(?features, "deck capability flags derived");
+                features
+            } else {
+                tracing::warn!(
+                    "capabilities carry no deck section: deriving conservative feature flags"
+                );
+                DeckFeatures::CONSERVATIVE
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "capabilities probe failed: deriving conservative feature flags"
+            );
+            DeckFeatures::CONSERVATIVE
         }
     }
 }
@@ -452,7 +487,7 @@ async fn cycle(
             // visible here — `card_of` stamps the cycle's board id, and an
             // unfiltered overlay would mis-tag foreign refs.
             let overlay = BindingOverlay::from_index(target, &index);
-            let mut executor = PushExecutor::new(client, overlay);
+            let mut executor = PushExecutor::new(client, overlay, st.features);
             for group in plan_pushes(&board_ops, tables) {
                 match executor.execute(&group, &board_ops, tables).await {
                     GroupOutcome::Outcomes(mut outcomes) => pushes.append(&mut outcomes),

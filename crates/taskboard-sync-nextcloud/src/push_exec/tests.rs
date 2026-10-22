@@ -5,8 +5,9 @@
 use std::collections::BTreeMap;
 
 use taskboard_domain::{
-    CardShape, EntityTables, LocalOp, MaterializedOp, PendingOp, PushGroup, PushResult,
-    RemoteBoardId, RemoteCardRef, RemoteEcho, RemoteIndex, RemoteLabelId, RemoteStackId,
+    CardShape, DeckFeatures, EntityTables, LocalOp, MaterializedOp, PendingOp, PushGroup,
+    PushResult, RemoteBoardId, RemoteCardRef, RemoteEcho, RemoteIndex, RemoteLabelId,
+    RemoteStackId,
 };
 
 use uuid::Uuid;
@@ -16,6 +17,11 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use crate::client::DeckClient;
 
 use super::*;
+
+/// The executor's flag fixture: the capability-true arm — every existing
+/// wire assertion (valued `startdate` carried through) was written
+/// against a startdate-capable server and keeps its semantics.
+const FEATURES: DeckFeatures = DeckFeatures::NATIVE;
 
 fn uid(raw: u128) -> Uuid {
     Uuid::from_u128(raw)
@@ -345,7 +351,11 @@ async fn create_binds_the_echo_and_rides_label_assignments() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[(6, 3)]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[(5, 7)], &[], &[(6, 3)]),
+        FEATURES,
+    );
     let outbox = vec![
         op(100, LocalOp::CreateTask(task_id(10))),
         op(101, LocalOp::AssignLabel(task_id(10), label_id(6))),
@@ -405,7 +415,7 @@ async fn create_binds_the_echo_and_rides_label_assignments() {
 async fn create_with_an_unresolved_stack_rejects_local_data_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let shape = taskboard_domain::NewCardShape {
         title: "created".into(),
         order: 0,
@@ -449,7 +459,7 @@ async fn create_with_an_unresolved_stack_rejects_local_data_without_sending() {
 async fn delete_of_an_unbound_entity_completes_synthetic_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outbox = vec![
         op(100, LocalOp::CreateTask(task_id(10))),
         op(101, LocalOp::DeleteTask(task_id(10))),
@@ -498,7 +508,11 @@ async fn update_preflights_the_card_then_puts_the_full_body() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let shape = CardShape {
         title: "edited".into(),
         description: String::new(),
@@ -569,7 +583,11 @@ async fn label_assignment_on_an_update_rides_the_sub_endpoint() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]),
+        FEATURES,
+    );
     let shape = CardShape {
         title: "edited".into(),
         description: String::new(),
@@ -645,7 +663,11 @@ async fn label_removal_on_an_update_rides_the_sub_endpoint() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]),
+        FEATURES,
+    );
     let shape = CardShape {
         title: "edited".into(),
         description: String::new(),
@@ -697,7 +719,11 @@ async fn preflight_404_on_an_update_maps_to_remote_missing() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let shape = CardShape {
         title: "edited".into(),
         description: String::new(),
@@ -746,7 +772,11 @@ async fn update_defers_when_only_unresolvable_labels_differ() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let shape = CardShape {
         title: "old".into(),
         description: String::new(),
@@ -816,7 +846,11 @@ async fn update_completes_subsumed_label_ops_by_resolvability() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]),
+        FEATURES,
+    );
     let shape = CardShape {
         title: "edited".into(),
         description: String::new(),
@@ -930,6 +964,7 @@ async fn update_assign_rejection_completes_ops_per_class() {
     let mut exec = PushExecutor::new(
         &client,
         overlay_with(42, &[], &[(10, 7, 55)], &[(6, 2), (7, 3)]),
+        FEATURES,
     );
     let mut shape = edited_shape();
     shape.labels = std::collections::BTreeSet::from([label_id(6), label_id(7)]);
@@ -1023,7 +1058,11 @@ async fn update_assign_404_routes_remote_missing_to_the_label_op_not_the_primary
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 2)]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[(6, 2)]),
+        FEATURES,
+    );
     let mut shape = edited_shape();
     shape.labels = std::collections::BTreeSet::from([label_id(6)]);
     let outbox = [op(101, LocalOp::AssignLabel(task_id(10), label_id(6)))];
@@ -1103,6 +1142,7 @@ async fn update_remove_rejection_completes_ops_per_class() {
     let mut exec = PushExecutor::new(
         &client,
         overlay_with(42, &[], &[(10, 7, 55)], &[(11, 3), (12, 4)]),
+        FEATURES,
     );
     let mut shape = edited_shape();
     shape.labels = std::collections::BTreeSet::new();
@@ -1187,7 +1227,11 @@ async fn update_rejection_does_not_shadow_unresolvable_label_ops() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]),
+        FEATURES,
+    );
     let mut shape = edited_shape();
     shape.labels = std::collections::BTreeSet::from([label_id(6), label_id(9)]);
     let outbox = [op(101, LocalOp::AssignLabel(task_id(10), label_id(9)))];
@@ -1276,6 +1320,7 @@ async fn update_rejection_leaves_unreached_label_ops_queued() {
     let mut exec = PushExecutor::new(
         &client,
         overlay_with(42, &[], &[(10, 7, 55)], &[(6, 2), (7, 3), (8, 5), (9, 4)]),
+        FEATURES,
     );
     let mut shape = edited_shape();
     shape.labels = std::collections::BTreeSet::from([label_id(6), label_id(7), label_id(8)]);
@@ -1361,7 +1406,11 @@ async fn label_delta_transport_failure_aborts_the_cycle() {
     });
 
     let client = DeckClient::new(&format!("http://{addr}"), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[(6, 3)]),
+        FEATURES,
+    );
     let mut shape = edited_shape();
     shape.labels = std::collections::BTreeSet::from([label_id(6)]);
     let outbox = [op(101, LocalOp::AssignLabel(task_id(10), label_id(6)))];
@@ -1411,7 +1460,11 @@ async fn move_same_stack_different_order_sends_the_reorder() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[(5, 7)], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let outcome = exec
         .execute(
             &group(
@@ -1474,6 +1527,7 @@ async fn move_sends_reorder_only_when_the_position_differs() {
     let mut exec = PushExecutor::new(
         &client,
         overlay_with(42, &[(5, 7), (6, 8)], &[(10, 7, 55)], &[]),
+        FEATURES,
     );
     let outcome = exec
         .execute(
@@ -1516,7 +1570,11 @@ async fn move_sends_reorder_only_when_the_position_differs() {
         .mount(&server2)
         .await;
     let client2 = DeckClient::new(&server2.uri(), "u", "t").unwrap();
-    let mut exec2 = PushExecutor::new(&client2, overlay_with(42, &[(5, 7)], &[(10, 7, 55)], &[]));
+    let mut exec2 = PushExecutor::new(
+        &client2,
+        overlay_with(42, &[(5, 7)], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let outcome = exec2
         .execute(
             &group(
@@ -1613,7 +1671,11 @@ async fn update_preflight_404_reresolves_the_card_from_a_fresh_listing() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let outcome = exec
         .execute(
             &group(
@@ -1698,6 +1760,7 @@ async fn move_preflight_404_reresolves_then_reorders_from_the_fresh_location() {
     let mut exec = PushExecutor::new(
         &client,
         overlay_with(42, &[(6, 8), (7, 9)], &[(10, 7, 55)], &[]),
+        FEATURES,
     );
     let outcome = exec
         .execute(
@@ -1762,7 +1825,11 @@ async fn preflight_404_with_the_card_absent_from_both_listings_classifies_remote
     }
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let outcome = exec
         .execute(
             &group(
@@ -1812,7 +1879,11 @@ async fn preflight_404_with_a_lying_listing_maps_the_refetch_404_to_remote_missi
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let outcome = exec
         .execute(
             &group(
@@ -1872,7 +1943,11 @@ async fn preflight_404_with_a_transport_failing_listing_aborts_the_cycle() {
     let client = DeckClient::new(&server.uri(), "u", "t")
         .unwrap()
         .with_sleeper(std::sync::Arc::new(InstantSleeper));
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let outcome = exec
         .execute(
             &group(
@@ -1916,7 +1991,11 @@ async fn preflight_404_with_a_forbidden_listing_rejects_forbidden() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let outcome = exec
         .execute(
             &group(
@@ -1954,7 +2033,11 @@ async fn transport_failure_aborts_without_outcomes() {
         .unwrap()
         .port();
     let client = DeckClient::new(&format!("http://127.0.0.1:{port}"), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let shape = CardShape {
         title: "edited".into(),
         description: String::new(),
@@ -2011,7 +2094,11 @@ async fn transport_failure_after_a_landed_create_keeps_its_evidence() {
     });
 
     let client = DeckClient::new(&format!("http://{addr}"), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[(6, 3)]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[(5, 7)], &[], &[(6, 3)]),
+        FEATURES,
+    );
     let outbox = vec![
         op(100, LocalOp::CreateTask(task_id(10))),
         op(101, LocalOp::AssignLabel(task_id(10), label_id(6))),
@@ -2075,7 +2162,11 @@ async fn a_rejected_write_leaves_the_subsumed_ops_queued() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let shape = CardShape {
         title: "edited".into(),
         description: String::new(),
@@ -2132,7 +2223,7 @@ async fn create_stack_posts_and_applies_the_echo() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2166,7 +2257,7 @@ async fn create_stack_posts_and_applies_the_echo() {
 async fn create_stack_with_a_missing_row_completes_synthetic_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2202,7 +2293,7 @@ async fn create_stack_400_is_rejected_bad_request() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2230,7 +2321,7 @@ async fn create_stack_400_is_rejected_bad_request() {
 #[tokio::test]
 async fn create_stack_transport_failure_aborts() {
     let client = refused_client();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2260,7 +2351,7 @@ async fn rename_stack_puts_the_changeset_and_applies_the_echo() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2298,7 +2389,7 @@ async fn move_stack_puts_the_full_row_and_applies_the_echo() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2331,7 +2422,7 @@ async fn move_stack_puts_the_full_row_and_applies_the_echo() {
 async fn move_of_an_unbound_stack_rejects_local_data_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2367,7 +2458,7 @@ async fn move_stack_404_maps_to_remote_missing() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2397,7 +2488,7 @@ async fn move_stack_transport_failure_aborts_the_cycle() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2417,7 +2508,7 @@ async fn move_stack_transport_failure_aborts_the_cycle() {
 async fn rename_of_an_unbound_stack_rejects_local_data_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2454,7 +2545,7 @@ async fn rename_board_puts_the_full_changeset_and_applies_the_echo() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2494,7 +2585,7 @@ async fn rename_board_falls_back_on_an_invalid_stored_color() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let mut row = board_row(1, "x");
     row.color = taskboard_domain::Color::new("not-hex");
     let outcome = exec
@@ -2530,7 +2621,7 @@ async fn rename_board_404_maps_to_remote_missing() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2559,7 +2650,7 @@ async fn rename_board_transport_failure_aborts_the_cycle() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2579,7 +2670,7 @@ async fn rename_board_transport_failure_aborts_the_cycle() {
 async fn delete_stack_unbound_completes_synthetic_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2614,7 +2705,7 @@ async fn delete_stack_sends_the_delete_and_applies_the_echo() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2649,7 +2740,7 @@ async fn delete_stack_404_maps_to_remote_missing() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2682,7 +2773,7 @@ async fn delete_board_sends_the_delete_and_applies_the_board_echo() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2717,7 +2808,7 @@ async fn delete_board_404_maps_to_remote_missing() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2750,7 +2841,7 @@ async fn create_label_posts_and_applies_the_echo() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2786,7 +2877,7 @@ async fn create_label_posts_and_applies_the_echo() {
 async fn create_label_with_an_invalid_local_color_rejects_bad_request_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2816,7 +2907,7 @@ async fn create_label_with_an_invalid_local_color_rejects_bad_request_without_se
 async fn create_label_with_a_missing_row_completes_synthetic_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2843,7 +2934,7 @@ async fn create_label_with_a_missing_row_completes_synthetic_without_sending() {
 #[tokio::test]
 async fn create_label_transport_failure_aborts() {
     let client = refused_client();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2875,7 +2966,7 @@ async fn update_label_puts_the_changeset_and_applies_the_echo() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[(6, 3)]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[(6, 3)]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2906,7 +2997,7 @@ async fn update_label_puts_the_changeset_and_applies_the_echo() {
 async fn update_of_an_unbound_label_rejects_local_data_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2936,7 +3027,7 @@ async fn update_of_an_unbound_label_rejects_local_data_without_sending() {
 async fn update_label_with_an_unencodable_color_rejects_bad_request_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[(6, 3)]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[(6, 3)]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -2966,7 +3057,7 @@ async fn update_label_with_an_unencodable_color_rejects_bad_request_without_send
 async fn delete_label_unbound_completes_synthetic_without_sending() {
     let server = MockServer::start().await;
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -3003,7 +3094,7 @@ async fn delete_label_sends_the_delete_and_applies_the_echo() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[(6, 3)]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[], &[(6, 3)]), FEATURES);
     let outcome = exec
         .execute(
             &group(
@@ -3168,7 +3259,11 @@ async fn delete_404_re_resolves_and_deletes_at_the_fresh_binding() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let (grp, outbox) = delete_group();
     let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
     server.verify().await;
@@ -3218,7 +3313,11 @@ async fn delete_404_with_the_card_absent_from_both_listings_stays_remote_missing
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let (grp, outbox) = delete_group();
     let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
     server.verify().await;
@@ -3266,7 +3365,11 @@ async fn delete_404_located_but_gone_on_the_wire_converges_remote_missing() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let (grp, outbox) = delete_group();
     let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
     server.verify().await;
@@ -3315,7 +3418,11 @@ async fn delete_re_resolve_consults_the_archived_listing() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let (grp, outbox) = delete_group();
     let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
     server.verify().await;
@@ -3357,7 +3464,11 @@ async fn delete_re_resolve_with_a_forbidden_listing_converges_remote_missing() {
         .await;
 
     let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[], &[(10, 7, 55)], &[]));
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
     let (grp, outbox) = delete_group();
     let outcome = exec.execute(&grp, &outbox, empty_tables()).await;
     server.verify().await;
@@ -3396,7 +3507,7 @@ async fn post_create_archive_transport_failure_aborts_with_the_create_as_landed(
     let client = DeckClient::new(&server.uri(), "u", "t")
         .unwrap()
         .with_sleeper(std::sync::Arc::new(InstantSleeper));
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]), FEATURES);
     let shape = taskboard_domain::NewCardShape {
         title: "created".into(),
         order: 0,
@@ -3468,7 +3579,7 @@ async fn post_create_archive_rejection_is_tolerated_without_aborting() {
     let client = DeckClient::new(&server.uri(), "u", "t")
         .unwrap()
         .with_sleeper(std::sync::Arc::new(InstantSleeper));
-    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]));
+    let mut exec = PushExecutor::new(&client, overlay_with(42, &[(5, 7)], &[], &[]), FEATURES);
     let shape = taskboard_domain::NewCardShape {
         title: "created".into(),
         order: 0,
