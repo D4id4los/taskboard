@@ -3467,3 +3467,260 @@ async fn f07_scheduled_edit_flushes_through_the_document_while_not_native() {
         "the document overlay carries the scheduled write"
     );
 }
+
+// ---- chunk 4: the D-S7 fence matrix (F1–F8, typed observables) ---------
+
+/// F1: a failing download (after retries) strands loudly —
+/// `Unreadable(Transport)`, ZERO upload requests, the cycle completes,
+/// the flush ops stay queued.
+#[tokio::test(start_paused = true)]
+async fn f11_transport_fence_no_upload() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, String::new(), 500).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed {
+        pushes, app_data, ..
+    } = report
+    else {
+        panic!("the cycle completes despite the download failure");
+    };
+    assert!(matches!(
+        app_data,
+        taskboard_domain::AppDataEvidence::Unreadable(
+            taskboard_domain::AppDataUnreadable::Transport
+        )
+    ));
+    assert!(pushes.is_empty(), "no outcomes for the flush ops");
+    assert!(
+        flush_seed::write_hits(&server).await.is_empty(),
+        "a document we could not read is never re-encoded"
+    );
+}
+
+/// F2: the decode fence — a corrupt body uploads nothing.
+#[tokio::test(start_paused = true)]
+async fn f12_decode_fence_no_upload() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, "{not json".to_owned(), 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed {
+        pushes, app_data, ..
+    } = report
+    else {
+        panic!("the cycle completes");
+    };
+    assert!(matches!(
+        app_data,
+        taskboard_domain::AppDataEvidence::Unreadable(taskboard_domain::AppDataUnreadable::Decode)
+    ));
+    assert_eq!(pushes, Vec::new());
+    assert_eq!(flush_seed::write_hits(&server).await, Vec::<String>::new());
+}
+
+/// F3: the format fence — a too-new document uploads nothing; the typed
+/// reason carries the version (the engine-side warning is the state
+/// crate's wiring pin).
+#[tokio::test(start_paused = true)]
+async fn f13_format_too_new_fence_no_upload() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 99), 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed {
+        pushes, app_data, ..
+    } = report
+    else {
+        panic!("the cycle completes");
+    };
+    assert!(matches!(
+        app_data,
+        taskboard_domain::AppDataEvidence::Unreadable(
+            taskboard_domain::AppDataUnreadable::FormatTooNew { format: 99 }
+        )
+    ));
+    assert_eq!(pushes, Vec::new());
+    assert_eq!(flush_seed::write_hits(&server).await, Vec::<String>::new());
+}
+
+/// F4: the moved-card fence — a foreign-board document with local work
+/// REPLACES the content (rebuild over an empty base, update-in-place).
+#[tokio::test(start_paused = true)]
+async fn f14_foreign_board_replaces_with_rebuild() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(43, 1), 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("the cycle completes");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == taskboard_domain::OpId(uuid(999))
+                && matches!(
+                    outcome.result,
+                    taskboard_domain::PushResult::Applied { echo: None }
+                )
+        }),
+        "the flush ran despite the foreign document: {pushes:?}"
+    );
+    assert_eq!(flush_seed::write_hits(&server).await.len(), 1);
+    // The uploaded body re-encodes for OUR board (the rebuild's envelope).
+    let requests = server.received_requests().await.unwrap();
+    let put = requests
+        .iter()
+        .find(|r| r.url.path().contains("/attachment/deck_file:"))
+        .unwrap();
+    let body = String::from_utf8_lossy(&put.body);
+    assert!(
+        body.contains("\"board\":42"),
+        "the rebuild re-encodes for our own board, not the foreign key"
+    );
+}
+
+/// F5: a transport-class upload failure strands — zero outcomes, the
+/// cycle still completes with its snapshot + evidence.
+#[tokio::test(start_paused = true)]
+async fn f15_upload_transport_failure_strands() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+    flush_seed::mount_content_put(&server, 500).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("the cycle completes despite the upload failure");
+    };
+    assert!(
+        pushes.is_empty(),
+        "no outcomes: the ops stay queued for the next cycle"
+    );
+}
+
+/// F6: an upload rejected 400 dead-letters the primary as the counted
+/// `Rejected { BadRequest }` outcome (the engine's `FailOp` half is the
+/// pipeline's existing dead-letter pin).
+#[tokio::test(start_paused = true)]
+async fn f16_upload_400_dead_letters_the_primary() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+    flush_seed::mount_content_put(&server, 400).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("the cycle completes");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == taskboard_domain::OpId(uuid(999))
+                && matches!(
+                    outcome.result,
+                    taskboard_domain::PushResult::Rejected {
+                        kind: taskboard_domain::SyncErrorKind::BadRequest
+                    }
+                )
+        }),
+        "the primary carries the counted rejection: {pushes:?}"
+    );
+}
+
+/// F7: the anchor creation is forbidden — the flush ops strand (no
+/// outcomes, queued), the cycle completes, and the ceremony re-attempts
+/// on the next flush-with-work.
+#[tokio::test(start_paused = true)]
+async fn f17_anchor_creation_forbidden_strands() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(&server, serde_json::json!([card_json(56, "a plain card")])).await;
+    flush_seed::mount_card_create(&server, 70, 403).await;
+    flush_seed::mount_upload(&server, 70, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("the cycle completes");
+    };
+    assert!(pushes.is_empty(), "forbidden strands: {pushes:?}");
+    assert!(flush_seed::write_hits(&server).await.len() <= 1);
+}
+
+/// F8: the anchor creation is a permanent bad request — the counted
+/// `FailOp` route (D-S5's uncreatable-anchor example).
+#[tokio::test(start_paused = true)]
+async fn f18_anchor_creation_400_dead_letters() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(&server, serde_json::json!([card_json(56, "a plain card")])).await;
+    flush_seed::mount_card_create(&server, 70, 400).await;
+    flush_seed::mount_upload(&server, 70, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("the cycle completes");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == taskboard_domain::OpId(uuid(999))
+                && matches!(
+                    outcome.result,
+                    taskboard_domain::PushResult::Rejected {
+                        kind: taskboard_domain::SyncErrorKind::BadRequest
+                    }
+                )
+        }),
+        "{pushes:?}"
+    );
+}
