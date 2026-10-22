@@ -158,6 +158,23 @@ pub struct SyncStatusView {
     /// `{secs, nanos}` pair.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cycle_ms: Option<u64>,
+    /// The board's sidecar-document warning, typed and flat (D-S2's
+    /// loud fence): `None` = healthy (a read document, or the ruled
+    /// silence). Additive with the `connectors` precedent — no protocol
+    /// bump; `Healthy` serializes as absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidecar: Option<SidecarHealthView>,
+}
+
+/// The typed sidecar warning (ADR 0009's flat envelope): a kebab/snake
+/// `reason` tag plus the format version where the reason carries one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SidecarHealthView {
+    /// `"format_too_new" | "transport" | "decode" | "foreign_board"`.
+    pub reason: String,
+    /// The document's too-new format version (`format_too_new` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<u32>,
 }
 
 /// One connector's status row (D6-3): the derived health aggregate over
@@ -224,8 +241,37 @@ impl SyncStatusView {
                 .counters
                 .last_cycle
                 .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            sidecar: sidecar_view(status.sidecar),
         }
     }
+}
+
+/// Projects the domain health into the flat typed view; healthy is
+/// absent on the wire.
+#[must_use]
+pub fn sidecar_view(health: taskboard_domain::SidecarHealth) -> Option<SidecarHealthView> {
+    let taskboard_domain::SidecarHealth::Unreadable(reason) = health else {
+        return None;
+    };
+    let view = match reason {
+        taskboard_domain::AppDataUnreadable::FormatTooNew { format } => SidecarHealthView {
+            reason: "format_too_new".to_owned(),
+            format: Some(format),
+        },
+        taskboard_domain::AppDataUnreadable::Transport => SidecarHealthView {
+            reason: "transport".to_owned(),
+            format: None,
+        },
+        taskboard_domain::AppDataUnreadable::Decode => SidecarHealthView {
+            reason: "decode".to_owned(),
+            format: None,
+        },
+        taskboard_domain::AppDataUnreadable::ForeignBoard => SidecarHealthView {
+            reason: "foreign_board".to_owned(),
+            format: None,
+        },
+    };
+    Some(view)
 }
 
 /// The kebab-case sync failure classification (structural, matched in

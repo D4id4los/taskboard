@@ -458,6 +458,7 @@ mod tests {
                     failures: 0,
                     offline_episodes: 0,
                     last_cycle_ms: None,
+                    sidecar: None,
                 },
                 boards: Vec::new(),
             }]),
@@ -477,6 +478,7 @@ mod tests {
                     failures: 0,
                     offline_episodes: 0,
                     last_cycle_ms: None,
+                    sidecar: None,
                 },
             }]),
         };
