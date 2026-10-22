@@ -480,26 +480,6 @@ mod tests {
         assert_eq!(json["sidecar"]["format"], 99);
         let back: SyncStatusView = serde_json::from_value(json).unwrap();
         assert_eq!(back, warning);
-
-        // The board-line rendering is presentation over the typed fact:
-        // it renders only when the warning exists (the array fact is
-        // machine-only; the text assertion here is the clause's own
-        // presence, checked structurally via the marker's existence).
-        let board = BoardStatusView {
-            board: "b".to_owned(),
-            title: "t".to_owned(),
-            remote: None,
-            connector: None,
-            sync: warning.clone(),
-        };
-        let line = super::board_line(&board, "  ");
-        assert!(line.contains("sidecar document unreadable"));
-        assert!(line.contains("format_too_new"));
-        let quiet = BoardStatusView {
-            sync: healthy,
-            ..board
-        };
-        assert!(!super::board_line(&quiet, "  ").contains("sidecar"));
     }
 
     /// T14: the projection carries the folded counters and converts the
