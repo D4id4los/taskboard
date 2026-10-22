@@ -29,11 +29,13 @@ fn mount_populated(
 ) -> taskboard_ui_slint::UiHandle {
     let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
     let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+    let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
     let handle = taskboard_ui_slint::mount(
         state,
         dummy_signals(),
         dummy_system(),
         commands,
+        requests_tx,
         UiSettings {
             scale,
             ..UiSettings::default()

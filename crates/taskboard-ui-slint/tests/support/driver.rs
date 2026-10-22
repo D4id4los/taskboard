@@ -299,6 +299,7 @@ mod tests {
             },
             |driver: &mut SlintDriver| {
                 let (commands_tx, _commands_rx) = mpsc::channel(16);
+                let (requests_tx, _requests_rx) = mpsc::channel(16);
                 let (system_tx, system_rx) = broadcast::channel(4);
                 let (signals_tx, signals_rx) = broadcast::channel(4);
                 drop(system_tx);
@@ -308,6 +309,7 @@ mod tests {
                     signals_rx,
                     system_rx,
                     commands_tx,
+                    requests_tx,
                     UiSettings::default(),
                 )
                 .expect("mount succeeds on the testing backend");

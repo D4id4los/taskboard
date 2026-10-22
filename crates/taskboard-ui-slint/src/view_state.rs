@@ -11,11 +11,14 @@
 //! view scope/field focuses itself when it is created); this module
 //! owns *selection* — which task/stack the actions address.
 
+use std::collections::BTreeMap;
+
 use taskboard_domain::{AppState, BoardId, StackId, StateCommand, TaskChanges, TaskId};
 
 use crate::actions::ContextId;
 use crate::presentation::{live_board, live_boards, stacks_in_board};
 use crate::router::Mode;
+use crate::widths::{STACK_WIDTH_DEFAULT_PX, STACK_WIDTH_MIN_PX, STACK_WIDTH_STEP_PX, clamp_width};
 
 /// The three v0.1.0 views (D7): one tree, one cycle
 /// Board → `StackDetail` → `TaskDetail` → Board.
@@ -53,6 +56,11 @@ pub enum FlowOutcome {
     Command(StateCommand),
     SetMode(Mode),
     RefreshNow,
+    /// The stack column widths changed (round-1 D16/D21): persist the
+    /// full per-board snapshot now — the adapter translates it into
+    /// the `UiRequest` lane; the view state itself never touches a
+    /// channel. Idempotent under re-send (full snapshots).
+    StackWidthsChanged,
 }
 
 /// The pure view state (D7).
@@ -76,6 +84,11 @@ pub struct ViewState {
     /// adapter updates it on every keystroke callback; commit reads
     /// it — no slint-state dependency.
     buffer: String,
+    /// The user-set stack column widths (round-1 D16), stored logical
+    /// px; an absent entry = auto layout (today's rendering). UI-local
+    /// forever — never a domain type (DF-2); `reconcile` leaves it
+    /// alone (liveness pruning is the app forwarder's write-time job).
+    stack_widths: BTreeMap<BoardId, BTreeMap<StackId, u32>>,
 }
 
 /// The canonical append position in `stack`: max canonical order + 1.
@@ -121,6 +134,7 @@ impl ViewState {
             selected_stack: None,
             flow: Flow::None,
             buffer: String::new(),
+            stack_widths: BTreeMap::new(),
         }
     }
 
@@ -511,6 +525,76 @@ impl ViewState {
                 .and_then(|t| state.tasks.get(&t))
                 .map(|t| t.stack),
         }
+    }
+
+    // -- stack column widths (round-1 D16) ---------------------------------
+
+    /// Seeds the device-local widths at mount (the settings' map, uuid
+    /// keys already converted). Unknown boards/stacks are kept — a
+    /// re-connected board finds its widths again; liveness pruning
+    /// happens once, at write time, app-side.
+    pub fn seed_stack_widths(&mut self, widths: BTreeMap<BoardId, BTreeMap<StackId, u32>>) {
+        self.stack_widths = widths;
+    }
+
+    /// The stored logical-px width of one column, if the user set one.
+    #[must_use]
+    pub fn stack_width(&self, board: BoardId, stack: StackId) -> Option<u32> {
+        self.stack_widths
+            .get(&board)
+            .and_then(|m| m.get(&stack))
+            .copied()
+    }
+
+    /// Stores one column's width (logical px). Clamping is the
+    /// caller's duty — the pure math of [`crate::widths`].
+    pub fn set_stack_width(&mut self, board: BoardId, stack: StackId, px: u32) {
+        self.stack_widths
+            .entry(board)
+            .or_default()
+            .insert(stack, px);
+    }
+
+    /// The full per-board width snapshot in `BTreeMap` order (the
+    /// `StackWidthsChanged` payload — deterministic, idempotent).
+    #[must_use]
+    pub fn stack_widths_of(&self, board: BoardId) -> Vec<(StackId, u32)> {
+        self.stack_widths
+            .get(&board)
+            .map(|m| m.iter().map(|(k, v)| (*k, *v)).collect())
+            .unwrap_or_default()
+    }
+
+    /// The keyboard resize verb (round-1 D18): resolves the target
+    /// stack (focused → selected → first, `create_target_stack`'s
+    /// Board-view resolution), seeds an absent entry at
+    /// [`STACK_WIDTH_DEFAULT_PX`], applies ±[`STACK_WIDTH_STEP_PX`]
+    /// clamped to `[STACK_WIDTH_MIN_PX, ceiling]`, and returns
+    /// `[StackWidthsChanged, RefreshNow]` — or `Vec::new()` when there
+    /// is no stack to address.
+    pub fn resize_focused_stack(
+        &mut self,
+        state: &AppState,
+        direction: i32,
+        ceiling: u32,
+    ) -> Vec<FlowOutcome> {
+        let Some(target) = self
+            .focused_stack(state)
+            .or(self.selected_stack)
+            .or_else(|| self.stack_ids(state).first().copied())
+        else {
+            return Vec::new();
+        };
+        let Some(board) = self.board else {
+            return Vec::new();
+        };
+        let base = self
+            .stack_width(board, target)
+            .unwrap_or(STACK_WIDTH_DEFAULT_PX);
+        let requested = i64::from(base) + i64::from(direction) * i64::from(STACK_WIDTH_STEP_PX);
+        let next = clamp_width(requested, STACK_WIDTH_MIN_PX, ceiling);
+        self.set_stack_width(board, target, next);
+        vec![FlowOutcome::StackWidthsChanged, FlowOutcome::RefreshNow]
     }
 
     /// `BeginCreate`: opens the row in insert mode (D5).
@@ -1598,5 +1682,118 @@ mod tests {
         assert_eq!(append_order(&state, s1), 1);
         let empty = StackId::from_uuid(uuid::Uuid::now_v7());
         assert_eq!(append_order(&state, empty), 0);
+    }
+
+    // -- stack column widths (round-1 D16) ---------------------------------
+
+    /// T-3 — the keyboard semantics: an auto column seeds at
+    /// DEFAULT ± STEP, the ends clamp at min/ceiling, and every step
+    /// emits `[StackWidthsChanged, RefreshNow]`.
+    #[test]
+    fn resize_focused_stack_seeds_steps_and_clamps() {
+        let (state, board, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+
+        let ceiling = 1_000u32;
+        let outcomes = vs.resize_focused_stack(&state, 1, ceiling);
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::StackWidthsChanged, FlowOutcome::RefreshNow]
+        );
+        assert_eq!(
+            vs.stack_width(board, s0),
+            Some(crate::widths::STACK_WIDTH_DEFAULT_PX + crate::widths::STACK_WIDTH_STEP_PX),
+            "an auto column seeds at DEFAULT, then steps"
+        );
+
+        // Narrower clamps at the readable floor.
+        for _ in 0..20 {
+            vs.resize_focused_stack(&state, -1, ceiling);
+        }
+        assert_eq!(
+            vs.stack_width(board, s0),
+            Some(crate::widths::STACK_WIDTH_MIN_PX),
+            "narrowing clamps at the min"
+        );
+
+        // Wider clamps at the given ceiling.
+        for _ in 0..60 {
+            vs.resize_focused_stack(&state, 1, ceiling);
+        }
+        assert_eq!(vs.stack_width(board, s0), Some(ceiling));
+    }
+
+    /// T-3 — target resolution: focused → selected → first; inert
+    /// without any stack.
+    #[test]
+    fn resize_targets_focused_then_selected_then_first_and_is_inert_without_stacks() {
+        let (state, _, [s0, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let ceiling = 1_000u32;
+
+        // No focus, no selection: the first stack.
+        vs.resize_focused_stack(&state, 1, ceiling);
+        assert_eq!(vs.selected_stack(), None);
+        assert!(
+            vs.stack_width(vs.board().expect("board"), s0).is_some(),
+            "the first stack was addressed"
+        );
+
+        // Selection wins over first.
+        vs.select_stack(&state, s1);
+        vs.resize_focused_stack(&state, 1, ceiling);
+        let board = vs.board().expect("board");
+        assert_eq!(
+            vs.stack_width(board, s1),
+            Some(crate::widths::STACK_WIDTH_DEFAULT_PX + crate::widths::STACK_WIDTH_STEP_PX),
+            "the selected stack was addressed"
+        );
+
+        // Focus wins over selection.
+        vs.activate_card(a, s0);
+        vs.resize_focused_stack(&state, 1, ceiling);
+        assert!(
+            vs.stack_width(board, s0).unwrap_or(0) > crate::widths::STACK_WIDTH_DEFAULT_PX,
+            "the focused stack was addressed"
+        );
+
+        // A stack-less state is inert.
+        let mut empty = ViewState::new();
+        let bare = AppState::default();
+        empty.reconcile(&bare);
+        assert_eq!(empty.resize_focused_stack(&bare, 1, ceiling), Vec::new());
+    }
+
+    /// T-4 — the restart-apply half: seeding lands, the snapshot reads
+    /// back in `BTreeMap` order, and `reconcile` leaves the map alone
+    /// (pruning is the app forwarder's write-time job).
+    #[test]
+    fn seed_and_snapshot_round_trip_and_reconcile_leaves_widths_alone() {
+        use std::collections::BTreeMap;
+        let (state, b1, b2, [sa, sb, sc], _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        let mut widths: BTreeMap<BoardId, BTreeMap<StackId, u32>> = BTreeMap::new();
+        widths.insert(b2, BTreeMap::from([(sc, 300)]));
+        widths.insert(b1, BTreeMap::from([(sb, 120), (sa, 240)]));
+        vs.seed_stack_widths(widths);
+        vs.reconcile(&state);
+
+        assert_eq!(vs.stack_width(b1, sa), Some(240));
+        assert_eq!(vs.stack_width(b1, sb), Some(120));
+        assert_eq!(vs.stack_width(b2, sc), Some(300));
+        assert_eq!(
+            vs.stack_widths_of(b1),
+            vec![(sa, 240), (sb, 120)],
+            "BTreeMap order, full per-board snapshot"
+        );
+        assert_eq!(vs.stack_widths_of(b2), vec![(sc, 300)]);
+        assert_eq!(
+            vs.stack_widths_of(BoardId::from_uuid(uuid::Uuid::now_v7())),
+            Vec::new()
+        );
+        let _ = b1;
     }
 }

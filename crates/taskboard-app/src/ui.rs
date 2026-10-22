@@ -210,6 +210,9 @@ pub fn resolve_ui_settings(
         },
         keymap: built.keymap,
         kiosk: false, // the desktop hand-over; the kiosk appliance (K3) sets this
+        // The config section rides with the settings chunk's serde
+        // extension; the desktop hand-over stays width-less until then.
+        stack_widths: std::collections::BTreeMap::new(),
     };
     (settings, built.findings)
 }
@@ -273,7 +276,10 @@ pub async fn quit_until_accepted() {
 /// # Errors
 ///
 /// Bootstrap, mount, and event-loop failures, as typed errors.
-pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result<()> {
+pub async fn run_desktop(
+    config: crate::config::AppConfig,
+    config_write_path: std::path::PathBuf,
+) -> color_eyre::Result<()> {
     // D13: the env var is read before anything slint-side.
     observe_scale_escape_hatch();
 
@@ -290,12 +296,19 @@ pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result
     // command channel and forwards; the UI never sees an EngineHandle.
     let (commands_tx, commands_rx) = ui_command_channel();
     let forwarder = spawn_ui_command_forwarder(commands_rx, app.engine.clone());
+    let (requests_tx, requests_rx) = crate::ui_requests::ui_request_channel();
+    let request_forwarder = crate::ui_requests::spawn_ui_request_forwarder(
+        requests_rx,
+        config_write_path,
+        app.engine.shared_state(),
+    );
 
     let handle = taskboard_ui_slint::mount(
         app.engine.shared_state(),
         app.engine.subscribe(),
         app.system.subscribe(),
         commands_tx,
+        requests_tx,
         ui_settings,
     )?;
 
@@ -313,6 +326,7 @@ pub async fn run_desktop(config: crate::config::AppConfig) -> color_eyre::Result
 
     exit_watcher.abort();
     forwarder.abort();
+    request_forwarder.abort();
     let outcome = app.shutdown().await;
     if outcome.actor_aborted {
         tracing::warn!("sync actor did not stop in time and was aborted");

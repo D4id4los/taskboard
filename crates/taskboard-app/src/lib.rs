@@ -44,6 +44,7 @@ mod repl_history;
 pub mod secrets;
 mod session_ceremonies;
 pub mod ui;
+pub mod ui_requests;
 pub mod web;
 
 /// Application version, taken from the shared workspace version.

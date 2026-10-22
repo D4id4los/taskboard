@@ -24,6 +24,7 @@ pub mod keymap;
 pub mod menu;
 pub mod models;
 pub mod presentation;
+pub mod requests;
 pub mod resolver;
 pub mod responsive;
 pub mod router;
@@ -33,6 +34,7 @@ pub mod view_state;
 pub mod widths;
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -65,6 +67,13 @@ pub struct UiSettings {
     /// shared `AppWindow`. Derives from the run mode — never a config
     /// key; the desktop hand-over leaves it `false`.
     pub kiosk: bool,
+    /// The device-local stack column widths (round-1 D16/D20): board
+    /// uuid → stack uuid → width in logical px. Seeded into the fresh
+    /// `ViewState` at mount, before the first refresh — widths are
+    /// applied before the first board render. Kept uuid-keyed
+    /// (serde-native shape; the domain newtypes deliberately carry no
+    /// serde impls); `adapter::install` converts once.
+    pub stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
 }
 
 impl Default for UiSettings {
@@ -74,6 +83,7 @@ impl Default for UiSettings {
             keymap: keymap::Keymap::from_preset(keymap::Preset::Standard),
             startup: adapter::StartupWarnings::default(),
             kiosk: false,
+            stack_widths: BTreeMap::new(),
         }
     }
 }
@@ -143,6 +153,7 @@ pub fn mount(
     signals: broadcast::Receiver<EngineSignal>,
     system: broadcast::Receiver<SystemEvent>,
     commands: mpsc::Sender<StateCommand>,
+    requests: mpsc::Sender<requests::UiRequest>,
     settings: UiSettings,
 ) -> Result<UiHandle, UiMountError> {
     fonts::register_bundled_fonts();
@@ -169,6 +180,8 @@ pub fn mount(
         settings.keymap,
         settings.startup,
         commands,
+        requests,
+        settings.stack_widths,
         Arc::clone(&state),
     );
     let tooltip_timer = install_tooltip_delay(&window);
@@ -439,13 +452,19 @@ mod mount_tests {
     use super::*;
     use crate::test_platform::on_slint_thread;
 
-    pub(super) fn handover() -> (
+    /// One mount hand-over's channel-plus-state bundle (lib tests).
+    type Handover = (
         Arc<ArcSwap<AppState>>,
         broadcast::Receiver<EngineSignal>,
         broadcast::Receiver<SystemEvent>,
         mpsc::Sender<StateCommand>,
-    ) {
+        mpsc::Sender<requests::UiRequest>,
+        mpsc::Receiver<requests::UiRequest>,
+    );
+
+    pub(super) fn handover() -> Handover {
         let (commands_tx, _commands_rx) = mpsc::channel(64);
+        let (requests_tx, requests_rx) = mpsc::channel(16);
         let (system_tx, system_rx) = broadcast::channel(16);
         let (signals_tx, signals_rx) = broadcast::channel(16);
         drop(system_tx);
@@ -455,6 +474,8 @@ mod mount_tests {
             signals_rx,
             system_rx,
             commands_tx,
+            requests_tx,
+            requests_rx,
         )
     }
 
@@ -463,12 +484,13 @@ mod mount_tests {
     #[test]
     fn mount_pushes_the_configured_scale_into_the_theme() {
         on_slint_thread(|| {
-            let (state, signals, system, commands) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
             let handle = mount(
                 state,
                 signals,
                 system,
                 commands,
+                requests_tx,
                 UiSettings {
                     scale: 2.0,
                     ..UiSettings::default()
@@ -483,9 +505,16 @@ mod mount_tests {
     #[test]
     fn mount_defaults_the_theme_scale_to_one() {
         on_slint_thread(|| {
-            let (state, signals, system, commands) = handover();
-            let handle = mount(state, signals, system, commands, UiSettings::default())
-                .expect("mount succeeds on the null platform");
+            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+            )
+            .expect("mount succeeds on the null platform");
             assert_eq!(handle.window.global::<Theme>().get_base_scale(), 1.0);
         });
     }
@@ -496,9 +525,16 @@ mod mount_tests {
     #[test]
     fn width_push_maps_the_breakpoint() {
         on_slint_thread(|| {
-            let (state, signals, system, commands) = handover();
-            let handle = mount(state, signals, system, commands, UiSettings::default())
-                .expect("mount succeeds on the null platform");
+            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+            )
+            .expect("mount succeeds on the null platform");
             let responsive = handle.window.global::<Responsive>();
             assert_eq!(responsive.get_current_breakpoint(), Breakpoint::Regular);
 
@@ -523,9 +559,16 @@ mod mount_tests {
     #[test]
     fn mount_produces_a_hidden_window_instance() {
         on_slint_thread(|| {
-            let (state, signals, system, commands) = handover();
-            let handle = mount(state, signals, system, commands, UiSettings::default())
-                .expect("mount succeeds on the null platform");
+            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+            )
+            .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_visible());
         });
     }
@@ -535,12 +578,13 @@ mod mount_tests {
     #[test]
     fn mount_applies_the_kiosk_fullscreen_profile() {
         on_slint_thread(|| {
-            let (state, signals, system, commands) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
             let handle = mount(
                 state,
                 signals,
                 system,
                 commands,
+                requests_tx,
                 UiSettings {
                     kiosk: true,
                     ..UiSettings::default()
@@ -551,15 +595,104 @@ mod mount_tests {
         });
     }
 
+    /// The load path (round-1 D16, review trap f): widths in
+    /// `UiSettings` land in the view state at mount, before the first
+    /// refresh — and seeding alone never emits a request (the lane
+    /// carries *changes* only).
+    #[test]
+    fn mount_applies_seeded_widths_before_first_refresh() {
+        on_slint_thread(|| {
+            let board = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x1001));
+            let stack = taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(0x2001));
+            let mut state = taskboard_domain::AppState::default();
+            state.boards.insert(
+                board,
+                taskboard_domain::Board {
+                    id: board,
+                    remote: None,
+                    title: "b".to_owned(),
+                    color: taskboard_domain::Color::new(""),
+                    archived: false,
+                    deleted: false,
+                    clocks: taskboard_domain::BoardClocks {
+                        title: taskboard_domain::BoardClocks::epoch(),
+                        color: taskboard_domain::BoardClocks::epoch(),
+                        archived: taskboard_domain::BoardClocks::epoch(),
+                        deleted: taskboard_domain::BoardClocks::epoch(),
+                    },
+                    remote_seen: None,
+                },
+            );
+            state.stacks.insert(
+                stack,
+                taskboard_domain::Stack {
+                    id: stack,
+                    remote: None,
+                    board,
+                    title: "s".to_owned(),
+                    order: 0,
+                    archived: false,
+                    deleted: false,
+                    clocks: taskboard_domain::StackClocks {
+                        title: taskboard_domain::BoardClocks::epoch(),
+                        order: taskboard_domain::BoardClocks::epoch(),
+                        deleted: taskboard_domain::BoardClocks::epoch(),
+                    },
+                    remote_seen: None,
+                },
+            );
+            let (commands_tx, _commands_rx) = mpsc::channel(16);
+            let (requests_tx, mut requests_rx) = mpsc::channel(16);
+            let handle = mount(
+                Arc::new(ArcSwap::from_pointee(state)),
+                {
+                    let (_tx, rx) = broadcast::channel(4);
+                    rx
+                },
+                {
+                    let (_tx, rx) = broadcast::channel(4);
+                    rx
+                },
+                commands_tx,
+                requests_tx,
+                UiSettings {
+                    stack_widths: BTreeMap::from([(
+                        uuid::Uuid::from_u128(0x1001),
+                        BTreeMap::from([(uuid::Uuid::from_u128(0x2001), 240u32)]),
+                    )]),
+                    ..UiSettings::default()
+                },
+            )
+            .expect("mount succeeds on the null platform");
+            let seeded = handle.adapter.borrow().view_state.stack_width(board, stack);
+            assert_eq!(
+                seeded,
+                Some(240),
+                "the seeded width is live before any interaction"
+            );
+            assert!(
+                requests_rx.try_recv().is_err(),
+                "seeding alone never emits a persistence request"
+            );
+        });
+    }
+
     /// The flag defaults off and the guarded application is a no-op:
     /// the desktop mount stays windowed (covers both the `Default`
     /// arm and the guard's off-path in one observable behavior).
     #[test]
     fn mount_without_the_kiosk_flag_stays_windowed() {
         on_slint_thread(|| {
-            let (state, signals, system, commands) = handover();
-            let handle = mount(state, signals, system, commands, UiSettings::default())
-                .expect("mount succeeds on the null platform");
+            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+            )
+            .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_fullscreen());
         });
     }
@@ -625,12 +758,13 @@ mod first_frame_tests {
             // there, so its event is captured. The guard is dropped at
             // closure end.
             let guard = tracing::subscriber::set_default(subscriber);
-            let (state, signals, system, commands) = handover();
+            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
             crate::mount(
                 state,
                 signals,
                 system,
                 commands,
+                requests_tx,
                 crate::UiSettings::default(),
             )
             .expect("mount succeeds on the null platform");
@@ -700,6 +834,7 @@ mod keymap_adapter_tests {
 
     fn handover_vi() -> (UiHandle, mpsc::Receiver<StateCommand>) {
         let (commands_tx, commands_rx) = mpsc::channel(8);
+        let (requests_tx, _requests_rx) = mpsc::channel(16);
         let (system_tx, system_rx) = broadcast::channel(4);
         let (signals_tx, signals_rx) = broadcast::channel(4);
         drop(system_tx);
@@ -709,6 +844,7 @@ mod keymap_adapter_tests {
             signals_rx,
             system_rx,
             commands_tx,
+            requests_tx,
             UiSettings {
                 keymap: vi_keymap(),
                 ..UiSettings::default()
@@ -780,6 +916,7 @@ mod keymap_adapter_tests {
     fn complete_keystroke_sends_the_exact_command() {
         on_slint_thread(|| {
             let (commands_tx, mut commands_rx) = mpsc::channel(8);
+            let (requests_tx, _requests_rx) = mpsc::channel(16);
             let (system_tx, system_rx) = broadcast::channel(4);
             let (signals_tx, signals_rx) = broadcast::channel(4);
             drop(system_tx);
@@ -789,6 +926,7 @@ mod keymap_adapter_tests {
                 signals_rx,
                 system_rx,
                 commands_tx,
+                requests_tx,
                 UiSettings::default(), // standard preset
             )
             .expect("mount succeeds on the null platform");
@@ -1065,6 +1203,7 @@ mod view_component_tests {
 
     fn handover_with(state: taskboard_domain::AppState, keymap: keymap::Keymap) -> Handover {
         let (commands_tx, commands_rx) = mpsc::channel(16);
+        let (requests_tx, _requests_rx) = mpsc::channel(16);
         let (system_tx, system_rx) = broadcast::channel(16);
         let (signals_tx, signals_rx) = broadcast::channel(16);
         drop(system_tx);
@@ -1074,6 +1213,7 @@ mod view_component_tests {
             signals_rx,
             system_rx,
             commands_tx,
+            requests_tx,
             UiSettings {
                 keymap,
                 ..UiSettings::default()

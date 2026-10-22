@@ -186,10 +186,12 @@ mod tests {
         tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal>,
         tokio::sync::broadcast::Receiver<taskboard_domain::SystemEvent>,
         tokio::sync::mpsc::Sender<taskboard_domain::StateCommand>,
+        tokio::sync::mpsc::Sender<crate::requests::UiRequest>,
     );
 
     fn handover(state: taskboard_domain::AppState) -> Handover {
         let (commands_tx, _rx) = tokio::sync::mpsc::channel(8);
+        let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
         let (_stx, signals) = tokio::sync::broadcast::channel(4);
         let (_syt, system) = tokio::sync::broadcast::channel(4);
         (
@@ -197,13 +199,21 @@ mod tests {
             signals,
             system,
             commands_tx,
+            requests_tx,
         )
     }
 
     fn mounted(state: taskboard_domain::AppState) -> crate::UiHandle {
-        let (state, signals, system, commands) = handover(state);
-        mount(state, signals, system, commands, UiSettings::default())
-            .expect("mount succeeds on the null platform")
+        let (state, signals, system, commands, requests) = handover(state);
+        mount(
+            state,
+            signals,
+            system,
+            commands,
+            requests,
+            UiSettings::default(),
+        )
+        .expect("mount succeeds on the null platform")
     }
 
     /// A small but real board: one board, two stacks, six cards —

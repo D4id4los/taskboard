@@ -1,0 +1,612 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The UI → app request lane's app half (round-1 D21): the debounced
+//! forwarder that persists device-local stack column widths into the
+//! `[ui.stack_widths]` config subtree. Single-owner rule (R6): this
+//! task owns every write of that subtree — no other code path touches
+//! it. Every error is logged and swallowed: the UI's widths live on in
+//! the view state, the next received request retries the whole
+//! read-merge-write, and the forwarder never blocks or crashes the UI
+//! (D8) — it only ever holds owned maps, never a lock across `.await`.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+use taskboard_domain::AppState;
+use taskboard_ui_slint::requests::UiRequest;
+
+/// Capacity of the UI → app request channel: human-input scale (the
+/// `UI_COMMAND_CAPACITY` rationale at a smaller budget — a resize
+/// burst is coalesced by the debounce, not queued).
+pub const UI_REQUEST_CAPACITY: usize = 16;
+
+/// The debounce quiet window: bursts of resize events collapse into
+/// one write at the end of the last quiet window (deterministic under
+/// `tokio::time::pause` — no sleeps, ever).
+pub const UI_REQUEST_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The UI → app request channel at its house capacity — one
+/// construction site for both UI lifecycles (desktop and kiosk
+/// appliance).
+#[must_use]
+pub fn ui_request_channel() -> (mpsc::Sender<UiRequest>, mpsc::Receiver<UiRequest>) {
+    mpsc::channel(UI_REQUEST_CAPACITY)
+}
+
+/// Spawns the stack-widths forwarder: merges `requests` into the
+/// pending map, debounces [`UI_REQUEST_DEBOUNCE`], then flushes the
+/// pruned snapshot into the config overlay. On channel close (the UI
+/// side dropped) one final flush lands a resize sent right before
+/// quit, then the task exits. The caller owns the handle's retirement.
+pub fn spawn_ui_request_forwarder(
+    mut requests: mpsc::Receiver<UiRequest>,
+    config_write_path: PathBuf,
+    state: Arc<ArcSwap<AppState>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut pending: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>> = BTreeMap::new();
+        loop {
+            let Some(request) = requests.recv().await else {
+                flush(&mut pending, &config_write_path, &state.load());
+                tracing::info!("ui request channel closed; forwarder exiting");
+                return;
+            };
+            merge_request(request, &mut pending);
+            // The debounce quiet window: a late message merges and
+            // restarts it; close flushes; elapsed falls through to the
+            // flush.
+            loop {
+                match tokio::time::timeout(UI_REQUEST_DEBOUNCE, requests.recv()).await {
+                    Ok(Some(request)) => merge_request(request, &mut pending),
+                    Ok(None) => {
+                        flush(&mut pending, &config_write_path, &state.load());
+                        tracing::info!("ui request channel closed; forwarder exiting");
+                        return;
+                    }
+                    Err(_elapsed) => break,
+                }
+            }
+            flush(&mut pending, &config_write_path, &state.load());
+        }
+    })
+}
+
+/// Merges one request into the pending map: a board's snapshot
+/// *replaces* that board's entry (full-snapshot semantics, idempotent
+/// under re-send).
+fn merge_request(
+    request: UiRequest,
+    pending: &mut BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+) {
+    let UiRequest::StackWidthsChanged { board, widths } = request;
+    pending.insert(
+        board.as_uuid(),
+        widths
+            .into_iter()
+            .map(|(stack, px)| (stack.as_uuid(), px))
+            .collect(),
+    );
+}
+
+/// The write-time liveness prune (the `normalize_board` /
+/// `stacks_in_board` rules, read-only): keep a board iff it exists and
+/// is neither deleted nor archived; keep a stack iff it exists, is
+/// live, and still belongs to that board. A board with nothing left is
+/// dropped entirely — no empty husk in the config.
+fn prune_widths(
+    pending: &BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+    state: &AppState,
+) -> BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>> {
+    pending
+        .iter()
+        .filter_map(|(board, stacks)| {
+            let board_id = taskboard_domain::BoardId::from_uuid(*board);
+            let live = state
+                .boards
+                .get(&board_id)
+                .is_some_and(|b| !b.deleted && !b.archived);
+            if !live {
+                return None;
+            }
+            let kept: BTreeMap<uuid::Uuid, u32> = stacks
+                .iter()
+                .filter(|(stack, _)| {
+                    state
+                        .stacks
+                        .get(&taskboard_domain::StackId::from_uuid(**stack))
+                        .is_some_and(|s| !s.deleted && s.board == board_id)
+                })
+                .map(|(stack, px)| (*stack, *px))
+                .collect();
+            (!kept.is_empty()).then_some((*board, kept))
+        })
+        .collect()
+}
+
+/// The flush: prune, then one read-merge-write over the config
+/// overlay. Errors are warned and swallowed — the pending map is
+/// dropped either way; the next received request re-sends the full
+/// snapshot.
+fn flush(
+    pending: &mut BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+    config_write_path: &std::path::Path,
+    state: &AppState,
+) {
+    if pending.is_empty() {
+        return; // nothing was ever received: no write at all
+    }
+    let pruned = prune_widths(pending, state);
+    pending.clear();
+    if let Err(err) = overlay_stack_widths(config_write_path, &pruned) {
+        tracing::warn!(error = %err, "stack-widths overlay write failed; the next event retries");
+    }
+}
+
+/// Merges the pruned widths into the `[ui.stack_widths]` subtree of
+/// the config file via `toml_edit` (comments, formatting, and every
+/// other table preserved by construction; comments *inside* the
+/// subtree are machine territory). An empty map *removes* the subtree
+/// instead — no empty husk. The whole-document write is atomic
+/// (temp + rename, owner-only).
+fn overlay_stack_widths(
+    path: &std::path::Path,
+    widths: &BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+) -> std::io::Result<()> {
+    let mut doc = crate::config::overlay_document(path)?;
+    let ui = doc
+        .entry("ui")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "[ui] is not a table")
+        })?;
+    if widths.is_empty() {
+        ui.remove("stack_widths");
+    } else {
+        let subtree = ui
+            .entry("stack_widths")
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "[ui.stack_widths] is not a table",
+                )
+            })?;
+        subtree.clear();
+        // Deterministic order: the BTreeMap iteration *is* the
+        // document order of the per-board tables.
+        for (board, stacks) in widths {
+            let mut board_table = toml_edit::Table::new();
+            for (stack, px) in stacks {
+                board_table.insert(&stack.to_string(), toml_edit::value(i64::from(*px)));
+            }
+            subtree.insert(&board.to_string(), toml_edit::Item::Table(board_table));
+        }
+    }
+    crate::config::write_owner_only_atomic(path, doc.to_string().as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use figment::providers::Format as _;
+    use taskboard_domain::{BoardClocks, BoardId, StackClocks, StackId};
+
+    fn epoch() -> chrono::DateTime<chrono::Utc> {
+        BoardClocks::epoch()
+    }
+
+    fn fixture_state() -> (AppState, uuid::Uuid, uuid::Uuid, uuid::Uuid) {
+        let board_id = BoardId::from_uuid(uuid::Uuid::from_u128(0x1001));
+        let stack_a = StackId::from_uuid(uuid::Uuid::from_u128(0x2001));
+        let stack_b = StackId::from_uuid(uuid::Uuid::from_u128(0x2002));
+        let mut state = AppState::default();
+        state.boards.insert(
+            board_id,
+            taskboard_domain::Board {
+                id: board_id,
+                remote: None,
+                title: "board".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: epoch(),
+                    color: epoch(),
+                    archived: epoch(),
+                    deleted: epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        for (id, order) in [(stack_a, 0), (stack_b, 1)] {
+            state.stacks.insert(
+                id,
+                taskboard_domain::Stack {
+                    id,
+                    remote: None,
+                    board: board_id,
+                    title: format!("stack-{order}"),
+                    order,
+                    archived: false,
+                    deleted: false,
+                    clocks: StackClocks {
+                        title: epoch(),
+                        order: epoch(),
+                        deleted: epoch(),
+                    },
+                    remote_seen: None,
+                },
+            );
+        }
+        (
+            state,
+            board_id.as_uuid(),
+            stack_a.as_uuid(),
+            stack_b.as_uuid(),
+        )
+    }
+
+    // -- prune (T-16) ------------------------------------------------------
+
+    #[test]
+    fn prune_drops_dead_entities_and_keeps_live_ones() {
+        let (mut state, board, stack_a, stack_b) = fixture_state();
+        let dead_stack = uuid::Uuid::from_u128(0x2999);
+        let pending = BTreeMap::from([
+            (
+                board,
+                BTreeMap::from([(stack_a, 240u32), (dead_stack, 300u32)]),
+            ),
+            (
+                uuid::Uuid::from_u128(0x1999),
+                BTreeMap::from([(stack_b, 120u32)]),
+            ),
+        ]);
+
+        // A stack moved to another board is pruned from the old board.
+        let other = BoardId::from_uuid(uuid::Uuid::from_u128(0x1002));
+        state.boards.insert(
+            other,
+            taskboard_domain::Board {
+                id: other,
+                remote: None,
+                title: "other".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: epoch(),
+                    color: epoch(),
+                    archived: epoch(),
+                    deleted: epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        let moved = StackId::from_uuid(uuid::Uuid::from_u128(0x2003));
+        state.stacks.insert(
+            moved,
+            taskboard_domain::Stack {
+                id: moved,
+                remote: None,
+                board: other,
+                title: "moved".to_owned(),
+                order: 0,
+                archived: false,
+                deleted: false,
+                clocks: StackClocks {
+                    title: epoch(),
+                    order: epoch(),
+                    deleted: epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        let pending = BTreeMap::from([(
+            board,
+            pending[&board]
+                .iter()
+                .chain(std::iter::once((&moved.as_uuid(), &400u32)))
+                .map(|(k, v)| (*k, *v))
+                .collect::<BTreeMap<_, _>>(),
+        )]);
+
+        let pruned = prune_widths(&pending, &state);
+        assert_eq!(pruned.len(), 1, "a dead board is dropped");
+        let kept = &pruned[&board];
+        assert_eq!(kept.get(&stack_a), Some(&240));
+        assert!(!kept.contains_key(&dead_stack), "a dead stack is dropped");
+        assert!(
+            !kept.contains_key(&moved.as_uuid()),
+            "a stack of another board is dropped from this board"
+        );
+    }
+
+    #[test]
+    fn prune_drops_archived_boards_and_boards_left_without_live_stacks() {
+        let (mut state, board, stack_a, stack_b) = fixture_state();
+        state
+            .boards
+            .get_mut(&BoardId::from_uuid(board))
+            .expect("board")
+            .archived = true;
+        let pending = BTreeMap::from([(
+            board,
+            BTreeMap::from([(stack_a, 240u32), (stack_b, 120u32)]),
+        )]);
+        assert!(
+            prune_widths(&pending, &state).is_empty(),
+            "an archived board's whole entry is dropped"
+        );
+
+        // Deleting the board's only stacks drops the board entry too.
+        state
+            .boards
+            .get_mut(&BoardId::from_uuid(board))
+            .expect("board")
+            .archived = false;
+        for stack in [stack_a, stack_b] {
+            state
+                .stacks
+                .get_mut(&StackId::from_uuid(stack))
+                .expect("stack")
+                .deleted = true;
+        }
+        assert!(prune_widths(&pending, &state).is_empty(), "no empty husk");
+    }
+
+    // -- overlay write (T-15) ------------------------------------------------
+
+    fn write_temp_config(contents: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        if !contents.is_empty() {
+            std::fs::write(&path, contents).expect("seed config");
+        }
+        (dir, path)
+    }
+
+    #[test]
+    fn overlay_preserves_comments_and_unrelated_keys_and_replaces_only_the_subtree() {
+        let (_dir, path) = write_temp_config(
+            "# operator comment\n[ui]\nscale = 1.5\n\
+             [ui.stack_widths]\n\"old-board\" = 1\n\
+             [nextcloud]\n# keep me\nserver_url = \"https://x\"\n",
+        );
+        let (_, board, stack_a, stack_b) = fixture_state();
+        let widths =
+            BTreeMap::from([(board, BTreeMap::from([(stack_a, 240u32), (stack_b, 96u32)]))]);
+        overlay_stack_widths(&path, &widths).expect("write succeeds");
+
+        let written = std::fs::read_to_string(&path).expect("read back");
+        assert!(written.contains("# operator comment"));
+        assert!(written.contains("scale = 1.5"));
+        assert!(written.contains("# keep me"));
+        assert!(written.contains("server_url = \"https://x\""));
+        assert!(!written.contains("old-board"), "the subtree was replaced");
+        // Structural: the written document decodes to the widths map.
+        let doc = written.parse::<toml_edit::DocumentMut>().expect("parses");
+        let stack_widths = doc["ui"]["stack_widths"].as_table().expect("subtree table");
+        let board_table = stack_widths
+            .get(&board.to_string())
+            .expect("board row")
+            .as_table()
+            .expect("board table");
+        assert_eq!(
+            board_table
+                .get(&stack_a.to_string())
+                .and_then(toml_edit::Item::as_integer),
+            Some(240)
+        );
+        assert_eq!(
+            board_table
+                .get(&stack_b.to_string())
+                .and_then(toml_edit::Item::as_integer),
+            Some(96)
+        );
+    }
+
+    #[test]
+    fn overlay_with_an_empty_map_removes_the_subtree() {
+        let (_dir, path) = write_temp_config("[ui]\nscale = 1.0\n[ui.stack_widths]\nx = 1\n");
+        overlay_stack_widths(&path, &BTreeMap::new()).expect("write succeeds");
+        let written = std::fs::read_to_string(&path).expect("read back");
+        assert!(written.contains("scale = 1.0"));
+        assert!(!written.contains("stack_widths"), "no empty husk");
+    }
+
+    #[test]
+    fn overlay_on_an_absent_file_creates_it() {
+        let (_dir, path) = write_temp_config("");
+        let (_, board, stack_a, _) = fixture_state();
+        let widths = BTreeMap::from([(board, BTreeMap::from([(stack_a, 240u32)]))]);
+        overlay_stack_widths(&path, &widths).expect("write succeeds");
+        let written = std::fs::read_to_string(&path).expect("created");
+        assert!(written.contains(&board.to_string()));
+    }
+
+    #[test]
+    fn overlay_on_a_directory_path_errors_typed_without_panicking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The config path itself is a directory: the read fails typed
+        // (io error kind), never a panic (the never-crash rule, D8).
+        let err = overlay_stack_widths(dir.path(), &BTreeMap::new());
+        assert!(err.is_err());
+    }
+
+    // -- restart round-trip (T-18) --------------------------------------------
+
+    #[test]
+    fn written_widths_round_trip_through_the_config_layer() {
+        let (_dir, path) = write_temp_config("# c\n[ui]\nscale = 1.25\n");
+        let (_, board, stack_a, stack_b) = fixture_state();
+        let widths =
+            BTreeMap::from([(board, BTreeMap::from([(stack_a, 240u32), (stack_b, 96u32)]))]);
+        overlay_stack_widths(&path, &widths).expect("write succeeds");
+
+        // The restart half: the written file decodes through the real
+        // figment layer — exactly what the next process's config load
+        // runs — and carries the widths verbatim into `UiSection`.
+        let written = std::fs::read_to_string(&path).expect("read");
+        let reloaded: crate::config::AppConfig = figment::Figment::from(
+            figment::providers::Serialized::defaults(crate::config::AppConfig::default()),
+        )
+        .merge(figment::providers::Toml::string(&written))
+        .extract()
+        .expect("the written config decodes");
+        let stacks = reloaded.ui.stack_widths.get(&board).expect("board row");
+        assert_eq!(stacks.get(&stack_a), Some(&240));
+        assert_eq!(stacks.get(&stack_b), Some(&96));
+    }
+
+    // -- the forwarder loop (T-17) ---------------------------------------------
+
+    /// T-17 — debounce determinism: two snapshots for one board inside
+    /// the quiet window collapse into exactly one write carrying the
+    /// merged latest; a late message extends the window; close flushes
+    /// pending; a failing path is survived and a later retry lands.
+    #[tokio::test(start_paused = true)]
+    async fn debounces_bursts_and_flushes_on_close() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
+        let (state, board, stack_a, stack_b) = fixture_state();
+        let (tx, rx) = ui_request_channel();
+        let forwarder =
+            spawn_ui_request_forwarder(rx, path.clone(), Arc::new(ArcSwap::from_pointee(state)));
+
+        let send = |tx: &mpsc::Sender<UiRequest>, stack: uuid::Uuid, px: u32| {
+            tx.try_send(UiRequest::StackWidthsChanged {
+                board: BoardId::from_uuid(board),
+                widths: vec![(StackId::from_uuid(stack), px)],
+            })
+            .expect("capacity holds");
+        };
+        send(&tx, stack_a, 240);
+        send(&tx, stack_b, 96);
+        // Inside the quiet window: nothing written yet. The settle runs
+        // the spawned task's polls without sleeps — the paused clock
+        // makes every step deterministic.
+        tokio::time::advance(
+            UI_REQUEST_DEBOUNCE
+                .checked_sub(std::time::Duration::from_millis(1))
+                .expect("positive"),
+        )
+        .await;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !std::fs::read_to_string(&path)
+                .expect("read")
+                .contains(&stack_a.to_string()),
+            "the window has not elapsed"
+        );
+        // A late message extends the window: the original window
+        // elapses, the message restarts it, and the *extended* window's
+        // flush carries the merged latest.
+        send(&tx, stack_a, 260);
+        tokio::time::advance(UI_REQUEST_DEBOUNCE + std::time::Duration::from_millis(1)).await;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(UI_REQUEST_DEBOUNCE + std::time::Duration::from_millis(1)).await;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        // …and the flush carried exactly the merged latest.
+        let written = std::fs::read_to_string(&path).expect("read");
+        assert!(written.contains(&board.to_string()));
+        let doc = written.parse::<toml_edit::DocumentMut>().expect("parses");
+        let board_table = doc["ui"]["stack_widths"][&board.to_string()]
+            .as_table()
+            .expect("board table");
+        assert_eq!(
+            board_table
+                .get(&stack_a.to_string())
+                .and_then(toml_edit::Item::as_integer),
+            Some(260),
+            "the latest snapshot won"
+        );
+
+        // A resize sent right before quit still lands (the final flush).
+        send(&tx, stack_a, 300);
+        drop(tx);
+        forwarder.await.expect("forwarder joins cleanly");
+        let doc = std::fs::read_to_string(&path)
+            .expect("read")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parses");
+        assert_eq!(
+            doc["ui"]["stack_widths"][&board.to_string()][&stack_a.to_string()].as_integer(),
+            Some(300),
+            "the close flush landed"
+        );
+    }
+
+    /// T-17 — the never-crash rule: a failing write path is warned and
+    /// survived; the task outlives it and completes a later good write.
+    #[tokio::test(start_paused = true)]
+    async fn a_failing_write_path_is_survived_and_retried() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The config "path" is a directory: every read/write fails.
+        let cursed = dir.path().join("cursed");
+        std::fs::create_dir(&cursed).expect("dir");
+        let (state, board, stack_a, _) = fixture_state();
+        let (tx, rx) = ui_request_channel();
+        let forwarder =
+            spawn_ui_request_forwarder(rx, cursed.clone(), Arc::new(ArcSwap::from_pointee(state)));
+        tx.try_send(UiRequest::StackWidthsChanged {
+            board: BoardId::from_uuid(board),
+            widths: vec![(StackId::from_uuid(stack_a), 240)],
+        })
+        .expect("capacity holds");
+        tokio::time::advance(UI_REQUEST_DEBOUNCE + std::time::Duration::from_millis(1)).await;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!forwarder.is_finished(), "the task outlived the failure");
+
+        // The retry story: the pending map was cleared by the failed
+        // flush, so nothing is written anywhere until the next request
+        // arrives — the good path simply stays clean and the task lives on.
+        tx.try_send(UiRequest::StackWidthsChanged {
+            board: BoardId::from_uuid(board),
+            widths: vec![(StackId::from_uuid(stack_a), 260)],
+        })
+        .expect("capacity holds");
+        // The pending map was cleared by the failed flush; the retry
+        // re-sends the full snapshot, so the good path's first write
+        // carries it.
+        tokio::time::advance(UI_REQUEST_DEBOUNCE + std::time::Duration::from_millis(1)).await;
+        drop(tx);
+        forwarder.await.expect("forwarder joins cleanly");
+        // The cursed path stayed a directory (no partial file anywhere).
+        assert!(cursed.is_dir());
+    }
+
+    /// An empty pending map at flush time (a close with nothing ever
+    /// received) writes nothing — the never-create rule.
+    #[tokio::test(start_paused = true)]
+    async fn a_close_without_requests_writes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        let (_state, _b, _a, _s) = fixture_state();
+        let (tx, rx) = ui_request_channel();
+        let forwarder = spawn_ui_request_forwarder(
+            rx,
+            path.clone(),
+            Arc::new(ArcSwap::from_pointee(AppState::default())),
+        );
+        drop(tx);
+        forwarder.await.expect("forwarder joins cleanly");
+        assert!(!path.exists(), "no write at all when nothing was received");
+    }
+}

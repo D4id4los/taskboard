@@ -8,6 +8,7 @@
 //! UI start (no live re-map machinery — §5.6).
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -62,6 +63,9 @@ pub(crate) struct Adapter {
     pub(crate) view_state: ViewState,
     state: Arc<ArcSwap<AppState>>,
     commands: mpsc::Sender<StateCommand>,
+    /// The app request lane (round-1 D21): the adapter is the only
+    /// sender (`try_send`, warn-and-drop — the F-3 convention).
+    requests: mpsc::Sender<crate::requests::UiRequest>,
     /// The ACTIVE menu page's entries (root page at the root level;
     /// the open group's page inside a submenu — round-1 D6). The
     /// cursor indexes into it and `InvokeSelected` re-dispatches it.
@@ -253,6 +257,21 @@ impl Adapter {
                     mode_changed = true;
                 }
                 FlowOutcome::RefreshNow => self.refresh(window),
+                FlowOutcome::StackWidthsChanged => {
+                    // The persist-now signal (round-1 D21): the full
+                    // per-board snapshot over the request lane,
+                    // warn-and-drop on a full/closed inbox — the next
+                    // event retries.
+                    if let Some(board) = self.view_state.board() {
+                        let request = crate::requests::UiRequest::StackWidthsChanged {
+                            board,
+                            widths: self.view_state.stack_widths_of(board),
+                        };
+                        if self.requests.try_send(request).is_err() {
+                            tracing::warn!("request channel full or closed; dropped");
+                        }
+                    }
+                }
             }
         }
         if mode_changed {
@@ -534,15 +553,39 @@ pub(crate) fn install(
     keymap: Keymap,
     startup: StartupWarnings,
     commands: mpsc::Sender<StateCommand>,
+    requests: mpsc::Sender<crate::requests::UiRequest>,
+    stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
     state: Arc<ArcSwap<AppState>>,
 ) -> Rc<RefCell<Adapter>> {
+    // The load path (round-1 D16): the uuid-keyed settings map
+    // converts once here and seeds the fresh ViewState before the
+    // first refresh — widths are applied before the first board
+    // render. Unknown boards/stacks are kept (write-time pruning is
+    // the app forwarder's job).
+    let seeded = stack_widths
+        .into_iter()
+        .map(|(board, stacks)| {
+            (
+                BoardId::from_uuid(board),
+                stacks
+                    .into_iter()
+                    .map(|(stack, px)| (StackId::from_uuid(stack), px))
+                    .collect::<BTreeMap<StackId, u32>>(),
+            )
+        })
+        .collect::<BTreeMap<BoardId, BTreeMap<StackId, u32>>>();
     let adapter = Rc::new(RefCell::new(Adapter {
         keymap,
         shell: KeymapShell::default(),
         resolver: KeymapResolver::new(),
-        view_state: ViewState::new(),
+        view_state: {
+            let mut vs = ViewState::new();
+            vs.seed_stack_widths(seeded);
+            vs
+        },
         state,
         commands,
+        requests,
         menu_entries: Vec::new(),
         root_entries: Vec::new(),
         menu_chain: Vec::new(),

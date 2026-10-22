@@ -24,6 +24,10 @@ slint = { workspace = true, features = ["unstable-fontique-011"] }
 tokio.workspace = true
 # Observability (AGENTS-approved stack; the lib only emits spans).
 tracing.workspace = true
+# Typed uuids in the device-local width settings hand-over (`UiSettings
+# .stack_widths`, round-1 D16/D20 — serde-native shape; the domain
+# newtypes carry no serde impls).
+uuid.workspace = true
 
 [features]
 # Dev/testing only (design §8.2/Q19): compiles the embedded MCP server
