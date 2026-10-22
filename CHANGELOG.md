@@ -10,6 +10,20 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The task-field surfaces + anchor hiding + the sidecar badge (#209,
+  chunk 5): `tasks edit` grows `--scheduled` (the `--due` vocabulary),
+  `--effort` (bare digits = minutes, `s`/`m`/`h` compose), and
+  `--importance`/`--urgency` (`very-low`…`very-high`), each clearing
+  on `none`, in the CLI and the REPL alike with completion for the
+  literals. `tasks list` rows (`--json` and human) carry the new
+  fields in their canonical text forms. The UI card renders
+  scheduled/effort phrases and importance/urgency chips from the
+  presentation layer only (no slint-side semantics). The app-data
+  anchor card disappears from list surfaces (CLI rows and counts, UI
+  board/stack cards, the overdue banner) while staying resolvable
+  behind its typed guard, and the status bar renders the selected
+  board's sidecar health as an update-this-app warning when the
+  document is unreadable.
 - The app-data sidecar fold, flush, and rules section (#207 + #244,
   chunk 4): app-field edits and rule mutations now enqueue the
   `UpdateAppData` op (mixed edits enqueue both lanes; `scheduled` is
