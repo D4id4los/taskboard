@@ -169,7 +169,15 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             .collect(),
         None => Vec::new(),
     };
-    let rebuild = ctx.group.is_none();
+    // A rebuild trigger widens the scope even when a group is queued:
+    // the base carries no usable content (absence or a foreign key), so
+    // flushing only the group's tasks over the empty base would drop
+    // every other local task's entries from the uploaded document.
+    let rebuild = ctx.group.is_none()
+        || matches!(
+            ctx.evidence,
+            AppDataEvidence::Absent | AppDataEvidence::Unreadable(AppDataUnreadable::ForeignBoard)
+        );
     let mut scoped: BTreeMap<TaskId, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
     if rebuild {
         let tables = board_tables(&ctx);
@@ -181,11 +189,12 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
                 scoped.insert(task.id, ctx.read_at);
             }
         }
-    } else {
-        for entry in &member_ops {
-            if let LocalOp::UpdateAppData(task_id) = entry.op {
-                scoped.insert(task_id, entry.queued_at);
-            }
+    }
+    // The queued ops' own stamps (≥ `read_at` by the boundary
+    // convention) dominate the rebuild seeding.
+    for entry in &member_ops {
+        if let LocalOp::UpdateAppData(task_id) = entry.op {
+            scoped.insert(task_id, entry.queued_at);
         }
     }
 
@@ -245,7 +254,9 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         .map(|task| task.id.card.get().to_string())
         .collect();
     let merged = prune_absent_cards(&merged, &present_cards);
-    let bytes = serde_json::to_vec(&merged).unwrap_or_default();
+    let bytes = serde_json::to_vec(&merged).expect(
+        "owned serde data serializes infallibly; an empty body would be a corrupt overwrite",
+    );
     let upload = AttachmentUpload {
         file_name: ANCHOR_ATTACHMENT_FILENAME.to_owned(),
         mime_type: ANCHOR_ATTACHMENT_MIME.to_owned(),
