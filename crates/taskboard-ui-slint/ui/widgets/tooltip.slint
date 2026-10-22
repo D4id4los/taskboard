@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The tooltip mechanism (usability pass D3): the TooltipState global
+// lives here so primitives (icon-button) and the window host import
+// the same file — no app-window cycle. The delay is the AppWindow's
+// Timer (600 ms); the text is always the control's a11y label, so a
+// tooltip never carries information unavailable elsewhere. Keyboard
+// and touch reach every action through the keymap — the tooltip is
+// redundant eye-candy by construction, never the only carrier.
+
+import { Theme, Typography, RoleText } from "../theme.slint";
+
+export global TooltipState {
+    in-out property <string> text;
+    // pending: hovered and inside the delay window; visible: the
+    // delay fired. hover/unhover are the only writers.
+    in-out property <bool> pending: false;
+    in-out property <bool> visible: false;
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+
+    // Installed by the window crate at mount: the delay timer (the
+    // arm/dismiss must restart per *invocation* — property-change
+    // callbacks collapse within one event turn, a repeated hover
+    // would not restart a markup Timer).
+    callback delay-requested();
+    callback dismiss-requested();
+
+    // A control without a label never shows a tooltip.
+    public function hover(label: string, x: length, y: length, w: length, h: length) {
+        if (label == "") {
+            return;
+        }
+        self.text = label;
+        self.anchor-x = x;
+        self.anchor-y = y;
+        self.anchor-width = w;
+        self.anchor-height = h;
+        self.visible = false;
+        self.pending = true;
+        self.delay-requested();
+    }
+
+    public function unhover() {
+        self.pending = false;
+        self.visible = false;
+        self.dismiss-requested();
+    }
+}
+
+// The display-only panel: no TouchArea (clicks pass through), no
+// focusability — it can never steal the keyboard.
+export component TooltipPanel inherits Rectangle {
+    background: Theme.surface-raised;
+    border-width: Theme.focus-ring-width;
+    border-color: Theme.border;
+    border-radius: Theme.radius-small;
+
+    HorizontalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+        padding-top: Theme.space-1;
+        padding-bottom: Theme.space-1;
+
+        RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-primary;
+            text: TooltipState.text;
+        }
+    }
+}
