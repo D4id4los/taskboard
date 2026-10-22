@@ -628,17 +628,19 @@ pub enum TasksCmd {
         /// The label (uuid | exact title).
         label: String,
     },
-    /// Manage a task's reminder rules: set/replace with `--before`,
-    /// enumerate with `--list`, remove with `--clear`, mute/unmute the
-    /// task's firings with `--off`/`--on`. Exactly one mode per line.
+    /// Manage a task's reminder rules: add one with `--before`, remove
+    /// one with `--remove`, remove all with `--clear`, enumerate with
+    /// `--list`, mute/unmute the task's firings with `--off`/`--on`.
+    /// Exactly one mode per line.
     #[group(required = true, multiple = true)]
     Remind {
         /// The task (uuid | unique ≥8-char uuid prefix | exact title).
         task: Option<String>,
         /// The new rule's offset before due (`30s|5m|1h30m|2d`); the
         /// `[reminders] default_before` config default applies when
-        /// omitted. List rendering glyphs: `!` marks overdue and `~`
-        /// due-soon in `tasks list`.
+        /// omitted. A rule at this offset is unique (repeats are no-ops).
+        /// List rendering glyphs: `!` marks overdue and `~` due-soon in
+        /// `tasks list`.
         #[arg(long, requires = "task", value_parser = parse_before_flag)]
         before: Option<chrono::TimeDelta>,
         /// List the board's reminder rules (pure read).
@@ -647,6 +649,14 @@ pub enum TasksCmd {
         /// Remove all of the task's reminder rules.
         #[arg(long, requires = "task", conflicts_with_all = ["before", "off", "on", "list"])]
         clear: bool,
+        /// Remove one of the task's rules (rule uuid | unique ≥8-char
+        /// uuid prefix | the offset text form, e.g. 30m).
+        #[arg(
+            long,
+            requires = "task",
+            conflicts_with_all = ["before", "clear", "off", "on", "list"]
+        )]
+        remove: Option<String>,
         /// Mute all firings of the task (the overdue banner is
         /// unaffected).
         #[arg(long, requires = "task", conflicts_with_all = ["before", "clear", "on", "list"])]

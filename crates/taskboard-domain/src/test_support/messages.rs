@@ -141,7 +141,7 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
         (super::task_id_strategy(), any::<bool>())
             .prop_map(|(task, muted)| StateCommand::SetTaskRemindersMuted { task, muted }),
         (super::task_id_strategy(), reminder_offset_strategy())
-            .prop_map(|(task, offset)| StateCommand::SetReminderRule { task, offset }),
+            .prop_map(|(task, offset)| StateCommand::AddReminderRule { task, offset }),
         super::task_id_strategy().prop_map(|task| StateCommand::ClearReminderRules { task }),
         // 1: sync request
         Just(StateCommand::RequestSync),

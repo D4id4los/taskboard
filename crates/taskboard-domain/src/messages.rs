@@ -207,16 +207,6 @@ pub enum StateCommand {
         /// `true` = mute, `false` = unmute.
         muted: bool,
     },
-    /// Set (replace) the task's explicit reminder rules with one rule:
-    /// the task's existing rules are deleted and the new one upserted.
-    /// Legal on a task without a duedate (the rule arms when a duedate
-    /// arrives — occurrence arithmetic is due-anchored).
-    SetReminderRule {
-        /// The task whose rules are replaced.
-        task: TaskId,
-        /// The single new rule's due-anchored offset.
-        offset: crate::reminders::ReminderOffset,
-    },
     /// Add one reminder rule to the task's rule set — unless a rule at
     /// this exact offset already exists, in which case nothing is
     /// planned and the receipt names the surviving rule (the dedup is

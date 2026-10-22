@@ -759,9 +759,9 @@ mod d {
         use taskboard_domain::reminders::ReminderOffset;
         let c = boot_convergence(cfg).await;
 
-        let taskboard_domain::CommandOutcome::ReminderSet { rule } =
+        let taskboard_domain::CommandOutcome::ReminderRuleAdded { rule, added: true } =
             c.a.engine
-                .execute(taskboard_domain::StateCommand::SetReminderRule {
+                .execute(taskboard_domain::StateCommand::AddReminderRule {
                     task: c.task_id,
                     offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
                         .unwrap(),

@@ -475,16 +475,34 @@ pub struct RemindersList {
     pub rules: Vec<ReminderRow>,
 }
 
-/// The `tasks remind --before` receipt.
+/// The `tasks remind --before` receipt (an add): `added: false` is the
+/// offset dedup hit — `rule_id` then names the surviving rule.
 #[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct ReminderSetReceipt {
-    /// The fresh rule's local uuid.
+pub struct ReminderAddReceipt {
+    /// The fresh rule's local uuid (the dedup survivor when `added` is
+    /// `false`).
     pub rule_id: String,
     /// The task's local uuid.
     pub task_id: String,
     /// The task's title.
     pub task_title: String,
     /// The rule's offset before due, canonical text.
+    pub before: String,
+    /// `false` = a rule at this offset already existed; nothing changed.
+    pub added: bool,
+}
+
+/// The `tasks remind --remove` receipt (projected from the pre-execute
+/// rule row — the rule is gone post-execute).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReminderRemoveReceipt {
+    /// The removed rule's local uuid.
+    pub rule_id: String,
+    /// The task's local uuid.
+    pub task_id: String,
+    /// The task's title.
+    pub task_title: String,
+    /// The removed rule's offset before due, canonical text.
     pub before: String,
 }
 

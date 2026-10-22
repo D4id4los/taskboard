@@ -12,7 +12,8 @@ use clap::Parser;
 
 use taskboard_app::cli::{Cli, Command, TasksCmd};
 use taskboard_app::commands::output::{
-    ReminderClearReceipt, ReminderMuteReceipt, ReminderSetReceipt, RemindersList,
+    ReminderAddReceipt, ReminderClearReceipt, ReminderMuteReceipt, ReminderRemoveReceipt,
+    RemindersList,
 };
 use taskboard_app::commands::{BasicSession, CommandIo, dispatch_line, reminders};
 use taskboard_app::config::{AppConfig, CredentialStoreKind};
@@ -68,28 +69,31 @@ async fn list(config: &AppConfig) -> RemindersList {
         .expect("list boots")
 }
 
-/// R1: `remind --before` sets exactly one rule; the receipt carries the
-/// fresh rule id, and a fresh boot's `--list` sees it (durable).
+/// R1: `remind --before` adds exactly one rule; the receipt carries the
+/// fresh rule id and `added: true`, and a fresh boot's `--list` sees it
+/// (durable).
 #[tokio::test]
-async fn r1_remind_sets_one_rule() {
+async fn r1_remind_adds_one_rule() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "r1.db");
     seed(&config, "Todo", "Write report").await;
 
-    let receipt = reminders::set(
+    let receipt = reminders::add(
         config.clone(),
         forbidden_store(),
         "Write report",
         Some(TimeDelta::try_minutes(10).expect("10m")),
     )
     .await
-    .expect("set");
-    let ReminderSetReceipt {
+    .expect("add");
+    let ReminderAddReceipt {
         rule_id,
         task_id,
         task_title,
         before,
+        added,
     } = receipt;
+    assert!(added);
     assert_ne!(rule_id, "");
     assert_ne!(task_id, "");
     assert_eq!(task_title, "Write report");
@@ -103,36 +107,57 @@ async fn r1_remind_sets_one_rule() {
     assert!(!listed.rules[0].task_muted);
 }
 
-/// R2: a second `remind` replaces the rule (still one, new id and
-/// offset).
+/// R2: the add semantics — a second add at a *different* offset grows
+/// the task to two rules; a repeat at the *same* offset is the dedup
+/// no-op: `added: false`, the receipt names the surviving first rule,
+/// and no state change lands.
 #[tokio::test]
-async fn r2_second_remind_replaces() {
+async fn r2_second_add_grows_and_same_offset_repeat_is_a_noop() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "r2.db");
     seed(&config, "Todo", "File taxes").await;
-    let first = reminders::set(
+    let first = reminders::add(
         config.clone(),
         forbidden_store(),
         "File taxes",
         Some(TimeDelta::try_minutes(10).expect("10m")),
     )
     .await
-    .expect("first set");
-    let second = reminders::set(
+    .expect("first add");
+    let second = reminders::add(
         config.clone(),
         forbidden_store(),
         "File taxes",
         Some(TimeDelta::try_hours(1).expect("1h")),
     )
     .await
-    .expect("second set");
+    .expect("second add");
 
+    assert!(second.added);
     assert_ne!(second.rule_id, first.rule_id);
-    assert_eq!(second.before, "1h");
     let listed = list(&config).await;
-    assert_eq!(listed.rules.len(), 1, "replace-all semantics");
-    assert_eq!(listed.rules[0].id, second.rule_id);
-    assert_eq!(listed.rules[0].before, "1h");
+    assert_eq!(listed.rules.len(), 2, "both rules coexist");
+    assert_eq!(
+        listed
+            .rules
+            .iter()
+            .map(|row| row.before.as_str())
+            .collect::<Vec<_>>(),
+        vec!["10m", "1h"],
+        "rows in rule-id order (v7: mint order); both offsets live"
+    );
+
+    let repeat = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "File taxes",
+        Some(TimeDelta::try_minutes(10).expect("10m")),
+    )
+    .await
+    .expect("repeat add at the first offset");
+    assert!(!repeat.added, "the dedup hit");
+    assert_eq!(repeat.rule_id, first.rule_id, "the survivor is named");
+    assert_eq!(list(&config).await.rules.len(), 2, "nothing changed");
 }
 
 /// R3: with no `--before`, the config's `default_before` is the rule's
@@ -144,9 +169,9 @@ async fn r3_before_default_comes_from_config() {
     config.reminders.default_before = "2m".to_owned();
     seed(&config, "Todo", "Water plants").await;
 
-    let receipt = reminders::set(config.clone(), forbidden_store(), "Water plants", None)
+    let receipt = reminders::add(config.clone(), forbidden_store(), "Water plants", None)
         .await
-        .expect("set with the config default");
+        .expect("add with the config default");
     assert_eq!(receipt.before, "2m");
     let listed = list(&config).await;
     assert_eq!(listed.rules[0].before, "2m");
@@ -161,9 +186,9 @@ async fn r4_list_empty_then_one_row() {
     assert_eq!(list(&config).await.rules, []);
 
     seed(&config, "Todo", "Alone").await;
-    reminders::set(config.clone(), forbidden_store(), "Alone", None)
+    reminders::add(config.clone(), forbidden_store(), "Alone", None)
         .await
-        .expect("set");
+        .expect("add");
     let listed = list(&config).await;
     assert_eq!(listed.rules.len(), 1);
     assert_eq!(listed.rules[0].task_title, "Alone");
@@ -178,9 +203,9 @@ async fn r5_clear_reports_removed_and_repeats_zero() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "r5.db");
     seed(&config, "Todo", "Sweep").await;
-    reminders::set(config.clone(), forbidden_store(), "Sweep", None)
+    reminders::add(config.clone(), forbidden_store(), "Sweep", None)
         .await
-        .expect("set");
+        .expect("add");
 
     let receipt = reminders::clear(config.clone(), forbidden_store(), "Sweep")
         .await
@@ -226,7 +251,9 @@ async fn r6_mute_toggle_and_repeat() {
 }
 
 /// R7: selector failures keep their cascade kinds: unknown →
-/// `unknown-task`, ambiguous title → `ambiguous-task`.
+/// `unknown-task`, ambiguous title → `ambiguous-task`; rule selectors
+/// gain their own kinds — unknown → `unknown-reminder-rule`, colliding
+/// prefix → `ambiguous-reminder-rule` carrying both rule ids.
 #[tokio::test]
 async fn r7_selector_errors_keep_their_kinds() {
     let dir = tempdir();
@@ -234,19 +261,181 @@ async fn r7_selector_errors_keep_their_kinds() {
     seed(&config, "Todo", "First").await;
     seed(&config, "Todo2", "First").await; // ambiguous duplicate title
 
-    let err = reminders::set(config.clone(), forbidden_store(), "no-such-task", None)
+    let err = reminders::add(config.clone(), forbidden_store(), "no-such-task", None)
         .await
         .expect_err("unknown");
     assert_eq!(err.error_kind(), "unknown-task");
 
-    let err = reminders::set(config.clone(), forbidden_store(), "First", None)
+    let err = reminders::add(config.clone(), forbidden_store(), "First", None)
         .await
         .expect_err("ambiguous");
     assert_eq!(err.error_kind(), "ambiguous-task");
+
+    let err = reminders::remove(config.clone(), forbidden_store(), "no-such-task", "30m")
+        .await
+        .expect_err("unknown task on remove");
+    assert_eq!(err.error_kind(), "unknown-task");
+}
+
+/// R7b: the rule selector cascade — uuid, unique ≥8-char prefix, and the
+/// offset text form all resolve to the same rule; the three failure
+/// shapes are typed (`unknown-reminder-rule`, `ambiguous-reminder-rule`
+/// with both candidates, offset-form miss).
+#[tokio::test]
+async fn r7b_rule_selectors_resolve_and_fail_typed() {
+    use taskboard_app::commands::CommandError;
+
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "r7b.db");
+    seed(&config, "Todo", "Selector task").await;
+    let first = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Selector task",
+        Some(TimeDelta::try_minutes(30).expect("30m")),
+    )
+    .await
+    .expect("first rule");
+    let second = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Selector task",
+        Some(TimeDelta::try_hours(2).expect("2h")),
+    )
+    .await
+    .expect("second rule");
+
+    // All three selector kinds resolve to the same rule (uuid-first).
+    let by_uuid = reminders::remove(
+        config.clone(),
+        forbidden_store(),
+        "Selector task",
+        &second.rule_id,
+    )
+    .await
+    .expect("remove by uuid");
+    let ReminderRemoveReceipt {
+        rule_id,
+        task_title,
+        before,
+        ..
+    } = by_uuid;
+    assert_eq!(rule_id, second.rule_id);
+    assert_eq!(task_title, "Selector task");
+    assert_eq!(before, "2h");
+
+    let re_added = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Selector task",
+        Some(TimeDelta::try_hours(2).expect("2h")),
+    )
+    .await
+    .expect("re-add");
+    // A unique prefix: the shortest ≥8-char prefix that no other rule of
+    // the task shares (same-millisecond v7 ids share leading chars).
+    let other = &first.rule_id;
+    let prefix_len = (8..=re_added.rule_id.len())
+        .find(|&n| !other.starts_with(&re_added.rule_id[..n]))
+        .expect("a disambiguating prefix exists");
+    let by_prefix = reminders::remove(
+        config.clone(),
+        forbidden_store(),
+        "Selector task",
+        &re_added.rule_id[..prefix_len],
+    )
+    .await
+    .expect("remove by unique prefix");
+    assert_eq!(by_prefix.rule_id, re_added.rule_id);
+    assert_eq!(by_prefix.before, "2h");
+
+    let by_offset = reminders::remove(config.clone(), forbidden_store(), "Selector task", "30m")
+        .await
+        .expect("remove by offset text form");
+    assert_eq!(by_offset.rule_id, first.rule_id);
+    assert_eq!(by_offset.before, "30m");
+
+    // The failure shapes.
+    let err = reminders::remove(config.clone(), forbidden_store(), "Selector task", "99d")
+        .await
+        .expect_err("offset-form miss");
+    assert!(matches!(err, CommandError::UnknownReminderRule(_)));
+
+    let err = reminders::remove(
+        config.clone(),
+        forbidden_store(),
+        "Selector task",
+        "no-such-rule",
+    )
+    .await
+    .expect_err("unknown selector");
+    assert!(matches!(err, CommandError::UnknownReminderRule(sel) if sel == "no-such-rule"));
+
+    // A uuid-shaped selector that names nothing falls through to the
+    // prefix/offset legs and misses typed (never an early uuid error).
+    let err = reminders::remove(
+        config.clone(),
+        forbidden_store(),
+        "Selector task",
+        &first.task_id,
+    )
+    .await
+    .expect_err("a task id is not a rule id");
+    assert!(matches!(err, CommandError::UnknownReminderRule(_)));
+}
+
+/// R7c: the ambiguous-prefix shape, pinned at its lowest layer —
+/// `resolve_rule` over a fabricated state (random `UUIDv7`s cannot
+/// force a public-path prefix collision deterministically).
+#[test]
+fn r7c_colliding_rule_prefix_is_typed_ambiguous() {
+    use taskboard_app::commands::CommandError;
+    use taskboard_domain::{AppState, ReminderOffset, ReminderRule, ReminderRuleId, TaskId};
+
+    let task = TaskId::from(uuid::Uuid::from_u128(1));
+    // Two ids sharing a long hex prefix, deterministically.
+    let epoch = chrono::DateTime::UNIX_EPOCH;
+    let mk = |raw: u128| ReminderRule {
+        id: ReminderRuleId::from(uuid::Uuid::from_u128(raw)),
+        task,
+        offset: ReminderOffset::at_due(),
+        created_at: epoch,
+        updated_at: epoch,
+    };
+    let one = mk(0x0000_0000_0000_0000_0000_0000_0000_0001);
+    let two = mk(0x0000_0000_0000_0000_0000_0000_0000_0002);
+    let mut state = AppState::default();
+    state.reminders.rules.insert(one.id, one.clone());
+    state.reminders.rules.insert(two.id, two.clone());
+
+    // "00000000-000" — the first 12 chars both zero-padded uuids share.
+    let shared = "00000000-000";
+    assert!(one.id.as_uuid().to_string().starts_with(shared));
+    assert!(two.id.as_uuid().to_string().starts_with(shared));
+
+    let err = taskboard_app::commands::reminders::resolve_rule(&state, task, shared)
+        .expect_err("the shared prefix is ambiguous");
+    match err {
+        CommandError::AmbiguousReminderRule { candidates } => {
+            assert_eq!(
+                candidates,
+                vec![one.id.as_uuid().to_string(), two.id.as_uuid().to_string()],
+                "both full uuids, in rule-id order"
+            );
+        }
+        other => panic!("expected AmbiguousReminderRule, got {other:?}"),
+    }
+    // A short (sub-8) selector never prefixes.
+    assert!(matches!(
+        taskboard_app::commands::reminders::resolve_rule(&state, task, "0"),
+        Err(CommandError::UnknownReminderRule(_))
+    ));
 }
 
 /// R8: the clap surface — a bad duration is a usage error, `--list`
-/// conflicts with a selector, a bare `remind` has no mode.
+/// conflicts with a selector, a bare `remind` has no mode, and the
+/// `--remove` mode is coherent (alone with the task it parses; with any
+/// other mode it refuses; without the task it refuses).
 #[test]
 fn r8_clap_mode_and_value_rules() {
     let err = Cli::try_parse_from(["taskboard", "tasks", "remind", "--before", "5min", "t"])
@@ -282,6 +471,36 @@ fn r8_clap_mode_and_value_rules() {
     assert_eq!(task.as_deref(), Some("t"));
     assert_eq!(before, Some(TimeDelta::try_minutes(90).expect("90m")));
     assert!(!list);
+
+    // The --remove mode parses alone with the task, carrying the selector.
+    let ok = Cli::try_parse_from(["taskboard", "tasks", "remind", "t", "--remove", "30m"])
+        .expect("remove parses");
+    let Some(Command::Tasks {
+        cmd: TasksCmd::Remind { remove, .. },
+    }) = ok.command
+    else {
+        panic!("expected the Remind variant");
+    };
+    assert_eq!(remove.as_deref(), Some("30m"));
+
+    // Remove conflicts with every other mode.
+    for conflict in [
+        vec!["--remove", "30m", "--before", "10m"],
+        vec!["--remove", "30m", "--clear"],
+        vec!["--remove", "30m", "--list"],
+        vec!["--remove", "30m", "--off"],
+        vec!["--remove", "30m", "--on"],
+    ] {
+        let mut argv = vec!["taskboard", "tasks", "remind", "t"];
+        argv.extend(conflict);
+        let err = Cli::try_parse_from(argv).expect_err("--remove is exclusive");
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    // Remove without the task refuses.
+    let err = Cli::try_parse_from(["taskboard", "tasks", "remind", "--remove", "30m"])
+        .expect_err("--remove requires the task");
+    assert_eq!(err.exit_code(), 2);
 }
 
 /// R10: the session lane routes `Remind` end to end — one `dispatch_line`
@@ -324,6 +543,7 @@ async fn r10_session_lane_routes_remind() {
                     before: Some(TimeDelta::try_minutes(7).expect("7m")),
                     list: false,
                     clear: false,
+                    remove: None,
                     off: false,
                     on: false,
                 },
@@ -342,6 +562,7 @@ async fn r10_session_lane_routes_remind() {
                     before: None,
                     list: true,
                     clear: false,
+                    remove: None,
                     off: false,
                     on: false,
                 },
@@ -350,18 +571,37 @@ async fn r10_session_lane_routes_remind() {
         )
         .await;
         assert_eq!(code, 0);
+
+        // The Remove mode routes through the same session lane.
+        let code = dispatch_line(
+            &session,
+            &app,
+            Command::Tasks {
+                cmd: TasksCmd::Remind {
+                    task: Some("Session task".to_owned()),
+                    before: None,
+                    list: false,
+                    clear: false,
+                    remove: Some("7m".to_owned()),
+                    off: false,
+                    on: false,
+                },
+            },
+            &mut io,
+        )
+        .await;
+        assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
     }
     app.shutdown().await;
 
-    // The line's mutation was durable, and the JSON lanes emitted twice.
+    // The add and the removal were both durable; three JSON lanes emitted.
     let listed = list(&config).await;
-    assert_eq!(listed.rules.len(), 1);
-    assert_eq!(listed.rules[0].before, "7m");
+    assert_eq!(listed.rules, [], "the rule was added, then removed");
     let lines: Vec<&[u8]> = out
         .split(|b| *b == b'\n')
         .filter(|l| !l.is_empty())
         .collect();
-    assert_eq!(lines.len(), 2);
+    assert_eq!(lines.len(), 3);
 }
 
 /// R9: the `tasks list` due-marker column — banner truth from the
@@ -571,9 +811,9 @@ fn sink_dump(sink: &RecordingSink) -> String {
 /// fire during the seeding boots: no duedate, no occurrence.
 async fn e2e_seed_task_and_rule(config: &AppConfig, title: &str, before: TimeDelta) -> String {
     seed(config, "Todo", title).await;
-    reminders::set(config.clone(), forbidden_store(), title, Some(before))
+    reminders::add(config.clone(), forbidden_store(), title, Some(before))
         .await
-        .expect("rule set")
+        .expect("rule added")
         .rule_id
 }
 
