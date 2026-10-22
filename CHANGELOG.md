@@ -10,6 +10,27 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The app-data sidecar transport + the Deck capability seam (#207,
+  chunk 3): one capabilities probe per sync-actor lifetime
+  (`GET ocs/v2.php/cloud/capabilities`) derives a typed
+  `DeckFeatures` flag table (the codebase's only version switch —
+  unknown versions and probe failures degrade to the conservative
+  arm), and `scheduled`'s card-write encoding gates on it: native
+  `startdate` on a capable server, an explicit wire-null everywhere
+  else. The attachment-create form carries the additive `data` field
+  unconditionally (required by Deck 1.17.5, tolerated by 1.19.0) and
+  the create/update echo decode folds `extendedData.info.filename`
+  into the stored filename, so one wire form serves every measured
+  server; tier-2 gate fixtures pin both tiers (Deck 1.19.0 round trip,
+  the Deck 1.17.5 measured silent write-drop, and the capabilities
+  probe end-to-end). The sidecar half lands the versioned document
+  codec (`format` + board envelope over the `tasks`/`reminder-rules`
+  registry, unknown content preserved verbatim, `scheduled` as the
+  fourth modeled key), the typed `AppDataEvidence` on completed sync
+  reports, the `UpdateAppData` outbox op + storage tag (nothing
+  enqueues it yet), and the anchor-card ceremony's discovery/pick/
+  evidence half with the per-board in-memory document cache — the
+  document fold/flush and the scheduled lane rule are the next chunk.
 - The day-boundary preference (#345): `[preferences] day_start_time`
   (default `"00:00"`, device-local, never synced) sets the
   wall-clock time at which "today" begins — an unparseable value is
