@@ -117,8 +117,6 @@ async fn the_save_ceremony_persists_stores_and_attaches_without_leaking_the_secr
     let config = seed_array_config(dir.path(), &server.uri());
     let store = Arc::new(FakeCredentialStore::default());
     let (app, workspace) = booted_workspace(config.clone(), store.clone()).await;
-    let (state, _board, _stack_a, _stack_b) = (app.engine.shared_state(), (), (), ());
-    let _ = state;
     let (tx, rx) = ui_request_channel();
     let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
         rx,
