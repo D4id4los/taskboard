@@ -171,6 +171,28 @@ invocation.
   =occ user:add-app-password= — =app-password:assign= on newer releases)
   so this tier exercises the production auth path. CI runs the tier
   under the =it_nextcloud_docker= test-name filter.
+- *Tier 2 variant — the Deck 1.17.5 gate instance (local + CI-able;
+  CI wiring deliberately not wired as of 2026-10-22).* The compose
+  file interpolates the image (=TASKBOARD_IT_NC_IMAGE=) and the setup
+  script pins the Deck release (=DECK_VERSION=, installed from the
+  official =nextcloud-releases= GitHub tarball and verified via
+  =occ app:list=). A second instance runs alongside the singleton:
+  #+begin_src sh
+  TASKBOARD_IT_SUFFIX=-deck1175 TASKBOARD_IT_PORT=8371 \\
+  EXPORT_PREFIX=TASKBOARD_IT_DOCKER_DECK1175 \\
+  TASKBOARD_IT_NC_IMAGE=nextcloud:33-apache DECK_VERSION=v1.17.5 \\
+  scripts/nextcloud_it_setup.sh up
+  #+end_src
+  The =…_deck1175_*= fixtures carry the same =it_nextcloud_docker=
+  substring (the CI filter picks them up with zero workflow edits)
+  and skip when =TASKBOARD_IT_DOCKER_DECK1175_*​= is unset — the gate
+  run happens locally against the pinned instance. Rationale and
+  ruling: the 2026-10-22 characterization pass measured two Deck
+  1.17.5 divergences and the connector adapts to them via a
+  capability probe (see the known-server matrix below and
+  =.artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md=);
+  this tier is the fixture gate that keeps the 1.17.5 wire forms
+  honest.
 - *Tier 3 — private production server (local, manual only).* Proves the
   full story against the real deployment: its Nextcloud version, reverse
   proxy, and TLS chain. It /never/ runs in CI — no Nextcloud secret of
@@ -209,6 +231,27 @@ drift is version-specific:
   details) answers 404/403; write endpoints answer sporadic =500=s
   under load (the production client must not retry those — a retried
   create can double-apply — but tier scaffolding retries them).
+- *Deck 1.17.5 (docker gate instance, characterized 2026-10-22; full
+  evidence in
+  =.artifacts/reports/2026-10-22-deck-1175-transport-characterization-report.md=).*
+  Measured deviations from the 1.19.0 forms, all handled by the
+  capability seam (=.artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md=):
+  the attachment-create API route /requires/ an additive =data=
+  multipart field (bare 400 without it; 1.19.0 tolerates the field,
+  so the client sends it unconditionally); the create/update echo's
+  =extendedData= lacks =fileName= (the name sits under
+  =info.filename= — decode falls back); card =startdate= does not
+  exist (create ignores it, PUT silently drops it, reads lack the key
+  — the native scheduled lane is capability-gated, sidecar fallback
+  otherwise). Verified /identical/ on 1.17.5: the whole
+  board/stack/card/label surface incl. full-send card PUT (=owner= as
+  bare user-id string), duplicate-attachment 409, byte round-trip,
+  in-place content update (id/createdAt preserved, card stamp
+  advances to the attachment stamp), soft delete + PUT-restore
+  (tombstones stay listed; content even stays downloadable while
+  tombstoned), no validators on the content route, and the
+  capabilities endpoint carrying =deck.version=. 11 of 15 existing
+  docker fixtures pass unmodified.
 
 Hard rules binding the real-server tiers (2 and 3):
 
