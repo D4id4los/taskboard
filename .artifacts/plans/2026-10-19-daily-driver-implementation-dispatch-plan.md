@@ -34,7 +34,7 @@
 |---|---|---|---|---|
 | 1 | §3 chunk 1 | `feat/domain-task-field-family` | the four fields + clocks + `TaskChanges` slots + guard bools, `Effort`/`Importance`/`Urgency` types, `TASK_FIELDS` manifest + assertions 1–2, migration 0007 (incl. the rule-clock column, codec untouched), native `startdate` end-to-end (DTO + `merge_task` verdict + push shapes + client encode + wire pins), strategies + the Task-widening insta pass; **closes #208** | L |
 | 2 | §3 chunk 2 | `feat/domain-day-boundary` | `[preferences] day_start_time` config + typed validation, domain `days.rs::day_window` + proptests; **closes #345** | S |
-| 3 | §3 chunk 3 | `feat/sync-appdata-transport` | the dockerized **Deck 1.17.5** contract-fixture gate (attachment surface + `startdate` pins), anchor ceremony (constants, discovery, lazy creation, adoption), domain `appdata.rs` document codec + union + GC + verbatim preservation, `AppDataEvidence` on `SyncReport::Completed`, `LocalOp::UpdateAppData` arm + codec tag, `LoopState` metadata cache, download-during-pull, manifest assertion 3 | L |
+| 3 | §3 chunk 3 | `feat/sync-appdata-transport` | the dockerized **Deck 1.17.5** contract-fixture gate (attachment surface pins + the 1.17.5 `startdate`-unsupported pin), run green on both tiers via the **capability seam** (2026-10-22 ruling; addendum `2026-10-22-deck-version-capabilities-design-plan.md`: probe + `CARD_STARTDATE` flag, unconditional additive attachment-create `data` field, echo-decode fallback, capability-gated card conversion), anchor ceremony (constants, discovery, lazy creation, adoption), domain `appdata.rs` document codec + union + GC + verbatim preservation (`scheduled` = fourth modeled key), `AppDataEvidence` on `SyncReport::Completed`, `LocalOp::UpdateAppData` arm + codec tag, `LoopState` metadata cache, download-during-pull, manifest assertion 3 (reworded: four modeled keys, `scheduled` emission/fold capability-gated) | L |
 | 4 | §3 chunk 4 | `feat/sync-appdata-fold` | `fold_task_app_data` + rules fold in `apply_sync_report`, the guard mirror (`UpdateAppData` arm, value+clock copy), flush between pull and report + rebuild mode + fences, `plan_pushes` document group, `ReminderRule.updated_at` + stamping + storage wiring, enqueue sites (EditTask app slots + rule verbs), per-board sidecar health, CLI `status` warning + the anchor-title CLI guard, manifest assertion 4; **closes #207 + #244** | L |
 | 5 | §3 chunk 5 | `feat/app-task-field-surfaces` | `tasks edit` flags + `parse_effort`, `TaskRow` + phrase rendering, REPL completion, UI decoration carriers + phrase helpers, the anchor exact-title filter over list rows/counts, the sidecar-health badge; **closes #209** | M |
 | 6 | §3 chunk 6 | `feat/state-reminder-rule-verbs` | retire `SetReminderRule`; `AddReminderRule` (dedup by offset) + `RemoveReminderRule` + kept `ClearReminderRules`; CLI group `--remove` + selectors + receipts; UI task-editor rule-list composition; **closes #204** | M |
@@ -394,15 +394,28 @@ Report: verdict, findings, fixes, PR URL, green-checks + CLEAN, worktree removed
 - **Covers** (implementation plan §3 chunk 3 — normative; doc 1
   §3.1 D-S1, §3.2 D-S2, §3.4 D-S4 items 1–3, §3.5 D-S5 (arm + tag
   only), §4 the ruled live-tier gate; doc 2 D-F2's folded wire pins;
-  DDF-4/5/10): **first** the dockerized **Deck 1.17.5** harness
-  variant + contract-fixture run (upload part names, create-409,
-  update-in-place stable filename, soft delete + restore,
-  no-validators-on-content, `startdate` read/write) — a divergence
-  is STOP-and-report (MD-5); domain `appdata.rs` (new module:
-  envelope/sections/`TaskEntry`/`RulesEntry` types with the D-S2
-  shapes, the codec, the union + snapshot-absence GC as pure
-  functions, verbatim unknown-content preservation); the exported
-  anchor-title constant in the domain crate (`[taskboard]
+  DDF-4/5/10; **amended 2026-10-22 by the version-capabilities
+  addendum** `.artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md`
+  — the gate ran, found two divergences (measured:
+  `.artifacts/reports/2026-10-22-deck-1175-transport-characterization-report.md`),
+  and the ruling replaced expected-degraded with version-specific
+  parity): the **capability seam** — one capabilities probe
+  (`deck.version`), a typed `DeckFeatures` flag table
+  (`CARD_STARTDATE`; newest-known-wins for unknown versions;
+  conservative fallback on probe failure), the unconditional additive
+  attachment-create `data` field (required by 1.17.5, tolerated by
+  1.19.0), the echo-decode fallback (`fileName` → `info.filename`),
+  and capability-gated card conversion (`scheduled` → `None` on card
+  writes while the flag is false); the dockerized **Deck 1.17.5**
+  gate fixtures **green on both tiers** (attachment lifecycle
+  identical once the wire changes land; `…_deck1175_startdate_unsupported`
+  pins the measured 1.17.5 behavior; capabilities decode probe on
+  both tiers; a *new* divergence is still STOP-and-report per MD-5);
+  domain `appdata.rs` (new module: envelope/sections/`TaskEntry`/
+  `RulesEntry` types with the D-S2 shapes, the codec, the union +
+  snapshot-absence GC as pure functions, verbatim unknown-content
+  preservation; **`scheduled` = fourth modeled key** per D-V2); the
+  exported anchor-title constant in the domain crate (`[taskboard]
   app-data`); `outbox.rs` `LocalOp::UpdateAppData(TaskId)` arm;
   storage `codec.rs` tag `update_app_data`; `messages.rs`
   `AppDataEvidence {Document(Box<AppDataDocument>) | Absent |
@@ -413,19 +426,25 @@ Report: verdict, findings, fixes, PR URL, green-checks + CLEAN, worktree removed
   metadata capture from the already-paid bound-card detail refresh,
   `LoopState` `(lastModified, filesize)` + cached-document store
   (in-memory only), download-during-pull after `pull_snapshot`,
-  evidence construction; manifest assertion 3 (the `TaskEntry`
-  codec's modeled key set = `{effort, importance, urgency}`
-  exactly); the `SyncReport`-fixture insta pass. **Non-goals**: no
-  fold, no health derivation, no flush/rebuild, no enqueue sites
-  (all chunk 4); no CLI/UI.
-- **Acceptance**: the 1.17.5 fixtures green before the transport
-  code lands (or the divergence honestly STOP-reported); anchor
-  ceremony behaviors unit/tier-2 pinned (creation, adoption,
-  deterministic pick); a downloaded document reaches the engine as
-  typed evidence; `Absent` is silent; unknown sections/keys/entries
-  survive a codec round-trip verbatim (property test); assertion 3
-  green; no persisted validator kind added; gates green;
-  annotations on #207/#244.
+  evidence construction; manifest assertion 3 (**reworded**: modeled
+  key set = `{effort, importance, urgency, scheduled}`, with
+  `scheduled`'s emission/fold sites capability-gated — the gate lives
+  in the sync/pipeline layers, the pure codec stays version-blind);
+  the `SyncReport`-fixture insta pass. **Non-goals**: no fold, no
+  health derivation, no flush/rebuild, no enqueue sites, no
+  emission/fold gating *code* (the gating itself is chunk 4's —
+  chunk 3 lands the flag seam + the codec's fourth key + the gated
+  card-write encoding only); no CLI/UI.
+- **Acceptance**: the gate fixtures green on **both** tiers before
+  the transport commits land (the harness + fixture commits
+  `84ab03b`/`332c89b` are already on the branch; revise fixture
+  bodies per the addendum, never weaken); anchor ceremony behaviors
+  unit/tier-2 pinned (creation, adoption, deterministic pick); a
+  downloaded document reaches the engine as typed evidence; `Absent`
+  is silent; unknown sections/keys/entries survive a codec round-trip
+  verbatim (property test); assertion 3 (reworded) green; no
+  persisted validator kind added; gates green; annotations on
+  #207/#244.
 - **Traps**: the anchor title scan normalized (trim/casefold) — it
   is exact-match, deliberately unlike `ReconcileByTitle`; multiple
   unconfirmed matches touched instead of creating own; anchor
@@ -436,35 +455,42 @@ Report: verdict, findings, fixes, PR URL, green-checks + CLEAN, worktree removed
   exists); create-against-a-tombstone depended on (restore-then-
   replace is the designed path — chunk 4's, referenced not built);
   the document codec dropping unknown content on re-encode; fold/
-  flush code appearing early (scope creep into chunk 4).
+  flush code appearing early (scope creep into chunk 4); raw version
+  comparisons scattered through the connector instead of the typed
+  flag table; gating the `data` field behind a probe (it is
+  unconditional — verified tolerated by 1.19.0); gating the *codec*
+  on the flag (the pure codec always models `scheduled`; only the
+  sync/pipeline sites gate); a `scheduled` document key that folds or
+  emits while `CARD_STARTDATE` is true (that gating is chunk 4's and
+  must not appear early — chunk 3 ships the key in the codec and the
+  gated card-write encoding only).
 
-**Prompt 3.1 (planning):**
+**Prompt 3.1 (planning — RE-RUN 2026-10-22, after the version-capabilities ruling):**
 
 ```text
-You are the stage-1 PLANNING agent for chunk 3 of the daily-driver implementation round ("Sidecar transport: 1.17.5 gate + anchor ceremony + document codec + evidence", branch feat/sync-appdata-transport) in the taskboard repo at /home/viktoria/src/taskboard.
+You are the stage-1 PLANNING agent for chunk 3 of the daily-driver implementation round ("Sidecar transport: 1.17.5 gate + anchor ceremony + document codec + evidence"), RE-RUN after the 2026-10-22 version-capabilities ruling, branch feat/sync-appdata-transport in the taskboard repo at /home/viktoria/src/taskboard.
 
-Precondition (MD-9): chunks 1 and 2 merged on origin/main (verify their branch tips are contained in origin/main, or a signature file from each stage-1 plan's catalogue exists there). If not, STOP and report.
+Preconditions (MD-9): chunks 1 and 2 merged on origin/main (verify). Additionally: this branch ALREADY CARRIES commits from the first run — the harness parameterization (compose image interpolation + DECK_VERSION pin), the fixture set, the stage-2 STOP report, and the 2026-10-22 design addendum + characterization report + doc amendments (all to ride this chunk's PR). Verify with git log; do not redo or revert them. Recreate the worktree ../taskboard-WT-feat-sync-appdata-transport if missing (run scripts/worktree-doctor.sh first — nonzero = STOP).
 
-1. Read AGENTS.md, the implementation plan (§2 DDF-2/4/5/10, §3 chunk 3, §4–§6), the design doc .artifacts/plans/2026-10-18-appdata-sidecar-design-plan.md (§1 binding constraints, §2 the verified-baseline table, §3.1 D-S1, §3.2 D-S2, §3.4 D-S4 items 1–3, §3.5 D-S5's arm shape, §4 the ruled 1.17.5 gate, §6 ACCEPTED + the session's six rulings, §7 chunk interfaces), .artifacts/plans/2026-10-18-field-family-design-plan.md §3.2 D-F2 (the folded startdate wire pins), and the dispatch plan §1/§4.
-2. Read the seams: crates/taskboard-sync-nextcloud/src/{client.rs (the attachment content surface + AttachmentUpload + card create/encode), actor.rs (cycle, pull_snapshot, the bound-card detail refresh, LoopState), model.rs (Card.attachments, RemoteTask), tests/{contract.rs, common/, it_docker.rs, fixtures/deck}}, scripts/nextcloud_it_setup.sh + docs/testing_strategy.org §8 (the pinned docker tier), crates/taskboard-domain/src/{messages.rs (SyncReport), outbox.rs (LocalOp), pipeline.rs (context only)}, crates/taskboard-storage-sqlite/src/codec.rs (op-tag table + legacy-tag rejection), the landed transport plan .artifacts/plans/2026-10-15-sync-nextcloud-attachment-content-plan.md (the D1 wire traps this chunk builds on).
-3. Run scripts/worktree-doctor.sh first (nonzero = STOP), then create ../taskboard-WT-feat-sync-appdata-transport on a new branch feat/sync-appdata-transport off main.
-4. Write a TDD-first plan at .artifacts/plans/<today>-daily-driver-appdata-transport-plan.md settling at minimum: the 1.17.5 harness variant mechanics (image/version pin, what the existing setup script parameterizes, fixture naming/CI filter — zero ci.yml edits if achievable per the P2 precedent) and the exact fixture assertions incl. startdate both directions; the appdata.rs type + codec design (serde shapes verbatim per D-S2's illustrations, the union + GC pure functions' signatures, the verbatim-preservation property tests); where the anchor-title const lives in domain and how sync references it; the AppDataEvidence/AppDataUnreadable shapes and their Box decision; the anchor-ceremony state machine as actor-local helpers (discovery inputs/outputs, the pick rule, creation/adoption preconditions); the LoopState cache fields + cold-start semantics; assertion 3's mechanics; the insta-pass catalogue. Record every decision; a 1.17.5 divergence found during planning is STOP-and-report material (DDF-10), not a design input.
-5. Commit as: docs(plan): app-data sidecar transport. Do not implement; do not push.
+1. Read AGENTS.md; the implementation plan (§2 DDF-2/4/5/10 as amended, §3 chunk 3, §4–§6); the sidecar design doc's named sections + §6 rulings (its 2026-10-22 amendment note); THE NORMATIVE NEW INPUTS: .artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md (D-V1 capability seam, D-V2 the scheduled lane rule, D-V3 the unconditional wire changes + revised fixture set, §4 obligations) and .artifacts/reports/2026-10-22-deck-1175-transport-characterization-report.md (the measured evidence); the field-family design doc §3.2 D-F2 (as amended); the dispatch plan §1/§4 (chunk 3, as amended 2026-10-22).
+2. Read the seams (symbols, not line numbers): sync client.rs (attachment surface + AttachmentUpload/multipart_form + card create/encode + DeckClient::new for the probe), model.rs (ExtendedData decode — the fileName→info.filename fallback site), actor.rs (cycle, pull_snapshot, LoopState), tests/{contract.rs, common/mod.rs, it_docker.rs}; domain {messages.rs, outbox.rs, entities.rs TASK_FIELDS, pipeline.rs context only}; storage codec.rs.
+3. REVISE the existing stage-1 plan .artifacts/plans/2026-10-22-daily-driver-appdata-transport-plan.md in place (it is partially superseded): keep what stands (D6–D16: appdata.rs types, anchor.rs, evidence, op arm, LoopState cache, commit ladder shape); rewrite what the addendum changes (D4/D5 fixtures → the revised gate set green on BOTH tiers; new decisions for D-V1/D-V2/D-V3 wiring: probe+flags types and their home, the capabilities client method, card-conversion gating, the codec's fourth modeled key + reworded assertion 3, the deck1175 startdate fixture renamed to …_unsupported pinning the measured behavior). Record every decision; a NEW divergence against the characterized behavior is STOP-and-report (MD-5), not a design input.
+4. Commit as: docs(plan): app-data sidecar transport, version-capability revision. Do not implement; do not push.
 
-Report: plan path, decisions, risks (esp. any 1.17.5 findings), estimated diff size.
+Report: plan path, decisions, risks, estimated diff size (the remaining ladder on top of the already-landed commits).
 ```
 
-**Prompt 3.2 (implementation):**
+**Prompt 3.2 (implementation — RE-RUN 2026-10-22, after the version-capabilities ruling):**
 
 ```text
-You are the stage-2 IMPLEMENTATION agent for chunk 3 of the daily-driver implementation round ("Sidecar transport: 1.17.5 gate + anchor ceremony + document codec + evidence").
+You are the stage-2 IMPLEMENTATION agent for chunk 3 of the daily-driver implementation round ("Sidecar transport: 1.17.5 gate + anchor ceremony + document codec + evidence"), RE-RUN after the 2026-10-22 version-capabilities ruling.
 
-1. Read AGENTS.md, the implementation plan (§2 DDF-2/4/5/10, §3 chunk 3, §4), the sidecar design doc's named sections + §6 rulings, the dispatch plan §1/§4, and the stage-1 plan in ../taskboard-WT-feat-sync-appdata-transport (branch feat/sync-appdata-transport). Recreate the worktree if missing.
-2. Implement exactly per the approved plan, TDD, commits standalone. ORDER: the 1.17.5 harness variant + fixtures FIRST as standalone commits — if any fixture diverges from the D1-evidenced 1.19.0 behavior, STOP and report (MD-5: never silently adapt; the design's expected-degraded stance stands until the user rules). Then: domain appdata.rs + the anchor const + the evidence enum + the op arm; the storage op tag; the sync actor's ceremony + download + evidence. Hard rules: exact-title scan (no normalization); lazy actor-side creation (never an engine command); newest-stamp/lowest-id pick; the typed evidence enum (never a bare Option); LoopState in-memory cache only; unknown content preserved verbatim; NO fold/health/flush/enqueue (chunk 4's — scope creep); typed outcomes; no sleeps (pause/advance, deadline polls); tier-2 tests record what ran honestly; SPDX headers.
+1. Read AGENTS.md, the implementation plan (§2 DDF-2/4/5/10 as amended, §3 chunk 3, §4), the sidecar design doc's named sections + §6 rulings + its amendment note, the NORMATIVE addendum .artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md + the characterization report .artifacts/reports/2026-10-22-deck-1175-transport-characterization-report.md, the dispatch plan §1/§4 (as amended), and the REVISED stage-1 plan in ../taskboard-WT-feat-sync-appdata-transport (branch feat/sync-appdata-transport — it already carries the harness/fixture commits, the STOP report, the addendum, and your revised plan; recreate the worktree if missing, worktree-doctor first).
+2. Implement exactly per the revised plan, TDD, commits standalone. ORDER: (a) the capability seam — capabilities probe method + typed DeckFeatures flag table + card-conversion gating + the unconditional attachment-create data field + the echo-decode fallback, then the REVISED fixtures; run the gate GREEN ON BOTH TIERS (default + deck1175) before any transport commit — the deck1175 startdate fixture pins the measured unsupported behavior (…_unsupported); a NEW divergence vs the characterized behavior is STOP-and-report (MD-5). (b) domain appdata.rs (scheduled = fourth modeled key) + the anchor const + the evidence enum + the op arm; (c) the storage op tag; (d) the sync actor's ceremony + download + evidence. Hard rules: exact-title scan (no normalization); lazy actor-side creation (never an engine command); newest-stamp/lowest-id pick; the typed evidence enum (never a bare Option); LoopState in-memory cache only; unknown content preserved verbatim; NO fold/health/flush/enqueue and NO scheduled emission/fold gating code (chunk 4's — scope creep; chunk 3 ships the flag seam + codec key + gated card-write encoding only); flags derived from the typed table, never raw version comparisons in the connector; typed outcomes; no sleeps (pause/advance, deadline polls); tier-2 tests record what ran honestly; SPDX headers.
 3. Run the full gate suite (AGENTS §10) green, incl. cargo deny over any tree change.
-4. Bookkeeping: the CHANGELOG Unreleased line. No tracker edits (MD-4). No push, no PR.
+4. Bookkeeping: the CHANGELOG Unreleased line (cover the capability seam + sidecar transport). No tracker edits (MD-4). No push, no PR.
 
-Report: per-gate results, the 1.17.5 fixture outcomes explicitly, deviations.
+Report: per-gate results, the 1.17.5 gate outcomes explicitly (both tiers), deviations.
 ```
 
 **Prompt 3.3 (review):**
@@ -474,7 +500,7 @@ You are the stage-3 REVIEW agent for chunk 3 of the daily-driver implementation 
 
 1. Rebase onto main first (fetch, rebase origin/main, push --force-with-lease if rewritten); review git diff origin/main...HEAD against the post-rebase base.
 2. Read AGENTS.md, the implementation plan (§2 DDF-2/4/5/10, §3 chunk 3), the sidecar design doc §3.1/§3.2/§3.4(1–3)/§3.5/§4 + §6 rulings, the dispatch plan §1/§4 (code-quality mandate in full), the stage-1 plan.
-3. Functional focus — this chunk's traps: the 1.17.5 fixtures exist, run (or their absence is honestly recorded), and pin all six behaviors incl. startdate read+write; any silent adaptation to a divergence is a critical finding; the anchor scan is exact-match and the pick rule deterministic; adoption only on exactly-one-unconfirmed-match; creation is actor-side and lazy; the evidence enum carries the reason (Unreadable variants used, not stringly errors); Absent stays silent; the LoopState cache is in-memory only (any persisted validator kind for document content is a finding — no HTTP validators exist); the codec preserves unknown sections/keys/entries verbatim under re-encode (the property test proves it); null = cleared and tasks-section tombstones do not exist; assertion 3's key set is exactly {effort, importance, urgency} — a scheduled key is a finding; NO fold/flush/health/enqueue code (chunk 4 scope creep); the SyncReport insta pass is the widening only.
+3. Functional focus — this chunk's traps (as amended 2026-10-22): the gate fixtures run green on BOTH tiers (or their absence is honestly recorded) and pin all attachment behaviors + the 1.17.5 startdate-unsupported behavior; any adaptation beyond the ruled capability seam (addendum D-V1/D-V3) is a critical finding; the flag table is the only version switch (raw version comparisons in the connector are a finding); the additive data field is unconditional; the anchor scan is exact-match and the pick rule deterministic; adoption only on exactly-one-unconfirmed-match; creation is actor-side and lazy; the evidence enum carries the reason (Unreadable variants used, not stringly errors); Absent stays silent; the LoopState cache is in-memory only (any persisted validator kind for document content is a finding — no HTTP validators exist); the codec preserves unknown sections/keys/entries verbatim under re-encode (the property test proves it); null = cleared and tasks-section tombstones do not exist; assertion 3's key set is exactly {effort, importance, urgency, scheduled} with the reworded gate (codec version-blind; a codec-level capability branch is a finding); NO fold/flush/health/enqueue/scheduled-emission code (chunk 4 scope creep); the SyncReport insta pass is the widening only.
 4. Code-quality mandate (naming/comments/no speculative generality — no flush scaffolding; SRP — domain appdata.rs is pure, the actor only transports; one abstraction level).
 5. Re-run the gates (AGENTS §10); failures are findings. If docker is unavailable, record honestly (MD-5) — the fixtures must still be shown wired and locally green or explicitly marked.
 6. Fix everything on the branch (amend/reword).
@@ -510,7 +536,14 @@ Report: verdict, findings, fixes, PR URL, green-checks + CLEAN, worktree removed
   **anchor-title CLI guard** (typed refusal of rename/delete on an
   anchor-titled task, app layer only); the enqueue sites — `EditTask`
   app-field slots and the existing rule verbs; manifest assertion 4
-  (per-row op routing). **Non-goals**: no N-rule verbs (chunk 6),
+  (per-row op routing). **Amended 2026-10-22 (version-capabilities
+  addendum §2/§4)**: the scheduled lane gating lives here — the fold
+  materializes document `scheduled` keys only while `CARD_STARTDATE`
+  is false, the native `scheduled` verdict is skipped while false
+  (the always-absent remote must never clobber local state), the
+  flush emits none and the union lane-GC drops stale `scheduled`
+  keys while true, and assertion 4 routes `EditTask`'s scheduled slot
+  per the flag. **Non-goals**: no N-rule verbs (chunk 6),
   no UI badge (chunk 5), no adhoc (chunk 7), no cross-board repair
   (#350), no proofs/settings sections (reserved names only).
 - **Acceptance**: a tier-2 convergence test — app-field edit →
