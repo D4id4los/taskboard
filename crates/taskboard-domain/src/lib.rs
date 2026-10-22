@@ -28,6 +28,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod appdata;
 pub mod capabilities;
 pub mod clock;
 pub mod command;
@@ -54,6 +55,11 @@ pub mod test_support;
 #[cfg(test)]
 pub(crate) mod merge_testutil;
 
+pub use appdata::{
+    ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections, MODELED_TASK_FIELD_KEYS,
+    ModeledValue, RuleEntry, RulesEntry, TaskEntry, TaskFieldWrite, modeled_key,
+    prune_absent_cards, union,
+};
 pub use capabilities::{DeckFeatures, flags_for};
 pub use clock::{Clock, SystemClock};
 pub use command::{

@@ -10,6 +10,7 @@ description = "Pure domain types, entities, and inter-actor protocols for the ta
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
