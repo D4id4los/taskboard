@@ -275,6 +275,220 @@ pub fn merge_task(local: &Task, remote: &RemoteTask, ctx: &RemoteIndex) -> Task 
     merged
 }
 
+/// The sidecar document fold for one card's app fields (D-S3, chunk 4's
+/// D1): applies `entry`'s modeled writes onto `merged` (the post
+/// `merge_task` + `keep_task_intent` result) under embedded-clock LWW.
+///
+/// Semantics (all pinned by tests):
+///
+/// - **Lane gate**: the `scheduled` key folds only while
+///   `!native_scheduled` — while the connector natively owns
+///   `startdate`, the document's (stale) key must never write. The
+///   other three keys fold unconditionally. The gate is a parameter:
+///   this function never names [`crate::capabilities::DeckFeatures`]
+///   (the lane decision lives in the sync/pipeline layers).
+/// - **Clock rule**: the document's embedded clock `d` wins against the
+///   local field clock `l` iff `d >= l` (ties to the document — the
+///   fold's input is a *read* result, and an equal-stamp remote write
+///   the local side has not adopted yet must land); the winner's clock
+///   is `max(l, d)`. `null` is a cleared-field write competing by the
+///   same clock.
+/// - **Guard copy** (D-S6): a set `intent` flag for a key copies the
+///   *local* value **and** local clock over the fold result — a queued
+///   `UpdateAppData` op the cycle never saw outranks the document.
+/// - **Absence is not deletion**: a key absent from `entry.fields`
+///   writes nothing. **No presence facts**: the function returns
+///   nothing and touches no index (R3 stays snapshot-only). The card
+///   stamp (`remote_seen` / the entity stamp) is never read — the two
+///   clock domains stay disjoint.
+#[allow(dead_code)] // the fold call site lands in commit 3 (chunk 4's pipeline)
+pub(crate) fn fold_task_app_data(
+    merged: &mut Task,
+    local: &Task,
+    entry: &crate::appdata::TaskEntry,
+    intent: crate::pipeline::PendingTaskIntent,
+    native_scheduled: bool,
+) {
+    for (key, write) in &entry.fields {
+        // The lane gate: native ownership skips the document's key.
+        if native_scheduled && key == "scheduled" {
+            continue;
+        }
+        let (guard, doc_wins, d, l) = match key.as_str() {
+            "effort" => (
+                intent.effort,
+                matches!(write.value, crate::appdata::ModeledValue::Effort(_)),
+                write.clock,
+                local.clocks.effort,
+            ),
+            "importance" => (
+                intent.importance,
+                matches!(write.value, crate::appdata::ModeledValue::Importance(_)),
+                write.clock,
+                local.clocks.importance,
+            ),
+            "urgency" => (
+                intent.urgency,
+                matches!(write.value, crate::appdata::ModeledValue::Urgency(_)),
+                write.clock,
+                local.clocks.urgency,
+            ),
+            "scheduled" => (
+                intent.scheduled,
+                matches!(write.value, crate::appdata::ModeledValue::Scheduled(_)),
+                write.clock,
+                local.clocks.scheduled,
+            ),
+            // Unmodeled content never folds (the codec quarantined it).
+            _ => continue,
+        };
+        if guard {
+            // The guard copies the value AND the embedded clock: the
+            // next fold's comparison must see the local write's
+            // recency (a failed flush must not let a remote write
+            // adopt one cycle late).
+            match key.as_str() {
+                "effort" => {
+                    merged.effort = local.effort;
+                    merged.clocks.effort = l;
+                }
+                "importance" => {
+                    merged.importance = local.importance;
+                    merged.clocks.importance = l;
+                }
+                "urgency" => {
+                    merged.urgency = local.urgency;
+                    merged.clocks.urgency = l;
+                }
+                "scheduled" => {
+                    merged.scheduled = local.scheduled;
+                    merged.clocks.scheduled = l;
+                }
+                _ => unreachable!("matched above"),
+            }
+            continue;
+        }
+        if !doc_wins {
+            continue;
+        }
+        if d < l {
+            continue; // local stands; `merged` already holds it.
+        }
+        let clock = std::cmp::max(l, d);
+        match &write.value {
+            crate::appdata::ModeledValue::Effort(value) => {
+                merged.effort = *value;
+                merged.clocks.effort = clock;
+            }
+            crate::appdata::ModeledValue::Importance(value) => {
+                merged.importance = *value;
+                merged.clocks.importance = clock;
+            }
+            crate::appdata::ModeledValue::Urgency(value) => {
+                merged.urgency = *value;
+                merged.clocks.urgency = clock;
+            }
+            crate::appdata::ModeledValue::Scheduled(value) => {
+                merged.scheduled = *value;
+                merged.clocks.scheduled = clock;
+            }
+        }
+    }
+}
+
+/// The typed deltas one [`fold_reminder_rules`] pass produced: the
+/// pipeline turns them into persistence actions and applies the same
+/// deltas to the memory view, so batch and view cannot drift (the
+/// `apply_push_outcomes` style).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RuleFoldChanges {
+    /// Rules adopted or updated from the document.
+    pub upserts: Vec<crate::reminders::ReminderRule>,
+    /// Rules removed by a strictly newer tombstone.
+    pub deletes: Vec<crate::ids::ReminderRuleId>,
+}
+
+/// The sidecar document fold for one card's reminder rules (D-S3's
+/// rules counterpart, chunk 4's D2). Keyed by the rule UUID — the
+/// document *is* the rule's remote identity (D-S9):
+///
+/// - A live document rule with clock `>=` the local rule's
+///   `updated_at` updates the local rule (and reports an `Upsert`);
+///   an unknown UUID adopts the document's id verbatim.
+/// - A tombstone removes the local rule iff strictly newer (a rule
+///   re-created after a delete carries a newer clock and stands).
+/// - [`crate::appdata::RuleEntry::Verbatim`] content never folds.
+/// - **Guard** (`protected`): the whole task's rules fold is skipped
+///   and no deltas are reported — exactly D-S6's copy-over collapse
+///   (adopt→re-add, update→revert, tombstone→restore all reduce to
+///   "nothing happened" when the local set is the protected truth).
+///
+/// Tombstones never materialize locally: a tombstone for a rule this
+/// device never had leaves no trace.
+pub fn fold_reminder_rules(
+    rules: &mut std::collections::BTreeMap<
+        crate::ids::ReminderRuleId,
+        crate::reminders::ReminderRule,
+    >,
+    task: TaskId,
+    entry: &crate::appdata::RulesEntry,
+    protected: bool,
+) -> RuleFoldChanges {
+    let mut changes = RuleFoldChanges::default();
+    if protected {
+        return changes;
+    }
+    for (key, rule_entry) in &entry.rules {
+        match rule_entry {
+            crate::appdata::RuleEntry::Rule {
+                offset,
+                created,
+                clock,
+            } => {
+                let Ok(uuid) = uuid::Uuid::parse_str(key) else {
+                    continue; // an unparseable key is not a rule identity
+                };
+                let id = crate::ids::ReminderRuleId::from(uuid);
+                match rules.get_mut(&id) {
+                    Some(local) if *clock >= local.updated_at => {
+                        local.offset = *offset;
+                        local.created_at = *created;
+                        local.updated_at = std::cmp::max(local.updated_at, *clock);
+                        changes.upserts.push(local.clone());
+                    }
+                    Some(_) => {} // local stands
+                    None => {
+                        let adopted = crate::reminders::ReminderRule {
+                            id,
+                            task,
+                            offset: *offset,
+                            created_at: *created,
+                            updated_at: *clock,
+                        };
+                        rules.insert(id, adopted.clone());
+                        changes.upserts.push(adopted);
+                    }
+                }
+            }
+            crate::appdata::RuleEntry::Tombstone { clock } => {
+                let Ok(uuid) = uuid::Uuid::parse_str(key) else {
+                    continue;
+                };
+                let id = crate::ids::ReminderRuleId::from(uuid);
+                if rules
+                    .get(&id)
+                    .is_some_and(|local| *clock > local.updated_at)
+                {
+                    rules.remove(&id);
+                    changes.deletes.push(id);
+                }
+            }
+            crate::appdata::RuleEntry::Verbatim(_) => {}
+        }
+    }
+    changes
+}
+
 /// R3 — observed remote absence of a bound card: delete-wins fallback.
 /// The tombstone's write time is the *observation* time (`observed_at`,
 /// i.e. "now" passed in by the engine); the remote binding is cleared.
@@ -1517,6 +1731,475 @@ mod tests {
         assert_eq!(finalized.remote_seen, Some(ts(BASE + 120)));
     }
 
+    // ---- chunk 4: the sidecar fold primitives -------------------------
+
+    use crate::appdata::{ModeledValue, RuleEntry, RulesEntry, TaskEntry, TaskFieldWrite};
+    use crate::pipeline::PendingTaskIntent;
+
+    fn fw(value: ModeledValue, clock_secs: i64) -> TaskFieldWrite {
+        TaskFieldWrite {
+            value,
+            clock: ts(clock_secs),
+        }
+    }
+
+    fn rules_entry(entries: &[(&str, RuleEntry)]) -> RulesEntry {
+        RulesEntry {
+            rules: entries
+                .iter()
+                .map(|(k, e)| ((*k).to_owned(), e.clone()))
+                .collect(),
+            unknown: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn rule_with_clock(updated_secs: i64) -> crate::reminders::ReminderRule {
+        crate::reminders::ReminderRule {
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+            task: TaskId::from(uuid::Uuid::from_u128(1)),
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: ts(BASE + 100),
+            updated_at: ts(updated_secs),
+        }
+    }
+
+    #[test]
+    fn fold_adopts_newer_document_values_with_the_embedded_clock() {
+        let mut merged = bound_task(1);
+        let local = bound_task(1);
+        let entry = TaskEntry {
+            fields: [
+                (
+                    "effort".to_owned(),
+                    fw(
+                        ModeledValue::Effort(Some(crate::entities::Effort::new(900))),
+                        BASE + 500,
+                    ),
+                ),
+                (
+                    "importance".to_owned(),
+                    fw(
+                        ModeledValue::Importance(Some(crate::entities::Importance::High)),
+                        BASE + 500,
+                    ),
+                ),
+            ]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.effort, Some(crate::entities::Effort::new(900)));
+        assert_eq!(merged.clocks.effort, ts(BASE + 500));
+        assert_eq!(merged.importance, Some(crate::entities::Importance::High));
+        assert_eq!(merged.clocks.importance, ts(BASE + 500));
+        // Untouched native fields stay put.
+        assert_eq!(merged.title, local.title);
+    }
+
+    #[test]
+    fn fold_keeps_newer_local_values_and_ties_lose_to_the_document() {
+        let mut local = bound_task(1);
+        local.urgency = Some(crate::entities::Urgency::High);
+        local.clocks.urgency = ts(BASE + 600);
+        let mut merged = local.clone();
+        // Document older than local: local stands.
+        let entry = TaskEntry {
+            fields: [(
+                "urgency".to_owned(),
+                fw(
+                    ModeledValue::Urgency(Some(crate::entities::Urgency::Low)),
+                    BASE + 500,
+                ),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.urgency, Some(crate::entities::Urgency::High));
+        assert_eq!(merged.clocks.urgency, ts(BASE + 600));
+
+        // Tie: the document wins (the fold's input is a read result).
+        let entry_tie = TaskEntry {
+            fields: [(
+                "urgency".to_owned(),
+                fw(
+                    ModeledValue::Urgency(Some(crate::entities::Urgency::Low)),
+                    BASE + 600,
+                ),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry_tie,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.urgency, Some(crate::entities::Urgency::Low));
+        assert_eq!(merged.clocks.urgency, ts(BASE + 600));
+    }
+
+    #[test]
+    fn fold_treats_a_cleared_field_as_an_ordinary_write() {
+        let mut merged = bound_task(1);
+        let mut local = bound_task(1);
+        local.effort = Some(crate::entities::Effort::new(5));
+        local.clocks.effort = ts(BASE + 100);
+        let entry = TaskEntry {
+            fields: [(
+                "effort".to_owned(),
+                fw(ModeledValue::Effort(None), BASE + 500),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.effort, None, "null is a cleared-field write");
+        assert_eq!(merged.clocks.effort, ts(BASE + 500));
+
+        // An older clear never deletes a newer local value.
+        let older = TaskEntry {
+            fields: [(
+                "effort".to_owned(),
+                fw(ModeledValue::Effort(None), BASE + 50),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &older,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.effort, None, "already cleared");
+    }
+
+    #[test]
+    fn fold_skips_the_scheduled_key_while_the_connector_owns_it() {
+        let mut local = bound_task(1);
+        local.scheduled = Some(ts(BASE + 100));
+        local.clocks.scheduled = ts(BASE + 100);
+        let mut merged = local.clone();
+        let entry = TaskEntry {
+            fields: [(
+                "scheduled".to_owned(),
+                fw(ModeledValue::Scheduled(Some(ts(BASE + 900))), BASE + 500),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            true,
+        );
+        assert_eq!(
+            merged.scheduled,
+            Some(ts(BASE + 100)),
+            "native ownership blocks the fold"
+        );
+        assert_eq!(merged.clocks.scheduled, ts(BASE + 100));
+        // While the flag is false, the same document folds.
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged.scheduled, Some(ts(BASE + 900)));
+    }
+
+    #[test]
+    fn fold_guard_copies_the_value_and_the_embedded_clock() {
+        let mut local = bound_task(1);
+        local.effort = Some(crate::entities::Effort::new(7));
+        local.clocks.effort = ts(BASE + 400);
+        let mut merged = local.clone();
+        let entry = TaskEntry {
+            fields: [(
+                "effort".to_owned(),
+                fw(
+                    ModeledValue::Effort(Some(crate::entities::Effort::new(900))),
+                    BASE + 500,
+                ),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        let intent = PendingTaskIntent {
+            effort: true,
+            ..PendingTaskIntent::default()
+        };
+        fold_task_app_data(&mut merged, &local, &entry, intent, false);
+        assert_eq!(merged.effort, Some(crate::entities::Effort::new(7)));
+        assert_eq!(merged.clocks.effort, ts(BASE + 400), "the clock copies too");
+    }
+
+    #[test]
+    fn fold_absence_writes_nothing_and_the_card_stamp_is_never_read() {
+        let mut merged = bound_task(1);
+        let mut local = bound_task(1);
+        local.effort = Some(crate::entities::Effort::new(3));
+        local.clocks.effort = ts(BASE + 300);
+        local.remote_seen = Some(ts(9_000));
+        // An entry with no modeled keys: nothing folds.
+        let entry = TaskEntry::default();
+        let before = merged.clone();
+        fold_task_app_data(
+            &mut merged,
+            &local,
+            &entry,
+            PendingTaskIntent::default(),
+            false,
+        );
+        assert_eq!(merged, before, "absence is not deletion; nothing writes");
+    }
+
+    #[test]
+    fn fold_guarded_scheduled_copies_local_over_a_newer_document_write() {
+        // The scheduled lane guard: while a post-read UpdateAppData op
+        // is queued, the fold result takes the local value + clock even
+        // though the document's clock is newer.
+        let mut local = bound_task(1);
+        local.scheduled = Some(ts(BASE + 800));
+        local.clocks.scheduled = ts(BASE + 800);
+        let mut merged = local.clone();
+        let entry = TaskEntry {
+            fields: [(
+                "scheduled".to_owned(),
+                fw(ModeledValue::Scheduled(Some(ts(BASE + 100))), BASE + 900),
+            )]
+            .into(),
+            unmodeled: std::collections::BTreeMap::new(),
+        };
+        let intent = PendingTaskIntent {
+            scheduled: true,
+            ..PendingTaskIntent::default()
+        };
+        fold_task_app_data(&mut merged, &local, &entry, intent, false);
+        assert_eq!(merged.scheduled, Some(ts(BASE + 800)));
+        assert_eq!(merged.clocks.scheduled, ts(BASE + 800));
+    }
+
+    #[test]
+    fn rules_fold_adopts_and_updates_by_the_embedded_clock() {
+        let mut rules = std::collections::BTreeMap::new();
+        let existing = rule_with_clock(BASE + 100);
+        rules.insert(existing.id, existing.clone());
+        let new_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(11));
+        let entry = rules_entry(&[
+            (
+                "00000000-0000-0000-0000-00000000000a",
+                RuleEntry::Rule {
+                    offset: crate::reminders::ReminderOffset::before(
+                        chrono::TimeDelta::try_minutes(-30).unwrap(),
+                    )
+                    .unwrap(),
+                    created: ts(BASE + 100),
+                    clock: ts(BASE + 500),
+                },
+            ),
+            (
+                "00000000-0000-0000-0000-00000000000b",
+                RuleEntry::Rule {
+                    offset: crate::reminders::ReminderOffset::at_due(),
+                    created: ts(BASE + 400),
+                    clock: ts(BASE + 400),
+                },
+            ),
+        ]);
+        let task = TaskId::from(uuid::Uuid::from_u128(1));
+        let changes = fold_reminder_rules(&mut rules, task, &entry, false);
+        assert_eq!(changes.upserts.len(), 2);
+        assert_eq!(changes.deletes, Vec::new());
+        // Update: the offset and the clock landed.
+        let updated = &rules[&existing.id];
+        assert_eq!(
+            updated.offset,
+            crate::reminders::ReminderOffset::before(chrono::TimeDelta::try_minutes(-30).unwrap())
+                .unwrap()
+        );
+        assert_eq!(updated.updated_at, ts(BASE + 500));
+        // Adopt: the document's UUID verbatim.
+        assert!(rules.contains_key(&new_id));
+        assert_eq!(rules[&new_id].task, task);
+        assert_eq!(rules[&new_id].updated_at, ts(BASE + 400));
+    }
+
+    #[test]
+    fn rules_fold_lets_a_newer_local_rule_stand() {
+        let mut rules = std::collections::BTreeMap::new();
+        let existing = rule_with_clock(BASE + 600);
+        rules.insert(existing.id, existing.clone());
+        let entry = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000a",
+            RuleEntry::Rule {
+                offset: crate::reminders::ReminderOffset::at_due(),
+                created: ts(BASE + 100),
+                clock: ts(BASE + 500),
+            },
+        )]);
+        let changes = fold_reminder_rules(
+            &mut rules,
+            TaskId::from(uuid::Uuid::from_u128(1)),
+            &entry,
+            false,
+        );
+        assert_eq!(changes.upserts, Vec::new());
+        assert_eq!(rules[&existing.id].updated_at, ts(BASE + 600));
+    }
+
+    #[test]
+    fn rules_fold_tombstones_only_strictly_newer() {
+        let mut rules = std::collections::BTreeMap::new();
+        let existing = rule_with_clock(BASE + 500);
+        rules.insert(existing.id, existing.clone());
+        // Equal clock: the tombstone does not win (re-create after delete).
+        let entry = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000a",
+            RuleEntry::Tombstone {
+                clock: ts(BASE + 500),
+            },
+        )]);
+        let changes = fold_reminder_rules(
+            &mut rules,
+            TaskId::from(uuid::Uuid::from_u128(1)),
+            &entry,
+            false,
+        );
+        assert_eq!(changes.deletes, Vec::new());
+        assert!(rules.contains_key(&existing.id));
+        // Strictly newer: gone.
+        let newer = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000a",
+            RuleEntry::Tombstone {
+                clock: ts(BASE + 501),
+            },
+        )]);
+        let changes = fold_reminder_rules(
+            &mut rules,
+            TaskId::from(uuid::Uuid::from_u128(1)),
+            &newer,
+            false,
+        );
+        assert_eq!(changes.deletes, vec![existing.id]);
+        assert!(!rules.contains_key(&existing.id));
+        // A tombstone for a rule this device never had leaves no trace.
+        let stranger = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000c",
+            RuleEntry::Tombstone {
+                clock: ts(BASE + 999),
+            },
+        )]);
+        let changes = fold_reminder_rules(
+            &mut rules,
+            TaskId::from(uuid::Uuid::from_u128(1)),
+            &stranger,
+            false,
+        );
+        assert_eq!(changes.deletes, Vec::new());
+        assert_eq!(rules.len(), 0);
+    }
+
+    #[test]
+    fn rules_fold_skips_verbatim_and_unparseable_keys() {
+        let mut rules = std::collections::BTreeMap::new();
+        let entry = rules_entry(&[
+            (
+                "not-a-uuid",
+                RuleEntry::Tombstone {
+                    clock: ts(BASE + 999),
+                },
+            ),
+            (
+                "not-a-uuid-either",
+                RuleEntry::Rule {
+                    offset: crate::reminders::ReminderOffset::at_due(),
+                    created: ts(BASE + 1),
+                    clock: ts(BASE + 2),
+                },
+            ),
+            (
+                "00000000-0000-0000-0000-00000000000d",
+                RuleEntry::Verbatim(serde_json::json!({ "future": true })),
+            ),
+        ]);
+        let changes = fold_reminder_rules(
+            &mut rules,
+            TaskId::from(uuid::Uuid::from_u128(1)),
+            &entry,
+            false,
+        );
+        assert_eq!(changes, crate::merge::RuleFoldChanges::default());
+    }
+
+    #[test]
+    fn rules_fold_guarded_skip_equals_copy_over() {
+        // D-S6's collapse: for an adopt+update+tombstone triple, the
+        // protected skip must leave exactly the copy-over end state.
+        let local_a = rule_with_clock(100); // update target
+        let mut rules = std::collections::BTreeMap::new();
+        rules.insert(local_a.id, local_a.clone());
+        let entry = rules_entry(&[
+            (
+                "00000000-0000-0000-0000-00000000000a",
+                RuleEntry::Rule {
+                    offset: crate::reminders::ReminderOffset::at_due(),
+                    created: ts(BASE + 100),
+                    clock: ts(BASE + 900),
+                },
+            ),
+            (
+                "00000000-0000-0000-0000-00000000000b",
+                RuleEntry::Rule {
+                    offset: crate::reminders::ReminderOffset::at_due(),
+                    created: ts(BASE + 1),
+                    clock: ts(BASE + 1),
+                },
+            ),
+            (
+                "00000000-0000-0000-0000-00000000000a-x",
+                RuleEntry::Tombstone {
+                    clock: ts(BASE + 900),
+                },
+            ),
+        ]);
+        let mut skipped = rules.clone();
+        let changes = fold_reminder_rules(
+            &mut skipped,
+            TaskId::from(uuid::Uuid::from_u128(1)),
+            &entry,
+            true,
+        );
+        assert_eq!(changes, crate::merge::RuleFoldChanges::default());
+        assert_eq!(skipped, rules, "skip == nothing happened");
+    }
+
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(256))]
 
@@ -1609,6 +2292,39 @@ mod tests {
 
             let again = merge_task(&merged, &remote, &ctx);
             prop_assert_eq!(again, merged, "idempotent at the extremes");
+        }
+
+        #[test]
+        fn fold_never_decreases_app_clocks_and_the_guard_dominates(
+            doc_secs in 0_i64..10_000,
+            local_secs in 0_i64..10_000,
+            guarded in proptest::bool::ANY,
+            effort in proptest::option::of(0_u64..1_000_000),
+        ) {
+            let mut local = bound_task(1);
+            local.clocks.effort = ts(local_secs);
+            let entry = TaskEntry {
+                fields: [(
+                    "effort".to_owned(),
+                    fw(ModeledValue::Effort(effort.map(crate::entities::Effort::new)), doc_secs),
+                )]
+                .into(),
+                unmodeled: std::collections::BTreeMap::new(),
+            };
+            let intent = PendingTaskIntent {
+                effort: guarded,
+                ..PendingTaskIntent::default()
+            };
+            let mut merged = local.clone();
+            fold_task_app_data(&mut merged, &local, &entry, intent, false);
+            prop_assert!(merged.clocks.effort >= local.clocks.effort);
+            if guarded || doc_secs < local_secs {
+                prop_assert_eq!(merged.effort, local.effort);
+                prop_assert_eq!(merged.clocks.effort, local.clocks.effort);
+            } else {
+                prop_assert_eq!(merged.effort, effort.map(crate::entities::Effort::new));
+                prop_assert_eq!(merged.clocks.effort, ts(doc_secs));
+            }
         }
     }
 }

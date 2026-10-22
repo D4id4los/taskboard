@@ -15,7 +15,10 @@
 ///
 /// One field per ruled flag; additive rows extend the struct (and the
 /// table in [`flags_for`]) together.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `Default` is the D-V1 fallback (`card_startdate: false` == the
+/// conservative arm): every not-yet-reported board routes `scheduled`
+/// to the sidecar document lane.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeckFeatures {
     /// Native card `startdate` write support: `false` for Deck 1.17.x
     /// (create ignores the field, the full-send PUT silently drops it,

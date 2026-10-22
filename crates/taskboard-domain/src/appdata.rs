@@ -564,6 +564,127 @@ pub fn prune_absent_cards(
     pruned
 }
 
+/// Builds one card's overlay `TaskEntry` from the task's current local
+/// truth (chunk 4's D11 overlay assembly): the three always-app keys as
+/// `{v, clock}` full-send writes out of the task's values + `TaskClocks`
+/// slots, and `scheduled` only while `!native_scheduled` (the D-V2
+/// emission gating — the decision is the caller's, the transform stays
+/// version-blind data).
+#[must_use]
+pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> TaskEntry {
+    let mut fields = BTreeMap::new();
+    let effort = ModeledValue::Effort(task.effort);
+    fields.insert(
+        "effort".to_owned(),
+        TaskFieldWrite {
+            value: effort,
+            clock: task.clocks.effort,
+        },
+    );
+    let importance = ModeledValue::Importance(task.importance);
+    fields.insert(
+        "importance".to_owned(),
+        TaskFieldWrite {
+            value: importance,
+            clock: task.clocks.importance,
+        },
+    );
+    let urgency = ModeledValue::Urgency(task.urgency);
+    fields.insert(
+        "urgency".to_owned(),
+        TaskFieldWrite {
+            value: urgency,
+            clock: task.clocks.urgency,
+        },
+    );
+    if !native_scheduled {
+        let scheduled = ModeledValue::Scheduled(task.scheduled);
+        fields.insert(
+            "scheduled".to_owned(),
+            TaskFieldWrite {
+                value: scheduled,
+                clock: task.clocks.scheduled,
+            },
+        );
+    }
+    TaskEntry {
+        fields,
+        unmodeled: BTreeMap::new(),
+    }
+}
+
+/// Builds one card's overlay `RulesEntry` from the task's local rules:
+/// each as `Rule { offset, created, clock: updated_at }` keyed by the
+/// rule UUID (D-S9). Tombstones are *derived* separately (see
+/// [`derive_rule_tombstones`]) — the overlay never invents them.
+#[must_use]
+pub fn rules_entry_for(
+    rules: &BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
+    task: crate::ids::TaskId,
+) -> RulesEntry {
+    let mapped: BTreeMap<String, RuleEntry> = rules
+        .values()
+        .filter(|rule| rule.task == task)
+        .map(|rule| {
+            (
+                rule.id.as_uuid().to_string(),
+                RuleEntry::Rule {
+                    offset: rule.offset,
+                    created: rule.created_at,
+                    clock: rule.updated_at,
+                },
+            )
+        })
+        .collect();
+    RulesEntry {
+        rules: mapped,
+        unknown: BTreeMap::new(),
+    }
+}
+
+/// Derives the removal tombstones for one card's flush (chunk 4's D8):
+/// every key in `base.rules` that decodes as a *live* `Rule` and has no
+/// local rule with that UUID gets `{ deleted: true, clock }` — the
+/// removing command's op stamp is the removal instant. Existing
+/// tombstones pass through untouched (no re-stamp); `Verbatim` entries
+/// are never ordered against. Absence-from-base is never an input: only
+/// base-*present* live rules missing locally tombstone, so a truncated
+/// foreign view can never cause a deletion here.
+#[must_use]
+pub fn derive_rule_tombstones(
+    base: &RulesEntry,
+    local: &BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
+    clock: DateTime<Utc>,
+) -> BTreeMap<String, RuleEntry> {
+    base.rules
+        .iter()
+        .filter_map(|(key, entry)| {
+            let RuleEntry::Rule { .. } = entry else {
+                return None; // tombstones pass through, verbatim never ordered
+            };
+            let uuid = uuid::Uuid::parse_str(key).ok()?;
+            let id = crate::ids::ReminderRuleId::from(uuid);
+            (!local.contains_key(&id)).then(|| (key.clone(), RuleEntry::Tombstone { clock }))
+        })
+        .collect()
+}
+
+/// The flush's lane GC (D-V2): while the connector natively owns
+/// `startdate`, every modeled `scheduled` key is removed from the tasks
+/// entries (native owns the field; the document must not carry a stale
+/// key). `drop == false` returns the document unchanged. The flag is a
+/// parameter — the lane decision lives in the sync layer.
+#[must_use]
+pub fn lane_gc_scheduled(document: &AppDataDocument, drop: bool) -> AppDataDocument {
+    let mut gc = document.clone();
+    if drop && let Some(tasks) = gc.sections.tasks.as_mut() {
+        for entry in tasks.values_mut() {
+            entry.fields.remove("scheduled");
+        }
+    }
+    gc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1058,6 +1179,185 @@ mod tests {
         assert!(decode_field_write("task-kind", &serde_json::json!({ "v": 1 })).is_none());
     }
 
+    // ---- chunk 4: overlay builders, tombstone derivation, lane GC ----
+
+    use crate::entities::{Task, TaskClocks};
+    use crate::ids::{ReminderRuleId, TaskId};
+
+    fn task_fixture() -> Task {
+        let t = |secs: i64| Utc.timestamp_opt(secs, 0).unwrap();
+        Task {
+            id: TaskId::from(uuid::Uuid::from_u128(1)),
+            remote: None,
+            title: "task".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: Some(t(9_000)),
+            done: None,
+            stack: crate::ids::StackId::from(uuid::Uuid::from_u128(2)),
+            order: 0,
+            labels: std::collections::BTreeSet::default(),
+            effort: Some(Effort::new(900)),
+            importance: Some(Importance::High),
+            urgency: None,
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: t(1_000),
+                description: t(1_000),
+                duedate: t(1_000),
+                scheduled: t(1_100),
+                done: t(1_000),
+                position: t(1_000),
+                labels: t(1_000),
+                effort: t(1_200),
+                importance: t(1_300),
+                urgency: t(1_400),
+                archived: t(1_000),
+                deleted: t(1_000),
+            },
+            remote_seen: None,
+        }
+    }
+
+    #[test]
+    fn task_entry_builds_full_send_writes_from_values_and_clocks() {
+        let task = task_fixture();
+        let entry = task_entry_for(&task, false);
+        assert_eq!(entry.fields.len(), 4);
+        assert_eq!(
+            entry.fields["effort"],
+            TaskFieldWrite {
+                value: ModeledValue::Effort(Some(Effort::new(900))),
+                clock: task.clocks.effort,
+            }
+        );
+        assert_eq!(
+            entry.fields["scheduled"].value,
+            ModeledValue::Scheduled(Some(task.scheduled.unwrap()))
+        );
+        // Native ownership: the scheduled key is not emitted.
+        let native = task_entry_for(&task, true);
+        assert_eq!(native.fields.len(), 3);
+        assert!(!native.fields.contains_key("scheduled"));
+    }
+
+    #[test]
+    fn rules_entry_builds_live_entries_keyed_by_uuid() {
+        let task = task_fixture();
+        let mut rules = std::collections::BTreeMap::new();
+        let rule = crate::reminders::ReminderRule {
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+            task: task.id,
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: task.clocks.title,
+            updated_at: task.clocks.effort,
+        };
+        let foreign = crate::reminders::ReminderRule {
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(11)),
+            task: TaskId::from(uuid::Uuid::from_u128(99)),
+            ..rule.clone()
+        };
+        rules.insert(rule.id, rule.clone());
+        rules.insert(foreign.id, foreign);
+        let entry = rules_entry_for(&rules, task.id);
+        assert_eq!(entry.rules.len(), 1, "only the task's own rules");
+        assert_eq!(
+            entry.rules[&rule.id.as_uuid().to_string()],
+            RuleEntry::Rule {
+                offset: rule.offset,
+                created: rule.created_at,
+                clock: rule.updated_at,
+            }
+        );
+    }
+
+    #[test]
+    fn tombstone_derivation_tombstones_exactly_the_locally_absent_live_rules() {
+        let clock = ts(5_000);
+        let kept = ReminderRuleId::from(uuid::Uuid::from_u128(16));
+        let mut local = std::collections::BTreeMap::new();
+        local.insert(
+            kept,
+            crate::reminders::ReminderRule {
+                id: kept,
+                task: TaskId::from(uuid::Uuid::from_u128(1)),
+                offset: crate::reminders::ReminderOffset::at_due(),
+                created_at: ts(1),
+                updated_at: ts(2),
+            },
+        );
+        let base = RulesEntry {
+            rules: [
+                (
+                    "00000000-0000-0000-0000-00000000000a",
+                    RuleEntry::Rule {
+                        offset: crate::reminders::ReminderOffset::at_due(),
+                        created: ts(1),
+                        clock: ts(1),
+                    },
+                ),
+                // An existing tombstone passes through untouched.
+                (
+                    "00000000-0000-0000-0000-00000000000b",
+                    RuleEntry::Tombstone { clock: ts(3) },
+                ),
+                // Verbatim is never ordered against.
+                (
+                    "00000000-0000-0000-0000-00000000000c",
+                    RuleEntry::Verbatim(serde_json::json!(1)),
+                ),
+            ]
+            .into_iter()
+            .map(|(k, e)| (k.to_owned(), e))
+            .collect(),
+            unknown: BTreeMap::new(),
+        };
+        let derived = derive_rule_tombstones(&base, &local, clock);
+        assert_eq!(derived.len(), 1);
+        assert_eq!(
+            derived["00000000-0000-0000-0000-00000000000a"],
+            RuleEntry::Tombstone { clock }
+        );
+    }
+
+    #[test]
+    fn lane_gc_drops_only_the_modeled_scheduled_keys() {
+        let mut doc = sample_document();
+        // An unmodeled key named "scheduled" inside `unmodeled` must survive.
+        doc.sections
+            .tasks
+            .as_mut()
+            .unwrap()
+            .get_mut("55")
+            .unwrap()
+            .unmodeled
+            .insert("scheduled".to_owned(), serde_json::json!("strange"));
+        let gc = lane_gc_scheduled(&doc, true);
+        for entry in gc.sections.tasks.as_ref().unwrap().values() {
+            assert!(!entry.fields.contains_key("scheduled"));
+        }
+        assert_eq!(
+            gc.sections.tasks.as_ref().unwrap()["55"].unmodeled["scheduled"],
+            serde_json::json!("strange"),
+            "unmodeled content is never touched"
+        );
+        // Everything else is identical.
+        let mut without = doc.clone();
+        without
+            .sections
+            .tasks
+            .as_mut()
+            .unwrap()
+            .values_mut()
+            .for_each(|e| {
+                e.fields.remove("scheduled");
+            });
+        assert_eq!(gc, without);
+        // drop == false is the identity.
+        assert_eq!(lane_gc_scheduled(&doc, false), doc);
+    }
+
     fn sample_document() -> AppDataDocument {
         let sections = AppDataSections {
             tasks: Some(
@@ -1173,6 +1473,71 @@ mod tests {
                 &back["sections"]["tasks"]["55"]["fields"][entry_key.as_str()],
                 &raw["sections"]["tasks"]["55"]["fields"][entry_key.as_str()]
             );
+        }
+
+        #[test]
+        #[test]
+        fn tombstone_derivation_never_invents_keys(
+            present in proptest::bool::ANY,
+            clock in 0_i64..4_000_000_000,
+        ) {
+            let id = "00000000-0000-0000-0000-00000000000a";
+            let base = RulesEntry {
+                rules: [(id.to_owned(), RuleEntry::Rule {
+                    offset: crate::reminders::ReminderOffset::at_due(),
+                    created: ts(1),
+                    clock: ts(2),
+                })].into(),
+                unknown: BTreeMap::new(),
+            };
+            let mut local = BTreeMap::new();
+            if present {
+                local.insert(
+                    ReminderRuleId::from(uuid::Uuid::from_u128(0xa)),
+                    crate::reminders::ReminderRule {
+                        id: ReminderRuleId::from(uuid::Uuid::from_u128(0xa)),
+                        task: TaskId::from(uuid::Uuid::from_u128(1)),
+                        offset: crate::reminders::ReminderOffset::at_due(),
+                        created_at: ts(1),
+                        updated_at: ts(2),
+                    },
+                );
+            }
+            let derived = derive_rule_tombstones(&base, &local, ts(clock));
+            if present {
+                prop_assert!(derived.is_empty());
+            } else {
+                prop_assert_eq!(derived.len(), 1);
+                prop_assert!(derived.contains_key(id));
+            }
+        }
+
+        #[test]
+        fn lane_gc_touched_only_modeled_scheduled_keys(
+            effort in proptest::option::of(0_u64..1_000),
+            drop in proptest::bool::ANY,
+        ) {
+            let mut task = task_fixture();
+            task.clocks.effort = ts(7);
+            task.effort = effort.map(Effort::new);
+            let t = task;
+            let doc = document(
+                2,
+                AppDataSections {
+                    tasks: Some([("55".to_owned(), task_entry_for(&t, false))].into()),
+                    ..Default::default()
+                },
+            );
+            let gc = lane_gc_scheduled(&doc, drop);
+            if drop {
+                prop_assert!(!gc.sections.tasks.as_ref().unwrap()["55"].fields.contains_key("scheduled"));
+                prop_assert_eq!(
+                    gc.sections.tasks.as_ref().unwrap()["55"].fields.get("effort"),
+                    doc.sections.tasks.as_ref().unwrap()["55"].fields.get("effort")
+                );
+            } else {
+                prop_assert_eq!(gc, doc);
+            }
         }
 
         #[test]

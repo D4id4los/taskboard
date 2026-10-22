@@ -1118,6 +1118,7 @@ pub fn plan_command(
                 task: *task,
                 offset: *offset,
                 created_at: now,
+                updated_at: now,
             };
             actions.push(PersistenceAction::UpsertReminderRule(rule.clone()));
             Ok(CommandPlan {
@@ -3863,6 +3864,7 @@ mod tests {
             task,
             offset: crate::reminders::ReminderOffset::at_due(),
             created_at: now(),
+            updated_at: now(),
         }
     }
 

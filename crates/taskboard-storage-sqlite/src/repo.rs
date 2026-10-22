@@ -154,6 +154,7 @@ struct ReminderRuleRow {
     task_id: String,
     offset_seconds: i64,
     created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 /// Raw `reminder_deliveries` row.
@@ -437,6 +438,10 @@ fn decode_reminder_rule(
             task: TaskId::from(decode::uuid(&row.task_id)?),
             offset,
             created_at: row.created_at,
+            // 0007's NOT NULL DEFAULT epoch column: pre-chunk-4 rows
+            // decode with the epoch, which loses every clock race
+            // exactly like `BoardClocks::epoch`'s precedent.
+            updated_at: row.updated_at,
         },
     ))
 }
@@ -589,7 +594,8 @@ impl SqliteTaskRepository {
         let reminder_rule_rows = sqlx::query_as!(
             ReminderRuleRow,
             r#"SELECT rule_id, task_id, offset_seconds,
-                      created_at as "created_at: DateTime<Utc>"
+                      created_at as "created_at: DateTime<Utc>",
+                      updated_at as "updated_at: DateTime<Utc>"
                FROM reminder_rules ORDER BY rule_id"#
         )
         .fetch_all(&mut *tx)
@@ -1165,16 +1171,18 @@ async fn execute_batch(
         // truncate toward zero (due-date reminders are minute-scale;
         // config durations are seconds-granularity).
         sqlx::query!(
-            r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at)
-                   VALUES (?, ?, ?, ?)
+            r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(rule_id) DO UPDATE SET
                        task_id = excluded.task_id,
                        offset_seconds = excluded.offset_seconds,
-                       created_at = excluded.created_at"#,
+                       created_at = excluded.created_at,
+                       updated_at = excluded.updated_at"#,
             codec::uuid_to_text(rule.id.as_uuid()),
             codec::uuid_to_text(rule.task.as_uuid()),
             rule.offset.as_duration().num_seconds(),
             rule.created_at.to_rfc3339(),
+            rule.updated_at.to_rfc3339(),
         )
         .execute(&mut *tx)
         .await

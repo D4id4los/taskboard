@@ -808,10 +808,49 @@ mod tests {
             .execute(&raw)
             .await
             .expect("strip reminder_muted");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 4")
+        // 0007 rides the same strip: its reminder_rules ALTER targets the
+        // table 0004 re-creates, so the bookkeeping row must go with it or
+        // the re-created table would lack the column (SQLite has no
+        // dependency tracking; the real pre-0004 upgrade runs 4, …, 7 in
+        // order and lands with the column in place).
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 4 OR version = 7")
             .execute(&raw)
             .await
             .expect("strip bookkeeping");
+        // 0007's task columns ride the same strip (they re-run with it);
+        // literal statements only (sqlx 0.9 audits dynamic SQL).
+        sqlx::query("ALTER TABLE tasks DROP COLUMN scheduled")
+            .execute(&raw)
+            .await
+            .expect("strip ck col");
+        sqlx::query("ALTER TABLE tasks DROP COLUMN effort")
+            .execute(&raw)
+            .await
+            .expect("strip ck col");
+        sqlx::query("ALTER TABLE tasks DROP COLUMN importance")
+            .execute(&raw)
+            .await
+            .expect("strip ck col");
+        sqlx::query("ALTER TABLE tasks DROP COLUMN urgency")
+            .execute(&raw)
+            .await
+            .expect("strip ck col");
+        sqlx::query("ALTER TABLE tasks DROP COLUMN ck_scheduled")
+            .execute(&raw)
+            .await
+            .expect("strip ck col");
+        sqlx::query("ALTER TABLE tasks DROP COLUMN ck_effort")
+            .execute(&raw)
+            .await
+            .expect("strip ck col");
+        sqlx::query("ALTER TABLE tasks DROP COLUMN ck_importance")
+            .execute(&raw)
+            .await
+            .expect("strip ck col");
+        sqlx::query("ALTER TABLE tasks DROP COLUMN ck_urgency")
+            .execute(&raw)
+            .await
+            .expect("strip ck col");
         // Seed the pre-existing entities the upgrade must not disturb
         // (FK order: board → stack → task; clocks are the NOT NULL texts).
         sqlx::query(

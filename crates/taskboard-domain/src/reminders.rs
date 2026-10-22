@@ -117,6 +117,11 @@ pub struct ReminderRule {
     /// Write time. Per-field write clocks are added additively when a
     /// connector demands rule sync; v1 needs only the creation stamp.
     pub created_at: DateTime<Utc>,
+    /// The rule's embedded LWW write clock (D-S9): consumed by the
+    /// sidecar document lane — every rule mutation stamps it, creation
+    /// stamps it equal to `created_at`; no rule-edit verbs exist yet
+    /// (removals delete, they never stamp a survivor).
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Proof that an occurrence was notified — the at-most-once guard.
@@ -685,6 +690,7 @@ mod tests {
                     task: task.id,
                     offset,
                     created_at: now,
+                    updated_at: now,
                 };
                 let r = ReminderRef::Rule(rule.id);
                 reminders.rules.insert(rule.id, rule);
@@ -794,6 +800,7 @@ mod tests {
             task: TaskId::from(uuid::Uuid::from_u128(2)),
             offset: ReminderOffset::before(chrono::TimeDelta::try_days(-30).unwrap()).unwrap(),
             created_at: ts(100),
+            updated_at: ts(100),
         };
         // A fire instant below chrono's representable floor suppresses
         // the reminder instead of panicking the evaluator.
@@ -825,12 +832,14 @@ mod tests {
             task: task_a.id,
             offset: ReminderOffset::at_due(),
             created_at: ts(100),
+            updated_at: ts(100),
         };
         let rule_b = ReminderRule {
             id: ReminderRuleId::from(uuid::Uuid::from_u128(11)),
             task: task_b.id,
             offset: ReminderOffset::at_due(),
             created_at: ts(100),
+            updated_at: ts(100),
         };
         reminders.rules.insert(rule_a.id, rule_a);
         reminders.rules.insert(rule_b.id, rule_b);
@@ -1088,6 +1097,7 @@ mod tests {
             task,
             offset,
             created_at,
+            updated_at: created_at,
         }
     }
 
@@ -1139,6 +1149,7 @@ mod tests {
                 task: task_id,
                 offset: ReminderOffset::at_due(),
                 created_at: due,
+                updated_at: due,
             };
             let reminder = ReminderRef::Rule(rule.id);
             let instants: Vec<DateTime<Utc>> = (0..=6)
@@ -1300,6 +1311,7 @@ mod tests {
                 task: task_id,
                 offset: ReminderOffset::before(-one_hour).unwrap(),
                 created_at: instant,
+                updated_at: instant,
             };
             assert_eq!(
                 occurrence_of(&rule, Some(instant)),

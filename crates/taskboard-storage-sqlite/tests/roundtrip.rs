@@ -234,6 +234,81 @@ async fn outbox_preserves_enqueue_order_across_removals() {
     assert_eq!(loaded.sync.aggregate().pending_ops, 3);
 }
 
+/// The rule write clock (chunk 4): an upsert persists `updated_at` and
+/// load returns it; a row written before this reader existed (the 0007
+/// column default) decodes with the epoch — which loses every clock
+/// race, exactly like `BoardClocks::epoch`'s precedent.
+#[tokio::test]
+async fn reminder_rule_round_trips_the_write_clock_and_epoch_decodes() {
+    use taskboard_domain::ids::ReminderRuleId;
+    use taskboard_domain::reminders::{ReminderOffset, ReminderRule};
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeSet::default());
+    let rule_id = ReminderRuleId::from(uuid::Uuid::from_u128(20));
+    let rule = ReminderRule {
+        id: rule_id,
+        task: t.id,
+        offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
+            .expect("valid offset"),
+        created_at: ts(1_000),
+        updated_at: ts(2_000),
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertReminderRule(rule.clone()),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.reminders.rules.get(&rule_id), Some(&rule));
+
+    // A row written before this reader existed: the DEFAULT epoch value
+    // (and only that) is what load can return for it.
+    let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+    let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+    sqlx::query("UPDATE reminder_rules SET updated_at = '0001-01-01T00:00:00+00:00'")
+        .execute(&pool)
+        .await
+        .expect("backdate the row");
+    sqlx::query(
+        "INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at) \
+         VALUES ('{00000000-0000-0000-0000-000000000021}', ?, -60, '1970-01-01T00:00:16+00:00')",
+    )
+    .bind(uuid::Uuid::from_u128(1).to_string())
+    .execute(&pool)
+    .await
+    .expect("a column-default row");
+    pool.close().await;
+
+    let loaded = repo.load().await.expect("load");
+    let epoch: chrono::DateTime<Utc> = Utc.timestamp_opt(0, 0).unwrap();
+    assert_eq!(
+        chrono::DateTime::parse_from_rfc3339("0001-01-01T00:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc),
+        loaded.reminders.rules[&rule_id].updated_at,
+        "the backdated row decodes with the epoch"
+    );
+    let defaulted = ReminderRuleId::from(uuid::Uuid::from_u128(0x21));
+    assert_eq!(
+        loaded.reminders.rules[&defaulted].updated_at, loaded.reminders.rules[&rule_id].updated_at,
+        "the column default decodes identically"
+    );
+    assert_eq!(
+        loaded.reminders.rules[&defaulted].created_at,
+        ts(16),
+        "the other columns decode normally"
+    );
+    let _ = epoch;
+    db.close().await;
+}
+
 /// P3 — upserting a modified entity overwrites every stored column.
 #[tokio::test]
 async fn upsert_overwrites_all_columns() {
