@@ -29,7 +29,11 @@ export component IconButton inherits Rectangle {
     border-radius: Theme.radius-small;
     border-width: focus-surface.has-focus ? Theme.focus-ring-width : 0;
     border-color: Semantic.focus-ring;
+    // The canonical square (usability D4): min AND max — without the
+    // cap the button is growable in a HorizontalLayout and absorbs the
+    // title's leftover space (the stretching hamburger bug).
     min-width: Theme.space-6;
+    max-width: Theme.space-6;
     min-height: Theme.space-6;
 
     // The focus half: a FocusScope overlay makes the button a real
