@@ -232,12 +232,16 @@ pub fn resolve_ui_settings(
 pub fn resolve_connector_infos(
     config: &crate::config::AppConfig,
 ) -> Vec<taskboard_ui_slint::requests::ConnectorInfo> {
+    // The legacy-singleton world (no array) synthesizes its one row
+    // read-only (D4): displayed, refused on mutation.
+    let legacy = config.sync.connectors.is_none();
     crate::connectors::configured_connectors(config)
         .into_iter()
         .map(|spec| taskboard_ui_slint::requests::ConnectorInfo {
             name: spec.name.to_string(),
             server_url: spec.server_url,
             username: spec.username,
+            read_only: legacy,
         })
         .collect()
 }

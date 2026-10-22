@@ -38,6 +38,9 @@ pub struct ConnectorInfo {
     pub name: String,
     pub server_url: String,
     pub username: String,
+    /// The legacy `[nextcloud]` singleton world's synthesized row
+    /// (D4): displayed, but mutation is refused typed.
+    pub read_only: bool,
 }
 
 /// The full draft the settings form commits (the `ConnectionTarget`
