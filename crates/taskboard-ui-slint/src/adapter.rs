@@ -322,6 +322,7 @@ impl Adapter {
                         action: entry.action.id().into(),
                         label: entry.label.into(),
                         enabled: entry.enabled,
+                        section_title: entry.section_title.into(),
                         hint: ModelRc::new(slint::VecModel::from(
                             entry
                                 .hint

@@ -13,6 +13,11 @@ export struct MenuEntryModel {
     label: string,
     enabled: bool,
     hint: [string],
+    // The section heading rendered above this row (usability D5);
+    // empty except at category boundaries — derived data, never
+    // hand-written rows (§5.9). Headers are not rows: the selection
+    // index only ever addresses entries.
+    section-title: string,
 }
 
 export component ActionMenu {
@@ -47,20 +52,27 @@ export component ActionMenu {
                 background: row-hit.has-hover ? Theme.surface-hover
                     : root.selected-index == entry-index ? Theme.surface
                     : transparent;
-                HorizontalLayout {
+                VerticalLayout {
                     padding-left: Theme.space-2;
                     padding-right: Theme.space-2;
-                    spacing: Theme.space-2;
-                    RoleText {
-                        role: Typography.body-emphasized;
-                        text-color: entry.enabled ? Theme.text-primary : Theme.text-secondary;
-                        text: entry.label;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
+                    if (entry.section-title != ""): RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: entry.section-title;
                     }
-                    VerticalLayout {
-                        KbdHint {
-                            keys: entry.hint;
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+                        RoleText {
+                            role: Typography.body-emphasized;
+                            text-color: entry.enabled ? Theme.text-primary : Theme.text-secondary;
+                            text: entry.label;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+                        VerticalLayout {
+                            KbdHint {
+                                keys: entry.hint;
+                            }
                         }
                     }
                 }

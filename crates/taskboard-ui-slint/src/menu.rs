@@ -19,6 +19,11 @@ pub struct MenuEntry {
     pub enabled: bool,
     /// The first chain-visible binding, one display string per stroke.
     pub hint: Vec<String>,
+    /// The section heading to render above this row (usability D5):
+    /// the row category's label at a category boundary (always on the
+    /// first row), empty otherwise. Derived from the same stable sort
+    /// as the row order — never hand-written (§5.9).
+    pub section_title: &'static str,
 }
 
 /// Generates the menu rows for `chain` (D19): registry entries whose
@@ -46,6 +51,7 @@ pub fn entries(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
                         label: entry.label,
                         enabled: entry.enabled,
                         hint,
+                        section_title: "",
                     },
                 ),
             )
@@ -54,7 +60,21 @@ pub fn entries(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
     // Stable sort by (category, registry order): `Category` orders by
     // its declaration (the documented menu order).
     rows.sort_by_key(|(index, (category, _))| (*category, *index));
-    rows.into_iter().map(|(_, (_, row))| row).collect()
+    // The section boundaries are derived data (usability D5): a row
+    // heading is its category's label exactly where the category
+    // changes (the first row always opens its section).
+    let mut previous = Option::<Category>::None;
+    rows.into_iter()
+        .map(|(_, (category, mut row))| {
+            row.section_title = if previous == Some(category) {
+                ""
+            } else {
+                category.section_label()
+            };
+            previous = Some(category);
+            row
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -175,5 +195,70 @@ mod tests {
                 "{preset:?}: every resolvable global binding is hinted"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+    use crate::actions::ActionId;
+    use crate::keymap::{Preset, RawKeymap, build};
+    use std::collections::BTreeMap;
+
+    /// G5 — sections are derived data (usability D5): a row carries a
+    /// non-empty section title exactly at a category boundary (and on
+    /// the first row), and the section count equals the count of
+    /// distinct categories present. The menu stays a projection —
+    /// nothing hand-written.
+    #[test]
+    fn entries_carry_section_titles_at_category_boundaries() {
+        let keymap = build(&RawKeymap {
+            preset: Preset::Standard,
+            overrides: BTreeMap::new(),
+        })
+        .keymap;
+        let rows = entries(&keymap, &[ContextId::Board, ContextId::Global]);
+        assert_ne!(rows, [] as [MenuEntry; 0]);
+        let mut previous = Option::<Category>::None;
+        let mut titled = 0;
+        for row in &rows {
+            let category = REGISTRY
+                .iter()
+                .find(|r| r.id == row.action)
+                .expect("row")
+                .category;
+            let boundary = previous != Some(category);
+            assert_eq!(
+                row.section_title.is_empty(),
+                !boundary,
+                "section title exactly at the {category:?} boundary"
+            );
+            assert_eq!(
+                row.section_title,
+                if boundary {
+                    category.section_label()
+                } else {
+                    ""
+                }
+            );
+            previous = Some(category);
+            titled += usize::from(!row.section_title.is_empty());
+        }
+        let categories: std::collections::BTreeSet<Category> = rows
+            .iter()
+            .map(|row| {
+                REGISTRY
+                    .iter()
+                    .find(|r| r.id == row.action)
+                    .expect("row")
+                    .category
+            })
+            .collect();
+        assert_eq!(titled, categories.len(), "one section per present category");
+        assert!(
+            rows.iter().any(|row| row.action == ActionId::AppExit
+                && row.section_title == Category::Application.section_label()),
+            "the first row always opens its section"
+        );
     }
 }
