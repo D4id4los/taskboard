@@ -348,6 +348,13 @@ pub struct UiSection {
     /// Keyboard map (Q22): preset + user override deltas.
     #[serde(default)]
     pub keymap: KeymapSection,
+    /// Device-local stack column widths (round-1 D20): board uuid →
+    /// stack uuid → width in logical px. Never synced (no domain key);
+    /// pruned by the UI request forwarder at write time. Skipped when
+    /// empty so width-less configs serialize unchanged (the `web`
+    /// precedent).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
 }
 
 impl Default for UiSection {
@@ -355,6 +362,7 @@ impl Default for UiSection {
         Self {
             scale: default_ui_scale(),
             keymap: KeymapSection::default(),
+            stack_widths: BTreeMap::new(),
         }
     }
 }
@@ -1339,6 +1347,45 @@ mod tests {
         assert_eq!(
             ConfigError::InvalidScale { field: "ui.scale" }.kind(),
             "invalid-scale"
+        );
+    }
+
+    /// T-14 — the `stack_widths` section round-trips (nested tables,
+    /// uuid keys, u32 values).
+    #[test]
+    fn ui_stack_widths_round_trips() {
+        let board = uuid::Uuid::from_u128(0x1001);
+        let stack = uuid::Uuid::from_u128(0x2001);
+        let toml = format!("[ui.stack_widths]\n'{board}' = {{ '{stack}' = 240 }}\n");
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string(&toml))
+            .extract()
+            .expect("the nested table decodes");
+        assert_eq!(
+            round
+                .ui
+                .stack_widths
+                .get(&board)
+                .and_then(|stacks| stacks.get(&stack)),
+            Some(&240u32)
+        );
+    }
+
+    /// T-14 — old configs parse unchanged: an absent key is the empty
+    /// map, and the default section serializes without the key (no
+    /// empty husk).
+    #[test]
+    fn ui_stack_widths_absent_key_is_empty_and_serializes_to_nothing() {
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string("[ui]\nscale = 1.5\n"))
+            .extract()
+            .expect("a width-less config decodes");
+        assert!(round.ui.stack_widths.is_empty(), "old configs parse");
+
+        let serialized = serde_json::to_value(AppConfig::default().ui).expect("serialize");
+        assert!(
+            serialized.get("stack_widths").is_none(),
+            "the default section serializes without the key"
         );
     }
 
