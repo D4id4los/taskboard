@@ -43,6 +43,10 @@ export component BoardLayout inherits Rectangle {
     // kanban, regular/expansive only — compact hides the strip
     // (keyboard switching still works).
     in property <BoardBarModel> board-bar;
+    // The board.select binding hint for the segment tooltips (D21b).
+    in property <[string]> board-segment-hint;
+    // The task.edit binding hint for the card tooltips (D8).
+    in property <[string]> task-card-hint;
     callback board-bar-activated(int);
     // The stack-create flow (usability D7): the on-board button and
     // the field's mirror/commit seams; open is board-level.
@@ -86,8 +90,8 @@ export component BoardLayout inherits Rectangle {
         // layer (the window's dispatch seam).
         BoardBar {
             bar: root.board-bar;
+            segment-hint: root.board-segment-hint;
             segment-activated(index) => root.board-bar-activated(index);
-            create-activated() => root.new-stack-activated();
         }
 
         HorizontalLayout {
@@ -132,6 +136,7 @@ export component BoardLayout inherits Rectangle {
                     spacing: Theme.space-1;
                     for task[task-index] in column.tasks: TaskCard {
                         model: task;
+                        hint-keys: root.task-card-hint;
                         activated => root.task-activated(column-index, task-index);
                         clicked => root.task-clicked(column-index, task-index);
                         context-requested(x, y) => root.task-context(column-index, task-index, x, y);
@@ -144,6 +149,47 @@ export component BoardLayout inherits Rectangle {
                         label: "New task title";
                         accepted(text) => root.create-committed(column-index, text);
                         edited(text) => root.create-edited(column-index, text);
+                    }
+                }
+            }
+
+            // The trailing add-column affordance (round-1 D22): the
+            // New-stack button's regular/expansive home — a slim
+            // full-height column after the last stack, the click
+            // equivalent of stack.create (§7.1).
+            Rectangle {
+                width: Theme.space-6 + Theme.space-2;
+                border-radius: Theme.radius-small;
+                background: add-col-hit.has-hover ? Theme.surface-hover : transparent;
+                add-col-hit := TouchArea {
+                    clicked => root.new-stack-activated();
+                }
+                add-col-focus := FocusScope {
+                    width: 100%;
+                    height: 100%;
+                    focus-on-tab-navigation: true;
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: "New stack";
+                    accessible-action-default => root.new-stack-activated();
+                }
+                icon-box := Rectangle {
+                    // A plus: the two bars crossing centred (the
+                    // icon-button plus glyph, composed inline).
+                    x: Theme.space-2;
+                    y: Theme.space-2;
+                    width: parent.width - 2 * Theme.space-2;
+                    height: parent.height - 2 * Theme.space-2;
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 100%;
+                        height: Theme.focus-ring-width;
+                        background: add-col-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    }
+                    Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        height: 100%;
+                        width: Theme.focus-ring-width;
+                        background: add-col-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
                     }
                 }
             }
@@ -215,6 +261,15 @@ export component BoardLayout inherits Rectangle {
             edited(text) => root.stack-create-edited(text);
         }
 
+        // The compact New-stack affordance (round-1 D22): a trailing
+        // small button after the switcher segments — reachable,
+        // click-equivalent.
+        IconButton {
+            icon: IconKind.plus;
+            label: "New stack";
+            clicked => root.new-stack-activated();
+        }
+
         // The selected stack's single column, tertiary decorations
         // collapsed via `compact: true` (D8).
         for column[column-index] in [root.selected-column()]: VerticalLayout {
@@ -228,6 +283,7 @@ export component BoardLayout inherits Rectangle {
                 for task[task-index] in column.tasks: TaskCard {
                     model: task;
                     compact: true;
+                    hint-keys: root.task-card-hint;
                     activated => root.task-activated(root.selected-stack, task-index);
                     clicked => root.task-clicked(root.selected-stack, task-index);
                     context-requested(x, y) => root.task-context(root.selected-stack, task-index, x, y);

@@ -397,16 +397,26 @@ fn the_open_menu_closes_its_box_above_the_status_bar_at_every_geometry() {
                 let handle = mount_populated(driver, scale, width, height);
                 handle.window().invoke_toolbar_menu_clicked();
                 driver.advance_time(0);
+                // The bottom edge comes from the panel's rendering
+                // facts (round-1 D4), not from the bottom-most ring
+                // pixel — row fragments below the border (a clipped
+                // row's ring edge) would fool the extent scan.
+                let facts = handle
+                    .window()
+                    .global::<taskboard_ui_slint::MenuPanelFacts>();
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                // UI-scale px values
+                let bottom = (facts.get_y() + facts.get_height()).round() as u32;
                 let snapshot = driver.snapshot();
-                let (top, bottom) = vertical_extent_of(&snapshot, FOCUS_RING);
+                let (top, _) = vertical_extent_of(&snapshot, FOCUS_RING);
                 assert!(
                     top < bottom,
                     "the menu border box exists at {width}×{height}"
                 );
                 // The bottom border is a long closed run, not a stray
-                // ring fragment: the panel is at least its min-width
+                // ring fragment: the panel is at least its floor
                 // minus clipping, and the border closes it.
-                let bottom_run = row_run_of(&snapshot, FOCUS_RING, bottom);
+                let bottom_run = row_run_of(&snapshot, FOCUS_RING, bottom.saturating_sub(1));
                 assert!(
                     bottom_run >= 100,
                     "the menu's bottom border closes the box at {width}×{height} (run {bottom_run})"

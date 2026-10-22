@@ -7,7 +7,7 @@
 // business (§5.1 — the callback routes through the adapter seam).
 
 import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
-import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
 
 // One board-bar segment (a display model, not a bag of strings). The
 // segment set is the live boards — an archived board is unreachable
@@ -26,10 +26,14 @@ export struct BoardBarModel {
 
 export component BoardBar inherits Rectangle {
     in property <BoardBarModel> bar;
+    // The `board.select` binding as display strings (round-1 D21b; a
+    // keymap projection — empty today, the mechanism is what ships).
+    in property <[string]> segment-hint;
     callback segment-activated(int);
-    // The on-board New-stack button (usability D7): the click
-    // equivalent of the `stack.create` action (§7.1).
-    callback create-activated();
+
+    // Round-1 D20b: the bar is exactly one control tall — the
+    // uncapped layout share that caused the tall whitespace is gone.
+    height: Theme.space-6 + 2 * Theme.space-1;
 
     // A zero-segment model (a never-booted install) renders no row.
     if (root.bar.segments.length > 0): HorizontalLayout {
@@ -42,6 +46,10 @@ export component BoardBar inherits Rectangle {
             focus-on-tab-navigation: true;
             accessible-role: AccessibleRole.tab;
             accessible-label: segment.title;
+            // Round-1 D20b: many boards share the row — a segment
+            // caps at 160·scale and elides.
+            max-width: 160px * Theme.base-scale;
+            height: 100%;
             Rectangle {
                 width: 100%;
                 height: 100%;
@@ -63,24 +71,29 @@ export component BoardBar inherits Rectangle {
                             : Theme.text-secondary;
                         text: segment.title;
                         vertical-alignment: center;
+                        // Round-1 D20b: many boards share the row.
+                        overflow: elide;
                     }
                 }
             }
             segment-hover := TouchArea {
                 // The hover cue's owner (usability D2): the segment's
-                // rest background reads this while hovered.
+                // rest background reads this while hovered. The D21b
+                // segment tooltip: title + what clicking does + the
+                // board.select hint.
+                changed has-hover => {
+                    if (self.has-hover) {
+                        TooltipState.hover(segment.title,
+                            "Switches to this board.",
+                            root.segment-hint,
+                            self.absolute-position.x, self.absolute-position.y,
+                            self.width, self.height);
+                    } else {
+                        TooltipState.unhover();
+                    }
+                }
                 clicked => root.segment-activated(segment-index);
             }
-        }
-
-        // The New-stack button: right-aligned after a stretching
-        // spacer (usability D7); the a11y label is the registry
-        // label, and the click routes the same registry action.
-        Rectangle { horizontal-stretch: 1; }
-        IconButton {
-            icon: IconKind.plus;
-            label: "New stack";
-            clicked => root.create-activated();
         }
     }
 }

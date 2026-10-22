@@ -176,6 +176,18 @@ fn push_chrome(
             .first_binding_display(ActionId::NavFocusBoard, chain)
             .unwrap_or_default(),
     ));
+    // The segment/card hints (round-1 D21b/D8): pushed once per
+    // refresh against the visible chain.
+    window.set_board_segment_hint(string_model(
+        &keymap
+            .first_binding_display(ActionId::BoardSelect, chain)
+            .unwrap_or_default(),
+    ));
+    window.set_task_card_hint(string_model(
+        &keymap
+            .first_binding_display(ActionId::TaskEdit, chain)
+            .unwrap_or_default(),
+    ));
 }
 
 /// The board model: one column per live stack, the flow's create row
