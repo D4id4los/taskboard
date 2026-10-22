@@ -81,6 +81,22 @@ impl Category {
             Self::Mode => "mode",
         }
     }
+
+    /// The menu's section display label (usability pass D5): the
+    /// declaration order remains the documented menu order; sections
+    /// are derived from this mapping, never hand-written rows.
+    #[must_use]
+    pub const fn section_label(self) -> &'static str {
+        match self {
+            Self::Application => "Application",
+            Self::Capture => "Capture",
+            Self::Search => "Search",
+            Self::Navigation => "Navigation",
+            Self::Task => "Task",
+            Self::Menu => "Menu",
+            Self::Mode => "Mode",
+        }
+    }
 }
 
 /// A dispatchable action: the dotted `scope.verb` vocabulary (design
