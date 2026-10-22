@@ -259,7 +259,10 @@ const EXCLUDED_FLAGS: [&str; 1] = ["config"];
 fn flag_value_kind(long: &str) -> Kind {
     match long {
         "stack" => Kind::Stacks,
-        "due" => Kind::Literals(&["none"]),
+        "due" | "scheduled" => Kind::Literals(&["none"]),
+        "importance" | "urgency" => {
+            Kind::Literals(&["very-low", "low", "normal", "high", "very-high", "none"])
+        }
         "board" | "local-board" => Kind::Boards,
         "connector" => Kind::Connectors,
         _ => Kind::None,
@@ -1614,6 +1617,38 @@ mod tests {
         assert_eq!(
             replacements(&candidates(&spec, &state, &[], &plan(&spec, &prefix))),
             ["none "]
+        );
+
+        // The field flags: `--scheduled` mirrors `--due`; the levels
+        // offer the hyphenated vocabulary plus the clear sentinel;
+        // `--effort` stays free text.
+        let prefix = tokenize_prefix("tasks edit t2 --scheduled ", 26);
+        assert_eq!(
+            replacements(&candidates(&spec, &state, &[], &plan(&spec, &prefix))),
+            ["none "]
+        );
+        let prefix = tokenize_prefix("tasks edit t2 --importance h", 28);
+        assert_eq!(
+            replacements(&candidates(&spec, &state, &[], &plan(&spec, &prefix))),
+            ["high "],
+            "the h-prefix matches only `high`"
+        );
+        let prefix = tokenize_prefix("tasks edit t2 --urgency ", 24);
+        assert_eq!(
+            replacements(&candidates(&spec, &state, &[], &plan(&spec, &prefix))),
+            [
+                "very-low ",
+                "low ",
+                "normal ",
+                "high ",
+                "very-high ",
+                "none "
+            ]
+        );
+        let prefix = tokenize_prefix("tasks edit t2 --effort ", 23);
+        assert!(
+            candidates(&spec, &state, &[], &plan(&spec, &prefix)).is_empty(),
+            "--effort is free text"
         );
     }
 

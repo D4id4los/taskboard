@@ -407,6 +407,74 @@ fn parse_due(raw: &str) -> Result<DueSpec, String> {
         .map_err(|_| "expected RFC-3339 (2026-10-24T09:00:00Z), YYYY-MM-DD, or 'none'".to_owned())
 }
 
+/// `--effort` grammar: set (the domain text form) or clear (`none`) —
+/// the [`DueSpec`] shape, because clap's derive wraps `Option<Option<T>>`
+/// one layer too many for a wrapper returning `Option`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EffortSpec {
+    /// Set the effort.
+    Set(taskboard_domain::Effort),
+    /// Clear the effort.
+    Clear,
+}
+
+/// `--importance` grammar: set (a vocabulary level) or clear (`none`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportanceSpec {
+    /// Set the level.
+    Set(taskboard_domain::Importance),
+    /// Clear the level.
+    Clear,
+}
+
+/// `--urgency` grammar: set (a vocabulary level) or clear (`none`) —
+/// distinct from [`ImportanceSpec`] by the ruled type separation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UrgencySpec {
+    /// Set the level.
+    Set(taskboard_domain::Urgency),
+    /// Clear the level.
+    Clear,
+}
+
+/// Parses the `--effort` value over the domain text form
+/// ([`taskboard_domain::Effort::parse_text_form`]): bare digits are
+/// minutes, `s`/`m`/`h` components compose (`1h30m`). `none` clears;
+/// anything unparsable is a clap usage error (exit 2).
+fn parse_effort(raw: &str) -> Result<EffortSpec, String> {
+    if raw == "none" {
+        return Ok(EffortSpec::Clear);
+    }
+    taskboard_domain::Effort::parse_text_form(raw)
+        .map(EffortSpec::Set)
+        .ok_or_else(|| {
+            "expected <n><unit> components (s|m|h; bare digits = minutes), e.g. 30 or 1h30m, or 'none'"
+                .to_owned()
+        })
+}
+
+/// Parses `--importance` over the domain's hyphenated level vocabulary;
+/// `none` clears. Anything unmatched is a clap usage error (exit 2).
+fn parse_importance(raw: &str) -> Result<ImportanceSpec, String> {
+    if raw == "none" {
+        return Ok(ImportanceSpec::Clear);
+    }
+    taskboard_domain::Importance::parse_text_form(raw)
+        .map(ImportanceSpec::Set)
+        .ok_or_else(|| "expected very-low|low|normal|high|very-high|none".to_owned())
+}
+
+/// Parses `--urgency` over the domain's hyphenated level vocabulary;
+/// `none` clears. Anything unmatched is a clap usage error (exit 2).
+fn parse_urgency(raw: &str) -> Result<UrgencySpec, String> {
+    if raw == "none" {
+        return Ok(UrgencySpec::Clear);
+    }
+    taskboard_domain::Urgency::parse_text_form(raw)
+        .map(UrgencySpec::Set)
+        .ok_or_else(|| "expected very-low|low|normal|high|very-high|none".to_owned())
+}
+
 /// The `tasks remind --before` flag: the same `[reminders]
 /// default_before` grammar ([`crate::config::parse_before`]). A
 /// malformed value is a clap usage error (exit 2), the `parse_due`
@@ -504,7 +572,7 @@ pub enum TasksCmd {
         #[arg(long)]
         order: Option<i64>,
     },
-    /// Edit task fields (at least one flag required).
+    /// Edit task fields (a zero-flag edit is a typed no-op).
     Edit {
         /// The task (uuid | unique ≥8-char uuid prefix | exact title).
         task: String,
@@ -517,6 +585,22 @@ pub enum TasksCmd {
         /// RFC-3339, YYYY-MM-DD (midnight UTC), or `none` (clears).
         #[arg(long, value_parser = parse_due)]
         due: Option<DueSpec>,
+        /// Scheduled start — the `--due` vocabulary (RFC-3339,
+        /// YYYY-MM-DD, or `none` clears). One parser, two flags.
+        #[arg(long, value_parser = parse_due)]
+        scheduled: Option<DueSpec>,
+        /// Effort estimate — bare digits = minutes, `s`/`m`/`h`
+        /// components compose (`1h30m`), `none` clears.
+        #[arg(long, value_parser = parse_effort)]
+        effort: Option<EffortSpec>,
+        /// Importance level (`very-low|low|normal|high|very-high`;
+        /// `none` clears).
+        #[arg(long, value_parser = parse_importance)]
+        importance: Option<ImportanceSpec>,
+        /// Urgency level (`very-low|low|normal|high|very-high`; `none`
+        /// clears).
+        #[arg(long, value_parser = parse_urgency)]
+        urgency: Option<UrgencySpec>,
         /// Archive the task.
         #[arg(long, conflicts_with = "unarchive")]
         archive: bool,
@@ -610,6 +694,137 @@ mod tests {
             Ok(chrono::TimeDelta::try_minutes(10).expect("10m"))
         );
         assert!(parse_before_flag("5min").is_err());
+    }
+
+    #[test]
+    fn parse_effort_none_clears_and_vocabulary_parses() {
+        assert_eq!(parse_effort("none"), Ok(EffortSpec::Clear));
+        assert_eq!(
+            parse_effort("1h30m"),
+            Ok(EffortSpec::Set(taskboard_domain::Effort::new(5400)))
+        );
+        assert_eq!(
+            parse_effort("30"),
+            Ok(EffortSpec::Set(taskboard_domain::Effort::new(30 * 60)))
+        );
+        assert!(
+            parse_effort("1h30").is_err(),
+            "bad grammar is a usage error"
+        );
+        assert!(parse_effort("").is_err());
+    }
+
+    #[test]
+    fn parse_level_flags_none_clears_and_vocabulary_parses() {
+        assert_eq!(parse_importance("none"), Ok(ImportanceSpec::Clear));
+        assert_eq!(parse_urgency("none"), Ok(UrgencySpec::Clear));
+        assert_eq!(
+            parse_importance("very-high"),
+            Ok(ImportanceSpec::Set(taskboard_domain::Importance::VeryHigh))
+        );
+        assert_eq!(
+            parse_urgency("low"),
+            Ok(UrgencySpec::Set(taskboard_domain::Urgency::Low))
+        );
+        for bad in ["medium", "very_low", ""] {
+            assert!(parse_importance(bad).is_err(), "{bad} must be rejected");
+            assert!(parse_urgency(bad).is_err(), "{bad} must be rejected");
+        }
+    }
+
+    #[test]
+    fn the_field_flags_land_on_the_edit_arm() {
+        let cli = Cli::try_parse_from([
+            "taskboard",
+            "tasks",
+            "edit",
+            "draft",
+            "--scheduled",
+            "2026-10-24",
+            "--effort",
+            "1h30m",
+            "--importance",
+            "high",
+            "--urgency",
+            "very-low",
+        ])
+        .expect("field flags parse");
+        let Some(Command::Tasks {
+            cmd:
+                TasksCmd::Edit {
+                    scheduled,
+                    effort,
+                    importance,
+                    urgency,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected tasks edit");
+        };
+        assert!(matches!(scheduled, Some(DueSpec::Set(_))));
+        assert_eq!(
+            effort,
+            Some(EffortSpec::Set(taskboard_domain::Effort::new(5400)))
+        );
+        assert_eq!(
+            importance,
+            Some(ImportanceSpec::Set(taskboard_domain::Importance::High))
+        );
+        assert_eq!(
+            urgency,
+            Some(UrgencySpec::Set(taskboard_domain::Urgency::VeryLow))
+        );
+    }
+
+    #[test]
+    fn the_field_flags_clear_on_none_and_error_on_garbage() {
+        let cli = Cli::try_parse_from([
+            "taskboard",
+            "tasks",
+            "edit",
+            "draft",
+            "--scheduled",
+            "none",
+            "--effort",
+            "none",
+            "--importance",
+            "none",
+            "--urgency",
+            "none",
+        ])
+        .expect("none clears each field flag");
+        let Some(Command::Tasks {
+            cmd:
+                TasksCmd::Edit {
+                    scheduled,
+                    effort,
+                    importance,
+                    urgency,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected tasks edit");
+        };
+        assert_eq!(scheduled, Some(DueSpec::Clear));
+        assert_eq!(effort, Some(EffortSpec::Clear));
+        assert_eq!(importance, Some(ImportanceSpec::Clear));
+        assert_eq!(urgency, Some(UrgencySpec::Clear));
+
+        for bad in [
+            ["--effort", "90min"],
+            ["--importance", "medium"],
+            ["--urgency", "very_high"],
+            ["--scheduled", "tomorrow"],
+        ] {
+            let mut argv = vec!["taskboard", "tasks", "edit", "draft"];
+            argv.extend(bad);
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "{bad:?} must be a clap usage error"
+            );
+        }
     }
 
     #[test]
