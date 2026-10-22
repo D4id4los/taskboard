@@ -123,6 +123,12 @@ export component BoardLayout inherits Rectangle {
                             text: column.title;
                             vertical-alignment: center;
                             horizontal-stretch: 1;
+                            // The D19 mechanical half (round-1 §5): a
+                            // long stack title may not force the
+                            // layout min above the window floors. The
+                            // conditional engagement (elide only under
+                            // a user-set width) is chunk 2.
+                            overflow: elide;
                         }
                         Badge {
                             text: "\{column.tasks.length}";
