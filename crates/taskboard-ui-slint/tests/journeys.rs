@@ -519,6 +519,48 @@ fn board_switching_walks_boards_by_keyboard() {
     );
 }
 
+/// D2/P1 — the outside-click dismissal layer: a click off the panel
+/// closes the menu (before the layer existed it did nothing), and a
+/// stolen hamburger click — the full-window layer covers the toolbar —
+/// converges on the same full close. The layer's z-order is pinned by
+/// this behavior, not by comments.
+#[test]
+fn an_outside_click_dismisses_the_menu() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // A fixed geometry: the hamburger button occupies the
+            // toolbar's right edge (x 952–984, y 16–48 at 1000 px).
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0); // instantiate the layer
+            assert!(keyboard(&harness).get_menu_open());
+            // Off-panel: the window's left edge, mid-height.
+            harness.driver.click_at(10.0, 450.0);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "an outside click dismisses"
+            );
+
+            // The stolen hamburger click: the layer covers the toolbar,
+            // so the click dismisses instead of re-toggling.
+            harness.handle.window().invoke_toolbar_menu_clicked();
+            harness.driver.advance_time(0); // instantiate the layer
+            assert!(keyboard(&harness).get_menu_open());
+            harness.driver.click_at(968.0, 32.0);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "a click over the hamburger while open is a dismissal, not a re-open"
+            );
+        },
+    );
+}
+
 /// F1/D1 — the hamburger is a stateful toggle and every open shows
 /// the same entries: open → second click closes → third click opens a
 /// model equal to the first open's (row count + per-row action ids,

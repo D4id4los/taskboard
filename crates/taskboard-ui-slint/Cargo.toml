@@ -50,6 +50,10 @@ png.workspace = true
 # The journey/golden harness (design §8.1/Q8): the exact-pin testing
 # backend, dev-only — the shipped feature set gains nothing.
 i-slint-backend-testing.workspace = true
+# The journey driver's pointer seam (round-1 D2/D13): the core crate
+# supplies the WindowEvent button enum the public facade does not
+# re-export. Dev-only, named only in tests/support/driver.rs.
+i-slint-core.workspace = true
 # The first-frame contract test: a handwritten capturing Layer over
 # Registry — dev-only, never a shipped dependency.
 tracing-subscriber.workspace = true

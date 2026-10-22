@@ -151,6 +151,19 @@ export component AppWindow inherits Window {
             }
         }
 
+        // The D2 outside-click dismissal layer (round 1): a full-window
+        // TouchArea declared AFTER the chrome and BEFORE the menu
+        // panel — the later sibling is hit-tested first, so the layer
+        // receives exactly the clicks the panel does not absorb (probe
+        // P1). No visual. A stolen hamburger click lands here too and
+        // converges on the same full close.
+        if (KeyboardState.menu-open): TouchArea {
+            width: 100%;
+            height: 100%;
+            init => TooltipState.unhover();
+            clicked => root.menu-dismiss-requested();
+        }
+
         // The generated menu host (§5.9): keyed to the shell's menu
         // state, no key handlers of its own. Mounting dismisses any
         // pending tooltip (the menu is the modal context now).
@@ -190,6 +203,9 @@ export component AppWindow inherits Window {
     // The `menu.invoke` projection: the adapter closes the menu and
     // re-dispatches the selected entry through the same router.
     pure callback menu-entry-invoked(int);
+    // The D2 dismissal layer: an outside click is a dismissal, not a
+    // level-up — the adapter routes the full close.
+    pure callback menu-dismiss-requested();
 
     // The D15 focus hand-off (journey finding): an edit flow's field
     // holds slint focus while mounted and unmounts when the flow ends;

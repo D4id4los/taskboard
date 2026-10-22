@@ -61,6 +61,10 @@ pub trait JourneyDriver {
     /// Injects one stroke through the real key path. Returns the
     /// count of physical presses contributed (always 1).
     fn press_stroke(&mut self, stroke: Stroke) -> u32;
+    /// Delivers a real pointer click (press + release) at the logical
+    /// window position — the dismissal layer's and the context menu's
+    /// coordinate-space seam (round-1 D2/D13).
+    fn click_at(&mut self, x: f32, y: f32);
     /// Sets the window size in logical px (scale factor 1 → also
     /// physical); drives the `Responsive` breakpoints.
     fn set_window_size(&mut self, width: u32, height: u32);
@@ -150,6 +154,20 @@ impl JourneyDriver for SlintDriver {
             dispatch(window, Key::into(*key), false);
         }
         1
+    }
+
+    fn click_at(&mut self, x: f32, y: f32) {
+        let component = self.window();
+        let window = component.window();
+        let position = slint::LogicalPosition::new(x, y);
+        let button = i_slint_core::items::PointerEventButton::Left;
+        for event in [
+            slint::platform::WindowEvent::PointerMoved { position },
+            slint::platform::WindowEvent::PointerPressed { position, button },
+            slint::platform::WindowEvent::PointerReleased { position, button },
+        ] {
+            window.dispatch_event(event);
+        }
     }
 
     fn set_window_size(&mut self, width: u32, height: u32) {
