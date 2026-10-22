@@ -1,0 +1,514 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! The sidecar flush (chunk 4's D11/D12): the read-modify-write union
+//! upload that runs **between the cycle's pull and its report**.
+//!
+//! The flush is never a blind overwrite: the base is the document this
+//! cycle actually read (`Document` evidence, or an empty document when
+//! rebuilding over `Absent`/foreign content), the overlay carries the
+//! board's local truth as of `read_at`, and [`taskboard_domain::union`]
+//! merges per-key embedded-clock LWW (ties to the overlay — the
+//! just-stamped local writes). The lane GC and the snapshot-absence GC
+//! run on the union, then one PUT lands it (D-S5).
+//!
+//! Failure semantics (D-S7's fence table): a transport-class upload
+//! failure strands (no outcomes, ops retry next cycle, the cycle still
+//! reports `Completed`); a permanent `BadRequest` dead-letters the
+//! group's primary as a counted `FailOp` (the native bad-request
+//! path's convergence cadence, mirrored); the flush never aborts the
+//! cycle.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use taskboard_domain::{
+    AppDataDocument, AppDataEvidence, AppDataSections, AppDataUnreadable, BoardId, DeckFeatures,
+    EntityTables, LocalOp, PendingOp, PushGroup, PushOutcome, PushResult, ReminderRule,
+    ReminderRuleId, RemoteBoardId, RemoteBoardSnapshot, Stack, SyncErrorKind, Task, TaskId,
+    derive_rule_tombstones, lane_gc_scheduled, prune_absent_cards, rules_entry_for, task_entry_for,
+    union,
+};
+
+use crate::anchor::{self, ANCHOR_ATTACHMENT_FILENAME, ANCHOR_ATTACHMENT_MIME, AnchorAction};
+use crate::client::{AttachmentUpload, DeckClient};
+use crate::error::DeckError;
+use crate::mapping::{self, PushCtx};
+
+/// The upload response's metadata pair — the `LoopState.documents`
+/// cache refresh's change-detection input (the next cycle must not
+/// re-GET our own write).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AttachmentStamp {
+    pub last_modified: i64,
+    pub filesize: i64,
+}
+
+/// What one flush attempt produced. `Idle` covers both "no work" and
+/// "the evidence fences flush nothing" — ops stay queued either way.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum FlushVerdict {
+    /// Nothing uploaded; no outcomes (transport fence, or no work).
+    Idle,
+    /// The document landed: one `Applied { echo: None }` per resolved
+    /// member op, plus the stamps and content for the cache refresh.
+    Applied {
+        outcomes: Vec<PushOutcome>,
+        stamp: AttachmentStamp,
+        document: AppDataDocument,
+    },
+    /// The write landed but its echo did not decode: outcomes still
+    /// complete (the write is authoritative), the cache stays cold so
+    /// the next cycle re-GETs honestly.
+    AppliedUncached { outcomes: Vec<PushOutcome> },
+    /// Permanent 4xx: the group's primary dead-letters as a counted
+    /// `FailOp`; subsumed ops re-form the group next cycle.
+    DeadLettered { primary: taskboard_domain::OpId },
+}
+
+/// Everything one flush attempt reads. The `group` is the cycle's
+/// deferred document group (`None` in the pure-rebuild case: no ops
+/// queued, only the rebuild triggers fired).
+pub(crate) struct FlushCtx<'a> {
+    pub client: &'a DeckClient,
+    pub target: RemoteBoardId,
+    pub features: DeckFeatures,
+    pub read_at: chrono::DateTime<chrono::Utc>,
+    pub snapshot: &'a RemoteBoardSnapshot,
+    pub evidence: &'a AppDataEvidence,
+    pub action: &'a AnchorAction,
+    pub group: Option<&'a PushGroup>,
+    pub outbox: &'a [PendingOp],
+    pub tasks: &'a BTreeMap<TaskId, Task>,
+    pub stacks: &'a BTreeMap<taskboard_domain::StackId, Stack>,
+    pub rules: &'a BTreeMap<ReminderRuleId, ReminderRule>,
+}
+
+/// D12's lazy gate: any live task of `board` carrying app-data (the
+/// three always-app fields, rules, or — while the connector lacks
+/// native `startdate` — a scheduled value). Boards whose users touch
+/// only native fields never grow an anchor.
+pub(crate) fn board_has_local_app_data(
+    tables: EntityTables<'_>,
+    rules: &BTreeMap<ReminderRuleId, ReminderRule>,
+    board: BoardId,
+    native_scheduled: bool,
+) -> bool {
+    let board_tasks: BTreeSet<TaskId> = tables
+        .tasks
+        .values()
+        .filter(|task| {
+            task.is_live()
+                && tables
+                    .stacks
+                    .get(&task.stack)
+                    .is_some_and(|stack| stack.board == board)
+        })
+        .map(|task| task.id)
+        .collect();
+    tables.tasks.values().any(|task| {
+        board_tasks.contains(&task.id)
+            && (task.effort.is_some()
+                || task.importance.is_some()
+                || task.urgency.is_some()
+                || (!native_scheduled && task.scheduled.is_some())
+                || rules.values().any(|rule| rule.task == task.id))
+    })
+}
+
+/// Whether the flush must run this cycle (D11's has-work gate):
+/// the board planned a document group, or a rebuild trigger fired and
+/// local app-data exists.
+pub(crate) fn has_flush_work(
+    group: Option<&PushGroup>,
+    evidence: &AppDataEvidence,
+    tables: EntityTables<'_>,
+    rules: &BTreeMap<ReminderRuleId, ReminderRule>,
+    board: BoardId,
+    native_scheduled: bool,
+) -> bool {
+    if group.is_some() {
+        return true;
+    }
+    let rebuild_trigger = matches!(
+        evidence,
+        AppDataEvidence::Absent | AppDataEvidence::Unreadable(AppDataUnreadable::ForeignBoard)
+    );
+    rebuild_trigger && board_has_local_app_data(tables, rules, board, native_scheduled)
+}
+
+/// Runs the flush (D11). Call sites: the sync actor's cycle, after
+/// `sidecar_evidence`, before the report — the only position satisfying
+/// D-S4's three clauses (after the cycle's card pushes, after the pull,
+/// before the report; the stamp bump lands in the next cycle's pull).
+#[allow(clippy::too_many_lines)] // one ladder, one outcome table; splitting hides the fence rows
+pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
+    // The fold/flush fences: a document we could not read must never be
+    // re-encoded (D-S7: Transport/Decode/FormatTooNew strand loudly).
+    let base = match ctx.evidence {
+        AppDataEvidence::Document(document) => (**document).clone(),
+        AppDataEvidence::Absent | AppDataEvidence::Unreadable(AppDataUnreadable::ForeignBoard) => {
+            // Rebuild content over the silence (or D-S2's moved-card
+            // fence: the flush may replace foreign content).
+            AppDataDocument {
+                format: taskboard_domain::APPDATA_FORMAT,
+                board: ctx.target,
+                sections: AppDataSections::default(),
+                unknown: BTreeMap::new(),
+            }
+        }
+        AppDataEvidence::Unreadable(_) => return FlushVerdict::Idle,
+    };
+
+    // ---- overlay assembly -------------------------------------------
+    // Normal scope: the deferred group's member tasks (resolved, live).
+    // Rebuild scope: ALL live board tasks with app-data — a rebuild is
+    // about scope, never about blind overwrite.
+    let member_ops: Vec<&PendingOp> = match ctx.group {
+        Some(group) => ctx
+            .outbox
+            .iter()
+            .filter(|entry| entry.op_id == group.primary || group.subsumed.contains(&entry.op_id))
+            .collect(),
+        None => Vec::new(),
+    };
+    let rebuild = ctx.group.is_none();
+    let mut scoped: BTreeMap<TaskId, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
+    if rebuild {
+        let tables = board_tables(&ctx);
+        for task in tables.tasks.values() {
+            if task.is_live()
+                && task.remote.is_some_and(|r| r.board == ctx.target)
+                && task_has_app_data(task, ctx.rules, ctx.features)
+            {
+                scoped.insert(task.id, ctx.read_at);
+            }
+        }
+    } else {
+        for entry in &member_ops {
+            if let LocalOp::UpdateAppData(task_id) = entry.op {
+                scoped.insert(task_id, entry.queued_at);
+            }
+        }
+    }
+
+    let mut overlay_tasks: BTreeMap<String, taskboard_domain::TaskEntry> = BTreeMap::new();
+    let mut overlay_rules: BTreeMap<String, taskboard_domain::RulesEntry> = BTreeMap::new();
+    for (task_id, stamp) in &scoped {
+        let Some(task) = ctx.tasks.get(task_id) else {
+            continue;
+        };
+        // Unresolved (create failed / still unbound) tasks are omitted:
+        // no entry, no outcome — they ride the next cycle (D10).
+        let Some(binding) = task.remote else {
+            continue;
+        };
+        if binding.board != ctx.target || !task.is_live() {
+            continue;
+        }
+        let card_key = binding.card.get().to_string();
+        overlay_tasks.insert(
+            card_key.clone(),
+            task_entry_for(task, ctx.features.card_startdate),
+        );
+        let mut rules_entry = rules_entry_for(ctx.rules, *task_id);
+        // The removal tombstones derive from the base (D8): only
+        // base-present live rules missing locally tombstone, stamped
+        // with the removing op's instant (or `read_at` in a rebuild).
+        if let Some(base_entry) = base
+            .sections
+            .reminder_rules
+            .as_ref()
+            .and_then(|entries| entries.get(&card_key))
+        {
+            for (key, tombstone) in derive_rule_tombstones(base_entry, ctx.rules, *stamp) {
+                rules_entry.rules.insert(key, tombstone);
+            }
+        }
+        overlay_rules.insert(card_key, rules_entry);
+    }
+    let overlay = AppDataDocument {
+        format: taskboard_domain::APPDATA_FORMAT,
+        board: ctx.target,
+        sections: AppDataSections {
+            tasks: (!overlay_tasks.is_empty()).then_some(overlay_tasks),
+            reminder_rules: (!overlay_rules.is_empty()).then_some(overlay_rules),
+            unknown: BTreeMap::new(),
+        },
+        unknown: BTreeMap::new(),
+    };
+
+    // ---- union + GC chain --------------------------------------------
+    let merged = union(&base, &overlay);
+    let merged = lane_gc_scheduled(&merged, ctx.features.card_startdate);
+    let present_cards: BTreeSet<String> = ctx
+        .snapshot
+        .tasks
+        .iter()
+        .map(|task| task.id.card.get().to_string())
+        .collect();
+    let merged = prune_absent_cards(&merged, &present_cards);
+    let bytes = serde_json::to_vec(&merged).unwrap_or_default();
+    let upload = AttachmentUpload {
+        file_name: ANCHOR_ATTACHMENT_FILENAME.to_owned(),
+        mime_type: ANCHOR_ATTACHMENT_MIME.to_owned(),
+        content: bytes,
+    };
+
+    // ---- the upload ladder (per anchor_action) ------------------------
+    let Some(ladder) = ladder_for(ctx.action) else {
+        return FlushVerdict::Idle;
+    };
+    let upload_result = match ladder {
+        Ladder::Use(location) => upload_onto(&ctx, &location, &upload, false).await,
+        Ladder::RestoreThenReplace(location) => {
+            // Restore-then-replace (never create-against-a-tombstone).
+            match ctx
+                .client
+                .restore_attachment(
+                    ctx.target.get(),
+                    location.stack.get(),
+                    location.card.get(),
+                    location.attachment_id,
+                )
+                .await
+            {
+                Ok(_) => upload_onto(&ctx, &location, &upload, false).await,
+                Err(err) => Err(err),
+            }
+        }
+        Ladder::Adopt(location) => upload_onto(&ctx, &location, &upload, true).await,
+        Ladder::Create => upload_with_create(&ctx, &upload).await,
+    };
+
+    // ---- outcome assembly --------------------------------------------
+    let resolved_members: Vec<taskboard_domain::OpId> = member_ops
+        .iter()
+        .filter_map(|entry| {
+            if let LocalOp::UpdateAppData(task_id) = entry.op
+                && ctx
+                    .tasks
+                    .get(&task_id)
+                    .and_then(|task| task.remote)
+                    .is_some_and(|binding| binding.board == ctx.target)
+                && ctx.tasks.get(&task_id).is_some_and(Task::is_live)
+            {
+                Some(entry.op_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+    match upload_result {
+        Ok(Some(stamp)) => FlushVerdict::Applied {
+            outcomes: resolved_members
+                .iter()
+                .map(|op| PushOutcome {
+                    op: *op,
+                    result: PushResult::Applied { echo: None },
+                })
+                .collect(),
+            stamp,
+            document: merged,
+        },
+        Ok(None) => FlushVerdict::AppliedUncached {
+            outcomes: resolved_members
+                .iter()
+                .map(|op| PushOutcome {
+                    op: *op,
+                    result: PushResult::Applied { echo: None },
+                })
+                .collect(),
+        },
+        Err(err) => {
+            let classified = mapping::classify_push(
+                &err,
+                PushCtx {
+                    existing: true,
+                    delete: false,
+                },
+            );
+            match classified {
+                // Permanent 4xx: dead-letter the primary (D-S5's
+                // completion clause); subsumed ops re-form next cycle.
+                Some(PushResult::Rejected {
+                    kind: SyncErrorKind::BadRequest,
+                }) => match ctx.group {
+                    Some(group) => FlushVerdict::DeadLettered {
+                        primary: group.primary,
+                    },
+                    None => FlushVerdict::Idle,
+                },
+                Some(_) => {
+                    // Other classified failures strand (retryable: auth,
+                    // forbidden, server, rate limit…).
+                    tracing::warn!(board = ctx.target.get(), %err, "sidecar flush rejected; ops stay queued");
+                    FlushVerdict::Idle
+                }
+                None => {
+                    tracing::warn!(board = ctx.target.get(), %err, "sidecar flush failed (transport); ops stay queued");
+                    FlushVerdict::Idle
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RemoteCardLocation {
+    stack: taskboard_domain::RemoteStackId,
+    card: taskboard_domain::RemoteCardId,
+    attachment_id: u64,
+}
+
+/// The upload ladder (per `anchor_action`): which wire steps land the
+/// assembled document.
+enum Ladder {
+    /// Replace the live carrier's content.
+    Use(RemoteCardLocation),
+    /// Restore the tombstoned carrier, then replace.
+    RestoreThenReplace(RemoteCardLocation),
+    /// A first upload onto the unconfirmed title match.
+    Adopt(RemoteCardLocation),
+    /// The two-step create ladder.
+    Create,
+}
+
+fn ladder_for(action: &AnchorAction) -> Option<Ladder> {
+    match action {
+        AnchorAction::Use(candidate) => {
+            let location = RemoteCardLocation {
+                stack: candidate.card.stack,
+                card: candidate.card.card,
+                attachment_id: candidate.attachment_id,
+            };
+            Some(if candidate.tombstoned {
+                Ladder::RestoreThenReplace(location)
+            } else {
+                Ladder::Use(location)
+            })
+        }
+        AnchorAction::Adopt(card_ref) => Some(Ladder::Adopt(RemoteCardLocation {
+            stack: card_ref.stack,
+            card: card_ref.card,
+            attachment_id: 0,
+        })),
+        AnchorAction::Create => Some(Ladder::Create),
+        AnchorAction::None => None,
+    }
+}
+
+fn board_tables<'a>(ctx: &'a FlushCtx<'a>) -> EntityTables<'a> {
+    EntityTables {
+        tasks: ctx.tasks,
+        stacks: ctx.stacks,
+        labels: empty_labels(),
+        boards: empty_boards(),
+    }
+}
+
+fn empty_labels() -> &'static BTreeMap<taskboard_domain::LabelId, taskboard_domain::entities::Label>
+{
+    static EMPTY: std::sync::LazyLock<
+        BTreeMap<taskboard_domain::LabelId, taskboard_domain::entities::Label>,
+    > = std::sync::LazyLock::new(BTreeMap::new);
+    &EMPTY
+}
+
+fn empty_boards() -> &'static BTreeMap<BoardId, taskboard_domain::Board> {
+    static EMPTY: std::sync::LazyLock<BTreeMap<BoardId, taskboard_domain::Board>> =
+        std::sync::LazyLock::new(BTreeMap::new);
+    &EMPTY
+}
+
+/// One scoped task's app-data presence (the rebuild scope's filter).
+fn task_has_app_data(
+    task: &Task,
+    rules: &BTreeMap<ReminderRuleId, ReminderRule>,
+    features: DeckFeatures,
+) -> bool {
+    task.effort.is_some()
+        || task.importance.is_some()
+        || task.urgency.is_some()
+        || (!features.card_startdate && task.scheduled.is_some())
+        || rules.values().any(|rule| rule.task == task.id)
+}
+
+/// `Ok(Some(stamp))` on a decoded response, `Ok(None)` when the write
+/// landed but the echo did not decode (the cache stays cold), `Err`
+/// for the classification table.
+async fn upload_onto(
+    ctx: &FlushCtx<'_>,
+    location: &RemoteCardLocation,
+    upload: &AttachmentUpload,
+    fresh_card: bool,
+) -> Result<Option<AttachmentStamp>, DeckError> {
+    let attachment = if fresh_card {
+        ctx.client
+            .upload_attachment(
+                ctx.target.get(),
+                location.stack.get(),
+                location.card.get(),
+                upload,
+            )
+            .await
+    } else {
+        ctx.client
+            .update_attachment_content(
+                ctx.target.get(),
+                location.card.get(),
+                location.attachment_id,
+                upload,
+            )
+            .await
+    }?;
+    Ok(attachment_stamp(&attachment))
+}
+
+/// The Create ladder: `creation_target` (the first live stack at last
+/// position) → the convention-titled card → the first upload. Actor-side
+/// and lazy; the next pull adopts the carrier (R6).
+async fn upload_with_create(
+    ctx: &FlushCtx<'_>,
+    upload: &AttachmentUpload,
+) -> Result<Option<AttachmentStamp>, DeckError> {
+    let Some((stack, order)) = anchor::creation_target(&ctx.snapshot.stacks, &ctx.snapshot.tasks)
+    else {
+        // No live stack: the flush strands this cycle (the actor never
+        // auto-creates stacks); ops stay queued.
+        tracing::warn!(
+            board = ctx.target.get(),
+            "sidecar flush stranded: no live stack for the anchor"
+        );
+        return Ok(None);
+    };
+    let created = ctx
+        .client
+        .create_card(
+            ctx.target.get(),
+            stack.get(),
+            &crate::client::NewCard {
+                title: taskboard_domain::ANCHOR_CARD_TITLE.to_owned(),
+                order: Some(order),
+                description: None,
+                duedate: None,
+                startdate: None,
+                kind: None,
+            },
+        )
+        .await?;
+    let attachment = ctx
+        .client
+        .upload_attachment(ctx.target.get(), stack.get(), created.id, upload)
+        .await?;
+    Ok(attachment_stamp(&attachment))
+}
+
+fn attachment_stamp(attachment: &crate::model::Attachment) -> Option<AttachmentStamp> {
+    let filesize = attachment
+        .extended_data
+        .as_ref()
+        .map(|data| data.size)
+        .or_else(|| attachment.data.as_ref().map(|data| data.size));
+    filesize.map(|filesize| AttachmentStamp {
+        last_modified: attachment.last_modified,
+        filesize,
+    })
+}

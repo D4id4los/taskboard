@@ -3074,3 +3074,396 @@ async fn a40_mutated_title_never_matches() {
     ));
     assert_eq!(sidecar::download_hits(&server).await, 0);
 }
+
+// ---- chunk 4: the sidecar flush (green paths) ---------------------------
+
+/// Flush-scenario seeds: a bound task on the anchor card with app-data
+/// and a queued `UpdateAppData` op (the flush trigger).
+mod flush_seed {
+    use super::*;
+
+    /// The bound task (card 55 = the anchor) with effort set, plus its
+    /// queued `UpdateAppData` op (op id `raw + 1`).
+    pub(crate) fn repo_with_flush_work(
+        effort: bool,
+        with_op: bool,
+        scheduled: bool,
+    ) -> Arc<InMemoryRepository> {
+        let mut state = PersistedState::default();
+        let board = bound_board();
+        state.boards.insert(board.id, board);
+        let stack = bound_stack(2, STACK);
+        state.stacks.insert(stack.id, stack);
+        let (mut task, _) = draft(100, 2, "the app task");
+        task.remote = Some(taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(BOARD),
+            stack: taskboard_domain::RemoteStackId(STACK),
+            card: taskboard_domain::RemoteCardId(sidecar::CARD),
+        });
+        task.remote_seen = Some(ts(T));
+        if effort {
+            task.effort = Some(taskboard_domain::entities::Effort::new(900));
+            task.clocks.effort = ts(T + 10);
+        }
+        if scheduled {
+            task.scheduled = Some(ts(T + 20));
+            task.clocks.scheduled = ts(T + 20);
+        }
+        state.tasks.insert(task.id, task);
+        if with_op {
+            state.outbox.push(PendingOp {
+                op_id: OpId(uuid(999)),
+                op: LocalOp::UpdateAppData(taskboard_domain::TaskId::from(uuid(100))),
+                queued_at: ts(T + 30),
+            });
+        }
+        Arc::new(InMemoryRepository::with_state(state))
+    }
+
+    /// The attachment-write routes: content PUT (update), restore, and
+    /// the create-path upload. Each mock records its hits via the
+    /// server's received-requests log (no counters needed).
+    pub(crate) async fn mount_content_put(server: &MockServer, status: u16) {
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/index.php/apps/deck/cards/{}/attachment/deck_file:{}",
+                sidecar::CARD,
+                sidecar::ATTACHMENT
+            )))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_string(attachment_json(sidecar::ATTACHMENT, T + 100)),
+            )
+            .mount(server)
+            .await;
+    }
+
+    pub(crate) async fn mount_restore(server: &MockServer, status: u16) {
+        Mock::given(method("PUT"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/{}/attachments/{}/restore",
+                sidecar::CARD,
+                sidecar::ATTACHMENT
+            )))
+            .respond_with(ResponseTemplate::new(status).set_body_string(attachment_json(
+                sidecar::ATTACHMENT,
+                T + 100,
+            )))
+            .mount(server)
+            .await;
+    }
+
+    pub(crate) async fn mount_upload(server: &MockServer, card: u64, status: u16) {
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/{card}/attachments"
+            )))
+            .respond_with(ResponseTemplate::new(status).set_body_string(attachment_json(
+                sidecar::ATTACHMENT,
+                T + 100,
+            )))
+            .mount(server)
+            .await;
+    }
+
+    pub(crate) async fn mount_card_create(server: &MockServer, card: u64, status: u16) {
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards"
+            )))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_string(sidecar::anchor_card_json(card, T + 100).to_string()),
+            )
+            .mount(server)
+            .await;
+    }
+
+    fn attachment_json(id: u64, stamp: i64) -> String {
+        serde_json::json!({
+            "id": id, "type": "deck_file", "cardId": sidecar::CARD,
+            "createdAt": stamp, "lastModified": stamp, "deletedAt": 0,
+            "extendedData": {
+                "fileName": sidecar::FILENAME, "filesize": 42,
+                "mimetype": "application/json", "mtime": stamp
+            }
+        })
+        .to_string()
+    }
+
+    /// The content-write hit count (PUT/POST on attachment routes).
+    pub(crate) async fn write_hits(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                let path = r.url.path();
+                (r.method == "POST" || r.method == "PUT")
+                    && (path.contains("/attachment") || path.ends_with("/cards"))
+            })
+            .map(|r| format!("{} {}", r.method, r.url.path()))
+            .collect()
+    }
+}
+
+/// G-1: a queued `UpdateAppData` op flushes through the live carrier —
+/// the content PUT lands, the report completes the op, and the metadata
+/// cache refresh keeps the next cycle's re-read at zero content GETs.
+#[tokio::test(start_paused = true)]
+async fn f01_flush_uploads_through_the_live_carrier_and_completes_the_op() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == taskboard_domain::OpId(uuid(999))
+                && matches!(
+                    outcome.result,
+                    taskboard_domain::PushResult::Applied { echo: None }
+                )
+        }),
+        "the flush op completes with the applied outcome: {pushes:?}"
+    );
+    // Exactly one content write, and it is the replace route.
+    let writes = flush_seed::write_hits(&server).await;
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert!(
+        writes[0].contains("/cards/attachment/deck_file:")
+            || writes[0].contains("/attachment/deck_file:")
+    );
+
+    // The cache refresh: the second cycle serves the read from
+    // `LoopState` or re-downloads only on a stamp change — either way
+    // the flush re-runs idempotently (this harness's repo still holds
+    // the op: the engine, not the actor, completes ops from the report).
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let second = next_report(&mut actor).await;
+    assert!(matches!(second, SyncReport::Completed { .. }));
+}
+
+/// G-2: no anchor anywhere + local app-data ⇒ the Create ladder builds
+/// the carrier (convention-titled card + first upload) — the rebuild
+/// trigger firing with a queued op.
+#[tokio::test(start_paused = true)]
+async fn f02_flush_creates_the_anchor_when_none_exists() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(&server, serde_json::json!([card_json(56, "a plain card")])).await;
+    flush_seed::mount_card_create(&server, 70, 200).await;
+    flush_seed::mount_upload(&server, 70, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == taskboard_domain::OpId(uuid(999))
+                && matches!(
+                    outcome.result,
+                    taskboard_domain::PushResult::Applied { echo: None }
+                )
+        }),
+        "the flush op completes: {pushes:?}"
+    );
+    let writes = flush_seed::write_hits(&server).await;
+    assert_eq!(writes.len(), 2, "create + first upload: {writes:?}");
+    assert!(writes[0].ends_with("/cards"), "the card create first");
+    assert!(
+        writes[1].contains("/cards/70/attachments"),
+        "then the upload"
+    );
+}
+
+/// G-3: no queued ops, but local app-data with an absent document ⇒ the
+/// rebuild trigger fires alone (D12) and the anchor is created — the
+/// lazy gate is about *local* work, not about queued ops.
+#[tokio::test(start_paused = true)]
+async fn f03_rebuild_trigger_flushes_without_queued_ops() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(&server, serde_json::json!([card_json(56, "a plain card")])).await;
+    flush_seed::mount_card_create(&server, 70, 200).await;
+    flush_seed::mount_upload(&server, 70, 200).await;
+
+    // effort set, no op queued.
+    let mut actor = spawn(
+        &server,
+        flush_seed::repo_with_flush_work(true, false, false),
+    );
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(pushes.is_empty(), "no ops queued ⇒ no outcomes: {pushes:?}");
+    assert_eq!(flush_seed::write_hits(&server).await.len(), 2);
+}
+
+/// G-4: a native-only board (no app-data, no ops) never grows an anchor
+/// — the lazy guarantee's gate (D-S8: zero sidecar cost).
+#[tokio::test(start_paused = true)]
+async fn f04_native_only_board_never_grows_an_anchor() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(&server, serde_json::json!([card_json(56, "a plain card")])).await;
+
+    let mut actor = spawn(
+        &server,
+        flush_seed::repo_with_flush_work(false, false, false),
+    );
+    let report = nudge_and_report(&mut actor).await;
+    assert!(matches!(report, SyncReport::Completed { .. }));
+    assert!(
+        flush_seed::write_hits(&server).await.is_empty(),
+        "zero sidecar writes on a board without app-data"
+    );
+}
+
+/// G-5: a tombstoned carrier attachment restores, then replaces
+/// (restore-then-replace, never create-against-a-tombstone).
+#[tokio::test(start_paused = true)]
+async fn f05_tombstoned_carrier_restores_then_replaces() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, true).await; // tombstoned
+    flush_seed::mount_restore(&server, 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == taskboard_domain::OpId(uuid(999))
+                && matches!(
+                    outcome.result,
+                    taskboard_domain::PushResult::Applied { echo: None }
+                )
+        }),
+        "{pushes:?}"
+    );
+    let writes = flush_seed::write_hits(&server).await;
+    assert_eq!(writes.len(), 2, "{writes:?}");
+    assert!(
+        writes[0].contains("/restore"),
+        "the restore precedes the replace"
+    );
+    assert!(writes[1].contains("/attachment/deck_file:"));
+}
+
+/// G-6: a single unconfirmed title match adopts — the first upload rides
+/// the existing card (the interrupted-ceremony loop closing).
+#[tokio::test(start_paused = true)]
+async fn f06_single_title_match_adopts() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    // The anchor-titled card exists but its detail carries no reserved
+    // attachment: unconfirmed ⇒ Adopt when work exists.
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/{}",
+            sidecar::CARD
+        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(sidecar::anchor_card_json(sidecar::CARD, T).to_string()),
+        )
+        .mount(&server)
+        .await;
+    flush_seed::mount_upload(&server, sidecar::CARD, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(true, true, false));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == taskboard_domain::OpId(uuid(999))
+                && matches!(
+                    outcome.result,
+                    taskboard_domain::PushResult::Applied { echo: None }
+                )
+        }),
+        "{pushes:?}"
+    );
+    let writes = flush_seed::write_hits(&server).await;
+    assert_eq!(writes.len(), 1, "{writes:?}");
+    assert!(
+        writes[0].contains(&format!("/cards/{}/attachments", sidecar::CARD)),
+        "the upload rides the matched card, not a new one"
+    );
+}
+
+/// G-7: while the connector lacks native `startdate`, a queued
+/// `scheduled` edit flushes through the document lane and lands in the
+/// uploaded document (D-V2's emission gate on the wire).
+#[tokio::test(start_paused = true)]
+async fn f07_scheduled_edit_flushes_through_the_document_while_not_native() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.17.5")).await; // conservative
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_flush_work(false, true, true));
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == taskboard_domain::OpId(uuid(999))
+                && matches!(
+                    outcome.result,
+                    taskboard_domain::PushResult::Applied { echo: None }
+                )
+        }),
+        "{pushes:?}"
+    );
+    // The uploaded body carries the scheduled write (the multipart part
+    // is inspected as bytes — the document JSON rides verbatim inside).
+    let requests = server.received_requests().await.unwrap();
+    let put = requests
+        .iter()
+        .find(|r| r.url.path().contains("/attachment/deck_file:"))
+        .expect("the content PUT happened");
+    let body = String::from_utf8_lossy(&put.body);
+    assert!(
+        body.contains("\"scheduled\""),
+        "the document overlay carries the scheduled write"
+    );
+}

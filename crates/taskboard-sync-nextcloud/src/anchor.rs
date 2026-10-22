@@ -26,9 +26,8 @@ use crate::model::Attachment;
 /// no rename exists on the attachment surface).
 pub(crate) const ANCHOR_ATTACHMENT_FILENAME: &str = "taskboard-appdata.json";
 
-/// The sidecar document's MIME type (chunk 4's flush uploads with it;
+/// The sidecar document's MIME type (the flush uploads with it;
 /// recorded here beside the filename it travels with).
-#[allow(dead_code)] // consumed by chunk 4's flush upload
 pub(crate) const ANCHOR_ATTACHMENT_MIME: &str = "application/json";
 
 /// One confirmed anchor carrier: a card whose detail read shows an
@@ -176,9 +175,8 @@ pub(crate) fn anchor_action(discovery: &AnchorDiscovery, has_document_work: bool
 /// The anchor card's creation position: the first live stack by `order`
 /// (minimum), at last position (max card order in that stack + 1; 0 for
 /// an empty stack). `None` when the board has no live stack — the flush
-/// strands this cycle; the actor never auto-creates stacks. (Chunk 4's
-/// flush consumes this; unit-pinned here.)
-#[allow(dead_code)] // the creation path rides chunk 4's flush
+/// strands this cycle; the actor never auto-creates stacks. (Unit-pinned
+/// here; consumed by the flush's Create ladder.)
 #[must_use]
 pub(crate) fn creation_target(
     stacks: &[RemoteStack],

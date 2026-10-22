@@ -27,14 +27,15 @@ use tokio::task::JoinHandle;
 
 use taskboard_domain::{
     AppDataEvidence, AppDataUnreadable, BoardPullValidators, Clock, DeckFeatures, EntityTables,
-    PushOutcome, RemoteBoard, RemoteBoardId, RemoteBoardSnapshot, RemoteCardRef, RemoteLabel,
-    RemoteStack, RemoteStackId, RemoteTask, SyncCommand, SyncErrorKind, SyncReport,
+    PushOutcome, PushResult, RemoteBoard, RemoteBoardId, RemoteBoardSnapshot, RemoteCardRef,
+    RemoteLabel, RemoteStack, RemoteStackId, RemoteTask, SyncCommand, SyncErrorKind, SyncReport,
     SyncStateReader, SyncValidators, SystemEvent, ValidatorKey, flags_for, plan_pushes,
 };
 
-use crate::anchor::{self, AnchorAction};
+use crate::anchor;
 use crate::client::{DeckClient, Fetch, Validators};
 use crate::error::DeckError;
+use crate::flush;
 use crate::mapping;
 use crate::mapping::classify_read;
 use crate::model::StackFilter;
@@ -489,6 +490,7 @@ async fn cycle(
 
         // ---- push (before pull: the R3 hazard, ADR 0007) ---------------
         let mut pushes: Vec<PushOutcome> = Vec::new();
+        let mut deferred_flush: Option<taskboard_domain::PushGroup> = None;
         if !board_ops.is_empty() {
             let index = taskboard_domain::RemoteIndex::from_bindings(
                 persisted
@@ -510,6 +512,13 @@ async fn cycle(
             let overlay = BindingOverlay::from_index(target, &index);
             let mut executor = PushExecutor::new(client, overlay, st.features);
             for group in plan_pushes(&board_ops, tables) {
+                // The flush executes post-pull (D-S4 item 4's position
+                // ruling): document groups are stashed, never executed
+                // in the push phase.
+                if matches!(group.target, taskboard_domain::PushTarget::Document(_)) {
+                    deferred_flush = Some(group);
+                    continue;
+                }
                 match executor.execute(&group, &board_ops, tables).await {
                     GroupOutcome::Outcomes(mut outcomes) => pushes.append(&mut outcomes),
                     GroupOutcome::Aborted { landed } => {
@@ -584,7 +593,7 @@ async fn cycle(
         // decode row below may fail the cycle (D-S7's invariant).
         let snapshot = pulled.snapshot;
         let validators = pulled.validators;
-        let app_data = match sidecar_evidence(
+        let (app_data, discovery, _detail_attachments) = match sidecar_evidence(
             client,
             target,
             &snapshot,
@@ -593,7 +602,7 @@ async fn cycle(
         )
         .await
         {
-            Ok(evidence) => evidence,
+            Ok(read) => read,
             Err(err) => {
                 let kind = classify_read(&err);
                 let network = matches!(kind, SyncErrorKind::Network);
@@ -616,6 +625,80 @@ async fn cycle(
                 continue;
             }
         };
+
+        // ---- flush (between pull and report, D-S4 item 4) ---------------
+        // The ceremony's write arms wake exactly when the flush has work
+        // (lazy, D-S1; zero sidecar cost otherwise, D-S8).
+        let has_work = flush::has_flush_work(
+            deferred_flush.as_ref(),
+            &app_data,
+            tables,
+            &persisted.reminders.rules,
+            *board_id,
+            st.features.card_startdate,
+        );
+        if has_work {
+            let action = anchor::anchor_action(&discovery, true);
+            let read_evidence = &app_data;
+            let attempt = !matches!(
+                read_evidence,
+                AppDataEvidence::Unreadable(
+                    AppDataUnreadable::Transport
+                        | AppDataUnreadable::Decode
+                        | AppDataUnreadable::FormatTooNew { .. }
+                )
+            );
+            if attempt {
+                let verdict = flush::run_flush(flush::FlushCtx {
+                    client,
+                    target,
+                    features: st.features,
+                    read_at,
+                    snapshot: &snapshot,
+                    evidence: read_evidence,
+                    action: &action,
+                    group: deferred_flush.as_ref(),
+                    outbox: &board_ops,
+                    tasks: &persisted.tasks,
+                    stacks: &persisted.stacks,
+                    rules: &persisted.reminders.rules,
+                })
+                .await;
+                match verdict {
+                    flush::FlushVerdict::Idle => {
+                        // Ops stay queued; the cycle still reports Completed.
+                    }
+                    flush::FlushVerdict::Applied {
+                        outcomes,
+                        stamp,
+                        document,
+                    } => {
+                        pushes.extend(outcomes);
+                        // The cache refresh: the next cycle must not
+                        // re-GET our own write (D-S4 item 4).
+                        st.documents.insert(
+                            target,
+                            CachedAppData {
+                                last_modified: stamp.last_modified,
+                                filesize: stamp.filesize,
+                                document,
+                            },
+                        );
+                    }
+                    flush::FlushVerdict::AppliedUncached { outcomes } => {
+                        pushes.extend(outcomes);
+                    }
+                    flush::FlushVerdict::DeadLettered { primary } => {
+                        pushes.push(PushOutcome {
+                            op: primary,
+                            result: PushResult::Rejected {
+                                kind: SyncErrorKind::BadRequest,
+                            },
+                        });
+                    }
+                }
+            }
+        }
 
         // ---- report (one per board) -------------------------------------
         any_completed = true;
@@ -727,17 +810,29 @@ async fn send_report(reports: &mpsc::Sender<SyncReport>, report: SyncReport) -> 
 /// and download the document only when the metadata pair says the
 /// content changed (D11's cache). Success-only caching: only
 /// `Document`-class evidence touches `LoopState.documents`.
+#[allow(clippy::type_complexity)] // the triple is the read's products
 async fn sidecar_evidence(
     client: &DeckClient,
     target: RemoteBoardId,
     snapshot: &RemoteBoardSnapshot,
     mut details: std::collections::HashMap<RemoteCardRef, Vec<crate::model::Attachment>>,
     st: &mut LoopState,
-) -> Result<AppDataEvidence, crate::error::DeckError> {
+) -> Result<
+    (
+        AppDataEvidence,
+        anchor::AnchorDiscovery,
+        std::collections::HashMap<RemoteCardRef, Vec<crate::model::Attachment>>,
+    ),
+    crate::error::DeckError,
+> {
     // A dead board's reads answer 404/403: the ceremony is skipped
     // entirely, evidence `Absent` (D10 item 1).
     if snapshot.board.deleted_at.is_some() {
-        return Ok(AppDataEvidence::Absent);
+        return Ok((
+            AppDataEvidence::Absent,
+            anchor::AnchorDiscovery::default(),
+            details,
+        ));
     }
     let mut discovery = anchor::scan_snapshot(snapshot, &details);
     for card_ref in discovery.unconfirmed.clone() {
@@ -758,15 +853,13 @@ async fn sidecar_evidence(
         }
     }
     discovery = anchor::scan_snapshot(snapshot, &details);
-    let action = anchor::anchor_action(&discovery, false);
-    let AnchorAction::Use(candidate) = action else {
-        // No work exists yet (no flush this chunk): `None`, or the
-        // tombstoned-carrier `Use` whose evidence is `Absent` with no
-        // download (the decision table's silent state).
-        return Ok(AppDataEvidence::Absent);
+    let Some(candidate) = anchor::pick(&discovery).cloned() else {
+        // No confirmed carrier: `Absent`, no download (the decision
+        // table's silent state; the write arms wake only on flush work).
+        return Ok((AppDataEvidence::Absent, discovery, details));
     };
     if candidate.tombstoned {
-        return Ok(AppDataEvidence::Absent);
+        return Ok((AppDataEvidence::Absent, discovery, details));
     }
     if let Some(cached) = st.documents.get(&target)
         && cached.last_modified == candidate.last_modified
@@ -774,7 +867,11 @@ async fn sidecar_evidence(
     {
         // Metadata equal ⇒ skip the content GET; re-folding the cached
         // document is idempotent (chunk 4's guarantee).
-        return Ok(AppDataEvidence::Document(Box::new(cached.document.clone())));
+        return Ok((
+            AppDataEvidence::Document(Box::new(cached.document.clone())),
+            discovery,
+            details,
+        ));
     }
     match client
         .download_attachment(
@@ -797,7 +894,7 @@ async fn sidecar_evidence(
                     },
                 );
             }
-            Ok(evidence)
+            Ok((evidence, discovery, details))
         }
         Err(err) => {
             // The reason travels typed, never silence (the loud fence's
@@ -807,7 +904,11 @@ async fn sidecar_evidence(
                 ?err,
                 "sidecar document download failed; folding nothing this cycle"
             );
-            Ok(AppDataEvidence::Unreadable(AppDataUnreadable::Transport))
+            Ok((
+                AppDataEvidence::Unreadable(AppDataUnreadable::Transport),
+                discovery,
+                details,
+            ))
         }
     }
 }
