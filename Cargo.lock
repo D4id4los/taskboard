@@ -6751,6 +6751,7 @@ dependencies = [
  "chrono",
  "criterion",
  "i-slint-backend-testing",
+ "i-slint-core",
  "insta",
  "png",
  "proptest",

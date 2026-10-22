@@ -45,6 +45,10 @@ slint-build = "1.18.1"
 # and the MCP screenshot smoke — the same crate version the slint
 # default features already put in the tree, no new vendors.
 i-slint-backend-testing = { version = "=1.18.1", features = ["renderer-software"] }
+# The journey driver's pointer seam (round-1 D2/D13): the core crate
+# supplies the WindowEvent button enum the public facade does not
+# re-export. Dev-only, named only in tests/support/driver.rs.
+i-slint-core = "=1.18.1"
 
 # Async runtime & channels
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs"] }

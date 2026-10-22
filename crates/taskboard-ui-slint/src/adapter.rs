@@ -483,6 +483,7 @@ pub(crate) fn install(
 /// state (the adapter applies `view_state` outcomes verbatim, D9).
 fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_toolbar_seam(window, adapter);
+    install_menu_dismiss_seam(window, adapter);
     install_board_bar_seam(window, adapter);
     install_stack_create_seams(window, adapter);
     install_board_seams(window, adapter);
@@ -507,6 +508,17 @@ fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         } else {
             a.route(&window, ActionId::AppMenu);
         }
+    });
+}
+
+/// The dismissal layer's full close (round-1 D2): an outside click
+/// routes `menu.dismiss` — a dismissal, not a level-up.
+fn install_menu_dismiss_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let adapter = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_menu_dismiss_requested(move || {
+        let Some(window) = weak.upgrade() else { return };
+        adapter.borrow_mut().route(&window, ActionId::MenuDismiss);
     });
 }
 
