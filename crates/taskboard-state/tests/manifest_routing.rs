@@ -357,8 +357,11 @@ fn every_taskchanges_slot_is_manifest_covered() {
             boards: &std::collections::BTreeMap::default(),
         },
     );
+    // The op buckets into exactly one group — the board's document
+    // flush, never a native wire group (commit 6's coalescing).
+    assert_eq!(groups.len(), 1);
     assert!(
-        groups.is_empty(),
+        matches!(groups[0].target, taskboard_domain::PushTarget::Document(_)),
         "a document-lane op must never misroute as a native group"
     );
 }
