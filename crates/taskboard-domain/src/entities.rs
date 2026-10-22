@@ -10,6 +10,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 use crate::ids::{
     BoardId, LabelId, RemoteBoardBinding, RemoteCardRef, RemoteLabelRef, RemoteStackRef, StackId,
@@ -61,6 +62,98 @@ impl Effort {
     pub const fn seconds(self) -> u64 {
         self.0
     }
+
+    /// Parses the canonical text form: `<n><s|m|h>` components
+    /// concatenated, or a string of bare digits = minutes (`30`, `1h30m`,
+    /// `45s` are valid; `1h30` — a unit-less component after a
+    /// unit-carrying one — is not). No signs, floats, whitespace, or
+    /// empty input; overflow at any step is `None` (never a saturation —
+    /// a wrapped estimate would be a lie).
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        if raw.is_empty() {
+            return None;
+        }
+        let mut rest = raw;
+        let mut total: u64 = 0;
+        let mut used_unit = false;
+        while !rest.is_empty() {
+            let digits_end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            let (digits, tail) = rest.split_at(digits_end);
+            if digits.is_empty() {
+                return None;
+            }
+            let value: u64 = digits.parse().ok()?;
+            match tail.as_bytes().first() {
+                // Bare digits: minutes, only when no unit has been seen
+                // anywhere (`1h30` is unambiguously invalid).
+                None => {
+                    if used_unit {
+                        return None;
+                    }
+                    total = total.checked_add(value.checked_mul(60)?)?;
+                    rest = "";
+                }
+                Some(b's') => {
+                    total = total.checked_add(value)?;
+                    used_unit = true;
+                    rest = &tail[1..];
+                }
+                Some(b'm') => {
+                    total = total.checked_add(value.checked_mul(60)?)?;
+                    used_unit = true;
+                    rest = &tail[1..];
+                }
+                Some(b'h') => {
+                    total = total.checked_add(value.checked_mul(3600)?)?;
+                    used_unit = true;
+                    rest = &tail[1..];
+                }
+                Some(_) => return None,
+            }
+        }
+        Some(Self(total))
+    }
+
+    /// The canonical text form: descending `h`/`m`/`s`, zero components
+    /// omitted, all-zero renders `0s`.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        let hours = self.0 / 3600;
+        let minutes = (self.0 % 3600) / 60;
+        let seconds = self.0 % 60;
+        let mut out = String::new();
+        if hours > 0 {
+            let _ = write!(out, "{hours}h");
+        }
+        if minutes > 0 {
+            let _ = write!(out, "{minutes}m");
+        }
+        if seconds > 0 {
+            let _ = write!(out, "{seconds}s");
+        }
+        if out.is_empty() {
+            return "0s".to_owned();
+        }
+        out
+    }
+}
+
+/// The two level enums' shared text vocabulary: index = declaration
+/// (severity) order. One vocabulary for CLI parse, CLI render, JSON
+/// row, and UI labels; the enums stay distinct types (no shared trait).
+const LEVEL_TEXT_FORMS: [&str; 5] = ["very-low", "low", "normal", "high", "very-high"];
+
+/// The vocabulary index of a canonical level name.
+fn parse_level_text_form(raw: &str) -> Option<usize> {
+    LEVEL_TEXT_FORMS.iter().position(|form| *form == raw)
+}
+
+/// The canonical level name at a declaration-order index.
+const fn level_text_form(index: usize) -> &'static str {
+    LEVEL_TEXT_FORMS[index]
 }
 
 /// Importance level for later decision support; `None` on a [`Task`] =
@@ -77,6 +170,31 @@ pub enum Importance {
     VeryHigh,
 }
 
+impl Importance {
+    /// Declaration order, mirroring the shared level vocabulary's index.
+    const LEVELS: [Self; 5] = [
+        Self::VeryLow,
+        Self::Low,
+        Self::Normal,
+        Self::High,
+        Self::VeryHigh,
+    ];
+
+    /// Parses the canonical hyphenated text form (`"very-low"` …
+    /// `"very-high"`).
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        parse_level_text_form(raw).map(|index| Self::LEVELS[index])
+    }
+
+    /// The canonical hyphenated text form (the serde name with `-` for
+    /// `_`).
+    #[must_use]
+    pub const fn text_form(self) -> &'static str {
+        level_text_form(self as usize)
+    }
+}
+
 /// Urgency level for later decision support; `None` on a [`Task`] =
 /// unset. A distinct type from [`Importance`] on purpose:
 /// cross-assignment is a type error and the matrix view grows them
@@ -89,6 +207,31 @@ pub enum Urgency {
     Normal,
     High,
     VeryHigh,
+}
+
+impl Urgency {
+    /// Declaration order, mirroring the shared level vocabulary's index.
+    const LEVELS: [Self; 5] = [
+        Self::VeryLow,
+        Self::Low,
+        Self::Normal,
+        Self::High,
+        Self::VeryHigh,
+    ];
+
+    /// Parses the canonical hyphenated text form (`"very-low"` …
+    /// `"very-high"`).
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        parse_level_text_form(raw).map(|index| Self::LEVELS[index])
+    }
+
+    /// The canonical hyphenated text form (the serde name with `-` for
+    /// `_`).
+    #[must_use]
+    pub const fn text_form(self) -> &'static str {
+        level_text_form(self as usize)
+    }
 }
 
 /// Which sync lane the Deck connector carries a task field on (#244).
@@ -404,6 +547,114 @@ mod tests {
         assert_eq!(sorted, urgency, "derived Ord = declaration order");
     }
 
+    #[test]
+    fn effort_parse_grammar_table() {
+        let cases = [
+            ("30", 30 * 60),  // bare digits are minutes
+            ("45s", 45),      // seconds
+            ("2h", 2 * 3600), // hours
+            ("1h30m", 5400),  // components compose
+            ("1h30m15s", 5415),
+            ("0", 0),
+            ("0s", 0),
+        ];
+        for (raw, seconds) in cases {
+            assert_eq!(
+                Effort::parse_text_form(raw),
+                Some(Effort::new(seconds)),
+                "{raw} must parse"
+            );
+        }
+        for bad in [
+            "1h30",                          // unit-less after a unit-carrying component
+            "-30m",                          // no signs
+            "1.5h",                          // no floats
+            "1 h30m",                        // no whitespace
+            "h30m",                          // no unit-less leading component
+            "10min",                         // units are exactly s|m|h
+            "",                              // no empty input
+            "none",                          // the clear sentinel is the CLI wrapper's, not ours
+            "9999999999999999999999999999h", // component overflow
+        ] {
+            assert_eq!(Effort::parse_text_form(bad), None, "{bad} must be rejected");
+        }
+    }
+
+    #[test]
+    fn effort_total_overflow_is_none() {
+        // A total that overflows u64 while accumulating valid components:
+        // the max whole hours plus enough seconds to pass the ceiling.
+        let hours = u64::MAX / 3600;
+        let room = u64::MAX - hours * 3600;
+        let raw = format!("{hours}h{}s", 3600 - room);
+        assert_eq!(Effort::parse_text_form(&raw), None);
+        // ...while the same hours alone is representable.
+        assert_eq!(
+            Effort::parse_text_form(&format!("{hours}h")),
+            Some(Effort::new(hours * 3600)),
+        );
+    }
+
+    #[test]
+    fn effort_text_form_canonical_table() {
+        let cases = [
+            (5400u64, "1h30m"),
+            (3600, "1h"),
+            (59, "59s"),
+            (60, "1m"),
+            (0, "0s"),
+            (30 * 60, "30m"),
+        ];
+        for (seconds, form) in cases {
+            assert_eq!(Effort::new(seconds).text_form(), form, "{seconds}s");
+        }
+    }
+
+    #[test]
+    fn effort_levels_reject_none_text_form() {
+        // The `none` clear sentinel never enters the domain grammar, for
+        // effort or the levels.
+        assert_eq!(Effort::parse_text_form("none"), None);
+        assert_eq!(Importance::parse_text_form("none"), None);
+        assert_eq!(Urgency::parse_text_form("none"), None);
+    }
+
+    #[test]
+    fn level_text_forms_roundtrip_all_values() {
+        let importance = [
+            (Importance::VeryLow, "very-low"),
+            (Importance::Low, "low"),
+            (Importance::Normal, "normal"),
+            (Importance::High, "high"),
+            (Importance::VeryHigh, "very-high"),
+        ];
+        for (level, form) in importance {
+            assert_eq!(level.text_form(), form);
+            assert_eq!(Importance::parse_text_form(form), Some(level));
+        }
+        let urgency = [
+            (Urgency::VeryLow, "very-low"),
+            (Urgency::Low, "low"),
+            (Urgency::Normal, "normal"),
+            (Urgency::High, "high"),
+            (Urgency::VeryHigh, "very-high"),
+        ];
+        for (level, form) in urgency {
+            assert_eq!(level.text_form(), form);
+            assert_eq!(Urgency::parse_text_form(form), Some(level));
+        }
+        for bad in ["very_low", "medium", "NONE", ""] {
+            assert_eq!(Importance::parse_text_form(bad), None, "{bad}");
+            assert_eq!(Urgency::parse_text_form(bad), None, "{bad}");
+        }
+        // The types are distinct on purpose: a cross parse is `None` by
+        // construction, but the spellings are one shared vocabulary.
+        assert_eq!(
+            Importance::parse_text_form(Urgency::High.text_form()),
+            Some(Importance::High),
+        );
+    }
+
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(256))]
 
@@ -425,6 +676,19 @@ mod tests {
         fn task_helpers_match_flags(task in test_support::task_strategy()) {
             prop_assert_eq!(task.is_live(), !task.deleted);
             prop_assert_eq!(task.is_open(), task.done.is_none());
+        }
+
+        #[test]
+        fn effort_parse_is_the_inverse_of_text_form(
+            seconds in 0u64..=(u64::MAX - 4000),
+        ) {
+            let effort = Effort::new(seconds);
+            let form = effort.text_form();
+            prop_assert_eq!(
+                Effort::parse_text_form(&form),
+                Some(effort),
+                "parse(text_form(e)) == Some(e)"
+            );
         }
     }
 }
