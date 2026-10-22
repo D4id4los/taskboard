@@ -428,6 +428,7 @@ async fn a5_completed_report_ingestion_publishes() {
     let h = harness().await;
     h.report_tx
         .send(SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::ZERO,
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
@@ -986,6 +987,7 @@ async fn completed_report_persists_validators_under_the_board_binding() {
     };
     h.report_tx
         .send(SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::ZERO,
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
@@ -1123,6 +1125,7 @@ async fn failed_report_with_pushes_applies_the_evidence() {
     // Bind board 77 and its stack 9 first, so the create's echo can bind.
     h.report_tx
         .send(SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::ZERO,
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
@@ -1846,6 +1849,7 @@ fn completed_report_for(
     validators: taskboard_domain::BoardPullValidators,
 ) -> SyncReport {
     SyncReport::Completed {
+        app_data: taskboard_domain::AppDataEvidence::Absent,
         duration: std::time::Duration::ZERO,
         connector: taskboard_domain::test_support::test_connector(),
         snapshot: Box::new(RemoteBoardSnapshot {
@@ -2197,6 +2201,7 @@ async fn j5_attach_during_drain_is_declined_typed() {
 /// tasks, one label) and one landed push outcome.
 fn counter_report(board: RemoteBoardId, duration: std::time::Duration) -> SyncReport {
     SyncReport::Completed {
+        app_data: taskboard_domain::AppDataEvidence::Absent,
         duration,
         connector: taskboard_domain::test_support::test_connector(),
         snapshot: Box::new(RemoteBoardSnapshot {

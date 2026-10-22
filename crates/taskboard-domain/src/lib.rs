@@ -81,7 +81,8 @@ pub use merge::{
     tombstone_stack, tombstone_task,
 };
 pub use messages::{
-    EngineSignal, LabelChanges, StateCommand, SyncCommand, SyncReport, SystemEvent, TaskChanges,
+    AppDataEvidence, AppDataUnreadable, EngineSignal, LabelChanges, StateCommand, SyncCommand,
+    SyncReport, SystemEvent, TaskChanges,
 };
 pub use outbox::{LocalOp, OpId, PendingOp};
 pub use persistence::{

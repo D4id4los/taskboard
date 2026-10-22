@@ -409,7 +409,8 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                         | crate::outbox::LocalOp::MoveTask(id)
                         | crate::outbox::LocalOp::DeleteTask(id)
                         | crate::outbox::LocalOp::AssignLabel(id, _)
-                        | crate::outbox::LocalOp::UnassignLabel(id, _) => board_tasks.contains(&id),
+                        | crate::outbox::LocalOp::UnassignLabel(id, _)
+                        | crate::outbox::LocalOp::UpdateAppData(id) => board_tasks.contains(&id),
                         crate::outbox::LocalOp::CreateStack(id)
                         | crate::outbox::LocalOp::RenameStack(id)
                         | crate::outbox::LocalOp::MoveStack(id)

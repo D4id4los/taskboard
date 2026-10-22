@@ -52,6 +52,11 @@ pub enum LocalOp {
     UpdateBoard(crate::ids::BoardId),
     /// Board delete; the tombstone finalizes on success (R9c).
     DeleteBoard(crate::ids::BoardId),
+    /// App-data document entry for a task is stale: fields and/or
+    /// reminder rules. Full-send at flush; coalesces per board into the
+    /// single sidecar document upload (D-S5). Nothing enqueues it yet —
+    /// the flush lane is chunk 4's.
+    UpdateAppData(TaskId),
 }
 
 /// An outbox entry: which operation, when it was queued.
@@ -86,7 +91,8 @@ impl LocalOp {
             | Self::MoveTask(task)
             | Self::DeleteTask(task)
             | Self::AssignLabel(task, _)
-            | Self::UnassignLabel(task, _) => entities
+            | Self::UnassignLabel(task, _)
+            | Self::UpdateAppData(task) => entities
                 .tasks
                 .get(&task)
                 .and_then(|t| entities.stacks.get(&t.stack))
@@ -106,7 +112,8 @@ pub fn op_targets_task(op: &LocalOp, task: TaskId) -> bool {
         | LocalOp::MoveTask(id)
         | LocalOp::DeleteTask(id)
         | LocalOp::AssignLabel(id, _)
-        | LocalOp::UnassignLabel(id, _) => *id == task,
+        | LocalOp::UnassignLabel(id, _)
+        | LocalOp::UpdateAppData(id) => *id == task,
         LocalOp::CreateStack(_)
         | LocalOp::RenameStack(_)
         | LocalOp::MoveStack(_)

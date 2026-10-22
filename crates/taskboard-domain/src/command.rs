@@ -819,7 +819,8 @@ pub fn plan_command(
                         | LocalOp::MoveTask(id)
                         | LocalOp::DeleteTask(id)
                         | LocalOp::AssignLabel(id, _)
-                        | LocalOp::UnassignLabel(id, _) => doomed_tasks.contains(&id),
+                        | LocalOp::UnassignLabel(id, _)
+                        | LocalOp::UpdateAppData(id) => doomed_tasks.contains(&id),
                         LocalOp::CreateStack(id)
                         | LocalOp::RenameStack(id)
                         | LocalOp::MoveStack(id)
@@ -872,7 +873,8 @@ pub fn plan_command(
                 | LocalOp::MoveTask(id)
                 | LocalOp::DeleteTask(id)
                 | LocalOp::AssignLabel(id, _)
-                | LocalOp::UnassignLabel(id, _) => board_tasks.contains(&id),
+                | LocalOp::UnassignLabel(id, _)
+                | LocalOp::UpdateAppData(id) => board_tasks.contains(&id),
                 LocalOp::CreateStack(id)
                 | LocalOp::RenameStack(id)
                 | LocalOp::MoveStack(id)
@@ -4391,7 +4393,8 @@ mod proptests {
             LocalOp::CreateTask(id)
             | LocalOp::UpdateTask(id)
             | LocalOp::MoveTask(id)
-            | LocalOp::DeleteTask(id) => tasks.contains_key(id),
+            | LocalOp::DeleteTask(id)
+            | LocalOp::UpdateAppData(id) => tasks.contains_key(id),
             LocalOp::CreateStack(id)
             | LocalOp::RenameStack(id)
             | LocalOp::MoveStack(id)

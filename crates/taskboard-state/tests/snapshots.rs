@@ -248,6 +248,7 @@ async fn s3_sync_ingestion_binds_and_pulls() {
     s.clock.advance(60);
     s.report_tx
         .send(SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::from_millis(250),
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
@@ -370,6 +371,7 @@ async fn s4_sync_resolution_drains_outbox() {
     s.clock.advance(60);
     s.report_tx
         .send(SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::from_millis(250),
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
@@ -780,6 +782,7 @@ async fn s10_boards_reset() {
     s.clock.advance(60);
     s.report_tx
         .send(SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Absent,
             duration: std::time::Duration::ZERO,
             connector: taskboard_domain::test_support::test_connector(),
             snapshot: Box::new(RemoteBoardSnapshot {
