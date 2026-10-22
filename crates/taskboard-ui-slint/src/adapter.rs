@@ -491,13 +491,22 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_banner_seams(window, adapter);
 }
 
-/// The toolbar's menu button routes the `app.menu` action (§7.1).
+/// The toolbar's menu button is a stateful toggle (round-1 D1): open
+/// when closed (routing `app.menu`), a full close when open (routing
+/// `menu.dismiss`) — the F1 fix, since the toggle means `OpenMenu` can
+/// only ever fire while the menu is closed, so the pre-menu chain the
+/// projection reads is the real one on every open.
 fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let adapter = Rc::clone(adapter);
     let weak = window.as_weak();
     window.on_toolbar_menu_clicked(move || {
         let Some(window) = weak.upgrade() else { return };
-        adapter.borrow_mut().route(&window, ActionId::AppMenu);
+        let mut a = adapter.borrow_mut();
+        if a.shell.menu.open {
+            a.route(&window, ActionId::MenuDismiss);
+        } else {
+            a.route(&window, ActionId::AppMenu);
+        }
     });
 }
 

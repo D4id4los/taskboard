@@ -160,6 +160,19 @@ impl Harness {
     }
 }
 
+fn keyboard(harness: &Harness) -> taskboard_ui_slint::KeyboardState<'_> {
+    harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::KeyboardState>()
+}
+fn model_snapshot(harness: &Harness) -> Vec<String> {
+    let entries = keyboard(harness).get_menu_entries();
+    (0..entries.row_count())
+        .map(|i| entries.row_data(i).expect("row").action.to_string())
+        .collect()
+}
+
 fn dummy_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
     let (_tx, rx) = tokio::sync::broadcast::channel(4);
     rx
@@ -502,6 +515,52 @@ fn board_switching_walks_boards_by_keyboard() {
                 "keyboard switching works while the strip is hidden"
             );
             harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// F1/D1 — the hamburger is a stateful toggle and every open shows
+/// the same entries: open → second click closes → third click opens a
+/// model equal to the first open's (row count + per-row action ids,
+/// structural).
+#[test]
+fn the_hamburger_toggles_and_every_open_shows_the_same_entries() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            harness.handle.window().invoke_toolbar_menu_clicked();
+            assert!(keyboard(&harness).get_menu_open(), "the first click opens");
+            let first = model_snapshot(&harness);
+            assert!(first.len() > 1, "the populated board offers rows");
+
+            harness.handle.window().invoke_toolbar_menu_clicked();
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the second click closes"
+            );
+
+            harness.handle.window().invoke_toolbar_menu_clicked();
+            assert!(
+                keyboard(&harness).get_menu_open(),
+                "the third click reopens"
+            );
+            assert_eq!(
+                model_snapshot(&harness),
+                first,
+                "the second open reproduces the first open's entries"
+            );
+
+            // The keyboard path never re-fires while open: Escape
+            // (menu.dismiss) closes cleanly after the toggle.
+            let opened = keyboard(&harness).get_menu_open();
+            harness.stroke(parse("Escape").expect("Escape"));
+            assert!(opened, "the third click left the menu open");
+            assert!(!keyboard(&harness).get_menu_open());
         },
     );
 }
