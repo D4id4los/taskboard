@@ -776,3 +776,112 @@ element; `PointerEventButton` has no `none` member in markup —
 - R3 winit right-click result.
 - D14 double-click journey outcome (or the recorded Tier-4 fallback).
 - The manual/Tier-4 checklist results for the PR body.
+
+## Appendix B — stage-2 fill-in (implemented 2026-10-22, commits 5dd6bad..33b6bde)
+
+### B.1 R1 winit probe (window-rect stability) — PASS, no fallback needed
+
+A throwaway probe crate at `/tmp/r1-probe` (never committed; built
+against this branch) mounted the UI through the public `mount()` on
+the **real winit backend** (display `:0`), stepped through
+view switches via the `set_view_context` seam plus `refresh`, and read
+`window().size()` on the following timer tick (so winit had processed
+the layout):
+
+- scale 1.0: mount 1024×640; every switch pair
+  (Board→StackDetail→TaskDetail→Board, both orders) left the rect at
+  1024×640; a programmatic resize to exactly the floors (480×400) held
+  across all switches.
+- scale 0.5: preferred 512×320; the same switch matrix changed
+  nothing; a 480×400 resize held across switches.
+- scale 3.0: preferred 3072×1920; same — no switch moved the rect.
+
+**Fallback not applied** (nothing grew). Caveat recorded honestly:
+programmatic `set_size` *below* the floors was honored at the slint
+API level (479×399 stayed) — the markup floors constrain the layout
+min; enforcement against *user/WM* resizes depends on winit's
+min-size hint and is part of the interactive Tier-4 checklist below
+(no xdotool on this machine to simulate a user drag).
+
+### B.2 R3 (right-button identity on winit) — deferred to Tier-4
+
+The headless seam works: the card `pointer-event` fires and the
+context menu opens through it (journey
+`the_context_menu_focuses_and_routes_the_card` pins the pipeline).
+The `button == right` identity on the real backend needs a real
+right-click — no input-injection tooling (xdotool) on this machine,
+so it stays on the Tier-4 checklist; the design's seam is kept as-is.
+
+### B.3 D14 double-click journey — recorded fallback (plan §4.3 decision point)
+
+The testing backend has no element-geometry API (plan §1.7), so card
+coordinates are not addressable headlessly and the double-click
+delivery cannot be driven. The single-click focus half is pinned via
+the context seam journey; the double-click half is a Tier-4 manual
+check. No real-pointer failure was observed (none driven).
+
+### B.4 Manual window-size checklist (Tier-4; for the PR body)
+
+| Check | Outcome |
+|---|---|
+| View-switch rect stability at preferred size, real winit | **Pass** (probe B.1, scales 0.5/1/3, both switch orders) |
+| View-switch rect stability at the floors (480×400·scale) | **Pass** (probe B.1) |
+| Compact usable at the floors | **Pass headlessly**: the containment journey (320×400) and compact journeys (600×800) drive the compact layout; visual confirmation at exactly 480 belongs to the interactive pass |
+| WM rejects resizing below the floors | **Open** (interactive; no injection tooling — stage 3/user) |
+| Right-click context menu on a real pointer | **Open** (interactive; B.2) |
+| Real double-click opens the task detail | **Open** (interactive; B.3) |
+| Tooltip visual pass (wrap, cap, flip, hint row) at scales 0.5/1/3 | **Pass headlessly**: the state-machine, hand-off and pixel tests cover placement/wrap/parts at those scales; the aesthetic pass is stage 3's visual review of the goldens |
+| Narrow-menu fallback | **Pass** (containment journey at 320 px) |
+| Kiosk fullscreen unaffected | **Pass** (`mount_applies_the_kiosk_fullscreen_profile` unchanged and green) |
+| Compact add-stack reachability | **Pass** (`the_compact_add_stack_affordance_opens_the_flow`) |
+
+### B.5 Recorded deviations from the plan (all with reasons)
+
+1. **Fly-out mounts at the root panel's LEFT edge** (§2.6 said
+   right edge): the panel is right-aligned under the hamburger, so
+   the right side never has room and the D4 clamp would collapse the
+   fly-out onto the panel. The J-5 journey pins "left of the root
+   panel, inside the window".
+2. **`menu.invoke` keypress ceiling dropped** (guard §9.2): the
+   curated menu makes the cursor walk scale with menu length — a
+   structural cost, not degradation; AGENTS §5 forbids success
+   ceilings. The verb is still recorded for the report.
+3. **The menu-invoke journey's step-8 target is the pinned Quit
+   row** — as planned (J-8); the mouse-invoke journey (J-3) pins the
+   Quit row headlessly instead of "Edit task", because the view verbs
+   live behind the submenus until the two-tier commit; the routing
+   outcome is the same typed seam.
+4. **`MenuPanelFacts` global instead of named conditional
+   properties** (§2.4's observation seam): Slint cannot name
+   conditional elements; the panel mirrors its realized geometry into
+   the global via `changed` handlers (the row-selection mirror
+   precedent). The J-4/J-5 journeys read it.
+5. **Tooltip placement hand-off via opacity**: the panel mounts while
+   content exists (so it can measure itself for the size hand-off)
+   and shows via `opacity` once `visible && placed` — the plan's
+   "mounts on visible && placed" is unmeasurable literally; no
+   flicker, same observable behavior.
+6. **Menu box test reads the bottom edge from `MenuPanelFacts`**: the
+   bottom-most ring pixel can be a clipped row fragment below the
+   border; the facts-driven read is the stronger check (no
+   weakening — the run ≥ 100 assertion is unchanged).
+7. **The dismissal layer and hamburger toggle apply `CloseMenu`
+   directly** instead of routing `menu.dismiss`: the level-aware
+   `MenuBack` mapping (recorded deviation 5 of §9) made
+   `menu.dismiss` level-aware, but a toggle/outside click is a full
+   close at any level (D6).
+8. **Board bar segment tooltips live in commit 11, task-card adopter
+   too** — the D8 adopters rode their host components' commits; the
+   API landed in commit 7 as planned.
+9. **Probes R1/B.2 via a winit probe program instead of
+   xdotool**: no injection tooling on this machine; the probe drives
+   the same public seams and reads winit's real geometry.
+
+### B.6 Gate results (AGENTS §10, all green)
+
+fmt OK; clippy `-D warnings` clean; nextest 1467 passed / 36 skipped
+(miri-gated); doc-tests ok; `cargo deny` all four checks ok; the
+three-command llvm-cov sequence ran with the quarantine step
+merging after one torn profraw, `lcov.info` written, and
+`target/llvm-cov-target` removed. Cross-crate diff
+(`domain/state/storage/sync/app`) **empty**.
