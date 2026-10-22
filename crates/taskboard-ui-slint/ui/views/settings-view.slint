@@ -32,6 +32,9 @@ export struct ConnectionRow {
     server: string,
     username: string,
     status: SettingsRowStatus,
+    // The legacy `[nextcloud]` singleton world's row (D4): displayed,
+    // but Test/Remove are dead controls.
+    read-only: bool,
 }
 
 
@@ -180,12 +183,14 @@ export component SettingsView inherits FocusScope {
                 }
                 SettingsButton {
                     text: "Test";
+                    enabled: !row.read-only;
                     clicked => {
                         root.test-clicked(index);
                     }
                 }
                 SettingsButton {
                     text: "Remove";
+                    enabled: !row.read-only;
                     clicked => {
                         root.remove-clicked(index);
                     }

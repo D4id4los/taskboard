@@ -39,7 +39,11 @@ pub enum InvalidKind {
 }
 
 /// The form-level validation outcome: the first failing field (the
-/// config ladder's order), or ok.
+/// config ladder's order), or ok. There is no collision arm by
+/// design: names are unique in the config, so a row under the draft's
+/// name *is* the edited row (the upsert semantics, plan D7) — the
+/// authoritative `DuplicateConnectorName` can only fire on a config
+/// edited out-of-band, and `PersistRejected` answers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DraftError {
     Invalid { field: Field, kind: InvalidKind },
@@ -48,19 +52,15 @@ pub enum DraftError {
 /// Whether the draft may attempt a save (the Save button's
 /// enablement): every field passes per [`validate`].
 #[must_use]
-pub fn draft_valid(draft: &ConnectionDraft, existing: &[crate::requests::ConnectorInfo]) -> bool {
-    validate(draft, existing).is_none()
+pub fn draft_valid(draft: &ConnectionDraft) -> bool {
+    validate(draft).is_none()
 }
 
 /// The mirror of the config's connector-entry ladder (plan F-D2), in
-/// the same order: kebab name → non-empty username/password → URL host
-/// rule → name collision against *other* rows only (upsert semantics:
-/// a same-name save is an edit, plan D7).
+/// the same order: kebab name → non-empty username/password → URL
+/// host rule. No collision arm (see the module-level note).
 #[must_use]
-pub fn validate(
-    draft: &ConnectionDraft,
-    _existing: &[crate::requests::ConnectorInfo],
-) -> Option<DraftError> {
+pub fn validate(draft: &ConnectionDraft) -> Option<DraftError> {
     if draft.name.is_empty() {
         return Some(DraftError::Invalid {
             field: Field::Name,
@@ -133,14 +133,6 @@ pub fn url_host_ok(raw: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn row(name: &str) -> crate::requests::ConnectorInfo {
-        crate::requests::ConnectorInfo {
-            name: name.to_owned(),
-            server_url: "https://old.example".into(),
-            username: "u".into(),
-        }
-    }
-
     /// T1 — the kebab truth table (shared parity fixtures with the
     /// config layer's validation tests: the same accept/reject sets).
     #[test]
@@ -185,8 +177,7 @@ mod tests {
         }
     }
 
-    /// T1 — the ladder: the first failing field wins; collision checks
-    /// only fire against *other* rows (a same-name row is an edit).
+    /// T1 — the ladder: the first failing field wins.
     #[test]
     fn the_ladder_reports_the_first_failing_field() {
         let base = ConnectionDraft {
@@ -195,12 +186,12 @@ mod tests {
             username: "alice".into(),
             password: "pw".into(),
         };
-        assert_eq!(validate(&base, &[row("other")]), None);
+        assert_eq!(validate(&base), None);
 
         let mut d = base.clone();
         d.name = String::new();
         assert_eq!(
-            validate(&d, &[]),
+            validate(&d),
             Some(DraftError::Invalid {
                 field: Field::Name,
                 kind: InvalidKind::Empty
@@ -210,7 +201,7 @@ mod tests {
         let mut d = base.clone();
         d.name = "Work".into();
         assert_eq!(
-            validate(&d, &[]),
+            validate(&d),
             Some(DraftError::Invalid {
                 field: Field::Name,
                 kind: InvalidKind::NotKebab
@@ -220,7 +211,7 @@ mod tests {
         let mut d = base.clone();
         d.username = "  ".into();
         assert_eq!(
-            validate(&d, &[]),
+            validate(&d),
             Some(DraftError::Invalid {
                 field: Field::Username,
                 kind: InvalidKind::Empty
@@ -230,7 +221,7 @@ mod tests {
         let mut d = base.clone();
         d.password = String::new();
         assert_eq!(
-            validate(&d, &[]),
+            validate(&d),
             Some(DraftError::Invalid {
                 field: Field::Password,
                 kind: InvalidKind::Empty
@@ -240,7 +231,7 @@ mod tests {
         let mut d = base.clone();
         d.server_url = "not a url".into();
         assert_eq!(
-            validate(&d, &[]),
+            validate(&d),
             Some(DraftError::Invalid {
                 field: Field::ServerUrl,
                 kind: InvalidKind::BadUrl
@@ -249,7 +240,7 @@ mod tests {
 
         // Same name, different server: an edit of that row, not a
         // collision (the upsert semantics).
-        assert_eq!(validate(&base, &[row("work")]), None);
+        assert_eq!(validate(&base), None);
     }
 
     /// The enablement predicate agrees with the ladder.
@@ -261,8 +252,8 @@ mod tests {
             username: "alice".into(),
             password: "pw".into(),
         };
-        assert!(draft_valid(&base, &[]));
-        base.name = "Nope".into(); // "nope" is valid kebab; the test means an invalid name
-        assert!(!draft_valid(&base, &[]));
+        assert!(draft_valid(&base));
+        base.name = "Nope".into(); // the uppercase fails the kebab class
+        assert!(!draft_valid(&base));
     }
 }

@@ -689,7 +689,7 @@ struct SettingsVm {
 impl SettingsVm {
     /// Whether the draft may save (the Save button's enablement).
     fn save_enabled(&self) -> bool {
-        self.pending.is_none() && settings_form::draft_valid(&self.draft, &self.rows)
+        self.pending.is_none() && settings_form::draft_valid(&self.draft)
     }
 
     /// Sends one request with its reply half parked; a full/closed
@@ -903,6 +903,7 @@ impl Adapter {
                     name: row.name.clone().into(),
                     server: row.server_url.clone().into(),
                     username: row.username.clone().into(),
+                    read_only: row.read_only,
                     status: match status {
                         crate::presentation::ConnectorStatus::Idle => Row::Idle,
                         crate::presentation::ConnectorStatus::Syncing => Row::Syncing,
@@ -990,9 +991,7 @@ impl Adapter {
             username: username.to_owned(),
             password: password.to_owned(),
         };
-        if self.settings.pending.is_some()
-            || !settings_form::draft_valid(&draft, &self.settings.rows)
-        {
+        if self.settings.pending.is_some() || !settings_form::draft_valid(&draft) {
             self.settings.outcome = SettingsOutcome::Rejected;
             self.push_settings(window);
             return;

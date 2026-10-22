@@ -1747,6 +1747,7 @@ fn the_settings_form_routes_the_save_ceremony() {
                     name: "home".into(),
                     server_url: "https://c.example".into(),
                     username: "alice".into(),
+                    read_only: false,
                 }]))
                 .expect("the reply lane is alive");
             harness.handle.drain_setting_replies();
@@ -1790,11 +1791,23 @@ fn connector_episodes_flip_the_row_status() {
     use taskboard_ui_slint::SettingsRowStatus;
     let (_fixture, state) = fixture::golden_state();
     let settings = UiSettings {
-        connectors: vec![taskboard_ui_slint::requests::ConnectorInfo {
-            name: "nextcloud".into(),
-            server_url: "https://c.example".into(),
-            username: "alice".into(),
-        }],
+        connectors: vec![
+            taskboard_ui_slint::requests::ConnectorInfo {
+                name: "nextcloud".into(),
+                server_url: "https://c.example".into(),
+                username: "alice".into(),
+                read_only: false,
+            },
+            // The D4 structural surface: a legacy-world row arrives
+            // flagged, and the flag survives the push (the row renders
+            // its Test/Remove controls dead — markup-owned).
+            taskboard_ui_slint::requests::ConnectorInfo {
+                name: "legacy".into(),
+                server_url: "https://legacy.example".into(),
+                username: "bob".into(),
+                read_only: true,
+            },
+        ],
         ..UiSettings::default()
     };
     support::driver::run(
@@ -1816,6 +1829,19 @@ fn connector_episodes_flip_the_row_status() {
                 row.status
             };
             assert_eq!(row_status(&harness), SettingsRowStatus::Idle);
+            let rows = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::SettingsModel>()
+                .get_rows();
+            assert!(
+                !rows.row_data(0).expect("row").read_only,
+                "a live connector's row is mutable"
+            );
+            assert!(
+                rows.row_data(1).expect("row").read_only,
+                "the legacy row arrives flagged read-only"
+            );
 
             harness.handle.observe_connector_episode(
                 &taskboard_domain::SystemEvent::ConnectorLost(taskboard_domain::ConnectorId::from(
