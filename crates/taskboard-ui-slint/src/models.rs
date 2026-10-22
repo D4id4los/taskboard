@@ -169,6 +169,13 @@ fn push_chrome(
             .first_binding_display(ActionId::AppMenu, chain)
             .unwrap_or_default(),
     ));
+    // The back button's hint (round-1 D12): the same projection, one
+    // element class later — shown only when a binding exists.
+    window.set_nav_back_hint(string_model(
+        &keymap
+            .first_binding_display(ActionId::NavFocusBoard, chain)
+            .unwrap_or_default(),
+    ));
 }
 
 /// The board model: one column per live stack, the flow's create row

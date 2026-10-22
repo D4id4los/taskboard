@@ -1029,6 +1029,42 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
     );
 }
 
+/// D12 — the task-detail back button: the click equivalent of
+/// `nav.focus-board` (§7.1) returns from the task detail to the board.
+#[test]
+fn the_back_button_returns_to_the_board() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+            harness.driver.click_by_label("Back to board");
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Board,
+                "the back button routed focus_board"
+            );
+            // Leaving mid-edit commits the buffer first (the D9
+            // leaving rule — the back button is an ordinary leaving
+            // effect, no special casing).
+            let drained = harness.engine.drain();
+            assert!(
+                matches!(
+                    drained.as_slice(),
+                    [StateCommand::UpdateTask { changes, .. }]
+                        if changes.title.as_deref() == Some("task-0")
+                ),
+                "the leaving commit reached the boundary, got {drained:?}"
+            );
+        },
+    );
+}
+
 /// G8/G9 — the stack-create flow has a visible surface, and the
 /// on-board New-stack button is the click equivalent of the `S` key
 /// (usability pass D7, dispatch issue 6): both routes open the same

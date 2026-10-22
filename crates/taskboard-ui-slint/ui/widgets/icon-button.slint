@@ -17,6 +17,8 @@ export enum IconKind {
     mute,
     warn,
     plus,
+    // The back affordance (round-1 D12): a left chevron.
+    chevron-left,
 }
 
 export component IconButton inherits Rectangle {
@@ -126,6 +128,26 @@ export component IconButton inherits Rectangle {
             spacing: Theme.space-1 / 2;
             Rectangle { vertical-stretch: 4; min-height: Theme.space-2; background: icon-box.icon-color(); }
             Rectangle { vertical-stretch: 1; min-height: Theme.space-1 / 2; background: icon-box.icon-color(); }
+        }
+
+        if (root.icon == IconKind.chevron-left): VerticalLayout {
+            // A left chevron: one polyline stroke (geometric, D19).
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: Theme.space-4;
+                Path {
+                    // space-3: the 12-px design grid square the
+                    // chevron polyline is drawn in.
+                    width: Theme.space-3;
+                    height: Theme.space-3;
+                    commands: "M 8 1 L 2 6 L 8 11";
+                    stroke: icon-box.icon-color();
+                    stroke-width: Theme.focus-ring-width;
+                    fill: transparent;
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                }
+            }
         }
 
         if (root.icon == IconKind.plus): Rectangle {

@@ -7,6 +7,7 @@
 
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { TextField } from "../widgets/text-field.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
 
 // The task-detail model (D22).
 export struct TaskDetailModel {
@@ -22,8 +23,12 @@ export struct TaskDetailModel {
 
 export component TaskView inherits FocusScope {
     in property <TaskDetailModel> task;
+    // The nav.focus-board binding as display strings (round-1 D12; a
+    // keymap projection pushed per refresh — never hand-written).
+    in property <[string]> nav-back-hint;
     callback title-committed(string);
     callback title-edited(string);
+    callback back-clicked();
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -49,19 +54,39 @@ export component TaskView inherits FocusScope {
         VerticalLayout {
             spacing: Theme.space-3;
 
-            // The title: the edit flow's field when open, the display
-            // title otherwise (cycle-entry shows the detail, D14).
-            if (root.task.edit-open): title-field := TextField {
-                placeholder: "Task title";
-                label: "Task title";
-                initial-text: root.task.initial-text;
-                selected-on-focus: true;
-                accepted(text) => root.title-committed(text);
-                edited(text) => root.title-edited(text);
-            }
-            if (!root.task.edit-open): RoleText {
-                role: Typography.title;
-                text: root.task.title;
+            // The header (round-1 D12): the back button left of the
+            // title block — the click equivalent of nav.focus-board
+            // (§7.1), described and hinted by the generalized trigger.
+            HorizontalLayout {
+                spacing: Theme.space-3;
+                alignment: start;
+                IconButton {
+                    icon: IconKind.chevron-left;
+                    label: "Back to board";
+                    description: "Returns to the board view.";
+                    hint-keys: root.nav-back-hint;
+                    clicked => root.back-clicked();
+                }
+                VerticalLayout {
+                    alignment: center;
+                    // The title: the edit flow's field when open, the
+                    // display title otherwise (cycle-entry shows the
+                    // detail, D14).
+                    if (root.task.edit-open): title-field := TextField {
+                        placeholder: "Task title";
+                        label: "Task title";
+                        initial-text: root.task.initial-text;
+                        selected-on-focus: true;
+                        accepted(text) => root.title-committed(text);
+                        edited(text) => root.title-edited(text);
+                    }
+                    if (!root.task.edit-open): RoleText {
+                        role: Typography.title;
+                        text: root.task.title;
+                        overflow: elide;
+                        width: root.width - Theme.space-6 - Theme.space-3;
+                    }
+                }
             }
 
             // The metadata row (tertiary per D17's demotion table).

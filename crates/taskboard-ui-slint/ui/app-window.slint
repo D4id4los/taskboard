@@ -72,6 +72,8 @@ export component AppWindow inherits Window {
     //      back — no ids cross the seam). ---------------------------
     in-out property <string> toolbar-title;
     in-out property <[string]> toolbar-menu-hint;
+    // The nav.focus-board binding (round-1 D12; a keymap projection).
+    in-out property <[string]> nav-back-hint;
     in-out property <View> current-view: View.board;
     in-out property <BoardModel> board-model;
     in-out property <BoardBarModel> board-bar-model;
@@ -146,8 +148,10 @@ export component AppWindow inherits Window {
             }
             if (root.current-view == View.task-detail): TaskView {
                 task: root.task-model;
+                nav-back-hint: root.nav-back-hint;
                 title-committed(t) => root.task-title-committed(t);
                 title-edited(t) => root.task-title-edited(t);
+                back-clicked() => root.task-back-clicked();
             }
 
             status := StatusBar {
@@ -299,6 +303,9 @@ export component AppWindow inherits Window {
     pure callback stack-create-edited(string);
     pure callback task-title-committed(string);
     pure callback task-title-edited(string);
+    // The back button (round-1 D12): routes nav.focus-board — no new
+    // view-state semantics.
+    pure callback task-back-clicked();
     pure callback banner-snooze-clicked(int);
     pure callback banner-mute-clicked(int);
     pure callback banner-row-activated(int);
