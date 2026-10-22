@@ -57,9 +57,21 @@ export component ActionMenu inherits Rectangle {
                 // keeps its inset + ring (usability D2). Disabled rows
                 // never hover: their TouchArea is disabled, so
                 // has-hover cannot engage.
-                row-hit := TouchArea {
-                    enabled: entry.enabled;
-                    clicked => root.invoke-entry(entry-index);
+                // The row's label is the registry label — the
+                // element's address (§7.1). The FocusScope overlay
+                // carries the a11y role and its default action (the
+                // icon-button precedent); the TouchArea owns the
+                // mouse click — both land on the same callback.
+                row-focus := FocusScope {
+                    width: 100%;
+                    height: 100%;
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: entry.label;
+                    accessible-action-default => root.invoke-entry(entry-index);
+                    row-hit := TouchArea {
+                        enabled: entry.enabled;
+                        clicked => root.invoke-entry(entry-index);
+                    }
                 }
                 background: row-hit.has-hover ? Theme.surface-hover
                     : root.selected-index == entry-index ? Theme.surface
