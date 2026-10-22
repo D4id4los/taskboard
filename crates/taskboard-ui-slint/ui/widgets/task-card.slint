@@ -29,6 +29,10 @@ export struct TaskDecoration {
 export struct TaskCardModel {
     title: string,
     due-phrase: string,
+    // The scheduled-start and effort phrases (empty = absent, the
+    // due-phrase pattern); the semantic words live presentation-side.
+    scheduled-phrase: string,
+    effort-phrase: string,
     due-kind: DueKind,
     done: bool,
     emphasis: bool,
@@ -115,6 +119,25 @@ export component TaskCard inherits Rectangle {
                 role: Typography.mono;
                 text-color: root.due-color();
                 text: root.model.due-phrase;
+            }
+        }
+
+        // The scheduled-start and effort chips (secondary class, like
+        // the due chip): mono rows at every breakpoint, each present
+        // only when its field is set. Pure empty-string tests — no
+        // slint-side semantics.
+        if (root.model.scheduled-phrase != ""): HorizontalLayout {
+            RoleText {
+                role: Typography.mono;
+                text-color: Theme.text-secondary;
+                text: root.model.scheduled-phrase;
+            }
+        }
+        if (root.model.effort-phrase != ""): HorizontalLayout {
+            RoleText {
+                role: Typography.mono;
+                text-color: Theme.text-secondary;
+                text: root.model.effort-phrase;
             }
         }
 
