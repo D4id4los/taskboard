@@ -8,66 +8,99 @@ expression: rows
     - global
   category: application
   enabled: true
+  menu_rank: 1000
+  description: Quits the application; local state is already saved.
+  menu_group: ~
 - id: app.menu
   label: Command menu
   contexts:
     - global
   category: application
   enabled: true
+  menu_rank: 60
+  description: "Opens or closes the command menu, the keyboard's way into every action."
+  menu_group: help
 - id: app.undo
   label: Undo
   contexts:
     - global
   category: application
   enabled: false
+  menu_rank: 30
+  description: "Undoes the last change. Not yet available — tracked as backlog #356."
+  menu_group: ~
 - id: app.redo
   label: Redo
   contexts:
     - global
   category: application
   enabled: false
+  menu_rank: 40
+  description: "Re-applies the last undone change. Not yet available — tracked as backlog #353."
+  menu_group: ~
 - id: app.settings
   label: Open settings
   contexts:
     - global
   category: application
   enabled: false
+  menu_rank: 10
+  description: Opens the settings view. Not yet available — lands with the settings chunk.
+  menu_group: ~
 - id: app.help
   label: Open help
   contexts:
     - global
   category: application
   enabled: false
+  menu_rank: 70
+  description: Shows the keymap and usage help. Not yet available — reserved.
+  menu_group: help
 - id: capture.quick
   label: Quick capture
   contexts:
     - global
   category: capture
   enabled: false
+  menu_rank: 20
+  description: "Captures a thought into the inbox from anywhere. Not yet available — tracked as backlog #347."
+  menu_group: ~
 - id: palette.search
   label: Search
   contexts:
     - global
   category: search
   enabled: false
+  menu_rank: 50
+  description: Searches tasks across all boards. Not yet available — reserved.
+  menu_group: view-nav
 - id: nav.next-view
   label: Next view
   contexts:
     - global
   category: navigation
   enabled: true
+  menu_rank: 60
+  description: Moves to the next view in the board → stack → task cycle.
+  menu_group: view-nav
 - id: nav.prev-view
   label: Previous view
   contexts:
     - global
   category: navigation
   enabled: true
+  menu_rank: 70
+  description: Moves to the previous view in the board → stack → task cycle.
+  menu_group: view-nav
 - id: nav.focus-board
   label: Go to board
   contexts:
     - global
   category: navigation
   enabled: true
+  menu_rank: 80
+  description: Returns to the board view from any deeper view.
+  menu_group: view-nav
 - id: nav.next-item
   label: Focus next item
   contexts:
@@ -76,6 +109,9 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
+  menu_rank: 90
+  description: Moves the focus to the next card or switcher entry in reading order.
+  menu_group: view-nav
 - id: nav.prev-item
   label: Focus previous item
   contexts:
@@ -84,6 +120,9 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
+  menu_rank: 100
+  description: Moves the focus to the previous card or switcher entry in reading order.
+  menu_group: view-nav
 - id: board.next
   label: Next board
   contexts:
@@ -93,6 +132,9 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
+  menu_rank: 60
+  description: Switches to the next board in canonical order.
+  menu_group: board-stack
 - id: board.previous
   label: Previous board
   contexts:
@@ -102,6 +144,9 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
+  menu_rank: 70
+  description: Switches to the previous board in canonical order.
+  menu_group: board-stack
 - id: board.select
   label: Select board
   contexts:
@@ -111,6 +156,9 @@ expression: rows
     - task-detail
   category: navigation
   enabled: true
+  menu_rank: 80
+  description: Switches to the board picked from the board bar (click a board segment).
+  menu_group: board-stack
 - id: task.create
   label: New task
   contexts:
@@ -118,6 +166,9 @@ expression: rows
     - stack-detail
   category: task
   enabled: true
+  menu_rank: 60
+  description: Opens the inline create row and puts it into insert mode.
+  menu_group: task
 - id: stack.create
   label: New stack
   contexts:
@@ -125,6 +176,9 @@ expression: rows
     - stack-detail
   category: task
   enabled: true
+  menu_rank: 90
+  description: Opens the new-stack field on the current board.
+  menu_group: board-stack
 - id: task.edit
   label: Edit task
   contexts:
@@ -132,6 +186,9 @@ expression: rows
     - task-detail
   category: task
   enabled: true
+  menu_rank: 70
+  description: "Opens the focused task's detail view with the title selected for editing."
+  menu_group: task
 - id: task.complete
   label: Complete task
   contexts:
@@ -139,6 +196,9 @@ expression: rows
     - task-detail
   category: task
   enabled: true
+  menu_rank: 80
+  description: Marks the focused task as done.
+  menu_group: task
 - id: task.move
   label: Move task
   contexts:
@@ -146,6 +206,9 @@ expression: rows
     - task-detail
   category: task
   enabled: true
+  menu_rank: 90
+  description: "Starts the move flow: pick a target stack, then confirm to move the focused task."
+  menu_group: task
 - id: task.delete
   label: Delete task
   contexts:
@@ -153,51 +216,78 @@ expression: rows
     - task-detail
   category: task
   enabled: true
+  menu_rank: 100
+  description: Deletes the focused task immediately (no confirmation step).
+  menu_group: task
 - id: reminder.snooze
   label: Snooze reminder
   contexts:
     - global
   category: task
   enabled: true
+  menu_rank: 110
+  description: "Pushes the selected reminder's due moment out by one hour."
+  menu_group: task
 - id: reminder.mute
   label: Mute reminders
   contexts:
     - global
   category: task
   enabled: true
+  menu_rank: 120
+  description: Silences all reminders on the selected task.
+  menu_group: task
 - id: menu.next
   label: Next menu entry
   contexts:
     - menu
   category: menu
   enabled: true
+  menu_rank: 900
+  description: Moves the menu cursor to the next row of the active page.
+  menu_group: ~
 - id: menu.previous
   label: Previous menu entry
   contexts:
     - menu
   category: menu
   enabled: true
+  menu_rank: 900
+  description: Moves the menu cursor to the previous row of the active page.
+  menu_group: ~
 - id: menu.invoke
   label: Invoke menu entry
   contexts:
     - menu
   category: menu
   enabled: true
+  menu_rank: 900
+  description: Activates the menu row under the cursor.
+  menu_group: ~
 - id: menu.dismiss
   label: Dismiss menu
   contexts:
     - menu
   category: menu
   enabled: true
+  menu_rank: 900
+  description: "Steps the menu back one level, or closes it at the top level."
+  menu_group: ~
 - id: mode.insert
   label: Enter insert mode
   contexts:
     - global
   category: mode
   enabled: true
+  menu_rank: 60
+  description: "Opens the view's editing flow in insert mode."
+  menu_group: mode
 - id: mode.normal
   label: Return to normal mode
   contexts:
     - global
   category: mode
   enabled: true
+  menu_rank: 70
+  description: Ends the active editing flow and returns to normal mode (Escape).
+  menu_group: mode

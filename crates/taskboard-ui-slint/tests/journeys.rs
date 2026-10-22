@@ -23,7 +23,6 @@ use std::sync::Arc;
 use taskboard_domain::{AppState, StateCommand};
 use taskboard_ui_slint::actions::{ActionId, ContextId};
 use taskboard_ui_slint::keymap::stroke::{self, parse};
-use taskboard_ui_slint::menu;
 use taskboard_ui_slint::{UiSettings, View};
 
 /// The harness (chunk plan §5): driver + fake engine + fixture + the
@@ -86,23 +85,18 @@ impl Harness {
 
     /// Presses one *action* by resolving its chain-visible binding
     /// through the same lookup the generated menu uses
-    /// (`menu::entries`' hint path — reuse, not reimplement) and
-    /// injecting each stroke; counts the presses on the open guard
-    /// phase (§9.2 accounting).
+    /// (`Keymap::first_binding_display` + the registry's `enabled`
+    /// bit — reuse, not reimplement) and injecting each stroke;
+    /// counts the presses on the open guard phase (§9.2 accounting).
     fn press(&mut self, action: ActionId) {
         let keymap = UiSettings::default().keymap;
-        let entries = menu::entries(&keymap, &self.chain());
-        let entry = entries
-            .iter()
-            .find(|entry| entry.action == action)
-            .unwrap_or_else(|| {
-                panic!(
-                    "{action:?} is bound in the visible chain {:?}",
-                    self.chain()
-                )
-            });
-        assert!(entry.enabled, "{action:?} is enabled");
-        for spelling in &entry.hint {
+        let chain = self.chain();
+        let registry = taskboard_ui_slint::actions::entry(action);
+        assert!(registry.enabled, "{action:?} is enabled");
+        let hint = keymap
+            .first_binding_display(action, &chain)
+            .unwrap_or_else(|| panic!("{action:?} is bound in the visible chain {chain:?}"));
+        for spelling in &hint {
             let stroke = stroke::parse(spelling)
                 .unwrap_or_else(|error| panic!("{action:?}'s hint {spelling:?}: {error}"));
             let presses = self.driver.press_stroke(stroke);
@@ -374,65 +368,51 @@ fn the_ten_step_keyboard_session() {
                 "the session stays on the board"
             );
 
-            // -- step 8: app.menu — open, cursor, invoke ------------------
-            //    The cursor lands on the second row (registry order puts
-            //    app.exit first, app.menu second), so the invoke
-            //    re-dispatches app.menu itself — the visible re-dispatch
-            //    path: the menu closes and immediately reopens fresh.
+            // -- step 8: app.menu — open, cursor walk to the last row
+            //    (Quit is pinned last by the curation), invoke: the
+            //    keyboard re-dispatch path closes the menu and fires
+            //    the exit effect (counter seam).
             harness.guard.begin(Verb::MenuInvoke);
             harness.press(ActionId::AppMenu);
-            assert!(
-                harness
-                    .handle
-                    .window()
-                    .global::<taskboard_ui_slint::KeyboardState>()
-                    .get_menu_open(),
-                "app.menu opens the menu"
+            macro_rules! keyboard_state {
+                () => {
+                    harness
+                        .handle
+                        .window()
+                        .global::<taskboard_ui_slint::KeyboardState>()
+                };
+            }
+            assert!(keyboard_state!().get_menu_open(), "app.menu opens the menu");
+            assert_eq!(keyboard_state!().get_menu_selected_index(), 0);
+            let rows = keyboard_state!().get_menu_entries().row_count();
+            assert!(rows > 1, "the curated root page offers multiple rows");
+            for _ in 1..rows {
+                harness.press(ActionId::MenuNext);
+            }
+            assert_eq!(
+                keyboard_state!().get_menu_selected_index(),
+                i32::try_from(rows - 1).unwrap_or(i32::MAX),
+                "the cursor reaches the pinned-last Quit row"
             );
             assert_eq!(
-                harness
-                    .handle
-                    .window()
-                    .global::<taskboard_ui_slint::KeyboardState>()
-                    .get_menu_selected_index(),
-                0
-            );
-            harness.press(ActionId::MenuNext);
-            assert_eq!(
-                harness
-                    .handle
-                    .window()
-                    .global::<taskboard_ui_slint::KeyboardState>()
-                    .get_menu_selected_index(),
-                1
+                keyboard_state!()
+                    .get_menu_entries()
+                    .row_data(rows - 1)
+                    .expect("row")
+                    .action,
+                "app.exit",
+                "Quit is the last row"
             );
             harness.press(ActionId::MenuInvoke);
             harness.guard.end(Verb::MenuInvoke);
             assert!(
-                harness
-                    .handle
-                    .window()
-                    .global::<taskboard_ui_slint::KeyboardState>()
-                    .get_menu_open(),
-                "the invoke closed the menu and the re-dispatched app.menu reopened it"
+                !keyboard_state!().get_menu_open(),
+                "the invoke closed the menu"
             );
             assert_eq!(
-                harness
-                    .handle
-                    .window()
-                    .global::<taskboard_ui_slint::KeyboardState>()
-                    .get_menu_selected_index(),
-                0,
-                "the reopened menu's cursor is fresh"
-            );
-            harness.stroke(parse("Escape").expect("Escape")); // menu.dismiss
-            assert!(
-                !harness
-                    .handle
-                    .window()
-                    .global::<taskboard_ui_slint::KeyboardState>()
-                    .get_menu_open(),
-                "dismiss closes the menu"
+                harness.handle.quit_requests(),
+                1,
+                "the re-dispatched Quit fired the exit effect"
             );
             harness.assert_commands(&[]);
 
@@ -443,12 +423,14 @@ fn the_ten_step_keyboard_session() {
             assert_eq!(sync.phase, taskboard_ui_slint::SyncPhaseUi::Offline);
             assert_eq!(sync.pending, 2, "the fixture's pending ops render");
 
-            // -- step 10: app.exit — the typed quit outcome ---------------
+            // -- step 10: app.exit — the typed quit outcome (the second
+            //    quit of the session; step 8's menu invoke was the
+            //    first) -----------------------------------------------
             harness.press(ActionId::AppExit);
             assert_eq!(
                 harness.handle.quit_requests(),
-                1,
-                "the exit effect fired exactly once"
+                2,
+                "the exit effect fired once per quit (menu + direct)"
             );
             harness.assert_commands(&[]);
 

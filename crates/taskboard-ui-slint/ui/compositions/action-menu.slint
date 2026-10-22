@@ -9,15 +9,17 @@ import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 
 export struct MenuEntryModel {
+    // The registry id — `""` for a submenu-parent row (the tests'
+    // address; a parent never dispatches).
     action: string,
     label: string,
+    // The row's tooltip / a11y description (round-1 D7).
+    description: string,
     enabled: bool,
     hint: [string],
-    // The section heading rendered above this row (usability D5);
-    // empty except at category boundaries — derived data, never
-    // hand-written rows (§5.9). Headers are not rows: the selection
-    // index only ever addresses entries.
-    section-title: string,
+    // True for a submenu-parent row (round-1 D6): activating it opens
+    // the group's page. Rows are never hand-written (§5.9).
+    submenu: bool,
 }
 
 export component ActionMenu inherits Rectangle {
@@ -81,11 +83,6 @@ export component ActionMenu inherits Rectangle {
                 VerticalLayout {
                     padding-left: Theme.space-2;
                     padding-right: Theme.space-2;
-                    if (entry.section-title != ""): RoleText {
-                        role: Typography.caption;
-                        text-color: Theme.text-secondary;
-                        text: entry.section-title;
-                    }
                     HorizontalLayout {
                         spacing: Theme.space-2;
                         RoleText {

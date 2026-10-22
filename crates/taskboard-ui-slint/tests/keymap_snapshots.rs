@@ -22,11 +22,15 @@ struct RegistryRow<'a> {
     contexts: Vec<&'a str>,
     category: &'a str,
     enabled: bool,
+    menu_rank: u16,
+    description: &'a str,
+    menu_group: Option<&'static str>,
 }
 
 /// The action registry dump: one row per action, in registry order —
-/// id, label, menu-availability contexts, category, and the honest
-/// `enabled` bit (§5.8: reserved actions read as disabled).
+/// id, label, menu-availability contexts, category, the honest
+/// `enabled` bit (§5.8: reserved actions read as disabled), and the
+/// round-1 presentation columns (menu rank, description, menu group).
 #[test]
 fn registry_dump_is_the_action_documentation() {
     let rows: Vec<RegistryRow<'_>> = REGISTRY
@@ -37,9 +41,24 @@ fn registry_dump_is_the_action_documentation() {
             contexts: entry.contexts.iter().map(|c| c.name()).collect(),
             category: entry.category.name(),
             enabled: entry.enabled,
+            menu_rank: entry.menu_rank,
+            description: entry.description,
+            menu_group: entry.menu_group.map(crate_group_name),
         })
         .collect();
     assert_yaml_snapshot!("registry", rows);
+}
+
+/// The stable snapshot name of a menu group.
+fn crate_group_name(group: taskboard_ui_slint::actions::MenuGroup) -> &'static str {
+    use taskboard_ui_slint::actions::MenuGroup::*;
+    match group {
+        Task => "task",
+        BoardStack => "board-stack",
+        ViewNav => "view-nav",
+        Mode => "mode",
+        Help => "help",
+    }
 }
 
 #[derive(Serialize)]
