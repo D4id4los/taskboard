@@ -35,6 +35,7 @@ pub mod cli;
 pub mod commands;
 mod completion;
 pub mod config;
+pub mod connections;
 pub mod connectors;
 pub mod ipc;
 pub mod lockfile;
