@@ -114,7 +114,8 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
                     std::process::exit(i32::from(report(cli.json, &CommandError::from(err))))
                 }
             };
-            return taskboard_app::ui::run_desktop(config).await;
+            let config_write_path = AppConfig::write_path(cli.config.clone());
+            return taskboard_app::ui::run_desktop(config, config_write_path).await;
         }
         // Transport auto-routing (ADR 0012): silent in both human and
         // JSON modes — the observable contract (exit code, stdout
@@ -187,7 +188,8 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
             taskboard_app::ui::display_env_available(),
         ) {
             taskboard_app::ui::BareRoute::DesktopUi => {
-                return taskboard_app::ui::run_desktop(config).await;
+                let config_write_path = AppConfig::write_path(cli.config.clone());
+                return taskboard_app::ui::run_desktop(config, config_write_path).await;
             }
             taskboard_app::ui::BareRoute::KioskAppliance => {
                 // The appliance owns its own mode handling — the display
@@ -454,6 +456,7 @@ async fn run_kiosk(
     config_path: Option<std::path::PathBuf>,
     json: bool,
 ) -> color_eyre::Result<()> {
+    let config_write_path = AppConfig::write_path(config_path.clone());
     let (app, server, mut web) =
         boot_and_serve(config, config_path, json, "kiosk appliance").await?;
 
@@ -503,12 +506,19 @@ async fn run_kiosk(
             let (commands_tx, commands_rx) = taskboard_app::ui::ui_command_channel();
             let forwarder =
                 taskboard_app::ui::spawn_ui_command_forwarder(commands_rx, app.engine.clone());
+            let (requests_tx, requests_rx) = taskboard_app::ui_requests::ui_request_channel();
+            let request_forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+                requests_rx,
+                config_write_path,
+                app.engine.shared_state(),
+            );
 
             let handle = match taskboard_ui_slint::mount(
                 app.engine.shared_state(),
                 app.engine.subscribe(),
                 app.system.subscribe(),
                 commands_tx,
+                requests_tx,
                 ui_settings,
             ) {
                 Ok(handle) => handle,
@@ -519,6 +529,7 @@ async fn run_kiosk(
                 // mount error is the reported outcome.
                 Err(err) => {
                     forwarder.abort();
+                    request_forwarder.abort();
                     let _ = drain_and_shutdown(app, server, web.take()).await;
                     return Err(err.into());
                 }
@@ -547,6 +558,7 @@ async fn run_kiosk(
 
             watcher.abort();
             forwarder.abort();
+            request_forwarder.abort();
             // The shutdown-tail error (a still-shared core) outranks
             // the loop result, mirroring `run_desktop`'s order.
             drain_and_shutdown(app, server, web.take()).await?;

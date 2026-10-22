@@ -1151,6 +1151,22 @@ fn reqwest_host_ok(raw: &str) -> bool {
     !authority.is_empty()
 }
 
+/// The read(NotFound → empty)→parse skeleton shared by every config
+/// overlay writer (round-1 chunk-2 extraction): the file is operator
+/// territory, so writers mutate a table subtree of the parsed
+/// `DocumentMut` and write it back atomically — comments, formatting,
+/// and unrelated tables are `toml_edit`-preserved by construction.
+/// An absent file parses as an empty document (the writer creates it).
+pub(crate) fn overlay_document(path: &Path) -> std::io::Result<toml_edit::DocumentMut> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+    text.parse::<toml_edit::DocumentMut>()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
+}
+
 /// Atomically rewrites the config file at `path` with `contents`
 /// (overlay on connect, key strip on logout — the only two writers of
 /// this artifact): tmp sidecar in the same directory, then rename.

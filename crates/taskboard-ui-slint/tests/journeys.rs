@@ -33,20 +33,30 @@ struct Harness {
     handle: taskboard_ui_slint::UiHandle,
     engine: FakeEngine,
     guard: Guard,
+    /// The request lane's receiver half (the tests drain it directly —
+    /// the `FakeEngine` pattern, minus the engine). Drained by the
+    /// width journeys (round-1 T-10–T-12); the request-lane plumbing
+    /// commit leaves it as harness surface.
+    #[allow(dead_code)]
+    requests_rx:
+        std::sync::Mutex<tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>>,
 }
 
 impl Harness {
     /// Mounts `state` through the public `mount()` with the fake's
     /// channel halves (dropped broadcast senders, as the lib tests
-    /// do) — no engine, no app crate.
+    /// do) — no engine, no app crate. The request lane's halves are
+    /// drained by the tests through `requests_drain`.
     fn mount(driver: SlintDriver, state: AppState) -> Self {
         let state = Arc::new(ArcSwap::from_pointee(state));
         let (commands, engine) = FakeEngine::channel(Arc::clone(&state));
+        let (requests_tx, requests_rx) = tokio::sync::mpsc::channel(16);
         let handle = taskboard_ui_slint::mount(
             state,
             dummy_receiver(),
             dummy_system_receiver(),
             commands,
+            requests_tx,
             UiSettings::default(), // the standard preset
         )
         .expect("mount succeeds on the testing backend");
@@ -55,9 +65,20 @@ impl Harness {
             handle,
             engine,
             guard: Guard::default(),
+            requests_rx: std::sync::Mutex::new(requests_rx),
         };
         harness.driver.bind(&harness.handle);
         harness
+    }
+
+    /// Drains the request lane: the typed `UiRequest`s that reached
+    /// the boundary since the last check. Drained by the width
+    /// journeys (round-1 T-10–T-12); the plumbing commit leaves it as
+    /// harness surface.
+    #[allow(dead_code)]
+    fn drain_requests(&self) -> Vec<taskboard_ui_slint::requests::UiRequest> {
+        let mut rx = self.requests_rx.lock().expect("requests lock");
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     /// The visible context chain (the adapter's `shell.chain()`

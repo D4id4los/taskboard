@@ -93,11 +93,13 @@ fn the_board_goldens_hold_across_the_scale_breakpoint_matrix() {
 fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) {
     let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
     let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+    let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
     let handle = taskboard_ui_slint::mount(
         state,
         dummy_signals(),
         dummy_system(),
         commands,
+        requests_tx,
         UiSettings {
             scale,
             ..UiSettings::default()

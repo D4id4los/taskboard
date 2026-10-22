@@ -526,14 +526,7 @@ fn write_config_overlay(
     user: &str,
     switch_backend: bool,
 ) -> Result<(), std::io::Error> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == IoErrorKind::NotFound => String::new(),
-        Err(err) => return Err(err),
-    };
-    let mut doc = text
-        .parse::<toml_edit::DocumentMut>()
-        .map_err(|err| std::io::Error::new(IoErrorKind::InvalidData, err))?;
+    let mut doc = crate::config::overlay_document(path)?;
     let scalar_world = doc
         .get("sync")
         .and_then(|sync| sync.get("connectors"))
