@@ -1,44 +1,71 @@
 # [Plan] Daily-Driver Chunk 3 — Sidecar Transport: 1.17.5 Gate + Anchor Ceremony + Document Codec + Evidence
 
-- **Date**: 2026-10-22
+- **Date**: 2026-10-22 (revised same day: the version-capability
+  re-run — see Status).
 - **Kind**: stage-1 implementation plan (TDD-first; this commit is plan
   only — no production code).
 - **Origin**: dispatch plan
   `.artifacts/plans/2026-10-19-daily-driver-implementation-dispatch-plan.md`
-  §1/§4 (MD-1…MD-10); wave implementation plan
+  §1/§4 (MD-1…MD-10, as amended 2026-10-22); wave implementation plan
   `.artifacts/plans/2026-10-19-daily-driver-wave-implementation-plan.md`
-  §2 DDF-2/4/5/10, §3 chunk 3, §4–§6; sidecar design doc
-  `.artifacts/plans/2026-10-18-appdata-sidecar-design-plan.md` §1/§2/§3.1
-  (D-S1)/§3.2 (D-S2)/§3.4 items 1–3/§3.5 (D-S5 arm shape)/§4 (the ruled
-  1.17.5 gate)/§6 (ACCEPTED + the six session rulings)/§7 (chunk
-  interfaces); field-family design doc §3.2 D-F2 (the folded startdate
-  wire pins). All ACCEPTED rulings are treated as binding (MD-7).
+  §2 DDF-2/4/5/10 (as amended), §3 chunk 3, §4–§6; sidecar design doc
+  `.artifacts/plans/2026-10-18-appdata-sidecar-design-plan.md` §3.1
+  (D-S1)/§3.2 (D-S2)/§3.4 items 1–3/§3.5 (D-S5 arm shape)/§6 (ACCEPTED
+  + the six session rulings)/§7 (chunk interfaces) + its 2026-10-22
+  amendment note; field-family design doc §3.2 D-F2 (as amended
+  2026-10-22). **Normative new inputs (the re-run)**: the
+  version-capabilities design addendum
+  `.artifacts/plans/2026-10-22-deck-version-capabilities-design-plan.md`
+  (D-V1 seam, D-V2 lane rule, D-V3 wire changes + revised fixtures,
+  §4 obligations) and the characterization report
+  `.artifacts/reports/2026-10-22-deck-1175-transport-characterization-report.md`
+  (the measured evidence). All ACCEPTED rulings are treated as binding
+  (MD-7); the 2026-10-22 ruling — version-specific parity, no
+  sync-functionality degradation — supersedes the original
+  expected-degraded stance.
 - **Branch / worktree**: `feat/sync-appdata-transport` in
   `../taskboard-WT-feat-sync-appdata-transport`, off `origin/main` @
-  `aac5097` (MD-9 verified: chunk 1 via PR #358's commits + the
-  stage-1 signature file
-  `.artifacts/plans/2026-10-21-daily-driver-task-field-family-plan.md`,
-  chunk 2 via `7a43cca` + its two feat commits — all on `origin/main`).
-  `scripts/worktree-doctor.sh` exited 0 (118 G free, floor 25 G).
-- **Goal**: the sidecar's transport half — the dockerized Deck 1.17.5
-  contract-fixture gate runs and passes **before** any transport code
-  lands (DDF-10/MD-5); the domain document codec (`appdata.rs`) with
-  verbatim preservation, union + GC pure functions, and manifest
-  assertion 3; the anchor-ceremony constants and actor-local helpers;
-  the typed `AppDataEvidence` on `SyncReport::Completed`; the
-  `LocalOp::UpdateAppData` arm + storage tag; `LoopState`'s in-memory
-  metadata/document cache; download-during-pull.
-- **Status**: awaiting stage-2 implementation.
+  `aac5097` (MD-9 re-verified 2026-10-22: chunk 1 — `8015b6b`…`26544d6`
+  + the stage-1 signature file
+  `.artifacts/plans/2026-10-21-daily-driver-task-field-family-plan.md`
+  — and chunk 2 — `7a43cca`/`ac1eff8`/`fe8f846`/`aac5097` — all on
+  `origin/main`). `scripts/worktree-doctor.sh` exited 0 (95 G free,
+  floor 25 G). **The branch already carries the first run's commits**
+  (verified `git log`; they ride this chunk's PR, not redone):
+  `84ab03b` the harness parameterization (compose image interpolation
+  + `DECK_VERSION` pin incl. the `nextcloud-releases` asset-URL fix),
+  `332c89b` the fixture set, `08562fa` the stage-2 STOP report,
+  `14b0b20` the characterization report, `000ea0b` the design
+  addendum + doc amendments, `0430d26` the dispatch-plan amendment.
+- **Goal**: the sidecar's transport half — the **capability seam**
+  (D-V1: one capabilities probe, typed `DeckFeatures` flag table,
+  conservative fallback), the unconditional attachment-create `data`
+  field + echo-decode fallback (D-V3), the **revised gate fixtures
+  green on both tiers** before any transport code lands (DDF-10 as
+  amended); capability-gated card conversion (D-V2's push half); the
+  domain document codec (`appdata.rs`) with verbatim preservation,
+  union + GC pure functions, **`scheduled` as the fourth modeled key**
+  and the reworded manifest assertion 3; the anchor-ceremony constants
+  and actor-local helpers; the typed `AppDataEvidence` on
+  `SyncReport::Completed`; the `LocalOp::UpdateAppData` arm + storage
+  tag; `LoopState`'s in-memory flags/metadata/document cache;
+  download-during-pull.
+- **Status**: revision 2 (supersedes the 2026-10-22 morning text where
+  the addendum says so — D4/D5 and the risks §7; the commit ladder's
+  first two rungs are landed). Awaiting stage-2 implementation (the
+  dispatch plan's RE-RUN Prompt 3.2).
 
-**Planning-method note (DDF-10 discipline)**: this planning stage ran
-no docker probe — planning reads wire facts, it does not discover
-them. The 1.17.5 gate therefore **executes in stage 2, first**, per
-the acceptance ordering ("fixtures green before the transport code
-lands"). No divergence was found or papered over during planning; the
-decision points below are harness mechanics and codec shapes, not
-adaptations to observed 1.17.5 behavior. Any fixture that fails
-against the D1-evidenced (1.19.0) behavior in stage 2 is a
-**STOP-and-report** finding (MD-5), never a design input.
+**Planning-method note (DDF-10 discipline, re-run)**: the gate already
+ran once (the first run's stage 2) and its findings are *measured
+facts* in the characterization report; this revision plans the ruled
+adaptation, it does not discover behavior. Wire facts are cited from
+the characterization, never assumed. A **new** divergence — a fixture
+disagreeing with the characterized behavior on either tier, or any
+1.17.5/1.19.0 surface observed to differ from the report — is
+**STOP-and-report** (MD-5), never a design input and never a silent
+fixture edit. The ruled adaptation set is exactly: the capability seam
+(D-V1), the `scheduled` lane rule (D-V2), the unconditional wire
+changes (D-V3); anything beyond it is a finding.
 
 ---
 
@@ -104,7 +131,8 @@ Symbols are the stable keys; line numbers are today's references.
   container name), `TASKBOARD_IT_PORT` (:23), `EXPORT_PREFIX` (:109,
   default `TASKBOARD_IT_DOCKER`); `install_deck` :75 does
   `occ app:install deck` (**latest** app-store version — the pin gap
-  this chunk closes); `docker/nextcloud-test/compose.yaml` pins
+  the landed `DECK_VERSION` knob closes, §1.1);
+  `docker/nextcloud-test/compose.yaml` pins
   `nextcloud:35-apache` (35.0.1). Tier-2 tests: `tests/common/mod.rs`
   `read_cfg(prefix)` :89 (already prefix-parameterized),
   `live_docker_config` :71, `run_id` :103, `with_deadline` :113,
@@ -128,9 +156,96 @@ Symbols are the stable keys; line numbers are today's references.
   corpus: `crates/taskboard-state/tests/snapshots/` (20 `.snap`
   files, persisted + published state only).
 
+### 1.1 The capability-seam sites (re-run additions; re-located on the branch @ `0430d26`)
+
+Symbols are the stable keys; line numbers are today's references. The
+first run's commits touched only `client.rs` (the
+`download_attachment_validators` fixture seam), the docker test files,
+`compose.yaml`, and the setup script — every §1 reference above is
+unchanged.
+
+- **Request plumbing** (sync `client.rs`): `Call` :174 (`method`,
+  `resource`, `scope`, `body`, `validators`) and `Scope` :185
+  (`OcsApi` ⇒ `DECK_API_PATH` = `index.php/apps/deck/api/v1.0`,
+  `App` ⇒ `index.php/apps/deck`; `path_prefix` :196); `attempt` :1504
+  joins `base_url + prefix + resource`, always sends
+  `OCS-APIRequest: true` + `Accept: application/json` + Basic auth
+  (:1516–1518). The capabilities route is a **third prefix**
+  (`ocs/v2.php/cloud/capabilities` — outside both Deck scopes): a new
+  `Scope` variant is the minimal join-compatible change; the header +
+  auth plumbing is already correct for it.
+- **`DeckClient::new` :338 is a sync constructor** (URL validation +
+  `Client::builder()`; the `with_sleeper` :374 test seam pattern). A
+  capabilities GET cannot run inside it — D-V1's "parsed once in
+  `DeckClient::new`" prose is honored via the recorded deviation in
+  D18 (probe once per actor lifetime, cached in `LoopState`).
+- **OCS envelope** (sync `ocs.rs`): `OcsEnvelope<T>`/`OcsBody<T>`
+  (`meta.statuscode` + `data`) — the capabilities payload decodes
+  through the same envelope; unknown fields are ignored (the module's
+  stated rule).
+- **`multipart_form`** (sync `client.rs` :238): takes
+  `(upload, for_update)` and adds the `data` text part only on the
+  update arm (:250–254); `CallBody::Multipart(upload, for_update)`
+  (the `attempt` match :1522) threads the flag. D-V3.1 makes `data`
+  unconditional ⇒ the `for_update` discriminator loses its purpose
+  and is removed (D19).
+- **`ExtendedData`** (sync `model.rs` :377: `file_name` :379 with
+  `#[serde(default)]`, `size` :382 `filesize` alias, `mimetype`,
+  `mtime`) decodes via `data_from_object_or_string` :357 (string form
+  = filename-only) for `Attachment.data` :347 and via plain derive for
+  `Attachment.extended_data` :350. **The D-V3.2 fallback site**: the
+  1.17.5 create/update echo carries the name under
+  `extendedData.info.filename` with no `fileName` key
+  (characterization §2A) — the fallback lands in `file_name` at decode
+  (D20), so the landed fixtures' `.file_name` assertions hold
+  unchanged on both tiers.
+- **Card write conversion** (sync `mapping.rs`): `new_card_from`
+  :213 (`startdate: shape.scheduled`, the create conversion) and
+  `apply_card_shape` :269 (`card.startdate = shape.scheduled`, the
+  full-send PUT conversion) — the two D-V2 gating sites; both take
+  the flag after the revision (D21). Wire forms today: `NewCard`
+  .startdate skips `None` (create omits the key — create ignores it
+  on 1.17.5 anyway); **`Card.startdate` serializes `null`** (no
+  `skip_serializing_if`, `ser_opt_datetime` — model.rs :126), so the
+  PUT carries explicit `startdate: null` exactly as D-V2 rules once
+  the conversion maps `scheduled → None`. Callers:
+  `push_exec/execute.rs` :344 (`new_card_from`) and :640
+  (`apply_card_shape`), both inside `PushExecutor` (constructed
+  `PushExecutor::new(client, overlay)` :32, called from the cycle at
+  `actor.rs` :455) — the flag threads through the executor (D21).
+- **Actor startup** (sync `actor.rs`): `run` :180 builds `LoopState`
+  at :192 (`cache`/`rerun_requested`/`failure_streak`/`offline`/
+  `retry_after_floor`) before the select loop — the probe's insertion
+  point (D18): one `capabilities()` GET before the first cycle, the
+  derived `DeckFeatures` cached as a new `LoopState` field.
+- **`push_exec/tests.rs`**: ~25 `PushExecutor::new(&client, overlay…)`
+  call sites (exact-request-count and echo assertions) — the
+  constructor's new parameter is a mechanical sweep; the probe also
+  adds one unmatched-route GET per hermetic actor start, which
+  exact-count assertions must absorb (D18's audit note).
+- **Landed fixtures** (the first run's `332c89b`, riding this PR —
+  the revision edits, never weakens): `tests/common/mod.rs`
+  `live_docker_deck1175_config()` (the `TASKBOARD_IT_DOCKER_DECK1175`
+  reader, skip-when-unset), the no-validators assertion inside the
+  `attachment_content_lifecycle` shared body (both tiers pin it), the
+  `startdate_round_trip(client)` shared body (three legs: create
+  reads back, PUT reads back, create-without decodes `None`);
+  `tests/it_docker.rs` wrappers `it_nextcloud_docker_startdate_round_trip`
+  (regular), `it_nextcloud_docker_deck1175_attachment_content_lifecycle`,
+  `it_nextcloud_docker_deck1175_startdate_round_trip` (this one
+  **renames** per D23). The `it_nextcloud_docker` filter-substring
+  convention (D3) is preserved by the new names — zero workflow
+  edits stands.
+
 ## 2. Decisions (every open question, resolved)
 
-- **D1 — 1.17.5 harness variant mechanics.** Reuse the existing
+> Numbering is continuous with revision 1. D1–D3 are **landed**
+> (`84ab03b`) and kept as the record of the harness mechanics; D4/D5
+> are **rewritten** by the re-run (the addendum's revised fixture set
+> and divergence protocol); D6–D16 stand unchanged; D17–D24 are the
+> re-run's new decisions (the D-V1/D-V2/D-V3 wiring).
+
+- **D1 — 1.17.5 harness variant mechanics. (landed, `84ab03b`)** Reuse the existing
   parameterization; add exactly two knobs:
   1. `docker/nextcloud-test/compose.yaml`: interpolate the image —
      `image: ${TASKBOARD_IT_NC_IMAGE:-nextcloud:35-apache}`. Default
@@ -144,19 +259,25 @@ Symbols are the stable keys; line numbers are today's references.
      `occ app:enable deck` (skipping `app:install`), and verify the
      installed version via `occ app:list` (fail loud on mismatch or a
      failed download — never a silently wrong-tier instance).
+     *(Landed amendment, first run: that GitHub URL 404s — the script
+     pins the `nextcloud-releases` org's versioned asset
+     `deck-v1.17.5.tar.gz` instead; STOP report §4. Kept here as
+     provenance, not as an instruction to restore.)*
   The variant instance runs fully through the existing hooks:
   `TASKBOARD_IT_SUFFIX=-deck1175 TASKBOARD_IT_PORT=8371
   EXPORT_PREFIX=TASKBOARD_IT_DOCKER_DECK1175
   TASKBOARD_IT_NC_IMAGE=nextcloud:33-apache DECK_VERSION=v1.17.5
   scripts/nextcloud_it_setup.sh up`.
-- **D2 — NC image pin of the variant: `nextcloud:33-apache`.** The
+- **D2 — NC image pin of the variant: `nextcloud:33-apache`. (landed,
+  `84ab03b`)** The
   gate's contract is Deck 1.17.5 behavior; the production pair is
   NC 33.0.9 + Deck 1.17.5 (known-server matrix), so the variant
   reproduces the whole live pair rather than risking Deck 1.17.5's
   Nextcloud-version compatibility metadata against a 35 image (its
   declared NC range is unverified and the live evidence says 33).
   Residual risk recorded as R1.
-- **D3 — fixture naming + CI filter: zero workflow edits.** Tests are
+- **D3 — fixture naming + CI filter: zero workflow edits. (landed,
+  `84ab03b`/`332c89b`; stands)** Tests are
   named `it_nextcloud_docker_deck1175_*` (contains the existing
   `it_nextcloud_docker` filter substring ⇒ auto-picked by
   `nextcloud-integration.yml`'s expression) and read credentials via
@@ -170,46 +291,73 @@ Symbols are the stable keys; line numbers are today's references.
   untouched — the gate is CI-able and reproducible in-repo, which is
   what §4 of the design rules; CI wiring is a user decision, noted in
   the stage report).
-- **D4 — the gate's fixture set and exact assertions.** The six
-  behaviors ride **shared bodies with thin per-tier wrappers** (the
-  P2 pattern; MD-5's "no new mechanics beyond the pinned variant"):
-  1. `attachment_content_lifecycle(client)` (existing shared body,
-     unchanged) wrapped a second time as
-     `it_nextcloud_docker_deck1175_attachment_content_lifecycle` —
-     pins upload part names/stored filename, duplicate-409 ⇒ typed
-     `Conflict`, byte-identical round-trip, in-place update with
-     preserved `id`/`created_at`, soft delete (tombstone stays
-     listed) + restore (content intact).
-  2. **Additive assertion in the shared body** (both tiers then pin
-     it): the download response carries **no `ETag`/
-     `Last-Modified` headers** — the no-validators-on-content fact
-     (D1 spike §3.2) asserted against the live tier, not just mocked.
-  3. New shared body `startdate_round_trip(client)` wrapped as
-     `it_nextcloud_docker_startdate_round_trip` (regular tier) **and**
-     `it_nextcloud_docker_deck1175_startdate_round_trip` (the gate) —
-     D-F2's "one assertion per direction": create a card with
-     `startdate: Some(ts)` ⇒ read back equal (second-granularity
-     tolerance, `>=`/round-to-second, never strict equality on a
-     wall clock); full-send card PUT with a new `startdate` ⇒ read
-     back the new value; create **without** `startdate` ⇒ read
-     `None` (null-tolerance on the live wire, the decode path
-     chunk 1 pinned only at tier 1).
-  Everything asserts typed outcomes/structural facts (header
-  presence, decoded values, request counts) — no text assertions.
-- **D5 — divergence protocol.** A deck1175 fixture disagreeing with
-  the D1-evidenced behavior (409 not surfacing, update not
-  in-place, restore losing content, validators appearing, startdate
-  write rejected) is STOP-and-report: transport commits do not land
-  until the user rules (DDF-10/MD-5). Decode-shape drift *outside*
-  the six behaviors (e.g. a field that decodes differently) goes to
-  the known-server matrix as findings, not silent fixture edits.
+- **D4 — the gate's fixture set and exact assertions (rewritten by
+  the re-run; addendum D-V3's revised set).** The gate must be **green
+  on BOTH tiers** — the regular tier (NC 35.0.1 / Deck 1.19.0) and the
+  pinned gate tier (NC 33 / Deck 1.17.5) — and the fixtures pin the
+  *characterized* behavior, which on the gate tier now includes two
+  measured server limitations. Shared bodies with thin per-tier
+  wrappers (the P2 pattern; the naming rule stays D3's):
+  1. `attachment_content_lifecycle(client)` — **runs unchanged on both
+     tiers** (as landed in `332c89b`, including the no-validators
+     pin). Once D19/D20's client changes land, its create/update-echo
+     assertions hold on 1.17.5 too — that *is* the parity proof for
+     the attachment surface; nothing about the fixture is weakened or
+     special-cased per tier.
+  2. `startdate_round_trip(client)` — **regular tier only**
+     (`it_nextcloud_docker_startdate_round_trip`, unchanged): the
+     capability-true-server pin. On 1.19.0 create reads the startdate
+     back, full-send PUT reads the new value back, create-without
+     decodes `None`.
+  3. **`it_nextcloud_docker_deck1175_startdate_round_trip` renames to
+     `it_nextcloud_docker_deck1175_startdate_unsupported`**, wrapping
+     a new shared body `startdate_unsupported_on_deck1175(client)`
+     pinning the *measured* 1.17.5 behavior (characterization §2B —
+     the server is the fixed party; this pin is the capability
+     table's evidence, not our behavior debt, so it is not a
+     `..._currently_pins_...` test):
+     create with `startdate: Some(ts)` ⇒ **200**, read back `None`
+     (create ignores the field); full-send card PUT with a valued
+     `startdate` ⇒ **200**, read back still `None` (the silent
+     write-drop — no 400, no effect). Typed outcomes only.
+  4. **New shared body `capabilities_probe(client)`** wrapped as
+     `it_nextcloud_docker_capabilities` (regular) **and**
+     `it_nextcloud_docker_deck1175_capabilities` (gate): the D-V1
+     probe succeeds against both real servers, the version decodes
+     (`"1.19.0"` / `"1.17.5"`), and the derived flag matches the
+     tier's pinned expectation (`card_startdate` true / false) — the
+     seam itself pinned end-to-end, per tier.
+  Everything asserts typed outcomes/structural facts (decoded values,
+  request counts, header absence) — no text assertions.
+  **Gate execution order**: commits 3–5 of the revised ladder (§5)
+  land the seam + wire changes; the gate suite then runs green on
+  both tiers **before the transport commits** (codec/evidence/
+  ceremony) land — the amended acceptance ordering.
+- **D5 — divergence protocol (rewritten by the re-run).** The
+  characterized behavior is now the *expected* behavior. A deck1175
+  or regular-tier fixture disagreeing with the characterization
+  report (or with the D1-evidenced 1.19.0 behavior) — 409 not
+  surfacing, update not in-place, restore losing content, validators
+  appearing, `startdate` suddenly honored on 1.17.5, capabilities
+  missing the `deck.version` key — is **STOP-and-report**
+  (DDF-10 as amended/MD-5): the ruled adaptation set is exactly
+  D-V1/D-V2/D-V3, and anything outside it (a third divergence, a
+  different echo shape, an unmeasured version row) stops the chunk
+  for a user ruling. The flag table (D17) is the ruled repair path
+  *after* such a ruling: a new divergence on an unknown version
+  re-enters via stop-and-report, then extends the table — never a
+  silent adaptation, never a raw version comparison in the connector.
+  Decode-shape drift outside the pinned set still goes to the
+  known-server matrix as findings, not silent fixture edits.
 - **D6 — domain `appdata.rs`: module + constants.** New pure domain
   module `crates/taskboard-domain/src/appdata.rs` (serde/chrono
   only; registered in `lib.rs`). It owns:
   - `pub const APPDATA_FORMAT: u32 = 1;`
   - `pub const ANCHOR_CARD_TITLE: &str = "[taskboard] app-data";`
   - `pub const MODELED_TASK_FIELD_KEYS: &[&str] = &["effort",
-    "importance", "urgency"];` (assertion 3's subject, D12).
+    "importance", "urgency", "scheduled"];` (assertion 3's subject,
+    D12; the fourth key is D-V2's fallback-lane ruling — the const is
+    capability-blind, the emission/fold sites gate).
   **Anchor-title const home (recorded deviation, allowed against
   prose per MD-7):** the implementation plan names "ids.rs or
   entities" as candidate homes; the plan settles on `appdata.rs` —
@@ -276,11 +424,15 @@ Symbols are the stable keys; line numbers are today's references.
   }
 
   /// The key selects the arm — `v`'s encoding is the domain field's
-  /// own serde shape (transparent u64 / snake_case unit / null).
+  /// own serde shape (transparent u64 / snake_case unit / rfc3339 or
+  /// null). `scheduled` is the fourth modeled key (D-V2): same
+  /// envelope as the others, `null` = cleared, **no** tasks-section
+  /// tombstones.
   pub enum ModeledValue {
       Effort(Option<Effort>),
       Importance(Option<Importance>),
       Urgency(Option<Urgency>),
+      Scheduled(Option<DateTime<Utc>>),
   }
 
   pub struct RulesEntry {
@@ -430,6 +582,10 @@ Symbols are the stable keys; line numbers are today's references.
   ```rust
   struct LoopState {
       // …existing fields unchanged…
+      /// The connector's derived capability flags (D18): probed once
+      /// per actor lifetime before the select loop, `CONSERVATIVE` on
+      /// any probe failure. In-memory like everything else here.
+      features: DeckFeatures,
       /// Per-board sidecar document cache: the attachment metadata
       /// pair of the last successful ingest plus the parsed document
       /// (in-memory only — D-S4 item 3 / §6 ruling 5; no new
@@ -458,17 +614,25 @@ Symbols are the stable keys; line numbers are today's references.
   - Refresh-from-upload-response (so a flush does not re-GET its own
     write) is chunk 4's; nothing here writes the cache outside
     ingest.
-- **D12 — manifest assertion 3 (domain `appdata.rs` tests).** Two
-  layers so the check is structural, not a const-vs-const tautology:
+- **D12 — manifest assertion 3 (domain `appdata.rs` tests; reworded by
+  the re-run per D-V2 — the key set is now four).** Two layers so the
+  check is structural, not a const-vs-const tautology:
   1. `MODELED_TASK_FIELD_KEYS` (the codec's single source for its
      modeled-key dispatch) equals `TASK_FIELDS`' rows filtered to
-     `FieldFamily::AppData` — exactly `["effort", "importance",
-     "urgency"]`, and `scheduled` is among the **Native** rows.
-  2. Decode probes: a document carrying each modeled key round-trips
-     into the typed arm; `scheduled`, the reserved `task-kind`, and
-     the reserved `proofs` section all land verbatim-unmodeled —
-     **no `scheduled` key is ever modeled** (D-F2; a modeled
-     `scheduled` arm is a finding).
+     `FieldFamily::AppData` **plus `scheduled`** (the Native row whose
+     sync lane is dynamic per D-V2) — exactly
+     `["effort", "importance", "urgency", "scheduled"]`, with
+     `scheduled` structurally checked to remain a manifest row and to
+     be absent from the AppData rows (the lane decision lives in the
+     sync/pipeline layers, never in the codec).
+  2. Decode probes: a document carrying each of the four modeled keys
+     round-trips into its typed arm (`Scheduled(Some)`/`Scheduled(None)`
+     = cleared, same `{v, clock}` envelope); the reserved `task-kind`
+     and the reserved `proofs` section land verbatim-unmodeled. The
+     codec is **version-blind**: `appdata.rs` never names
+     `DeckFeatures` and carries no capability branch (a codec-level
+     capability branch is a dispatch-trap finding; review checks this
+     structurally).
 - **D13 — the op arm's mechanical perimeter (MD-10 honored).**
   `LocalOp::UpdateAppData(TaskId)` (D-S5's shape + doc comment) lands
   in domain `outbox.rs`, which **forces** the exhaustive matches it
@@ -534,11 +698,168 @@ Symbols are the stable keys; line numbers are today's references.
     Creation/adoption stay unit-pinned (the cycle cannot flush yet —
     D8); the `create_card`-with-title IO is already contract-pinned
     generically.
-  - Docker tier 2 (regular): the existing lifecycle + the new shared
-    `startdate_round_trip` wrapper.
-  - Docker tier 2 (deck1175 variant): the same two wrappers under
-    `it_nextcloud_docker_deck1175_*` names — the DDF-10 gate
-    (D3/D4).
+  - Docker tier 2 (regular): the existing lifecycle + the
+    `startdate_round_trip` wrapper + the `capabilities_probe`
+    wrapper (D4's revised set).
+  - Docker tier 2 (deck1175 variant): the lifecycle wrapper
+    (unchanged body), `…_startdate_unsupported` (the measured pin),
+    and `…_capabilities` — the DDF-10 gate as amended, green on both
+    tiers (D3/D4/D23).
+
+### 2.1 The capability-seam decisions (the re-run's D-V1/D-V2/D-V3 wiring)
+
+- **D17 — flag types + table: a new pure domain module
+  `crates/taskboard-domain/src/capabilities.rs`** (registered in
+  `lib.rs`; serde-free, dependency-free — pure functions only, per the
+  domain crate rule). Contents:
+  - `#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub struct
+    DeckFeatures { pub card_startdate: bool }` — a plain struct, one
+    field per ruled flag (additive rows extend it); plus
+    `DeckFeatures::CONSERVATIVE` (all false) as the single
+    fallback value every degradation path converges on.
+  - `#[must_use] pub fn flags_for(version: &str) -> DeckFeatures` —
+    **total, pure**: parse `"<major>.<minor>[.<patch>]"` (patch and
+    any suffix tolerated-but-ignored); the known-row table maps
+    major.minor ranges: `(1,17) ⇒ false`, `(1,18) ⇒ false` (the
+    conservative arm — 1.18.x is unmeasured and deliberately not
+    depended on, addendum §5.1), `≥ (1,19) ⇒ true` (the
+    **newest-known-wins** optimistic rule: a version newer than the
+    newest known row behaves like the newest known row). A version
+    older than the oldest known row, or an unparseable string ⇒
+    `CONSERVATIVE` (safe by construction — the conservative arm's
+    wire forms work on every measured version).
+  - Units + proptest: every known row, the newest-known-wins rule
+    (arbitrary `≥1.19` inputs), older-than-known and unparseable ⇒
+    conservative. The table is the *only* version switch in the
+    codebase (a raw version comparison anywhere in the connector is a
+    dispatch-trap finding).
+  **Home rationale**: chunk 4's merge-verdict gate and assertion 4's
+  lane routing live in domain (`pipeline.rs`/`merge.rs`) and must name
+  the type; the pure document codec stays version-blind (D12). Sync
+  consumes the domain type exactly as it consumes every other domain
+  vocabulary type.
+- **D18 — the probe: typed client method + one-shot actor wiring.**
+  - Client method (sync `client.rs`): `pub async fn capabilities(&self)
+    -> Result<DeckCapabilities, DeckError>` — `GET` via a third
+    `Scope::Ocs` variant (`path_prefix` ⇒ `"ocs/v2.php"`, resource
+    `cloud/capabilities`), decoding `OcsEnvelope<CapabilitiesPayload>`
+    with `CapabilitiesPayload { capabilities: CapabilitiesSection }`,
+    `CapabilitiesSection { #[serde(default)] deck:
+    Option<DeckSection> }`, `DeckSection { version: String }`
+    (unknown fields ignored per the `ocs.rs` rule). New public type
+    `DeckCapabilities { pub deck_version: Option<String> }` — `None`
+    = the `deck` key absent (Deck not installed / ancient build);
+    transport/HTTP failure = typed `Err`.
+  - **Recorded deviation (allowed against prose per MD-7)**: D-V1
+    says "parsed once in `DeckClient::new`", but `new` is a sync
+    constructor (§1.1) and cannot perform a GET. The probe instead
+    runs **once per actor lifetime**: `run` (`actor.rs` :180) issues
+    `capabilities()` immediately after building `LoopState` (:192),
+    before the select loop, and stores the derived flags in a new
+    `LoopState.features: DeckFeatures` (probe `Ok` + version ⇒
+    `flags_for(version)`; `Ok` + no deck key, or `Err` ⇒
+    `CONSERVATIVE` + one typed `tracing::warn!` — the degraded lane
+    is *correct*, never an error surfaced to the cycle). One extra
+    GET per client construction (per connector actor), not per cycle,
+    matching D-V1's cost statement; an actor respawn (reconnect /
+    re-attach) re-probes — that is the "until the probe succeeds"
+    recovery path (addendum §5.3), accepted without a retry timer
+    (no speculative machinery; a persistent probe failure means the
+    conservative lane for the process lifetime).
+  - **Mechanical consequence, audited in stage 2**: every hermetic
+    actor test now sees one extra GET at start (wiremock answers
+    unmatched routes with 404 ⇒ the probe degrades conservatively —
+    existing tests keep their semantics). Tests asserting **exact
+    request counts** (`tests/actor_wiremock.rs`,
+    `push_exec/tests.rs`) are swept and updated mechanically (+1
+    probe request or an explicit probe stub); a count assertion left
+    unadjusted is a review finding. A dedicated stub answering the
+    capabilities route is provided by a small helper in the wiremock
+    harness for tests that want to pin a flag value.
+- **D19 — the `data` field goes unconditional (D-V3.1).**
+  `multipart_form` (`client.rs` :238) drops its `for_update`
+  parameter: **both** create and update forms carry
+  `text("data", upload.file_name)` (value = the client filename;
+  measured inert — `FileService::create` overwrites the entity's
+  `data` with the stored filename; required by 1.17.5, tolerated by
+  1.19.0). `CallBody::Multipart(upload, for_update)` collapses to
+  `CallBody::Multipart(AttachmentUpload)`; the two call sites
+  (`upload_attachment`, `update_attachment_content`) pass the same
+  form. **Unconditional means unconditional**: gating the field
+  behind the capability probe is a dispatch-trap finding (one request
+  form for all versions). The in-place update route is untouched
+  otherwise (already sends `data`; verified working on 1.17.5
+  as-is). Tier-1 contract pins of the multipart form gain the
+  create-side `data` part assertion.
+- **D20 — the echo-decode fallback (D-V3.2), in `model.rs`.**
+  `ExtendedData` grows `#[serde(default)] pub info:
+  Option<ExtensionInfo>` with `ExtensionInfo {
+  #[serde(default, rename = "filename")] pub file_name: String }`
+  (serde ignores unknown `info` keys). A decode-side normalization —
+  `file_name` empty ⇒ take `info.file_name`, else stay empty —
+  applies at **both** decode paths (`data_from_object_or_string`'s
+  object arm, and a `deserialize_with` wrapping the plain derive on
+  `Attachment.extended_data`), so every decoded `ExtendedData` carries
+  the stored filename in `.file_name` regardless of the server's echo
+  shape. Consequence: the landed fixtures' `extendedData.fileName ==
+  upload_name` assertions hold **unchanged on both tiers** (§1.1);
+  consumers (the anchor scan's filename comparison, D8) read the
+  already-normalized field. Model units pin: the 1.19.0 echo shape,
+  the 1.17.5 echo shape (`info.filename`, no `fileName`), the string
+  form, and absence ⇒ `None`.
+- **D21 — capability-gated card conversion (D-V2's push half).** The
+  two conversion sites take the flag: `mapping::new_card_from(shape,
+  features)` sets `startdate` to `shape.scheduled` only when
+  `features.card_startdate`, else `None`; `apply_card_shape(fetched,
+  shape, resolved_labels, features)` likewise. Wire forms fall out of
+  today's serde (§1.1): create omits the key (`NewCard` skips `None`;
+  1.17.5 create ignores it anyway), the full-send PUT serializes
+  `startdate: null` (`Card` has no skip attr) — exactly D-V2's
+  "keeps the wire honest" form, no serde changes needed. Threading:
+  `PushExecutor::new(client, overlay)` grows a third parameter
+  `features: DeckFeatures` (the executor is per-cycle, constructed in
+  the cycle that owns `LoopState.features` at `actor.rs` :455); the
+  ~25 `push_exec/tests.rs` call sites pass an explicit fixture
+  constant (`DeckFeatures::CONSERVATIVE` or the native-true value) —
+  the sweep is mechanical and each changed line is reviewable as
+  "flag in, same shape out". Connector-independence holds: the lane
+  choice is a connector concern (D-V2); domain `push.rs` shapes keep
+  carrying `scheduled` untouched (the D-F2 `from_task` pins stay
+  green — only the wire conversion gates).
+- **D22 — the codec's fourth modeled key (D-V2's codec half).**
+  `ModeledValue::Scheduled(Option<DateTime<Utc>>)` (D7, amended);
+  encoding = the field's own domain shape (`null` = cleared, rfc3339
+  otherwise) in the same `{v, clock}` envelope; `MODELED_TASK_FIELD_KEYS`
+  = the four names (D6, amended); assertion 3 reworded (D12,
+  amended). **No tombstones in the tasks section** — `Scheduled(None)`
+  is a cleared value, not a deletion marker (D-S2's rule unchanged).
+  The codec never reads the flag (version-blind; D12's structural
+  check). Union/GC treat the new key exactly like the other three
+  (embedded-clock LWW; no special case).
+- **D23 — the revised gate set + lane-rule boundaries (the
+  re-run's D-V2/D-V3 obligation summary).** The gate fixture set is
+  D4 (rewritten); the run order is §5's revised ladder: seam commits
+  land first, the gate runs **green on both tiers** before any
+  transport commit. Lane-rule boundaries this chunk enforces by
+  construction: the deck1175 startdate fixture pins the server's
+  unsupported behavior (never our adaptation of it); the native
+  round-trip pin lives only on the capability-true tier; **no**
+  fold-side gating, no document emission gating, no union lane-GC,
+  and no merge-verdict skip ships in this chunk (all chunk 4 —
+  dispatch non-goals; chunk 3 ships the flag seam + the codec's
+  fourth key + the gated card-write encoding only). D-V2's data-safety
+  rationale (the always-absent remote must never clobber local
+  `scheduled`) is recorded as the *requirement* chunk 4's
+  merge-verdict gate satisfies; this chunk's `LoopState.features` is
+  its intended input.
+- **D24 — `LoopState.features` consumers this chunk.** Exactly the
+  card-write conversion (D21). The evidence/anchor/ceremony paths are
+  flag-independent (addendum §1: no flag touches the ceremony's
+  conventions); the report carries no flag field (chunk 4 widens
+  `SyncReport` if its gate needs the flag traveling — no speculative
+  field now); `SyncClient`/probe/flag wiring adds no config surface
+  (no `TASKBOARD_*` override — addendum §5.3 records the issue-class
+  option if a deployment ever needs one).
 
 ## 3. The evidence decision table (chunk 3's construction rules)
 
@@ -563,6 +884,25 @@ upload) is chunk 4's consumer logic; chunk 3 delivers the typed
 reasons.
 
 ## 4. Test design (TDD — tests written first per tier)
+
+### 4.0 The capability seam (re-run additions; default suite + wiremock)
+
+- Domain `capabilities.rs` units/proptests per D17 (every known row,
+  newest-known-wins, older/unparseable ⇒ conservative).
+- Model units per D20 (the two echo shapes + string form + absence).
+- Client/wiremock: the probe decodes a captured-shaped capabilities
+  payload (both tiers' shapes: deck key present); no `deck` key ⇒
+  `DeckCapabilities { deck_version: None }`; transport error ⇒ typed
+  `Err`; the actor-start wiring derives `CONSERVATIVE` on both
+  failure forms (unit via the injected client stubs, or the wiremock
+  harness helper from D18).
+- Mapping/executor: `new_card_from`/`apply_card_shape` under both
+  flag values (valued `scheduled` survives native-true, becomes
+  `None`/`null` conservative; a `None` scheduled is unchanged either
+  way); the multipart create form carries the `data` part (D19's
+  tier-1 pin).
+- Existing exact-request-count assertions absorb the probe request
+  (D18's sweep).
 
 ### 4.1 Domain `appdata.rs` (default suite)
 
@@ -595,53 +935,97 @@ reasons.
   counts, cache behavior). No sleeps: the actor's existing
   hermetic harness patterns (nudge + report drain).
 
-### 4.3 Docker tier 2 (both variants)
+### 4.3 Docker tier 2 (both variants — the gate, per D4 as rewritten)
 
-- Shared bodies per D4; wrappers thin (`#[ignore]`, env-guarded,
+- The revised fixture set: `attachment_content_lifecycle` unchanged on
+  both tiers; `startdate_round_trip` (regular, capability-true pin);
+  `startdate_unsupported_on_deck1175` (gate, the measured pin); the
+  `capabilities_probe` pair. Wrappers thin (`#[ignore]`, env-guarded,
   `with_deadline`, run-id resources, board teardown).
-- Stage 2 records the tier-2 evidence summary (what ran, against
-  which Deck/NC versions, outcomes) in its report; captured payloads
-  never land (round-wide evidence clause) — PR-body excerpts only.
+- Stage 2 runs the gate green on **both tiers** between the seam
+  commits and the transport commits (§5's order) and records the
+  tier-2 evidence summary (what ran, against which Deck/NC versions,
+  outcomes) in its report; captured payloads never land (round-wide
+  evidence clause) — PR-body excerpts only. A new divergence is
+  STOP-and-report (D5).
 
-## 5. Commit ladder (each standalone, rebase-merge hygiene)
+## 5. Commit ladder (each standalone, rebase-merge hygiene; revised)
+
+Already landed on the branch (ride this chunk's PR; never redone):
 
 1. `test(sync): parameterize the docker tier for a pinned deck version`
-   — compose image interpolation + the setup script's `DECK_VERSION`
-   path (D1/D2). The default tier's behavior is provably unchanged.
+   — `84ab03b`: compose image interpolation + the setup script's
+   `DECK_VERSION` path (D1/D2, incl. the `nextcloud-releases` asset
+   URL the first run's fail-loud path fixed).
 2. `test(sync): deck 1.17.5 contract fixtures (attachments + startdate)`
-   — the deck1175 cfg reader, the no-validators assertion in the
-   shared body, the `startdate_round_trip` shared body, and the three
-   wrappers (regular startdate + two deck1175). **Stage 2 runs the
-   gate here, before any transport commit**; a divergence stops the
+   — `332c89b`: the deck1175 cfg reader, the no-validators assertion
+   in the shared body, the `startdate_round_trip` shared body, the
+   three wrappers. (Its deck1175 startdate wrapper renames in commit
+   5 below; never weakened.)
+
+The remaining ladder (stage 2 executes in this order; the gate run
+sits between 5 and 6):
+
+3. `feat(domain): the deck capability flag table` — `capabilities.rs`
+   (D17): `DeckFeatures`, `flags_for`, the known-row table, units +
+   proptest, `lib.rs` registration. Pure, no consumers yet —
+   standalone by construction.
+4. `feat(sync): capabilities probe and the capability-gated card
+   write` — the `Scope::Ocs` variant + `DeckCapabilities` DTOs + the
+   `capabilities()` method, `LoopState.features` + the `run` probe
+   (D18); `new_card_from`/`apply_card_shape` gating + the
+   `PushExecutor` parameter (D21); the wiremock harness probe helper
+   + the exact-count sweep (D18's audit). Every count change is
+   mechanically explained by the probe.
+5. `fix(sync): unconditional attachment-create data field and the
+   1.17.5 echo decode` — `multipart_form` simplification (D19), the
+   `ExtendedData.info` fallback (D20), model units, the create-side
+   contract pin; **the revised fixtures**: the
+   `…_startdate_unsupported` rename + new body, the
+   `capabilities_probe` pair, the regular-tier wrappers (D4/D23).
+6. **The gate run**: the full docker fixture suite green on **both**
+   tiers (default + deck1175), executed before any transport commit;
+   outcomes recorded in the stage-2 report. A divergence stops the
    chunk (D5).
-3. `feat(domain): app-data document codec with verbatim preservation`
-   — `appdata.rs` (types per D7, union + GC per D2-of-design §3,
-   constants per D6), `lib.rs` registration, assertion 3, the
-   proptest suite.
-4. `feat(domain): app-data evidence and the update_app_data op arm`
+7. `feat(domain): app-data document codec with verbatim preservation`
+   — `appdata.rs` (types per D7 incl. the `Scheduled` arm, union + GC
+   per design-doc §3, constants per D6), `lib.rs` registration,
+   the reworded assertion 3 (D12), the proptest suite.
+8. `feat(domain): app-data evidence and the update_app_data op arm`
    — `messages.rs` evidence enums + the `Completed.app_data` field;
    `outbox.rs` arm + `owning_board`/`op_targets_task`; the
    `plan_pushes` totality arm; storage codec tag; the mechanical
    test-site updates + the `apply_sync_report` `_` binding (D13/D14).
-5. `feat(sync): anchor discovery and document evidence ingestion`
+9. `feat(sync): anchor discovery and document evidence ingestion`
    — `anchor.rs` per D8, `pull_snapshot`'s `Pulled` struct +
    detail-attachment capture, the cycle wiring + evidence table,
    `LoopState.documents` (D10/D11), the hermetic wiremock suite.
-6. `docs(changelog): the sidecar transport and the 1.17.5 gate` —
-   the Unreleased line.
+10. `docs(changelog): the sidecar transport and the capability seam`
+   — the Unreleased line (cover the capability seam + sidecar
+   transport, per the dispatch Prompt 3.2 bookkeeping).
 
 ## 6. Scope fence & no-go checklist (checked by stage 3)
 
 - **No** fold, flush, health derivation, rebuild, restore-then-
   replace, enqueue sites, `pending_task_intents` arms, fence-comment
   amendments, CLI/UI, anchor-task hiding (chunks 4/5).
+- **No** scheduled emission/fold *gating code* (chunk 4): no
+  merge-verdict skip, no document emission gate, no union lane-GC,
+  no assertion 4 lane routing. Chunk 3 ships exactly the flag seam +
+  the codec's fourth key + the gated card-write encoding.
+- **No raw version comparisons in the connector** — `flags_for`'s
+  table is the only version switch (D17); no probe-gating of the
+  `data` field (unconditional, D19); no codec-level capability
+  branch (version-blind, D12/D22).
 - **No** persisted validator kind; **no** storage schema change (the
-  codec tag is a new value in an existing TEXT column; no migration).
+  codec tag is a new value in an existing TEXT column; no migration);
+  `LoopState.features` is in-memory like the document cache (D18).
 - `pipeline.rs`'s diff is exactly D14's match-arm acknowledgment.
 - The interim (MD-10) stands: nothing enqueues `UpdateAppData`.
 - `ci.yml` and `nextcloud-integration.yml` untouched (D3).
-- The deck1175 gate runs before commits 3–5; any divergence is
-  STOP-and-report, never adapted (D5).
+- The gate runs green on **both tiers** after ladder commit 5 and
+  before commit 7 (the transport commits); any divergence is
+  STOP-and-report, never adapted (D5/D23).
 - Captured tier-2 payloads stay out of the repo (evidence in the
   stage report / PR body).
 - SPDX headers on new files (MIT OR Apache-2.0 — domain + sync are
@@ -649,38 +1033,63 @@ reasons.
 - Gates per AGENTS §10, incl. `cargo deny` (no new dependencies are
   expected — serde/chrono/uuid only; a surprise dep is a finding).
 
-## 7. Risks
+## 7. Risks (revised: the first run's R2/R3 are resolved by the characterization; the re-run adds R8–R11)
 
 1. **Deck 1.17.5 × Nextcloud 35 compatibility (R1)** — mitigated by
-   the NC 33 image pin (D2); if the pinned install still fails, the
-   script fails loud and stage 2 reports the harness finding (not a
-   behavioral divergence, not silently worked around).
-2. **1.17.5 behavioral divergence on the six behaviors** — the gate's
-   reason to exist; STOP-and-report path (D5). The design's
-   expected-degraded stance for the live tier stands until the user
-   rules.
-3. **1.17.5 `startdate` write acceptance unknown** — exactly what
-   `startdate_round_trip` measures (D-F2 gated the write path on this
-   fixture); a rejection is a STOP-and-report finding, not an adaptation.
-4. **Release-tarball availability for `v1.17.5`** — the GitHub release
-   asset URL is the pin; a missing asset fails loud (D1).
-5. **Local second-instance hygiene** — the suffix/port/export hooks
+   the NC 33 image pin (D2); the first run proved the invocation
+   works end-to-end. A re-run harness failure is still reported, not
+   silently worked around.
+2. **Release-tarball availability for `v1.17.5`** — resolved in the
+   first run: the script pins the `nextcloud-releases` org's
+   versioned asset (`deck-v1.17.5.tar.gz`) and fails loud (the STOP
+   report §4). Kept as the recorded mechanism.
+3. **Local second-instance hygiene** — the suffix/port/export hooks
    make the variant coexist with the singleton; the documented
    invocation (D1) is the contract; `down` is suffix-scoped already.
-6. **D9's leniency rule is a planning interpretation** (of D-S2's
+4. **D9's leniency rule is a planning interpretation** (of D-S2's
    materialization rule) — recorded here and in the stage report for
    user visibility; it does not contradict any ACCEPTED ruling (the
    strict boundary is the envelope; unknown content is never dropped).
-7. **`flatten`-based verbatim mechanics** rely on `serde_json::Value`
+5. **`flatten`-based verbatim mechanics** rely on `serde_json::Value`
    preservation — value-verbatim, not byte-verbatim (D7); the
    property tests pin exactly that guarantee so the D5 relay claim
    stays honest.
+6. **R8 — the probe reshapes hermetic request counts** (re-run): one
+   extra GET per actor start; 404 on unstubbed wiremock servers ⇒
+   conservative flags (semantics preserved), but exact-count
+   assertions must be swept (D18's audit). Risk is mechanical and
+   reviewable line-by-line; a missed count is a finding, not a
+   flake.
+7. **R9 — 1.18.x unmeasured** (addendum §5.1): mapped conservative;
+   a probe against a 1.18.x instance would extend the table
+   (fixture-plus-row), out of scope here.
+8. **R10 — optimistic newest-known-wins for future versions**
+   (addendum §5.2): a future Deck release may diverge again; MD-5's
+   stop-and-report protocol is the catch, the flag table the repair.
+   The explicitly accepted trade-off of the 2026-10-22 ruling.
+9. **R11 — capabilities-route failure on exotic deployments**
+   (addendum §5.3): reverse proxies stripping OCS or hardened
+   instances degrade to the conservative lane (correct, native
+   `scheduled` rides the sidecar) until a successful probe
+   (actor respawn re-probes, D18). Accepted; the `TASKBOARD_*`
+   override env remains an issue-class option if it ever bites.
+   Additionally the one-off transient 405 on freshly-enabled
+   instances (characterization §3) is watchlist-noted: a first-cycle
+   probe hitting it would conservatively degrade until the next
+   actor respawn — harmless (no wrong writes either way), recorded.
 
-## 8. Estimated diff
+## 8. Estimated diff (the remaining ladder on top of the landed commits)
 
-≈ **1,700 added lines** across ~16 files: harness ~200 (script ~35,
-compose ~2, common ~120, it_docker ~50); domain `appdata.rs` ~650
-(types/codec ~330, tests + proptests ~280, assertion 3 ~40);
-messages/outbox/push/codec/mechanicals ~180; sync `anchor.rs` ~280 +
-actor/pull wiring ~150 + wiremock suite ~250; CHANGELOG ~4; test-site
-field additions ~40 spread.
+≈ **2,050 added lines** across ~19 files (revision 1 estimated 1,700;
+the re-run adds the seam). Harness/fixtures are already landed. The
+remaining ladder: domain `capabilities.rs` ~130 (types/table ~50,
+units + proptest ~80); probe method + `Scope::Ocs` + DTOs ~90;
+`LoopState.features` + `run` wiring ~25; mapping/executor gating ~40 +
+the `push_exec/tests.rs` count sweep ~25 mechanical lines; multipart
+simplification ±10 net; model `info` fallback ~70; fixture revision
+~100 (the `…_unsupported` body ~55, the `capabilities_probe` pair
+~45) + contract pins ~15; domain `appdata.rs` ~680 (types/codec ~350
+incl. the `Scheduled` arm, tests + proptests ~290, reworded assertion
+3 ~40); messages/outbox/push/codec/mechanicals ~180; sync `anchor.rs`
+~280 + actor/pull wiring ~150 + wiremock suite ~250; CHANGELOG ~5;
+test-site field additions ~40 spread.
