@@ -7,6 +7,7 @@
 
 import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
 import { Responsive, Breakpoint } from "../responsive.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 import { MenuPanelFacts } from "../menu-facts.slint";
 
@@ -144,9 +145,24 @@ export component ActionMenu inherits Rectangle {
                     height: 100%;
                     accessible-role: AccessibleRole.button;
                     accessible-label: entry.label;
+                    // The D7 description: the AT text and the row
+                    // tooltip's middle part are the same data.
+                    accessible-description: entry.description;
                     accessible-action-default => root.invoke-entry(entry-index);
                     row-hit := TouchArea {
                         enabled: entry.enabled;
+                        // The D8 row tooltip (round 1): hover arms the
+                        // generalized trigger with the entry's own
+                        // description and binding hint.
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                TooltipState.hover(entry.label, entry.description, entry.hint,
+                                    self.absolute-position.x, self.absolute-position.y,
+                                    self.width, self.height);
+                            } else {
+                                TooltipState.unhover();
+                            }
+                        }
                         clicked => root.invoke-entry(entry-index);
                     }
                 }
