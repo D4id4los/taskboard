@@ -2527,3 +2527,98 @@ fn a_double_click_across_a_refresh_opens_the_task_detail() {
         },
     );
 }
+
+/// R2 D11 (§4) — the drag survives refreshes: press, tick, refresh,
+/// tick, a concurrent engine change (a new task in the other stack) +
+/// refresh, tick, release. Every tick's live width stays on the model,
+/// the interleaved passes never disturb the drag (the tables guard
+/// still resolves column 0), requests stay empty until release, and
+/// the release emits exactly one full-snapshot request with the final
+/// width. The `TouchArea` survival itself is the repetition-probe's
+/// mechanism; the feel is the Tier-4 item.
+#[test]
+fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
+    let (fixture, state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state.clone());
+            let window = harness.handle.window();
+
+            window.invoke_board_stack_width_press(0, 300.0);
+            window.invoke_board_stack_width_drag(0, -20.0);
+            assert_eq!(harness.column_width_px(0), 280.0, "first tick");
+            harness.handle.refresh();
+            window.invoke_board_stack_width_drag(0, -30.0);
+            assert_eq!(
+                harness.column_width_px(0),
+                270.0,
+                "the refresh did not disturb the drag"
+            );
+
+            // A concurrent engine change: a new task joins stack b.
+            let mut changed = state.clone();
+            changed.tasks.insert(
+                taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7()),
+                taskboard_domain::Task {
+                    id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7()),
+                    remote: None,
+                    title: "mid-drag".into(),
+                    description: String::new(),
+                    duedate: None,
+                    scheduled: None,
+                    done: None,
+                    stack: fixture.stack_b,
+                    order: 1,
+                    labels: std::collections::BTreeSet::new(),
+                    effort: None,
+                    importance: None,
+                    urgency: None,
+                    archived: false,
+                    deleted: false,
+                    clocks: taskboard_domain::TaskClocks {
+                        title: taskboard_domain::BoardClocks::epoch(),
+                        description: taskboard_domain::BoardClocks::epoch(),
+                        duedate: taskboard_domain::BoardClocks::epoch(),
+                        scheduled: taskboard_domain::BoardClocks::epoch(),
+                        done: taskboard_domain::BoardClocks::epoch(),
+                        position: taskboard_domain::BoardClocks::epoch(),
+                        labels: taskboard_domain::BoardClocks::epoch(),
+                        effort: taskboard_domain::BoardClocks::epoch(),
+                        importance: taskboard_domain::BoardClocks::epoch(),
+                        urgency: taskboard_domain::BoardClocks::epoch(),
+                        archived: taskboard_domain::BoardClocks::epoch(),
+                        deleted: taskboard_domain::BoardClocks::epoch(),
+                    },
+                    remote_seen: None,
+                },
+            );
+            harness.engine.replace_state(changed, &harness.handle);
+            window.invoke_board_stack_width_drag(0, -40.0);
+            assert_eq!(
+                harness.column_width_px(0),
+                260.0,
+                "the engine change did not disturb the drag"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "drag ticks never persist (release only)"
+            );
+
+            window.invoke_board_stack_width_release(0);
+            let requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one request on release");
+            assert!(matches!(
+                &requests[0],
+                taskboard_ui_slint::requests::UiRequest::StackWidthsChanged {
+                    board: payload_board,
+                    widths,
+                } if *payload_board == board
+                    && widths.as_slice() == [(fixture.stack_a, 260u32)]
+            ));
+        },
+    );
+}
