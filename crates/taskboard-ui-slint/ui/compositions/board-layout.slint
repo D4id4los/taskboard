@@ -57,6 +57,8 @@ export component BoardLayout inherits Rectangle {
     in property <[string]> task-card-hint;
     // The stack.wider binding hint for the header tooltips (D18).
     in property <[string]> stack-header-hint;
+    // The stack.create binding hint for the add-column tooltip (r2 D6).
+    in property <[string]> stack-create-hint;
     // The drag seams (round-1 D17): press captures the pre-drag base
     // width, drag reports the absolute delta since press (idempotent
     // against dropped events), release persists. Button-agnostic — a
@@ -288,6 +290,20 @@ export component BoardLayout inherits Rectangle {
                 background: add-col-hit.has-hover ? Theme.surface-hover : transparent;
                 add-col-hit := TouchArea {
                     clicked => root.new-stack-activated();
+                    // The generalized tooltip trigger (r2 D6): the
+                    // standard enter-arms/leave-dismiss wiring, the
+                    // same property the a11y layer reads as the label.
+                    changed has-hover => {
+                        if (self.has-hover) {
+                            TooltipState.hover("New stack",
+                                "Adds a new stack to this board.",
+                                root.stack-create-hint,
+                                self.absolute-position.x, self.absolute-position.y,
+                                self.width, self.height);
+                        } else {
+                            TooltipState.unhover();
+                        }
+                    }
                 }
                 add-col-focus := FocusScope {
                     width: 100%;
@@ -364,6 +380,14 @@ export component BoardLayout inherits Rectangle {
                     clicked => root.switcher-activated(column-index);
                 }
             }
+            // The compact New-stack affordance (r2 D7): inline at the
+            // switcher row's end — no own row at the smallest
+            // viewport; reachable, click-equivalent.
+            IconButton {
+                icon: IconKind.plus;
+                label: "New stack";
+                clicked => root.new-stack-activated();
+            }
         }
 
         // The stack-create flow's field (usability D7), compact leg.
@@ -372,15 +396,6 @@ export component BoardLayout inherits Rectangle {
             label: "New stack name";
             accepted(text) => root.stack-create-committed(text);
             edited(text) => root.stack-create-edited(text);
-        }
-
-        // The compact New-stack affordance (round-1 D22): a trailing
-        // small button after the switcher segments — reachable,
-        // click-equivalent.
-        IconButton {
-            icon: IconKind.plus;
-            label: "New stack";
-            clicked => root.new-stack-activated();
         }
 
         // The selected stack's single column, tertiary decorations

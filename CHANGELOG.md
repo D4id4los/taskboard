@@ -275,6 +275,12 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- The add-stack affordance has its **tooltip** (r2 board-surface,
+  D6): hovering the trailing add-column shows "New stack" plus the
+  `stack.create` binding hint (empty hint renders without keys —
+  emacs gains its binding in a later chunk). In compact mode the
+  New-stack button now sits **inline at the end of the stack
+  switcher** instead of its own row (D7).
 - The add-stack affordance draws a **square plus glyph** (r2
   board-surface, D5) instead of a near-full-height bar; the affordance
   stays a full-height hit target.

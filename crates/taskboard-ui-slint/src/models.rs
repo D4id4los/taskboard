@@ -199,6 +199,14 @@ fn push_chrome(
             .first_binding_display(ActionId::StackWider, chain)
             .unwrap_or_default(),
     ));
+    // The add-column tooltip's hint (r2 D6): the stack.create binding
+    // — empty under emacs until chunk 3 binds it (the established
+    // empty-hint rendering applies).
+    window.set_stack_create_hint(string_model(
+        &keymap
+            .first_binding_display(ActionId::StackCreate, chain)
+            .unwrap_or_default(),
+    ));
 }
 
 /// The per-column `width-px` model value (round-1 D16): the user-set
