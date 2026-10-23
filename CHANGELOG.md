@@ -275,6 +275,9 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- The add-stack affordance draws a **square plus glyph** (r2
+  board-surface, D5) instead of a near-full-height bar; the affordance
+  stays a full-height hit target.
 - Clicking a stack header now **selects** it visibly (r2
   board-surface, D4): the selected stack's header paints raised with
   its focus ring in regular/expansive mode (previously only the

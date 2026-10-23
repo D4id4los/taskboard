@@ -16,6 +16,7 @@ import { EmptyState } from "../widgets/empty-state.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { Badge } from "../widgets/badge.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { PlusGlyph } from "../widgets/plus-glyph.slint";
 import { BoardBar, BoardBarModel } from "board-bar.slint";
 
 // One kanban column (rule B: a display model, not a bag of strings).
@@ -296,25 +297,13 @@ export component BoardLayout inherits Rectangle {
                     accessible-label: "New stack";
                     accessible-action-default => root.new-stack-activated();
                 }
-                icon-box := Rectangle {
-                    // A plus: the two bars crossing centred (the
-                    // icon-button plus glyph, composed inline).
-                    x: Theme.space-2;
-                    y: Theme.space-2;
-                    width: parent.width - 2 * Theme.space-2;
-                    height: parent.height - 2 * Theme.space-2;
-                    Rectangle {
-                        y: (parent.height - self.height) / 2;
-                        width: 100%;
-                        height: Theme.focus-ring-width;
-                        background: add-col-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
-                    }
-                    Rectangle {
-                        x: (parent.width - self.width) / 2;
-                        height: 100%;
-                        width: Theme.focus-ring-width;
-                        background: add-col-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
-                    }
+                // The square plus (r2 D5): the glyph is locked to
+                // space-6 on both axes and centred — the affordance
+                // stays a full-height hit target.
+                icon-box := PlusGlyph {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    glyph-color: add-col-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
                 }
             }
         }
