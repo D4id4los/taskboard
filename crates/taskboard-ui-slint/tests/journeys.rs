@@ -1591,6 +1591,88 @@ fn the_add_stack_glyph_is_square() {
         },
     );
 }
+/// R2 D6 (T-7) — the add-stack button carries the stack.create binding
+/// hint: non-empty under the standard preset, structurally empty under
+/// emacs (chunk 3 binds it there). Structural emptiness only — the
+/// hint's content is never asserted.
+#[test]
+fn the_add_stack_button_carries_the_stack_create_hint() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            assert!(
+                harness.handle.window().get_stack_create_hint().row_count() > 0,
+                "the standard preset binds stack.create"
+            );
+
+            let emacs = taskboard_ui_slint::keymap::Keymap::from_preset(
+                taskboard_ui_slint::keymap::Preset::Emacs,
+            );
+            let (_fixture, state) = fixture::golden_state();
+            let harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: emacs,
+                    keymap_preset: taskboard_ui_slint::keymap::Preset::Emacs,
+                    ..UiSettings::default()
+                },
+            );
+            assert_eq!(
+                harness.handle.window().get_stack_create_hint().row_count(),
+                0,
+                "emacs leaves stack.create unbound (the D15 gap)"
+            );
+        },
+    );
+}
+
+/// R2 D7 (T-8) — compact mounts exactly one add-stack entry, inline:
+/// at the smallest viewport the regular full-height affordance is
+/// absent and a single "New stack" accessible entry exists (the
+/// switcher's trailing button); at a regular width the affordance is
+/// present.
+#[test]
+fn compact_mounts_exactly_one_add_stack_entry() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(600, 800);
+            assert!(harness.handle.window().get_compact_active());
+            assert!(
+                harness
+                    .driver
+                    .find_all_by_id("BoardLayout::add-col-hit")
+                    .is_empty(),
+                "the regular add-column unmounts in compact"
+            );
+            assert_eq!(
+                harness.driver.find_all_by_label("New stack").len(),
+                1,
+                "exactly one compact add-stack entry"
+            );
+
+            harness.driver.set_window_size(1000, 800);
+            assert!(!harness.handle.window().get_compact_active());
+            assert!(
+                !harness
+                    .driver
+                    .find_all_by_id("BoardLayout::add-col-hit")
+                    .is_empty(),
+                "the regular add-column is mounted"
+            );
+        },
+    );
+}
+
 /// DDF-5 — the anchor card is hidden from the board's list surfaces:
 /// board card counts (and, on the same single pass, the stack-detail
 /// cards) exclude the exact-title anchor; a byte-level near-miss stays
