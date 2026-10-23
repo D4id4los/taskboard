@@ -569,11 +569,25 @@ impl ViewState {
     // -- stack column widths (round-1 D16) ---------------------------------
 
     /// Seeds the device-local widths at mount (the settings' map, uuid
-    /// keys already converted). Unknown boards/stacks are kept — a
-    /// re-connected board finds its widths again; liveness pruning
-    /// happens once, at write time, app-side.
+    /// keys already converted). Sub-floor persisted widths heal here
+    /// (r2 D2, the single load point — never at reconcile, never at
+    /// push, and never written back to config: healing reaches the
+    /// stored overlay only when the user next drags/steps). Unknown
+    /// boards/stacks are kept — a re-connected board finds its widths
+    /// again; liveness pruning happens once, at write time, app-side.
     pub fn seed_stack_widths(&mut self, widths: BTreeMap<BoardId, BTreeMap<StackId, u32>>) {
-        self.stack_widths = widths;
+        self.stack_widths = widths
+            .into_iter()
+            .map(|(board, stacks)| {
+                (
+                    board,
+                    stacks
+                        .into_iter()
+                        .map(|(stack, px)| (stack, crate::widths::reclamp_width(px)))
+                        .collect::<BTreeMap<StackId, u32>>(),
+                )
+            })
+            .collect();
     }
 
     /// The stored logical-px width of one column, if the user set one.
@@ -1823,16 +1837,18 @@ mod tests {
         let mut vs = ViewState::new();
         let mut widths: BTreeMap<BoardId, BTreeMap<StackId, u32>> = BTreeMap::new();
         widths.insert(b2, BTreeMap::from([(sc, 300)]));
-        widths.insert(b1, BTreeMap::from([(sb, 120), (sa, 240)]));
+        // E-4 (r2 D2): the seed heals at load, so the round-trip seeds
+        // floor-respecting values; the sub-floor heal is T-3's subject.
+        widths.insert(b1, BTreeMap::from([(sb, 180), (sa, 240)]));
         vs.seed_stack_widths(widths);
         vs.reconcile(&state);
 
         assert_eq!(vs.stack_width(b1, sa), Some(240));
-        assert_eq!(vs.stack_width(b1, sb), Some(120));
+        assert_eq!(vs.stack_width(b1, sb), Some(180));
         assert_eq!(vs.stack_width(b2, sc), Some(300));
         assert_eq!(
             vs.stack_widths_of(b1),
-            vec![(sa, 240), (sb, 120)],
+            vec![(sa, 240), (sb, 180)],
             "BTreeMap order, full per-board snapshot"
         );
         assert_eq!(vs.stack_widths_of(b2), vec![(sc, 300)]);
@@ -1841,6 +1857,35 @@ mod tests {
             Vec::new()
         );
         let _ = b1;
+    }
+
+    /// T-3 (r2 D2) — the load-time heal: a sub-floor persisted entry
+    /// seeds as the floor; an at-or-above-floor entry passes through
+    /// untouched. The reconcile-leaves-alone invariant is the round
+    /// trip's (the test above).
+    #[test]
+    fn seed_stack_widths_heals_below_floor_entries() {
+        use std::collections::BTreeMap;
+        let (state, b1, _b2, [sa, sb, _sc], _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        let mut widths: BTreeMap<BoardId, BTreeMap<StackId, u32>> = BTreeMap::new();
+        widths.insert(
+            b1,
+            BTreeMap::from([(sa, 96), (sb, crate::widths::STACK_WIDTH_MIN_PX + 80)]),
+        );
+        vs.seed_stack_widths(widths);
+        vs.reconcile(&state);
+
+        assert_eq!(
+            vs.stack_width(b1, sa),
+            Some(crate::widths::STACK_WIDTH_MIN_PX),
+            "the legacy 96-px entry healed at load"
+        );
+        assert_eq!(
+            vs.stack_width(b1, sb),
+            Some(crate::widths::STACK_WIDTH_MIN_PX + 80),
+            "an above-floor entry is untouched"
+        );
     }
 }
 

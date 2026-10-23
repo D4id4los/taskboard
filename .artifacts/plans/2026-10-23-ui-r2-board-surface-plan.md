@@ -505,6 +505,19 @@ keymap snapshots (no keymap change — no snapshot regen).
   `.max(96)` → `.max(STACK_WIDTH_MIN_PX)` (imported constant). Reason:
   D2's normative floor raise; the journey then pins the relation
   rather than a number.
+- **E-4** (discovered at stage 2, recorded per the §6 stop rule) —
+  view_state.rs `seed_and_snapshot_round_trip_and_reconcile_leaves_widths_alone`
+  seeds `(sb, 120)`: sub-floor, so the D2 heal changes it to 160 and
+  the assertion breaks. The test's contract is the round trip +
+  reconcile-leaves-alone (the T-4 pin), not sub-floor values — the
+  heal is T-3's subject — so the seed becomes a floor-respecting 180
+  and the assertions follow. Not a weakening; the semantics changed by
+  design (D2).
+- **E-5** (discovered at stage 2, same rule) — widths.rs
+  `clamp_width_saturates_at_both_bounds` passes a mid-range literal
+  `150` that the raised floor turns into a clamped case; the
+  in-bounds pass-through arm moves to `200` (comment in place). Not a
+  weakening — the same behavior, tested with a floor-valid value.
 
 No other existing test changes. Any additional edit stage-2 discovers
 a need for is a STOP-and-record event, not an in-flight tweak.

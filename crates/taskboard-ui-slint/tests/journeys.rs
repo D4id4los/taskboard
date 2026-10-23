@@ -1285,7 +1285,9 @@ fn keyboard_resize_steps_clamps_and_requests_persistence() {
             // reporting the clamped snapshot.
             for step in 1..=8u32 {
                 harness.press(ActionId::StackNarrower);
-                let expected = 280u32.saturating_sub(32 * step).max(96);
+                let expected = 280u32
+                    .saturating_sub(32 * step)
+                    .max(taskboard_ui_slint::widths::STACK_WIDTH_MIN_PX);
                 // px values, far below f32's mantissa reach.
                 #[allow(clippy::cast_precision_loss)]
                 let expected_px = expected as f32;
@@ -1420,7 +1422,8 @@ fn stored_widths_fill_the_window_as_floors() {
                 .find_all_by_id("BoardLayout::add-col-hit")
                 .pop()
                 .expect("the add-column affordance is mounted");
-            let floor = 96.0_f32; // STACK_WIDTH_MIN_PX at scale 1
+            #[allow(clippy::cast_precision_loss)]
+            let floor = taskboard_ui_slint::widths::STACK_WIDTH_MIN_PX as f32; // at scale 1
             let mut total = add_col.size().width;
             for title in ["a", "b"] {
                 let column = harness
