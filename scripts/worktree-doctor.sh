@@ -7,9 +7,10 @@
 # time disk headroom is in doubt.
 #
 # What it does:
-#   1. removes sibling worktrees whose branch is merged into origin/main
-#      (or whose PR is MERGED/CLOSED) and that have no uncommitted
-#      changes — in-flight worktrees are never touched;
+#   1. removes sibling worktrees whose checked-out HEAD is fully merged
+#      into origin/main and that have no uncommitted changes — a worktree
+#      whose branch carries any commit absent from origin/main (or that
+#      sits on a primary branch, or is locked) is never touched;
 #   2. deletes target/llvm-cov-target from surviving worktrees (the
 #      coverage tree is spent once lcov.info exists; separate from the
 #      incremental cache, so nothing else is invalidated) — skipped when
@@ -30,18 +31,39 @@ git -C "$ROOT" fetch origin --prune --quiet
 for wt in "$ROOT"-WT-*; do
   [ -d "$wt" ] || continue
   branch="$(git -C "$wt" branch --show-current)"
+  if [ -z "$branch" ] || [ "$branch" = main ]; then
+    echo "KEEP   (no branch or primary branch): $wt"
+    continue
+  fi
   if [ -n "$(git -C "$wt" status --porcelain)" ]; then
     echo "KEEP   (uncommitted changes): $wt"
     continue
   fi
-  if git -C "$ROOT" merge-base --is-ancestor "$branch" origin/main 2>/dev/null \
-     || [ -n "$(gh pr list --state all --head "$branch" --json state \
-                --jq 'map(select(.state == "MERGED" or .state == "CLOSED")) | length | select(. > 0)')" ]; then
-    git -C "$ROOT" worktree remove --force "$wt" \
-      || { git -C "$ROOT" worktree prune; rm -rf "$wt"; }
-    echo "REMOVE (branch/PR merged):    $wt"
-  else
+  # Safe predicate: the worktree's HEAD itself (not merely the branch
+  # name's PR history) must be fully merged into origin/main, and must
+  # not BE the origin/main tip — a worktree at the tip is either fresh
+  # (just created, nothing committed yet) or a resume on a landed
+  # branch, both of which look identical to "done" to any sweep and
+  # are therefore kept (2026-10-23 active-worktree deletions, #415).
+  head_commit="$(git -C "$wt" rev-parse HEAD)"
+  if [ "$(git -C "$ROOT" rev-parse origin/main)" = "$head_commit" ]; then
+    echo "KEEP   (HEAD at origin/main tip — fresh or resume): $wt"
+    continue
+  fi
+  if ! git -C "$ROOT" merge-base --is-ancestor "$head_commit" origin/main; then
     echo "KEEP   (in flight):           $wt"
+    continue
+  fi
+  # Re-check liveness immediately before removal: status was sampled
+  # above, so anything written since would be destroyed by --force.
+  if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+    echo "KEEP   (changed during sweep): $wt"
+    continue
+  fi
+  if git -C "$ROOT" worktree remove "$wt" 2>/dev/null; then
+    echo "REMOVE (HEAD merged):         $wt"
+  else
+    echo "KEEP   (remove refused — likely locked or in use): $wt"
   fi
 done
 

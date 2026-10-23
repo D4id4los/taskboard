@@ -208,6 +208,30 @@ implementation specs into the root directory or source folders.
   (everything precious is pushed; `--force` only discards regenerable
   build output); a later round that resumes the chunk recreates it
   (`git worktree add ../<project-root>-WT-<branch-name> <branch>`).
+  **Active-worktree safety** (2026-10-23, issue #415 — concurrent
+  agents had live worktrees deleted):
+  - Never reuse a branch name (or worktree path) whose PR has already
+    landed: after a rebase-merge the local branch is fully contained in
+    `origin/main` and the doctor will treat any worktree on it as
+    disposable. Resume work on `<branch>-v2` instead, or re-branch off
+    the fetched `origin/main`.
+  - Create worktrees with `git worktree add -b <branch>
+    ../<project-root>-WT-<branch-name>` (fails loudly if the branch
+    already exists); never `git worktree add <path> main` — a worktree
+    sitting on a primary branch looks exactly like an abandoned one to
+    the doctor.
+  - Never remove a worktree via a relative path: anchor teardown to the
+    main checkout (`git -C /home/viktoria/src/taskboard worktree remove
+    ../<project-root>-WT-<branch-name>`) and confirm via `git worktree
+    list` that the removed path was the intended one — with chunks
+    running in parallel, a wrong-cwd relative path names the
+    neighbour's worktree.
+  - The doctor itself refuses to remove a worktree whose `HEAD` carries
+    any commit absent from `origin/main`, whose tree is dirty (checked
+    twice: once in the sweep, once immediately before removal), or that
+    sits on `main` — `scripts/worktree-doctor.sh` is the only sanctioned
+    bulk-removal tool; ad-hoc `rm -rf` of a `*-WT-*` directory is never
+    acceptable.
 - `gh` is available for CI triage (`gh run list/watch/view --log-failed`,
   `gh pr checks`).
 - **PR granularity**: default to **one branch/PR per plan** when the plan is
