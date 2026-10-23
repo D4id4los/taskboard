@@ -12,6 +12,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local, Utc};
 
+use crate::config::{AppMode, SinkChoice};
+
 use taskboard_domain::Notification;
 
 /// Channel capacity of the notifier inbox (engine → sink consumer).
@@ -171,6 +173,27 @@ fn toast_payload(notification: &Notification, now: DateTime<Utc>) -> ToastPayloa
     }
 }
 
+/// The resolved sink kind — the typed result of the D-R13 matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SinkKind {
+    Desktop,
+    Log,
+}
+
+/// The D-R13 resolution: an explicit choice wins; `auto` consults the
+/// mode — desktop toasts, daemon/kiosk keep the log trail. An explicit
+/// `desktop` under daemon/kiosk is honored, not refused: the operator
+/// who asks for toasts gets a sink whose failures are logged
+/// [`NotifyError`]s (degradation governs delivery, not resolution).
+pub(crate) fn resolve_sink(choice: SinkChoice, mode: AppMode) -> SinkKind {
+    match (choice, mode) {
+        (SinkChoice::Auto, AppMode::Desktop) | (SinkChoice::Desktop, _) => SinkKind::Desktop,
+        (SinkChoice::Auto, AppMode::Daemon | AppMode::Kiosk) | (SinkChoice::Log, _) => {
+            SinkKind::Log
+        }
+    }
+}
+
 /// Spawns the notifier consumer: drains the engine's notification
 /// channel into `sink` until the channel closes (the engine task owns
 /// the only sender clone; its exit closes the channel). A failed
@@ -255,5 +278,29 @@ mod tests {
             body_kind(FIRED_AT, FIRED_AT - chrono::Duration::minutes(1)),
             BodyKind::AtInstant
         ));
+    }
+
+    #[test]
+    fn resolve_sink_matrix() {
+        use AppMode::{Daemon, Desktop, Kiosk};
+        // auto resolves by mode; an explicit choice wins over any mode.
+        let cells = [
+            (SinkChoice::Auto, Daemon, SinkKind::Log),
+            (SinkChoice::Auto, Desktop, SinkKind::Desktop),
+            (SinkChoice::Auto, Kiosk, SinkKind::Log),
+            (SinkChoice::Log, Daemon, SinkKind::Log),
+            (SinkChoice::Log, Desktop, SinkKind::Log),
+            (SinkChoice::Log, Kiosk, SinkKind::Log),
+            (SinkChoice::Desktop, Daemon, SinkKind::Desktop),
+            (SinkChoice::Desktop, Desktop, SinkKind::Desktop),
+            (SinkChoice::Desktop, Kiosk, SinkKind::Desktop),
+        ];
+        for (choice, mode, expected) in cells {
+            assert_eq!(
+                resolve_sink(choice, mode),
+                expected,
+                "{choice:?} x {mode:?}"
+            );
+        }
     }
 }

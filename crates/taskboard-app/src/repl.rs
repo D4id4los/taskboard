@@ -807,13 +807,8 @@ pub async fn run_session_with_parts(
     // connector's kind word (D5-9).
     let backend = config.resolved_default_backend();
     let connectors_configured = !crate::connectors::configured_connectors(&config).is_empty();
-    let app = match crate::bootstrap::bootstrap(
-        config,
-        store.clone(),
-        Arc::new(crate::notifications::LogSink),
-    )
-    .await
-    {
+    let sink = crate::bootstrap::resolve_notifier_sink(&config);
+    let app = match crate::bootstrap::bootstrap(config, store.clone(), sink).await {
         Ok(app) => app,
         Err(err) => return crate::commands::report_to(io, &CommandError::from(err)),
     };

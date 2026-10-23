@@ -47,8 +47,8 @@ pub(crate) async fn with_core<T>(
 ) -> Result<T, CommandError> {
     let timeout = Duration::from_secs(config.app.shutdown_timeout_secs.max(1));
     let standalone = crate::connectors::configured_connectors(&config).is_empty();
-    let app =
-        crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
+    let sink = crate::bootstrap::resolve_notifier_sink(&config);
+    let app = crate::bootstrap::bootstrap(config, store, sink).await?;
     // A connector-less core can never run a cycle: skip the boot-pull
     // wait entirely (it would only burn the shutdown budget).
     if !standalone {

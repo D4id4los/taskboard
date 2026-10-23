@@ -622,8 +622,8 @@ pub async fn publish(
 ) -> Result<PublishReceipt, CommandError> {
     let (client, spec) = publish_prelude(&config, &store, connector)?;
 
-    let app =
-        crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
+    let sink = crate::bootstrap::resolve_notifier_sink(&config);
+    let app = crate::bootstrap::bootstrap(config, store, sink).await?;
     let result = publish_on(&app, &client, board, timeout, &spec.name).await;
     let _ = app.shutdown().await;
     result
@@ -778,8 +778,8 @@ pub async fn select(
 ) -> Result<SelectReceipt, CommandError> {
     let (entry, spec) = select_prelude(&config, &store, board, connector).await?;
 
-    let app =
-        crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
+    let sink = crate::bootstrap::resolve_notifier_sink(&config);
+    let app = crate::bootstrap::bootstrap(config, store, sink).await?;
     let result = select_on(
         &app,
         entry,

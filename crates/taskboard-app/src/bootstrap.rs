@@ -772,6 +772,19 @@ pub async fn bootstrap(
     bootstrap_with_modules(config, credentials, notifier_sink, modules).await
 }
 
+/// The boot-time notifier sink: `[reminders] sink` resolved against
+/// `[app] mode` (D-R13). One `Arc` per process — the consumer holds it
+/// for its lifetime; no live swap exists (D-R13). The resolution
+/// matrix behavior is owned by `notifications::resolve_sink`'s tests;
+/// this glue adds the `Arc` and nothing else.
+#[must_use]
+pub fn resolve_notifier_sink(config: &AppConfig) -> Arc<dyn NotificationSink> {
+    match crate::notifications::resolve_sink(config.reminders.sink, config.app.mode) {
+        crate::notifications::SinkKind::Desktop => Arc::new(crate::notifications::DesktopSink),
+        crate::notifications::SinkKind::Log => Arc::new(crate::notifications::LogSink),
+    }
+}
+
 /// The registry-loop seam: production `bootstrap` synthesizes the
 /// Nextcloud module and delegates; app tests pass a `FakeModule` to
 /// control the connector without a server.

@@ -325,13 +325,8 @@ async fn boot_and_serve(
         config.credential_base_dir(),
     );
 
-    let app = match bootstrap(
-        config,
-        store.clone(),
-        Arc::new(taskboard_app::notifications::LogSink),
-    )
-    .await
-    {
+    let sink = taskboard_app::bootstrap::resolve_notifier_sink(&config);
+    let app = match bootstrap(config, store.clone(), sink).await {
         Ok(app) => Arc::new(app),
         // Boot failures are reported typed (the `--json` envelope on
         // stderr), exactly like every other command — `instance-locked`
