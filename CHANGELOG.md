@@ -275,6 +275,9 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- Stack headers are one fixed-height control row (r2 board-surface,
+  D3): a column's title no longer grows tall on an empty stack — the
+  leftover column height flows to the task area instead.
 - The stack-width floor rises 96 → **160 logical px** (r2
   board-surface, D2) and persisted widths below the floor heal once at
   load (existing configs with narrower columns re-clamp on first

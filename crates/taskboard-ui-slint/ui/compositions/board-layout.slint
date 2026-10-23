@@ -149,6 +149,13 @@ export component BoardLayout inherits Rectangle {
                 header := Rectangle {
                     accessible-role: AccessibleRole.button;
                     accessible-label: column.title;
+                    // One locked control row (r2 D3, the D20b board-bar
+                    // constant inline — no new theme token; the token
+                    // ladder is chunk 7's): the height no longer depends
+                    // on column content, so a 0-task stack's title
+                    // renders at every other stack's height.
+                    min-height: Theme.space-6 + 2 * Theme.space-1;
+                    max-height: Theme.space-6 + 2 * Theme.space-1;
                     // A shrunken column's content stays inside its bounds.
                     clip: true;
                     header-hit := TouchArea {
@@ -224,6 +231,10 @@ export component BoardLayout inherits Rectangle {
 
                 VerticalLayout {
                     alignment: start;
+                    // The task area absorbs the column's surplus height
+                    // (r2 D3): with the header locked, every leftover
+                    // pixel flows here (F-A6's equal-split fix).
+                    vertical-stretch: 1;
                     spacing: Theme.space-1;
                     for task[task-index] in column.tasks: TaskCard {
                         model: task;

@@ -115,6 +115,14 @@ impl Element {
         self.handle.absolute_position()
     }
 
+    /// Whether the element is an accessible button — the
+    /// disambiguator when a label (a column title) addresses several
+    /// items (the column list *and* its header button).
+    #[must_use]
+    pub fn is_accessible_button(&self) -> bool {
+        self.handle.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button)
+    }
+
     /// Invokes the element's accessible default action (the click
     /// equivalence seam, §7.1).
     pub fn invoke_default_action(&self) {
