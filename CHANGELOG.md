@@ -275,6 +275,13 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- Board columns fill the window (r2 board-surface, D1): a stored
+  stack width is now a **floor**, not a pin — every column keeps an
+  equal stretch, spare window width distributes in equal shares, and
+  a board whose columns were all narrowed still consumes the full
+  window at any size. The board surface itself now actually receives
+  the window width (previously the columns row collapsed to
+  min-content; a pre-existing layout gap the chunk fixes en route).
 - **Reminder rules are N-rule additive** (#204, chunk 6) — a semantic
   change to a live verb: `tasks remind <task> --before <dur>` (and the
   REPL/UI equivalents) now **adds** one reminder rule instead of

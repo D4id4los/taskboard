@@ -139,6 +139,38 @@ anywhere (the sentinel-arm solver perturbation recorded at
 board-layout.slint:120-124 was about an explicit `max-width` — D1
 adds none).
 
+**Stage-2 recorded deviations D1-b/D1-c (empirical correction of this
+section's premise)**: the T-4 fill journey failed against the plan's
+markup alone, and the *committed goldens* prove the premise wrong:
+today's auto board does **not** fill the window — the columns row sits
+at min-content (91/39 px at a 1000 px window). Two compiler facts,
+both verified against the pinned 1.18.1 sources and the running
+window:
+
+- **D1-b — the conditional leg receives no default fill geometry.**
+  The compiler's default-geometry pass early-returns on *repeated*
+  elements (`i-slint-compiler-1.18.1/passes/default_geometry.rs`:
+  `if elem.borrow().repeated.is_some() { return None; }`), and Slint
+  compiles `if` elements as single-iteration repetitions — the
+  board-leg `if (...) : VerticalLayout` was never sized to its parent.
+  Fix: `width: 100%;` on the regular leg (compact leg untouched).
+- **D1-c — content caps the column's growth.** A `Text` child reports
+  `max == preferred` in its layout info, and a max-capped item
+  receives no growth ("space a max-capped item cannot take stays
+  free" — the solver's own comment). Each column's layout max was its
+  text's preferred width. Fix: `max-width: root.width;` on the
+  column (percent is rejected on `max-width` by the compiler; a
+  parent-width bound never over-constrains — a column can never want
+  more than the row).
+
+With both, the observed rule of §3.1 holds exactly on the real window:
+equal stretch → `max(content_pref, floor)` + equal shares of the
+surplus (measured 746.5/689.5 from prefs 96/39.5 at a 1500 px window —
+both +650). T-4 asserts fill + floors, not share equality (R-c). The
+D1 goldens therefore drift *more* than §4 predicted (the columns
+spread out), all attributable to D1-b/D1-c; the regen commit's diff
+list records it.
+
 ### 3.2 D2 — floor raise + load-time re-clamp
 
 - `STACK_WIDTH_MIN_PX`: 96 → **160** logical px (widths.rs:13). At
