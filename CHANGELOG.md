@@ -275,6 +275,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- Every stack column ends in an **Add Task** button (r2
+  board-surface, D8): a ghost row in the column's visual language —
+  empty stacks show it instead of blank space. Clicking it selects
+  that stack and opens the same create flow as the keyboard action;
+  typing + Return creates the task there.
 - The add-stack affordance has its **tooltip** (r2 board-surface,
   D6): hovering the trailing add-column shows "New stack" plus the
   `stack.create` binding hint (empty hint renders without keys —

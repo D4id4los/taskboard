@@ -46,6 +46,8 @@ export component BoardView inherits FocusScope {
     callback switcher-activated(int);
     callback create-committed(int, string);
     callback create-edited(int, string);
+    // The per-column Add Task ghost (r2 D8).
+    callback add-task-activated(int);
     // The stack-create flow (usability D7): the on-board button and
     // the field's mirror/commit seams.
     callback new-stack-activated();
@@ -90,6 +92,7 @@ export component BoardView inherits FocusScope {
                 switcher-activated(c) => root.switcher-activated(c);
                 create-committed(c, t) => root.create-committed(c, t);
                 create-edited(c, t) => root.create-edited(c, t);
+                add-task-activated(c) => root.add-task-activated(c);
                 new-stack-activated() => root.new-stack-activated();
                 stack-create-committed(t) => root.stack-create-committed(t);
                 stack-create-edited(t) => root.stack-create-edited(t);

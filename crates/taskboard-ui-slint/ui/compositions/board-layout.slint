@@ -47,6 +47,9 @@ export component BoardLayout inherits Rectangle {
     callback switcher-activated(int);
     callback create-committed(int, string);
     callback create-edited(int, string);
+    // The per-column Add Task ghost (r2 D8): select the column's
+    // stack, then route task.create — the keyboard's exact action.
+    callback add-task-activated(int);
     // The board bar (design §3.8): the live-board strip above the
     // kanban, regular/expansive only — compact hides the strip
     // (keyboard switching still works).
@@ -277,6 +280,32 @@ export component BoardLayout inherits Rectangle {
                         accepted(text) => root.create-committed(column-index, text);
                         edited(text) => root.create-edited(column-index, text);
                     }
+
+                    // The per-column Add Task ghost (r2 D8): the
+                    // add-column's visual language at one control row;
+                    // empty stacks show it instead of blank space.
+                    add-task := Rectangle {
+                        min-height: Theme.space-6 + 2 * Theme.space-1;
+                        max-height: Theme.space-6 + 2 * Theme.space-1;
+                        border-radius: Theme.radius-small;
+                        background: add-task-hit.has-hover ? Theme.surface-hover : transparent;
+                        add-task-hit := TouchArea {
+                            clicked => root.add-task-activated(column-index);
+                        }
+                        add-task-focus := FocusScope {
+                            width: 100%;
+                            height: 100%;
+                            focus-on-tab-navigation: true;
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: "Add task";
+                            accessible-action-default => root.add-task-activated(column-index);
+                        }
+                        PlusGlyph {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            glyph-color: add-task-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        }
+                    }
                 }
             }
 
@@ -422,6 +451,31 @@ export component BoardLayout inherits Rectangle {
                     label: "New task title";
                     accepted(text) => root.create-committed(root.effective-selected(), text);
                     edited(text) => root.create-edited(root.effective-selected(), text);
+                }
+
+                // The compact leg's ghost (r2 D8): addresses the
+                // effective-selected stack.
+                add-task-compact := Rectangle {
+                    min-height: Theme.space-6 + 2 * Theme.space-1;
+                    max-height: Theme.space-6 + 2 * Theme.space-1;
+                    border-radius: Theme.radius-small;
+                    background: add-task-hit-compact.has-hover ? Theme.surface-hover : transparent;
+                    add-task-hit-compact := TouchArea {
+                        clicked => root.add-task-activated(root.effective-selected());
+                    }
+                    add-task-focus-compact := FocusScope {
+                        width: 100%;
+                        height: 100%;
+                        focus-on-tab-navigation: true;
+                        accessible-role: AccessibleRole.button;
+                        accessible-label: "Add task";
+                        accessible-action-default => root.add-task-activated(root.effective-selected());
+                    }
+                    PlusGlyph {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        glyph-color: add-task-hit-compact.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    }
                 }
             }
         }

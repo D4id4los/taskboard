@@ -180,6 +180,7 @@ export component AppWindow inherits Window {
                 switcher-activated(c) => root.board-switcher-activated(c);
                 create-committed(c, t) => root.board-create-committed(c, t);
                 create-edited(c, t) => root.board-create-edited(c, t);
+                add-task-activated(c) => root.board-add-task-activated(c);
                 new-stack-activated() => root.board-new-stack-clicked();
                 stack-create-committed(t) => root.board-stack-create-committed(t);
                 stack-create-edited(t) => root.board-stack-create-edited(t);
@@ -366,6 +367,9 @@ export component AppWindow inherits Window {
     pure callback board-switcher-activated(int);
     pure callback board-create-committed(int, string);
     pure callback board-create-edited(int, string);
+    // The per-column Add Task ghost (r2 D8): select + route
+    // task.create — the keyboard's exact dispatch.
+    pure callback board-add-task-activated(int);
     // The stack-create flow (usability D7): the on-board button
     // routes the same registry action as the `S` binding (§7.1).
     pure callback board-new-stack-clicked();

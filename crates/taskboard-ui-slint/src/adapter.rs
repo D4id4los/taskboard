@@ -1616,6 +1616,20 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         select_column(&mut a, &window, column);
     });
 
+    // The Add Task ghost (r2 D8): select the addressed stack, then
+    // route task.create — the keyboard's exact action, so click ≡ key
+    // by construction (one action, one target-resolution rule).
+    let ghost = Rc::clone(adapter);
+    let ghost_weak = window.as_weak();
+    window.on_board_add_task_activated(move |column| {
+        let Some(window) = ghost_weak.upgrade() else {
+            return;
+        };
+        let mut a = ghost.borrow_mut();
+        select_column(&mut a, &window, column);
+        a.route(&window, ActionId::TaskCreate);
+    });
+
     // The create-row field: keystrokes mirror into the Rust buffer
     // (D9 rule 1); Return commits.
     let mirror = Rc::clone(adapter);
