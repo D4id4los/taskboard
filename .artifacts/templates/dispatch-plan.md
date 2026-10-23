@@ -62,7 +62,14 @@ which merges or on a human gate, and the default dispatch order.>
 concurrently as separate sessions; never two agents share a
 worktree. Every chunk works in `../taskboard-WT-<branch>` next to
 the project root (AGENTS §8), branched off the then-current `main`,
-no PR ever stacked. Disk hygiene (AGENTS §8 worktree lifecycle): any
+no PR ever stacked. **Branch names are never reused after their PR
+lands** (AGENTS §8, issue #415): a resume/second round of a chunk
+works on `<branch>-v2` (or re-branches off the fetched `origin/main`),
+never on the landed branch — the doctor treats any worktree whose
+`HEAD` is fully contained in `origin/main` as disposable. Create
+worktrees with `git worktree add -b <branch>
+../taskboard-WT-<branch>` (never `git worktree add <path> main`).
+Disk hygiene (AGENTS §8 worktree lifecycle): any
 agent creating or recreating a worktree runs
 `scripts/worktree-doctor.sh` from the main checkout first — nonzero
 exit (free disk below the floor) stops the chunk; stage 3 removes
@@ -80,7 +87,9 @@ the worktree as its final handoff task.
    reason.
 2. **Stage 2 — <implementation | execution | research> agent**:
    continues in that worktree (recreates it on the branch if
-   missing), executes per the approved plan — <implementation: TDD,
+   missing — if the branch or the worktree path's PR already landed,
+   create `<branch>-v2` instead per AGENTS §8; never
+   `git worktree add <path> main`), executes per the approved plan — <implementation: TDD,
    every commit standalone (rebase-merge hygiene), full AGENTS §10
    gate suite green | research: the experiments and the deliverable
    report>. Does **not** push or open a PR. Reports deviations.
@@ -102,10 +111,15 @@ the worktree as its final handoff task.
    onto `origin/main`, push `--force-with-lease`, let the checks
    re-run, repeat; any other state ⇒ diagnose before handing off.
    **Then teardown**: remove the now-disposable worktree — from the
-   project root, `git worktree remove --force ../taskboard-WT-<branch>`
-   (everything precious is pushed; a later round that resumes the chunk
-   recreates it on the branch). The handoff contract is "PR open +
-   checks green + merge state `CLEAN` + worktree removed" so the
+   project root, `git -C /home/viktoria/src/taskboard worktree remove
+   --force ../taskboard-WT-<branch>` (absolute anchor per AGENTS §8 —
+   never a bare relative path, which resolves against whatever cwd the
+   session happens to be in and can name a neighbour's worktree;
+   everything precious is pushed; a later round that resumes the chunk
+   recreates it on a fresh branch). Confirm via `git worktree list`
+   that the removed path was the intended one. The handoff contract is
+   "PR open + checks green + merge state `CLEAN` + worktree removed" so
+   the
    user's merge needs no additional rebase and the chunk leaves no
    36–55G of build output behind. Reports a verdict. Never merges;
    never touches `main`. (<`main` is
@@ -158,7 +172,7 @@ You are the stage-1 PLANNING agent for chunk <N> of <dispatch-plan short name> (
 
 1. Read AGENTS.md, then <origin docs with their normative section numbers> and the dispatch plan <path> §1/§<n>.
 2. Read the current seams you will extend: <files + what to look for in each>, plus the tests you must not break: <paths>.
-3. Run scripts/worktree-doctor.sh from the project root /home/viktoria/src/taskboard first (nonzero exit = free disk below the floor: STOP and report instead of planning), then create the worktree ../taskboard-WT-<branch> on a new branch <branch> off main.
+3. Run scripts/worktree-doctor.sh from the project root /home/viktoria/src/taskboard first (nonzero exit = free disk below the floor: STOP and report instead of planning), then create the worktree with git worktree add -b <branch> ../taskboard-WT-<branch> off main (never without -b and never on main — AGENTS §8 active-worktree safety).
 4. Write a detailed TDD-first plan at .artifacts/plans/<today>-<topic>-plan.md: <enumerate the concrete decisions this plan must settle — shapes, semantics, seams, test catalogue>. Resolve every open question with a recorded decision; deviations from the origin need a recorded reason.
 5. Commit it as: docs(plan): <subject>. Do not implement; do not push.
 
@@ -190,7 +204,7 @@ You are the stage-3 REVIEW agent for chunk <N> of <dispatch-plan short name> (br
 4. Re-run the full gate suite yourself (AGENTS §10); any failure is a finding.
 5. Fix every issue directly on the branch (amend/reword — no duplicate-subject fixups).
 6. Ship: push the branch, open the PR to main with gh, then gh pr checks --watch; any failing check is a finding — diagnose, fix, push --force-with-lease, repeat until all checks are green. <main is protected: never merge; the user merges on GitHub.>
-7. Teardown: from the project root, git worktree remove --force ../taskboard-WT-<branch> (everything is pushed; a resuming round recreates the worktree on the branch via git worktree add).
+7. Teardown: from the project root, git -C /home/viktoria/src/taskboard worktree remove --force ../taskboard-WT-<branch> (everything is pushed; a resuming round starts a fresh <branch>-v2 branch per AGENTS §8 — never recreates on the landed branch). Confirm with git worktree list that the removed path was the intended one.
 
 Report: verdict, findings (functional + mandate), what you fixed, PR URL, green-checks confirmation, worktree-removed confirmation. Never merge; never touch main.
 ```
