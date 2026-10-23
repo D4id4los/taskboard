@@ -232,6 +232,10 @@ impl JourneyDriver for SlintDriver {
             .match_id(id)
             .find_all()
             .into_iter()
+            // The backend's chain match also reports a match for
+            // descendants of the addressed element; only the exact
+            // qualified id is the element itself.
+            .filter(|handle| handle.id().as_deref() == Some(id))
             .map(|handle| Element { handle })
             .collect()
     }

@@ -99,6 +99,13 @@ export component BoardLayout inherits Rectangle {
     }
 
     if (root.stacks.length > 0 && !root.compact-active): VerticalLayout {
+        // The leg must receive the window width: conditional (`if`)
+        // elements get no default fill geometry (the compiler's
+        // default-geometry pass skips repeated elements), so without
+        // this the columns row collapses to min-content and D1's
+        // stretch distribution has no surplus to distribute (r2
+        // board-surface plan, recorded deviation D1-b).
+        width: 100%;
         spacing: Theme.space-1;
 
         // The board bar (design §3.8): one segment per live board,
@@ -114,18 +121,24 @@ export component BoardLayout inherits Rectangle {
             spacing: Theme.space-3;
             for column[column-index] in root.stacks: column-body := VerticalLayout {
                 spacing: Theme.space-1;
-                // The user-set width (round-1 D16): the min carries the
-                // width and the stretch is dropped, so the column is
-                // exactly that wide (spare space flows to the auto
-                // columns); ≤ 0 keeps the untouched auto distribution —
-                // the sentinel arms are inert in the constraint solver,
-                // and the unregenerated goldens prove it (an explicit
-                // max-width binding perturbs the solver even in its
-                // sentinel arm, probe-recorded).
+                // The user-set width (r2 D1) is a *floor*, never a pin:
+                // the min carries the stored width while every column
+                // keeps equal stretch, so the solver gives each column
+                // max(content, floor) + an equal share of the surplus —
+                // a fully-resized board still fills the window and no
+                // refresh can render a column below its floor. ≤ 0 (the
+                // auto sentinel) keeps the floor at 0. No max-width
+                // binding anywhere (the round-1 solver-perturbation
+                // caution stands).
                 min-width: column.width-px > 0 * Theme.space-1
                     ? column.width-px
                     : 0 * Theme.space-1;
-                horizontal-stretch: column.width-px > 0 * Theme.space-1 ? 0 : 1;
+                horizontal-stretch: 1;
+                // Lift the content-derived max cap (a Text child caps
+                // the column's layout max at its preferred width, and
+                // max-capped items receive no growth): bounded by the
+                // row itself, so it never over-constrains the solver.
+                max-width: root.width;
                 // The D16 address: the column is a list labelled by its
                 // stack title.
                 accessible-role: AccessibleRole.list;

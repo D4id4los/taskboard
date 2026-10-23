@@ -1379,6 +1379,73 @@ fn never_resized_board_pushes_auto_widths_and_no_requests() {
     );
 }
 
+/// R2 D1 (T-4) — stored widths are floors, never pins: after dragging
+/// column 0 down to its floor, a window resize still distributes the
+/// row's full width (every column ≥ its stored floor, Σ columns +
+/// the add-column affordance + gaps == window width within rounding).
+#[test]
+fn stored_widths_fill_the_window_as_floors() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let window = harness.handle.window();
+            harness.driver.set_window_size(1000, 800);
+
+            // Drag column 0 to its readable floor (the seam's press
+            // base is the rendered width; the delta clamps at min).
+            window.invoke_board_stack_width_press(0, 500.0);
+            window.invoke_board_stack_width_drag(0, -500.0);
+            window.invoke_board_stack_width_release(0);
+            assert!(
+                harness.drain_requests().iter().any(|request| {
+                    matches!(
+                        request,
+                        taskboard_ui_slint::requests::UiRequest::StackWidthsChanged { .. }
+                    )
+                }),
+                "the drag persisted"
+            );
+
+            // A wider window fills: the stored width holds only as the
+            // column's floor, the surplus redistributes.
+            harness.driver.set_window_size(1500, 900);
+            // The a11y items of one column (list + header button)
+            // share the column's width; the titles are the addresses.
+            let add_col = harness
+                .driver
+                .find_all_by_id("BoardLayout::add-col-hit")
+                .pop()
+                .expect("the add-column affordance is mounted");
+            let floor = 96.0_f32; // STACK_WIDTH_MIN_PX at scale 1
+            let mut total = add_col.size().width;
+            for title in ["a", "b"] {
+                let column = harness
+                    .driver
+                    .find_by_label(title)
+                    .unwrap_or_else(|| panic!("column {title} is addressable"));
+                let width = column.size().width;
+                assert!(
+                    width >= floor,
+                    "no column renders below its stored floor, got {width}"
+                );
+                total += width;
+            }
+            // Two inter-column gaps (space-3 = 12 px at scale 1) plus
+            // the trailing add-column counted above; ±1 px of physical
+            // rounding.
+            let expected = 1500.0 - 2.0 * 12.0;
+            assert!(
+                (total - expected).abs() <= 1.0,
+                "the columns row fills the window: {total} vs {expected}"
+            );
+        },
+    );
+}
+
 /// DDF-5 — the anchor card is hidden from the board's list surfaces:
 /// board card counts (and, on the same single pass, the stack-detail
 /// cards) exclude the exact-title anchor; a byte-level near-miss stays
