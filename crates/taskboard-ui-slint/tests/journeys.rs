@@ -1449,6 +1449,39 @@ fn stored_widths_fill_the_window_as_floors() {
     );
 }
 
+/// R2 D3 (T-5) — the header is one locked control row regardless of
+/// content: a 0-task stack's header measures exactly the D20b constant,
+/// identical to its populated neighbour's.
+#[test]
+fn stack_headers_are_one_control_row_regardless_of_content() {
+    let (fixture, mut state) = fixture::golden_state();
+    state.tasks.retain(|_, task| task.stack != fixture.stack_b);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(harness.board_shape(), vec![2, 0], "stack b is empty");
+            #[allow(clippy::cast_precision_loss)]
+            let control_row = (32.0 + 2.0 * 4.0) * 1.0; // space-6 + 2·space-1, scale 1
+            for title in ["a", "b"] {
+                let header = harness
+                    .driver
+                    .find_all_by_label(title)
+                    .into_iter()
+                    .find(support::driver::Element::is_accessible_button)
+                    .unwrap_or_else(|| panic!("stack {title}'s header is addressable"));
+                let height = header.size().height;
+                assert_eq!(
+                    height, control_row,
+                    "stack {title}'s header is one control row"
+                );
+            }
+        },
+    );
+}
+
 /// DDF-5 — the anchor card is hidden from the board's list surfaces:
 /// board card counts (and, on the same single pass, the stack-detail
 /// cards) exclude the exact-title anchor; a byte-level near-miss stays
