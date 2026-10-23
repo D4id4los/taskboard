@@ -275,6 +275,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- The stack-width floor rises 96 → **160 logical px** (r2
+  board-surface, D2) and persisted widths below the floor heal once at
+  load (existing configs with narrower columns re-clamp on first
+  launch; healing never writes config back — it reaches the stored
+  overlay only when you next drag or step a column).
 - Board columns fill the window (r2 board-surface, D1): a stored
   stack width is now a **floor**, not a pin — every column keeps an
   equal stretch, spare window width distributes in equal shares, and

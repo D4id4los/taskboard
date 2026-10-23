@@ -8,9 +8,11 @@
 //! persistence boundary; no slint types here (the §5.5 extraction
 //! seam).
 
-/// The lower bound of the design's 96–120 band: card content stays
-/// readable and the count badge fits.
-pub const STACK_WIDTH_MIN_PX: u32 = 96;
+/// The design's readability floor (r2 D2): a column never renders
+/// below this many logical px — 80 rendered px at the 0.5 scale
+/// extreme, where card content stays readable and the count badge
+/// fits.
+pub const STACK_WIDTH_MIN_PX: u32 = 160;
 
 /// The keyboard seed for a never-resized column — near the typical
 /// auto distribution.
@@ -18,6 +20,17 @@ pub const STACK_WIDTH_DEFAULT_PX: u32 = 280;
 
 /// The fixed keyboard step (stack.wider / stack.narrower).
 pub const STACK_WIDTH_STEP_PX: u32 = 32;
+
+/// The load-time heal (r2 D2): a persisted width below the readable
+/// floor re-clamps to it. Applied once, where widths load into the
+/// view state (`ViewState::seed_stack_widths`) — never at reconcile
+/// and never at push (the drag/keyboard seams clamp their own writes),
+/// and it never writes config back: healing reaches the stored
+/// overlay only when the user next drags/steps.
+#[must_use]
+pub fn reclamp_width(px: u32) -> u32 {
+    px.max(STACK_WIDTH_MIN_PX)
+}
 
 /// Saturating clamp of a requested rendered width into
 /// `[min, max]` (`max < min` — a degenerate window — resolves to
@@ -53,7 +66,9 @@ mod tests {
     /// proptest invariants).
     #[test]
     fn clamp_width_saturates_at_both_bounds() {
-        assert_eq!(clamp_width(150, STACK_WIDTH_MIN_PX, 400), 150);
+        // E-5 (r2 D2): the mid-range literal was 150, below the
+        // raised floor — the in-bounds pass-through case moves to 200.
+        assert_eq!(clamp_width(200, STACK_WIDTH_MIN_PX, 400), 200);
         assert_eq!(clamp_width(10, STACK_WIDTH_MIN_PX, 400), STACK_WIDTH_MIN_PX);
         assert_eq!(clamp_width(9_999, STACK_WIDTH_MIN_PX, 400), 400);
         assert_eq!(
@@ -70,18 +85,31 @@ mod tests {
     }
 
     /// Subtracts the other columns' minimums and the furniture; the
-    /// result never dips below the readable floor.
+    /// result never dips below the readable floor. The expected value
+    /// is arithmetic over the floor constant (E-2): the relation is
+    /// the contract, not a stale literal.
     #[test]
     fn width_ceiling_subtracts_others_and_chrome() {
         assert_eq!(
             width_ceiling(1000, 2 * STACK_WIDTH_MIN_PX, 80),
-            1000 - 192 - 80
+            1000 - 2 * STACK_WIDTH_MIN_PX - 80
         );
         assert_eq!(
             width_ceiling(100, 2 * STACK_WIDTH_MIN_PX, 80),
             STACK_WIDTH_MIN_PX,
             "a starved window still floors at the readable bound"
         );
+    }
+
+    /// The load-time heal (r2 D2, T-2): every result sits at or above
+    /// the floor, the map is idempotent, and values at or above the
+    /// floor pass through untouched.
+    #[test]
+    fn reclamp_width_heals_sub_floor_values() {
+        assert_eq!(reclamp_width(96), STACK_WIDTH_MIN_PX);
+        assert_eq!(reclamp_width(0), STACK_WIDTH_MIN_PX);
+        assert_eq!(reclamp_width(STACK_WIDTH_MIN_PX), STACK_WIDTH_MIN_PX);
+        assert_eq!(reclamp_width(240), 240);
     }
 
     #[cfg(test)]
@@ -119,6 +147,20 @@ mod tests {
             ) {
                 prop_assume!(window_w >= STACK_WIDTH_MIN_PX + chrome);
                 prop_assert_eq!(width_ceiling(window_w, others, chrome) >= STACK_WIDTH_MIN_PX, true);
+            }
+
+            /// The heal math (r2 D2, T-2): idempotent, monotone
+            /// identity above the floor, floored below it.
+            #[test]
+            fn reclamp_width_is_idempotent_monotone_and_floored(a in 0u32..5000, b in 0u32..5000) {
+                let (lo, hi) = (a.min(b), a.max(b));
+                let (r_lo, r_hi) = (reclamp_width(lo), reclamp_width(hi));
+                prop_assert!(r_lo <= r_hi, "monotone: {r_lo} <= {r_hi}");
+                prop_assert_eq!(reclamp_width(r_lo), r_lo, "idempotent");
+                prop_assert!(r_lo >= STACK_WIDTH_MIN_PX && r_hi >= STACK_WIDTH_MIN_PX);
+                if lo >= STACK_WIDTH_MIN_PX {
+                    prop_assert_eq!(r_lo, lo, "identity above the floor");
+                }
             }
         }
     }
