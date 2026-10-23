@@ -309,6 +309,77 @@ async fn reminder_rule_round_trips_the_write_clock_and_epoch_decodes() {
     db.close().await;
 }
 
+/// Chunk-7 board-clear pin (storage-side): an alarm row and its
+/// `alarm:`-keyed deliveries/snoozes ride the text codec and survive a
+/// `ClearBoardContent` — the `'rule:'`/`'default:'` subqueries cannot
+/// match `'alarm:'` text.
+#[tokio::test]
+async fn adhoc_alarms_and_their_facts_survive_a_board_clear() {
+    use taskboard_domain::ids::AdhocAlarmId;
+    use taskboard_domain::reminders::{ReminderDelivery, ReminderRef, ReminderSnooze};
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeSet::default());
+    let alarm_id = AdhocAlarmId::from(uuid::Uuid::from_u128(30));
+    let reminder = ReminderRef::Adhoc(alarm_id);
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b.clone()),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertAdhocAlarm(taskboard_domain::reminders::AdhocAlarm {
+            id: alarm_id,
+            label: "steep the tea".into(),
+            fire_at: ts(3_000),
+            created_at: ts(1_000),
+        }),
+        PersistenceAction::RecordReminderDelivery(ReminderDelivery {
+            reminder,
+            occurrence: ts(3_000),
+            delivered_at: ts(3_001),
+        }),
+        PersistenceAction::RecordReminderSnooze(ReminderSnooze {
+            reminder,
+            occurrence: ts(4_000),
+            rescheduled_to: ts(5_000),
+        }),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.reminders.alarms.len(), 1);
+
+    repo.apply(vec![PersistenceAction::ClearBoardContent(b.id)])
+        .await
+        .expect("clear");
+    let loaded = repo.load().await.expect("load");
+    assert!(loaded.tasks.is_empty(), "board content goes");
+    let alarm = loaded
+        .reminders
+        .alarms
+        .get(&alarm_id)
+        .expect("alarm survives");
+    assert_eq!(alarm.label, "steep the tea");
+    assert_eq!(alarm.fire_at, ts(3_000));
+    assert!(
+        loaded.reminders.is_delivered(&reminder, &ts(3_000)),
+        "the alarm-keyed delivery survives"
+    );
+    assert!(
+        loaded
+            .reminders
+            .snoozes
+            .contains_key(&taskboard_domain::reminders::ReminderSnoozeKey {
+                reminder,
+                occurrence: ts(4_000),
+            }),
+        "the alarm-keyed snooze survives"
+    );
+    db.close().await;
+}
+
 /// P3 — upserting a modified entity overwrites every stored column.
 #[tokio::test]
 async fn upsert_overwrites_all_columns() {

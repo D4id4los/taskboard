@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT alarm_id, label,\n                      fire_at as \"fire_at: DateTime<Utc>\",\n                      created_at as \"created_at: DateTime<Utc>\"\n               FROM adhoc_alarms ORDER BY alarm_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "alarm_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "adhoc_alarms",
+            "name": "alarm_id"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "adhoc_alarms",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "name": "fire_at: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "adhoc_alarms",
+            "name": "fire_at"
+          }
+        }
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "adhoc_alarms",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2b359f735ad4fa6bd8276faf430991702eb92d6a05894de6f3d8105814fb1c30"
+}

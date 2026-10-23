@@ -580,7 +580,8 @@ mod tests {
     fn reminder_ref_text_roundtrips_and_rejects_garbage() {
         let rule = ReminderRef::Rule(taskboard_domain::ids::ReminderRuleId::from(id(7)));
         let default = ReminderRef::Default(TaskId::from(id(8)));
-        for reminder in [rule, default] {
+        let alarm = ReminderRef::Adhoc(taskboard_domain::ids::AdhocAlarmId::from(id(9)));
+        for reminder in [rule, default, alarm] {
             assert_eq!(
                 reminder_ref_from_text(&reminder_ref_to_text(reminder)),
                 Ok(reminder)
@@ -588,6 +589,8 @@ mod tests {
         }
         assert_eq!(reminder_ref_from_text("garbage"), Err(CodecError));
         assert_eq!(reminder_ref_from_text("rule:not-a-uuid"), Err(CodecError));
+        assert_eq!(reminder_ref_from_text("alarm:not-a-uuid"), Err(CodecError));
+        assert_eq!(reminder_ref_from_text("alarm:"), Err(CodecError));
         assert_eq!(reminder_ref_from_text(""), Err(CodecError));
     }
 
