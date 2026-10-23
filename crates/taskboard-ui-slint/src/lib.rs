@@ -1852,14 +1852,28 @@ mod repetition_probe_tests {
     slint::slint! {
         export global ProbeCounter {
             in-out property <int> count: 0;
+            in-out property <int> cond: 0;
         }
         component ProbeRow inherits Text {
             init => {
                 ProbeCounter.count += 1;
             }
         }
+        component ProbeCondRow inherits Text {
+            init => {
+                ProbeCounter.cond += 1;
+            }
+        }
+
         export struct ProbeGroup {
             rows: [string],
+        }
+        export struct ProbeColumn {
+            open: bool,
+            cards: [string],
+        }
+        export struct ProbeBoard {
+            columns: [ProbeColumn],
         }
         export component ProbeWindow inherits Window {
             width: 200px;
@@ -1872,6 +1886,27 @@ mod repetition_probe_tests {
             // The nested shape (the column → cards pair): an outer
             // model of structs, each carrying an inner model.
             in property <[ProbeGroup]> groups;
+            in property <[ProbeColumn]> columns;
+            // The real push's wiring: a struct property whose model
+            // field rebinds through an intermediate property.
+            in property <ProbeBoard> board;
+            in property <[ProbeColumn]> mirror: root.board.columns;
+            board-mirror := VerticalLayout {
+                for c in mirror: VerticalLayout {
+                    if (c.open): ProbeRow {
+                        text: "wired";
+                    }
+                }
+            }
+            // The second hop: a repeater bound through an
+            // intermediate property, like BoardLayout.stacks.
+            wired := VerticalLayout {
+                for c in root.mirror: VerticalLayout {
+                    if (c.open): ProbeRow {
+                        text: "wired2";
+                    }
+                }
+            }
             VerticalLayout {
                 for row in rows: ProbeRow {
                     text: row;
@@ -1882,6 +1917,16 @@ mod repetition_probe_tests {
                 for g in groups: VerticalLayout {
                     for inner in g.rows: ProbeRow {
                         text: inner;
+                    }
+                }
+                for c in columns: VerticalLayout {
+                    HorizontalLayout {
+                        for card in c.cards: ProbeRow {
+                            text: card;
+                        }
+                    }
+                    if (c.open): ProbeCondRow {
+                        text: "cond";
                     }
                 }
             }
@@ -1901,6 +1946,14 @@ mod repetition_probe_tests {
     /// Forces a layout pass (the repeaters update during layout) and
     /// returns how many row instances were instantiated since the
     /// last `reset`.
+    fn settle_with_parts(window: &ProbeWindow) -> (i32, i32) {
+        let adapter = test_platform::window_adapter().expect("the probe owns the last window");
+        let mut buffer = vec![Rgb8Pixel::default(); 200 * 200];
+        let _ = adapter.render_into(&mut buffer, 200);
+        let g = window.global::<ProbeCounter>();
+        (g.get_count(), g.get_cond())
+    }
+
     fn settle(window: &ProbeWindow) -> i32 {
         let adapter = test_platform::window_adapter().expect("the probe owns the last window");
         let mut buffer = vec![Rgb8Pixel::default(); 200 * 200];
@@ -1914,6 +1967,73 @@ mod repetition_probe_tests {
 
     fn strings(values: &[&str]) -> Vec<SharedString> {
         values.iter().map(|v| SharedString::from(*v)).collect()
+    }
+
+    /// A conditional inside a repeated row mounts when the row's
+    /// scalar flips via `set_row_data` (the D9 create-row mechanism).
+    #[test]
+    fn a_conditional_inside_a_repeated_row_mounts_on_an_in_place_flip() {
+        on_slint_thread(|| {
+            let window = mounted();
+            let columns = Rc::new(VecModel::from(vec![
+                ProbeColumn {
+                    open: false,
+                    cards: ModelRc::new(VecModel::from(strings(&["c0"]))),
+                },
+                ProbeColumn {
+                    open: false,
+                    cards: ModelRc::new(VecModel::from(strings(&["c1"]))),
+                },
+            ]));
+            window.set_columns(ModelRc::from(columns.clone()));
+            assert_eq!(settle(&window), 2, "the cards mount; nothing conditional");
+            // Keep the same inner cards handle, exactly as the D9 push
+            // does for an unchanged column.
+            let same_cards = columns.row_data(1).expect("row").cards;
+            columns.set_row_data(
+                1,
+                ProbeColumn {
+                    open: true,
+                    cards: same_cards,
+                },
+            );
+            let (_, cond) = settle_with_parts(&window);
+            assert_eq!(cond, 1, "the flipped row's conditional mounts");
+        });
+    }
+
+    /// The real push's wiring: struct re-assignment (equal handles)
+    /// around a `set_row_data` flip must not swallow the row update.
+    #[test]
+    fn a_struct_reassignment_around_an_in_place_flip_keeps_the_mount() {
+        on_slint_thread(|| {
+            let window = mounted();
+            let columns = Rc::new(VecModel::from(vec![
+                ProbeColumn {
+                    open: false,
+                    cards: ModelRc::default(),
+                },
+                ProbeColumn {
+                    open: false,
+                    cards: ModelRc::default(),
+                },
+            ]));
+            window.set_board(ProbeBoard {
+                columns: ModelRc::from(columns.clone()),
+            });
+            assert_eq!(settle(&window), 0, "nothing conditional mounts");
+            columns.set_row_data(
+                1,
+                ProbeColumn {
+                    open: true,
+                    cards: ModelRc::default(),
+                },
+            );
+            window.set_board(ProbeBoard {
+                columns: ModelRc::from(columns.clone()),
+            });
+            assert_eq!(settle(&window), 2, "the flip mounts through both hops");
+        });
     }
 
     /// The F-3 table (plan §1, probe results 1–8): mount-once,

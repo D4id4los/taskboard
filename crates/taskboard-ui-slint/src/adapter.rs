@@ -106,6 +106,10 @@ pub(crate) struct Adapter {
     rule_add_offset: Option<ReminderOffset>,
     /// The id tables of the last refresh pass (D2): index → id.
     tables: IdTables,
+    /// The persistent model handles of this window (r2 D9): the
+    /// refresh pass diffs the desired rows onto them, so unchanged
+    /// refreshes notify nothing.
+    models: crate::models::PushModels,
     /// The active column drag (round-1 D17): the dragged stack and the
     /// pre-drag base width in rendered px, captured at press. The
     /// drag deltas are absolute since press — idempotent against
@@ -325,8 +329,15 @@ impl Adapter {
         self.view_state.reconcile(&state);
         let chain = self.shell.chain();
         let now = chrono::Utc::now();
-        self.tables =
-            crate::models::push(window, &state, &self.view_state, &self.keymap, &chain, now);
+        self.tables = crate::models::push(
+            window,
+            &state,
+            &self.view_state,
+            &self.keymap,
+            &chain,
+            now,
+            &mut self.models,
+        );
         self.push_settings(window);
     }
 
@@ -899,8 +910,9 @@ impl Adapter {
 
     /// Pushes the settings view-model onto the window global (the
     /// refresh pass's settings half; rows fold liveness + the bound
-    /// boards' phases, D8).
-    pub(crate) fn push_settings(&self, window: &AppWindow) {
+    /// boards' phases, D8). The row list rides the persistent
+    /// settings-row handle through the positional diff (r2 D9).
+    pub(crate) fn push_settings(&mut self, window: &AppWindow) {
         use crate::SettingsRowStatus as Row;
         let state = self.state.load();
         let rows: Vec<crate::ConnectionRow> = self
@@ -928,7 +940,7 @@ impl Adapter {
             })
             .collect();
         let global = window.global::<crate::SettingsModel>();
-        global.set_rows(ModelRc::new(slint::VecModel::from(rows)));
+        self.models.push_settings_rows(&global, &rows);
         global.set_draft_name(self.settings.draft.name.clone().into());
         global.set_draft_server(self.settings.draft.server_url.clone().into());
         global.set_draft_username(self.settings.draft.username.clone().into());
@@ -1191,6 +1203,7 @@ pub(crate) fn install(
         rule_target: None,
         rule_add_offset: None,
         tables: IdTables::default(),
+        models: crate::models::PushModels::default(),
         width_drag: None,
         settings: SettingsVm {
             rows: connectors,

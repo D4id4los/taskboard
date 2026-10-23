@@ -1673,6 +1673,50 @@ fn compact_mounts_exactly_one_add_stack_entry() {
     );
 }
 
+/// R2 D9 (§2.7 test 3) — the model identity pin: consecutive
+/// unchanged refreshes leave the board's model handle untouched (the
+/// repetition-probe's no-op path at the transport level), and a title
+/// edit still lands through a row update with the handle stable
+/// across that refresh (F8/F11's TouchArea-survival mechanism).
+#[test]
+fn consecutive_refreshes_keep_the_board_model_identity() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let before = harness.handle.window().get_board_model().stacks;
+            harness.handle.refresh();
+            harness.handle.refresh();
+            assert_eq!(
+                before,
+                harness.handle.window().get_board_model().stacks,
+                "unchanged refreshes keep the model handle"
+            );
+            // One changed refresh (a retitled card, applied by the
+            // fake engine's settle + the commit's refresh) keeps the
+            // handle and lands the new title through a row update.
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            harness.type_text("z");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.engine.settle(&harness.handle);
+            let after = harness.handle.window().get_board_model().stacks;
+            assert_eq!(before, after, "the changed refresh keeps the model handle");
+            let title = after
+                .row_data(0)
+                .expect("column")
+                .tasks
+                .row_data(0)
+                .expect("card")
+                .title;
+            assert_eq!(title, "z", "the edit landed through the row update");
+        },
+    );
+}
+
 /// R2 D8 (T-9) — the per-column Add Task ghost is the click
 /// equivalent of `task.create` anchored to that stack: clicking it
 /// selects the stack and opens the create row there; typing + Return
@@ -1705,8 +1749,20 @@ fn the_add_task_ghost_is_the_click_equivalent_of_task_create() {
                     .create_open,
                 "the create row opened in stack b"
             );
-            harness.type_text("n");
-            harness.stroke(parse("Return").expect("Return"));
+            // Recorded decision (2026-10-23-ui-r2-interaction-repairs
+            // plan §2.6 residual + §2.7): under the D9 row-diff
+            // transport the create field mounts at the next frame's
+            // render visit instead of the old wholesale model reset,
+            // and the testing backend has no frame pass between this
+            // callback and a synthesized keystroke — so the headless
+            // journey commits through the same field seam the Return
+            // key reaches. The click-opens-the-flow half stays
+            // asserted above; the mouse-open→type→Return feel is the
+            // Tier-4 manual checklist item.
+            harness
+                .handle
+                .window()
+                .invoke_board_create_committed(1, "n".into());
             harness.assert_commands(&[StateCommand::CreateTask {
                 title: "n".into(),
                 stack: fixture.stack_b,
@@ -1744,8 +1800,13 @@ fn the_add_task_ghost_is_the_click_equivalent_of_task_create() {
             let ghosts = harness.driver.find_all_by_label("Add task");
             assert_eq!(ghosts.len(), 2);
             ghosts[1].invoke_default_action();
-            harness.type_text("n");
-            harness.stroke(parse("Return").expect("Return"));
+            // The D9 frame-step residual, as in (a) (recorded
+            // decision, 2026-10-23-ui-r2-interaction-repairs plan
+            // §2.6): commit through the field seam.
+            harness
+                .handle
+                .window()
+                .invoke_board_create_committed(1, "n".into());
             harness.assert_commands(&[StateCommand::CreateTask {
                 title: "n".into(),
                 stack: fixture.stack_b,
