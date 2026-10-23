@@ -46,6 +46,9 @@ fd-lock.workspace = true
 toml_edit.workspace = true
 interprocess.workspace = true
 serde_json.workspace = true
+# Desktop toast notifications ([reminders] sink = "desktop"; the D-R10
+# stack ruling) — pinned once in [workspace.dependencies].
+notify-rust.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
