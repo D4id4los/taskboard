@@ -275,6 +275,11 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- Clicking a stack header now **selects** it visibly (r2
+  board-surface, D4): the selected stack's header paints raised with
+  its focus ring in regular/expansive mode (previously only the
+  compact switcher showed a selection); during a move flow the target
+  highlight still wins and the selection returns when the flow ends.
 - Stack headers are one fixed-height control row (r2 board-surface,
   D3): a column's title no longer grows tall on an empty stack — the
   leftover column height flows to the task area instead.

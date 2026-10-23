@@ -12,6 +12,10 @@ import { BoardBarModel } from "../compositions/board-bar.slint";
 // in the toolbar (the window's `toolbar-title`), not in this model.
 export struct BoardModel {
     stacks: [StackColumnModel],
+    // The true selection (r2 D4): a stack index, or −1 when no stack
+    // is explicitly selected (the move-target convention) — the
+    // regular header paints only a real selection; the compact leg
+    // clamps through its `effective-selected()`.
     selected-stack: int,
     move-target: int, // stack index, −1 = no move flow
     // The stack-create flow's visible field (usability D7), open or

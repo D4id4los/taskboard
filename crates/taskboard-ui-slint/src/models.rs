@@ -267,12 +267,16 @@ fn push_board(
         stacks: ModelRc::new(columns),
         // The stack-create flow's visible field (usability D7).
         stack_create_open: matches!(flow, Flow::CreateStack),
-        selected_stack: i32::try_from(
-            vs.selected_stack()
-                .and_then(|s| stack_ids.iter().position(|c| c == &s))
-                .unwrap_or(0),
-        )
-        .unwrap_or(i32::MAX),
+        // The true selection (r2 D4): None flattens to −1 — the
+        // move-target convention in the same struct. The regular
+        // header paints the selected stack; the compact leg clamps
+        // through its `effective-selected()` (mount renders stack 0
+        // exactly as the old 0-fallback did).
+        selected_stack: vs
+            .selected_stack()
+            .and_then(|s| stack_ids.iter().position(|c| c == &s))
+            .and_then(|i| i32::try_from(i).ok())
+            .unwrap_or(-1),
         move_target: match &flow {
             Flow::Move { target, .. } => stack_ids
                 .iter()

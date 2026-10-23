@@ -76,9 +76,16 @@ export component BoardLayout inherits Rectangle {
     // decorations.
     out property <bool> compact-active: Responsive.current-breakpoint == Breakpoint.compact;
 
+    // The stack index the switcher renders for (compact): the −1
+    // "no selection" push (r2 D4) clamps to stack 0 — compact's
+    // mount-time pixels are exactly the old 0-fallback's.
+    pure function effective-selected() -> int {
+        Math.max(root.selected-stack, 0)
+    }
+
     // The stack index the switcher renders for (compact).
     pure function selected-column() -> StackColumnModel {
-        root.stacks[root.selected-stack]
+        root.stacks[root.effective-selected()]
     }
 
     // The empty board (usability D7): the same New-stack button the
@@ -149,6 +156,11 @@ export component BoardLayout inherits Rectangle {
                 header := Rectangle {
                     accessible-role: AccessibleRole.button;
                     accessible-label: column.title;
+                    // The AT/keyboard activation lands on the same
+                    // selection seam the TouchArea's click hits (the
+                    // add-col FocusScope pattern; the plan's T-10
+                    // click-by-label address).
+                    accessible-action-default => root.header-activated(column-index);
                     // One locked control row (r2 D3, the D20b board-bar
                     // constant inline — no new theme token; the token
                     // ladder is chunk 7's): the height no longer depends
@@ -200,9 +212,19 @@ export component BoardLayout inherits Rectangle {
                             }
                         }
                     }
+                    // The selected stack paints in regular mode (r2
+                    // D4): raised fill + focus ring (the compact
+                    // switcher's selected language). Move-target keeps
+                    // its distinct arm (raised, no ring) and wins when
+                    // both apply — the ring returns when the move flow
+                    // ends. clip keeps the ring inside the radius.
                     background: header-hit.has-hover ? Theme.surface-hover
                         : column-index == root.move-target ? Theme.surface-raised
+                        : column-index == root.selected-stack ? Theme.surface-raised
                         : transparent;
+                    border-width: column-index == root.selected-stack
+                        ? Theme.focus-ring-width : 0;
+                    border-color: Semantic.focus-ring;
                     border-radius: Theme.radius-small;
                     HorizontalLayout {
                         padding-left: Theme.space-2;
@@ -327,7 +349,7 @@ export component BoardLayout inherits Rectangle {
                     height: 100%;
                     border-radius: Theme.radius-small;
                     background: segment-hover.has-hover ? Theme.surface-hover
-                        : column-index == root.selected-stack ? Theme.surface-raised
+                        : column-index == root.effective-selected() ? Theme.surface-raised
                         : column-index == root.move-target ? Theme.surface
                         : transparent;
                     border-width: segment.has-focus || column-index == root.move-target
@@ -337,10 +359,10 @@ export component BoardLayout inherits Rectangle {
                         padding-left: Theme.space-2;
                         padding-right: Theme.space-2;
                         RoleText {
-                            role: column-index == root.selected-stack
+                            role: column-index == root.effective-selected()
                                 ? Typography.body-emphasized
                                 : Typography.body;
-                            text-color: column-index == root.selected-stack
+                            text-color: column-index == root.effective-selected()
                                 ? Theme.text-primary
                                 : Theme.text-secondary;
                             text: column.title;
@@ -386,16 +408,16 @@ export component BoardLayout inherits Rectangle {
                     model: task;
                     compact: true;
                     hint-keys: root.task-card-hint;
-                    activated => root.task-activated(root.selected-stack, task-index);
-                    clicked => root.task-clicked(root.selected-stack, task-index);
-                    context-requested(x, y) => root.task-context(root.selected-stack, task-index, x, y);
+                    activated => root.task-activated(root.effective-selected(), task-index);
+                    clicked => root.task-clicked(root.effective-selected(), task-index);
+                    context-requested(x, y) => root.task-context(root.effective-selected(), task-index, x, y);
                 }
 
                 if (column.create-open): TextField {
                     placeholder: "New task title";
                     label: "New task title";
-                    accepted(text) => root.create-committed(root.selected-stack, text);
-                    edited(text) => root.create-edited(root.selected-stack, text);
+                    accepted(text) => root.create-committed(root.effective-selected(), text);
+                    edited(text) => root.create-edited(root.effective-selected(), text);
                 }
             }
         }
