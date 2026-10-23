@@ -8,7 +8,10 @@
 //! indices the views return resolve against the tables built in the
 //! same pass that pushed the models.
 
-use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use chrono::{DateTime, TimeDelta, Utc};
 
@@ -101,10 +104,111 @@ fn string_model(values: &[String]) -> ModelRc<SharedString> {
     ))
 }
 
+/// The persistent model handles of one mounted window (r2 D9): the
+/// refresh pass keeps deriving the *complete desired* rows exactly as
+/// before, then applies them onto these handles through a positional
+/// diff — an unchanged refresh notifies nothing, so the repeated
+/// surfaces' `TouchArea`s survive across refreshes (F8 double-click,
+/// F11 drag) and small changes touch exactly one row (#390's first
+/// leg). One instance per mounted window, owned by the `Adapter`.
+#[derive(Default)]
+pub struct PushModels {
+    bar_segments: Option<Rc<VecModel<BoardSegmentModel>>>,
+    columns: Option<Rc<VecModel<StackColumnModel>>>,
+    /// The per-column card models, keyed by the column's stack (the
+    /// board's columns and the stack-detail list address them by
+    /// stack).
+    column_tasks: BTreeMap<StackId, Rc<VecModel<TaskCardModel>>>,
+    /// Per-card decoration models keyed by the task.
+    /// `TaskCardModel` compares its `decorations` field by handle
+    /// identity (the pinned Slint's `ModelRc` `PartialEq`), so a
+    /// fresh model per card per pass would dirty every card and
+    /// degrade the diff to a full `set_row_data` cascade.
+    card_decorations: BTreeMap<TaskId, Rc<VecModel<TaskDecoration>>>,
+    detail_tasks: Option<Rc<VecModel<TaskCardModel>>>,
+    task_rules: Option<Rc<VecModel<RuleRowModel>>>,
+    task_rule_presets: Option<Rc<VecModel<SharedString>>>,
+    banner: Option<Rc<VecModel<BannerRowModel>>>,
+    settings_rows: Option<Rc<VecModel<crate::ConnectionRow>>>,
+    hints: HintModels,
+    /// The tasks whose decoration models the current pass touched
+    /// (cleared at pass start) — the prune set for
+    /// `card_decorations`, so the map never grows past the live task
+    /// set.
+    pass_tasks: BTreeSet<TaskId>,
+}
+
+/// The six `[string]` keymap-projection hint slots (r2 D9): they
+/// change only when the keymap or the visible chain changes, so the
+/// diff keeps their refresh cost at zero.
+#[derive(Default)]
+struct HintModels {
+    toolbar_menu: Option<Rc<VecModel<SharedString>>>,
+    nav_back: Option<Rc<VecModel<SharedString>>>,
+    board_segment: Option<Rc<VecModel<SharedString>>>,
+    task_card: Option<Rc<VecModel<SharedString>>>,
+    stack_header: Option<Rc<VecModel<SharedString>>>,
+    stack_create: Option<Rc<VecModel<SharedString>>>,
+}
+
+/// Applies `desired` onto the persistent model through a positional
+/// diff and returns the number of row mutations: `set_row_data` only
+/// where the row differs over the common length, then the tail is
+/// truncated, then appended. No LCS — a mid-list reorder costs a
+/// `set_row_data` cascade over the suffix, which the pinned Slint
+/// applies as in-place binding updates with zero re-instantiation
+/// (the repetition-probe pins), and reorders are user-move-scale,
+/// not refresh-scale.
+pub(crate) fn diff_rows<T: PartialEq + Clone + 'static>(
+    model: &VecModel<T>,
+    desired: &[T],
+) -> usize {
+    let mut mutations = 0;
+    let current = model.row_count();
+    let common = current.min(desired.len());
+    for (i, row) in desired[..common].iter().enumerate() {
+        if model.row_data(i).as_ref() != Some(row) {
+            model.set_row_data(i, row.clone());
+            mutations += 1;
+        }
+    }
+    for _ in desired.len()..current {
+        model.remove(desired.len());
+        mutations += 1;
+    }
+    for row in &desired[common..] {
+        model.push(row.clone());
+        mutations += 1;
+    }
+    mutations
+}
+
+/// Get-or-create the persistent handle in `slot` (installing it into
+/// its window property exactly once via `install`), then diff
+/// `desired` onto it.
+fn push_rows<T: PartialEq + Clone + 'static>(
+    slot: &mut Option<Rc<VecModel<T>>>,
+    install: impl FnOnce(ModelRc<T>),
+    desired: &[T],
+) -> usize {
+    let model = slot.get_or_insert_with(|| {
+        let model = Rc::new(VecModel::default());
+        install(ModelRc::from(model.clone()));
+        model
+    });
+    diff_rows(model, desired)
+}
+
 /// One refresh pass (D1): reconcile the view state against `state`,
 /// then push the full display model one-way onto the window and
 /// return the id tables. Deterministic and timer-free — the repaint
-/// timer and the tests call this.
+/// timer and the tests call this. The desired rows are applied onto
+/// `models`' persistent handles through a positional diff (r2 D9):
+/// an unchanged refresh notifies nothing. The `for`-repeater markup
+/// stays untouched — every repeated surface keeps a single stable
+/// model with stable row addressing, which is exactly the model shape
+/// a `ListView` virtualisation (#373, the next lever on the same
+/// render budget) consumes later.
 #[must_use]
 pub fn push(
     window: &AppWindow,
@@ -113,6 +217,7 @@ pub fn push(
     keymap: &Keymap,
     chain: &[ContextId],
     now: DateTime<Utc>,
+    models: &mut PushModels,
 ) -> IdTables {
     let sets = presentation::due_sets(state, now);
     let board = vs.board().and_then(|id| state.boards.get(&id));
@@ -127,17 +232,23 @@ pub fn push(
             title: SharedString::from(b.title.clone()),
         })
         .collect();
+    let selected = i32::try_from(
+        vs.board()
+            .and_then(|b| live_boards.iter().position(|board| board.id == b))
+            .unwrap_or(0),
+    )
+    .unwrap_or(i32::MAX);
+    let segments_handle = models.bar_segments.get_or_insert_with(Rc::default).clone();
+    let mut mutations = diff_rows(&segments_handle, &segments);
+    // The struct re-assignment runs every pass — its `selected` scalar
+    // must stay live; the unchanged segments handle makes it a
+    // renderer no-op for the repetition (the repetition-probe pins).
     window.set_board_bar_model(BoardBarModel {
-        segments: ModelRc::new(VecModel::from(segments)),
-        selected: i32::try_from(
-            vs.board()
-                .and_then(|b| live_boards.iter().position(|board| board.id == b))
-                .unwrap_or(0),
-        )
-        .unwrap_or(i32::MAX),
+        segments: ModelRc::from(segments_handle),
+        selected,
     });
 
-    push_chrome(window, board, keymap, chain);
+    mutations += push_chrome(window, board, keymap, chain, models);
     window.set_current_view(match vs.view() {
         crate::view_state::ViewId::Board => View::Board,
         crate::view_state::ViewId::StackDetail => View::StackDetail,
@@ -150,63 +261,104 @@ pub fn push(
         stack_ids: stack_ids.clone(),
         ..IdTables::default()
     };
-    push_board(window, state, vs, &sets, &stack_ids, &mut tables, now);
-    push_stack_detail(window, state, vs, &sets, &mut tables, now);
-    push_task_detail(window, state, vs, &sets, &mut tables, now);
-    push_status_bar(window, state, vs, keymap, chain, now, &mut tables);
+    mutations += push_board(
+        window,
+        state,
+        vs,
+        &sets,
+        &stack_ids,
+        &mut tables,
+        now,
+        models,
+    );
+    mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, models);
+    mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models);
+    mutations += push_status_bar(window, state, vs, keymap, chain, now, &mut tables, models);
+    // The decoration handles of tasks this pass dropped from every
+    // surface are unreachable from the views.
+    let pass = std::mem::take(&mut models.pass_tasks);
+    models
+        .card_decorations
+        .retain(|task, _| pass.contains(task));
+    tracing::trace!(rows = mutations, "model push diff: row mutations this pass");
     tables
 }
 
 /// The toolbar chrome: board title and the `app.menu` binding hint (a
-/// keymap projection, never hand-written — D19).
+/// keymap projection, never hand-written — D19). Returns the hint
+/// diff's mutation count.
 fn push_chrome(
     window: &AppWindow,
     board: Option<&taskboard_domain::Board>,
     keymap: &Keymap,
     chain: &[ContextId],
-) {
+    models: &mut PushModels,
+) -> usize {
     window.set_toolbar_title(SharedString::from(
         board.map_or(String::new(), |b| b.title.clone()),
     ));
-    window.set_toolbar_menu_hint(string_model(
-        &keymap
-            .first_binding_display(ActionId::AppMenu, chain)
-            .unwrap_or_default(),
-    ));
+    let rows = |action| -> Vec<SharedString> {
+        keymap
+            .first_binding_display(action, chain)
+            .unwrap_or_default()
+            .iter()
+            .map(SharedString::from)
+            .collect()
+    };
+    let mut mutations = 0;
+    // The toolbar menu hint…
+    mutations += push_rows(
+        &mut models.hints.toolbar_menu,
+        |rc| {
+            window.set_toolbar_menu_hint(rc);
+        },
+        &rows(ActionId::AppMenu),
+    );
     // The back button's hint (round-1 D12): the same projection, one
     // element class later — shown only when a binding exists.
-    window.set_nav_back_hint(string_model(
-        &keymap
-            .first_binding_display(ActionId::NavFocusBoard, chain)
-            .unwrap_or_default(),
-    ));
+    mutations += push_rows(
+        &mut models.hints.nav_back,
+        |rc| {
+            window.set_nav_back_hint(rc);
+        },
+        &rows(ActionId::NavFocusBoard),
+    );
     // The segment/card hints (round-1 D21b/D8): pushed once per
     // refresh against the visible chain.
-    window.set_board_segment_hint(string_model(
-        &keymap
-            .first_binding_display(ActionId::BoardSelect, chain)
-            .unwrap_or_default(),
-    ));
-    window.set_task_card_hint(string_model(
-        &keymap
-            .first_binding_display(ActionId::TaskEdit, chain)
-            .unwrap_or_default(),
-    ));
+    mutations += push_rows(
+        &mut models.hints.board_segment,
+        |rc| {
+            window.set_board_segment_hint(rc);
+        },
+        &rows(ActionId::BoardSelect),
+    );
+    mutations += push_rows(
+        &mut models.hints.task_card,
+        |rc| {
+            window.set_task_card_hint(rc);
+        },
+        &rows(ActionId::TaskEdit),
+    );
     // The stack-header hint (round-1 D18): the stack.wider binding —
     // the header tooltip's discoverability carrier.
-    window.set_stack_header_hint(string_model(
-        &keymap
-            .first_binding_display(ActionId::StackWider, chain)
-            .unwrap_or_default(),
-    ));
+    mutations += push_rows(
+        &mut models.hints.stack_header,
+        |rc| {
+            window.set_stack_header_hint(rc);
+        },
+        &rows(ActionId::StackWider),
+    );
     // The add-column tooltip's hint (r2 D6): the stack.create binding
     // — empty under emacs until chunk 3 binds it (the established
     // empty-hint rendering applies).
-    window.set_stack_create_hint(string_model(
-        &keymap
-            .first_binding_display(ActionId::StackCreate, chain)
-            .unwrap_or_default(),
-    ));
+    mutations += push_rows(
+        &mut models.hints.stack_create,
+        |rc| {
+            window.set_stack_create_hint(rc);
+        },
+        &rows(ActionId::StackCreate),
+    );
+    mutations
 }
 
 /// The per-column `width-px` model value (round-1 D16): the user-set
@@ -231,7 +383,8 @@ pub fn stack_width_px(
 /// The board model: one column per live stack, the flow's create row
 /// and move target marked by index (D8/D22). The board title renders
 /// in the toolbar (`push_chrome`), so the model carries only the
-/// kanban geometry.
+/// kanban geometry. Returns the diff's mutation count.
+#[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
 fn push_board(
     window: &AppWindow,
     state: &AppState,
@@ -240,14 +393,18 @@ fn push_board(
     stack_ids: &[StackId],
     tables: &mut IdTables,
     now: DateTime<Utc>,
-) {
+    models: &mut PushModels,
+) -> usize {
     let flow = vs.flow().clone();
-    let columns = VecModel::default();
+    let scale = window.global::<Theme>().get_base_scale();
+    let mut mutations = 0;
+    let mut columns: Vec<StackColumnModel> = Vec::with_capacity(stack_ids.len());
     for stack_id in stack_ids {
         let stack = &state.stacks[stack_id];
         let tasks = state.tasks_in_stack(*stack_id);
         let mut task_ids = Vec::with_capacity(tasks.len());
-        let cards = VecModel::default();
+        let cards_handle = models.column_tasks.entry(*stack_id).or_default().clone();
+        let mut cards: Vec<TaskCardModel> = Vec::with_capacity(tasks.len());
         // The anchor card is hidden from list surfaces (DDF-5): filtered
         // once, before the loop, so cards and the id table stay in sync.
         for task in tasks {
@@ -255,24 +412,38 @@ fn push_board(
                 continue;
             }
             task_ids.push(task.id);
-            cards.push(task_card_model(task, sets, vs, now));
+            cards.push(task_card_model(
+                task,
+                sets,
+                vs,
+                now,
+                decorations_model(models, task),
+            ));
         }
+        mutations += diff_rows(&cards_handle, &cards);
         tables.board_tasks.push(task_ids);
         columns.push(StackColumnModel {
             title: SharedString::from(stack.title.clone()),
-            tasks: ModelRc::new(cards),
+            // The column's own persistent handle: the outer row fires
+            // only when scalars or the inner handle actually differ
+            // (board/stack switches rebind exactly the rebinding
+            // columns; unchanged refreshes are zero-mutation).
+            tasks: ModelRc::from(cards_handle.clone()),
             // The create row opens in the flow's stack only (D8).
             create_open: matches!(&flow, Flow::Create { stack } if stack == stack_id),
-            width_px: stack_width_px(
-                vs.board(),
-                *stack_id,
-                vs,
-                window.global::<Theme>().get_base_scale(),
-            ),
+            width_px: stack_width_px(vs.board(), *stack_id, vs, scale),
         });
     }
+    mutations += diff_rows(models.columns.get_or_insert_with(Rc::default), &columns);
+    // Prune the per-column card handles of stacks this pass dropped.
+    models
+        .column_tasks
+        .retain(|stack, _| stack_ids.contains(stack));
     window.set_board_model(BoardModel {
-        stacks: ModelRc::new(columns),
+        // The persistent columns handle: the struct re-assignment is a
+        // renderer no-op for the repetition while the scalar fields
+        // stay live (the repetition-probe pins).
+        stacks: ModelRc::from(models.columns.clone().expect("just inserted")),
         // The stack-create flow's visible field (usability D7).
         stack_create_open: matches!(flow, Flow::CreateStack),
         // The true selection (r2 D4): None flattens to −1 — the
@@ -294,9 +465,37 @@ fn push_board(
             _ => -1,
         },
     });
+    mutations
+}
+
+impl PushModels {
+    /// Diffs the settings connection rows onto the persistent
+    /// settings-row handle, installing it into the global exactly
+    /// once (the slot's property lives on a global, not the window
+    /// root — hence this method instead of the root-property
+    /// installers).
+    pub(crate) fn push_settings_rows(
+        &mut self,
+        global: &crate::SettingsModel<'_>,
+        desired: &[crate::ConnectionRow],
+    ) -> usize {
+        push_rows(&mut self.settings_rows, |rc| global.set_rows(rc), desired)
+    }
+}
+
+/// The task's decoration model: get-or-create the persistent
+/// per-task handle and diff the desired decorations onto it (r2
+/// D9's `card_decorations` slot — the handle identity that makes
+/// unchanged cards compare fully equal).
+fn decorations_model(models: &mut PushModels, task: &Task) -> ModelRc<TaskDecoration> {
+    let slot = models.card_decorations.entry(task.id).or_default();
+    models.pass_tasks.insert(task.id);
+    diff_rows(slot, &field_decorations(task));
+    ModelRc::from(slot.clone())
 }
 
 /// The stack-detail model over the snapshotted subject (D7/D22).
+/// Returns the diff's mutation count.
 fn push_stack_detail(
     window: &AppWindow,
     state: &AppState,
@@ -304,35 +503,46 @@ fn push_stack_detail(
     sets: &DueSets,
     tables: &mut IdTables,
     now: DateTime<Utc>,
-) {
+    models: &mut PushModels,
+) -> usize {
     let tasks = vs
         .subject_stack()
         .map(|stack| state.tasks_in_stack(stack))
         .unwrap_or_default();
-    let detail_tasks = VecModel::default();
+    let detail_handle = models.detail_tasks.get_or_insert_with(Rc::default).clone();
+    let mut detail_rows: Vec<TaskCardModel> = Vec::with_capacity(tasks.len());
     // The same single-pass anchor filter as `push_board` (DDF-5).
     for task in &tasks {
         if presentation::is_anchor_task(task) {
             continue;
         }
         tables.stack_tasks.push(task.id);
-        detail_tasks.push(task_card_model(task, sets, vs, now));
+        detail_rows.push(task_card_model(
+            task,
+            sets,
+            vs,
+            now,
+            decorations_model(models, task),
+        ));
     }
+    let mutations = diff_rows(&detail_handle, &detail_rows);
     window.set_stack_model(StackDetailModel {
         title: SharedString::from(
             vs.subject_stack()
                 .and_then(|s| state.stacks.get(&s))
                 .map_or(String::new(), |s| s.title.clone()),
         ),
-        tasks: ModelRc::new(detail_tasks),
+        tasks: ModelRc::from(detail_handle.clone()),
         create_open: vs.view() == crate::view_state::ViewId::StackDetail
             && matches!(vs.flow(), Flow::Create { .. }),
     });
+    mutations
 }
 
 /// The task-detail model (D14): display plus the edit-flow state.
 /// Rule 4 (D9): the buffer stays user-owned while the flow is active —
-/// the field reads `initial-text` only on mount.
+/// the field reads `initial-text` only on mount. Returns the diff's
+/// mutation count.
 fn push_task_detail(
     window: &AppWindow,
     state: &AppState,
@@ -340,7 +550,8 @@ fn push_task_detail(
     sets: &DueSets,
     tables: &mut IdTables,
     now: DateTime<Utc>,
-) {
+    models: &mut PushModels,
+) -> usize {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
     let editing = matches!(vs.flow(), Flow::EditTitle { task } if vs.subject_task().is_some_and(|s| *task == s));
     // The subject task's rules in id order (the table and the row
@@ -365,6 +576,14 @@ fn push_task_detail(
             created: SharedString::from(rule.created_at.to_rfc3339()),
         })
         .collect();
+    let preset_rows: Vec<SharedString> = presentation::rule_preset_labels()
+        .into_iter()
+        .map(SharedString::from)
+        .collect();
+    let presets_handle = models.task_rule_presets.get_or_insert_with(Rc::default);
+    let mut mutations = diff_rows(presets_handle, &preset_rows);
+    let rules_handle = models.task_rules.get_or_insert_with(Rc::default);
+    mutations += diff_rows(rules_handle, &rule_rows);
     window.set_task_model(TaskDetailModel {
         title: SharedString::from(subject.map_or(String::new(), |t| t.title.clone())),
         stack_title: SharedString::from(
@@ -386,20 +605,17 @@ fn push_task_detail(
         } else {
             String::new()
         }),
-        rules: ModelRc::new(VecModel::from(rule_rows)),
-        rule_presets: ModelRc::new(VecModel::from(
-            presentation::rule_preset_labels()
-                .into_iter()
-                .map(SharedString::from)
-                .collect::<Vec<_>>(),
-        )),
+        rules: ModelRc::from(rules_handle.clone()),
+        rule_presets: ModelRc::from(presets_handle.clone()),
         rules_hint: SharedString::from(presentation::rule_list_hint(task_rules.len())),
     });
     tables.task_rules = task_rules;
+    mutations
 }
 
 /// The status bar: sync badge, the capped banner rows, the flow hint
-/// (D11/D12).
+/// (D11/D12). Returns the banner diff's mutation count.
+#[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
 fn push_status_bar(
     window: &AppWindow,
     state: &AppState,
@@ -408,7 +624,8 @@ fn push_status_bar(
     chain: &[ContextId],
     now: DateTime<Utc>,
     tables: &mut IdTables,
-) {
+    models: &mut PushModels,
+) -> usize {
     // The badge reads the *selected* board's row (design §3.2); the
     // recency caption follows it — the badge's freshness, per board.
     let badge = presentation::sync_badge_for_board(&state.sync, vs.board());
@@ -432,9 +649,10 @@ fn push_status_bar(
     let banner = presentation::banner_rows(state, now);
     tables.banner.clone_from(&banner);
     let overflow = banner.len().saturating_sub(BANNER_ROW_CAP);
-    let rows = VecModel::default();
-    for row in banner.iter().take(BANNER_ROW_CAP) {
-        rows.push(BannerRowModel {
+    let rows: Vec<BannerRowModel> = banner
+        .iter()
+        .take(BANNER_ROW_CAP)
+        .map(|row| BannerRowModel {
             title: SharedString::from(
                 state
                     .tasks
@@ -444,9 +662,15 @@ fn push_status_bar(
             due_phrase: SharedString::from(state.tasks.get(&row.task).map_or(String::new(), |t| {
                 presentation::due_phrase(DueKind::Overdue, t.duedate, now)
             })),
-        });
-    }
-    window.set_banner_model(ModelRc::new(rows));
+        })
+        .collect();
+    let mutations = push_rows(
+        &mut models.banner,
+        |rc| {
+            window.set_banner_model(rc);
+        },
+        &rows,
+    );
     window.set_banner_overflow(i32::try_from(overflow).unwrap_or(i32::MAX));
 
     let flow_hint_keys = match vs.flow() {
@@ -459,6 +683,7 @@ fn push_status_bar(
         keys: string_model(&flow_hint_keys),
         visible: matches!(vs.flow(), Flow::Move { .. }),
     });
+    mutations
 }
 
 /// The visual-only monotone level→tone mapping over existing tokens
@@ -504,6 +729,7 @@ fn task_card_model(
     sets: &DueSets,
     vs: &ViewState,
     now: DateTime<Utc>,
+    decorations: ModelRc<TaskDecoration>,
 ) -> TaskCardModel {
     let kind = presentation::due_kind(task, sets);
     TaskCardModel {
@@ -514,7 +740,7 @@ fn task_card_model(
         due_kind: to_slint_due_kind(kind),
         done: task.done.is_some(),
         emphasis: vs.focused_task().is_some_and(|f| f == task.id),
-        decorations: ModelRc::new(VecModel::from(field_decorations(task))),
+        decorations,
     }
 }
 
@@ -661,5 +887,90 @@ mod tests {
     #[test]
     fn unset_levels_decorate_nothing() {
         assert_eq!(field_decorations(&task()), [] as [TaskDecoration; 0]);
+    }
+
+    /// D9 — the diff primitive: positional compare, truncate, append;
+    /// the mutation counts are the transport's budget log.
+    #[test]
+    fn diff_rows_mutates_exactly_the_differing_rows() {
+        let model = VecModel::from(vec![1, 2, 3]);
+        // Equal rows → zero mutations.
+        assert_eq!(diff_rows(&model, &[1, 2, 3]), 0);
+        // One changed row → one mutation, in place.
+        assert_eq!(diff_rows(&model, &[1, 9, 3]), 1);
+        assert_eq!(model.row_data(1), Some(9));
+        // Append → one; shrinking back → one removal.
+        assert_eq!(diff_rows(&model, &[1, 9, 3, 4]), 1);
+        assert_eq!(diff_rows(&model, &[1, 9, 3]), 1);
+        assert_eq!(diff_rows(&model, &[1]), 2);
+        assert_eq!(model.row_count(), 1);
+        // A mid-list reorder is a positional set cascade over the
+        // suffix — the accepted transport shape (in-place updates).
+        let reordered = VecModel::from(vec![1, 2, 3, 4]);
+        assert_eq!(diff_rows(&reordered, &[1, 3, 2, 4]), 2);
+        assert_eq!(reordered.row_data(1), Some(3));
+        assert_eq!(reordered.row_data(2), Some(2));
+    }
+
+    /// D9's column rule: a `StackColumnModel` row whose scalars and
+    /// inner card handle are unchanged compares equal — the outer
+    /// `set_row_data` never fires for an unchanged refresh.
+    #[test]
+    fn a_column_row_with_unchanged_scalars_and_handle_compares_equal() {
+        let cards: ModelRc<TaskCardModel> = ModelRc::new(VecModel::default());
+        let column = StackColumnModel {
+            title: "a".into(),
+            tasks: cards.clone(),
+            create_open: false,
+            width_px: -1.0,
+        };
+        let model = VecModel::from(vec![column.clone()]);
+        assert_eq!(
+            diff_rows(&model, std::slice::from_ref(&column)),
+            0,
+            "unchanged refresh"
+        );
+        // A scalar change fires exactly one row update; a fresh inner
+        // handle (the pre-D9 shape) fires even with equal scalars.
+        let retitle = StackColumnModel {
+            title: "b".into(),
+            ..column.clone()
+        };
+        assert_eq!(diff_rows(&model, std::slice::from_ref(&retitle)), 1);
+        let rebound = StackColumnModel {
+            tasks: ModelRc::new(VecModel::default()),
+            ..retitle
+        };
+        assert_eq!(diff_rows(&model, &[rebound]), 1, "a fresh handle rebinds");
+    }
+
+    /// D9 — an unchanged card (same title, phrases, emphasis, and the
+    /// persistent decorations handle) compares fully equal, so the
+    /// card row never fires across refreshes.
+    #[test]
+    fn an_unchanged_card_compares_equal_across_refresh_passes() {
+        let mut t = task();
+        t.importance = Some(Importance::Normal);
+        let decorations = Rc::new(VecModel::from(field_decorations(&t)));
+        let vs = ViewState::default();
+        let now = epoch();
+        let sets = DueSets::default();
+        let build = || task_card_model(&t, &sets, &vs, now, ModelRc::from(decorations.clone()));
+        let model = VecModel::from(vec![build()]);
+        assert_eq!(
+            diff_rows(&model, &[build()]),
+            0,
+            "same pass inputs, same handle"
+        );
+        // A fresh decorations handle makes the row differ even with
+        // equal scalars — why the slot is keyed by task (§2.1).
+        let fresh = task_card_model(
+            &t,
+            &sets,
+            &vs,
+            now,
+            ModelRc::new(VecModel::from(field_decorations(&t))),
+        );
+        assert_eq!(diff_rows(&model, &[fresh]), 1);
     }
 }
