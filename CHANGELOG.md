@@ -390,6 +390,24 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- The GUI review round-2 interaction repairs (issue #390 and the
+  round-2 ledger's F7/F8/F11/F13/F28 family): refreshes no longer
+  rebuild every slint model wholesale — the push pass diffs the
+  desired rows onto persistent per-surface models, so an unchanged
+  refresh notifies nothing and small changes touch exactly one row.
+  With that transport: double-clicking a card opens Edit Task (the
+  first click's focus refresh no longer destroys the clicked card's
+  TouchArea), dragging a column's edge tracks the pointer through the
+  whole gesture however long (refreshes no longer kill the drag),
+  clicking a parent row in the command menu opens its submenu page at
+  every window size (the pointer path now syncs what the keyboard
+  path syncs) and the compact replace page's rows invoke their own
+  page, tooltips no longer stick around after a view switch, a menu
+  open/close, or the row's own click, and a tooltip with a keyboard
+  hint is wide enough for the keycaps (the width includes the hint
+  row; the 60%-window cap holds). View switches leave the window size
+  alone at every scale (0.5–3.0) — probed on the real backend, no
+  content-min offender found.
 - A shutdown signal (or `daemon stop`) landing while the desktop
   window is still booting no longer strands the process: the winit
   backend drops a quit sent before the event loop runs, so the exit

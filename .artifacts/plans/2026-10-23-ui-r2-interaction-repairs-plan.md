@@ -547,9 +547,33 @@ the recorded-decision comment.
 
 ## 10. D15 probe results (stage-2 fill-in)
 
-- [ ] matrix: (scale × view) → window resized? content-min offender?
-- [ ] fixes applied (min-width caps) and their re-run results
-- [ ] escalation path taken, if any
+- [x] matrix: (scale × view) → window resized? content-min offender?
+
+  Scratch probe (real winit backend on the dev box's `:0` display,
+  keyboard-seam view switches, window placed at the min floor per
+  scale; scratch example reverted before handoff, never committed):
+
+  | scale | placed at | after switches (board → stack → task → board) |
+  |---|---|---|
+  | 0.5 | 240×200 | 240×200 — never resized |
+  | 1.0 | 480×400 | 480×400 — never resized |
+  | 3.0 | 1440×1200 | 1440×1052 after boot, then never resized |
+  | 3.0 | 1440×1000 | 1440×1052 after boot, then never resized |
+  | 3.0 | 700×1000 | 1440×1052 after boot, then never resized |
+  | 1.0 | 480×300 | 480×400 after boot (the declared floor), then never resized |
+
+- [x] fixes applied (min-width caps) and their re-run results: **none
+  needed** — no (scale, view) point showed a view-switch-driven
+  resize, so no content min-width offender exists. The only size
+  changes are boot-time: the declared scale-aware min floors
+  (`app-window.slint:88-89`, the round-1 invariant) enforced by the
+  WM, and the workarea clamp when the floors exceed the monitor
+  (scale 3.0 on a ~1080p screen). Both are boot-time establishment,
+  not view switches.
+- [x] escalation path taken, if any: none — hypothesis F-B6 (view
+  switches resize the window) is **refuted** at every matrix point;
+  the rule-(a)/(b) fallbacks never engage. The Window width/height
+  binding invariant is untouched (no diff over `app-window.slint`).
 
 ## 11. Code inventory & estimated size
 
