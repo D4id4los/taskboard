@@ -1673,6 +1673,104 @@ fn compact_mounts_exactly_one_add_stack_entry() {
     );
 }
 
+/// R2 D8 (T-9) — the per-column Add Task ghost is the click
+/// equivalent of `task.create` anchored to that stack: clicking it
+/// selects the stack and opens the create row there; typing + Return
+/// lands the exact typed command the keyboard's action produces from
+/// the same selection state. Empty stacks are anchored too; the
+/// compact ghost addresses the effective-selected stack.
+#[test]
+fn the_add_task_ghost_is_the_click_equivalent_of_task_create() {
+    let (fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            // (a) The click route: stack b's ghost (document order —
+            // a's ghost is first).
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            let ghosts = harness.driver.find_all_by_label("Add task");
+            assert_eq!(ghosts.len(), 2, "one ghost per stack");
+            ghosts[1].invoke_default_action();
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .get_board_model()
+                    .stacks
+                    .row_data(1)
+                    .expect("column")
+                    .create_open,
+                "the create row opened in stack b"
+            );
+            harness.type_text("n");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[StateCommand::CreateTask {
+                title: "n".into(),
+                stack: fixture.stack_b,
+                order: 1,
+            }]);
+
+            // (b) The keyboard route from the same selection state
+            // (fresh mount): select stack b via its header, then
+            // task.create — the identical command shape.
+            let (fixture, state) = fixture::journey_state();
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            harness
+                .driver
+                .find_all_by_label("b")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .expect("stack b's header")
+                .invoke_default_action();
+            harness.press(ActionId::TaskCreate);
+            harness.type_text("n");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[StateCommand::CreateTask {
+                title: "n".into(),
+                stack: fixture.stack_b,
+                order: 1,
+            }]);
+
+            // (c) The empty-stack variant: stack b has no tasks and
+            // its ghost still anchors the flow there.
+            let (fixture, mut state) = fixture::golden_state();
+            state.tasks.retain(|_, task| task.stack != fixture.stack_b);
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            let ghosts = harness.driver.find_all_by_label("Add task");
+            assert_eq!(ghosts.len(), 2);
+            ghosts[1].invoke_default_action();
+            harness.type_text("n");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[StateCommand::CreateTask {
+                title: "n".into(),
+                stack: fixture.stack_b,
+                order: 0,
+            }]);
+
+            // (d) The compact variant: the single ghost addresses the
+            // effective-selected stack (a at mount).
+            let (fixture, state) = fixture::journey_state();
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(600, 800);
+            let ghosts = harness.driver.find_all_by_label("Add task");
+            assert_eq!(ghosts.len(), 1, "the compact column's ghost");
+            ghosts[0].invoke_default_action();
+            harness.type_text("n");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[StateCommand::CreateTask {
+                title: "n".into(),
+                stack: fixture.stack_a,
+                order: 2,
+            }]);
+        },
+    );
+}
+
 /// DDF-5 — the anchor card is hidden from the board's list surfaces:
 /// board card counts (and, on the same single pass, the stack-detail
 /// cards) exclude the exact-title anchor; a byte-level near-miss stays
