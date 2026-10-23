@@ -33,6 +33,10 @@ export global TooltipState {
     // The placed top-left (Rust-written, D10).
     in-out property <length> tip-x;
     in-out property <length> tip-y;
+    // The panel's realized size, mirrored for the tests' geometry
+    // oracle (r2 D14) — written next to the size hand-off.
+    in-out property <length> tip-width;
+    in-out property <length> tip-height;
 
     // Installed by the window crate at mount: the delay timer (the
     // arm/dismiss must restart per *invocation* — property-change
@@ -79,23 +83,42 @@ export component TooltipPanel inherits Rectangle {
     opacity: TooltipState.visible && TooltipState.placed ? 1 : 0;
     x: TooltipState.tip-x;
     y: TooltipState.tip-y;
-    // Round-1 D9/D10: content-hugging width under the caps — 60% of
-    // the window and an absolute 420·scale, whichever is smaller. The
-    // natural width comes from the caption's own unwrapped preferred
-    // width (wrap does not change it, probe P5) — binding the panel to
-    // the layout's preferred width would cycle through the children's
-    // explicit width bindings.
-    width: min(caption.preferred-width + 2 * Theme.space-2,
+    // Round-1 D9/D10, widened by r2 D14: content-hugging width under
+    // the caps — 60% of the window and an absolute 420·scale,
+    // whichever is smaller. The natural term is the wider of the
+    // caption's own unwrapped preferred width (wrap does not change
+    // it, probe P5 — the wrap-probe comment stays the authority) and
+    // the hint row's keycap-row preferred width (F28: the height
+    // always included the hint; the width now does too). Binding the
+    // panel to the layout's preferred width would cycle through the
+    // children's explicit width bindings.
+    width: min(max(caption.preferred-width, hint-natural())
+                   + 2 * Theme.space-2,
                min(root.window-width * 0.6, 420px * Theme.base-scale));
+    // A hint-less tip is not widened by an empty model: the keys-less
+    // term is zero. The hint row stays mounted (invisible when
+    // keys-less) so its intrinsic preferred width is referenceable
+    // here — a conditional element cannot be referenced from outside
+    // its branch.
+    pure function hint-natural() -> length {
+        TooltipState.keys.length == 0 ? 0px : hint-row.preferred-width;
+    }
     height: layout.preferred-height;
     background: Theme.surface-raised;
     border-width: Theme.focus-ring-width;
     border-color: Theme.border;
     border-radius: Theme.radius-small;
 
-    changed width => { TooltipState.size-observed(self.width, self.height); }
-    changed height => { TooltipState.size-observed(self.width, self.height); }
-    init => { TooltipState.size-observed(self.width, self.height); }
+    changed width => { self.mirror-size(); }
+    changed height => { self.mirror-size(); }
+    init => { self.mirror-size(); }
+
+    // The size hand-off plus the tests' mirrors (r2 D14).
+    public function mirror-size() {
+        TooltipState.tip-width = self.width;
+        TooltipState.tip-height = self.height;
+        TooltipState.size-observed(self.width, self.height);
+    }
 
     layout := VerticalLayout {
         padding-left: Theme.space-2;
@@ -121,8 +144,14 @@ export component TooltipPanel inherits Rectangle {
             wrap: word-wrap;
             width: root.width - 2 * Theme.space-2;
         }
-        if (TooltipState.keys.length > 0): KbdHint {
+        // Always mounted so its preferred width can be mirrored (the
+        // conditional element cannot be referenced from outside its
+        // branch, and an init-time read sees no caps yet); hidden when
+        // keys-less — layouts skip invisible children, so this renders
+        // exactly as the old conditional did.
+        hint-row := KbdHint {
             keys: TooltipState.keys;
+            visible: TooltipState.keys.length > 0;
         }
     }
 }
