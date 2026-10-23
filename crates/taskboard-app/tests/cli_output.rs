@@ -334,6 +334,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::AmbiguousLabel { .. } => "ambiguous-label",
             CommandError::UnknownReminderRule(_) => "unknown-reminder-rule",
             CommandError::AmbiguousReminderRule { .. } => "ambiguous-reminder-rule",
+            CommandError::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
+            CommandError::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
             CommandError::NoStacks => "no-stacks",
             CommandError::AmbiguousBoard { .. } => "ambiguous-board",
             CommandError::SyncFailed(_) => "sync-failed",

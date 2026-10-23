@@ -10,6 +10,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Standalone timers & alarms, `taskboard timers add/list/cancel`
+  (#211, chunk 7): task-independent one-shot alarms (`--in <dur>` or
+  `--at <instant|date|HH:MM[:SS]>` host-local at the CLI edge; a bare
+  time already past means tomorrow), resolved by uuid/uuid-prefix/
+  label-prefix and cancelled typedly. An alarm fires within one tick
+  of its (snooze-chain-moved) instant, notifies with its label, and
+  dies by settlement — the post-batch prune removes it with its
+  delivery proofs and snooze links. Device-local: never synced, no UI
+  surface (the banner and the reminder center are unchanged). The
+  one-tick cadence is the firing precision bound, stated honestly.
+  Migration 0008 adds the additive `adhoc_alarms` table (0004
+  conventions).
 - The task-field surfaces + anchor hiding + the sidecar badge (#209,
   chunk 5): `tasks edit` grows `--scheduled` (the `--due` vocabulary),
   `--effort` (bare digits = minutes, `s`/`m`/`h` compose), and

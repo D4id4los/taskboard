@@ -1094,7 +1094,7 @@ mod tests {
 
         // Word 0: groups + flat verbs + REPL exits; refusals excluded.
         for verb in [
-            "boards", "stacks", "tasks", "labels", "sync", "status", "exit", "quit",
+            "boards", "stacks", "tasks", "labels", "timers", "sync", "status", "exit", "quit",
         ] {
             assert!(
                 spec.offered_verbs.iter().any(|v| v == verb),
@@ -1169,6 +1169,7 @@ mod tests {
                 ],
             ),
             ("labels", vec!["add", "delete", "edit", "list"]),
+            ("timers", vec!["add", "list", "cancel"]),
         ] {
             let walked = spec.groups.get(group).expect("group walked");
             for sub in subs {
@@ -1208,6 +1209,16 @@ mod tests {
             kinds(["tasks", "add"]),
             &[Kind::None],
             "a new task title is free text"
+        );
+        assert_eq!(
+            kinds(["timers", "add"]),
+            &[Kind::None],
+            "a timer label is free text"
+        );
+        assert_eq!(
+            kinds(["timers", "cancel"]),
+            &[Kind::None],
+            "no dynamic alarm completion (the D17 static-tokens ruling)"
         );
 
         // Value flags.

@@ -82,6 +82,12 @@ pub enum Command {
         #[command(subcommand)]
         cmd: LabelsCmd,
     },
+    /// Standalone timer/alarm verbs over the in-process core: fire once
+    /// at `--in`/`--at`, die by settlement. Device-local — never synced.
+    Timers {
+        #[command(subcommand)]
+        cmd: TimersCmd,
+    },
     /// Delete the stored Nextcloud credentials (and, under the auto
     /// backend, the config's server/user keys). Idempotent; the board
     /// binding and local db are untouched.
@@ -482,6 +488,95 @@ fn parse_urgency(raw: &str) -> Result<UrgencySpec, String> {
 fn parse_before_flag(raw: &str) -> Result<chrono::TimeDelta, String> {
     crate::config::parse_before(raw)
         .ok_or_else(|| "expected <int><unit> components (s|m|h|d), e.g. 10m or 1h30m".to_owned())
+}
+
+/// The `timers add --at` flag (D-R9's host-local ruling, applied at the
+/// CLI edge — this is the only place the app reads `chrono::Local`).
+/// Accepted, in order: (1) full RFC-3339 with offset → absolute instant;
+/// (2) `YYYY-MM-DD` → that date's midnight **host-local**, resolved to
+/// UTC (deliberately diverging from `parse_due`'s UTC bare-date reading:
+/// a wake-up alarm is a wall-clock promise); (3) `HH:MM[:SS]` → today
+/// host-local at that time, rolled to **tomorrow** when already past (a
+/// "09:30" set at 22:00 means tomorrow 09:30). DST-ambiguous local
+/// times resolve to one offset (chrono's local resolution); the alarm
+/// is absolute thereafter. Anything else is a clap usage error
+/// (exit 2), the `parse_due` failure shape.
+fn parse_at_flag(raw: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    use chrono::TimeZone as _;
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Ok(dt.with_timezone(&chrono::Utc));
+    }
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        let midnight = date.and_hms_opt(0, 0, 0).expect("midnight is valid");
+        return chrono::Local
+            .from_local_datetime(&midnight)
+            .single()
+            .map(|local| local.with_timezone(&chrono::Utc))
+            .ok_or_else(|| "that local midnight does not resolve to one instant".to_owned());
+    }
+    let time = chrono::NaiveTime::parse_from_str(raw, "%H:%M")
+        .or_else(|_| chrono::NaiveTime::parse_from_str(raw, "%H:%M:%S"));
+    if let Ok(time) = time {
+        let today = chrono::Local::now().date_naive();
+        let mut local = chrono::Local
+            .from_local_datetime(&today.and_time(time))
+            .single()
+            .ok_or_else(|| "that local time does not resolve to one instant".to_owned())?;
+        if local <= chrono::Local::now() {
+            let tomorrow = today.succ_opt().expect("tomorrow exists");
+            local = chrono::Local
+                .from_local_datetime(&tomorrow.and_time(time))
+                .single()
+                .ok_or_else(|| "that local time does not resolve to one instant".to_owned())?;
+        }
+        return Ok(local.with_timezone(&chrono::Utc));
+    }
+    Err("expected RFC-3339 (2026-10-24T09:00:00Z), YYYY-MM-DD, or HH:MM[:SS]".to_owned())
+}
+
+/// `timers` subcommands: the standalone alarm family (D-R9).
+#[derive(Debug, Subcommand)]
+pub enum TimersCmd {
+    /// Create a standalone alarm: fires once at the stamped instant,
+    /// then dies by settlement. Exactly one of `--in`/`--at`.
+    Add {
+        /// The notification label (no task to snapshot a title from).
+        /// The clap id is `timer_label` — `label` is the task-label
+        /// selector positional's id, and the completion walk types by
+        /// id (a collision would offer task-label titles here).
+        #[arg(value_name = "label")]
+        timer_label: String,
+        /// Fire this long after now (`30s|5m|1h30m|2d`); must be
+        /// positive. Exactly one of `--in`/`--at`.
+        #[arg(
+            long,
+            name = "in",
+            required_unless_present = "at",
+            conflicts_with = "at",
+            value_parser = parse_before_flag
+        )]
+        in_: Option<chrono::TimeDelta>,
+        /// Fire at this instant (RFC-3339 | YYYY-MM-DD | HH:MM[:SS]
+        /// host-local; a bare time already past means tomorrow).
+        /// Exactly one of `--in`/`--at`.
+        #[arg(
+            long,
+            required_unless_present = "in",
+            conflicts_with = "in",
+            value_parser = parse_at_flag
+        )]
+        at: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// List the standalone alarms in canonical `(fire_at, id)` order
+    /// (pure read).
+    List,
+    /// Cancel a standalone alarm (uuid | unique ≥8-char uuid prefix |
+    /// unique case-folded label prefix). Cancel deletes the row, so a
+    /// repeat is a typed unknown-alarm refusal.
+    Cancel {
+        /// The alarm selector.
+        selector: String,
+    },
 }
 
 /// `config` subcommands.
