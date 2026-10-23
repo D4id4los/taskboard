@@ -10,15 +10,17 @@ use taskboard_domain::entities::{
     Board, BoardClocks, Color, Label, LabelClocks, Stack, StackClocks, Task, TaskClocks,
 };
 use taskboard_domain::ids::{
-    BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId, RemoteCardId,
-    RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
+    AdhocAlarmId, BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId,
+    RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef,
+    StackId, TaskId,
 };
 use taskboard_domain::outbox::{OpId, PendingOp};
 use taskboard_domain::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
 };
 use taskboard_domain::reminders::{
-    ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderSnoozeKey, ReminderState,
+    AdhocAlarm, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderSnoozeKey,
+    ReminderState,
 };
 use taskboard_domain::state::{SyncPhase, SyncStates, derive_sync_states};
 use uuid::Uuid;
@@ -157,6 +159,14 @@ struct ReminderRuleRow {
     updated_at: DateTime<Utc>,
 }
 
+/// Raw `adhoc_alarms` row.
+struct AdhocAlarmRow {
+    alarm_id: String,
+    label: String,
+    fire_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+}
+
 /// Raw `reminder_deliveries` row.
 struct ReminderDeliveryRow {
     reminder: String,
@@ -169,6 +179,15 @@ struct ReminderSnoozeRow {
     reminder: String,
     occurrence: DateTime<Utc>,
     rescheduled_to: DateTime<Utc>,
+}
+
+fn decode_adhoc_alarm(row: &AdhocAlarmRow) -> Result<AdhocAlarm, RepositoryError> {
+    Ok(AdhocAlarm {
+        id: AdhocAlarmId::from(decode::uuid(&row.alarm_id)?),
+        label: row.label.clone(),
+        fire_at: row.fire_at,
+        created_at: row.created_at,
+    })
 }
 
 /// Decode helpers shared by the row mappers; every failure becomes
@@ -624,6 +643,17 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
+        let adhoc_alarm_rows = sqlx::query_as!(
+            AdhocAlarmRow,
+            r#"SELECT alarm_id, label,
+                      fire_at as "fire_at: DateTime<Utc>",
+                      created_at as "created_at: DateTime<Utc>"
+               FROM adhoc_alarms ORDER BY alarm_id"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
         let reminder_muted_rows =
             sqlx::query!(r#"SELECT task_id FROM reminder_muted ORDER BY task_id"#)
                 .fetch_all(&mut *tx)
@@ -709,9 +739,11 @@ impl SqliteTaskRepository {
         for row in reminder_muted_rows {
             muted.insert(TaskId::from(decode::uuid(&row.task_id)?));
         }
-        // Adhoc alarms hydrate with 0008; until that migration lands the
-        // table does not exist and the map is empty by construction.
-        let alarms = BTreeMap::new();
+        let mut alarms = BTreeMap::new();
+        for row in adhoc_alarm_rows {
+            let alarm = decode_adhoc_alarm(&row)?;
+            alarms.insert(alarm.id, alarm);
+        }
         let reminders = ReminderState {
             rules,
             deliveries,

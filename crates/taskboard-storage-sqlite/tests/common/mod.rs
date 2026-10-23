@@ -32,6 +32,9 @@ pub fn actions_from_state(state: &PersistedState) -> Vec<PersistenceAction> {
     for rule in state.reminders.rules.values() {
         actions.push(PersistenceAction::UpsertReminderRule(rule.clone()));
     }
+    for alarm in state.reminders.alarms.values() {
+        actions.push(PersistenceAction::UpsertAdhocAlarm(alarm.clone()));
+    }
     for delivery in &state.reminders.deliveries {
         actions.push(PersistenceAction::RecordReminderDelivery(*delivery));
     }
