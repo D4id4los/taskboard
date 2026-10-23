@@ -2805,3 +2805,101 @@ fn a_menu_row_click_unhovers_the_tooltip() {
         },
     );
 }
+
+/// R2 D14 (§7) — the tooltip width includes the hint row, relation
+/// only (no font metrics): the same caption with a two-keycap hint is
+/// wider than without; the absurd-caption case keeps the window cap;
+/// a keys-less hover is not widened by an empty model.
+#[test]
+fn the_tooltip_width_includes_the_hint_row_and_keeps_the_cap() {
+    use slint::{ModelRc, SharedString, VecModel};
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+
+            // (a) Short caption, no keys → w1; same caption plus a
+            //     two-keycap hint → wider.
+            tooltip_state(&harness).invoke_hover(
+                "short".into(),
+                "".into(),
+                ModelRc::default(),
+                500.0,
+                300.0,
+                32.0,
+                32.0,
+            );
+            harness.driver.advance_time(600);
+            harness.driver.advance_time(0);
+            let plain = tooltip_state(&harness).get_tip_width();
+            assert!(plain > 0.0, "the tip measured its width");
+            tooltip_state(&harness).invoke_unhover();
+
+            let keys = ModelRc::new(VecModel::from(vec![
+                SharedString::from("Ctrl"),
+                SharedString::from("K"),
+            ]));
+            tooltip_state(&harness).invoke_hover(
+                "short".into(),
+                "".into(),
+                keys,
+                500.0,
+                300.0,
+                32.0,
+                32.0,
+            );
+            harness.driver.advance_time(600);
+            harness.driver.advance_time(0);
+            let hinted = tooltip_state(&harness).get_tip_width();
+            assert!(
+                hinted > plain,
+                "the hint row widens the tip: {hinted} vs {plain}"
+            );
+            tooltip_state(&harness).invoke_unhover();
+
+            // (b) The absurd caption keeps the window cap.
+            tooltip_state(&harness).invoke_hover(
+                "an absurdly long tooltip label that cannot possibly fit a 1000 px window without wrapping somewhere long long long"
+                    .into(),
+                "".into(),
+                ModelRc::default(),
+                500.0,
+                300.0,
+                32.0,
+                32.0,
+            );
+            harness.driver.advance_time(600);
+            harness.driver.advance_time(0);
+            assert!(
+                tooltip_state(&harness).get_tip_width() <= 1000.0 * 0.6 + 0.5,
+                "the cap holds: {}",
+                tooltip_state(&harness).get_tip_width()
+            );
+            tooltip_state(&harness).invoke_unhover();
+
+            // (c) A keys-less hover is not widened by an empty model:
+            //     the width returns to the caption term.
+            tooltip_state(&harness).invoke_hover(
+                "short".into(),
+                "".into(),
+                ModelRc::default(),
+                500.0,
+                300.0,
+                32.0,
+                32.0,
+            );
+            harness.driver.advance_time(600);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                tooltip_state(&harness).get_tip_width(),
+                plain,
+                "the keys-less width matches the plain caption term"
+            );
+            tooltip_state(&harness).invoke_unhover();
+        },
+    );
+}
