@@ -492,6 +492,58 @@ pub struct ReminderAddReceipt {
     pub added: bool,
 }
 
+/// The `timers add` receipt (`fire_at` is state truth — the stamped
+/// `In` value read back from the alarms map, not an input echo).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TimerAddReceipt {
+    /// The fresh alarm's local uuid.
+    pub alarm_id: String,
+    /// The label.
+    pub label: String,
+    /// The absolute fire instant.
+    pub fire_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The `timers cancel` receipt (projected from the pre-execute row —
+/// the row is gone post-execute).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TimerCancelReceipt {
+    /// The cancelled alarm's local uuid.
+    pub alarm_id: String,
+    /// The cancelled alarm's label.
+    pub label: String,
+}
+
+/// One `timers list` row. `effective_at` is the snooze-chain-walked
+/// fire instant; `overdue` marks `effective_at <= now` — a delivered,
+/// settled alarm cannot survive a batch (the prune removes it in the
+/// same `apply` that records the delivery), so a visible row with an
+/// effective instant at or below now is exactly the fired-but-unacked
+/// shape; a snoozed alarm shows its moved target.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TimerRow {
+    /// The alarm's local uuid.
+    pub alarm_id: String,
+    /// The label.
+    pub label: String,
+    /// The alarm row's absolute fire instant (the chain base).
+    pub fire_at: chrono::DateTime<chrono::Utc>,
+    /// The effective (chain-walked) fire instant.
+    pub effective_at: chrono::DateTime<chrono::Utc>,
+    /// `effective_at <= now` (the fired-not-yet-processed marker).
+    pub overdue: bool,
+    /// `effective_at - now` when positive (the snoozed/moved target's
+    /// remaining time).
+    pub remaining: Option<chrono::TimeDelta>,
+}
+
+/// The `timers list` payload.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TimersList {
+    /// Rows in canonical `(fire_at, id)` order.
+    pub timers: Vec<TimerRow>,
+}
+
 /// The `tasks remind --remove` receipt (projected from the pre-execute
 /// rule row — the rule is gone post-execute).
 #[derive(Debug, Clone, Serialize, PartialEq)]

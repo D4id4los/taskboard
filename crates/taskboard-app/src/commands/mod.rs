@@ -23,6 +23,7 @@ pub mod stacks;
 pub mod status;
 pub mod sync;
 pub mod tasks;
+pub mod timers;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -186,6 +187,16 @@ pub enum CommandError {
     #[error("rule selector matches several rules — pass one of {}", candidates.join(" | "))]
     AmbiguousReminderRule {
         /// The matched rules' full uuids.
+        candidates: Vec<String>,
+    },
+    /// No standalone alarm matches the selector.
+    #[error("no such timer/alarm")]
+    UnknownAdhocAlarm(String),
+    /// The alarm selector matches several alarms; carries their full
+    /// uuids (deterministic alarm-id order).
+    #[error("timer selector matches several alarms — pass one of {}", candidates.join(" | "))]
+    AmbiguousAdhocAlarm {
+        /// The matched alarms' full uuids.
         candidates: Vec<String>,
     },
     /// There is no stack to target.
@@ -397,6 +408,8 @@ impl CommandError {
             Self::AmbiguousLabel { .. } => "ambiguous-label",
             Self::UnknownReminderRule(_) => "unknown-reminder-rule",
             Self::AmbiguousReminderRule { .. } => "ambiguous-reminder-rule",
+            Self::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
+            Self::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
             Self::NoStacks => "no-stacks",
             Self::AmbiguousBoard { .. } => "ambiguous-board",
             Self::SyncFailed(_) => "sync-failed",
@@ -451,10 +464,12 @@ impl CommandError {
             Self::UnknownTask(sel)
             | Self::UnknownStack(sel)
             | Self::UnknownLabel(sel)
-            | Self::UnknownReminderRule(sel) => Some(sel.clone()),
+            | Self::UnknownReminderRule(sel)
+            | Self::UnknownAdhocAlarm(sel) => Some(sel.clone()),
             Self::AmbiguousTask { candidates }
             | Self::AmbiguousStack { candidates }
             | Self::AmbiguousReminderRule { candidates }
+            | Self::AmbiguousAdhocAlarm { candidates }
             | Self::AmbiguousBoard { candidates } => Some(candidates.join(", ")),
             Self::SyncFailed(kind) => Some(output::sync_error_kind(*kind).to_owned()),
             Self::IpcVersion { server_v } => Some(server_v.to_string()),
@@ -988,6 +1003,12 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             }
             None => unreachable!("the outer match selected the Remind arm"),
         },
+        Command::Timers { cmd } => match timers::collapse(cmd) {
+            Some(invocation) => {
+                timers::timers_command(&mut ctx.io, ctx.config_path.clone(), invocation).await
+            }
+            None => unreachable!("clap requires exactly one of --in/--at on timers add"),
+        },
         Command::Tasks {
             cmd: TasksCmd::Label { task, label },
         } => run_mutation(
@@ -1359,6 +1380,10 @@ pub async fn dispatch_line(
         Command::Boards { cmd } => boards_line(session, app, cmd, io).await,
         Command::Stacks { cmd } => stacks_line(app, cmd, io).await,
         Command::Labels { cmd } => labels_line(app, cmd, io).await,
+        Command::Timers { cmd } => match timers::collapse(cmd) {
+            Some(invocation) => timers::timers_line(app, io, invocation).await,
+            None => unreachable!("clap requires exactly one of --in/--at on timers add"),
+        },
         Command::Tasks { cmd } => tasks_line(session, app, cmd, io).await,
         Command::Sync {
             no_wait,
@@ -1771,6 +1796,7 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         | Command::Stacks { .. }
         | Command::Labels { .. }
         | Command::Tasks { .. }
+        | Command::Timers { .. }
         | Command::Sync { .. } => IpcRoute::IpcOrLocal,
     }
 }
