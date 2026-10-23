@@ -322,7 +322,7 @@ async fn r1_first_tick_fires_the_past_due_default() {
         notes,
         vec![Notification {
             reminder: ReminderRef::Default(task_id),
-            task: task_id,
+            anchor: taskboard_domain::ReminderAnchor::Task(task_id),
             title: "due task".into(),
             occurrence: ts(T0 - 3_600),
         }],

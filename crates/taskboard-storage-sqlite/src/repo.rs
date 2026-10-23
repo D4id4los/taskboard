@@ -709,11 +709,15 @@ impl SqliteTaskRepository {
         for row in reminder_muted_rows {
             muted.insert(TaskId::from(decode::uuid(&row.task_id)?));
         }
+        // Adhoc alarms hydrate with 0008; until that migration lands the
+        // table does not exist and the map is empty by construction.
+        let alarms = BTreeMap::new();
         let reminders = ReminderState {
             rules,
             deliveries,
             snoozes,
             muted,
+            alarms,
         };
 
         let mut state = PersistedState {

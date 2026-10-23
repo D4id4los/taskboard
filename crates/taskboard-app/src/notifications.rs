@@ -51,13 +51,25 @@ impl NotificationSink for LogSink {
         notification: &'a Notification,
     ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
         Box::pin(async move {
-            tracing::info!(
-                reminder = %notification.reminder.text_form(),
-                task = %notification.task.as_uuid(),
-                title = %notification.title,
-                occurrence = %notification.occurrence.to_rfc3339(),
-                "reminder due"
-            );
+            // The typed anchor decides the id field: task firings render
+            // `task=`, alarm firings `alarm=` (the DesktopSink of the
+            // desktop-toast plan matches the same enum).
+            match notification.anchor {
+                taskboard_domain::ReminderAnchor::Task(task) => tracing::info!(
+                    reminder = %notification.reminder.text_form(),
+                    task = %task.as_uuid(),
+                    title = %notification.title,
+                    occurrence = %notification.occurrence.to_rfc3339(),
+                    "reminder due"
+                ),
+                taskboard_domain::ReminderAnchor::Alarm(alarm) => tracing::info!(
+                    reminder = %notification.reminder.text_form(),
+                    alarm = %alarm.as_uuid(),
+                    title = %notification.title,
+                    occurrence = %notification.occurrence.to_rfc3339(),
+                    "reminder due"
+                ),
+            }
             Ok(())
         })
     }

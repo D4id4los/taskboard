@@ -72,8 +72,9 @@ pub use entities::{
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
-    BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId, RemoteCardId,
-    RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId, TaskId,
+    AdhocAlarmId, BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId,
+    RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef,
+    StackId, TaskId,
 };
 pub use merge::{
     RuleFoldChanges, adopt_board_if_newer, adopt_label_after_push, adopt_remote_board,
@@ -96,9 +97,10 @@ pub use push::{
 };
 pub use reconcile::{ReconcileCounts, normalized_title, plan_reconcile};
 pub use reminders::{
-    InvalidReminderOffset, Notification, ReminderDefaults, ReminderDelivery, ReminderFiring,
-    ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState,
-    due_firings, due_soon, effective_occurrence, notifications_for, occurrence_of, overdue_tasks,
+    AdhocAlarm, InvalidReminderOffset, Notification, ReminderAnchor, ReminderDefaults,
+    ReminderDelivery, ReminderFiring, ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze,
+    ReminderSnoozeKey, ReminderState, alarm_occurrence, due_firings, due_soon,
+    effective_occurrence, notifications_for, occurrence_of, overdue_tasks,
 };
 pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,

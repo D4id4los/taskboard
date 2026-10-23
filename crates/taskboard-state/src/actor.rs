@@ -1075,7 +1075,7 @@ async fn reminder_tick(
         return;
     }
     *storage_failing = false;
-    let payloads = notifications_for(&firings, core.tasks());
+    let payloads = notifications_for(&firings, core.tasks(), core.reminders());
     if core.interpret(&actions, now) {
         publish(core, shared, signals, metrics);
     }

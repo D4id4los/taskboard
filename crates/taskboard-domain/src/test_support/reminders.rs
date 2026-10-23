@@ -15,10 +15,10 @@ use proptest::prelude::*;
 
 use super::{task_id_strategy, task_strategy, timestamp_strategy};
 use crate::entities::Task;
-use crate::ids::{ReminderRuleId, TaskId};
+use crate::ids::{AdhocAlarmId, ReminderRuleId, TaskId};
 use crate::reminders::{
-    ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey,
-    ReminderState,
+    AdhocAlarm, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze,
+    ReminderSnoozeKey, ReminderState,
 };
 
 /// A non-positive offset in `≤ −30 d … 0`: exercises the sign domain
@@ -37,12 +37,41 @@ pub fn reminder_rule_id_strategy() -> impl Strategy<Value = ReminderRuleId> {
     any::<u128>().prop_map(|raw| ReminderRuleId::from(uuid::Uuid::from_u128(raw)))
 }
 
-/// A reminder pointing at an explicit rule or a task's implicit default.
+/// A random adhoc-alarm id.
+pub fn adhoc_alarm_id_strategy() -> impl Strategy<Value = AdhocAlarmId> {
+    any::<u128>().prop_map(|raw| AdhocAlarmId::from(uuid::Uuid::from_u128(raw)))
+}
+
+/// A reminder pointing at an explicit rule, a task's implicit default,
+/// or a standalone adhoc alarm.
 pub fn reminder_ref_strategy() -> impl Strategy<Value = ReminderRef> {
     prop_oneof![
         reminder_rule_id_strategy().prop_map(ReminderRef::Rule),
         task_id_strategy().prop_map(ReminderRef::Default),
+        adhoc_alarm_id_strategy().prop_map(ReminderRef::Adhoc),
     ]
+}
+
+/// A standalone adhoc alarm row (label from a short alphanumeric string;
+/// referentially self-contained — no task anchor).
+///
+/// # Panics
+///
+/// Only via `expect` on the constant label regex: a compile-time-known
+/// valid pattern.
+pub fn adhoc_alarm_strategy() -> impl Strategy<Value = AdhocAlarm> {
+    (
+        adhoc_alarm_id_strategy(),
+        proptest::string::string_regex("[a-z0-9]{0,10}").expect("valid regex"),
+        timestamp_strategy(),
+        timestamp_strategy(),
+    )
+        .prop_map(|(id, label, fire_at, created_at)| AdhocAlarm {
+            id,
+            label,
+            fire_at,
+            created_at,
+        })
 }
 
 /// A standalone rule row (not referentially bound — the `task_strategy`
@@ -101,41 +130,57 @@ pub fn task_map_strategy() -> impl Strategy<Value = BTreeMap<TaskId, Task>> {
 /// [`build_reminders`].
 #[derive(Debug, Clone)]
 pub struct ReminderRow {
-    /// Row kind: 0 = rule, 1 = delivery, 2 = snooze, 3 = mute.
+    /// Row kind: 0 = rule, 1 = delivery, 2 = snooze, 3 = mute,
+    /// 4 = adhoc alarm.
     pub kind: usize,
     /// Rule id (rule rows) / part of the reminder pick (delivery, snooze).
     pub rule: ReminderRuleId,
     /// Task anchor: the rule's task, the `Default` ref's task, or the
     /// muted task.
     pub task: TaskId,
+    /// Alarm id (alarm rows) / part of the reminder pick (delivery,
+    /// snooze).
+    pub alarm: AdhocAlarmId,
     /// Rule offset (rule rows).
     pub offset: ReminderOffset,
-    /// Rule creation stamp (rule rows).
+    /// Rule creation stamp (rule rows) / alarm creation stamp (alarm
+    /// rows).
     pub created_at: DateTime<Utc>,
-    /// Reminder pick: even → a generated rule, odd → `Default` of a
-    /// generated task (delivery and snooze rows).
+    /// Reminder pick: `pick % 3` — 0 → a generated rule, 1 → `Default`
+    /// of a generated task, 2 → a generated alarm (delivery and snooze
+    /// rows).
     pub pick: usize,
-    /// Occurrence (delivery and snooze rows).
+    /// Occurrence (delivery and snooze rows) / fire-at instant (alarm
+    /// rows).
     pub occurrence: DateTime<Utc>,
     /// Delivery stamp (delivery rows).
     pub delivered_at: DateTime<Utc>,
     /// Snooze target (snooze rows).
     pub rescheduled_to: DateTime<Utc>,
+    /// Alarm label (alarm rows).
+    pub label: String,
 }
 
-/// Raw reminder rows: `0..4` kinds × a handful of rows each.
+/// Raw reminder rows: `0..5` kinds × a handful of rows each.
+///
+/// # Panics
+///
+/// Only via `expect` on the constant label regex: a compile-time-known
+/// valid pattern.
 pub fn reminder_rows_strategy() -> impl Strategy<Value = Vec<ReminderRow>> {
     prop::collection::vec(
         (
-            prop_oneof![Just(0_usize), Just(1), Just(2), Just(3)],
+            prop_oneof![Just(0_usize), Just(1), Just(2), Just(3), Just(4)],
             reminder_rule_id_strategy(),
             task_id_strategy(),
+            adhoc_alarm_id_strategy(),
             reminder_offset_strategy(),
             timestamp_strategy(),
             any::<usize>(),
             timestamp_strategy(),
             timestamp_strategy(),
             timestamp_strategy(),
+            proptest::string::string_regex("[a-z0-9]{0,10}").expect("valid regex"),
         ),
         0..12,
     )
@@ -146,23 +191,27 @@ pub fn reminder_rows_strategy() -> impl Strategy<Value = Vec<ReminderRow>> {
                     kind,
                     rule,
                     task,
+                    alarm,
                     offset,
                     created_at,
                     pick,
                     occurrence,
                     delivered_at,
                     rescheduled_to,
+                    label,
                 )| {
                     ReminderRow {
                         kind,
                         rule,
                         task,
+                        alarm,
                         offset,
                         created_at,
                         pick,
                         occurrence,
                         delivered_at,
                         rescheduled_to,
+                        label,
                     }
                 },
             )
@@ -171,10 +220,12 @@ pub fn reminder_rows_strategy() -> impl Strategy<Value = Vec<ReminderRow>> {
 }
 
 /// Assembles the reminder section over generated tasks: rule rows anchor
-/// on the picked task; delivery/snooze rows reference an existing rule or
-/// the `Default` of an existing task; muted tasks ⊆ generated tasks.
-/// Normalizes to the persisted invariants (≤1 delivery per key, first
-/// wins; compacted snooze chains).
+/// on the picked task; delivery/snooze rows reference an existing rule,
+/// the `Default` of an existing task, or an existing alarm; muted tasks
+/// ⊆ generated tasks; alarm rows are referentially self-contained (the
+/// alarm map never references tasks). Normalizes to the persisted
+/// invariants (≤1 delivery per key, first wins; compacted snooze
+/// chains).
 #[must_use]
 pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -> ReminderState {
     let task_ids: Vec<TaskId> = tasks.keys().copied().collect();
@@ -183,6 +234,7 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
         return state;
     }
     let mut rule_ids: Vec<ReminderRuleId> = Vec::new();
+    let mut alarm_ids: Vec<AdhocAlarmId> = Vec::new();
     for row in rows {
         match row.kind {
             0 => {
@@ -199,7 +251,7 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
                 }
             }
             1 | 2 => {
-                let Some(reminder) = pick_ref(&rule_ids, &task_ids, row.pick) else {
+                let Some(reminder) = pick_ref(&rule_ids, &task_ids, &alarm_ids, row.pick) else {
                     continue;
                 };
                 let occurrence = row.occurrence;
@@ -222,6 +274,16 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
                     );
                 }
             }
+            4 => {
+                let alarm = AdhocAlarm {
+                    id: row.alarm,
+                    label: row.label,
+                    fire_at: row.occurrence,
+                    created_at: row.created_at,
+                };
+                alarm_ids.push(alarm.id);
+                state.alarms.insert(alarm.id, alarm);
+            }
             _ => {
                 state.muted.insert(task_ids[row.pick % task_ids.len()]);
             }
@@ -231,19 +293,28 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
     state
 }
 
-/// Picks `Rule` of a generated rule for even picks, `Default` of a
-/// generated task otherwise; `None` when the anchor side is empty.
-fn pick_ref(rule_ids: &[ReminderRuleId], task_ids: &[TaskId], pick: usize) -> Option<ReminderRef> {
-    if pick.is_multiple_of(2) {
-        rule_ids
+/// Picks `Rule` of a generated rule (`pick % 3 == 0`), `Default` of a
+/// generated task (`== 1`), or `Adhoc` of a generated alarm (`== 2`);
+/// `None` when the picked anchor side is empty.
+fn pick_ref(
+    rule_ids: &[ReminderRuleId],
+    task_ids: &[TaskId],
+    alarm_ids: &[AdhocAlarmId],
+    pick: usize,
+) -> Option<ReminderRef> {
+    match pick % 3 {
+        0 => rule_ids
             .get(pick % rule_ids.len().max(1))
             .copied()
-            .map(ReminderRef::Rule)
-    } else {
-        task_ids
+            .map(ReminderRef::Rule),
+        1 => task_ids
             .get(pick % task_ids.len())
             .copied()
-            .map(ReminderRef::Default)
+            .map(ReminderRef::Default),
+        _ => alarm_ids
+            .get(pick % alarm_ids.len().max(1))
+            .copied()
+            .map(ReminderRef::Adhoc),
     }
 }
 
@@ -273,12 +344,14 @@ mod tests {
                 match delivery.reminder {
                     ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
                     ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
+                    ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),
                 }
             }
             for key in state.snoozes.keys() {
                 match key.reminder {
                     ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
                     ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
+                    ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),
                 }
             }
             for task in &state.muted {

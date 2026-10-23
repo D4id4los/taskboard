@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::entities::Task;
-use crate::ids::{ReminderRuleId, TaskId};
+use crate::ids::{AdhocAlarmId, ReminderRuleId, TaskId};
 
 /// A due-anchored offset that can only be "at or before" the due date:
 /// the inner `chrono::TimeDelta` is ≤ 0 by construction — [`before`] is
@@ -133,24 +133,29 @@ pub enum InvalidReminderOffset {
 }
 
 /// Which reminder a firing/delivery/snooze refers to: an explicit rule,
-/// or a task's implicit default (no stored row — its identity is the
-/// task).
+/// a task's implicit default (no stored row — its identity is the task),
+/// or a standalone adhoc alarm (device-local; the label lives on the
+/// alarm row).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ReminderRef {
     /// An explicit rule.
     Rule(ReminderRuleId),
     /// The task's implicit default reminder.
     Default(TaskId),
+    /// A standalone adhoc alarm.
+    Adhoc(AdhocAlarmId),
 }
 
 impl ReminderRef {
     /// The text form shared by the storage codec and the snooze-map key
-    /// encoding (`"rule:<uuid>"` / `"default:<task-uuid>"`).
+    /// encoding (`"rule:<uuid>"` / `"default:<task-uuid>"` /
+    /// `"alarm:<uuid>"`).
     #[must_use]
     pub fn text_form(self) -> String {
         match self {
             Self::Rule(id) => format!("rule:{}", id.as_uuid()),
             Self::Default(task) => format!("default:{}", task.as_uuid()),
+            Self::Adhoc(id) => format!("alarm:{}", id.as_uuid()),
         }
     }
 
@@ -161,6 +166,11 @@ impl ReminderRef {
     pub fn parse_text_form(raw: &str) -> Option<Self> {
         if let Some(id) = raw.strip_prefix("rule:") {
             return Some(Self::Rule(ReminderRuleId::from(
+                uuid::Uuid::parse_str(id).ok()?,
+            )));
+        }
+        if let Some(id) = raw.strip_prefix("alarm:") {
+            return Some(Self::Adhoc(AdhocAlarmId::from(
                 uuid::Uuid::parse_str(id).ok()?,
             )));
         }
@@ -189,6 +199,24 @@ pub struct ReminderRule {
     /// stamps it equal to `created_at`; no rule-edit verbs exist yet
     /// (removals delete, they never stamp a survivor).
     pub updated_at: DateTime<Utc>,
+}
+
+/// A standalone alarm: fires once at its absolute `fire_at` instant
+/// (plus whatever snooze-chain movement follows), then dies by
+/// settlement — the post-batch prune removes it once its effective
+/// occurrence is delivered. Cancel is the off-switch; there is no mute
+/// (mute is task-shaped) and no done/archived state (map membership is
+/// liveness).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdhocAlarm {
+    /// Local identity.
+    pub id: AdhocAlarmId,
+    /// The notification title (no task to snapshot a title from).
+    pub label: String,
+    /// The absolute fire instant.
+    pub fire_at: DateTime<Utc>,
+    /// Creation stamp.
+    pub created_at: DateTime<Utc>,
 }
 
 /// Proof that an occurrence was notified — the at-most-once guard.
@@ -270,15 +298,27 @@ pub struct ReminderDefaults {
 pub struct ReminderFiring {
     /// Which reminder fires.
     pub reminder: ReminderRef,
-    /// The task it belongs to.
-    pub task: TaskId,
+    /// What the firing is anchored on (the watched task, or the alarm).
+    pub anchor: ReminderAnchor,
     /// The effective occurrence being fired.
     pub occurrence: DateTime<Utc>,
 }
 
+/// What a firing/notification is anchored on: the task a reminder
+/// watches, or the alarm that owns its label. Alarms carry the typed
+/// anchor so consumers match without re-matching the ref.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ReminderAnchor {
+    /// A task-anchored reminder (explicit rule or implicit default).
+    Task(TaskId),
+    /// A standalone alarm (the label lives on the [`AdhocAlarm`] row).
+    Alarm(AdhocAlarmId),
+}
+
 /// Persisted reminder facts carried in `AppState`/`PersistedState`.
-/// Field order is the snapshot order: rules, deliveries, snoozes, muted.
-/// Delivered-ness and snoozed-ness are plain set/map membership checks.
+/// Field order is the snapshot order: rules, deliveries, snoozes, muted,
+/// alarms. Delivered-ness and snoozed-ness are plain set/map membership
+/// checks.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReminderState {
     /// Explicit rules by id.
@@ -293,6 +333,9 @@ pub struct ReminderState {
     /// Tasks muted out of firings entirely. The overdue *banner* ignores
     /// this set — mute means "stop nagging", not "hide reality".
     pub muted: BTreeSet<TaskId>,
+    /// Standalone alarms by id. Map membership is liveness: a removed
+    /// row cannot fire, and no done/tombstone state exists.
+    pub alarms: BTreeMap<AdhocAlarmId, AdhocAlarm>,
 }
 
 impl ReminderState {
@@ -320,15 +363,17 @@ impl ReminderState {
 }
 
 /// Outbound reminder notification: the payload a sink delivers. Title is
-/// a snapshot at fire time (the task may be edited later). Pure data —
-/// the engine's notifier *channel* lives in the actor crates.
+/// a snapshot at fire time (the task may be edited later; an alarm's
+/// label is its own row). Pure data — the engine's notifier *channel*
+/// lives in the actor crates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
     /// Which reminder fired — correlates a later dismiss/snooze reply
     /// with this payload (both carry the ref + occurrence).
     pub reminder: ReminderRef,
-    /// The task it belongs to.
-    pub task: TaskId,
+    /// What the notification is anchored on (the watched task, or the
+    /// alarm that owns the label).
+    pub anchor: ReminderAnchor,
     /// Title snapshot at fire time.
     pub title: String,
     /// The effective occurrence that fired.
@@ -336,23 +381,34 @@ pub struct Notification {
 }
 
 /// Pure payload assembly: one [`Notification`] per firing, with the
-/// title snapshot from the task map. A firing whose task is missing is
+/// title snapshot from the task map (task anchors) or the alarm row's
+/// label (alarm anchors). A firing whose anchor cannot resolve — a task
+/// missing from the map, an alarm missing from the alarms map — is
 /// skipped (total on arbitrary input; unreachable through the engine's
 /// sequential tick, which evaluates and assembles in one message).
 #[must_use]
 pub fn notifications_for(
     firings: &[ReminderFiring],
     tasks: &BTreeMap<TaskId, Task>,
+    reminders: &ReminderState,
 ) -> Vec<Notification> {
     firings
         .iter()
-        .filter_map(|firing| {
-            tasks.get(&firing.task).map(|task| Notification {
+        .filter_map(|firing| match firing.anchor {
+            ReminderAnchor::Task(task_id) => tasks.get(&task_id).map(|task| Notification {
                 reminder: firing.reminder,
-                task: firing.task,
+                anchor: firing.anchor,
                 title: task.title.clone(),
                 occurrence: firing.occurrence,
-            })
+            }),
+            ReminderAnchor::Alarm(alarm_id) => {
+                reminders.alarms.get(&alarm_id).map(|alarm| Notification {
+                    reminder: firing.reminder,
+                    anchor: firing.anchor,
+                    title: alarm.label.clone(),
+                    occurrence: firing.occurrence,
+                })
+            }
         })
         .collect()
 }
@@ -402,11 +458,25 @@ pub fn effective_occurrence(
     defaults: &ReminderDefaults,
 ) -> Option<DateTime<Utc>> {
     let base = base_occurrence(reminder, reminders, tasks, defaults)?;
+    Some(walk_chain(base, *reminder, &reminders.snoozes))
+}
+
+/// The snooze-chain walk shared by every occurrence reader: follows
+/// `(reminder, occurrence) → target` links from `base`, cycle-bounded
+/// (a `visited` set — on a cyclic link chain, unsanctionable data no
+/// sanctioned write can produce, the walk stops at the last node before
+/// the repeat, keeping the reader total on arbitrary input). Pure
+/// motion out of `effective_occurrence`.
+fn walk_chain(
+    base: DateTime<Utc>,
+    reminder: ReminderRef,
+    snoozes: &BTreeMap<ReminderSnoozeKey, DateTime<Utc>>,
+) -> DateTime<Utc> {
     let mut effective = base;
     let mut visited = BTreeSet::new();
     visited.insert(base);
-    while let Some(&target) = reminders.snoozes.get(&ReminderSnoozeKey {
-        reminder: *reminder,
+    while let Some(&target) = snoozes.get(&ReminderSnoozeKey {
+        reminder,
         occurrence: effective,
     }) {
         if !visited.insert(target) {
@@ -414,7 +484,18 @@ pub fn effective_occurrence(
         }
         effective = target;
     }
-    Some(effective)
+    effective
+}
+
+/// Effective occurrence of one adhoc alarm: its absolute `fire_at` base,
+/// or wherever the snooze chain has moved it. The alarms-side reading
+/// used by the settlement prune, the CLI list rows, and
+/// [`notifications_for`]'s label lookup — no `tasks`/`defaults` context,
+/// unlike [`effective_occurrence`]. `None` ⇔ the alarm row is missing.
+#[must_use]
+pub fn alarm_occurrence(reminders: &ReminderState, id: AdhocAlarmId) -> Option<DateTime<Utc>> {
+    let base = reminders.alarms.get(&id)?.fire_at;
+    Some(walk_chain(base, ReminderRef::Adhoc(id), &reminders.snoozes))
 }
 
 fn base_occurrence(
@@ -432,16 +513,20 @@ fn base_occurrence(
             let duedate = tasks.get(&task)?.duedate?;
             duedate.checked_add_signed(defaults.default_before.as_duration())
         }
+        // Absolute: no arithmetic, so `None` is only the missing row.
+        ReminderRef::Adhoc(id) => Some(reminders.alarms.get(&id)?.fire_at),
     }
 }
 
 /// Everything that must fire at `now`: explicit rules plus implicit
-/// defaults, occurrence-keyed, snooze- and mute-aware. Sorted by
+/// defaults, occurrence-keyed, snooze- and mute-aware — plus the
+/// standalone alarms (eligibility = alarms-map membership; mute does
+/// not apply to alarms, cancel is their off-switch). Sorted by
 /// `(occurrence, reminder)` — a total order, so output is fully
 /// deterministic.
 ///
-/// Eligibility: the task must be live and open with a due date and not
-/// muted; a task's explicit rules (in rule-id order) replace its
+/// Task-side eligibility: the task must be live and open with a due date
+/// and not muted; a task's explicit rules (in rule-id order) replace its
 /// implicit default. A reminder fires iff its effective occurrence is ≤
 /// `now` and undelivered.
 #[must_use]
@@ -474,10 +559,24 @@ pub fn due_firings(
             {
                 firings.push(ReminderFiring {
                     reminder,
-                    task: task.id,
+                    anchor: ReminderAnchor::Task(task.id),
                     occurrence: effective,
                 });
             }
+        }
+    }
+    // The alarms pass: map membership is liveness, no mute check (the
+    // muted set is task-shaped; cancel removes the row).
+    for &id in reminders.alarms.keys() {
+        if let Some(effective) = alarm_occurrence(reminders, id)
+            && effective <= now
+            && !reminders.is_delivered(&ReminderRef::Adhoc(id), &effective)
+        {
+            firings.push(ReminderFiring {
+                reminder: ReminderRef::Adhoc(id),
+                anchor: ReminderAnchor::Alarm(id),
+                occurrence: effective,
+            });
         }
     }
     firings.sort_by_key(|f| (f.occurrence, f.reminder));
@@ -651,6 +750,7 @@ mod tests {
                         };
                         duedate + defaults.default_before.as_duration()
                     }
+                    ReminderRef::Adhoc(_) => continue,
                 };
                 // Hand-rolled snooze walk (stops at first repeat).
                 let mut effective = base;
@@ -667,6 +767,25 @@ mod tests {
                 if effective <= now && !reminders.is_delivered(&reminder, &effective) {
                     expected.push((effective, reminder));
                 }
+            }
+        }
+        // The alarms loop: absolute base, same walk, same gate; mute
+        // does not apply.
+        for (&id, alarm) in &reminders.alarms {
+            let reminder = ReminderRef::Adhoc(id);
+            let mut effective = alarm.fire_at;
+            let mut seen = BTreeSet::from([alarm.fire_at]);
+            while let Some(&target) = reminders.snoozes.get(&ReminderSnoozeKey {
+                reminder,
+                occurrence: effective,
+            }) {
+                if !seen.insert(target) {
+                    break;
+                }
+                effective = target;
+            }
+            if effective <= now && !reminders.is_delivered(&reminder, &effective) {
+                expected.push((effective, reminder));
             }
         }
         expected.sort();
@@ -805,26 +924,40 @@ mod tests {
             now in test_support::timestamp_strategy(),
             postpone_secs in 1_i64..=3_600,
             probe_secs in 0_i64..3_600,
-            use_rule in any::<bool>(),
+            which in 0_u8..3,
         ) {
             let postpone = chrono::TimeDelta::try_seconds(postpone_secs).unwrap();
-            let task = live_task(1, Some(now), 0);
+            // The alarm arm needs no task anchor (alarms are
+            // task-independent): no duedate, so no default competes.
+            let task = live_task(1, (which != 2).then_some(now), 0);
             let tasks = BTreeMap::from([(task.id, task.clone())]);
             let defaults = ReminderDefaults { default_before: offset };
             let mut reminders = ReminderState::default();
-            let reminder = if use_rule {
-                let rule = ReminderRule {
-                    id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
-                    task: task.id,
-                    offset,
-                    created_at: now,
-                    updated_at: now,
-                };
-                let r = ReminderRef::Rule(rule.id);
-                reminders.rules.insert(rule.id, rule);
-                r
-            } else {
-                ReminderRef::Default(task.id)
+            let reminder = match which {
+                0 => {
+                    let rule = ReminderRule {
+                        id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+                        task: task.id,
+                        offset,
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    let r = ReminderRef::Rule(rule.id);
+                    reminders.rules.insert(rule.id, rule);
+                    r
+                }
+                1 => ReminderRef::Default(task.id),
+                _ => {
+                    let alarm = AdhocAlarm {
+                        id: AdhocAlarmId::from(uuid::Uuid::from_u128(10)),
+                        label: "p7".into(),
+                        fire_at: now,
+                        created_at: now,
+                    };
+                    let r = ReminderRef::Adhoc(alarm.id);
+                    reminders.alarms.insert(alarm.id, alarm);
+                    r
+                }
             };
             let base = reminders.effective_occurrence(&reminder, &tasks, &defaults).unwrap();
             prop_assert!(base <= now);
@@ -863,12 +996,31 @@ mod tests {
                 .filter(|t| t.is_live() && t.is_open() && t.duedate.is_some_and(|d| d < now))
                 .map(|t| t.id)
                 .collect();
+            // Alarm firings are observed before the mute: muting every
+            // task must not silence any of them.
+            let alarm_firings: Vec<ReminderRef> =
+                due_firings(&tasks, &reminders, &defaults, now)
+                    .into_iter()
+                    .filter(|f| matches!(f.anchor, ReminderAnchor::Alarm(_)))
+                    .map(|f| f.reminder)
+                    .collect();
             reminders.muted = overdue.iter().copied().collect();
-            let fired: Vec<TaskId> = due_firings(&tasks, &reminders, &defaults, now)
+            let firings = due_firings(&tasks, &reminders, &defaults, now);
+            let fired_tasks: Vec<TaskId> =
+                firings.iter().filter_map(|f| match f.anchor {
+                    ReminderAnchor::Task(t) => Some(t),
+                    ReminderAnchor::Alarm(_) => None,
+                }).collect();
+            prop_assert!(fired_tasks.iter().all(|t| !reminders.muted.contains(t)));
+            let fired_alarms: Vec<ReminderRef> = firings
                 .into_iter()
-                .map(|f| f.task)
+                .filter(|f| matches!(f.anchor, ReminderAnchor::Alarm(_)))
+                .map(|f| f.reminder)
                 .collect();
-            prop_assert!(fired.iter().all(|t| !reminders.muted.contains(t)));
+            prop_assert_eq!(
+                fired_alarms, alarm_firings,
+                "muting every task does not silence any alarm",
+            );
             // Banner truth ignores mute entirely.
             let banner: BTreeSet<TaskId> =
                 overdue_tasks(&tasks, now).into_iter().map(|t| t.id).collect();
@@ -1061,20 +1213,25 @@ mod tests {
     fn reminder_ref_text_form_roundtrips_and_rejects_garbage() {
         let rule = ref_of(11);
         let default = ReminderRef::Default(TaskId::from(uuid::Uuid::from_u128(12)));
-        for reminder in [rule, default] {
+        let alarm = ReminderRef::Adhoc(AdhocAlarmId::from(uuid::Uuid::from_u128(13)));
+        for reminder in [rule, default, alarm] {
             assert_eq!(
                 ReminderRef::parse_text_form(&reminder.text_form()),
                 Some(reminder),
                 "parse is the inverse of text_form"
             );
         }
+        assert!(alarm.text_form().starts_with("alarm:"));
         for garbage in [
             "",
             "garbage",
             "rule:",
             "default:",
+            "alarm:",
             "rule:not-a-uuid",
             "default:not-a-uuid",
+            "alarm:not-a-uuid",
+            "alarm:1|default:2",
             "rule:1|default:2",
         ] {
             assert_eq!(
@@ -1089,7 +1246,7 @@ mod tests {
     fn notification_roundtrips_through_serde() {
         let notification = Notification {
             reminder: ref_of(3),
-            task: TaskId::from(uuid::Uuid::from_u128(4)),
+            anchor: ReminderAnchor::Task(TaskId::from(uuid::Uuid::from_u128(4))),
             title: "ship it".into(),
             occurrence: ts(1_000),
         };
@@ -1099,34 +1256,62 @@ mod tests {
     }
 
     #[test]
-    fn notifications_for_snapshots_titles_and_skips_missing_tasks() {
+    fn notifications_for_snapshots_titles_skips_missing_and_labels_alarms() {
         let task = live_task(1, Some(ts(500)), 0);
         let tasks = BTreeMap::from([(task.id, task.clone())]);
+        let alarm = crate::reminders::AdhocAlarm {
+            id: AdhocAlarmId::from(uuid::Uuid::from_u128(20)),
+            label: "steep the tea".into(),
+            fire_at: ts(300),
+            created_at: ts(100),
+        };
+        let mut reminders = ReminderState::default();
+        reminders.alarms.insert(alarm.id, alarm.clone());
         let stranger = TaskId::from(uuid::Uuid::from_u128(999));
+        let stranger_alarm = AdhocAlarmId::from(uuid::Uuid::from_u128(998));
         let firings = vec![
             ReminderFiring {
                 reminder: ref_of(10),
-                task: task.id,
+                anchor: ReminderAnchor::Task(task.id),
                 occurrence: ts(400),
             },
             ReminderFiring {
                 reminder: ReminderRef::Default(stranger),
-                task: stranger,
+                anchor: ReminderAnchor::Task(stranger),
                 occurrence: ts(401),
             },
+            ReminderFiring {
+                reminder: ReminderRef::Adhoc(alarm.id),
+                anchor: ReminderAnchor::Alarm(alarm.id),
+                occurrence: ts(402),
+            },
+            ReminderFiring {
+                reminder: ReminderRef::Adhoc(stranger_alarm),
+                anchor: ReminderAnchor::Alarm(stranger_alarm),
+                occurrence: ts(403),
+            },
         ];
-        let notes = notifications_for(&firings, &tasks);
+        let notes = notifications_for(&firings, &tasks, &reminders);
         assert_eq!(
             notes,
-            vec![Notification {
-                reminder: ref_of(10),
-                task: task.id,
-                title: task.title.clone(),
-                occurrence: ts(400),
-            }],
-            "one payload per firing with a live task; the missing task is skipped"
+            vec![
+                Notification {
+                    reminder: ref_of(10),
+                    anchor: ReminderAnchor::Task(task.id),
+                    title: task.title.clone(),
+                    occurrence: ts(400),
+                },
+                Notification {
+                    reminder: ReminderRef::Adhoc(alarm.id),
+                    anchor: ReminderAnchor::Alarm(alarm.id),
+                    title: alarm.label.clone(),
+                    occurrence: ts(402),
+                },
+            ],
+            "task payloads carry the task title; alarm payloads the alarm label; \
+             missing anchors are skipped"
         );
-        assert_eq!(notifications_for(&[], &tasks), Vec::new());
+        assert_eq!(notifications_for(&[], &tasks, &reminders), Vec::new());
     }
 
     proptest! {
@@ -1138,6 +1323,7 @@ mod tests {
             delivery in test_support::reminder_delivery_strategy(),
             snooze in test_support::reminder_snooze_strategy(),
             offset in test_support::reminder_offset_strategy(),
+            alarm in test_support::adhoc_alarm_strategy(),
             firing_occurrence in test_support::timestamp_strategy(),
         ) {
             fn roundtrip<
@@ -1153,21 +1339,35 @@ mod tests {
             roundtrip(&delivery);
             roundtrip(&snooze);
             roundtrip(&offset);
+            roundtrip(&alarm);
+            roundtrip(&ReminderAnchor::Task(rule.task));
+            roundtrip(&ReminderAnchor::Alarm(alarm.id));
             roundtrip(&ReminderDefaults {
                 default_before: offset,
             });
             roundtrip(&ReminderFiring {
                 reminder: delivery.reminder,
-                task: rule.task,
+                anchor: ReminderAnchor::Task(rule.task),
+                occurrence: firing_occurrence,
+            });
+            roundtrip(&Notification {
+                reminder: delivery.reminder,
+                anchor: ReminderAnchor::Alarm(alarm.id),
+                title: alarm.label.clone(),
                 occurrence: firing_occurrence,
             });
         }
 
         #[test]
-        fn reminder_ref_roundtrips_through_serde(rule_raw in any::<u128>(), task_raw in any::<u128>()) {
+        fn reminder_ref_roundtrips_through_serde(
+            rule_raw in any::<u128>(),
+            task_raw in any::<u128>(),
+            alarm_raw in any::<u128>(),
+        ) {
             for reminder in [
                 ref_of(rule_raw),
                 ReminderRef::Default(TaskId::from(uuid::Uuid::from_u128(task_raw))),
+                ReminderRef::Adhoc(AdhocAlarmId::from(uuid::Uuid::from_u128(alarm_raw))),
             ] {
                 let back: ReminderRef =
                     serde_json::from_str(&serde_json::to_string(&reminder).unwrap()).unwrap();
@@ -1200,23 +1400,26 @@ mod tests {
             let mut firings = Vec::new();
             firings.push(ReminderFiring {
                 reminder: any_ref,
-                task: stranger,
+                anchor: ReminderAnchor::Task(stranger),
                 occurrence: occurrences[0],
             });
             for occurrence in &occurrences[1..] {
                 firings.push(ReminderFiring {
                     reminder: any_ref,
-                    task: anchor,
+                    anchor: ReminderAnchor::Task(anchor),
                     occurrence: *occurrence,
                 });
             }
-            let notes = notifications_for(&firings, &tasks);
+            let notes = notifications_for(&firings, &tasks, &ReminderState::default());
             prop_assert_eq!(notes.len() + 1, firings.len());
             for (note, firing) in notes.iter().zip(&firings[1..]) {
                 prop_assert_eq!(note.reminder, firing.reminder);
-                prop_assert_eq!(note.task, firing.task);
+                prop_assert_eq!(note.anchor, firing.anchor);
                 prop_assert_eq!(note.occurrence, firing.occurrence);
-                prop_assert_eq!(&note.title, &tasks[&firing.task].title);
+                let ReminderAnchor::Task(task_id) = firing.anchor else {
+                    unreachable!("the fixture only builds Task anchors");
+                };
+                prop_assert_eq!(&note.title, &tasks[&task_id].title);
             }
         }
     }
@@ -1407,9 +1610,14 @@ mod tests {
             for firing in &a {
                 prop_assert!(firing.occurrence <= now);
                 prop_assert!(!reminders.is_delivered(&firing.reminder, &firing.occurrence));
-                let task = &tasks[&firing.task];
+                let ReminderAnchor::Task(task_id) = firing.anchor else {
+                    // Alarm firings are covered by the delivered/order
+                    // checks above (the fixture mints no alarms).
+                    continue;
+                };
+                let task = &tasks[&task_id];
                 prop_assert!(task.is_live() && task.is_open() && task.duedate.is_some());
-                prop_assert!(!reminders.muted.contains(&firing.task));
+                prop_assert!(!reminders.muted.contains(&task_id));
             }
         }
 

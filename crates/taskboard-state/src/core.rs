@@ -125,6 +125,13 @@ impl EngineCore {
         &self.state.tasks
     }
 
+    /// The reminder state (the alarm-label lookup for notification
+    /// payload assembly — the `tasks()` sibling).
+    #[must_use]
+    pub fn reminders(&self) -> &taskboard_domain::ReminderState {
+        &self.state.reminders
+    }
+
     /// Test/assertion view mirroring the persisted shape. One divergence
     /// from what a repository could return: the memory-only `Syncing`
     /// transient set by [`Self::mark_syncing`] appears here even though

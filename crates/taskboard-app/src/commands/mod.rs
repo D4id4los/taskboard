@@ -479,6 +479,7 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::BoardAlreadyBound { .. } => "board-already-bound",
         D::RemoteBoardInUse { .. } => "remote-board-in-use",
         D::UnknownReminderRule(_) => "unknown-reminder-rule",
+        D::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
         D::InvalidSnoozePostpone => "invalid-snooze-postpone",
     }
 }

@@ -100,6 +100,9 @@ pub enum CommandError {
     /// No reminder rule with this id exists.
     #[error("unknown reminder rule")]
     UnknownReminderRule(ReminderRuleId),
+    /// No adhoc alarm with this id exists.
+    #[error("unknown adhoc alarm")]
+    UnknownAdhocAlarm(crate::ids::AdhocAlarmId),
     /// A snooze postpone must be positive ("snooze" that does not move
     /// the occurrence forward is not a snooze).
     #[error("snooze postpone must be positive")]
@@ -909,8 +912,10 @@ pub fn plan_command(
                 || app.reminders.deliveries.iter().any(|d| match d.reminder {
                     ReminderRef::Default(t) => board_tasks.contains(&t),
                     // A surviving rule reference belongs to a live rule,
-                    // which the rules arm above already covers.
-                    ReminderRef::Rule(_) => false,
+                    // which the rules arm above already covers; alarms
+                    // are device-global, not board content — a board
+                    // clear never touches either.
+                    ReminderRef::Rule(_) | ReminderRef::Adhoc(_) => false,
                 })
                 || board_tasks.iter().any(|t| app.reminders.muted.contains(t));
             if board_stacks.is_empty()
@@ -1077,7 +1082,10 @@ pub fn plan_command(
             postpone,
         } => {
             // Edit-style intent: snoozing a dead task's reminder is a
-            // rejection, not a meaningless-redundant repeat.
+            // rejection, not a meaningless-redundant repeat. Alarms have
+            // no task and no liveness states — the arm is only the
+            // existence guard, and the shared `live_task` guard below
+            // runs on task-anchored refs only.
             let task = match *reminder {
                 ReminderRef::Rule(rule_id) => {
                     let rule = app
@@ -1085,11 +1093,20 @@ pub fn plan_command(
                         .rules
                         .get(&rule_id)
                         .ok_or(CommandError::UnknownReminderRule(rule_id))?;
-                    rule.task
+                    Some(rule.task)
                 }
-                ReminderRef::Default(task) => task,
+                ReminderRef::Default(task) => Some(task),
+                ReminderRef::Adhoc(alarm_id) => {
+                    app.reminders
+                        .alarms
+                        .get(&alarm_id)
+                        .ok_or(CommandError::UnknownAdhocAlarm(alarm_id))?;
+                    None
+                }
             };
-            live_task(app, task)?;
+            if let Some(task) = task {
+                live_task(app, task)?;
+            }
             if *postpone <= chrono::TimeDelta::zero() {
                 return Err(CommandError::InvalidSnoozePostpone);
             }

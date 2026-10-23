@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 009e06256466d9370879e2c0b802702f2ef80744ab35db50b248fba8374ba0ef # shrinks to now_secs = 1793512800, dues = [1793512799, 1774745999, 31536000], offset_secs = 0
+cc d90649d5c2d751410c58ebdd11513fdf1aab52b630b6988899e15ebe5b8eb1ac # shrinks to offset = ReminderOffset(TimeDelta { secs: -1, nanos: 0 }), now = 1971-01-01T00:00:00Z, postpone_secs = 1, probe_secs = 0, which = 2
