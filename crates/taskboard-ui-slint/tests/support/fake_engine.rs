@@ -148,4 +148,12 @@ impl FakeEngine {
         self.state.store(Arc::new(state));
         ui.refresh();
     }
+
+    /// Replaces the whole state snapshot and triggers the UI's
+    /// deterministic refresh (the D11 drag journey's "a concurrent
+    /// engine change lands mid-gesture" step).
+    pub fn replace_state(&mut self, state: AppState, ui: &UiHandle) {
+        self.state.store(Arc::new(state));
+        ui.refresh();
+    }
 }
