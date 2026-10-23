@@ -111,6 +111,21 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 # the release graph (uuid/tempfile/rand).
 getrandom = "0.4"
 
+# Desktop toast notifications (taskboard-app): the D-R10 stack ruling
+# (reminders-surfaces design §3.10, GRANTED 2026-10-19) — one façade
+# over zbus (Linux, pure Rust, no libdbus C dependency),
+# mac-notification-sys and tauri-winrt-notification. Passive text
+# toasts only (D-R12): the image feature stays off. The executor
+# question is decided by measurement (design §3.10), not doctrine:
+# z-with-tokio ADOPTED 2026-10-23 — show_async's future satisfies the
+# port's Send bound under both feature sets, but the default `z`
+# backend grows three persistent async-io executor threads where
+# z-with-tokio grows none beyond the bus connection itself (2 vs 4
+# resident threads, RSS delta ~1.4 MB in both, 20 real deliveries on
+# the dev session's live notification daemon). Pin discipline: the
+# exact version is committed via Cargo.lock (Q12).
+notify-rust = { version = "4.18.2", default-features = false, features = ["z-with-tokio"] }
+
 # Error handling
 thiserror = "2"
 color-eyre = "0.6"
