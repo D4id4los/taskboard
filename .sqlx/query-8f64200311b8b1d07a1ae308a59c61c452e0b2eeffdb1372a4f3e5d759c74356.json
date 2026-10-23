@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO adhoc_alarms (alarm_id, label, fire_at, created_at)\n                   VALUES (?, ?, ?, ?)\n                   ON CONFLICT(alarm_id) DO UPDATE SET\n                       label = excluded.label,\n                       fire_at = excluded.fire_at,\n                       created_at = excluded.created_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "8f64200311b8b1d07a1ae308a59c61c452e0b2eeffdb1372a4f3e5d759c74356"
+}

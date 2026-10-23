@@ -805,6 +805,8 @@ async fn execute_batch(
     let mut sync_status_deletes = Vec::new();
     let mut rule_upserts = Vec::new();
     let mut rule_deletes = Vec::new();
+    let mut alarm_upserts = Vec::new();
+    let mut alarm_deletes = Vec::new();
     let mut deliveries = Vec::new();
     let mut snoozes = Vec::new();
     let mut mute_toggles = Vec::new();
@@ -830,6 +832,8 @@ async fn execute_batch(
             }
             PersistenceAction::UpsertReminderRule(rule) => rule_upserts.push(rule),
             PersistenceAction::DeleteReminderRule(rule_id) => rule_deletes.push(rule_id),
+            PersistenceAction::UpsertAdhocAlarm(alarm) => alarm_upserts.push(alarm),
+            PersistenceAction::DeleteAdhocAlarm(alarm_id) => alarm_deletes.push(alarm_id),
             PersistenceAction::RecordReminderDelivery(delivery) => deliveries.push(delivery),
             PersistenceAction::RecordReminderSnooze(snooze) => snoozes.push(snooze),
             PersistenceAction::SetTaskRemindersMuted(task, muted) => {
@@ -1218,6 +1222,51 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(rule = ?rule_id, "reminder rule pruned with its dependents");
+    }
+
+    for alarm in alarm_upserts {
+        sqlx::query!(
+            r#"INSERT INTO adhoc_alarms (alarm_id, label, fire_at, created_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(alarm_id) DO UPDATE SET
+                       label = excluded.label,
+                       fire_at = excluded.fire_at,
+                       created_at = excluded.created_at"#,
+            codec::uuid_to_text(alarm.id.as_uuid()),
+            alarm.label,
+            alarm.fire_at.to_rfc3339(),
+            alarm.created_at.to_rfc3339(),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(alarm = ?alarm.id, "adhoc alarm upserted");
+    }
+
+    for alarm_id in alarm_deletes {
+        let reminder = codec::reminder_ref_to_text(ReminderRef::Adhoc(*alarm_id));
+        sqlx::query!(
+            r#"DELETE FROM reminder_deliveries WHERE reminder = ?"#,
+            reminder
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM reminder_snoozes WHERE reminder = ?"#,
+            reminder
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM adhoc_alarms WHERE alarm_id = ?"#,
+            codec::uuid_to_text(alarm_id.as_uuid())
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(alarm = ?alarm_id, "adhoc alarm pruned with its dependents");
     }
 
     for delivery in deliveries {

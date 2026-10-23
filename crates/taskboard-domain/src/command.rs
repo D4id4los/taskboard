@@ -103,6 +103,10 @@ pub enum CommandError {
     /// No adhoc alarm with this id exists.
     #[error("unknown adhoc alarm")]
     UnknownAdhocAlarm(crate::ids::AdhocAlarmId),
+    /// An alarm duration must be positive ("in 0 seconds" fires
+    /// nothing and "in the past" is [`AdhocWhen::At`] data).
+    #[error("alarm duration must be positive")]
+    InvalidAdhocWhen,
     /// A snooze postpone must be positive ("snooze" that does not move
     /// the occurrence forward is not a snooze).
     #[error("snooze postpone must be positive")]
@@ -138,6 +142,16 @@ pub enum CommandOutcome {
     ReminderRuleRemoved {
         /// The removed rule.
         rule: ReminderRuleId,
+    },
+    /// The command created the standalone alarm with this id.
+    AdhocAlarmCreated {
+        /// The fresh alarm.
+        alarm: crate::ids::AdhocAlarmId,
+    },
+    /// The command cancelled the named standalone alarm.
+    AdhocAlarmCancelled {
+        /// The cancelled alarm.
+        alarm: crate::ids::AdhocAlarmId,
     },
     /// The command muted or unmuted a task's reminder firings.
     ReminderMuted {
@@ -1217,6 +1231,49 @@ pub fn plan_command(
             Ok(CommandPlan {
                 actions,
                 outcome: CommandOutcome::ReminderCleared { removed },
+            })
+        }
+        StateCommand::CreateAdhocAlarm { label, when } => {
+            // Device-local by ruling: no outbox op, no document-lane
+            // trigger — the alarm never leaves this machine.
+            let fire_at = match *when {
+                crate::reminders::AdhocWhen::In(dur) => {
+                    if dur <= chrono::TimeDelta::zero() {
+                        return Err(CommandError::InvalidAdhocWhen);
+                    }
+                    // Total arithmetic: an unrepresentable target
+                    // saturates at chrono's ceiling (the SnoozeReminder
+                    // precedent), never panics the planner.
+                    now.checked_add_signed(dur)
+                        .unwrap_or(DateTime::<Utc>::MAX_UTC)
+                }
+                // A past instant is legal data: it fires on the next
+                // tick.
+                crate::reminders::AdhocWhen::At(t) => t,
+            };
+            let alarm = crate::reminders::AdhocAlarm {
+                id: ids.new_adhoc_alarm_id(),
+                label: label.clone(),
+                fire_at,
+                created_at: now,
+            };
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertAdhocAlarm(alarm.clone())],
+                outcome: CommandOutcome::AdhocAlarmCreated { alarm: alarm.id },
+            })
+        }
+        StateCommand::CancelAdhocAlarm { alarm } => {
+            // Existence-only lookup (terminal-by-deletion, like
+            // `RemoveReminderRule`): no tombstone exists, so a repeat is
+            // a typed rejection, not a no-op. The persistence cascade
+            // prunes the alarm's deliveries and snooze links.
+            app.reminders
+                .alarms
+                .get(alarm)
+                .ok_or(CommandError::UnknownAdhocAlarm(*alarm))?;
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::DeleteAdhocAlarm(*alarm)],
+                outcome: CommandOutcome::AdhocAlarmCancelled { alarm: *alarm },
             })
         }
         StateCommand::RequestSync => Ok(CommandPlan {
@@ -4571,6 +4628,217 @@ mod tests {
             ),
             Ok(no_op())
         );
+    }
+
+    // ---- Adhoc alarm verbs (chunk-7) -----------------------------------
+
+    fn alarm(raw: u128, fire_at: chrono::DateTime<Utc>) -> crate::reminders::AdhocAlarm {
+        crate::reminders::AdhocAlarm {
+            id: crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(raw)),
+            label: "steep the tea".into(),
+            fire_at,
+            created_at: now(),
+        }
+    }
+
+    #[test]
+    fn create_adhoc_alarm_in_stamps_and_never_enqueues() {
+        let (app, outbox) = base();
+        let dur = chrono::TimeDelta::try_minutes(5).unwrap();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CreateAdhocAlarm {
+                label: "tea".into(),
+                when: crate::reminders::AdhocWhen::In(dur),
+            },
+        )
+        .expect("accepted");
+        // Exactly one action, the upsert — device-local (no outbox op,
+        // no document-lane trigger).
+        assert_eq!(plan.actions.len(), 1);
+        let PersistenceAction::UpsertAdhocAlarm(alarm) = &plan.actions[0] else {
+            panic!("the upsert is the only action");
+        };
+        assert_eq!(alarm.fire_at, ts(T0) + dur, "engine-stamped now + dur");
+        assert_eq!(alarm.created_at, ts(T0));
+        assert_eq!(alarm.label, "tea");
+        assert_eq!(
+            plan.outcome,
+            CommandOutcome::AdhocAlarmCreated { alarm: alarm.id }
+        );
+    }
+
+    #[test]
+    fn create_adhoc_alarm_in_saturates_an_unrepresentable_target() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CreateAdhocAlarm {
+                label: "tea".into(),
+                when: crate::reminders::AdhocWhen::In(chrono::TimeDelta::MAX),
+            },
+        )
+        .expect("accepted");
+        let PersistenceAction::UpsertAdhocAlarm(alarm) = &plan.actions[0] else {
+            panic!("the upsert is the only action");
+        };
+        assert_eq!(
+            alarm.fire_at,
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            "unrepresentable target degrades to the ceiling, never panics"
+        );
+    }
+
+    #[test]
+    fn create_adhoc_alarm_at_is_verbatim_and_past_is_legal() {
+        let (app, outbox) = base();
+        let past = ts(T0 - 3_600);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CreateAdhocAlarm {
+                label: "tea".into(),
+                when: crate::reminders::AdhocWhen::At(past),
+            },
+        )
+        .expect("a past instant is legal data: it fires on the next tick");
+        let PersistenceAction::UpsertAdhocAlarm(alarm) = &plan.actions[0] else {
+            panic!("the upsert is the only action");
+        };
+        assert_eq!(alarm.fire_at, past, "At is verbatim, never re-stamped");
+    }
+
+    #[test]
+    fn create_adhoc_alarm_rejects_non_positive_in_typed() {
+        let (app, outbox) = base();
+        for secs in [0_i64, -1, -600] {
+            let err = run(
+                &app,
+                &outbox,
+                &StateCommand::CreateAdhocAlarm {
+                    label: "tea".into(),
+                    when: crate::reminders::AdhocWhen::In(
+                        chrono::TimeDelta::try_seconds(secs).unwrap(),
+                    ),
+                },
+            )
+            .expect_err("dur <= 0 is a typed rejection");
+            assert!(
+                matches!(err, CommandError::InvalidAdhocWhen),
+                "{secs}s must be InvalidAdhocWhen"
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_adhoc_alarm_deletes_and_a_repeat_is_typed() {
+        let (app, outbox) = base();
+        let unknown = crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(4242));
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::CancelAdhocAlarm { alarm: unknown },
+        )
+        .expect_err("unknown id is a typed rejection");
+        assert!(matches!(err, CommandError::UnknownAdhocAlarm(id) if id == unknown));
+
+        let a = alarm(20, ts(T0 + 60));
+        let mut app = app;
+        app.reminders.alarms.insert(a.id, a.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CancelAdhocAlarm { alarm: a.id },
+        )
+        .expect("accepted");
+        assert_eq!(
+            plan.actions,
+            vec![PersistenceAction::DeleteAdhocAlarm(a.id)],
+            "exactly the delete — the persistence cascade prunes dependents"
+        );
+        assert_eq!(
+            plan.outcome,
+            CommandOutcome::AdhocAlarmCancelled { alarm: a.id }
+        );
+    }
+
+    #[test]
+    fn snooze_adhoc_alarm_guards_existence_without_live_task() {
+        let (app, outbox) = base();
+        let unknown = crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(4243));
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::SnoozeReminder {
+                reminder: crate::reminders::ReminderRef::Adhoc(unknown),
+                occurrence: ts(T0),
+                postpone: chrono::TimeDelta::try_minutes(1).unwrap(),
+            },
+        )
+        .expect_err("unknown alarm is a typed rejection");
+        assert!(matches!(err, CommandError::UnknownAdhocAlarm(id) if id == unknown));
+
+        // An alarm is not a task: no liveness states, so the snooze
+        // applies with no `live_task` involvement.
+        let a = alarm(21, ts(T0 - 60));
+        let mut app = app;
+        app.reminders.alarms.insert(a.id, a);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SnoozeReminder {
+                reminder: crate::reminders::ReminderRef::Adhoc(crate::ids::AdhocAlarmId::from(
+                    uuid::Uuid::from_u128(21),
+                )),
+                occurrence: ts(T0 - 60),
+                postpone: chrono::TimeDelta::try_minutes(1).unwrap(),
+            },
+        )
+        .expect("accepted");
+        assert_eq!(plan.actions.len(), 1);
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+    }
+
+    #[test]
+    fn clear_board_probe_ignores_alarms_they_are_device_global() {
+        let (app, outbox) = base();
+        // Empty content + alarm rows and their facts: the repair has
+        // nothing to do — alarms are device-global, not board content.
+        let mut app = app;
+        app.stacks.clear();
+        app.tasks.clear();
+        app.labels.clear();
+        let a = alarm(22, ts(T0 - 60));
+        let reminder = crate::reminders::ReminderRef::Adhoc(a.id);
+        app.reminders.alarms.insert(a.id, a);
+        app.reminders
+            .deliveries
+            .insert(crate::reminders::ReminderDelivery {
+                reminder,
+                occurrence: ts(T0 - 60),
+                delivered_at: ts(T0),
+            });
+        app.reminders.snoozes.insert(
+            crate::reminders::ReminderSnoozeKey {
+                reminder,
+                occurrence: ts(T0 - 60),
+            },
+            ts(T0 + 60),
+        );
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::ResetBoard { board: board_id() },
+        )
+        .expect("planned");
+        assert_eq!(
+            plan.outcome,
+            CommandOutcome::NoOp,
+            "alarms never count as board content"
+        );
+        assert_eq!(plan.actions, Vec::new());
     }
 }
 

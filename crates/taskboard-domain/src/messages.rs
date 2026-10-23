@@ -252,6 +252,22 @@ pub enum StateCommand {
         /// The board whose entities reconcile.
         board: BoardId,
     },
+    /// Create a standalone alarm: fires once at the stamped instant,
+    /// then dies by settlement (the post-batch prune). Device-local —
+    /// no sync op, no sidecar section.
+    CreateAdhocAlarm {
+        /// The notification title (no task to snapshot a title from).
+        label: String,
+        /// Absolute instant or engine-stamped duration.
+        when: crate::reminders::AdhocWhen,
+    },
+    /// Cancel a standalone alarm (its deliveries and snooze links are
+    /// pruned by the persistence cascade). An unknown id is a typed
+    /// rejection — cancel deletes the row, so a repeat targets nothing.
+    CancelAdhocAlarm {
+        /// The alarm to cancel.
+        alarm: crate::ids::AdhocAlarmId,
+    },
     /// User-visible refresh request; the engine forwards it to the sync
     /// actor.
     RequestSync,
