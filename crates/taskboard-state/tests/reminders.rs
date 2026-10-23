@@ -22,9 +22,9 @@ use taskboard_domain::persistence::{
 };
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    AppState, Board, CommandOutcome, EngineSignal, Notification, ReminderDefaults, ReminderOffset,
-    ReminderRef, ReminderSnoozeKey, Stack, StackClocks, StateCommand, SyncCommand, SyncReport,
-    SystemEvent, Task, TaskClocks,
+    AdhocWhen, AppState, Board, CommandOutcome, EngineSignal, Notification, ReminderAnchor,
+    ReminderDefaults, ReminderOffset, ReminderRef, ReminderSnoozeKey, Stack, StackClocks,
+    StateCommand, SyncCommand, SyncReport, SystemEvent, Task, TaskClocks,
 };
 use taskboard_state::{EngineHandle, ReminderEngineConfig, spawn_state_engine};
 
@@ -434,6 +434,166 @@ async fn r3_snooze_refires_at_its_target_then_settles() {
     h.handle.flush().await;
     let app = h.handle.shared_state().load_full();
     assert_eq!(app.reminders.deliveries.len(), 2, "no third fire");
+}
+
+/// R-alarm series (chunk 7, D11): the tick's routing of standalone
+/// alarms on the paused clock. Semantics live in the domain suite;
+/// these pin the engine-side correlation: the delivery batch and the
+/// settlement prune land in the same `apply`, notification payloads
+/// carry the alarm anchor, and the snoozed ref re-fires at its target.
+/// The alarm rows are seeded/minted through the engine's own command
+/// path (`CreateAdhocAlarm`) — the staged create-then-advance shape.
+/// R9: an alarm fires within one tick of its stamped instant — exactly
+/// one delivery, one notification with the `Alarm` anchor and the label,
+/// and the settled alarm row pruned by the same batch's post-pass.
+#[cfg_attr(miri, ignore)] // timer wheel (testing-strategy §10 scope)
+#[tokio::test(start_paused = true)]
+async fn r9_alarm_fires_within_one_tick_and_settles() {
+    let mut h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(PersistedState::default())),
+        ..Spawner::default()
+    })
+    .await;
+    settle_boot_tick().await;
+    let outcome = h
+        .handle
+        .execute(StateCommand::CreateAdhocAlarm {
+            label: "steep the tea".into(),
+            when: AdhocWhen::In(chrono::TimeDelta::try_seconds(30).unwrap()),
+        })
+        .await
+        .expect("accepted");
+    let CommandOutcome::AdhocAlarmCreated { alarm: alarm_id } = outcome else {
+        panic!("create yields the created receipt");
+    };
+    let reminder = ReminderRef::Adhoc(alarm_id);
+
+    advance_both(&h.clock, 31).await;
+    eventually(&h.handle, |app| app.reminders.alarms.is_empty()).await;
+
+    let app = h.handle.shared_state().load_full();
+    assert!(
+        app.reminders.deliveries.is_empty(),
+        "the prune cascades the settled delivery out of memory too"
+    );
+    drop(app);
+
+    // The durable-then-notify leg of the tick's delivery batch is R1's
+    // subject (the batch path is shared, construction unchanged by the
+    // anchor widening). What the alarm arm adds: the settlement — the
+    // post-pass prunes the settled alarm AND cascades its delivery out
+    // of the shared-semantics fake, so the notifications (whose permit
+    // the marker is) are the observable that the batch landed.
+    let notes = drain_notifications(&mut h.notifications);
+    assert_eq!(
+        notes,
+        vec![Notification {
+            reminder,
+            anchor: ReminderAnchor::Alarm(alarm_id),
+            title: "steep the tea".into(),
+            occurrence: ts(T0 + 30),
+        }],
+        "one payload with the alarm anchor and the label"
+    );
+}
+
+/// R10: a future alarm is quiet — advances below its target leave the
+/// row untouched (no delivery, no notification).
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn r10_future_alarm_is_quiet_below_its_target() {
+    let mut h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(PersistedState::default())),
+        ..Spawner::default()
+    })
+    .await;
+    settle_boot_tick().await;
+    let CommandOutcome::AdhocAlarmCreated { alarm: alarm_id } = h
+        .handle
+        .execute(StateCommand::CreateAdhocAlarm {
+            label: "wake up".into(),
+            when: AdhocWhen::In(chrono::TimeDelta::try_hours(1).unwrap()),
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("create yields the created receipt");
+    };
+
+    advance_both(&h.clock, 120).await;
+    h.handle.flush().await;
+    let app = h.handle.shared_state().load_full();
+    assert_eq!(app.reminders.alarms.len(), 1, "the row survives");
+    assert!(app.reminders.alarms.contains_key(&alarm_id));
+    assert!(
+        app.reminders.deliveries.is_empty(),
+        "no delivery below the target"
+    );
+    drop(app);
+    assert_eq!(
+        drain_notifications(&mut h.notifications),
+        [] as [Notification; 0]
+    );
+}
+
+/// R11: a snoozed alarm re-fires at its target — the engine-side
+/// routing of a snoozed `Adhoc` ref (the chain semantics are the
+/// domain suite's P7).
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn r11_snoozed_alarm_refires_at_its_target() {
+    let mut h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(PersistedState::default())),
+        ..Spawner::default()
+    })
+    .await;
+    settle_boot_tick().await;
+    let CommandOutcome::AdhocAlarmCreated { alarm: alarm_id } = h
+        .handle
+        .execute(StateCommand::CreateAdhocAlarm {
+            label: "tea".into(),
+            when: AdhocWhen::In(chrono::TimeDelta::try_seconds(30).unwrap()),
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("create yields the created receipt");
+    };
+    let reminder = ReminderRef::Adhoc(alarm_id);
+    // Snooze the pending occurrence (typed-legal before the fire): the
+    // engine stamps target = now + 10 m (the clock is still at T0).
+    let target = ts(T0 + 600);
+    let outcome = h
+        .handle
+        .execute(StateCommand::SnoozeReminder {
+            reminder,
+            occurrence: ts(T0 + 30),
+            postpone: chrono::TimeDelta::try_minutes(10).unwrap(),
+        })
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::Applied);
+
+    // Past the original stamp: quiet (the chain moved the fire).
+    advance_both(&h.clock, 31).await;
+    h.handle.flush().await;
+    let app = h.handle.shared_state().load_full();
+    assert!(
+        app.reminders.deliveries.is_empty(),
+        "quiet below the target"
+    );
+    assert_eq!(app.reminders.alarms.len(), 1, "still alive");
+    drop(app);
+
+    // At the target: fires with the rescheduled occurrence and settles.
+    advance_both(&h.clock, 600).await;
+    eventually(&h.handle, |app| app.reminders.alarms.is_empty()).await;
+    let notes = drain_notifications(&mut h.notifications);
+    assert_eq!(notes.len(), 1, "exactly the re-fire notification");
+    assert_eq!(notes[0].occurrence, target);
+    assert_eq!(notes[0].anchor, ReminderAnchor::Alarm(alarm_id));
+    let app = h.handle.shared_state().load_full();
+    assert!(app.reminders.alarms.is_empty(), "settled and pruned");
 }
 
 /// R4: drain disarms the timer — a due reminder that arrives during the

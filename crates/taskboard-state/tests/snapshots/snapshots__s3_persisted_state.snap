@@ -91,3 +91,4 @@ reminders:
   deliveries: []
   snoozes: {}
   muted: []
+  alarms: {}
