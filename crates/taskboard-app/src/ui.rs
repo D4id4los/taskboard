@@ -8,8 +8,6 @@
 //! the UI's command channel into the state engine; the desktop entry
 //! lifecycle lands in this module too.
 
-use std::sync::Arc;
-
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -318,8 +316,8 @@ pub async fn run_desktop(
         config.nextcloud.credential_store,
         config.credential_base_dir(),
     );
-    let app =
-        crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
+    let sink = crate::bootstrap::resolve_notifier_sink(&config);
+    let app = crate::bootstrap::bootstrap(config, store, sink).await?;
 
     // The hand-over (D6): the app keeps the receiver half of the
     // command channel and forwards; the UI never sees an EngineHandle.

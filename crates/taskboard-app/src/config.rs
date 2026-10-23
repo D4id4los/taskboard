@@ -264,6 +264,24 @@ fn default_backoff_max() -> u64 {
     DEFAULT_BACKOFF_MAX_SECS
 }
 
+/// `[reminders] sink`: which notifier delivers fired reminders.
+/// `auto` — the default — resolves by `[app] mode` at boot (D-R13):
+/// desktop gets toasts day one with zero configuration; daemon/kiosk
+/// keep the journald trail. An unknown value has no meaningful drop
+/// (the `KeymapPreset` rule): it fails the decode, never defaults.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SinkChoice {
+    /// Resolve by `[app] mode`: `desktop` → toasts, `daemon`/`kiosk`
+    /// → the log trail.
+    #[default]
+    Auto,
+    /// The journald trail (`notifications::LogSink`), on every mode.
+    Log,
+    /// Desktop toasts (`notifications::DesktopSink`), on every mode.
+    Desktop,
+}
+
 /// `[reminders]` table: seconds tick plus one string duration parsed in
 /// [`AppConfig::validate`] — a bad value must surface as the typed
 /// `invalid-duration` kind, not a generic decode failure, and the raw
@@ -281,6 +299,9 @@ pub struct RemindersSection {
     /// grammar; see [`parse_before`]).
     #[serde(default = "default_reminder_before")]
     pub default_before: String,
+    /// Which notifier delivers fired reminders (D-R13).
+    #[serde(default)]
+    pub sink: SinkChoice,
 }
 
 impl Default for RemindersSection {
@@ -289,6 +310,7 @@ impl Default for RemindersSection {
             enabled: default_reminders_enabled(),
             tick_secs: default_reminder_tick(),
             default_before: default_reminder_before(),
+            sink: SinkChoice::default(),
         }
     }
 }
@@ -1398,7 +1420,36 @@ mod tests {
         assert!(round.reminders.enabled);
         assert_eq!(round.reminders.tick_secs, DEFAULT_REMINDER_TICK_SECS);
         assert_eq!(round.reminders.default_before, DEFAULT_REMINDER_BEFORE);
+        assert_eq!(round.reminders.sink, SinkChoice::Auto);
         assert_eq!(round.preferences.day_start_time, DEFAULT_DAY_START_TIME);
+    }
+
+    #[test]
+    fn sink_decodes_the_three_kebab_words() {
+        for (raw, expected) in [
+            ("auto", SinkChoice::Auto),
+            ("log", SinkChoice::Log),
+            ("desktop", SinkChoice::Desktop),
+        ] {
+            let config: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+                .merge(Toml::string(
+                    format!("[reminders]\nsink = '{raw}'").as_str(),
+                ))
+                .extract()
+                .unwrap_or_else(|_| panic!("sink = '{raw}' decodes"));
+            assert_eq!(config.reminders.sink, expected);
+        }
+    }
+
+    #[test]
+    fn unknown_sink_value_is_a_decode_error() {
+        // The KeymapPreset rule: an unknown enum value has no
+        // meaningful drop — it fails the decode, never defaults.
+        let result: Result<AppConfig, _> =
+            Figment::from(Serialized::defaults(AppConfig::default()))
+                .merge(Toml::string("[reminders]\nsink = 'sms'"))
+                .extract();
+        assert!(result.is_err());
     }
 
     #[test]

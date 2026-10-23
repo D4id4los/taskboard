@@ -10,6 +10,17 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Desktop reminder toasts via `[reminders] sink = auto|log|desktop`
+  (#344, chunk 8): `notify-rust` 4.18.2 enters the approved stack
+  (D-R10, `z-with-tokio` executor adopted by measurement), and
+  `DesktopSink` renders fired reminders as passive toasts behind the
+  unmoved `NotificationSink` port (D-R11) — no action buttons, no
+  sound, no escalation (D-R12). `auto` (the default) resolves by
+  `[app] mode` at boot: desktop gets toasts with zero configuration,
+  daemon/kiosk keep the journald `LogSink` path byte-for-byte (D-R13).
+  A failed delivery is a logged `NotifyError` — never retried, never
+  fallback-sent; the sink choice is boot-time config, not
+  runtime-switchable.
 - Standalone timers & alarms, `taskboard timers add/list/cancel`
   (#211, chunk 7): task-independent one-shot alarms (`--in <dur>` or
   `--at <instant|date|HH:MM[:SS]>` host-local at the CLI edge; a bare

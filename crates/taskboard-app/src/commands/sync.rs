@@ -68,8 +68,8 @@ pub async fn run(
         .map(|name| crate::commands::resolve_connector(&config, Some(name)))
         .transpose()?
         .map(|spec| spec.name);
-    let app =
-        crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink)).await?;
+    let sink = crate::bootstrap::resolve_notifier_sink(&config);
+    let app = crate::bootstrap::bootstrap(config, store, sink).await?;
     let result = sync_on(&app, no_wait, timeout, scope.as_ref()).await;
     let _ = app.shutdown().await;
     result
