@@ -257,6 +257,16 @@ impl Adapter {
             DispatchOutcome::UiEffect(effect) => self.apply_effect(window, effect),
             DispatchOutcome::Disabled | DispatchOutcome::NoTarget => {}
         }
+        self.finish_mutation(window);
+    }
+
+    /// The shared post-mutation sync (r2 D12): the view-context seam
+    /// realignment plus the shell → window global push. `route`'s
+    /// trailing pair, factored out so the mouse menu paths
+    /// (`activate_parent`, `apply_close_menu`, the `MenuBack` arm)
+    /// update the same globals the keyboard path updates — the parent
+    /// rows' `menu-active-group` used to stay stale (F7).
+    fn finish_mutation(&mut self, window: &AppWindow) {
         self.sync_view_context();
         self.sync(window);
     }
@@ -559,7 +569,7 @@ impl Adapter {
                     // root page again.
                     self.menu_entries = self.root_entries.clone();
                     self.sync_menu_models(window);
-                    self.sync(window);
+                    self.finish_mutation(window);
                 }
             }
             UiEffect::MenuNext | UiEffect::MenuPrevious => {
@@ -594,8 +604,9 @@ impl Adapter {
         self.menu_anchor = MenuAnchor::Hamburger;
         self.sync_menu_models(window);
         // The direct callers (toggle, dismissal layer, mouse invoke)
-        // bypass `route`'s trailing sync.
-        self.sync(window);
+        // bypass `route`'s trailing sync; the shared helper keeps the
+        // globals identical to it (r2 D12).
+        self.finish_mutation(window);
     }
 
     /// Activating a parent row (round-1 D6, keyboard `InvokeSelected`
@@ -608,6 +619,10 @@ impl Adapter {
         self.menu_entries = menu::group_page(&self.keymap, &self.menu_chain, group);
         self.shell.menu.len = self.menu_entries.len();
         self.sync_menu_models(window);
+        // The F7 fix (r2 D12): the mouse parent path pushes the same
+        // globals the keyboard path pushes — `menu-active-group` and
+        // friends — so the fly-out/replace page actually mounts.
+        self.finish_mutation(window);
     }
 
     /// The ACTIVE page's invocation (keyboard `menu.invoke`, and the
