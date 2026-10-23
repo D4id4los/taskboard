@@ -201,6 +201,21 @@ pub struct ReminderRule {
     pub updated_at: DateTime<Utc>,
 }
 
+/// The [`CreateAdhocAlarm`](crate::messages::StateCommand::CreateAdhocAlarm)
+/// timing input: absolute-vs-duration is a CLI concern, never a domain
+/// concern — the planner stamps `In`. Serde is externally tagged (the
+/// `StateCommand` default).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum AdhocWhen {
+    /// Fire at this absolute instant (a past instant is legal data: it
+    /// fires on the next tick).
+    At(DateTime<Utc>),
+    /// Fire `now + dur`, stamped by the engine's injected clock (the
+    /// `SnoozeReminder` stamp precedent). `dur ≤ 0` is a typed
+    /// rejection.
+    In(chrono::TimeDelta),
+}
+
 /// A standalone alarm: fires once at its absolute `fire_at` instant
 /// (plus whatever snooze-chain movement follows), then dies by
 /// settlement — the post-batch prune removes it once its effective

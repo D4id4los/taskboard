@@ -97,7 +97,7 @@ pub use push::{
 };
 pub use reconcile::{ReconcileCounts, normalized_title, plan_reconcile};
 pub use reminders::{
-    AdhocAlarm, InvalidReminderOffset, Notification, ReminderAnchor, ReminderDefaults,
+    AdhocAlarm, AdhocWhen, InvalidReminderOffset, Notification, ReminderAnchor, ReminderDefaults,
     ReminderDelivery, ReminderFiring, ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze,
     ReminderSnoozeKey, ReminderState, alarm_occurrence, due_firings, due_soon,
     effective_occurrence, notifications_for, occurrence_of, overdue_tasks,

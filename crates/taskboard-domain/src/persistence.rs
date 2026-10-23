@@ -217,12 +217,30 @@ pub enum PersistenceAction {
     /// overdue banner is unaffected by construction (it never reads the
     /// muted set).
     SetTaskRemindersMuted(crate::ids::TaskId, bool),
+    /// Insert or replace a standalone alarm.
+    UpsertAdhocAlarm(crate::reminders::AdhocAlarm),
+    /// Remove an alarm **and prune its `Adhoc`-ref deliveries and
+    /// snooze links** (the `DeleteReminderRule` cascade shape):
+    /// nothing can re-fire from a pruned map row.
+    DeleteAdhocAlarm(crate::ids::AdhocAlarmId),
     /// Clear the local content of one board: stacks, tasks, labels,
     /// outbox entries, sync validators, and reminder facts (rules,
     /// deliveries, snooze links, mutes) of its tasks. The board row
     /// itself (identity, binding, clocks, `remote_seen`) and the sync
     /// status survive. The `ResetBoard` repair's single bulk action.
     ClearBoardContent(crate::ids::BoardId),
+}
+
+/// Removes an alarm row and prunes its `Adhoc`-ref deliveries and
+/// snooze links with it — the `DeleteReminderRule` cascade shape, one
+/// definition site shared by the [`PersistenceAction::DeleteAdhocAlarm`]
+/// arm and the settlement prune (nothing can re-fire from a pruned map
+/// row).
+fn remove_alarm(reminders: &mut ReminderState, id: crate::ids::AdhocAlarmId) {
+    reminders.alarms.remove(&id);
+    let reminder = ReminderRef::Adhoc(id);
+    reminders.deliveries.retain(|d| d.reminder != reminder);
+    reminders.snoozes.retain(|key, _| key.reminder != reminder);
 }
 
 /// Applies a batch of [`PersistenceAction`]s to a [`PersistedState`] —
@@ -305,6 +323,12 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                     .reminders
                     .snoozes
                     .retain(|key, _| key.reminder != ReminderRef::Rule(*id));
+            }
+            PersistenceAction::UpsertAdhocAlarm(alarm) => {
+                state.reminders.alarms.insert(alarm.id, alarm.clone());
+            }
+            PersistenceAction::DeleteAdhocAlarm(id) => {
+                remove_alarm(&mut state.reminders, *id);
             }
             PersistenceAction::RecordReminderDelivery(delivery) => {
                 if !state

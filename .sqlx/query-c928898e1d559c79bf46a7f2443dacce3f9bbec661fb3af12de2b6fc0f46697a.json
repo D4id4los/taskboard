@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM adhoc_alarms WHERE alarm_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "c928898e1d559c79bf46a7f2443dacce3f9bbec661fb3af12de2b6fc0f46697a"
+}
