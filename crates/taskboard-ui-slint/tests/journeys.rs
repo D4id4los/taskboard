@@ -1525,6 +1525,72 @@ fn mount_pushes_no_selection_and_a_header_click_moves_it() {
     );
 }
 
+/// R2 D5 (T-6) — the add-stack plus glyph is square: the renderer's
+/// bounding box of the painted glyph inside the trailing add-column
+/// strip measures the space-6 square (element ids cannot address the
+/// glyph directly — unnamed decoration items merge in the item tree —
+/// so this pin reads the pixels, golden-adjacent).
+#[test]
+fn the_add_stack_glyph_is_square() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            let header_b = harness
+                .driver
+                .find_all_by_label("b")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .expect("stack b's header is addressable");
+            // The add-col strip starts one space-3 gap after the last
+            // column and is space-6 + space-2 wide (scale 1).
+            let strip_x0 = header_b.absolute_position().x + header_b.size().width + 12.0;
+
+            let image = harness.driver.snapshot();
+            let (mut x_min, mut x_max, mut y_min, mut y_max) = (u32::MAX, 0u32, u32::MAX, 0u32);
+            // Scan only the columns row's band: the toolbar and
+            // status bar also paint at the window's right edge.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // px coordinates at scale 1
+            let row_y0 = header_b.absolute_position().y as u32;
+            let row_y1 = (row_y0 + 600).min(image.height);
+            for y in row_y0..row_y1 {
+                // 995: inside the board region's focus ring (whose
+                // right border also paints at the window edge).
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let (scan_x0, scan_x1) = (strip_x0 as u32, strip_x0 as u32 + 40);
+                for x in scan_x0..scan_x1.min(995) {
+                    let i = (y as usize * image.width as usize + x as usize) * 4;
+                    let (r, g, b) = (
+                        i64::from(image.data[i]),
+                        i64::from(image.data[i + 1]),
+                        i64::from(image.data[i + 2]),
+                    );
+                    let background =
+                        (r - 20).abs() <= 12 && (g - 22).abs() <= 12 && (b - 28).abs() <= 12;
+                    if !background {
+                        x_min = x_min.min(x);
+                        x_max = x_max.max(x);
+                        y_min = y_min.min(y);
+                        y_max = y_max.max(y);
+                    }
+                }
+            }
+            assert!(x_max > x_min, "the glyph paints inside the strip");
+            let width = x_max - x_min + 1;
+            let height = y_max - y_min + 1;
+            assert!(
+                (28.0..=36.0).contains(&f64::from(width))
+                    && (28.0..=36.0).contains(&f64::from(height)),
+                "the glyph bounding box is a space-6 square, got {width}x{height}"
+            );
+        },
+    );
+}
 /// DDF-5 — the anchor card is hidden from the board's list surfaces:
 /// board card counts (and, on the same single pass, the stack-detail
 /// cards) exclude the exact-title anchor; a byte-level near-miss stays

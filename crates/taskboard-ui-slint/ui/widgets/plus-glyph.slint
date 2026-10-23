@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The square plus glyph (L1, r2 D5): the two crossing bars extracted
+// from the board's add-column affordance so the per-column Add Task
+// ghost (r2 D8) shares it. Square-locked the IconButton way — but on
+// both axes, because unlike the IconButton's parent row, the parents
+// here do not bound the glyph.
+
+import { Theme } from "../theme.slint";
+
+export component PlusGlyph inherits Rectangle {
+    // The bars' colour; the hover lift is the caller's cue.
+    in property <color> glyph-color: Theme.text-secondary;
+
+    // Explicit size (the square contract): in a plain (non-layout)
+    // parent the default geometry fills the parent and max
+    // constraints never clamp that fill (probed r2 D5) — so this is
+    // `width`/`height`, not a min/max lock.
+    width: Theme.space-6;
+    height: Theme.space-6;
+
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: 100%;
+        height: Theme.focus-ring-width;
+        background: root.glyph-color;
+    }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        height: 100%;
+        width: Theme.focus-ring-width;
+        background: root.glyph-color;
+    }
+}
