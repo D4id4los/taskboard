@@ -260,6 +260,15 @@ impl Adapter {
         self.finish_mutation(window);
     }
 
+    /// The dismiss-all tooltip primitive (r2 D13): the global's
+    /// existing `unhover()` — invoked from the effect-application
+    /// points where the anchor is about to unmount or a modal context
+    /// takes over. Rule: a tooltip never outlives the element that
+    /// spawned it.
+    fn dismiss_tooltip(window: &AppWindow) {
+        window.global::<crate::TooltipState>().invoke_unhover();
+    }
+
     /// The shared post-mutation sync (r2 D12): the view-context seam
     /// realignment plus the shell → window global push. `route`'s
     /// trailing pair, factored out so the mouse menu paths
@@ -437,6 +446,9 @@ impl Adapter {
         // Leaving the edit field by effect first commits the buffer;
         // a move flow ends without dispatch (D9's recorded rule).
         if leaving {
+            // Every view switch by effect dismisses the tooltip (r2
+            // D13): the anchor view is about to unmount.
+            Self::dismiss_tooltip(window);
             match flow {
                 Flow::Create { .. } | Flow::CreateStack | Flow::EditTitle { .. } => {
                     let outcomes = self.view_state.commit_edit(&state);
@@ -515,6 +527,7 @@ impl Adapter {
             // menu row, `Ctrl+,`, and a second press all close an open
             // settings surface.
             (_, UiEffect::OpenSettings) => {
+                Self::dismiss_tooltip(window);
                 if self.view_state.view() == crate::view_state::ViewId::Settings {
                     self.view_state.close_settings()
                 } else {
@@ -539,6 +552,9 @@ impl Adapter {
                 let _ = crate::quit();
             }
             UiEffect::OpenMenu => {
+                // The menu is the modal context now (r2 D13): no tip
+                // survives the open.
+                Self::dismiss_tooltip(window);
                 // The projection is computed for the pre-menu chain
                 // (the active context's actions, §5.9); the menu
                 // context itself masks the chain once open (D11).
@@ -597,6 +613,10 @@ impl Adapter {
     /// The full close shared by every path that means "close the
     /// menu": the shell state and both page models clear (round-1 D6).
     fn apply_close_menu(&mut self, window: &AppWindow) {
+        // Every close (the effect, the dismissal layer, the toggle,
+        // and both mouse leaf paths sharing it) dismisses the tooltip
+        // (r2 D13).
+        Self::dismiss_tooltip(window);
         self.shell.apply(&UiEffect::CloseMenu, 0);
         self.menu_entries.clear();
         self.root_entries.clear();
@@ -1529,6 +1549,7 @@ fn install_settings_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     let weak = window.as_weak();
     window.on_settings_back_clicked(move || {
         let Some(window) = weak.upgrade() else { return };
+        Adapter::dismiss_tooltip(&window);
         let mut a = adapter.borrow_mut();
         let outcomes = a.view_state.close_settings();
         a.apply_outcomes(&window, &outcomes);
