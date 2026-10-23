@@ -1834,3 +1834,224 @@ mod view_component_tests {
         );
     }
 }
+
+/// The stage-1 repetition probe (r2 interaction plan §2.7 test 1),
+/// checked in: pins the pinned Slint's `for`-repeater semantics —
+/// the mechanism D9's row-diff push relies on (in-place
+/// `set_row_data` re-instantiates nothing; a fresh `ModelRc` resets
+/// the repetition). The canary for future Slint bumps: a failure here
+/// invalidates D9's no-op-path assumption and must be triaged before
+/// any transport change is trusted.
+#[cfg(test)]
+mod repetition_probe_tests {
+    use crate::test_platform::{self, on_slint_thread};
+    use i_slint_core::graphics::Rgb8Pixel;
+    use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
+    use std::rc::Rc;
+
+    slint::slint! {
+        export global ProbeCounter {
+            in-out property <int> count: 0;
+        }
+        component ProbeRow inherits Text {
+            init => {
+                ProbeCounter.count += 1;
+            }
+        }
+        export struct ProbeGroup {
+            rows: [string],
+        }
+        export component ProbeWindow inherits Window {
+            width: 200px;
+            height: 200px;
+            in property <[string]> rows;
+            // The struct-property shape (the per-refresh `set_board_model`
+            // push): a plain struct re-assigned wholesale, its model
+            // field carried by handle.
+            in property <ProbeGroup> group;
+            // The nested shape (the column → cards pair): an outer
+            // model of structs, each carrying an inner model.
+            in property <[ProbeGroup]> groups;
+            VerticalLayout {
+                for row in rows: ProbeRow {
+                    text: row;
+                }
+                for inner in group.rows: ProbeRow {
+                    text: inner;
+                }
+                for g in groups: VerticalLayout {
+                    for inner in g.rows: ProbeRow {
+                        text: inner;
+                    }
+                }
+            }
+        }
+    }
+
+    fn mounted() -> ProbeWindow {
+        let window = ProbeWindow::new().expect("the probe window instantiates");
+        window
+            .window()
+            .set_size(slint::WindowSize::Physical(slint::PhysicalSize::new(
+                200, 200,
+            )));
+        window
+    }
+
+    /// Forces a layout pass (the repeaters update during layout) and
+    /// returns how many row instances were instantiated since the
+    /// last `reset`.
+    fn settle(window: &ProbeWindow) -> i32 {
+        let adapter = test_platform::window_adapter().expect("the probe owns the last window");
+        let mut buffer = vec![Rgb8Pixel::default(); 200 * 200];
+        let _ = adapter.render_into(&mut buffer, 200);
+        window.global::<ProbeCounter>().get_count()
+    }
+
+    fn reset(window: &ProbeWindow) {
+        window.global::<ProbeCounter>().set_count(0);
+    }
+
+    fn strings(values: &[&str]) -> Vec<SharedString> {
+        values.iter().map(|v| SharedString::from(*v)).collect()
+    }
+
+    /// The F-3 table (plan §1, probe results 1–8): mount-once,
+    /// in-place row updates and same-handle re-assignments churn
+    /// nothing, a fresh `ModelRc` resets everything, `insert` adds
+    /// exactly one, and the handle/struct equality is identity-based.
+    #[test]
+    fn the_repetition_semantics_table_holds_on_the_pinned_slint() {
+        on_slint_thread(|| {
+            let window = mounted();
+            let rows = Rc::new(VecModel::from(strings(&["a", "b", "c"])));
+            window.set_rows(ModelRc::from(rows.clone()));
+
+            // 1. The initial mount instantiates each row exactly once,
+            //    and an unchanged re-render adds nothing.
+            assert_eq!(settle(&window), 3, "initial mount: one instance per row");
+            reset(&window);
+            assert_eq!(settle(&window), 0, "an unchanged re-render adds nothing");
+
+            // 2. set_row_data — equal or changed — updates in place,
+            //    re-instantiating nothing.
+            rows.set_row_data(0, SharedString::from("a"));
+            assert_eq!(settle(&window), 0, "an equal set_row_data is a no-op");
+            rows.set_row_data(0, SharedString::from("a2"));
+            assert_eq!(
+                settle(&window),
+                0,
+                "a changed set_row_data updates in place"
+            );
+
+            // 3. insert adds exactly one instance; remove adds none.
+            rows.insert(1, SharedString::from("x"));
+            assert_eq!(settle(&window), 1, "insert adds exactly one instance");
+            reset(&window);
+            let _removed = rows.remove(1);
+            assert_eq!(settle(&window), 0, "remove re-instantiates nothing");
+
+            // 4. A different ModelRc — even with byte-equal content —
+            //    resets the repetition: every row re-instantiates.
+            window.set_rows(ModelRc::new(VecModel::from(strings(&["a2", "b", "c"]))));
+            assert_eq!(settle(&window), 3, "a fresh ModelRc resets the repetition");
+
+            // 5. Re-assigning the current handle is a no-op (capture
+            //    the installed handle — phase 4 replaced it).
+            let installed = window.get_rows();
+            reset(&window);
+            window.set_rows(installed.clone());
+            assert_eq!(settle(&window), 0, "the same handle re-assigns for free");
+
+            // 8. ModelRc's PartialEq is handle identity; the generated
+            //    struct's is value equality over its fields (handles
+            //    included).
+            let same = installed;
+            let other: ModelRc<SharedString> =
+                ModelRc::new(VecModel::from(strings(&["a2", "b", "c"])));
+            assert_eq!(
+                same,
+                window.get_rows(),
+                "the installed handle reads back equal"
+            );
+            assert_ne!(same, other, "distinct handles compare unequal");
+        });
+    }
+
+    /// F-3.6/7 — a struct property re-assigned wholesale with the same
+    /// inner model handle churns nothing, an inner `set_row_data`
+    /// reaches the inner repeater with zero churn and no outer write,
+    /// and an outer row update over a persistent outer model that
+    /// keeps the inner handle churns nothing inner.
+    #[test]
+    fn struct_reassignment_with_persistent_handles_and_inner_updates_churn_nothing() {
+        on_slint_thread(|| {
+            let window = mounted();
+            let inner = Rc::new(VecModel::from(strings(&["x", "y"])));
+            window.set_group(ProbeGroup {
+                rows: ModelRc::from(inner.clone()),
+            });
+            assert_eq!(settle(&window), 2, "the inner rows mount once");
+            reset(&window);
+
+            // 6. A fresh struct value carrying the same inner handle:
+            //    zero re-instantiation.
+            window.set_group(ProbeGroup {
+                rows: ModelRc::from(inner.clone()),
+            });
+            assert_eq!(
+                settle(&window),
+                0,
+                "same-handle struct re-assignment is a no-op"
+            );
+
+            // 7a. An inner set_row_data reaches the inner repeater in
+            //     place, with no outer write.
+            inner.set_row_data(0, SharedString::from("x2"));
+            assert_eq!(settle(&window), 0, "the inner update is in place");
+        });
+    }
+
+    /// F-3.7 (nested models) — an outer `set_row_data` (equal or
+    /// changed scalars) that keeps the same inner handle
+    /// re-instantiates nothing inner.
+    #[test]
+    fn an_outer_row_update_keeping_the_inner_handle_churns_nothing_inner() {
+        on_slint_thread(|| {
+            let window = mounted();
+            let inner = Rc::new(VecModel::from(strings(&["x", "y"])));
+            let outer: Rc<VecModel<ProbeGroup>> = Rc::new(VecModel::from(vec![ProbeGroup {
+                rows: ModelRc::from(inner.clone()),
+            }]));
+            window.set_groups(ModelRc::from(outer.clone()));
+            assert_eq!(settle(&window), 2, "the inner rows mount once");
+            reset(&window);
+
+            outer.set_row_data(
+                0,
+                ProbeGroup {
+                    rows: ModelRc::from(inner.clone()),
+                },
+            );
+            assert_eq!(
+                settle(&window),
+                0,
+                "the outer row update churns nothing inner"
+            );
+
+            // The struct's PartialEq compares its fields (handles by
+            // identity).
+            let g = ProbeGroup {
+                rows: ModelRc::from(inner.clone()),
+            };
+            assert_eq!(g, g.clone(), "structs with identical handles compare equal");
+            assert_ne!(
+                g,
+                ProbeGroup {
+                    rows: ModelRc::new(VecModel::from(strings(&["x", "y"]))),
+                },
+                "a fresh inner handle makes the struct unequal"
+            );
+        });
+    }
+}
