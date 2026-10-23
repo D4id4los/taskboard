@@ -27,6 +27,7 @@
 #![allow(clippy::missing_panics_doc)] // harness-internal invariants
 
 use i_slint_backend_testing::ElementHandle;
+use i_slint_backend_testing::ElementQuery;
 use i_slint_backend_testing::testing_backend::{
     TestingBackend, TestingBackendOptions, mock_elapsed_time,
 };
@@ -76,6 +77,11 @@ pub trait JourneyDriver {
     /// Finds the first element whose accessible label equals `label`
     /// (labels are element *addresses*, never assertion text).
     fn find_by_label(&self, label: &str) -> Option<Element>;
+    /// Finds every element with the given qualified element id
+    /// (`Component::element-name`) — one per repetition instance.
+    fn find_all_by_id(&self, id: &str) -> Vec<Element>;
+    /// Finds every element whose accessible label equals `label`.
+    fn find_all_by_label(&self, label: &str) -> Vec<Element>;
     /// Delivers a real click to the labelled element's accessible
     /// default action (§7.1's click-equivalence seam — no coordinate
     /// arithmetic).
@@ -94,6 +100,19 @@ impl Element {
     #[must_use]
     pub fn label(&self) -> Option<String> {
         self.handle.accessible_label().map(Into::into)
+    }
+
+    /// The element's size in logical px (the geometry oracle for the
+    /// layout pins — header heights, column fills, glyph squares).
+    #[must_use]
+    pub fn size(&self) -> slint::LogicalSize {
+        self.handle.size()
+    }
+
+    /// The element's position in window coordinates (logical px).
+    #[must_use]
+    pub fn absolute_position(&self) -> slint::LogicalPosition {
+        self.handle.absolute_position()
     }
 
     /// Invokes the element's accessible default action (the click
@@ -204,6 +223,24 @@ impl JourneyDriver for SlintDriver {
         ElementHandle::find_by_accessible_label(&window, label)
             .next()
             .map(|handle| Element { handle })
+    }
+
+    fn find_all_by_id(&self, id: &str) -> Vec<Element> {
+        let window = self.window();
+        ElementQuery::from_root(&window)
+            .match_descendants()
+            .match_id(id)
+            .find_all()
+            .into_iter()
+            .map(|handle| Element { handle })
+            .collect()
+    }
+
+    fn find_all_by_label(&self, label: &str) -> Vec<Element> {
+        let window = self.window();
+        ElementHandle::find_by_accessible_label(&window, label)
+            .map(|handle| Element { handle })
+            .collect()
     }
 
     fn click_by_label(&mut self, label: &str) {
@@ -342,6 +379,62 @@ mod tests {
 
                 // The mock clock advances without an event loop.
                 driver.advance_time(1_000);
+            },
+        );
+    }
+
+    /// T-0 (r2 chunk 1) — the geometry oracle exists: the bound
+    /// element reads its logical size back (window-filling region),
+    /// the find-all queries address repetition instances (empty over
+    /// an absent id / a single over the one labelled element).
+    #[test]
+    fn driver_reads_element_geometry_and_queries_all_instances() {
+        run(
+            DriverOptions {
+                headless_renderer: false,
+            },
+            |driver: &mut SlintDriver| {
+                let (commands_tx, _commands_rx) = mpsc::channel(16);
+                let (requests_tx, _requests_rx) = mpsc::channel(16);
+                let (system_tx, system_rx) = broadcast::channel(4);
+                let (signals_tx, signals_rx) = broadcast::channel(4);
+                drop(system_tx);
+                drop(signals_tx);
+                let handle = taskboard_ui_slint::mount(
+                    Arc::new(ArcSwap::from_pointee(AppState::default())),
+                    signals_rx,
+                    system_rx,
+                    commands_tx,
+                    requests_tx,
+                    UiSettings::default(),
+                )
+                .expect("mount succeeds on the testing backend");
+                driver.bind(&handle);
+                driver.advance_time(0);
+                driver.set_window_size(1000, 800);
+
+                let board = driver
+                    .find_by_label("Board")
+                    .expect("the board region is addressable");
+                let size = board.size();
+                assert_eq!(size.width, 1000.0, "the region reads its width back");
+                assert!(size.height > 0.0, "the region reads a real height");
+                let position = board.absolute_position();
+                assert_eq!(position.x, 0.0);
+                assert!(
+                    position.y > 0.0,
+                    "the region sits below the toolbar (window coordinates)"
+                );
+
+                assert!(
+                    driver.find_all_by_id("BoardLayout::column-body").is_empty(),
+                    "an absent element id finds nothing"
+                );
+                assert_eq!(
+                    driver.find_all_by_label("Board").len(),
+                    1,
+                    "the find-all label query addresses every instance"
+                );
             },
         );
     }
