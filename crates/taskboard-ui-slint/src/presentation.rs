@@ -750,6 +750,44 @@ mod tests {
         assert_eq!(rows[0].task, ruleless);
     }
 
+    /// Chunk-7 anchor pins (D14): alarm rows never surface — a banner
+    /// target is always Task-anchored even when the state carries
+    /// alarms (the #352 no-UI ruling), and a state with alarms but no
+    /// overdue tasks renders zero banner rows.
+    #[test]
+    fn banner_targets_stay_task_anchored_when_alarms_exist() {
+        use taskboard_domain::{AdhocAlarm, AdhocAlarmId, ReminderAnchor};
+        let now = Utc::now();
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        state.reminders.alarms.insert(
+            AdhocAlarmId::from_uuid(uuid::Uuid::now_v7()),
+            AdhocAlarm {
+                id: AdhocAlarmId::from_uuid(uuid::Uuid::now_v7()),
+                label: "steep the tea".into(),
+                fire_at: now - TimeDelta::hours(1), // overdue as an alarm
+                created_at: now,
+            },
+        );
+        assert!(
+            banner_rows(&state, now).is_empty(),
+            "alarms are not banner rows"
+        );
+
+        // With an overdue task too: every target is Task-anchored.
+        let task_id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut t = task(task_id, stack, 0);
+        t.duedate = Some(now - TimeDelta::hours(2));
+        state.tasks.insert(task_id, t);
+        let rows = banner_rows(&state, now);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].target.anchor,
+            ReminderAnchor::Task(task_id),
+            "banner targets carry Task anchors only"
+        );
+    }
+
     #[test]
     fn scheduled_phrase_is_empty_when_absent_and_directional_when_set() {
         // Structural facts only (AGENTS §5), the `due_phrase` precedent:
