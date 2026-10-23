@@ -2622,3 +2622,81 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
         },
     );
 }
+
+/// R2 D12 (§5.3) — the mouse parent path syncs: clicking a parent row
+/// in the wide (fly-out) presentation pushes `menu-active-group` (the
+/// fly-out mounts — F7's "clicking parents does nothing") and the
+/// fly-out's leaf click switches the view.
+#[test]
+fn a_wide_parent_click_opens_the_fly_out_and_its_leaf_switches_the_view() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+
+            harness.driver.click_by_label("View & navigation");
+            harness.driver.advance_time(0);
+            assert!(
+                keyboard(&harness).get_menu_active_group() >= 0,
+                "the parent click pushed the active group"
+            );
+            assert!(
+                facts(&harness).get_flyout_width() > 0.0,
+                "the fly-out mounted"
+            );
+
+            harness.driver.click_by_label("Next view");
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::StackDetail,
+                "the fly-out leaf switched the view"
+            );
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the leaf invocation closed the menu"
+            );
+        },
+    );
+}
+
+/// R2 D12 (§5.3) — the compact replace page resolves its own index
+/// space: the parent click replaces the panel's page, and the leaf
+/// click resolves against the DISPLAYED page (pre-fix the click
+/// resolved against the root page's vector — the F-B3 mismatch).
+#[test]
+fn a_compact_parent_click_replaces_the_page_and_its_leaf_resolves_it() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(600, 800);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+
+            harness.driver.click_by_label("View & navigation");
+            harness.driver.advance_time(0);
+            assert!(
+                keyboard(&harness).get_menu_active_group() >= 0,
+                "the parent click pushed the active group"
+            );
+
+            // The replaced page's rows are addressable and resolve
+            // against the displayed (submenu) page.
+            harness.driver.click_by_label("Next view");
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::StackDetail,
+                "the replace page's leaf switched the view"
+            );
+        },
+    );
+}
