@@ -214,6 +214,13 @@ fn model_snapshot(harness: &Harness) -> Vec<String> {
         .collect()
 }
 
+fn tooltip_state(harness: &Harness) -> taskboard_ui_slint::TooltipState<'_> {
+    harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::TooltipState>()
+}
+
 fn facts(harness: &Harness) -> taskboard_ui_slint::MenuPanelFacts<'_> {
     harness
         .handle
@@ -2696,6 +2703,104 @@ fn a_compact_parent_click_replaces_the_page_and_its_leaf_resolves_it() {
                 harness.handle.window().get_current_view(),
                 View::StackDetail,
                 "the replace page's leaf switched the view"
+            );
+        },
+    );
+}
+
+/// R2 D13 (§6.3) — a visible tooltip does not survive a view switch:
+/// the interpret leaving block dismisses the trigger, so the pending
+/// or visible tip is gone after `nav.next-view` (the anchor unmounted).
+#[test]
+fn a_visible_tooltip_does_not_survive_a_view_switch() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            // Hover a card through its a11y geometry, let the delay
+            // fire.
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let pos = card.absolute_position();
+            let size = card.size();
+            let mut armed = false;
+            let mut y = pos.y + 2.0;
+            while y < pos.y + size.height - 2.0 {
+                harness.driver.hover_at(pos.x + size.width / 2.0, y);
+                harness.driver.advance_time(0);
+                if tooltip_state(&harness).get_pending() {
+                    armed = true;
+                    break;
+                }
+                y += 4.0;
+            }
+            assert!(armed, "the card hover armed the trigger");
+            harness.driver.advance_time(600);
+            assert!(
+                tooltip_state(&harness).get_visible(),
+                "the tip went visible"
+            );
+
+            harness.press(ActionId::NavNextView);
+            harness.driver.advance_time(0);
+            let tooltip = tooltip_state(&harness);
+            assert!(
+                !tooltip.get_visible() && !tooltip.get_pending() && !tooltip.get_placed(),
+                "the view switch dismissed the tooltip"
+            );
+        },
+    );
+}
+
+/// R2 D13 (§6.3) — a menu-row click unhovers: the pending tip armed by
+/// hovering a row is cleared by clicking a (parent) row; the submenu
+/// opening itself is the D12 journey's assertion.
+#[test]
+fn a_menu_row_click_unhovers_the_tooltip() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+
+            // The existing row-hover scan pattern: arm the trigger on
+            // some enabled row.
+            let facts = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::MenuPanelFacts>();
+            let (px, pw) = (facts.get_x(), facts.get_width());
+            let (py, ph) = (facts.get_y(), facts.get_height());
+            let mut armed = false;
+            let mut y = py + 8.0;
+            while y < py + ph - 8.0 {
+                harness.driver.hover_at(px + pw / 2.0, y);
+                harness.driver.advance_time(0);
+                if tooltip_state(&harness).get_pending() {
+                    armed = true;
+                    break;
+                }
+                y += 6.0;
+            }
+            assert!(armed, "a row hover armed the tooltip");
+
+            harness.driver.click_by_label("View & navigation");
+            harness.driver.advance_time(0);
+            let tooltip = tooltip_state(&harness);
+            assert!(
+                !tooltip.get_pending() && !tooltip.get_visible(),
+                "the row click unhovered the tooltip"
             );
         },
     );

@@ -163,7 +163,12 @@ export component ActionMenu inherits Rectangle {
                     // The D7 description: the AT text and the row
                     // tooltip's middle part are the same data.
                     accessible-description: entry.description;
-                    accessible-action-default => root.invoke-row(entry-index);
+                    accessible-action-default => {
+                        // A tooltip never outlives the row that spawned
+                        // it (r2 D13) — the icon-button pattern.
+                        TooltipState.unhover();
+                        root.invoke-row(entry-index);
+                    }
                     row-hit := TouchArea {
                         enabled: entry.enabled;
                         // The D8 row tooltip (round 1): hover arms the
@@ -178,7 +183,10 @@ export component ActionMenu inherits Rectangle {
                                 TooltipState.unhover();
                             }
                         }
-                        clicked => root.invoke-row(entry-index);
+                        clicked => {
+                            TooltipState.unhover();
+                            root.invoke-row(entry-index);
+                        }
                     }
                 }
                 background: row-hit.has-hover ? Theme.surface-hover
