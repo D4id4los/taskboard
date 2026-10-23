@@ -1006,8 +1006,8 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
             );
             assert_eq!(
                 harness.handle.window().get_board_model().selected_stack,
-                0,
-                "the compact board starts on the first stack"
+                -1,
+                "no stack is explicitly selected at mount (compact still renders the first via its effective-selected clamp)"
             );
             // Retreat hands the card focus back to the switcher level
             // (D8's selection-follows-focus entry point).
@@ -1478,6 +1478,49 @@ fn stack_headers_are_one_control_row_regardless_of_content() {
                     "stack {title}'s header is one control row"
                 );
             }
+        },
+    );
+}
+
+/// R2 D4 (T-10) — the model pushes the *true* selection: a fresh mount
+/// carries −1 (no explicit selection), and a header click moves it to
+/// the clicked stack's index.
+#[test]
+fn mount_pushes_no_selection_and_a_header_click_moves_it() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                -1,
+                "a fresh mount pushes no selection"
+            );
+            let click_header = |harness: &Harness, title: &str| {
+                harness
+                    .driver
+                    .find_all_by_label(title)
+                    .into_iter()
+                    .find(support::driver::Element::is_accessible_button)
+                    .unwrap_or_else(|| panic!("stack {title}'s header is addressable"))
+                    .invoke_default_action();
+            };
+            click_header(&harness, "a");
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                0,
+                "the header click selected stack a"
+            );
+            click_header(&harness, "b");
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                1,
+                "the header click moved the selection to stack b"
+            );
         },
     );
 }
