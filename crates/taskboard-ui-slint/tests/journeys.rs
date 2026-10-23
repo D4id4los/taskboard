@@ -2488,3 +2488,42 @@ fn the_rule_list_journeys_reach_the_boundary() {
         },
     );
 }
+
+/// R2 D10 (§3) — the synthesized double-click journey: two clicks at
+/// a card's centre with a refresh (the first click's focus refresh)
+/// in between and no mock-clock advance land on the same card
+/// instance under the D9 transport, and the second release fires the
+/// card's `double-clicked => activated()` wiring — the task-detail
+/// view. The window-level click counter runs on the mock clock; the
+/// journey never advances it.
+#[test]
+fn a_double_click_across_a_refresh_opens_the_task_detail() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let pos = card.absolute_position();
+            let size = card.size();
+            let cx = pos.x + size.width / 2.0;
+            let cy = pos.y + size.height / 2.0;
+
+            harness.driver.click_at(cx, cy);
+            harness.handle.refresh();
+            harness.driver.click_at(cx, cy);
+
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::TaskDetail,
+                "the second release activated the card"
+            );
+        },
+    );
+}
