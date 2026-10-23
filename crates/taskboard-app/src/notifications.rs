@@ -221,6 +221,7 @@ pub fn spawn_notifier(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
     use taskboard_domain::{AdhocAlarmId, ReminderAnchor, ReminderRef, TaskId};
 
     const FIRED_AT: DateTime<Utc> =
@@ -302,5 +303,62 @@ mod tests {
                 "{choice:?} x {mode:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn failed_delivery_does_not_kill_the_consumer() {
+        // D-R13's "never fatal" contract, pinned at its lowest layer:
+        // the first delivery errs, the consumer logs and continues, the
+        // second lands. Deterministic: channels + join, no sleeps.
+        struct FailingSink {
+            calls: std::sync::atomic::AtomicUsize,
+            failures: std::sync::atomic::AtomicUsize,
+            deliveries: std::sync::atomic::AtomicUsize,
+        }
+        impl NotificationSink for FailingSink {
+            fn deliver<'a>(
+                &'a self,
+                _notification: &'a Notification,
+            ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+                Box::pin(async move {
+                    if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        self.failures.fetch_add(1, Ordering::SeqCst);
+                        return Err(NotifyError);
+                    }
+                    self.deliveries.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }
+        }
+        impl std::fmt::Debug for FailingSink {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("FailingSink")
+            }
+        }
+
+        let sink = Arc::new(FailingSink {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            failures: std::sync::atomic::AtomicUsize::new(0),
+            deliveries: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let (tx, rx) = tokio::sync::mpsc::channel(NOTIFIER_CAPACITY);
+        let consumer = spawn_notifier(rx, Arc::clone(&sink) as Arc<dyn NotificationSink>);
+        tx.send(notification(ReminderAnchor::Task(TaskId::from_uuid(
+            uuid::Uuid::from_u128(6),
+        ))))
+        .await
+        .expect("first send");
+        tx.send(notification(ReminderAnchor::Task(TaskId::from_uuid(
+            uuid::Uuid::from_u128(7),
+        ))))
+        .await
+        .expect("second send");
+        drop(tx);
+        consumer.await.expect("consumer survives a failed delivery");
+        // Both notifications were offered, exactly the first failed,
+        // the second was delivered.
+        assert_eq!(sink.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(sink.failures.load(Ordering::SeqCst), 1);
+        assert_eq!(sink.deliveries.load(Ordering::SeqCst), 1);
     }
 }
