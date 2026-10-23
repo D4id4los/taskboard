@@ -1264,11 +1264,14 @@ mod tests {
                     .all(|f| !batch_snoozed.contains(&f.reminder) || f.occurrence >= target),
                 "a batch-snoozed reminder must not fire below its target"
             );
-            // (c) muted tasks contribute zero firings.
+            // (c) muted tasks contribute zero task firings.
             let fired_tasks: std::collections::BTreeSet<_> =
                 crate::reminders::due_firings(&app, settled, &defaults, now + chrono::TimeDelta::try_minutes(20).unwrap())
                     .into_iter()
-                    .map(|f| f.task)
+                    .filter_map(|f| match f.anchor {
+                        crate::reminders::ReminderAnchor::Task(t) => Some(t),
+                        crate::reminders::ReminderAnchor::Alarm(_) => None,
+                    })
                     .collect();
             prop_assert!(fired_tasks.iter().all(|t| !settled.muted.contains(t)));
             // (d) persisted invariants: <= 1 delivery per key; compacted.

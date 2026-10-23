@@ -253,7 +253,7 @@ pub fn sidecar_caption(health: SidecarHealth) -> String {
 /// effect of these links lands with the reminders toast plan).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReminderTarget {
-    pub task: TaskId,
+    pub anchor: taskboard_domain::ReminderAnchor,
     pub reminder: ReminderRef,
     pub occurrence: DateTime<Utc>,
 }
@@ -324,7 +324,7 @@ pub fn banner_rows(state: &AppState, now: DateTime<Utc>) -> Vec<BannerRow> {
                 task: task.id,
                 kind: DueKind::Overdue,
                 target: ReminderTarget {
-                    task: task.id,
+                    anchor: taskboard_domain::ReminderAnchor::Task(task.id),
                     reminder,
                     occurrence,
                 },
@@ -919,12 +919,20 @@ mod tests {
             prop_assert_eq!(got, expected);
             for row in &rows {
                 prop_assert_eq!(row.kind, DueKind::Overdue);
-                prop_assert_eq!(row.target.task, row.task);
+                // Banner rows are task-only by contract: an alarm-anchored
+                // target is unconstructible through `banner_rows`.
+                let taskboard_domain::ReminderAnchor::Task(anchor_task) = row.target.anchor else {
+                    panic!("banner rows never carry alarm anchors");
+                };
+                prop_assert_eq!(anchor_task, row.task);
                 match row.target.reminder {
                     ReminderRef::Rule(_) => {
                         prop_assert!(state.reminders.rules.values().any(|r| r.task == row.task));
                     }
                     ReminderRef::Default(task) => prop_assert_eq!(task, row.task),
+                    ReminderRef::Adhoc(_) => {
+                        panic!("banner rows never carry alarm refs");
+                    }
                 }
             }
         }

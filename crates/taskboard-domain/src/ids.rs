@@ -58,6 +58,11 @@ local_id!(
     /// Local identity of a reminder rule (`UUIDv7`, generated client-side).
     ReminderRuleId
 );
+local_id!(
+    /// Local identity of a standalone adhoc alarm (`UUIDv7`, generated
+    /// client-side; device-local — never synced).
+    AdhocAlarmId
+);
 
 macro_rules! remote_id {
     ($(#[$doc:meta])* $name:ident) => {
@@ -193,6 +198,9 @@ mod tests {
             let rule = ReminderRuleId::from_uuid(raw);
             prop_assert_eq!(rule.as_uuid(), raw);
             prop_assert_eq!(rule, ReminderRuleId::from(raw));
+            let alarm = AdhocAlarmId::from_uuid(raw);
+            prop_assert_eq!(alarm.as_uuid(), raw);
+            prop_assert_eq!(alarm, AdhocAlarmId::from(raw));
         }
 
         #[test]

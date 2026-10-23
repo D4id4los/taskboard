@@ -174,10 +174,17 @@ impl ActionRouter {
                 None => DispatchOutcome::NoTarget,
             },
             ActionId::ReminderMute => match ctx.reminder_target {
-                Some(target) => DispatchOutcome::Command(StateCommand::SetTaskRemindersMuted {
-                    task: target.task,
-                    muted: true,
-                }),
+                Some(target) => match target.anchor {
+                    // Mute is task-shaped; an alarm anchor has no task to
+                    // mute (unreachable via `banner_rows`).
+                    taskboard_domain::ReminderAnchor::Task(task) => {
+                        DispatchOutcome::Command(StateCommand::SetTaskRemindersMuted {
+                            task,
+                            muted: true,
+                        })
+                    }
+                    taskboard_domain::ReminderAnchor::Alarm(_) => DispatchOutcome::NoTarget,
+                },
                 None => DispatchOutcome::NoTarget,
             },
             // The rule-list verbs (chunk 6, D11): the banner-verb
@@ -244,7 +251,7 @@ mod tests {
 
     fn banner_target() -> crate::presentation::ReminderTarget {
         crate::presentation::ReminderTarget {
-            task: TaskId::from_uuid(Uuid::now_v7()),
+            anchor: taskboard_domain::ReminderAnchor::Task(TaskId::from_uuid(Uuid::now_v7())),
             reminder: taskboard_domain::ReminderRef::Default(TaskId::from_uuid(Uuid::now_v7())),
             occurrence: chrono::Utc::now(),
         }
@@ -356,10 +363,13 @@ mod tests {
                 postpone: SNOOZE_POSTPONE,
             })
         );
+        let taskboard_domain::ReminderAnchor::Task(task_id) = target.anchor else {
+            unreachable!("the fixture builds a task anchor");
+        };
         assert_eq!(
             ActionRouter::dispatch(ActionId::ReminderMute, &ctx),
             DispatchOutcome::Command(StateCommand::SetTaskRemindersMuted {
-                task: target.task,
+                task: task_id,
                 muted: true,
             })
         );
