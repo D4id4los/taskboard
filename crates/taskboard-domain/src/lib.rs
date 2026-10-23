@@ -100,7 +100,7 @@ pub use reminders::{
     AdhocAlarm, AdhocWhen, InvalidReminderOffset, Notification, ReminderAnchor, ReminderDefaults,
     ReminderDelivery, ReminderFiring, ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze,
     ReminderSnoozeKey, ReminderState, alarm_occurrence, due_firings, due_soon,
-    effective_occurrence, notifications_for, occurrence_of, overdue_tasks,
+    effective_occurrence, notifications_for, occurrence_of, overdue_tasks, prune_settled_alarms,
 };
 pub use remote::{
     BoardPullValidators, PushOutcome, PushResult, RemoteBoard, RemoteBoardSnapshot, RemoteEcho,

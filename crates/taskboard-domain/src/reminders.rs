@@ -450,6 +450,43 @@ pub fn compact_snooze_chains(reminders: &mut ReminderState) {
     reminders.snoozes.retain(|key, _| keep.contains(key));
 }
 
+/// Removes an alarm row and prunes its `Adhoc`-ref deliveries and
+/// snooze links with it — the `DeleteReminderRule` cascade shape, one
+/// definition site shared by the
+/// [`DeleteAdhocAlarm`](crate::persistence::PersistenceAction::DeleteAdhocAlarm)
+/// arm and [`prune_settled_alarms`] (nothing can re-fire from a pruned
+/// map row).
+pub(crate) fn remove_alarm(reminders: &mut ReminderState, id: AdhocAlarmId) {
+    reminders.alarms.remove(&id);
+    let reminder = ReminderRef::Adhoc(id);
+    reminders.deliveries.retain(|d| d.reminder != reminder);
+    reminders.snoozes.retain(|key, _| key.reminder != reminder);
+}
+
+/// Prunes alarms whose effective occurrence is delivered: such an alarm
+/// can never fire again (the occurrence key is immutable) and carries
+/// no truth worth keeping. The [`compact_snooze_chains`] sibling — the
+/// caller orders it AFTER compaction so a just-settled chain reverts to
+/// its base before the delivered-ness check reads it (the composition:
+/// target settles → both chain endpoints delivered → link compacts →
+/// effective reverts → base delivered → alarm prunes). Pruning an alarm
+/// removes its deliveries and snooze links with it. Unobservable in
+/// [`due_firings`] (property-pinned).
+pub fn prune_settled_alarms(reminders: &mut ReminderState) {
+    let settled: Vec<AdhocAlarmId> = reminders
+        .alarms
+        .keys()
+        .copied()
+        .filter(|&id| {
+            alarm_occurrence(reminders, id)
+                .is_some_and(|eff| reminders.is_delivered(&ReminderRef::Adhoc(id), &eff))
+        })
+        .collect();
+    for id in settled {
+        remove_alarm(reminders, id);
+    }
+}
+
 /// The instant an explicit rule fires at, given the task's current
 /// due date. `None` ⇔ no due date, or a fire instant outside the
 /// representable range (the evaluator is total on arbitrary input).

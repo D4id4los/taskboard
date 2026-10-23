@@ -231,18 +231,6 @@ pub enum PersistenceAction {
     ClearBoardContent(crate::ids::BoardId),
 }
 
-/// Removes an alarm row and prunes its `Adhoc`-ref deliveries and
-/// snooze links with it — the `DeleteReminderRule` cascade shape, one
-/// definition site shared by the [`PersistenceAction::DeleteAdhocAlarm`]
-/// arm and the settlement prune (nothing can re-fire from a pruned map
-/// row).
-fn remove_alarm(reminders: &mut ReminderState, id: crate::ids::AdhocAlarmId) {
-    reminders.alarms.remove(&id);
-    let reminder = ReminderRef::Adhoc(id);
-    reminders.deliveries.retain(|d| d.reminder != reminder);
-    reminders.snoozes.retain(|key, _| key.reminder != reminder);
-}
-
 /// Applies a batch of [`PersistenceAction`]s to a [`PersistedState`] —
 /// the executable definition of the port's batch contract, shared by the
 /// state engine's memory advance and the repository implementations
@@ -260,7 +248,11 @@ fn remove_alarm(reminders: &mut ReminderState, id: crate::ids::AdhocAlarmId) {
 /// same key; mute toggles membership. A final derivation re-computes
 /// `sync.pending_ops` from the outbox depth, and fully-delivered snooze
 /// links are compacted — both derivations run unconditionally after
-/// every batch (both this function and `load()` derive them). The sync
+/// every batch (both this function and `load()` derive them). Alarm
+/// rows join the same unconditional derivation: an alarm whose
+/// effective occurrence is delivered is pruned with its dependents,
+/// always after the compaction (the order the composition needs). The
+/// sync
 /// projection is derived the same way: every board materialized,
 /// `pending_ops` attributed from the outbox.
 #[allow(clippy::too_many_lines)] // one exhaustive semantics table; the arms ARE the contract
@@ -328,7 +320,7 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                 state.reminders.alarms.insert(alarm.id, alarm.clone());
             }
             PersistenceAction::DeleteAdhocAlarm(id) => {
-                remove_alarm(&mut state.reminders, *id);
+                crate::reminders::remove_alarm(&mut state.reminders, *id);
             }
             PersistenceAction::RecordReminderDelivery(delivery) => {
                 if !state
@@ -475,6 +467,12 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
     // suppress on their own. Pruning it bounds chain growth with zero
     // behavioral change (the compaction-unobservability property).
     crate::reminders::compact_snooze_chains(&mut state.reminders);
+    // An alarm whose effective occurrence is delivered can never fire
+    // again — prune it (with its deliveries and snooze links). The
+    // caller-order is load-bearing: compaction first lets a just-
+    // settled chain revert to its base before the delivered-ness check
+    // reads it (the composition pinned by the mis-order catcher).
+    crate::reminders::prune_settled_alarms(&mut state.reminders);
     // Derived, never tracked: after every batch the per-board pending
     // counts are re-derived from the outbox they summarize.
     derive_sync_states(
@@ -1379,6 +1377,222 @@ mod tests {
             serde_json::to_string("archived_stacks:9").unwrap(),
             "the wire tag is the storage codec's text form"
         );
+    }
+
+    // ---- Alarm settlement (chunk-7): the prune and its property set --
+
+    fn adhoc_alarm(raw: u128, fire_at_secs: i64) -> crate::reminders::AdhocAlarm {
+        crate::reminders::AdhocAlarm {
+            id: crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(raw)),
+            label: "steep the tea".into(),
+            fire_at: ts(fire_at_secs),
+            created_at: ts(100),
+        }
+    }
+
+    #[test]
+    fn adhoc_alarm_delete_cascades_dependents_and_nothing_elses() {
+        let mut state = PersistedState::default();
+        let a = adhoc_alarm(30, 1_000);
+        let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(5));
+        let task_ref = crate::reminders::ReminderRef::Default(task);
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::UpsertAdhocAlarm(a.clone()),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: crate::reminders::ReminderRef::Adhoc(a.id),
+                    occurrence: ts(1_000),
+                    delivered_at: ts(1_001),
+                }),
+                PersistenceAction::RecordReminderSnooze(crate::reminders::ReminderSnooze {
+                    reminder: crate::reminders::ReminderRef::Adhoc(a.id),
+                    occurrence: ts(2_000),
+                    rescheduled_to: ts(3_000),
+                }),
+                // A task-reminder row must survive the alarm delete.
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder: task_ref,
+                    occurrence: ts(1_000),
+                    delivered_at: ts(1_001),
+                }),
+            ],
+        );
+        apply_actions(&mut state, &[PersistenceAction::DeleteAdhocAlarm(a.id)]);
+        assert!(state.reminders.alarms.is_empty());
+        assert_eq!(
+            state.reminders.deliveries.len(),
+            1,
+            "only the task-reminder delivery survives"
+        );
+        assert!(state.reminders.snoozes.is_empty());
+    }
+
+    #[test]
+    fn cancelled_alarm_is_quiet_at_every_now() {
+        let mut state = PersistedState::default();
+        let a = adhoc_alarm(31, 500);
+        let alarm_id = a.id;
+        apply_actions(&mut state, &[PersistenceAction::UpsertAdhocAlarm(a)]);
+        // Fires before the cancel...
+        let app: AppState = state.clone().into();
+        let defaults = crate::reminders::ReminderDefaults::default();
+        assert_eq!(
+            crate::reminders::due_firings(&app.tasks, &state.reminders, &defaults, ts(500)).len(),
+            1
+        );
+        // ...and never after it: the batch `CancelAdhocAlarm` plans is
+        // exactly `DeleteAdhocAlarm`, and nothing can re-fire from a
+        // pruned map row (snooze links go with the row).
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordReminderSnooze(crate::reminders::ReminderSnooze {
+                    reminder: crate::reminders::ReminderRef::Adhoc(alarm_id),
+                    occurrence: ts(500),
+                    rescheduled_to: ts(9_000),
+                }),
+                PersistenceAction::DeleteAdhocAlarm(alarm_id),
+            ],
+        );
+        for now in [499, 500, 9_000, 10_000] {
+            let app: AppState = state.clone().into();
+            let firings =
+                crate::reminders::due_firings(&app.tasks, &state.reminders, &defaults, ts(now));
+            assert!(
+                firings
+                    .iter()
+                    .all(|f| f.reminder != crate::reminders::ReminderRef::Adhoc(alarm_id)),
+                "no re-fire at now={now}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_prune_runs_after_compaction_settled_chain_reverts_then_prunes() {
+        // The mis-order catcher (D10.2): a two-link chain (base→m→t)
+        // with base+m delivered and t undelivered. Compaction first
+        // drops the settled base→m link, the walk reverts to base, and
+        // the prune removes the alarm whose remaining m→t link is
+        // unreachable garbage. Prune-first (or dropped) would read
+        // effective = t (undelivered) and keep the zombie through round
+        // one.
+        let mut state = PersistedState::default();
+        let a = adhoc_alarm(32, 1_000);
+        let reminder = crate::reminders::ReminderRef::Adhoc(a.id);
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::UpsertAdhocAlarm(a),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder,
+                    occurrence: ts(1_000),
+                    delivered_at: ts(1_001),
+                }),
+                PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
+                    reminder,
+                    occurrence: ts(2_000),
+                    delivered_at: ts(2_001),
+                }),
+                PersistenceAction::RecordReminderSnooze(crate::reminders::ReminderSnooze {
+                    reminder,
+                    occurrence: ts(1_000),
+                    rescheduled_to: ts(2_000),
+                }),
+                PersistenceAction::RecordReminderSnooze(crate::reminders::ReminderSnooze {
+                    reminder,
+                    occurrence: ts(2_000),
+                    rescheduled_to: ts(3_000),
+                }),
+            ],
+        );
+        // One post-pass (the empty batch) must run compaction → prune.
+        apply_actions(&mut state, &[]);
+        assert!(
+            state.reminders.alarms.is_empty(),
+            "the settled alarm prunes in the same post-pass"
+        );
+    }
+
+    #[test]
+    fn the_composition_narrative_through_batches_only() {
+        // D-R7's sentence made concrete, on the sanctioned path: create
+        // → the user snoozes the pending occurrence (link data is
+        // opaque; snoozing before the fire is typed-legal) → the alarm
+        // fires at its target → the delivery batch settles it: the
+        // prune removes the alarm and its dependents in the SAME
+        // post-pass. All through `apply_actions` batches, no direct
+        // mutation. (The plan's literal deliver-base-then-snooze
+        // sequence is unrepresentable: an unsnoozed fire settles and
+        // prunes in one batch, so the snooze would target a pruned row
+        // — recorded as a stage-2 deviation note.)
+        let mut state = PersistedState::default();
+        let a = adhoc_alarm(33, 1_000);
+        let reminder = crate::reminders::ReminderRef::Adhoc(a.id);
+        apply_actions(&mut state, &[PersistenceAction::UpsertAdhocAlarm(a)]);
+        // Snooze the pending occurrence to 2_000.
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::RecordReminderSnooze(
+                crate::reminders::ReminderSnooze {
+                    reminder,
+                    occurrence: ts(1_000),
+                    rescheduled_to: ts(2_000),
+                },
+            )],
+        );
+        // Below the target: alive, quiet (the chain moved the fire).
+        let app: AppState = state.clone().into();
+        assert_eq!(
+            crate::reminders::due_firings(
+                &app.tasks,
+                &state.reminders,
+                &crate::reminders::ReminderDefaults::default(),
+                ts(1_500),
+            ),
+            Vec::new()
+        );
+        // Fire at the target: the evaluator delivers it; the same
+        // batch's post-pass prunes the settled alarm with its
+        // deliveries and snooze links.
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::RecordReminderDelivery(
+                crate::reminders::ReminderDelivery {
+                    reminder,
+                    occurrence: ts(2_000),
+                    delivered_at: ts(2_001),
+                },
+            )],
+        );
+        assert!(state.reminders.alarms.is_empty());
+        assert!(state.reminders.snoozes.is_empty());
+        assert!(state.reminders.deliveries.is_empty());
+        // One more batch: settled is a fixed point.
+        apply_actions(&mut state, &[]);
+        assert!(state.reminders.alarms.is_empty());
+        assert!(state.reminders.snoozes.is_empty());
+    }
+
+    proptest! {
+        #![proptest_config(test_support::proptest_config(256))]
+
+        #[test]
+        fn alarm_prune_is_unobservable_in_due_firings(
+            (app, reminders) in test_support::app_state_strategy()
+                .prop_map(|app| (app.tasks.clone(), app.reminders.clone())),
+            offset in test_support::reminder_offset_strategy(),
+            now in test_support::timestamp_strategy(),
+        ) {
+            let defaults = crate::reminders::ReminderDefaults { default_before: offset };
+            let mut pruned = reminders.clone();
+            crate::reminders::prune_settled_alarms(&mut pruned);
+            prop_assert_eq!(
+                crate::reminders::due_firings(&app, &reminders, &defaults, now),
+                crate::reminders::due_firings(&app, &pruned, &defaults, now),
+                "the prune never changes what fires",
+            );
+        }
     }
 
     proptest! {
