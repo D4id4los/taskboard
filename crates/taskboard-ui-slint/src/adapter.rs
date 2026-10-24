@@ -2285,19 +2285,19 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let custom_weak = window.as_weak();
     window.on_rule_add_custom_accepted(move |text| {
         let Some(window) = custom_weak.upgrade() else {
-            return;
+            return false;
         };
         let mut a = custom.borrow_mut();
         // A parse miss dispatches nothing (absorbed — D12): the UI
-        // owns no error chrome; the CLI owns typed failures. The
-        // buffer reset rides the reject seam (r2 D24) so the field
-        // never looks stuck.
+        // owns no error chrome; the CLI owns typed failures. The miss
+        // rides the seam's return (r2 D24): the composition clears its
+        // own buffer, so the field never looks stuck.
         let Some(offset) = ReminderOffset::parse_text_form(&text) else {
-            window.invoke_rule_add_custom_rejected();
-            return;
+            return false;
         };
         a.rule_add_offset = Some(offset);
         a.route(&window, ActionId::ReminderRuleAdd);
+        true
     });
 }
 

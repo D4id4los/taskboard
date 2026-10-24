@@ -350,8 +350,9 @@ The workspace carries a single global version (see `docs/architecture.org`);
   the column create-task rows, and the settings fields. The reminder
   presets row absorbs the custom-offset entry: preset chips gain
   side padding over a `space-6` floor and a parse-missed custom
-  entry now **clears its buffer** through the new
-  `rule-add-custom-rejected` seam (the D12 silent absorb stays). The
+  entry now **clears its buffer** (the parse outcome rides the
+  `rule-add-custom-accepted` return; the D12 silent absorb stays).
+  The
   task view's Due cell becomes a real **due-date editor** (#227;
   both paths, fully keyboard-operable): typed entry (`YYYY-MM-DD` at
   00:00 UTC, `+N<unit>` relative, empty clears, refusals keep the
