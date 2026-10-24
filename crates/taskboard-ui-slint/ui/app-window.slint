@@ -100,6 +100,7 @@ export component AppWindow inherits Window {
     //      back — no ids cross the seam). ---------------------------
     in-out property <TodayModel> today-model;
     in-out property <string> toolbar-title;
+    in-out property <int> toolbar-inbox-count: 0;
     in-out property <[string]> toolbar-menu-hint;
     // The nav.focus-board binding (round-1 D12; a keymap projection).
     in-out property <[string]> nav-back-hint;
@@ -179,7 +180,10 @@ export component AppWindow inherits Window {
             toolbar := Toolbar {
                 title: root.toolbar-title;
                 menu-hint: root.toolbar-menu-hint;
+                inbox-count: root.toolbar-inbox-count;
+                compact: Responsive.current-breakpoint == Breakpoint.compact;
                 menu-clicked => root.toolbar-menu-clicked();
+                inbox-clicked => root.toolbar-inbox-clicked();
             }
 
             // The view-stack area (D20 [DEV]): conditional mounting of
@@ -464,6 +468,7 @@ export component AppWindow inherits Window {
     // in the adapter. Indices only — the adapter resolves them
     // against the id tables it built when pushing the models (D2).
     pure callback toolbar-menu-clicked();
+    pure callback toolbar-inbox-clicked();
     pure callback board-bar-segment-activated(int);
     pure callback board-task-activated(int, int);
     pure callback board-task-clicked(int, int);

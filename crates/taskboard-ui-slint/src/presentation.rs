@@ -378,6 +378,29 @@ pub fn live_boards(state: &AppState) -> Vec<&Board> {
         .collect()
 }
 
+/// The global inbox's open count (chunk 10 D9): live, open,
+/// anchor-filtered tasks whose stack belongs to the global Inbox
+/// board — one inbox, one number, the `due_sets` template. Zero when
+/// no Inbox board exists (an empty inbox is triage-done).
+#[must_use]
+pub fn inbox_count(state: &AppState) -> usize {
+    state.inbox_board().map_or(0, |inbox| {
+        state
+            .tasks
+            .values()
+            .filter(|task| {
+                task.is_live()
+                    && task.is_open()
+                    && !is_anchor_task(task)
+                    && state
+                        .stacks
+                        .get(&task.stack)
+                        .is_some_and(|stack| stack.board == inbox)
+            })
+            .count()
+    })
+}
+
 /// The today row's context line (chunk 10 D7, D-V3): the stack title
 /// always; the `"<board> › <stack>"` board badge only on a multi-board
 /// desktop — and suppressed entirely on kiosk (no badges). A
@@ -1133,6 +1156,165 @@ mod connector_status_tests {
         let mut states = taskboard_domain::SyncStates::new();
         states.set_stored(board, phase, None);
         state.sync = states;
+    }
+
+    /// The inbox count (chunk 10 D9): the global Inbox board's live,
+    /// open, anchor-filtered tasks; zero with no inbox; archived
+    /// boards and tombstoned/done tasks never count.
+    #[test]
+    #[allow(clippy::too_many_lines)] // the fixture is the length; the assertions are three
+    fn inbox_counts_the_global_inbox_only() {
+        let mut state = AppState::default();
+        assert_eq!(inbox_count(&state), 0, "no inbox, no count");
+        let board = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let other = BoardId::from_uuid(uuid::Uuid::now_v7());
+        state.boards.insert(
+            board,
+            Board {
+                id: board,
+                remote: None,
+                title: "Inbox".into(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        state.boards.insert(
+            other,
+            Board {
+                id: other,
+                remote: None,
+                title: "beta".into(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        let inbox_stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let other_stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        state.stacks.insert(
+            inbox_stack,
+            Stack {
+                id: inbox_stack,
+                remote: None,
+                board,
+                title: "Inbox".into(),
+                order: 0,
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::StackClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    order: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        state.stacks.insert(
+            other_stack,
+            Stack {
+                id: other_stack,
+                remote: None,
+                board: other,
+                title: "todo".into(),
+                order: 0,
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::StackClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    order: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        let mk = |stack: StackId, title: &str, done: bool, deleted: bool| {
+            let mut t = Task {
+                id: TaskId::from_uuid(uuid::Uuid::now_v7()),
+                remote: None,
+                title: title.to_owned(),
+                description: String::new(),
+                duedate: None,
+                scheduled: None,
+                done: None,
+                stack,
+                order: 0,
+                labels: std::collections::BTreeSet::default(),
+                effort: None,
+                importance: None,
+                urgency: None,
+                archived: false,
+                deleted,
+                clocks: taskboard_domain::TaskClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    description: taskboard_domain::BoardClocks::epoch(),
+                    duedate: taskboard_domain::BoardClocks::epoch(),
+                    scheduled: taskboard_domain::BoardClocks::epoch(),
+                    done: taskboard_domain::BoardClocks::epoch(),
+                    position: taskboard_domain::BoardClocks::epoch(),
+                    labels: taskboard_domain::BoardClocks::epoch(),
+                    effort: taskboard_domain::BoardClocks::epoch(),
+                    importance: taskboard_domain::BoardClocks::epoch(),
+                    urgency: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            };
+            if done {
+                t.done = Some(taskboard_domain::BoardClocks::epoch());
+            }
+            t
+        };
+        state.tasks.insert(
+            TaskId::from_uuid(uuid::Uuid::now_v7()),
+            mk(inbox_stack, "one", false, false),
+        );
+        state.tasks.insert(
+            TaskId::from_uuid(uuid::Uuid::now_v7()),
+            mk(inbox_stack, "two", false, false),
+        );
+        let done_id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        state
+            .tasks
+            .insert(done_id, mk(inbox_stack, "done", true, false));
+        let dead_id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        state
+            .tasks
+            .insert(dead_id, mk(inbox_stack, "dead", false, true));
+        let anchor_id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        state.tasks.insert(
+            anchor_id,
+            mk(
+                inbox_stack,
+                taskboard_domain::ANCHOR_CARD_TITLE,
+                false,
+                false,
+            ),
+        );
+        state.tasks.insert(
+            TaskId::from_uuid(uuid::Uuid::now_v7()),
+            mk(other_stack, "elsewhere", false, false),
+        );
+        assert_eq!(
+            inbox_count(&state),
+            2,
+            "live ∧ open ∧ inbox-stacked ∧ not anchor"
+        );
     }
 
     /// The move-flow hint (chunk 10 D6): `"<board> › <stack>"` for a

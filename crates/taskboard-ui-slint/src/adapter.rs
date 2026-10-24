@@ -2013,17 +2013,25 @@ fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
 /// only ever fire while the menu is closed, so the pre-menu chain the
 /// projection reads is the real one on every open.
 fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let adapter = Rc::clone(adapter);
+    let menu = Rc::clone(adapter);
     let weak = window.as_weak();
     window.on_toolbar_menu_clicked(move || {
         let Some(window) = weak.upgrade() else { return };
-        let mut a = adapter.borrow_mut();
+        let mut a = menu.borrow_mut();
         if a.shell.menu.open {
             // The toggle is a full close from any level (round-1 D6).
             a.apply_effect(&window, UiEffect::CloseMenu);
         } else {
             a.route(&window, ActionId::AppMenu);
         }
+    });
+    // The inbox chip's click routes `view.inbox` (§7.1: every click
+    // has an action equivalent; chunk 10 D9).
+    let inbox = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_toolbar_inbox_clicked(move || {
+        let Some(window) = weak.upgrade() else { return };
+        inbox.borrow_mut().route(&window, ActionId::ViewInbox);
     });
 }
 
