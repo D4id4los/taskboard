@@ -378,6 +378,101 @@ fn vertical_extent_of(image: &Rgba8Image, rgb: [u8; 3]) -> (u32, u32) {
     (min, max)
 }
 
+/// D22 — the text-field primitive is a well-behaved layout citizen:
+/// with a short and a long buffer the window renders byte-identical
+/// everywhere **outside** the field's own rectangle at every probe
+/// geometry — the text-derived preferred width never reaches the
+/// ancestor layouts, so no sibling, row, or ancestor shifts (F-C4;
+/// the settings F20 symptom dies with it). Pixel proof only, no
+/// preferred-width introspection (round-1 probe discipline); typed
+/// through the real edit flow (Return on the board opens the detail;
+/// the field seeds selected, so typing replaces). Probe record: the
+/// primary mechanism (the absolutely-positioned input plus the
+/// Theme.space-15 token floor) held on the pinned Slint — the
+/// fallback ladder stayed unused.
+#[test]
+fn the_text_field_keeps_its_layout_cell_while_text_grows() {
+    use taskboard_ui_slint::keymap::Stroke;
+    use taskboard_ui_slint::keymap::stroke::parse;
+    for (scale, width, height) in [
+        (0.5, 1000, 900),
+        (1.0, 600, 900),
+        (1.0, 1000, 900),
+        (3.0, 1000, 900),
+    ] {
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |driver: &mut SlintDriver| {
+                let _handle = mount_populated(driver, scale, width, height);
+                driver.press_stroke(parse("Down").expect("Down"));
+                driver.press_stroke(parse("Return").expect("Return"));
+                driver.advance_time(0);
+
+                driver.press_stroke(parse("a").expect("a"));
+                driver.advance_time(0);
+                let field = driver
+                    .find_by_label("Task title")
+                    .expect("the title field is mounted");
+                let pos = field.absolute_position();
+                let size = field.size();
+                let short = driver.snapshot();
+
+                // Append a long tail; the buffer grows, the cell must
+                // not — and with it nothing around it.
+                let tail = " plus an absurdly long tail that no layout cell should grow for";
+                for ch in tail.chars() {
+                    driver.press_stroke(Stroke {
+                        key: ch,
+                        ctrl: false,
+                        alt: false,
+                        shift: false,
+                        meta: false,
+                    });
+                }
+                driver.advance_time(0);
+                let field = driver
+                    .find_by_label("Task title")
+                    .expect("the title field is mounted");
+                let long_pos = field.absolute_position();
+                let long_size = field.size();
+                let long = driver.snapshot();
+
+                assert_eq!(
+                    (pos, size),
+                    (long_pos, long_size),
+                    "scale {scale} @ {width}×{height}: the field's own cell moved or grew"
+                );
+                // Byte-identical outside the field's rect: the glyphs
+                // inside are the only permitted difference.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let (fx, fy) = (pos.x as usize, pos.y as usize);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let (fw, fh) = (size.width as usize, size.height as usize);
+                let stride = short.width as usize;
+                let mut diffs = 0usize;
+                for y in 0..short.height as usize {
+                    for x in 0..stride {
+                        let inside = x >= fx && x < fx + fw && y >= fy && y < fy + fh;
+                        if inside {
+                            continue;
+                        }
+                        let i = (y * stride + x) * 4;
+                        if short.data[i..i + 4] != long.data[i..i + 4] {
+                            diffs += 1;
+                        }
+                    }
+                }
+                assert_eq!(
+                    diffs, 0,
+                    "scale {scale} @ {width}×{height}: {diffs} px outside the field changed with text"
+                );
+            },
+        );
+    }
+}
+
 /// G6 — the menu never renders beyond the available space (plan D6,
 /// dispatch issue 5): at the kiosk netbook's real geometries and the
 /// golden matrix's scale extremes, the open menu's focus-ring border

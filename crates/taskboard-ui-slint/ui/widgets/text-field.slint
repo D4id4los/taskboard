@@ -4,6 +4,13 @@
 // received natively (the insert-mode chain binds nothing printable);
 // Return fires `accepted`, and cancellation rides the action layer
 // (mode.normal → discard_edit), not a key handler here.
+//
+// Layout citizenship (r2 D22): the input is absolutely positioned
+// with an explicit width term, so its text-derived preferred width
+// never flows into the ancestor layouts — the field's preferred
+// width is the Theme.space-15 floor, never the buffer (the probe
+// pin `the_text_field_keeps_its_layout_cell_while_text_grows`
+// records the mechanism against the pinned Slint).
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 
@@ -25,6 +32,9 @@ export component TextField inherits Rectangle {
     border-width: input.has-focus ? Theme.focus-ring-width : 0;
     border-color: Semantic.focus-ring;
     min-height: placeholder-text.preferred-height + 2 * Theme.space-2;
+    // The content-free preferred width (r2 D22): the token floor, so
+    // a growing buffer cannot stretch the field or its ancestors.
+    min-width: Theme.space-15;
 
     accessible-role: AccessibleRole.text-input;
     accessible-label: root.label;
@@ -42,21 +52,26 @@ export component TextField inherits Rectangle {
         text-color: Theme.text-secondary;
         text: root.placeholder;
         visible: input.text == "";
+        x: Theme.space-2;
+        y: (parent.height - self.preferred-height) / 2;
     }
 
-    HorizontalLayout {
-        padding-left: Theme.space-2;
-        padding-right: Theme.space-2;
-        input := TextInput {
-            // The font is TextInput's platform default: the token lint
-            // (rightly) forbids font attributes outside the theme, and
-            // the theme cannot reach into a primitive's input. The
-            // colour still flows from tokens.
-            color: Theme.text-primary;
-            input-type: root.secret ? InputType.password : InputType.text;
-            vertical-alignment: center;
-            edited() => root.edited(input.text);
-            accepted() => root.accepted(input.text);
-        }
+    input := TextInput {
+        // Explicit geometry (r2 D22): the width term is the cell, not
+        // the text — the preferred-width propagation of the former
+        // inner HorizontalLayout is what let buffers stretch every
+        // ancestor layout.
+        x: Theme.space-2;
+        width: parent.width - 2 * Theme.space-2;
+        height: parent.height;
+        // The font is TextInput's platform default: the token lint
+        // (rightly) forbids font attributes outside the theme, and
+        // the theme cannot reach into a primitive's input. The
+        // colour still flows from tokens.
+        color: Theme.text-primary;
+        input-type: root.secret ? InputType.password : InputType.text;
+        vertical-alignment: center;
+        edited() => root.edited(input.text);
+        accepted() => root.accepted(input.text);
     }
 }

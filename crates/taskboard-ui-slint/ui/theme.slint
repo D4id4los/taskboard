@@ -49,6 +49,10 @@ export global Theme {
     out property <length> space-6: 32px * base-scale;
     out property <length> space-7: 48px * base-scale;
     out property <length> space-8: 64px * base-scale;
+    // The text-field's layout-cell floor (r2 D22): a field's preferred
+    // width comes from this token, never from its text content — the
+    // settings-row / metadata-cell minimum.
+    out property <length> space-15: 96px * base-scale;
 
     // The column resize handle's hit-target width (round-1 D17; the
     // builtin tableview's 10 px pattern, one theme home).
