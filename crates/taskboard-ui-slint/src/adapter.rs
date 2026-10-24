@@ -125,6 +125,13 @@ pub(crate) struct Adapter {
     /// The settings view-model (round-1 D7/D8): draft mirror, row
     /// list, liveness overrides, and the pending reply half.
     settings: SettingsVm,
+    /// The status line's auto-clear driver (r2 D28): a one-shot slint
+    /// timer, mock-clock driven. Lifetime held here alongside the
+    /// window; the fire closure carries only weak handles.
+    status_timer: Rc<slint::Timer>,
+    /// The fire closure the choke point hands to `start` on every
+    /// re-arm (built once in `install`, over the weak handles).
+    status_fire: Rc<dyn Fn()>,
     /// The exit-effect counter (the §6 component-test seam: journeys
     /// assert the quit request without killing the platform).
     pub(crate) quit_requests: usize,
@@ -1027,6 +1034,9 @@ struct SettingsVm {
     pending: Option<PendingKind>,
     replies: Vec<PendingReply>,
     outcome: SettingsOutcome,
+    /// The concrete error retained past the coarse fold (r2 D28):
+    /// the status text's typed granularity rides it.
+    detail: Option<SettingsError>,
     /// The last-known persisted preset (r2 D27): seeded at mount,
     /// changed only by `apply_keymap_update` — the reply, never the
     /// click, is the selection's source.
@@ -1039,22 +1049,23 @@ impl SettingsVm {
         self.pending.is_none() && settings_form::draft_valid(&self.draft)
     }
 
-    /// Sends one request with its reply half parked; a full/closed
-    /// inbox degrades to the typed outcome, never a wedge.
+    /// Sends one request with its reply half parked. Returns whether
+    /// the lane accepted it — a full/closed inbox degrades to the
+    /// typed outcome at the caller (the choke point), never a wedge.
     fn send(
         &mut self,
         requests: &mpsc::Sender<UiRequest>,
         request: UiRequest,
         kind: PendingKind,
         reply: PendingReply,
-    ) {
+    ) -> bool {
         if requests.try_send(request).is_err() {
             tracing::warn!("request channel full or closed; settings op dropped");
-            self.outcome = SettingsOutcome::Failed;
-            return;
+            return false;
         }
         self.pending = Some(kind);
         self.replies.push(reply);
+        true
     }
 
     fn outcome_of(err: &SettingsError) -> SettingsOutcome {
@@ -1150,60 +1161,63 @@ impl Adapter {
         let mut i = 0;
         let mut drained = false;
         while i < self.settings.replies.len() {
+            // The settled reply's outcome, computed borrow-local and
+            // routed through the one choke point below (r2 D28).
+            let mut landed: Option<(SettingsOutcome, Option<SettingsError>)> = None;
             let settled = match &mut self.settings.replies[i] {
                 PendingReply::Test(rx) => match rx.try_recv() {
                     Ok(outcome) => {
-                        self.settings.outcome = match &outcome {
-                            Ok(()) => SettingsOutcome::Ok,
-                            Err(err) => SettingsVm::outcome_of(err),
-                        };
+                        landed = Some(match &outcome {
+                            Ok(()) => (SettingsOutcome::Ok, None),
+                            Err(err) => (SettingsVm::outcome_of(err), Some(err.clone())),
+                        });
                         true
                     }
                     Err(oneshot::error::TryRecvError::Empty) => false,
                     Err(oneshot::error::TryRecvError::Closed) => {
-                        self.settings.outcome = SettingsOutcome::Failed;
+                        landed = Some((SettingsOutcome::Failed, None));
                         true
                     }
                 },
                 PendingReply::List(rx) => match rx.try_recv() {
                     Ok(Ok(rows)) => {
                         self.settings.rows = rows;
-                        self.settings.outcome = SettingsOutcome::Ok;
+                        landed = Some((SettingsOutcome::Ok, None));
                         true
                     }
                     Ok(Err(err)) => {
-                        self.settings.outcome = SettingsVm::outcome_of(&err);
+                        landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
                         true
                     }
                     Err(oneshot::error::TryRecvError::Empty) => false,
                     Err(oneshot::error::TryRecvError::Closed) => {
-                        self.settings.outcome = SettingsOutcome::Failed;
+                        landed = Some((SettingsOutcome::Failed, None));
                         true
                     }
                 },
                 PendingReply::Keymap(rx) => match rx.try_recv() {
                     Ok(Ok(update)) => {
                         self.apply_keymap_update(window, update);
-                        self.settings.outcome = SettingsOutcome::Ok;
+                        landed = Some((SettingsOutcome::Ok, None));
                         true
                     }
                     Ok(Err(err)) => {
-                        self.settings.outcome = SettingsVm::outcome_of(&err);
+                        landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
                         true
                     }
                     Err(oneshot::error::TryRecvError::Empty) => false,
                     Err(oneshot::error::TryRecvError::Closed) => {
-                        self.settings.outcome = SettingsOutcome::Failed;
+                        landed = Some((SettingsOutcome::Failed, None));
                         true
                     }
                 },
                 PendingReply::Scale(rx, previous) => match rx.try_recv() {
                     Ok(Ok(())) => {
-                        self.settings.outcome = SettingsOutcome::Ok;
+                        landed = Some((SettingsOutcome::Ok, None));
                         true
                     }
                     Ok(Err(err)) => {
-                        self.settings.outcome = SettingsVm::outcome_of(&err);
+                        landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
                         // The live-apply revert (D9): the theme value
                         // goes back to the previous setting.
                         #[allow(clippy::cast_possible_truncation)]
@@ -1214,7 +1228,7 @@ impl Adapter {
                     }
                     Err(oneshot::error::TryRecvError::Empty) => false,
                     Err(oneshot::error::TryRecvError::Closed) => {
-                        self.settings.outcome = SettingsOutcome::Failed;
+                        landed = Some((SettingsOutcome::Failed, None));
                         true
                     }
                 },
@@ -1222,6 +1236,9 @@ impl Adapter {
             if settled {
                 let _ = self.settings.replies.remove(i);
                 self.settings.pending = None;
+                if let Some((outcome, detail)) = landed {
+                    self.set_settings_outcome(window, outcome, detail);
+                }
                 drained = true;
             } else {
                 i += 1;
@@ -1231,6 +1248,50 @@ impl Adapter {
             self.push_settings(window);
             self.refresh(window);
         }
+    }
+
+    /// The single outcome choke point (r2 D28): every assignment of
+    /// the settings outcome routes through here — assign outcome +
+    /// detail, drive the auto-clear timer (a pending op stops it; a
+    /// terminal outcome re-arms it), then push. No outcome write may
+    /// bypass it.
+    fn set_settings_outcome(
+        &mut self,
+        window: &AppWindow,
+        outcome: SettingsOutcome,
+        detail: Option<SettingsError>,
+    ) {
+        self.settings.outcome = outcome;
+        self.settings.detail = detail;
+        if outcome == SettingsOutcome::Busy {
+            // A pending op must never auto-clear mid-flight.
+            self.status_timer.stop();
+        } else {
+            // Every new terminal outcome re-arms the clear.
+            self.status_timer.start(
+                slint::TimerMode::SingleShot,
+                std::time::Duration::from_millis(crate::settings_status::STATUS_VISIBLE_MS),
+                {
+                    let fire = Rc::clone(&self.status_fire);
+                    move || fire()
+                },
+            );
+        }
+        self.push_settings(window);
+    }
+
+    /// The auto-clear fire (r2 D28): a stale fire during a new Busy
+    /// is a no-op; otherwise the status returns to hidden (and the
+    /// next refresh cannot resurrect it — the VM clears, not the
+    /// property).
+    fn settings_status_expired(&mut self, window: &AppWindow) {
+        self.status_timer.stop();
+        if self.settings.pending.is_some() {
+            return;
+        }
+        self.settings.outcome = SettingsOutcome::None;
+        self.settings.detail = None;
+        self.push_settings(window);
     }
 
     /// The live keymap swap (D9): the new map drives resolution, menu
@@ -1284,6 +1345,10 @@ impl Adapter {
         global.set_draft_username(self.settings.draft.username.clone().into());
         global.set_save_enabled(self.settings.save_enabled());
         global.set_preset_index(preset_index(self.settings.preset));
+        global.set_status_text(SharedString::from(crate::settings_status::status_text(
+            self.settings.outcome,
+            self.settings.detail.as_ref(),
+        )));
         global.set_last_outcome(match self.settings.outcome {
             SettingsOutcome::None => crate::SettingsOutcome::None,
             SettingsOutcome::Ok => crate::SettingsOutcome::Ok,
@@ -1371,14 +1436,21 @@ impl Adapter {
             reply,
         };
         self.settings.draft.password.clear();
-        self.settings.send(
+        let sent = self.settings.send(
             &self.requests,
             request,
             PendingKind::Save,
             PendingReply::List(reply_rx),
         );
-        self.settings.outcome = SettingsOutcome::Busy;
-        self.push_settings(window);
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
     }
 
     /// The per-row Test seam: verify the row's stored secret (DEV-3 —
@@ -1398,14 +1470,21 @@ impl Adapter {
             },
             reply,
         };
-        self.settings.send(
+        let sent = self.settings.send(
             &self.requests,
             request,
             PendingKind::Test,
             PendingReply::Test(reply_rx),
         );
-        self.settings.outcome = SettingsOutcome::Busy;
-        self.push_settings(window);
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
     }
 
     /// The per-row Remove seam (a stale index is absorbed silently).
@@ -1421,14 +1500,21 @@ impl Adapter {
             name: entry.name,
             reply,
         };
-        self.settings.send(
+        let sent = self.settings.send(
             &self.requests,
             request,
             PendingKind::Remove,
             PendingReply::List(reply_rx),
         );
-        self.settings.outcome = SettingsOutcome::Busy;
-        self.push_settings(window);
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
     }
 
     /// The preset picker seam: the optimistic marker, then the request
@@ -1448,14 +1534,21 @@ impl Adapter {
         }
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::SetKeymapPreset { preset, reply };
-        self.settings.send(
+        let sent = self.settings.send(
             &self.requests,
             request,
             PendingKind::Preset,
             PendingReply::Keymap(reply_rx),
         );
-        self.settings.outcome = SettingsOutcome::Busy;
-        self.push_settings(window);
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
     }
 
     /// The scale commit seam: live-apply first (the mount precedent),
@@ -1463,13 +1556,11 @@ impl Adapter {
     pub(crate) fn settings_scale_committed(&mut self, window: &AppWindow, text: &str) {
         self.settings_field_committed(window);
         let Ok(scale) = text.parse::<f64>() else {
-            self.settings.outcome = SettingsOutcome::Rejected;
-            self.push_settings(window);
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
             return;
         };
         if self.settings.pending.is_some() || !scale.is_finite() || !(0.5..=3.0).contains(&scale) {
-            self.settings.outcome = SettingsOutcome::Rejected;
-            self.push_settings(window);
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
             return;
         }
         let previous = f64::from(window.global::<crate::Theme>().get_base_scale());
@@ -1477,14 +1568,21 @@ impl Adapter {
         window.global::<crate::Theme>().set_base_scale(scale as f32);
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::SetScale { scale, reply };
-        self.settings.send(
+        let sent = self.settings.send(
             &self.requests,
             request,
             PendingKind::Scale,
             PendingReply::Scale(reply_rx, previous),
         );
-        self.settings.outcome = SettingsOutcome::Busy;
-        self.push_settings(window);
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
     }
 }
 
@@ -1503,6 +1601,7 @@ pub(crate) fn install(
     stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
     connectors: Vec<ConnectorInfo>,
     state: Arc<ArcSwap<AppState>>,
+    status_timer: Rc<slint::Timer>,
 ) -> Rc<RefCell<Adapter>> {
     // The load path (round-1 D16): the uuid-keyed settings map
     // converts once here and seeds the fresh ViewState before the
@@ -1555,8 +1654,22 @@ pub(crate) fn install(
             preset,
             ..SettingsVm::default()
         },
+        status_timer,
+        status_fire: Rc::new(|| {}), // replaced below, before any fire can happen
         quit_requests: 0,
     }));
+    // The status auto-clear's fire closure (r2 D28): weak handles
+    // only — no Rc cycle. Armed by `set_settings_outcome` from the
+    // first outcome on.
+    {
+        let adapter_weak = Rc::downgrade(&adapter);
+        let window_weak = window.as_weak();
+        adapter.borrow_mut().status_fire = Rc::new(move || {
+            if let (Some(window), Some(adapter)) = (window_weak.upgrade(), adapter_weak.upgrade()) {
+                adapter.borrow_mut().settings_status_expired(&window);
+            }
+        });
+    }
     // Startup warnings are pure input (Q15): pushed once at mount.
     window
         .global::<UiStatus>()
