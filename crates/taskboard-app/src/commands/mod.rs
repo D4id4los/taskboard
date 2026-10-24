@@ -15,6 +15,7 @@
 pub mod boards;
 pub mod config;
 pub mod connect;
+pub mod find;
 pub mod labels;
 pub mod logout;
 pub mod output;
@@ -1003,6 +1004,21 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             }
             None => unreachable!("the outer match selected the Remind arm"),
         },
+        Command::Find {
+            query,
+            kind,
+            limit,
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                |rows: &Vec<_>| find::render_text_list(rows),
+                move |config, store| async move {
+                    find::find(config, store, &query, kind, limit).await
+                },
+            )
+            .await
+        }
         Command::Timers { cmd } => match timers::collapse(cmd) {
             Some(invocation) => {
                 timers::timers_command(&mut ctx.io, ctx.config_path.clone(), invocation).await
@@ -1380,6 +1396,13 @@ pub async fn dispatch_line(
         Command::Boards { cmd } => boards_line(session, app, cmd, io).await,
         Command::Stacks { cmd } => stacks_line(app, cmd, io).await,
         Command::Labels { cmd } => labels_line(app, cmd, io).await,
+        Command::Find { query, kind, limit } => {
+            // A pure read off the session's published state: exit 0 on
+            // every well-formed query, the empty table on no hits.
+            let rows = find::find_on(app, &query, kind, limit);
+            emit_to(io, &rows, &find::render_text_list(&rows));
+            0
+        }
         Command::Timers { cmd } => match timers::collapse(cmd) {
             Some(invocation) => timers::timers_line(app, io, invocation).await,
             None => unreachable!("clap requires exactly one of --in/--at on timers add"),
@@ -1797,6 +1820,7 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         | Command::Labels { .. }
         | Command::Tasks { .. }
         | Command::Timers { .. }
+        | Command::Find { .. }
         | Command::Sync { .. } => IpcRoute::IpcOrLocal,
     }
 }
@@ -1970,6 +1994,11 @@ mod ipc_routing_tests {
                     title: "t".to_owned(),
                     stack: None,
                 },
+            },
+            Command::Find {
+                query: "needle".to_owned(),
+                kind: None,
+                limit: None,
             },
             Command::Sync {
                 no_wait: false,

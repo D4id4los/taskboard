@@ -1137,6 +1137,16 @@ mod tests {
         let (_, json) = execute(resolve_line("--json tasks list", false));
         assert!(json);
 
+        // The top-level find verb parses with its flags (clap reuse —
+        // nothing new to parse).
+        let (command, _) = execute(resolve_line("find needle --type board --limit 3", false));
+        let Command::Find { query, kind, limit } = command else {
+            panic!("expected find");
+        };
+        assert_eq!(query, "needle");
+        assert_eq!(kind, Some(crate::cli::FindType::Board));
+        assert_eq!(limit, Some(3));
+
         // Escaped quotes inside a quoted argument survive.
         let (command, _) = execute(resolve_line(r#"tasks add "say \"hi\" now""#, false));
         let Command::Tasks {

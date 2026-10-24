@@ -82,6 +82,22 @@ pub enum Command {
         #[command(subcommand)]
         cmd: LabelsCmd,
     },
+    /// Fuzzy title search across all live boards, stacks, and tasks
+    /// (done included); prints ranked rows — an exact title first, then
+    /// prefixes, word starts, substrings, subsequences. The scripting
+    /// bridge over the same ranking the GUI palette uses.
+    Find {
+        /// The query: case-insensitive, trimmed; an empty (or
+        /// whitespace-only) query matches nothing.
+        query: String,
+        /// Restrict the results to one entity kind. An unknown word is
+        /// a clap usage error, never a runtime string compare.
+        #[arg(long = "type")]
+        kind: Option<FindType>,
+        /// Cap the ranked output (applied after ranking).
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        limit: Option<u64>,
+    },
     /// Standalone timer/alarm verbs over the in-process core: fire once
     /// at `--in`/`--at`, die by settlement. Device-local — never synced.
     Timers {
@@ -127,6 +143,18 @@ pub enum Command {
     /// desktop window regardless of `[app] mode` and of TTY. A running
     /// instance on the same database fails typed `instance-locked`.
     Gui,
+}
+
+/// The `find --type` values: the one entity kind a result row may name.
+/// The workspace's first clap `ValueEnum` — validation is the parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum FindType {
+    /// Task cards.
+    Task,
+    /// Stacks (columns).
+    Stack,
+    /// Boards.
+    Board,
 }
 
 /// `daemon` subcommands.
@@ -790,6 +818,48 @@ mod tests {
         for raw in ["tomorrow", "2026-13-40", ""] {
             assert!(parse_due(raw).is_err(), "{raw} must be rejected");
         }
+    }
+
+    #[test]
+    fn find_flags_parse_typedly_and_refuse_garbage() {
+        // Well-formed combinations parse.
+        let Cli {
+            command: Some(Command::Find { query, kind, limit }),
+            ..
+        } = Cli::try_parse_from([
+            "taskboard",
+            "find",
+            "needle",
+            "--type",
+            "board",
+            "--limit",
+            "3",
+        ])
+        .expect("find with flags parses")
+        else {
+            panic!("expected find");
+        };
+        assert_eq!(query, "needle");
+        assert_eq!(kind, Some(FindType::Board));
+        assert_eq!(limit, Some(3));
+
+        // Defaults: no kind filter, no cap.
+        let Cli {
+            command: Some(Command::Find { query, kind, limit }),
+            ..
+        } = Cli::try_parse_from(["taskboard", "find", "needle"]).expect("bare find parses")
+        else {
+            panic!("expected find");
+        };
+        assert_eq!(query, "needle");
+        assert_eq!(kind, None);
+        assert_eq!(limit, None);
+
+        // An unknown kind is a clap usage error, never a runtime compare.
+        assert!(Cli::try_parse_from(["taskboard", "find", "needle", "--type", "bogus"]).is_err());
+        // A zero limit is a usage error — "print nothing" is not a
+        // meaningful invocation.
+        assert!(Cli::try_parse_from(["taskboard", "find", "needle", "--limit", "0"]).is_err());
     }
 
     #[test]
