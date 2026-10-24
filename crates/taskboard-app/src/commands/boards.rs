@@ -23,7 +23,10 @@ use taskboard_sync_nextcloud::{DeckClient, DeckColor};
 
 /// The publish/create color fallback when the stored (lenient) board
 /// color is not valid hex (CLI-validated input makes this defensive).
-pub(crate) const DEFAULT_BOARD_COLOR: &str = "0082c9";
+/// The constant's home is the domain (the engine's Inbox creation uses
+/// the same one default); this alias keeps the module's call sites
+/// short.
+use taskboard_domain::entities::DEFAULT_BOARD_COLOR;
 
 /// Builds the Deck client from one resolved connector spec (D6-5): the
 /// store is already keyed per identity, so the spec's `(server_url,

@@ -249,6 +249,12 @@ pub enum FieldFamily {
 /// assertions pin every structure against (#244). One row per
 /// [`TaskClocks`] slot; `.1` names the [`Task`] members the clock guards
 /// (composites name both); `.2` is the Deck connector's lane.
+/// Deck's UI blue — the one default board color, for every board
+/// created without an explicit color (the app-global Inbox creation,
+/// the app-side create default). Presentation-lenient data: parsed at
+/// the display edge, never validated domain-side.
+pub const DEFAULT_BOARD_COLOR: &str = "0082c9";
+
 pub const TASK_FIELDS: &[(&str, &[&str], FieldFamily)] = &[
     ("title", &["title"], FieldFamily::Native),
     ("description", &["description"], FieldFamily::Native),

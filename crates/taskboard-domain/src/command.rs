@@ -355,6 +355,118 @@ pub fn plan_command(
                 outcome: CommandOutcome::CreatedTask(id),
             })
         }
+        StateCommand::CaptureTask { title, board } => {
+            // Resolve-or-create compose, one batch: capture never errors
+            // on the happy path — the landing board/stack is found or
+            // minted, then the task rides the `CreateTask` shape. Batch
+            // order: board upsert, stack upsert, task upsert, then the
+            // enqueues (persistence applies them in order).
+            let mut actions = Vec::new();
+            let mut minted_stack: Option<StackId> = None;
+            let target_stack: StackId = match board {
+                None => {
+                    if let Some(inbox) = app.inbox_board() {
+                        if let Some(found) = app.canonical_first_stack(inbox) {
+                            found
+                        } else {
+                            let stack = mint_capture_stack(
+                                app,
+                                &mut actions,
+                                inbox,
+                                crate::state::INBOX_BOARD_TITLE,
+                                ids,
+                                now,
+                            );
+                            minted_stack = Some(stack);
+                            stack
+                        }
+                    } else {
+                        let board_id = ids.new_board_id();
+                        actions.push(PersistenceAction::UpsertBoard(crate::entities::Board {
+                            id: board_id,
+                            // Unbound by construction: binding is the
+                            // user's ceremony; the queued ops strand
+                            // honestly until then.
+                            remote: None,
+                            title: crate::state::INBOX_BOARD_TITLE.to_string(),
+                            color: crate::entities::Color::new(
+                                crate::entities::DEFAULT_BOARD_COLOR,
+                            ),
+                            archived: false,
+                            deleted: false,
+                            clocks: crate::entities::BoardClocks {
+                                title: now,
+                                color: now,
+                                archived: now,
+                                deleted: now,
+                            },
+                            remote_seen: None,
+                        }));
+                        let stack = mint_capture_stack(
+                            app,
+                            &mut actions,
+                            board_id,
+                            crate::state::INBOX_BOARD_TITLE,
+                            ids,
+                            now,
+                        );
+                        minted_stack = Some(stack);
+                        stack
+                    }
+                }
+                Some(board_id) => {
+                    let board_id = live_board_of(app, *board_id)?;
+                    if let Some(found) = app.backlog_stack(board_id) {
+                        found
+                    } else {
+                        let stack = mint_capture_stack(
+                            app,
+                            &mut actions,
+                            board_id,
+                            crate::state::BACKLOG_STACK_TITLE,
+                            ids,
+                            now,
+                        );
+                        minted_stack = Some(stack);
+                        stack
+                    }
+                }
+            };
+            // A minted landing stack defers its op to the enqueue tail.
+            let minted = minted_stack;
+            let order = app
+                .tasks_in_stack(target_stack)
+                .last()
+                .map_or(0, |t| t.order + 1);
+            let id = ids.new_task_id();
+            actions.push(PersistenceAction::UpsertTask(Task {
+                id,
+                remote: None,
+                title: title.clone(),
+                description: String::new(),
+                duedate: None,
+                scheduled: None,
+                done: None,
+                stack: target_stack,
+                order,
+                labels: BTreeSet::default(),
+                effort: None,
+                importance: None,
+                urgency: None,
+                archived: false,
+                deleted: false,
+                clocks: all_task_clocks(now),
+                remote_seen: None,
+            }));
+            if let Some(stack) = minted {
+                actions.push(enqueue(LocalOp::CreateStack(stack), ids, now));
+            }
+            actions.push(enqueue(LocalOp::CreateTask(id), ids, now));
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::CreatedTask(id),
+            })
+        }
         StateCommand::UpdateTask { id, changes } => {
             // Existence before the changeset guard, like every other
             // command: an empty edit against an unknown/deleted task is a
@@ -1281,6 +1393,45 @@ pub fn plan_command(
             outcome: CommandOutcome::SyncRequested,
         }),
     }
+}
+
+/// The capture path's landing stack when none exists: mints one
+/// (`title`) appended after the board's live stacks (the
+/// `append_stack_order` arithmetic, engine-side), pushing only the
+/// upsert — the caller queues the `CreateStack` op after the task
+/// upsert (the plan's batch order).
+fn mint_capture_stack(
+    app: &AppState,
+    actions: &mut Vec<PersistenceAction>,
+    board: BoardId,
+    title: &str,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> StackId {
+    let order = app
+        .stacks
+        .values()
+        .filter(|s| s.board == board && !s.deleted)
+        .map(|s| s.order)
+        .max()
+        .map_or(0, |max| max + 1);
+    let id = ids.new_stack_id();
+    actions.push(PersistenceAction::UpsertStack(Stack {
+        id,
+        remote: None,
+        board,
+        title: title.to_string(),
+        order,
+        archived: false,
+        deleted: false,
+        clocks: crate::entities::StackClocks {
+            title: now,
+            order: now,
+            deleted: now,
+        },
+        remote_seen: None,
+    }));
+    id
 }
 
 fn enqueue(op: LocalOp, ids: &dyn IdGenerator, now: DateTime<Utc>) -> PersistenceAction {
@@ -2969,6 +3120,297 @@ mod tests {
         let stack = stack(901, false);
         app.stacks.insert(stack.id, stack);
         app
+    }
+
+    // ---- CaptureTask (#347, D-V5 v2) -------------------------------------
+
+    fn inbox_stack(id: u64, board: BoardId, title: &str, order: i64) -> Stack {
+        Stack {
+            id: StackId::from(uuid::Uuid::from_u128(u128::from(id))),
+            remote: None,
+            board,
+            title: title.into(),
+            order,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: ts(T0 - 3_600),
+                order: ts(T0 - 3_600),
+                deleted: ts(T0 - 3_600),
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn titled_board(raw: u64, title: &str) -> crate::entities::Board {
+        crate::entities::Board {
+            id: BoardId::from(uuid::Uuid::from_u128(u128::from(raw))),
+            remote: None,
+            title: title.into(),
+            color: crate::entities::Color::new("00ccff"),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::BoardClocks {
+                title: crate::entities::BoardClocks::epoch(),
+                color: crate::entities::BoardClocks::epoch(),
+                archived: crate::entities::BoardClocks::epoch(),
+                deleted: crate::entities::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        }
+    }
+
+    /// The actions' op kinds in order (upserts and enqueues flattened
+    /// to a readable shape for the batch-order pins).
+    fn action_shapes(plan: &CommandPlan) -> Vec<&'static str> {
+        plan.actions
+            .iter()
+            .map(|a| match a {
+                PersistenceAction::UpsertBoard(_) => "board",
+                PersistenceAction::UpsertStack(_) => "stack",
+                PersistenceAction::UpsertTask(_) => "task",
+                PersistenceAction::EnqueueOp(op) => match op.op {
+                    LocalOp::CreateStack(_) => "op create-stack",
+                    LocalOp::CreateTask(_) => "op create-task",
+                    _ => "op other",
+                },
+                _ => "other",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn first_capture_mints_the_unbound_inbox_batch_in_order() {
+        let empty = AppState::default();
+        let outbox: Vec<PendingOp> = Vec::new();
+        let plan = run(
+            &empty,
+            &outbox,
+            &StateCommand::CaptureTask {
+                title: "milk".into(),
+                board: None,
+            },
+        )
+        .unwrap();
+        let CommandOutcome::CreatedTask(task_id) = plan.outcome else {
+            panic!("wrong outcome");
+        };
+        assert_eq!(
+            action_shapes(&plan),
+            vec![
+                "board",
+                "stack",
+                "task",
+                "op create-stack",
+                "op create-task"
+            ],
+            "board upsert, stack upsert, task upsert, then the enqueues"
+        );
+        // The board row is unbound by construction and carries no outbox
+        // op of its own.
+        let PersistenceAction::UpsertBoard(board) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(board.title, "Inbox");
+        assert_eq!(
+            board.color,
+            crate::entities::Color::new(crate::entities::DEFAULT_BOARD_COLOR)
+        );
+        assert_eq!(board.remote, None);
+        let PersistenceAction::UpsertStack(stack) = &plan.actions[1] else {
+            panic!("wrong action");
+        };
+        assert_eq!(stack.title, "Inbox");
+        assert_eq!(stack.order, 0);
+        assert_eq!(stack.board, board.id);
+        let PersistenceAction::UpsertTask(task) = &plan.actions[2] else {
+            panic!("wrong action");
+        };
+        assert_eq!(task.id, task_id);
+        assert_eq!(task.title, "milk");
+        assert_eq!(task.stack, stack.id);
+        assert_eq!(task.order, 0);
+        assert_eq!(task.remote, None);
+    }
+
+    #[test]
+    fn capture_adopts_the_existing_inbox_and_appends_after_its_last_task() {
+        let mut app = AppState::default();
+        let board = titled_board(2, "Inbox");
+        let stack = inbox_stack(901, board.id, "Inbox", 0);
+        let existing = task(31, stack.id, false);
+        let mut existing = existing;
+        existing.order = 5;
+        app.boards.insert(board.id, board);
+        app.stacks.insert(stack.id, stack);
+        app.tasks.insert(existing.id, existing);
+        let outbox: Vec<PendingOp> = Vec::new();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CaptureTask {
+                title: "second".into(),
+                board: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            action_shapes(&plan),
+            vec!["task", "op create-task"],
+            "an adopted inbox mints the task only"
+        );
+        let PersistenceAction::UpsertTask(t) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(t.stack, StackId::from(uuid::Uuid::from_u128(901)));
+        assert_eq!(t.order, 6, "after the stack's canonical last order");
+    }
+
+    #[test]
+    fn capture_with_two_live_inbox_titled_boards_adopts_the_canonical_first() {
+        let mut app = AppState::default();
+        let first = titled_board(2, "Inbox");
+        let second = titled_board(1, "Inbox");
+        app.boards.insert(first.id, first.clone());
+        app.boards.insert(second.id, second.clone());
+        let stack = inbox_stack(901, second.id, "Inbox", 0);
+        app.stacks.insert(stack.id, stack.clone());
+        let outbox: Vec<PendingOp> = Vec::new();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CaptureTask {
+                title: "x".into(),
+                board: None,
+            },
+        )
+        .unwrap();
+        // Board 1 sorts below board 2, so board 1 is the inbox — but it
+        // has no stacks, so its landing stack is minted (order 0).
+        assert_eq!(
+            action_shapes(&plan),
+            vec!["task", "op create-task"],
+            "the canonical board is adopted, stacks and all"
+        );
+        let PersistenceAction::UpsertTask(t) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(
+            t.stack, stack.id,
+            "board 1 sorts below board 2, so its stack is the landing"
+        );
+        let _ = &first;
+    }
+
+    #[test]
+    fn board_directed_capture_creates_the_backlog_on_demand() {
+        let mut app = AppState::default();
+        let board = titled_board(2, "personal");
+        app.boards.insert(board.id, board);
+        let outbox: Vec<PendingOp> = Vec::new();
+        let board_id = BoardId::from(uuid::Uuid::from_u128(2));
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CaptureTask {
+                title: "x".into(),
+                board: Some(board_id),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            action_shapes(&plan),
+            vec!["stack", "task", "op create-stack", "op create-task"]
+        );
+        let PersistenceAction::UpsertStack(s) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(s.title, "Backlog");
+        assert_eq!(s.order, 0, "an empty board appends at 0");
+    }
+
+    #[test]
+    fn board_directed_capture_lands_canonical_first_among_backlogs() {
+        let mut app = AppState::default();
+        let board = titled_board(2, "personal");
+        let late = inbox_stack(902, board.id, "Backlog", 4);
+        let early = inbox_stack(901, board.id, "Backlog", 3);
+        app.boards.insert(board.id, board);
+        app.stacks.insert(late.id, late);
+        app.stacks.insert(early.id, early);
+        let outbox: Vec<PendingOp> = Vec::new();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::CaptureTask {
+                title: "x".into(),
+                board: Some(BoardId::from(uuid::Uuid::from_u128(2))),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            action_shapes(&plan),
+            vec!["task", "op create-task"],
+            "an existing Backlog is adopted, canonical-first"
+        );
+        let PersistenceAction::UpsertTask(t) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(t.stack, StackId::from(uuid::Uuid::from_u128(901)));
+    }
+
+    #[test]
+    fn board_directed_capture_rejects_unknown_and_deleted_boards_typed() {
+        let mut app = AppState::default();
+        let dead = titled_board(3, "old");
+        dead.clone().deleted = true;
+        let dead = crate::entities::Board {
+            deleted: true,
+            ..titled_board(3, "old")
+        };
+        app.boards.insert(dead.id, dead);
+        let outbox: Vec<PendingOp> = Vec::new();
+        let unknown = run(
+            &app,
+            &outbox,
+            &StateCommand::CaptureTask {
+                title: "x".into(),
+                board: Some(BoardId::from(uuid::Uuid::from_u128(4242))),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(unknown, CommandError::UnknownBoard(_)));
+        let deleted = run(
+            &app,
+            &outbox,
+            &StateCommand::CaptureTask {
+                title: "x".into(),
+                board: Some(BoardId::from(uuid::Uuid::from_u128(3))),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(deleted, CommandError::BoardDeleted(_)));
+    }
+
+    #[test]
+    fn capture_accepts_any_title_verbatim() {
+        let empty = AppState::default();
+        let outbox: Vec<PendingOp> = Vec::new();
+        for title in ["", "   ", "  padded  "] {
+            let plan = run(
+                &empty,
+                &outbox,
+                &StateCommand::CaptureTask {
+                    title: title.into(),
+                    board: None,
+                },
+            )
+            .unwrap();
+            let PersistenceAction::UpsertTask(t) = &plan.actions[2] else {
+                panic!("wrong action");
+            };
+            assert_eq!(&t.title, title, "the engine never rewrites titles");
+        }
     }
 
     #[test]
