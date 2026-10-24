@@ -86,6 +86,7 @@ export component TaskView inherits FocusScope {
                     if (root.task.edit-open): title-field := TextField {
                         placeholder: "Task title";
                         label: "Task title";
+                        commit-affordance: true;
                         initial-text: root.task.initial-text;
                         selected-on-focus: true;
                         accepted(text) => root.title-committed(text);

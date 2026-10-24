@@ -64,6 +64,7 @@ export component StackView inherits FocusScope {
                 if (root.stack.create-open): TextField {
                     placeholder: "New task title";
                     label: "New task title";
+                    commit-affordance: true;
                     accepted(text) => root.create-committed(text);
                     edited(text) => root.create-edited(text);
                 }

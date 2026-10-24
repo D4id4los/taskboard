@@ -90,6 +90,7 @@ export component RuleList inherits VerticalLayout {
     TextField {
         placeholder: "Custom offset, e.g. 45m";
         label: "Custom reminder offset";
+        commit-affordance: true;
         accepted(text) => { root.add-custom-accepted(text); }
     }
 }

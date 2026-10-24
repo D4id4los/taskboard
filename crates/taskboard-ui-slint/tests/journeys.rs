@@ -3514,3 +3514,100 @@ fn the_rename_flows_seed_commit_and_discard() {
         },
     );
 }
+
+/// R2 D23 — the checkmark commit affordance: clicking it dispatches
+/// exactly what Return dispatches (click ≡ key at the observed
+/// boundary, §7.1), and it stays inert on an empty buffer.
+#[test]
+fn the_commit_affordance_click_equals_return_on_the_title_field() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Into the title editor: the field mounts focused with its
+            // seed selected.
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+
+            // (a) The click path: type a fresh title, invoke Commit.
+            harness.type_text("clicked");
+            harness.driver.click_by_label("Commit");
+            let clicked = harness.engine.drain();
+            assert!(
+                matches!(&clicked[..], [StateCommand::UpdateTask { changes, .. }]
+                    if changes.title.as_deref() == Some("clicked")),
+                "the click route dispatched the title commit, got {clicked:?}"
+            );
+
+            // (b) The key path: the same buffer through Return produces
+            // the identical command (equality is the pin). The editor
+            // re-opens from the board, focus still on the same task.
+            harness.press(ActionId::NavFocusBoard);
+            harness.press(ActionId::TaskEdit);
+            harness.type_text("clicked");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(clicked.as_slice());
+        },
+    );
+}
+
+/// R2 D23 — the affordance renders only while a non-empty buffer
+/// holds focus: an emptied field offers no Commit element and the
+/// check seam cannot fire (nothing dispatched).
+#[test]
+fn the_commit_affordance_is_inert_on_an_empty_buffer() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.driver.find_by_label("Commit").is_some(),
+                "a populated focused field offers the affordance"
+            );
+
+            // Empty the seeded selection: the affordance unmounts.
+            harness.stroke(parse("Backspace").expect("Backspace"));
+            harness.driver.advance_time(0);
+            assert!(
+                harness.driver.find_by_label("Commit").is_none(),
+                "an empty buffer hides the affordance"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// R2 D23 — the create-row sites share the primitive: the stack
+/// create field's `Commit` click lands the same `CreateStack` command the
+/// Return path produces (one widget, one seam — second data point).
+#[test]
+fn the_commit_affordance_click_equals_return_on_the_stack_create_row() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::StackCreate);
+            harness.type_text("s");
+            harness.driver.click_by_label("Commit");
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CreateStack { title, order, .. }] => {
+                    assert_eq!(title.as_str(), "s");
+                    assert_eq!(*order, 2, "the same command shape as Return");
+                }
+                other => panic!("the click route's command reached the boundary, got {other:?}"),
+            }
+        },
+    );
+}
