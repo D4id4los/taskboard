@@ -49,6 +49,10 @@ pub enum Flow {
     CreateStack,
     /// The task-detail title editor.
     EditTitle { task: TaskId },
+    /// The task-detail due-date editor (r2 D25): typed entry plus the
+    /// calendar picker; the commit funnels through the adapter's
+    /// `task-due-committed` seam, never through `commit_edit`.
+    EditDue { task: TaskId },
     /// The move flow: moving `task` toward `target`.
     Move { task: TaskId, target: StackId },
     /// The jump-to search palette (#348, chunk 9): the palette cursor
@@ -622,6 +626,24 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
+    /// The due cell's click (r2 D25): begin the subject task's
+    /// due-date editor in place — insert mode (the typed field's
+    /// printables), no buffer seeding (an empty entry means clear).
+    pub fn begin_edit_due(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Some(task) = self.subject_task.and_then(|id| state.tasks.get(&id)) else {
+            return Vec::new();
+        };
+        self.flow = Flow::EditDue { task: task.id };
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// The due-commit funnel's end (r2 D25): the adapter dispatches
+    /// the `UpdateTask` itself; ending the flow returns to normal.
+    pub fn end_edit_due(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::None;
+        vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
     /// The `Activate` intent with no flow (D9): open the focused
     /// task's detail as a title-edit flow (D14).
     pub fn activate_focused(&mut self, state: &AppState) -> Vec<FlowOutcome> {
@@ -1189,7 +1211,10 @@ impl ViewState {
             if self.view == ViewId::TaskDetail {
                 self.view = ViewId::Board;
             }
-            if matches!(self.flow, Flow::EditTitle { task: t } if t == task) {
+            if matches!(
+                self.flow,
+                Flow::EditTitle { task: t } | Flow::EditDue { task: t } if t == task
+            ) {
                 self.flow = Flow::None;
                 self.buffer.clear();
             }

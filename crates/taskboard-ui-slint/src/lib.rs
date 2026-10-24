@@ -19,6 +19,7 @@ slint::include_modules!();
 
 pub mod actions;
 pub mod adapter;
+pub mod due_edit;
 pub mod fonts;
 pub mod keymap;
 pub mod menu;
