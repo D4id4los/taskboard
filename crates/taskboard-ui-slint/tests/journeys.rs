@@ -2831,6 +2831,91 @@ fn a_slider_commit_reverts_on_a_typed_error_reply() {
     );
 }
 
+// ---------------------------------------------------------------------
+// r2 D30: the settings content scrolls under the pinned header
+// ---------------------------------------------------------------------
+
+/// The scale-3.0 reachability contract (r2 D30, dispatch §6 f): at
+/// scale 3.0 in the scale-multiplied min-floor window the content
+/// overflows, the scroll reaches the scale controls (the content's
+/// tail), the pinned header never moves, and the Window size
+/// invariant holds throughout.
+#[test]
+fn settings_scroll_reaches_the_scale_controls_at_scale_3() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let settings = UiSettings {
+                scale: 3.0,
+                ..UiSettings::default()
+            };
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            driver.bind(&harness.handle);
+            driver.set_window_size(480 * 3, 400 * 3);
+            harness.press(ActionId::AppSettings);
+            assert_eq!(harness.handle.window().get_current_view(), View::Settings);
+
+            let window = harness.handle.window();
+            let facts = window.global::<taskboard_ui_slint::SettingsScrollFacts>();
+            assert!(
+                facts.get_content_height() > facts.get_viewport_height(),
+                "the overflow exists at scale 3.0 in the min-floor window"
+            );
+
+            let back_y = |driver: &mut SlintDriver| {
+                driver
+                    .find_by_label("Back")
+                    .expect("the pinned Back affordance")
+                    .absolute_position()
+                    .y
+            };
+            let before = back_y(driver);
+
+            // Scroll to the bottom: the content's tail — the scale
+            // row and the status row — becomes reachable.
+            let overflow = facts.get_content_height() - facts.get_viewport_height();
+            facts.set_viewport_y(-overflow);
+            driver.advance_time(0);
+            assert!(
+                (facts.get_viewport_y() + overflow).abs() < 0.01,
+                "the write-back landed (the two-way binding)"
+            );
+
+            let scale_field = driver
+                .find_by_label("Scale")
+                .expect("the scale field is addressable");
+            let pos = scale_field.absolute_position();
+            let size = scale_field.size();
+            assert!(
+                pos.y >= 0.0 && pos.y + size.height <= 400.0 * 3.0,
+                "the scale field sits inside the window after the scroll"
+            );
+            // The status row is the content's last child: with the
+            // viewport at the bottom the content's bottom edge is
+            // exactly the viewport's bottom edge, so the tail is on
+            // screen by construction.
+            assert!(
+                (facts.get_viewport_y() + facts.get_content_height() - facts.get_viewport_height())
+                    .abs()
+                    < 0.01,
+                "the content tail (the status row) is reachable"
+            );
+
+            // The pinned header: the Back affordance's y never moved.
+            assert_eq!(back_y(driver), before, "the header never scrolls away");
+
+            // The Window invariant: no width/height binding may react
+            // to the scale — the dims out-properties are unchanged
+            // across the whole journey.
+            assert_eq!(window.get_window_w(), 480.0 * 3.0);
+            assert_eq!(window.get_window_h(), 400.0 * 3.0);
+        },
+    );
+}
+
 /// The rule-list journey leg (chunk 6, D12/D13): the task detail's
 /// composition renders the subject task's rules (rows + the derived
 /// hint) and its seams dispatch the exact typed commands — preset add,
