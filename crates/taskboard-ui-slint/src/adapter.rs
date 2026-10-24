@@ -2242,8 +2242,11 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         };
         let mut a = custom.borrow_mut();
         // A parse miss dispatches nothing (absorbed — D12): the UI
-        // owns no error chrome; the CLI owns typed failures.
+        // owns no error chrome; the CLI owns typed failures. The
+        // buffer reset rides the reject seam (r2 D24) so the field
+        // never looks stuck.
         let Some(offset) = ReminderOffset::parse_text_form(&text) else {
+            window.invoke_rule_add_custom_rejected();
             return;
         };
         a.rule_add_offset = Some(offset);

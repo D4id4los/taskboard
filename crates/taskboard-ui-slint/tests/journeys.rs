@@ -3611,3 +3611,109 @@ fn the_commit_affordance_click_equals_return_on_the_stack_create_row() {
         },
     );
 }
+
+/// R2 D24 — a parse-missed custom offset still dispatches nothing
+/// (the D12 absorb) but now resets the buffer: the field reads empty
+/// afterwards, so it never looks stuck. A parse hit routes
+/// `ReminderRuleAdd` unchanged (the regression pin).
+#[test]
+fn a_parse_missed_custom_offset_clears_its_buffer() {
+    let (fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+            harness.driver.advance_time(0);
+
+            let field = |harness: &Harness| {
+                harness
+                    .driver
+                    .find_by_label("Custom reminder offset")
+                    .expect("the custom-offset field is mounted")
+            };
+            assert_eq!(
+                field(&harness).value().as_deref(),
+                Some(""),
+                "the field mounts empty"
+            );
+
+            // A parse miss: nothing at the boundary, buffer reset.
+            harness
+                .handle
+                .window()
+                .invoke_rule_add_custom_accepted("soon".into());
+            harness.assert_commands(&[]);
+            assert_eq!(
+                field(&harness).value().as_deref(),
+                Some(""),
+                "the reject reset the buffer"
+            );
+
+            // A parse hit routes unchanged.
+            harness
+                .handle
+                .window()
+                .invoke_rule_add_custom_accepted("45m".into());
+            harness.assert_commands(&[StateCommand::AddReminderRule {
+                task: fixture.task1,
+                offset: taskboard_domain::ReminderOffset::before(
+                    TimeDelta::try_minutes(-45).expect("-45m"),
+                )
+                .expect("legal offset"),
+            }]);
+        },
+    );
+}
+
+/// R2 D24 — the preset chips carry the design's padding tokens: each
+/// chip's painted width is at least the space-6 floor at scale 1.0
+/// (the label no longer touches the chip edges).
+#[test]
+fn the_preset_chips_hold_their_token_floor() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.advance_time(0);
+            // The id query reports each repetition through every
+            // ancestor chain; dedup by painted geometry.
+            let mut seen: Vec<(f32, f32)> = Vec::new();
+            let chips = harness
+                .driver
+                .find_all_by_id("RuleList::preset-chip")
+                .into_iter()
+                .filter(|chip| {
+                    let pos = chip.absolute_position();
+                    let key = (pos.x, pos.y);
+                    let fresh = !seen.contains(&key);
+                    if fresh {
+                        seen.push(key);
+                    }
+                    fresh
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(chips.len(), 4, "the fixture's four preset chips");
+            for chip in chips {
+                assert!(
+                    chip.size().width >= 32.0, // Theme.space-6 at scale 1
+                    "every chip is at least the space-6 floor, got {}",
+                    chip.size().width
+                );
+            }
+        },
+    );
+}

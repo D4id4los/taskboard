@@ -28,6 +28,12 @@ export component RuleList inherits VerticalLayout {
     callback remove-clicked(int);
     callback add-preset-clicked(int);
     callback add-custom-accepted(string);
+    // The parse-miss buffer reset (r2 D24): the adapter absorbs a
+    // miss (D12) and fires this; the composition clears its own
+    // field instance's text so the buffer never looks stuck. The
+    // field is remounted only on view switch, never per refresh —
+    // the reject callback is the only writer.
+    callback add-custom-rejected();
 
     RoleText {
         role: Typography.caption;
@@ -66,6 +72,9 @@ export component RuleList inherits VerticalLayout {
         }
     }
 
+    // The presets row (r2 D24): the chips plus the custom-offset
+    // entry read as one controls row — start-aligned so the chips
+    // stay content-sized, the field stretching into the leftover.
     HorizontalLayout {
         spacing: Theme.space-2;
         alignment: start;
@@ -74,23 +83,31 @@ export component RuleList inherits VerticalLayout {
             border-width: Theme.focus-ring-width;
             border-color: touch.has-hover ? Semantic.focus-ring : Theme.text-secondary;
             min-height: Theme.space-5;
+            // The design's exact tokens (r2 D24): the label no longer
+            // touches the chip edges (padding rides the inner layout —
+            // a plain Rectangle has none).
+            min-width: Theme.space-6;
             touch := TouchArea {
                 clicked => { root.add-preset-clicked(i); }
             }
-            RoleText {
-                role: Typography.mono;
-                text-color: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-                text: label;
-                vertical-alignment: center;
-                horizontal-alignment: center;
+            HorizontalLayout {
+                padding-left: Theme.space-2;
+                padding-right: Theme.space-2;
+                RoleText {
+                    role: Typography.mono;
+                    text-color: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    text: label;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
             }
         }
-    }
-
-    TextField {
-        placeholder: "Custom offset, e.g. 45m";
-        label: "Custom reminder offset";
-        commit-affordance: true;
-        accepted(text) => { root.add-custom-accepted(text); }
+        custom-field := TextField {
+            placeholder: "Custom offset, e.g. 45m";
+            label: "Custom reminder offset";
+            commit-affordance: true;
+            horizontal-stretch: 1;
+            accepted(text) => { root.add-custom-accepted(text); }
+        }
     }
 }

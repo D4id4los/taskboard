@@ -231,6 +231,7 @@ export component AppWindow inherits Window {
                 rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
+                rule-add-custom-rejected() => root.rule-add-custom-rejected();
             }
 
             // The board create/rename fields (r2 D21): the
@@ -471,6 +472,7 @@ export component AppWindow inherits Window {
     pure callback task-rule-remove-clicked(int);
     pure callback rule-add-preset-clicked(int);
     pure callback rule-add-custom-accepted(string);
+    pure callback rule-add-custom-rejected();
     pure callback banner-snooze-clicked(int);
     pure callback banner-mute-clicked(int);
     pure callback banner-row-activated(int);
