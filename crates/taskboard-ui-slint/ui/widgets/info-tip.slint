@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The InfoTip primitive (L1, r2 D31): a tiny circle-"i" square beside
+// an annotated field; hovering arms the generalized tooltip trigger
+// with `about` as the label and `help` as the description. Deliberately
+// NOT an IconButton: it routes no action and takes no click — made a
+// focusable button it would be an AT dead-end, so the widget stays
+// AT-transparent (no role); the help content's AT delivery is the
+// annotated field's accessible-description (single source per help
+// fact, r2 D31).
+
+import { Theme } from "../theme.slint";
+import { TooltipState } from "tooltip.slint";
+
+export component InfoTip inherits Rectangle {
+    // The subject's name (the tooltip's label — non-empty required).
+    in property <string> about;
+    // The help sentence (the tooltip's description slot).
+    in property <string> help;
+
+    // The canonical square lock (the icon-button pattern): without
+    // the cap the square grows in a HorizontalLayout.
+    min-width: Theme.space-3;
+    max-width: Theme.space-3;
+    min-height: Theme.space-3;
+    max-height: Theme.space-3;
+    border-radius: self.width / 2;
+    border-width: Theme.focus-ring-width;
+    border-color: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+
+    // The geometric "i" (the D19 no-icon-font vocabulary): a dot and
+    // a stem, centred.
+    VerticalLayout {
+        padding: Theme.space-1;
+        spacing: Theme.space-1 / 4;
+
+        Rectangle {
+            width: Theme.focus-ring-width + 1px;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        }
+        Rectangle {
+            width: Theme.focus-ring-width + 1px;
+            vertical-stretch: 1;
+            min-height: Theme.space-1 / 2;
+            border-radius: self.width / 4;
+            background: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        }
+    }
+
+    // The canonical generalized trigger verbatim (the icon-button
+    // pattern, r2 D13 lifecycle): enter arms the delay, leave
+    // dismisses.
+    touch := TouchArea {
+        changed has-hover => {
+            if (self.has-hover) {
+                TooltipState.hover(
+                    root.about,
+                    root.help,
+                    [],
+                    self.absolute-position.x,
+                    self.absolute-position.y,
+                    self.width,
+                    self.height,
+                );
+            } else {
+                TooltipState.unhover();
+            }
+        }
+    }
+}

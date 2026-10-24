@@ -1732,6 +1732,19 @@ pub(crate) fn install(
     window
         .global::<UiStatus>()
         .set_startup_keymap_findings(i32::try_from(startup.keymap_findings).unwrap_or(i32::MAX));
+    // The D31 help-text constants: presentation constants, pushed once
+    // at mount (they never vary at runtime).
+    {
+        use crate::settings_status as status;
+        let global = window.global::<crate::SettingsModel>();
+        global.set_help_name(status::HELP_NAME.into());
+        global.set_help_server(status::HELP_SERVER.into());
+        global.set_help_username(status::HELP_USERNAME.into());
+        global.set_help_app_password(status::HELP_APP_PASSWORD.into());
+        global.set_help_scale(status::HELP_SCALE.into());
+        global.set_help_keymap(status::HELP_KEYMAP.into());
+        global.set_help_rows(status::HELP_ROWS.into());
+    }
 
     {
         let adapter = Rc::clone(&adapter);
