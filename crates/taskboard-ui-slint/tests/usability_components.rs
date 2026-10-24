@@ -407,7 +407,10 @@ fn the_text_field_keeps_its_layout_cell_while_text_grows() {
                 headless_renderer: true,
             },
             move |driver: &mut SlintDriver| {
-                let _handle = mount_populated(driver, scale, width, height);
+                let handle = mount_populated(driver, scale, width, height);
+                // The desktop mount starts on Today (chunk 10 D2); the
+                // title-editor flow under test lives on the board.
+                handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
                 driver.press_stroke(parse("Down").expect("Down"));
                 driver.press_stroke(parse("Return").expect("Return"));
                 driver.advance_time(0);
@@ -503,13 +506,6 @@ fn the_open_menu_closes_its_box_above_the_status_bar_at_every_geometry() {
                 let facts = handle
                     .window()
                     .global::<taskboard_ui_slint::MenuPanelFacts>();
-                eprintln!(
-                    "DBG geom {width}x{height} fx={} fy={} fw={} fh={}",
-                    facts.get_x(),
-                    facts.get_y(),
-                    facts.get_width(),
-                    facts.get_height()
-                );
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 // UI-scale px values
                 let bottom = (facts.get_y() + facts.get_height()).round() as u32;
