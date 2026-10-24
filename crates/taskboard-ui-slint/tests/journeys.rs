@@ -21,7 +21,7 @@ use arc_swap::ArcSwap;
 use slint::ComponentHandle as _;
 use slint::Model as _;
 use std::sync::Arc;
-use taskboard_domain::{AppState, StateCommand};
+use taskboard_domain::{AppState, StateCommand, TaskId};
 use taskboard_ui_slint::actions::{ActionId, ContextId};
 use taskboard_ui_slint::keymap::stroke::{self, parse};
 use taskboard_ui_slint::{UiSettings, View};
@@ -2900,6 +2900,125 @@ fn the_tooltip_width_includes_the_hint_row_and_keeps_the_cap() {
                 "the keys-less width matches the plain caption term"
             );
             tooltip_state(&harness).invoke_unhover();
+        },
+    );
+}
+
+/// Chunk 9 (design D15) — the palette journey: open with the empty
+/// query floor, type a needle across boards (cursor walk + overflow
+/// count), prove the anchor's absence structurally (a live matching
+/// anchor missing from the row counts is the filter's proof), jump to
+/// a unique hit (board + focus retarget), and close on Escape without
+/// dispatching anything to the engine.
+#[test]
+fn the_palette_searches_and_jumps_across_boards() {
+    let (fixture, mut state) = fixture::two_board_state();
+    // Board one's first stack: the decoy + the anchor ride there.
+    let stack_a = state
+        .stacks
+        .values()
+        .find(|stack| stack.board == fixture.board_one)
+        .expect("board one stack")
+        .id;
+    let plant =
+        |state: &mut AppState, stack: taskboard_domain::StackId, order: i64, title: &str| {
+            let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut task = state.tasks.values().next().expect("fixture task").clone();
+            task.id = id;
+            task.stack = stack;
+            task.order = order;
+            task.title = title.to_owned();
+            state.tasks.insert(id, task);
+        };
+    // The unique needle lives on board two (the jump crosses boards);
+    // order 5 puts it at canonical row 1 of stack "c".
+    plant(&mut state, fixture.stack_c, 5, "zebra needle");
+    plant(&mut state, stack_a, 5, "zebra decoy");
+    plant(&mut state, stack_a, 6, taskboard_domain::ANCHOR_CARD_TITLE);
+    for n in 0..9 {
+        plant(
+            &mut state,
+            fixture.stack_c,
+            10 + n,
+            &format!("zebra extra {n}"),
+        );
+    }
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            macro_rules! window {
+                () => {
+                    harness.handle.window()
+                };
+            }
+
+            // Open: the empty-query floor, end to end.
+            harness.press(ActionId::PaletteSearch);
+            assert!(window!().get_palette_open(), "the palette opened");
+            assert_eq!(window!().get_palette_model().row_count(), 0);
+            assert_eq!(window!().get_palette_overflow(), 0);
+            harness.assert_commands(&[]);
+
+            // "zeb" matches the needle, the decoy, and nine extras —
+            // eleven candidates. The cap keeps 8; the overflow counts
+            // the real remainder (the anchor does not match this
+            // query, so nothing is filtered here).
+            harness.type_text("zeb");
+            assert_eq!(window!().get_palette_model().row_count(), 8);
+            assert_eq!(window!().get_palette_overflow(), 3);
+
+            // The cursor ring-walks: Down lands on row 1.
+            harness.stroke(parse("Down").expect("down"));
+            assert_eq!(window!().get_palette_selected_index(), 1);
+
+            // Escape closes without effect: the view, the board, and
+            // the engine boundary are untouched.
+            harness.stroke(parse("Escape").expect("escape"));
+            assert!(!window!().get_palette_open(), "Escape closed");
+            assert_eq!(window!().get_current_view(), View::Board);
+            harness.assert_commands(&[]);
+
+            // The anchor proof: the anchor task is live and its title
+            // matches "taskboard" as a subsequence — an unfiltered
+            // count of 1 would be a visible row; zero rows IS the
+            // presentation-side filter.
+            harness.press(ActionId::PaletteSearch);
+            assert!(window!().get_palette_open());
+            harness.type_text("taskboard");
+            assert_eq!(
+                window!().get_palette_model().row_count(),
+                0,
+                "the matching anchor is filtered from the palette rows"
+            );
+            assert_eq!(window!().get_palette_overflow(), 0);
+            harness.stroke(parse("Escape").expect("escape"));
+            assert!(!window!().get_palette_open());
+
+            // The jump: a query only the needle matches, Return
+            // activates — the view retargets to board two and the
+            // needle's card renders emphasized (canonical row 1 of
+            // the single stack).
+            harness.press(ActionId::PaletteSearch);
+            harness.type_text("zebra needle");
+            assert_eq!(window!().get_palette_model().row_count(), 1);
+            harness.stroke(parse("Return").expect("return"));
+            assert!(!window!().get_palette_open(), "the jump ends the flow");
+            assert_eq!(window!().get_current_view(), View::Board);
+            assert_eq!(
+                window!().get_board_bar_model().selected,
+                1,
+                "the jump selected board two"
+            );
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 1)),
+                "the needle's card is emphasized"
+            );
+            harness.assert_commands(&[]);
         },
     );
 }
