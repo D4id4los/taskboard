@@ -75,6 +75,11 @@ pub enum Flow {
     /// lives in the flow (subject-free — `reconcile` leaves it alone;
     /// background refreshes re-rank through the row push instead).
     Palette { selected: usize },
+    /// Quick capture (chunk 10 D8, #347): subject-free like the
+    /// palette — the buffer is the thought; committing keeps the flow
+    /// open (the rapid-fire braindump; `commit_edit`'s "the flow
+    /// always ends" contract does not apply).
+    Capture,
     // -- round 2 (D18/D21): the board/stack lifecycle flows --
     /// The new-board field (window-level slot).
     CreateBoard,
@@ -1031,6 +1036,49 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
+    /// Quick capture's opener (chunk 10 D8): replaces any in-progress
+    /// flow WITHOUT committing it (the overlay is the fire-drill
+    /// escape; the XOR rule substitutes, it does not commit), then
+    /// opens `Flow::Capture` with a cleared buffer — exactly
+    /// `begin_create`'s opening.
+    pub fn begin_capture(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::Capture;
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// Return on the capture buffer (chunk 10 D8): a non-empty
+    /// (trimmed) thought dispatches `CaptureTask { board: None }` —
+    /// always the global Inbox, never a focused board — clears the
+    /// buffer, and KEEPS the flow + Insert mode (commits-and-continues).
+    /// An empty buffer closes instead.
+    pub fn commit_capture(&mut self) -> Vec<FlowOutcome> {
+        if self.flow != Flow::Capture {
+            return Vec::new();
+        }
+        let thought = self.buffer.trim().to_owned();
+        if thought.is_empty() {
+            return self.close_capture();
+        }
+        self.buffer.clear();
+        vec![
+            FlowOutcome::Command(StateCommand::CaptureTask {
+                title: thought,
+                board: None,
+            }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
+    /// Escape out of capture (chunk 10 D8): discard-and-close (the
+    /// `discard_edit` shape).
+    pub fn close_capture(&mut self) -> Vec<FlowOutcome> {
+        if self.flow != Flow::Capture {
+            return Vec::new();
+        }
+        self.discard_edit()
+    }
+
     // -- search palette (#348, chunk 9) ------------------------------------
 
     /// `PaletteSearch`: opens the palette in insert mode with an empty
@@ -1628,6 +1676,70 @@ mod tests {
             })],
             "cross-board targets are already legal engine-side"
         );
+    }
+
+    // -- the capture flow (chunk 10 D8) -----------------------------------
+
+    #[test]
+    fn capture_commits_and_continues_then_closes_on_empty() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+
+        // Begin replaces any in-progress flow WITHOUT committing it.
+        let outcomes = vs.begin_capture();
+        assert_eq!(*vs.flow(), Flow::Capture);
+        assert_eq!(vs.buffer(), "");
+        assert!(
+            outcomes
+                .iter()
+                .all(|o| !matches!(o, FlowOutcome::Command(_))),
+            "the replaced move flow dispatches nothing"
+        );
+        assert!(outcomes.contains(&FlowOutcome::SetMode(Mode::Insert)));
+
+        // Non-empty Return: the exact CaptureTask, board None, and the
+        // flow KEEPS running (commits-and-continues).
+        vs.set_buffer("  milk  ".to_owned());
+        let outcomes = vs.commit_capture();
+        assert_eq!(
+            outcomes[..1],
+            [FlowOutcome::Command(StateCommand::CaptureTask {
+                title: "milk".to_owned(),
+                board: None,
+            })],
+            "trimmed, always the global inbox"
+        );
+        assert_eq!(*vs.flow(), Flow::Capture, "the flow continues");
+        assert_eq!(vs.buffer(), "", "the buffer cleared");
+
+        // Empty Return closes (SetMode(Normal), flow ends).
+        let outcomes = vs.commit_capture();
+        assert_eq!(*vs.flow(), Flow::None);
+        assert!(outcomes.contains(&FlowOutcome::SetMode(Mode::Normal)));
+    }
+
+    #[test]
+    fn escape_discards_capture_and_reconcile_leaves_the_flow_alone() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_capture();
+        vs.set_buffer("halfway".to_owned());
+        let outcomes = vs.close_capture();
+        assert_eq!(*vs.flow(), Flow::None, "discard-and-close");
+        assert_eq!(vs.buffer(), "");
+        assert!(outcomes.contains(&FlowOutcome::SetMode(Mode::Normal)));
+
+        // reconcile never ends the capture flow nor touches the buffer
+        // (the palette precedent: subject-free).
+        vs.begin_capture();
+        vs.set_buffer("mid-thought".to_owned());
+        vs.reconcile(&state);
+        assert_eq!(*vs.flow(), Flow::Capture);
+        assert_eq!(vs.buffer(), "mid-thought");
     }
 
     // -- the view cycle (D7) --------------------------------------------

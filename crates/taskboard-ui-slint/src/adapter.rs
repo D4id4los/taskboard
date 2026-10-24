@@ -152,6 +152,19 @@ impl Adapter {
     /// status bar reads these.
     fn sync(&self, window: &AppWindow) {
         window.set_palette_open(self.shell.palette);
+        // The capture overlay's window bit (chunk 10 D8): from the
+        // view-state flow, the palette precedent.
+        let capture = matches!(self.view_state.flow(), crate::view_state::Flow::Capture);
+        window.set_capture_open(capture);
+        // The field seeds at overlay init only (the rename-field rule):
+        // the buffer rides while the flow holds, the slot clears on
+        // close — a refresh never rewrites a live field's text (D9
+        // rule 4).
+        window.set_capture_initial_text(if capture {
+            SharedString::from(self.view_state.buffer().to_owned())
+        } else {
+            SharedString::from(String::new())
+        });
         let palette_selected = match self.view_state.flow() {
             crate::view_state::Flow::Palette { selected } => *selected,
             _ => 0,
@@ -535,6 +548,12 @@ impl Adapter {
                 let outcomes = self.view_state.close_palette();
                 self.apply_outcomes(window, &outcomes);
             }
+            // A view switch out of capture discards-and-closes (the
+            // fire-drill overlay never commits on a view change).
+            Flow::Capture => {
+                let outcomes = self.view_state.close_capture();
+                self.apply_outcomes(window, &outcomes);
+            }
             Flow::None => {}
         }
     }
@@ -563,6 +582,14 @@ impl Adapter {
         }
 
         let outcomes = match (&flow, effect) {
+            // -- quick capture (chunk 10 D8): the GLOBAL action, from
+            //    any flow — the XOR rule replaces without committing --
+            (_, UiEffect::BeginCapture) => self.view_state.begin_capture(),
+            // The capture commit/close (the palette's modal peers);
+            // NOT `interpret_edit` — capture's non-empty commit
+            // deliberately keeps the flow.
+            (Flow::Capture, UiEffect::Activate) => self.view_state.commit_capture(),
+            (Flow::Capture, UiEffect::SetMode(Mode::Normal)) => self.view_state.close_capture(),
             // -- the move flows (D8/D9; round 2 adds the stack move) --
             (
                 flow @ (Flow::Move { .. } | Flow::MoveStack { .. }),
@@ -2423,6 +2450,35 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         palette.borrow_mut().apply_palette_query(&window, &text);
+    });
+    // Quick capture (chunk 10 D8): the buffer mirror, the Return
+    // commit (keeps the flow), and the scrim's discard-and-close
+    // (routed through the action layer's ModeNormal semantics).
+    let capture = Rc::clone(adapter);
+    window.on_capture_text_edited(move |text| {
+        capture.borrow_mut().view_state.set_buffer(text.to_string());
+    });
+    let capture = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_capture_accepted(move || {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let mut a = capture.borrow_mut();
+        let outcomes = a.view_state.commit_capture();
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
+    });
+    let capture = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_capture_dismiss_requested(move || {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let mut a = capture.borrow_mut();
+        let outcomes = a.view_state.close_capture();
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
     });
     let palette = Rc::clone(adapter);
     let weak = window.as_weak();
