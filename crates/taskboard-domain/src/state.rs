@@ -370,7 +370,56 @@ pub fn attributed_board(
     }
 }
 
+/// The app-global Inbox board's title (#347, D-V5 v2): the exact-title
+/// adoption key for [`AppState::inbox_board`] and the created board's
+/// title.
+pub const INBOX_BOARD_TITLE: &str = "Inbox";
+
+/// The board-directed capture landing stack's title: the exact-title
+/// key for [`AppState::backlog_stack`] and the created stack's title.
+pub const BACKLOG_STACK_TITLE: &str = "Backlog";
+
 impl AppState {
+    /// The app-global Inbox: the canonical-first (smallest
+    /// [`BoardId`] — boards carry no `order` field, so the canonical
+    /// board order *is* id order) live board titled exactly
+    /// [`INBOX_BOARD_TITLE`]. "Live" = `!deleted ∧ !archived` (the
+    /// one canonical live-board set the board bar, walk, ring, and
+    /// find all use); an archived `Inbox`-titled board is not adopted.
+    #[must_use]
+    pub fn inbox_board(&self) -> Option<BoardId> {
+        self.boards
+            .values()
+            .find(|b| !b.deleted && !b.archived && b.title == INBOX_BOARD_TITLE)
+            .map(|b| b.id)
+    }
+
+    /// The board's canonical-first stack: smallest `(order, id)` among
+    /// the board's non-tombstoned stacks (`stacks_in_board`'s order).
+    #[must_use]
+    pub fn canonical_first_stack(&self, board: BoardId) -> Option<StackId> {
+        self.stacks
+            .values()
+            .filter(|s| s.board == board && !s.deleted)
+            .map(|s| (s.order, s.id))
+            .min()
+            .map(|(_, id)| id)
+    }
+
+    /// The board's Backlog: the canonical-first stack titled exactly
+    /// [`BACKLOG_STACK_TITLE`] among the board's non-tombstoned
+    /// stacks; `None` when no such stack exists (created on demand by
+    /// the capture handler).
+    #[must_use]
+    pub fn backlog_stack(&self, board: BoardId) -> Option<StackId> {
+        self.stacks
+            .values()
+            .filter(|s| s.board == board && !s.deleted && s.title == BACKLOG_STACK_TITLE)
+            .map(|s| (s.order, s.id))
+            .min()
+            .map(|(_, id)| id)
+    }
+
     /// Every board carrying a remote binding — live and tombstoned
     /// alike (a tombstoned board's finalizing push is a sync fact), in
     /// deterministic board-id order.
@@ -1023,9 +1072,141 @@ mod sync_states_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::ids::TaskId;
+    use super::AppState;
+    use crate::entities::{BoardClocks, Color, StackClocks};
+    use crate::ids::{BoardId, StackId, TaskId};
     use crate::test_support;
+    use chrono::TimeZone;
     use proptest::prelude::*;
+
+    fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn board(raw: u128, title: &str) -> crate::entities::Board {
+        crate::entities::Board {
+            id: BoardId::from(uuid::Uuid::from_u128(raw)),
+            remote: None,
+            title: title.into(),
+            color: Color::new("0082c9"),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: ts(100),
+                color: ts(100),
+                archived: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        }
+    }
+
+    fn stack(raw: u128, on: BoardId, title: &str, order: i64) -> crate::entities::Stack {
+        crate::entities::Stack {
+            id: StackId::from(uuid::Uuid::from_u128(raw)),
+            remote: None,
+            board: on,
+            title: title.into(),
+            order,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: ts(100),
+                order: ts(100),
+                deleted: ts(100),
+            },
+            remote_seen: None,
+        }
+    }
+
+    #[test]
+    fn inbox_board_adopts_the_canonical_first_exact_titled_live_board() {
+        let mut state = AppState::default();
+        assert_eq!(state.inbox_board(), None, "an empty state has no inbox");
+        let late = board(9, "Inbox");
+        let early = board(2, "Inbox");
+        state.boards.insert(late.id, late);
+        assert_eq!(
+            state.inbox_board(),
+            Some(BoardId::from(uuid::Uuid::from_u128(9)))
+        );
+        state.boards.insert(early.id, early);
+        assert_eq!(
+            state.inbox_board(),
+            Some(BoardId::from(uuid::Uuid::from_u128(2))),
+            "the smallest board id wins"
+        );
+        let decoy = board(1, "Inbox items");
+        state.boards.insert(decoy.id, decoy);
+        assert_eq!(
+            state.inbox_board(),
+            Some(BoardId::from(uuid::Uuid::from_u128(2))),
+            "titles match exactly"
+        );
+    }
+
+    #[test]
+    fn an_archived_or_deleted_inbox_titled_board_is_not_adopted() {
+        let mut state = AppState::default();
+        let mut archived = board(3, "Inbox");
+        archived.archived = true;
+        state.boards.insert(archived.id, archived);
+        assert_eq!(state.inbox_board(), None, "archived is not live");
+        let mut deleted = board(4, "Inbox");
+        deleted.deleted = true;
+        state.boards.insert(deleted.id, deleted);
+        assert_eq!(state.inbox_board(), None);
+    }
+
+    #[test]
+    fn canonical_first_stack_picks_smallest_order_then_id() {
+        let mut state = AppState::default();
+        let on = board(5, "b");
+        state.boards.insert(on.id, on.clone());
+        state.stacks.insert(
+            StackId::from(uuid::Uuid::from_u128(302)),
+            stack(302, on.id, "todo", 0),
+        );
+        state.stacks.insert(
+            StackId::from(uuid::Uuid::from_u128(101)),
+            stack(101, on.id, "doing", 1),
+        );
+        assert_eq!(
+            state.canonical_first_stack(on.id),
+            Some(StackId::from(uuid::Uuid::from_u128(302))),
+            "order dominates id"
+        );
+        let mut tie = stack(201, on.id, "done", 0);
+        state.stacks.insert(tie.id, tie.clone());
+        assert_eq!(
+            state.canonical_first_stack(on.id),
+            Some(StackId::from(uuid::Uuid::from_u128(201))),
+            "a tie breaks on the smaller stack id"
+        );
+        tie.deleted = true;
+        state.stacks.insert(tie.id, tie);
+        assert_eq!(
+            state.canonical_first_stack(on.id),
+            Some(StackId::from(uuid::Uuid::from_u128(302))),
+            "tombstoned stacks are skipped"
+        );
+    }
+
+    #[test]
+    fn backlog_stack_matches_exactly_titled_backlogs_only() {
+        let mut state = AppState::default();
+        let on = board(5, "b");
+        state.boards.insert(on.id, on.clone());
+        assert_eq!(state.backlog_stack(on.id), None);
+        state.stacks.insert(
+            StackId::from(uuid::Uuid::from_u128(301)),
+            stack(301, on.id, "Backlog items", 0),
+        );
+        assert_eq!(state.backlog_stack(on.id), None, "exact titles only");
+        let want = stack(401, on.id, "Backlog", 2);
+        state.stacks.insert(want.id, want.clone());
+        assert_eq!(state.backlog_stack(on.id), Some(want.id));
+    }
 
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(256))]

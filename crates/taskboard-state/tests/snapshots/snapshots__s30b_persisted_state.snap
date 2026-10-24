@@ -1,0 +1,129 @@
+---
+source: crates/taskboard-state/tests/snapshots.rs
+expression: "&persisted"
+---
+boards:
+  00000000-0000-0000-0000-000000000001:
+    id: 00000000-0000-0000-0000-000000000001
+    remote: ~
+    title: Inbox
+    color: 0082c9
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:01:00Z"
+      color: "1970-01-01T10:01:00Z"
+      archived: "1970-01-01T10:01:00Z"
+      deleted: "1970-01-01T10:01:00Z"
+    remote_seen: ~
+stacks:
+  00000000-0000-0000-0000-000000000002:
+    id: 00000000-0000-0000-0000-000000000002
+    remote: ~
+    board: 00000000-0000-0000-0000-000000000001
+    title: Inbox
+    order: 0
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:01:00Z"
+      order: "1970-01-01T10:01:00Z"
+      deleted: "1970-01-01T10:01:00Z"
+    remote_seen: ~
+tasks:
+  00000000-0000-0000-0000-000000000003:
+    id: 00000000-0000-0000-0000-000000000003
+    remote: ~
+    title: first thought
+    description: ""
+    duedate: ~
+    scheduled: ~
+    done: ~
+    stack: 00000000-0000-0000-0000-000000000002
+    order: 0
+    labels: []
+    effort: ~
+    importance: ~
+    urgency: ~
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:01:00Z"
+      description: "1970-01-01T10:01:00Z"
+      duedate: "1970-01-01T10:01:00Z"
+      scheduled: "1970-01-01T10:01:00Z"
+      done: "1970-01-01T10:01:00Z"
+      position: "1970-01-01T10:01:00Z"
+      labels: "1970-01-01T10:01:00Z"
+      effort: "1970-01-01T10:01:00Z"
+      importance: "1970-01-01T10:01:00Z"
+      urgency: "1970-01-01T10:01:00Z"
+      archived: "1970-01-01T10:01:00Z"
+      deleted: "1970-01-01T10:01:00Z"
+    remote_seen: ~
+  00000000-0000-0000-0000-000000000006:
+    id: 00000000-0000-0000-0000-000000000006
+    remote: ~
+    title: second thought
+    description: ""
+    duedate: ~
+    scheduled: ~
+    done: ~
+    stack: 00000000-0000-0000-0000-000000000002
+    order: 1
+    labels: []
+    effort: ~
+    importance: ~
+    urgency: ~
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:02:00Z"
+      description: "1970-01-01T10:02:00Z"
+      duedate: "1970-01-01T10:02:00Z"
+      scheduled: "1970-01-01T10:02:00Z"
+      done: "1970-01-01T10:02:00Z"
+      position: "1970-01-01T10:02:00Z"
+      labels: "1970-01-01T10:02:00Z"
+      effort: "1970-01-01T10:02:00Z"
+      importance: "1970-01-01T10:02:00Z"
+      urgency: "1970-01-01T10:02:00Z"
+      archived: "1970-01-01T10:02:00Z"
+      deleted: "1970-01-01T10:02:00Z"
+    remote_seen: ~
+labels: {}
+outbox:
+  - op_id: 00000000-0000-0000-0000-000000000004
+    op:
+      CreateStack: 00000000-0000-0000-0000-000000000002
+    queued_at: "1970-01-01T10:01:00Z"
+  - op_id: 00000000-0000-0000-0000-000000000005
+    op:
+      CreateTask: 00000000-0000-0000-0000-000000000003
+    queued_at: "1970-01-01T10:01:00Z"
+  - op_id: 00000000-0000-0000-0000-000000000007
+    op:
+      CreateTask: 00000000-0000-0000-0000-000000000006
+    queued_at: "1970-01-01T10:02:00Z"
+validators: {}
+sync:
+  00000000-0000-0000-0000-000000000001:
+    phase: Idle
+    last_success: ~
+    pending_ops: 3
+    counters:
+      cycles: 0
+      pushes: 0
+      pulls: 0
+      failures: 0
+      offline_episodes: 0
+      last_cycle: ~
+    sidecar: Healthy
+    features:
+      card_startdate: false
+reminders:
+  rules: {}
+  deliveries: []
+  snoozes: {}
+  muted: []
+  alarms: {}

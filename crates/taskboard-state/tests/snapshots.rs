@@ -836,3 +836,132 @@ async fn s10_boards_reset() {
     s.snap("s10");
     drop(s);
 }
+
+/// S30 — first capture (#347, D-V5 v2): the unbound Inbox board, its
+/// Inbox stack, and the task are minted in one batch; the board row
+/// carries `remote: None` and no board op is queued — the stack + task
+/// ops strand honestly until the user binds. The second capture appends
+/// to the same stack (adoption, canonical-first landing).
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s30_capture_creates_the_unbound_inbox_then_appends() {
+    let mut s = Scenario::start_empty().await;
+    let CommandOutcome::CreatedTask(_) = s
+        .run(StateCommand::CaptureTask {
+            title: "first thought".into(),
+            board: None,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.snap("s30a");
+    s.run(StateCommand::CaptureTask {
+        title: "second thought".into(),
+        board: None,
+    })
+    .await;
+    s.snap("s30b");
+}
+
+/// S31 — board-directed capture: `Some(board)` on the seeded board
+/// (no Backlog) creates the Backlog appended; a second capture lands in
+/// it. The seeded board stays untouched otherwise.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s31_capture_board_directed_creates_the_backlog() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    let CommandOutcome::CreatedTask(_) = s
+        .run(StateCommand::CaptureTask {
+            title: "triaged thought".into(),
+            board: Some(board),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.run(StateCommand::CaptureTask {
+        title: "second thought".into(),
+        board: Some(board),
+    })
+    .await;
+    s.snap("s31");
+}
+
+/// S32 — adoption: a live board titled exactly `Inbox` is adopted (not
+/// duplicated); an *archived* one is not — a fresh unbound Inbox is
+/// minted instead. The unknown board id is the one typed rejection.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s32_capture_adopts_a_live_inbox_not_an_archived_one() {
+    let mut s = Scenario::start_empty().await;
+    let CommandOutcome::CreatedBoard(live_inbox) = s
+        .run(StateCommand::CreateBoard {
+            title: "Inbox".into(),
+            color: Color::new("3366cc"),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.run(StateCommand::CaptureTask {
+        title: "adopted".into(),
+        board: None,
+    })
+    .await;
+    s.snap("s32a");
+
+    // Archive the live inbox; the next capture must mint a fresh board.
+    s.run(StateCommand::SetBoardArchived {
+        board: live_inbox,
+        archived: true,
+    })
+    .await;
+    s.run(StateCommand::CaptureTask {
+        title: "not adopted".into(),
+        board: None,
+    })
+    .await;
+    s.snap("s32b");
+
+    // The happy path never errors — only a stranger board id does.
+    let error = s
+        .run_raw(StateCommand::CaptureTask {
+            title: "x".into(),
+            board: Some(stranger_board_id()),
+        })
+        .await
+        .expect_err("an unknown board is the typed rejection");
+    assert!(matches!(
+        error,
+        taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::UnknownBoard(_))
+    ));
+}
+
+/// An id guaranteed absent from the state (the rejection test's target).
+fn stranger_board_id() -> taskboard_domain::BoardId {
+    common::stranger_board_id()
+}
+
+/// S33 — canonical-first among duplicates: two `Backlog`-titled stacks
+/// on one board; board-directed capture lands in the smaller
+/// `(order, id)` one.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s33_capture_lands_canonical_first_among_backlogs() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    s.run(StateCommand::CreateStack {
+        board,
+        title: "Backlog".into(),
+        order: 5,
+    })
+    .await;
+    s.run(StateCommand::CaptureTask {
+        title: "earliest backlog".into(),
+        board: Some(board),
+    })
+    .await;
+    s.snap("s33");
+}

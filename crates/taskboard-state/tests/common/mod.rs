@@ -102,3 +102,13 @@ pub fn stranger_task_id() -> TaskId {
     }
     ids.new_task_id()
 }
+
+/// An id guaranteed absent from the current scenario (board analogue of
+/// [`stranger_task_id`]).
+pub fn stranger_board_id() -> taskboard_domain::BoardId {
+    let ids = CountingIds::new();
+    for _ in 0..1_000 {
+        ids.new_op_id();
+    }
+    ids.new_board_id()
+}

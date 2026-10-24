@@ -27,6 +27,18 @@ pub enum StateCommand {
         /// Requested sort order.
         order: i64,
     },
+    /// Quick capture (#347, D-V5 v2): `board: None` lands in the
+    /// app-global Inbox (the designated board, created unbound on first
+    /// capture); `Some(board)` lands in that board's Backlog stack
+    /// (created on demand). Never errors on the happy path; title
+    /// validation stays at the edges.
+    CaptureTask {
+        /// The captured thought, verbatim.
+        title: String,
+        /// `None` = the global Inbox; `Some(board)` = that board's
+        /// Backlog.
+        board: Option<BoardId>,
+    },
     /// Edit task fields (sparse changeset; untouched fields keep clocks).
     UpdateTask {
         /// Task to edit.
