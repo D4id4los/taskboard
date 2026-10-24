@@ -34,6 +34,53 @@
   exception is =taskboard-ui-slint=, where Slint's generated rendering code
   requires =unsafe=. Do not relax this without an ADR.
 
+** 2.1 Type-Driven Design Policy (2026-10-24 ruling)
+
+The project's assurance ladder starts at the type system. The rulings
+below come out of the type-driven/formal-methods suitability evaluation
+(=.artifacts/reports/2026-10-24-type-driven-formal-methods-suitability-report.md=,
+grounded in the survey of the same date) and are binding for new code.
+
+- *The house pattern is A1, hand-rolled:* a private-field newtype whose
+  non-total constructor (the /mint/) lives at the trust boundary — the
+  wire decode, the storage codec, or the config load. Parse, don't
+  validate: values are validated once where they enter and thereafter
+  carried in the minted type. Existing exemplars: =ReminderOffset=
+  (=crates/taskboard-domain/src/reminders.rs=), =DeckColor=
+  (=crates/taskboard-sync-nextcloud/src/color.rs=), the =local_id!=/
+  =remote_id!= id families (=crates/taskboard-domain/src/ids.rs=).
+- *No derive-crate dependencies for this:* do not add =nutype=,
+  =bounded-integer=, =refined=, or similar. A dozen hand-rolled lines
+  match the house style and cost no proc-macro compile time.
+- *Deliberate leniency is legitimate but must be documented at the
+  type*, the way =Color= ("lenient by design; validation is the sync
+  adapter's job") and =DeckColor= (strict writes, lenient reads) are.
+  Leniency without that comment is indistinguishable from a gap.
+- *No validate-and-forget:* a value range-checked at one boundary must
+  not continue its life as a bare primitive. Config-minted values
+  (connector names, UI scale) are to be carried in minted types
+  (tracked in the follow-up issue from the suitability report).
+- *A2–A4 techniques stay out while the existing means suffice — but the
+  ruling is conditional, not permanent.* The default correctness means
+  are: typed-id-keyed collections and composite refs (handle
+  provenance), enums-with-data plus pure transition functions (state
+  machines), and boundary-parsed inert quantities (units). If *new* code
+  introduces shapes where those means stop sufficing — arena or
+  slot-recycled containers, stateful resources with illegal transitions
+  not cleanly expressible as enum data, operation-dense mixed-unit
+  arithmetic — then either apply the corresponding technique (branding/
+  generational indices, typestate, quantity types) or an equivalent
+  compile-time/structural guarantee, and record the choice at the type
+  or in an ADR. =PhantomData=-heavy encodings applied where an
+  enum-with-data would do are a smell, not a goal.
+- *Churn posture:* the workspace API is internal and the sole current
+  user is the maintainer; API churn, blame-churn, and wide multi-file
+  edits are *not* decision variables. If the change improves the code —
+  cleaner, more elegant, more provably correct — make it. API stability
+  becomes a criterion only when the maintainer explicitly nominates a
+  crate for extraction/reuse, at that time.
+
+
 * 3. Error Handling
 
 Error handling is structurally split between library crates and the main
