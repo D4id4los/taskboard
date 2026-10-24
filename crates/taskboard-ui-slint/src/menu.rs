@@ -110,11 +110,65 @@ pub fn group_page(keymap: &Keymap, chain: &[ContextId], group: MenuGroup) -> Vec
     rows.into_iter().map(|(_, _, entry)| entry).collect()
 }
 
-/// The task-card context menu (round-1 D13): the Task group's
-/// chain-visible rows, flat (no parents), no Quit pin.
+/// The task-card context menu (round-1 D13, round-2 D21 spelling):
+/// the Task group's chain-visible rows, flat (no parents), no Quit
+/// pin. The reopen and move-cancel rows join automatically with their
+/// Task-group registry rows.
 #[must_use]
 pub fn context_entries(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
     group_page(keymap, chain, MenuGroup::Task)
+}
+
+/// The task context menu's action list (round-2 D21): the Task
+/// group's rows in rank order.
+pub const TASK_CONTEXT: &[ActionId] = &[
+    ActionId::TaskCreate,
+    ActionId::TaskEdit,
+    ActionId::TaskComplete,
+    ActionId::TaskReopen,
+    ActionId::TaskMove,
+    ActionId::TaskMoveCancel,
+    ActionId::TaskDelete,
+    ActionId::ReminderSnooze,
+    ActionId::ReminderMute,
+    ActionId::ReminderRuleAdd,
+    ActionId::ReminderRuleRemove,
+];
+
+/// The stack-header context menu's action list (round-2 D21): the
+/// stack verbs plus new-task, destructive last, no parents, no Quit.
+pub const STACK_CONTEXT: &[ActionId] = &[
+    ActionId::TaskCreate,
+    ActionId::StackMove,
+    ActionId::StackRename,
+    ActionId::StackWider,
+    ActionId::StackNarrower,
+    ActionId::StackDelete,
+];
+
+/// The board-bar segment context menu's action list (round-2 D21):
+/// the create family, board rename, destructive last.
+pub const BOARD_CONTEXT: &[ActionId] = &[
+    ActionId::TaskCreate,
+    ActionId::StackCreate,
+    ActionId::BoardCreate,
+    ActionId::BoardRename,
+    ActionId::BoardDelete,
+];
+
+/// One object context menu (round-2 D21): the named actions
+/// projected through the same `row()` as every page — binding hints
+/// included. Over `[Board, Global]` (the one chain every object menu
+/// opens with) every board-surface verb's binding is visible, so the
+/// F-B7 empty-hint bug cannot recur. No static enablement gating:
+/// gating is dispatch-time (`NoTarget`/inert), the established
+/// `task.complete`-on-no-focus machinery.
+#[must_use]
+pub fn object_entries(keymap: &Keymap, chain: &[ContextId], ids: &[ActionId]) -> Vec<MenuEntry> {
+    ids.iter()
+        .filter_map(|id| REGISTRY.iter().find(|entry| entry.id == *id))
+        .map(|entry| row(keymap, chain, entry))
+        .collect()
 }
 
 #[cfg(test)]
@@ -303,6 +357,48 @@ mod tests {
             .filter(|g| !group_page(&keymap, &[ContextId::Global], *g).is_empty())
             .collect();
         assert_eq!(page_groups, non_empty);
+    }
+
+    /// T-12 (round 2, D21) — the object context lists: each projects
+    /// flat (no Quit, no parents) in its declared order, the task list
+    /// equals the Task group page (T-4's equality pin, new spelling),
+    /// and over `[Board, Global]` every row whose action is bound in
+    /// the chain carries a non-empty hint — the F-B7 fix pin
+    /// (structural: presence, never hint text).
+    #[test]
+    fn object_context_lists_project_flat_with_rendered_hints() {
+        let keymap = standard_keymap();
+        let chain = [ContextId::Board, ContextId::Global];
+        for list in [TASK_CONTEXT, STACK_CONTEXT, BOARD_CONTEXT] {
+            let rows = object_entries(&keymap, &chain, list);
+            assert_eq!(rows.len(), list.len(), "one row per id");
+            assert_eq!(
+                ids(&rows),
+                list.iter().map(|id| Some(*id)).collect::<Vec<_>>(),
+                "declared order"
+            );
+            assert!(rows.iter().all(|e| e.action != Some(ActionId::AppExit)));
+            assert!(rows.iter().all(|e| e.submenu.is_none()), "no parents");
+            for entry in &rows {
+                let bound = keymap
+                    .first_binding_display(entry.action.expect("leaf"), &chain)
+                    .is_some();
+                if bound {
+                    assert!(
+                        !entry.hint.is_empty(),
+                        "{} renders a binding hint over [Board, Global]",
+                        entry.action.expect("leaf")
+                    );
+                }
+            }
+        }
+        // The task list is the Task group page, spelled explicitly.
+        let task_rows = object_entries(&keymap, &chain, TASK_CONTEXT);
+        let task_page = group_page(&keymap, &chain, MenuGroup::Task);
+        assert_eq!(
+            ids(&task_rows),
+            task_page.iter().map(|e| e.action).collect::<Vec<_>>()
+        );
     }
 
     /// T-11 — filtering rebased on the pages: a view chain offers the
