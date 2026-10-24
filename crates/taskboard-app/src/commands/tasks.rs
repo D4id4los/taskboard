@@ -360,10 +360,15 @@ pub(crate) async fn move_on(
                 match matches.len() {
                     0 => Err(CommandError::UnknownStack(stack.to_owned()))?,
                     1 => matches[0],
+                    // Even scoped, duplicate titles within one board
+                    // stay ambiguous — the typed error names the
+                    // colliding stacks' titles.
                     _ => {
-                        return Err(CommandError::AmbiguousBoard {
-                            candidates: vec![board.as_uuid().to_string()],
-                        });
+                        let titles: Vec<String> = matches
+                            .iter()
+                            .filter_map(|id| state.stacks.get(id).map(|s| s.title.clone()))
+                            .collect();
+                        return Err(CommandError::AmbiguousStack { candidates: titles });
                     }
                 }
             }
