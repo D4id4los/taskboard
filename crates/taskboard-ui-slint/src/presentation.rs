@@ -17,7 +17,8 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use taskboard_domain::{
-    AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, SyncPhase, Task, TaskId,
+    AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, StackId, SyncPhase, Task,
+    TaskId,
 };
 
 /// The due-soon window (design §4): a presentation constant, not
@@ -375,6 +376,21 @@ pub fn live_boards(state: &AppState) -> Vec<&Board> {
         .values()
         .filter(|b| !b.deleted && !b.archived)
         .collect()
+}
+
+/// The move-flow hint (chunk 10 D6, D-V5's literal vocabulary): the
+/// target stack's `"<board> › <stack>"` — always both parts, uniform,
+/// no conditional abbreviation. Empty on a dangling stack (data
+/// degradation, not an error).
+#[must_use]
+pub fn move_hint(state: &AppState, target: StackId) -> String {
+    state
+        .stacks
+        .get(&target)
+        .and_then(|stack| state.boards.get(&stack.board).map(|board| (stack, board)))
+        .map_or_else(String::new, |(stack, board)| {
+            format!("{} \u{203a} {}", board.title, stack.title)
+        })
 }
 
 /// The single live, non-archived board — the view-state seed rule's
@@ -1098,6 +1114,55 @@ mod connector_status_tests {
         let mut states = taskboard_domain::SyncStates::new();
         states.set_stored(board, phase, None);
         state.sync = states;
+    }
+
+    /// The move-flow hint (chunk 10 D6): `"<board> › <stack>"` for a
+    /// live target; empty on a dangling stack (degradation, not an
+    /// error).
+    #[test]
+    fn move_hint_names_both_parts_and_degrades_empty() {
+        let mut state = AppState::default();
+        let board = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        state.boards.insert(
+            board,
+            Board {
+                id: board,
+                remote: None,
+                title: "personal".into(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        state.stacks.insert(
+            stack,
+            Stack {
+                id: stack,
+                remote: None,
+                board,
+                title: "todo".into(),
+                order: 0,
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::StackClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    order: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        assert_eq!(move_hint(&state, stack), "personal \u{203a} todo");
+        let dangling = StackId::from_uuid(uuid::Uuid::now_v7());
+        assert_eq!(move_hint(&state, dangling), "");
     }
 
     /// T4 — the down-override wins; the phases fold with the badge
