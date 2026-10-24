@@ -2472,6 +2472,197 @@ fn the_preset_selection_echoes_the_replied_preset_not_the_click() {
     );
 }
 
+// ---------------------------------------------------------------------
+// r2 D28: the status line's text and auto-clear lifetime
+// ---------------------------------------------------------------------
+
+/// Terminal status shows mapped text and auto-clears under the mock
+/// clock (r2 D28): the seam-local Rejected (a scale parse miss — no
+/// lane round-trip) is visible for `STATUS_VISIBLE_MS`, then returns to
+/// hidden (outcome None, text empty — the VM cleared, so no refresh
+/// can resurrect it).
+#[test]
+fn a_terminal_status_shows_text_then_auto_clears_under_the_mock_clock() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let model = || {
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::SettingsModel>()
+            };
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::None,
+                "the mount starts hidden"
+            );
+
+            harness
+                .handle
+                .window()
+                .invoke_settings_scale_committed("not a number".into());
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected,
+                "the terminal outcome landed"
+            );
+            assert_ne!(
+                model().get_status_text(),
+                "",
+                "the status shows its mapped text"
+            );
+
+            harness
+                .driver
+                .advance_time(taskboard_ui_slint::settings_status::STATUS_VISIBLE_MS - 1);
+            assert_ne!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::None,
+                "still visible one tick before the deadline"
+            );
+            harness.driver.advance_time(1);
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::None,
+                "the auto-clear fired at the deadline"
+            );
+            assert_eq!(model().get_status_text(), "", "the text cleared with it");
+        },
+    );
+}
+
+/// A new outcome re-arms the auto-clear (r2 D28): seven seconds after
+/// the first terminal outcome a second one landed three seconds in —
+/// the status must still be visible, clearing only `STATUS_VISIBLE_MS`
+/// after the *second* outcome (the tooltip-restart pin's shape).
+#[test]
+fn a_new_outcome_re_arms_the_status_clear() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let model = || {
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::SettingsModel>()
+            };
+            let window = harness.handle.window();
+
+            window.invoke_settings_scale_committed("not a number".into());
+            harness
+                .driver
+                .advance_time(taskboard_ui_slint::settings_status::STATUS_VISIBLE_MS - 2_000);
+            window.invoke_settings_scale_committed("0.0".into());
+            harness
+                .driver
+                .advance_time(taskboard_ui_slint::settings_status::STATUS_VISIBLE_MS - 2_000);
+            assert_ne!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::None,
+                "still visible past the FIRST outcome's deadline — the re-arm reset it"
+            );
+            harness.driver.advance_time(2_000);
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::None,
+                "the clear rides the second outcome's deadline"
+            );
+        },
+    );
+}
+
+/// A busy status never auto-clears mid-flight (r2 D28): the Save
+/// click's Busy holds past twice the clear window; the Ok reply arms
+/// the clear, which then fires.
+#[test]
+fn busy_status_holds_until_the_reply_lands() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let model = || {
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::SettingsModel>()
+            };
+
+            // A valid draft: the Save click routes the ceremony.
+            let window = harness.handle.window();
+            window.invoke_settings_field_edited(0, "home".into());
+            window.invoke_settings_field_edited(1, "https://c.example".into());
+            window.invoke_settings_field_edited(2, "alice".into());
+            window.invoke_settings_field_edited(3, "hunter2-secret".into());
+            window.invoke_settings_save_clicked(
+                "home".into(),
+                "https://c.example".into(),
+                "alice".into(),
+                "hunter2-secret".into(),
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Busy,
+            );
+
+            // Twice the clear window: the busy status holds (the
+            // timer was stopped, never armed).
+            harness
+                .driver
+                .advance_time(2 * taskboard_ui_slint::settings_status::STATUS_VISIBLE_MS);
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Busy,
+                "busy never auto-clears mid-flight"
+            );
+
+            // The reply lands through the drain: Ok, the clear armed.
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::SaveConnection { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the save request routed");
+            };
+            reply
+                .send(Ok(vec![taskboard_ui_slint::requests::ConnectorInfo {
+                    name: "home".into(),
+                    server_url: "https://c.example".into(),
+                    username: "alice".into(),
+                    read_only: false,
+                }]))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Ok,
+                "the Ok reply is visible"
+            );
+            harness
+                .driver
+                .advance_time(taskboard_ui_slint::settings_status::STATUS_VISIBLE_MS);
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::None,
+                "the Ok status auto-clears"
+            );
+        },
+    );
+}
+
 /// The rule-list journey leg (chunk 6, D12/D13): the task detail's
 /// composition renders the subject task's rules (rows + the derived
 /// hint) and its seams dispatch the exact typed commands — preset add,

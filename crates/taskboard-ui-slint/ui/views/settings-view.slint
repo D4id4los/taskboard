@@ -46,6 +46,9 @@ export global SettingsModel {
     in-out property <int> preset-index: 0;
     in-out property <bool> save-enabled: false;
     in-out property <SettingsOutcome> last-outcome: SettingsOutcome.none;
+    // The mapped status sentence (r2 D28): presentation policy lives
+    // in src/settings_status.rs; the push lands the string here.
+    in-out property <string> status-text: "";
 }
 
 
@@ -60,6 +63,21 @@ component RowDot inherits Rectangle {
         : root.status == SettingsRowStatus.offline ? Semantic.warning
         : root.status == SettingsRowStatus.syncing ? Semantic.focus-ring
         : Semantic.success;
+}
+
+// The status line's tone dot (r2 D28): the RowDot shape over the
+// outcome. One deliberate fix against the old marker: busy renders
+// `Semantic.sync-active` — the old `surface-raised` was invisible on
+// the surface.
+component StatusDot inherits Rectangle {
+    in property <SettingsOutcome> outcome: SettingsOutcome.none;
+    width: Theme.space-2;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: root.outcome == SettingsOutcome.ok ? Semantic.success
+        : root.outcome == SettingsOutcome.busy ? Semantic.sync-active
+        : root.outcome == SettingsOutcome.failed ? Semantic.danger
+        : Semantic.warning;
 }
 
 component SettingsButton inherits Rectangle {
@@ -322,15 +340,27 @@ export component SettingsView inherits FocusScope {
             }
         }
 
-        // The typed outcome marker (R5: structural rendering only —
-        // the tones, never message text).
-        Rectangle {
+        // The status line (r2 D28 — reverses round-1 R5's
+        // tones-only rule by user direction): tone dot + mapped
+        // text. The row's extent is pinned (min == max == one
+        // control row, vertical-stretch 0), so it is structurally
+        // unable to absorb layout height — the F-C3 mechanism, dead.
+        HorizontalLayout {
             visible: SettingsModel.last-outcome != SettingsOutcome.none;
-            background: SettingsModel.last-outcome == SettingsOutcome.ok ? Semantic.success
-                : SettingsModel.last-outcome == SettingsOutcome.busy ? Theme.surface-raised
-                : Semantic.danger;
-            border-radius: Theme.radius-small;
-            min-height: Theme.space-3;
+            spacing: Theme.space-2;
+            vertical-stretch: 0;
+            min-height: status-text.preferred-height + 2 * Theme.space-2;
+            max-height: status-text.preferred-height + 2 * Theme.space-2;
+            StatusDot {
+                outcome: SettingsModel.last-outcome;
+            }
+            status-text := RoleText {
+                role: Typography.body;
+                text: SettingsModel.status-text;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
         }
     }
 }

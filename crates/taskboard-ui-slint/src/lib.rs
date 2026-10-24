@@ -149,6 +149,11 @@ pub struct UiHandle {
     /// owns the timer's lifetime alongside the window.
     #[allow(dead_code)]
     tooltip_timer: std::rc::Rc<slint::Timer>,
+    /// The settings status line's auto-clear driver (r2 D28). Never
+    /// read here: the adapter arms and the closure fires; this field
+    /// owns the timer's lifetime alongside the window.
+    #[allow(dead_code)]
+    status_timer: std::rc::Rc<slint::Timer>,
 }
 
 /// Creates the window and applies the theme state (theme init is a
@@ -187,6 +192,10 @@ pub fn mount(
     }
     // The keymap is applied one-way at UI start (§5.6): install the
     // root-scope interception over the validated keymap.
+    // The status line's auto-clear driver (r2 D28): created at mount
+    // beside the tooltip delay (the same lifetime pattern), handed to
+    // the adapter — the choke point arms it, the mock clock fires it.
+    let status_timer = std::rc::Rc::new(slint::Timer::default());
     let adapter = adapter::install(
         &window,
         settings.keymap,
@@ -197,6 +206,7 @@ pub fn mount(
         settings.stack_widths,
         settings.connectors,
         Arc::clone(&state),
+        Rc::clone(&status_timer),
     );
     let tooltip_timer = install_tooltip_delay(&window);
     let handle = UiHandle {
@@ -205,6 +215,7 @@ pub fn mount(
         state,
         timer: slint::Timer::default(),
         tooltip_timer,
+        status_timer,
     };
     start_repaint_driver(&handle, signals, system);
     // The first paint is a refresh, not a timer wait (D1's
