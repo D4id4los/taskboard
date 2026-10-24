@@ -85,8 +85,12 @@ export component TextField inherits Rectangle {
 
     // The commit affordance (r2 D23): overlays the trailing padding —
     // no space is reserved (the field's width term is content-free
-    // per D22). Same square language as IconButton; a11y label
-    // "Commit" with the field's label as description.
+    // per D22). Same square language as IconButton, but deliberately
+    // not an IconButton: the visibility rule requires the input's
+    // focus, and a tab-stop child would unmount the moment it took
+    // focus — a trap. TouchArea-only (click and AT activation, no
+    // tab stop); a11y label "Commit" with the field's label as
+    // description.
     if (root.commit-affordance && input.has-focus && input.text != ""): commit-button := Rectangle {
         x: parent.width - self.width - Theme.space-1;
         y: (parent.height - self.height) / 2;
