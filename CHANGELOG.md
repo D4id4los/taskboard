@@ -336,6 +336,31 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- The GUI review round-2 settings form, feedback, and help (issue
+  #390, chunk 5; D26–D31): the keymap preset picker becomes a real
+  **segmented control** (one grouped container, exactly-one-selected;
+  the inverted-`enabled` three-button hack is gone) and the selection
+  now **echoes the replied preset** — `KeymapUpdate` carries the
+  preset it persisted, so the picker always reflects the last reply,
+  whether the change came from this UI, the REPL, or a config reload.
+  The bare outcome bar is replaced by a **status line**: a tone dot
+  plus a mapped human sentence (busy/done/refused/unreachable/failed
+  over every `SettingsError` variant — the mapping is exhaustive by
+  compiler construction in `settings_status.rs`, reversing round-1's
+  tones-only rule) that **auto-clears after 5 s**, holds while an
+  operation is in flight, and re-arms on every new outcome. The UI
+  scale row gains a **slider** (0.5–3.0, step 0.1) beside the
+  authoritative text field: dragging previews live, release commits
+  exactly one `SetScale` per gesture, and a refused commit reverts
+  the whole preview. The settings content **scrolls** in a Flickable
+  under a pinned header with a conditional scroll indicator — the
+  scale controls and status line are reachable at scale 3.0 in a
+  minimum window (the window never resizes). Every settings field
+  (Name, Server, Username, App password, Scale, Keymap, and each
+  connection row) carries an **InfoTip** help affordance: hovering
+  the circle-i square shows the help text from presentation
+  constants; the same fact feeds the field's accessible description.
+
 - The GUI review round-2 task view & text-field ergonomics (issue
   #390, chunk 4; D22–D25): the `TextField` primitive stops feeding
   its text-derived preferred width into the ancestor layouts — the
