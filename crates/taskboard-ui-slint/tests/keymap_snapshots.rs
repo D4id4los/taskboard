@@ -54,7 +54,8 @@ fn crate_group_name(group: taskboard_ui_slint::actions::MenuGroup) -> &'static s
     use taskboard_ui_slint::actions::MenuGroup::*;
     match group {
         Task => "task",
-        BoardStack => "board-stack",
+        Stack => "stack",
+        Board => "board",
         ViewNav => "view-nav",
         Mode => "mode",
         Help => "help",

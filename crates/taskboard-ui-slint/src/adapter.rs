@@ -297,6 +297,13 @@ impl Adapter {
             self.view_state.flow(),
             crate::view_state::Flow::Palette { .. }
         );
+        // Round 2 (D19): the reopen gate's done stamp, from the same
+        // focused task — the router stays pure.
+        self.shell.focused_task_done = self
+            .view_state
+            .focused_task()
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|task| task.done.is_some());
     }
 
     /// Applies flow outcomes verbatim (D9): the adapter never
@@ -655,7 +662,21 @@ impl Adapter {
             | UiEffect::OpenSettings
             | UiEffect::BoardNext
             | UiEffect::BoardPrevious
-            | UiEffect::BoardSelect(_) => self.interpret(window, effect),
+            | UiEffect::BoardSelect(_)
+            // Round 2 (D16–D21): the round-up verbs interpret like
+            // every other view intent; their (flow, effect) arms land
+            // with the view-state commits.
+            | UiEffect::CancelMove
+            | UiEffect::StackNext
+            | UiEffect::StackPrev
+            | UiEffect::StackDelete
+            | UiEffect::StackRename
+            | UiEffect::StackMove
+            | UiEffect::BoardCreate
+            | UiEffect::BoardDelete
+            | UiEffect::BoardRename
+            | UiEffect::FocusFirst
+            | UiEffect::FocusLast => self.interpret(window, effect),
         }
     }
 

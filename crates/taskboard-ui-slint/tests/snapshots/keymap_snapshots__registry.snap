@@ -112,6 +112,28 @@ expression: rows
   menu_rank: 90
   description: Moves the focus to the next card or switcher entry in reading order.
   menu_group: view-nav
+- id: nav.first-item
+  label: Focus first item
+  contexts:
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
+  menu_rank: 105
+  description: Moves the focus to the first card in reading order.
+  menu_group: view-nav
+- id: nav.last-item
+  label: Focus last item
+  contexts:
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
+  menu_rank: 115
+  description: Moves the focus to the last card in reading order.
+  menu_group: view-nav
 - id: nav.prev-item
   label: Focus previous item
   contexts:
@@ -134,7 +156,7 @@ expression: rows
   enabled: true
   menu_rank: 60
   description: Switches to the next board in canonical order.
-  menu_group: board-stack
+  menu_group: board
 - id: board.previous
   label: Previous board
   contexts:
@@ -146,7 +168,7 @@ expression: rows
   enabled: true
   menu_rank: 70
   description: Switches to the previous board in canonical order.
-  menu_group: board-stack
+  menu_group: board
 - id: board.select
   label: Select board
   contexts:
@@ -158,25 +180,115 @@ expression: rows
   enabled: true
   menu_rank: 80
   description: Switches to the board picked from the board bar (click a board segment).
-  menu_group: board-stack
+  menu_group: board
+- id: board.create
+  label: New board
+  contexts:
+    - global
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
+  menu_rank: 90
+  description: Opens the new-board field and creates the board on commit.
+  menu_group: board
+- id: board.rename
+  label: Rename board
+  contexts:
+    - global
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
+  menu_rank: 100
+  description: Opens the board title editor for the current board.
+  menu_group: board
+- id: board.delete
+  label: Delete board
+  contexts:
+    - global
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
+  menu_rank: 110
+  description: "Deletes the current board and all its content (no confirmation step); typed refusals are the engine's."
+  menu_group: board
+- id: stack.next
+  label: Next stack
+  contexts:
+    - global
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
+  menu_rank: 60
+  description: Moves the stack selection to the next stack (wraps) and focuses its first task.
+  menu_group: stack
+- id: stack.prev
+  label: Previous stack
+  contexts:
+    - global
+    - board
+    - stack-detail
+    - task-detail
+  category: navigation
+  enabled: true
+  menu_rank: 70
+  description: Moves the stack selection to the previous stack (wraps) and focuses its first task.
+  menu_group: stack
 - id: stack.wider
   label: Widen stack
   contexts:
     - board
   category: navigation
   enabled: true
-  menu_rank: 100
+  menu_rank: 110
   description: "Widens the focused stack's column; the width is saved per device."
-  menu_group: board-stack
+  menu_group: stack
 - id: stack.narrower
   label: Narrow stack
   contexts:
     - board
   category: navigation
   enabled: true
-  menu_rank: 110
+  menu_rank: 120
   description: "Narrows the focused stack's column; the width is saved per device."
-  menu_group: board-stack
+  menu_group: stack
+- id: stack.rename
+  label: Rename stack
+  contexts:
+    - board
+    - stack-detail
+  category: navigation
+  enabled: true
+  menu_rank: 90
+  description: Opens the stack title editor for the focused or selected stack.
+  menu_group: stack
+- id: stack.move
+  label: Move stack
+  contexts:
+    - board
+    - stack-detail
+  category: navigation
+  enabled: true
+  menu_rank: 100
+  description: "Starts a move flow for the focused or selected stack: pick an insertion slot, then confirm to reorder."
+  menu_group: stack
+- id: stack.delete
+  label: Delete stack
+  contexts:
+    - board
+    - stack-detail
+  category: navigation
+  enabled: true
+  menu_rank: 130
+  description: Deletes the focused or selected stack and everything in it; the engine refuses typed when the target is gone.
+  menu_group: stack
 - id: task.create
   label: New task
   contexts:
@@ -194,9 +306,9 @@ expression: rows
     - stack-detail
   category: task
   enabled: true
-  menu_rank: 90
+  menu_rank: 80
   description: Opens the new-stack field on the current board.
-  menu_group: board-stack
+  menu_group: stack
 - id: task.edit
   label: Edit task
   contexts:
@@ -217,6 +329,16 @@ expression: rows
   menu_rank: 80
   description: Marks the focused task as done.
   menu_group: task
+- id: task.reopen
+  label: Reopen task
+  contexts:
+    - board
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 85
+  description: Marks the focused completed task as not done.
+  menu_group: task
 - id: task.move
   label: Move task
   contexts:
@@ -226,6 +348,15 @@ expression: rows
   enabled: true
   menu_rank: 90
   description: "Starts the move flow: pick a target stack, then confirm to move the focused task."
+  menu_group: task
+- id: task.move.cancel
+  label: Cancel move
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 95
+  description: Cancels the active move flow without moving anything (Escape; under emacs also Ctrl+g).
   menu_group: task
 - id: task.delete
   label: Delete task
