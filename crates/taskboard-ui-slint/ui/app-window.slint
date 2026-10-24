@@ -233,7 +233,6 @@ export component AppWindow inherits Window {
                 rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
-                rule-add-custom-rejected() => root.rule-add-custom-rejected();
                 due-edit-opened() => root.task-due-edit-opened();
                 due-edited(t) => root.task-due-edited(t);
                 due-accepted(t) => root.task-due-accepted(t);
@@ -479,8 +478,9 @@ export component AppWindow inherits Window {
     // id tables / parsed at the adapter, then routed one-shot.
     pure callback task-rule-remove-clicked(int);
     pure callback rule-add-preset-clicked(int);
-    pure callback rule-add-custom-accepted(string);
-    pure callback rule-add-custom-rejected();
+    // The bool is the parse outcome (r2 D24): `false` absorbs (D12)
+    // and the composition resets its buffer — no reject seam.
+    pure callback rule-add-custom-accepted(string) -> bool;
     pure callback task-due-edit-opened();
     pure callback task-due-edited(string);
     pure callback task-due-accepted(string);

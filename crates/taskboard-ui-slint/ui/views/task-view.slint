@@ -49,8 +49,7 @@ export component TaskView inherits FocusScope {
     // the window, resolved against the id tables there.
     callback rule-remove-clicked(int);
     callback rule-add-preset-clicked(int);
-    callback rule-add-custom-accepted(string);
-    callback rule-add-custom-rejected();
+    callback rule-add-custom-accepted(string) -> bool;
     // The due editor's seams (r2 D25), forwarded to the window.
     callback due-edit-opened();
     callback due-edited(string);
@@ -196,7 +195,6 @@ export component TaskView inherits FocusScope {
                 remove-clicked(i) => root.rule-remove-clicked(i);
                 add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 add-custom-accepted(text) => root.rule-add-custom-accepted(text);
-                add-custom-rejected() => root.rule-add-custom-rejected();
             }
 
             // The description (read-only body text — markup rendering

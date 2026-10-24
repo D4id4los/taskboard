@@ -27,13 +27,11 @@ export component RuleList inherits VerticalLayout {
     in property <string> hint;
     callback remove-clicked(int);
     callback add-preset-clicked(int);
-    callback add-custom-accepted(string);
-    // The parse-miss buffer reset (r2 D24): the adapter absorbs a
-    // miss (D12) and fires this; the composition clears its own
-    // field instance's text so the buffer never looks stuck. The
-    // field is remounted only on view switch, never per refresh —
-    // the reject callback is the only writer.
-    callback add-custom-rejected();
+    // The parse outcome rides the seam's return (r2 D24): `false` is
+    // the D12 absorb (nothing dispatched) plus this composition's
+    // buffer reset — the field is remounted only on view switch, never
+    // per refresh, so the handler below is the buffer's only clearer.
+    callback add-custom-accepted(string) -> bool;
 
     RoleText {
         role: Typography.caption;
@@ -73,16 +71,19 @@ export component RuleList inherits VerticalLayout {
     }
 
     // The presets row (r2 D24): the chips plus the custom-offset
-    // entry read as one controls row — start-aligned so the chips
-    // stay content-sized, the field stretching into the leftover.
+    // entry read as one controls row. Alignment stays the stretch
+    // default — chips are pinned at stretch 0 so they keep their
+    // content size while the field's stretch 1 takes the leftover
+    // (an `alignment: start` row would size every cell to its
+    // preferred width and defeat the stretch).
     HorizontalLayout {
         spacing: Theme.space-2;
-        alignment: start;
         for label[i] in root.presets: preset-chip := Rectangle {
             border-radius: Theme.radius-small;
             border-width: Theme.focus-ring-width;
             border-color: touch.has-hover ? Semantic.focus-ring : Theme.text-secondary;
             min-height: Theme.space-5;
+            horizontal-stretch: 0;
             // The design's exact tokens (r2 D24): the label no longer
             // touches the chip edges (padding rides the inner layout —
             // a plain Rectangle has none).
@@ -107,7 +108,13 @@ export component RuleList inherits VerticalLayout {
             label: "Custom reminder offset";
             commit-affordance: true;
             horizontal-stretch: 1;
-            accepted(text) => { root.add-custom-accepted(text); }
+            accepted(text) => {
+                // A miss (`false`) is the D12 absorb: nothing
+                // dispatched, this buffer resets.
+                if (!root.add-custom-accepted(text)) {
+                    custom-field.text = "";
+                }
+            }
         }
     }
 }
