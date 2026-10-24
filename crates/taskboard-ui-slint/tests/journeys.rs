@@ -3615,8 +3615,11 @@ fn the_commit_affordance_click_equals_return_on_the_stack_create_row() {
 
 /// R2 D24 — a parse-missed custom offset still dispatches nothing
 /// (the D12 absorb) but now resets the buffer: the field reads empty
-/// afterwards, so it never looks stuck. A parse hit routes
-/// `ReminderRuleAdd` unchanged (the regression pin).
+/// afterwards, so it never looks stuck. The buffer is typed through
+/// the real path — the field focused, the entry committed by Return —
+/// because the seam's `false` return is what drives the
+/// composition's own clear. A parse hit routes `ReminderRuleAdd`
+/// unchanged (the regression pin).
 #[test]
 fn a_parse_missed_custom_offset_clears_its_buffer() {
     let (fixture, state) = fixture::journey_state();
@@ -3639,6 +3642,16 @@ fn a_parse_missed_custom_offset_clears_its_buffer() {
                     .find_by_label("Custom reminder offset")
                     .expect("the custom-offset field is mounted")
             };
+            // A pointer click is the field's focus seam (no AT default
+            // action on a text input, and nothing auto-focuses it).
+            let focus = |harness: &mut Harness| {
+                let field = field(harness);
+                let pos = field.absolute_position();
+                let size = field.size();
+                harness
+                    .driver
+                    .click_at(pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+            };
             assert_eq!(
                 field(&harness).value().as_deref(),
                 Some(""),
@@ -3646,10 +3659,9 @@ fn a_parse_missed_custom_offset_clears_its_buffer() {
             );
 
             // A parse miss: nothing at the boundary, buffer reset.
-            harness
-                .handle
-                .window()
-                .invoke_rule_add_custom_accepted("soon".into());
+            focus(&mut harness);
+            harness.type_text("soon");
+            harness.stroke(parse("Return").expect("Return"));
             harness.assert_commands(&[]);
             assert_eq!(
                 field(&harness).value().as_deref(),
@@ -3658,10 +3670,9 @@ fn a_parse_missed_custom_offset_clears_its_buffer() {
             );
 
             // A parse hit routes unchanged.
-            harness
-                .handle
-                .window()
-                .invoke_rule_add_custom_accepted("45m".into());
+            focus(&mut harness);
+            harness.type_text("45m");
+            harness.stroke(parse("Return").expect("Return"));
             harness.assert_commands(&[StateCommand::AddReminderRule {
                 task: fixture.task1,
                 offset: taskboard_domain::ReminderOffset::before(
@@ -3715,6 +3726,38 @@ fn the_preset_chips_hold_their_token_floor() {
                     chip.size().width
                 );
             }
+        },
+    );
+}
+
+/// R2 D24 — the custom-offset entry stretches into the presets row's
+/// leftover: its painted width lands well past the primitive's token
+/// floor — where it would sit if the row sized every cell to its
+/// preferred width (the stretch default is load-bearing).
+#[test]
+fn the_custom_offset_field_stretches_into_the_presets_row() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 800);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.advance_time(0);
+            let field = harness
+                .driver
+                .find_by_label("Custom reminder offset")
+                .expect("the custom-offset field is mounted");
+            assert!(
+                field.size().width > 160.0, // the 96 px floor plus the row's leftover
+                "the field takes the row's leftover, got {}",
+                field.size().width
+            );
         },
     );
 }
@@ -3828,6 +3871,7 @@ fn the_typed_due_entries_reach_the_boundary() {
 /// opens on the due's month, the keyboard drives the cursor and the
 /// months, Enter and the typed path produce the identical command,
 /// a day click ≡ cursor+Enter, and Escape closes clean.
+#[allow(clippy::too_many_lines)] // the walk is the contract's length
 #[test]
 fn the_due_picker_journeys_reach_the_boundary() {
     let (fixture, mut state) = fixture::journey_state();
@@ -3933,8 +3977,10 @@ fn the_due_picker_journeys_reach_the_boundary() {
                 },
             }]);
 
-            // Escape closes the whole editor clean — no command, and
-            // the cycle still leaves the view closable (R-c).
+            // Escape closes the whole editor clean — no command, the
+            // editor collapses, a reopen starts with the picker closed
+            // (the clean close closed it), and the cycle leaves the
+            // view closable by its own back binding (R-c).
             harness.driver.click_by_label("Edit due date");
             harness.driver.advance_time(0);
             harness.handle.window().invoke_task_due_picker_toggled();
@@ -3942,6 +3988,23 @@ fn the_due_picker_journeys_reach_the_boundary() {
             harness.stroke(parse("Escape").expect("Escape"));
             harness.assert_commands(&[]);
             assert!(!keyboard(&harness).get_vi_insert(), "back to normal");
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "the editor collapsed"
+            );
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().due_picker_open,
+                "a reopen starts collapsed — the clean close closed the picker"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.press(ActionId::NavFocusBoard);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Board,
+                "the view's back binding still works after the cycle"
+            );
         },
     );
 }

@@ -106,7 +106,8 @@ pub(crate) struct Adapter {
     rule_add_offset: Option<ReminderOffset>,
     /// The due editor's live state (r2 D25/R-d): the typed buffer, its
     /// echo, and the picker cursor/month — adapter-owned so a refresh
-    /// push can never reset them; cleared when the flow ends.
+    /// push can never reset them. A commit consumes all three; the
+    /// clean close keeps the buffer/echo (D25) and closes the picker.
     due_buffer: String,
     due_echo: String,
     due_picker: Option<crate::due_edit::DuePickerState>,
@@ -219,17 +220,11 @@ impl Adapter {
         };
         // The due editor's Down-in-field opens the picker (r2 D25):
         // consumed here, ahead of the resolver, so the insert-mode
-        // chain never has to bind it.
+        // chain never has to bind it. The stroke is the grammar's own
+        // Down row — never a private-use literal.
         if matches!(self.view_state.flow(), Flow::EditDue { .. })
             && self.due_picker.is_none()
-            && stroke
-                == (crate::keymap::Stroke {
-                    key: '\u{F701}',
-                    ctrl: false,
-                    alt: false,
-                    shift: false,
-                    meta: false,
-                })
+            && Ok(stroke) == crate::keymap::stroke::parse("Down")
         {
             self.open_due_picker(window);
             return true;
@@ -498,8 +493,10 @@ impl Adapter {
                 self.apply_outcomes(window, &outcomes);
             }
             // The due editor ends without committing on a view
-            // switch (r2 D25: the clean close, like a move flow).
+            // switch (r2 D25: the clean close, like a move flow) —
+            // the picker closes with it; a reopen starts collapsed.
             Flow::EditDue { .. } => {
+                self.due_picker = None;
                 let outcomes = self.view_state.end_edit_due();
                 self.apply_outcomes(window, &outcomes);
             }
@@ -560,10 +557,14 @@ impl Adapter {
                 effect @ (UiEffect::SetMode(Mode::Normal) | UiEffect::Activate),
             ) => self.interpret_edit(effect, &state),
             // The due editor (r2 D25): Escape discards (the clean
-            // close — no commit, no clear); the commit itself rides
-            // the `task-due-committed` seam, so nothing else acts.
+            // close — no commit, buffer/echo kept); the commit itself
+            // rides `commit_due`, so nothing else acts. The picker
+            // closes with the flow; a reopen starts collapsed.
             (Flow::EditDue { .. }, effect) => match effect {
-                UiEffect::SetMode(Mode::Normal) => self.view_state.discard_edit(),
+                UiEffect::SetMode(Mode::Normal) => {
+                    self.due_picker = None;
+                    self.view_state.discard_edit()
+                }
                 _ => Vec::new(),
             },
             // -- no flow: the intents begin things --
@@ -2301,12 +2302,11 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
-/// The due-date editor's seams (r2 D25). The commit funnel is one
-/// window callback (`task-due-committed`, RFC3339 or empty=clear);
-/// the typed Return path, the picker's Enter, and the day cells'
-/// clicks all resolve through it — click ≡ key by construction. The
-/// picker's cursor/month live on the adapter (R-d) and only ride the
-/// refresh push.
+/// The due-date editor's seams (r2 D25). The commit funnel is the one
+/// `commit_due` below: the typed Return path, the picker's Enter, and
+/// the day cells' clicks all end in it — click ≡ key by construction.
+/// The picker's cursor/month live on the adapter (R-d) and only ride
+/// the refresh push.
 #[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
 fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let open = Rc::clone(adapter);
@@ -2405,14 +2405,13 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let Some(picker) = a.due_picker.as_ref() else {
             return;
         };
-        let Some(cell) = picker
+        let Some(date) = picker
             .grid()
             .get(usize::try_from(cell).unwrap_or(usize::MAX))
             .and_then(|c| c.date)
         else {
             return; // a blank or a stale index
         };
-        let date = cell;
         a.due_picker
             .as_mut()
             .expect("checked above")

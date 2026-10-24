@@ -322,6 +322,16 @@ fn push_rows<T: PartialEq + Clone + 'static>(
     diff_rows(model, desired)
 }
 
+/// The due editor's pushed state (r2 D25): the adapter owns the
+/// buffer, echo, and picker cursor across refreshes (R-d); the push
+/// only carries them into the model.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DueEditorPush<'a> {
+    pub text: &'a str,
+    pub echo: &'a str,
+    pub picker: Option<&'a crate::due_edit::DuePickerState>,
+}
+
 /// One refresh pass (D1): reconcile the view state against `state`,
 /// then push the full display model one-way onto the window and
 /// return the id tables. Deterministic and timer-free — the repaint
@@ -333,16 +343,6 @@ fn push_rows<T: PartialEq + Clone + 'static>(
 /// a `ListView` virtualisation (#373, the next lever on the same
 /// render budget) consumes later.
 #[must_use]
-/// The due editor's pushed state (r2 D25): the adapter owns the
-/// buffer, echo, and picker cursor across refreshes (R-d); the push
-/// only carries them into the model.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DueEditorPush<'a> {
-    pub text: &'a str,
-    pub echo: &'a str,
-    pub picker: Option<&'a crate::due_edit::DuePickerState>,
-}
-
 #[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
 pub fn push(
     window: &AppWindow,
