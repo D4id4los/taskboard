@@ -265,6 +265,7 @@ fn flag_value_kind(long: &str) -> Kind {
         }
         "board" | "local-board" => Kind::Boards,
         "connector" => Kind::Connectors,
+        "type" => Kind::Literals(&["task", "stack", "board"]),
         _ => Kind::None,
     }
 }
