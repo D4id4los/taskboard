@@ -10,6 +10,14 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Fuzzy search (#348, chunk 9): the pure domain ranking core
+  (`find.rs` — class-ordered subsequence matching over live boards,
+  stacks, and tasks, ranked by `(quality, title_len, target)`, no
+  numeric score), the top-level `taskboard find` verb + REPL line
+  (`--type`, `--limit`), and the GUI jump-to palette
+  (Ctrl+F / Ctrl+s / `/`): per-keystroke re-ranking capped at 8 rows
+  with an overflow count, jump-to board/stack/task per hit kind, and
+  the anchor card hidden from palette rows.
 - Desktop reminder toasts via `[reminders] sink = auto|log|desktop`
   (#344, chunk 8): `notify-rust` 4.18.2 enters the approved stack
   (D-R10, `z-with-tokio` executor adopted by measurement), and
