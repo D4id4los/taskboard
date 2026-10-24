@@ -22,10 +22,14 @@ use crate::presentation::{live_board, live_boards, stacks_in_board};
 use crate::router::Mode;
 use crate::widths::{STACK_WIDTH_DEFAULT_PX, STACK_WIDTH_MIN_PX, STACK_WIDTH_STEP_PX, clamp_width};
 
-/// The three v0.1.0 views (D7): one tree, one cycle
-/// Board → `StackDetail` → `TaskDetail` → Board.
+/// The v0.1.0 views (D7): one tree, one cycle
+/// Today → Board → `StackDetail` → `TaskDetail` → Today (chunk 10 D2
+/// added `Today` at the cycle head; the `Default` stays on `Board` —
+/// `ViewState::new()` keeps every existing caller's shape, the
+/// desktop-default is `new_starting`'s argument).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewId {
+    Today,
     #[default]
     Board,
     StackDetail,
@@ -158,6 +162,17 @@ fn wrapped_index(current: usize, direction: i32, len: usize) -> usize {
 }
 
 impl ViewState {
+    /// The constructor with an explicit start view (chunk 10 D2): the
+    /// desktop mount starts on `Today`, the kiosk mount on `Board` —
+    /// the choice is `install`'s, from `UiSettings.kiosk`; `new()`
+    /// keeps the const `Board` default.
+    #[must_use]
+    pub const fn new_starting(view: ViewId) -> Self {
+        let mut state = Self::new();
+        state.view = view;
+        state
+    }
+
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -251,6 +266,7 @@ impl ViewState {
     #[must_use]
     pub const fn context(&self) -> ContextId {
         match self.view {
+            ViewId::Today => ContextId::Today,
             ViewId::Board => ContextId::Board,
             ViewId::StackDetail => ContextId::StackDetail,
             ViewId::TaskDetail => ContextId::TaskDetail,
@@ -323,7 +339,12 @@ impl ViewState {
     }
 
     fn step_view(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
-        let order = [ViewId::Board, ViewId::StackDetail, ViewId::TaskDetail];
+        let order = [
+            ViewId::Today,
+            ViewId::Board,
+            ViewId::StackDetail,
+            ViewId::TaskDetail,
+        ];
         let current = order.iter().position(|v| *v == self.view).unwrap_or(0);
         let next = if direction > 0 {
             order[(current + 1) % order.len()]
@@ -341,6 +362,11 @@ impl ViewState {
     /// whether the switch happened.
     fn enter(&mut self, state: &AppState, view: ViewId) -> bool {
         match view {
+            // Subjectless (chunk 10 D2): `ViewId::Board`'s arm inverted.
+            ViewId::Today => {
+                self.view = ViewId::Today;
+                true
+            }
             ViewId::Board => {
                 self.view = ViewId::Board;
                 true
@@ -382,6 +408,13 @@ impl ViewState {
     /// `nav.focus-board`: back to the board view (D7).
     pub fn focus_board(&mut self) -> Vec<FlowOutcome> {
         self.view = ViewId::Board;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// `view.today` (chunk 10 D3): the Today view, no engine command —
+    /// the `focus_board` sibling.
+    pub fn focus_today(&mut self) -> Vec<FlowOutcome> {
+        self.view = ViewId::Today;
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -664,6 +697,10 @@ impl ViewState {
     #[must_use]
     pub fn create_target_stack(&self, state: &AppState) -> Option<StackId> {
         match self.view {
+            // No create row on the today view (chunk 10 D3): capture
+            // is the create path there. The settings surface hosts no
+            // create flow either (round-1 D5).
+            ViewId::Today | ViewId::Settings => None,
             ViewId::Board => self
                 .focused_stack(state)
                 .or(self.selected_stack)
@@ -673,8 +710,6 @@ impl ViewState {
                 .subject_task
                 .and_then(|t| state.tasks.get(&t))
                 .map(|t| t.stack),
-            // The settings surface hosts no create flow (round-1 D5).
-            ViewId::Settings => None,
         }
     }
 
@@ -921,6 +956,21 @@ impl ViewState {
     /// hit kind against the live snapshot, then end the flow. A stale
     /// target (the entity died between push and invoke) is inert —
     /// close only, no retarget.
+    /// `view.inbox` (chunk 10 D9, D-V7): jumps to the global Inbox's
+    /// canonical-first stack — read-side only. Quietly no-ops (no
+    /// repaint, no creation) when no live Inbox board exists: an empty
+    /// inbox is triage-done, and read-write separation forbids the
+    /// view from creating.
+    pub fn open_inbox(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Some(board) = state.inbox_board() else {
+            return Vec::new();
+        };
+        let outcomes = self.select_board(state, board);
+        self.subject_stack = state.canonical_first_stack(board);
+        self.view = ViewId::StackDetail;
+        outcomes
+    }
+
     pub fn palette_jump(&mut self, state: &AppState, target: SearchTarget) -> Vec<FlowOutcome> {
         let mut outcomes = match target {
             SearchTarget::Task(task_id) => {
@@ -1368,7 +1418,11 @@ mod tests {
         );
 
         vs.next_view(&state);
-        assert_eq!(vs.view(), ViewId::Board, "cycle wraps");
+        assert_eq!(vs.view(), ViewId::Today, "the cycle wraps through Today");
+        vs.next_view(&state);
+        assert_eq!(vs.view(), ViewId::Board);
+        vs.prev_view(&state);
+        assert_eq!(vs.view(), ViewId::Today);
         vs.prev_view(&state);
         assert_eq!(vs.view(), ViewId::TaskDetail);
         vs.focus_board();

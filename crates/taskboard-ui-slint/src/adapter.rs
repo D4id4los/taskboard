@@ -754,6 +754,12 @@ impl Adapter {
             UiEffect::BoardCreate => self.view_state.begin_create_board(),
             UiEffect::BoardDelete => self.view_state.delete_board(state),
             UiEffect::BoardRename => self.view_state.begin_rename_board(state),
+            // The today/inbox intents + capture (chunk 10): pure view
+            // state, read-side jump, flow replacement.
+            UiEffect::FocusToday => self.view_state.focus_today(),
+            UiEffect::OpenInbox => self.view_state.open_inbox(state),
+            // `BeginCapture` lands with the capture overlay (piece 6);
+            // the catch-all absorbs it until then.
             _ => Vec::new(),
         }
     }
@@ -865,7 +871,12 @@ impl Adapter {
             | UiEffect::BoardDelete
             | UiEffect::BoardRename
             | UiEffect::FocusFirst
-            | UiEffect::FocusLast => self.interpret(window, effect),
+            | UiEffect::FocusLast
+            // Chunk 10: the today/inbox jumps and capture route
+            // through the same interpretation table.
+            | UiEffect::FocusToday
+            | UiEffect::OpenInbox
+            | UiEffect::BeginCapture => self.interpret(window, effect),
         }
     }
 
@@ -2843,6 +2854,7 @@ impl crate::UiHandle {
         let mut adapter = self.adapter.borrow_mut();
         if let Some(view) = view {
             let mapped = match view {
+                ContextId::Today => crate::view_state::ViewId::Today,
                 ContextId::Board => crate::view_state::ViewId::Board,
                 ContextId::StackDetail => crate::view_state::ViewId::StackDetail,
                 ContextId::TaskDetail => crate::view_state::ViewId::TaskDetail,

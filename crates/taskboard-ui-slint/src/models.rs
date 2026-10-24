@@ -385,6 +385,7 @@ pub fn push(
 
     mutations += push_chrome(window, board, keymap, chain, models);
     window.set_current_view(match vs.view() {
+        crate::view_state::ViewId::Today => View::Today,
         crate::view_state::ViewId::Board => View::Board,
         crate::view_state::ViewId::StackDetail => View::StackDetail,
         crate::view_state::ViewId::TaskDetail => View::TaskDetail,

@@ -453,7 +453,11 @@ mod tests {
             ActionId::NavNextView,
             ActionId::NavPrevView,
             ActionId::NavFocusBoard,
+            // Chunk 10 (D3): view.today joins at rank 90, view.inbox
+            // at 100 — rank ties keep registry order.
+            ActionId::ViewToday,
             ActionId::NavNextItem,
+            ActionId::ViewInbox,
             ActionId::NavPrevItem,
             // Round 2 (D20): the first/last jumps join the ViewNav
             // page at ranks 105/115.

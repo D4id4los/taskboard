@@ -40,6 +40,15 @@ pub enum UiEffect {
     MenuBack,
     MenuNext,
     MenuPrevious,
+    /// Enter the Today view (chunk 10, D-V2): subjectless, no engine
+    /// command.
+    FocusToday,
+    /// Jump to the global Inbox (chunk 10, D-V7): read-side only — the
+    /// interpretation quietly no-ops with no Inbox board.
+    OpenInbox,
+    /// Open the capture overlay (chunk 10, D-V6): any flow is replaced
+    /// without committing (the XOR rule); typing rides `ViInsert`.
+    BeginCapture,
     /// The adapter closes the menu and re-dispatches the selected
     /// entry — bounded (the menu is closed first, no recursion).
     InvokeSelected,
@@ -154,6 +163,11 @@ pub struct DispatchCtx {
     /// the adapter (preset or custom); `reminder.rule-add` routes from
     /// it together with the focused task (`NoTarget` without both).
     pub rule_add_offset: Option<ReminderOffset>,
+    /// The today day window (chunk 10 D4), set by the adapter per
+    /// dispatch from its held `(day_start_time, offset)` pair — state-
+    /// derived, never consumed; `task.due-today` re-commits to its end
+    /// (`NoTarget` without focus or window).
+    pub day_window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     /// Whether the focused task is done (round 2, D19): the reopen
     /// verb's enablement gate — `task.reopen` routes only for a
     /// focused *completed* task (the `task.complete` machinery
@@ -167,6 +181,9 @@ pub struct DispatchCtx {
 pub struct ActionRouter;
 
 impl ActionRouter {
+    /// One catalogue; splitting hides the table (the `plan_command`
+    /// house style).
+    #[allow(clippy::too_many_lines)]
     #[must_use]
     pub fn dispatch(id: ActionId, ctx: &DispatchCtx) -> DispatchOutcome {
         // The registry's enabled bit decides before any target check:
@@ -259,6 +276,25 @@ impl ActionRouter {
             ActionId::BoardRename => DispatchOutcome::UiEffect(UiEffect::BoardRename),
             ActionId::NavFirstItem => DispatchOutcome::UiEffect(UiEffect::FocusFirst),
             ActionId::NavLastItem => DispatchOutcome::UiEffect(UiEffect::FocusLast),
+            // The today re-commit (chunk 10, D-V4 rider): a fresh
+            // `Some(Some(window_end))` write, confirmation-free;
+            // `NoTarget` without focus *or* window (the design's exact
+            // wording).
+            ActionId::TaskDueToday => match (ctx.focused_task, ctx.day_window) {
+                (Some(id), Some((_, end))) => DispatchOutcome::Command(StateCommand::UpdateTask {
+                    id,
+                    changes: taskboard_domain::TaskChanges {
+                        duedate: Some(Some(end)),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }),
+                _ => DispatchOutcome::NoTarget,
+            },
+            // The today/inbox view intents + the capture flip (chunk
+            // 10): pure view intents; the adapter interprets them.
+            ActionId::ViewToday => DispatchOutcome::UiEffect(UiEffect::FocusToday),
+            ActionId::ViewInbox => DispatchOutcome::UiEffect(UiEffect::OpenInbox),
+            ActionId::CaptureQuick => DispatchOutcome::UiEffect(UiEffect::BeginCapture),
             ActionId::TaskReopen => match (ctx.focused_task, ctx.focused_task_done) {
                 (Some(id), true) => {
                     DispatchOutcome::Command(StateCommand::SetTaskDone { id, done: false })
@@ -278,9 +314,7 @@ impl ActionRouter {
             ActionId::AppSettings => DispatchOutcome::UiEffect(UiEffect::OpenSettings),
             // Reserved (§5.8) — the only disabled rows left (D6).
             ActionId::PaletteSearch => DispatchOutcome::UiEffect(UiEffect::OpenPalette),
-            ActionId::AppUndo | ActionId::AppRedo | ActionId::AppHelp | ActionId::CaptureQuick => {
-                DispatchOutcome::Disabled
-            }
+            ActionId::AppUndo | ActionId::AppRedo | ActionId::AppHelp => DispatchOutcome::Disabled,
         }
     }
 }
@@ -299,6 +333,7 @@ mod tests {
             board_target: None,
             rule_target: None,
             rule_add_offset: None,
+            day_window: None,
             focused_task_done: false,
         }
     }
@@ -520,14 +555,19 @@ mod tests {
     #[test]
     fn disabled_actions_are_absorbed_even_with_focus() {
         let ctx = ctx(true);
-        for id in [ActionId::AppUndo, ActionId::AppRedo, ActionId::CaptureQuick] {
+        for id in [ActionId::AppUndo, ActionId::AppRedo, ActionId::AppHelp] {
             assert_eq!(ActionRouter::dispatch(id, &ctx), DispatchOutcome::Disabled);
         }
-        // PaletteSearch flipped live (chunk 9): it yields the open
-        // effect now, focus or not.
+        // CaptureQuick flipped live (chunk 10, D-V6): it yields the
+        // capture effect now, focus or not. PaletteSearch flipped the
+        // same way (chunk 9).
         assert_eq!(
             ActionRouter::dispatch(ActionId::PaletteSearch, &ctx),
             DispatchOutcome::UiEffect(UiEffect::OpenPalette)
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::CaptureQuick, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::BeginCapture)
         );
     }
 

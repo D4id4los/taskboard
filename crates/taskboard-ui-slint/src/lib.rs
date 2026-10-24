@@ -1748,9 +1748,12 @@ mod view_component_tests {
             press(&handle, "t");
             assert_eq!(
                 handle.window.get_current_view(),
-                View::Board,
-                "the cycle wraps"
+                View::Today,
+                "the cycle wraps through Today"
             );
+            press(&handle, "g");
+            press(&handle, "t");
+            assert_eq!(handle.window.get_current_view(), View::Board);
 
             // A deleted TaskDetail subject pops to Board on refresh.
             handle.set_focused_entities(Some(victim), None);
