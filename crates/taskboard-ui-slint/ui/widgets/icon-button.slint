@@ -21,8 +21,6 @@ export enum IconKind {
     chevron-left,
     // The remove affordance (chunk 6, D12): an x.
     remove,
-    // The commit affordance (r2 D23): a check mark.
-    check,
     // The month-next affordance (r2 D25): a right chevron.
     chevron-right,
     // The picker-toggle affordance (r2 D25): a calendar.
@@ -167,24 +165,6 @@ export component IconButton inherits Rectangle {
                     width: Theme.space-3;
                     height: Theme.space-3;
                     commands: "M 2 2 L 10 10 M 10 2 L 2 10";
-                    stroke: icon-box.icon-color();
-                    stroke-width: Theme.focus-ring-width;
-                    fill: transparent;
-                    viewbox-width: 12;
-                    viewbox-height: 12;
-                }
-            }
-        }
-
-        if (root.icon == IconKind.check): VerticalLayout {
-            // A check mark: one polyline stroke (geometric, D19).
-            Rectangle {
-                vertical-stretch: 1;
-                min-height: Theme.space-4;
-                Path {
-                    width: Theme.space-3;
-                    height: Theme.space-3;
-                    commands: "M 2 6 L 5 9 L 10 3";
                     stroke: icon-box.icon-color();
                     stroke-width: Theme.focus-ring-width;
                     fill: transparent;
