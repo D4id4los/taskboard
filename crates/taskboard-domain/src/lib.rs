@@ -34,6 +34,7 @@ pub mod clock;
 pub mod command;
 pub mod days;
 pub mod entities;
+pub mod find;
 pub mod idgen;
 pub mod ids;
 pub mod merge;
@@ -70,6 +71,7 @@ pub use entities::{
     Board, BoardClocks, Color, Effort, Importance, Label, LabelClocks, Stack, StackClocks, Task,
     TaskClocks, Urgency,
 };
+pub use find::{MatchQuality, SearchHit, SearchTarget, find};
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
     AdhocAlarmId, BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId,
