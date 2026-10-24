@@ -9,6 +9,7 @@ import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.s
 import { TextField } from "../widgets/text-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
+import { DueEditor, DueDayModel } from "../compositions/due-editor.slint";
 
 // The task-detail model (D22).
 export struct TaskDetailModel {
@@ -25,6 +26,15 @@ export struct TaskDetailModel {
     rules: [RuleRowModel],
     rule-presets: [string],
     rules-hint: string,
+    // The due-date editor (r2 D25): the open flag plus the pushed
+    // picker state (buffer, echo, caption, grid) — the adapter owns
+    // it all across refreshes (R-d), this model only carries.
+    due-open: bool,
+    due-text: string,
+    due-echo: string,
+    due-picker-open: bool,
+    due-caption: string,
+    due-grid: [[DueDayModel]],
 }
 
 export component TaskView inherits FocusScope {
@@ -41,6 +51,13 @@ export component TaskView inherits FocusScope {
     callback rule-add-preset-clicked(int);
     callback rule-add-custom-accepted(string);
     callback rule-add-custom-rejected();
+    // The due editor's seams (r2 D25), forwarded to the window.
+    callback due-edit-opened();
+    callback due-edited(string);
+    callback due-accepted(string);
+    callback due-picker-toggled();
+    callback due-picker-key(int);
+    callback due-day-clicked(int);
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -117,17 +134,42 @@ export component TaskView inherits FocusScope {
                     }
                 }
                 VerticalLayout {
-                    // The due-date region (D16): display-only — date
-                    // editing is a recorded scope cut (D13).
+                    // The due-date region (D16). Editing is r2 D25
+                    // (W2 closed; #227): the collapsed cell is the
+                    // display RoleText, clickable into the DueEditor
+                    // — typed entry and the calendar picker, one
+                    // commit seam.
                     RoleText {
                         role: Typography.caption;
                         text-color: Theme.text-secondary;
                         text: "Due date";
                     }
-                    RoleText {
-                        role: Typography.mono;
-                        text-color: root.due-color();
-                        text: root.task.due-phrase == "" ? "—" : root.task.due-phrase;
+                    if (!root.task.due-open): due-cell := Rectangle {
+                        border-radius: Theme.radius-small;
+                        accessible-role: AccessibleRole.button;
+                        accessible-label: "Edit due date";
+                        accessible-description: "Opens the due-date editor.";
+                        accessible-action-default => { root.due-edit-opened(); }
+                        touch := TouchArea {
+                            clicked => { root.due-edit-opened(); }
+                        }
+                        RoleText {
+                            role: Typography.mono;
+                            text-color: root.due-color();
+                            text: root.task.due-phrase == "" ? "—" : root.task.due-phrase;
+                        }
+                    }
+                    if (root.task.due-open): DueEditor {
+                        initial-text: root.task.due-text;
+                        echo: root.task.due-echo;
+                        picker-open: root.task.due-picker-open;
+                        caption: root.task.due-caption;
+                        grid: root.task.due-grid;
+                        edited(text) => root.due-edited(text);
+                        accepted(text) => root.due-accepted(text);
+                        picker-toggled() => root.due-picker-toggled();
+                        picker-key(key) => root.due-picker-key(key);
+                        day-clicked(cell) => root.due-day-clicked(cell);
                     }
                 }
                 VerticalLayout {

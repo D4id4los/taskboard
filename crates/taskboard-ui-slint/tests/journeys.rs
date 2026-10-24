@@ -12,6 +12,7 @@
 mod support;
 
 use chrono::TimeDelta;
+use chrono::TimeZone as _;
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fake_engine::FakeEngine;
 use support::fixture;
@@ -3714,6 +3715,233 @@ fn the_preset_chips_hold_their_token_floor() {
                     chip.size().width
                 );
             }
+        },
+    );
+}
+
+/// R2 D25 — the due editor's typed path: ISO commits at 00:00 UTC,
+/// `+N<unit>` commits relative to now (bracketed by the journey's own
+/// clock reads), an empty accept clears, and a refusal dispatches
+/// nothing while keeping the buffer.
+#[test]
+fn the_typed_due_entries_reach_the_boundary() {
+    let (fixture, mut state) = fixture::journey_state();
+    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(due);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // One walk into task1's detail; the editor re-opens by
+            // its cell after every commit (the view stays put).
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            let open_editor = |harness: &mut Harness| {
+                assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+                harness.driver.click_by_label("Edit due date");
+                harness.driver.advance_time(0);
+                assert!(
+                    keyboard(harness).get_vi_insert(),
+                    "the editor opened in insert mode"
+                );
+            };
+
+            // ISO: commits at the date's midnight UTC.
+            open_editor(&mut harness);
+            harness.type_text("2030-02-28");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    duedate: Some(Some(
+                        chrono::Utc.with_ymd_and_hms(2030, 2, 28, 0, 0, 0).unwrap(),
+                    )),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+
+            // Relative: now + 2d, bracketed by the journey's own reads.
+            open_editor(&mut harness);
+            let before = chrono::Utc::now();
+            harness.type_text("+2d");
+            harness.stroke(parse("Return").expect("Return"));
+            let after = chrono::Utc::now();
+            let drained = harness.engine.drain();
+            match drained.as_slice() {
+                [StateCommand::UpdateTask { id, changes, .. }] => {
+                    assert_eq!(id, &fixture.task1);
+                    let offset = changes
+                        .duedate
+                        .expect("the due arm is Some(_)")
+                        .expect("a set, not a clear")
+                        - before;
+                    assert!(
+                        offset
+                            >= TimeDelta::try_days(2).unwrap() - TimeDelta::try_seconds(1).unwrap()
+                            && offset <= TimeDelta::try_days(2).unwrap() + (after - before),
+                        "+2d lands inside the journey's clock bracket, got {offset}"
+                    );
+                }
+                other => panic!("the relative commit reached the boundary, got {other:?}"),
+            }
+
+            // Empty accept clears.
+            open_editor(&mut harness);
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    duedate: Some(None),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+
+            // A refusal dispatches nothing and keeps the buffer.
+            open_editor(&mut harness);
+            harness.type_text("junk");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[]);
+            let field = harness
+                .driver
+                .find_by_label("Due date entry")
+                .expect("the editor stays open on a refusal");
+            assert_eq!(
+                field.value().as_deref(),
+                Some("junk"),
+                "the refused buffer is kept"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// R2 D25 — the calendar picker (seeded due 2030-01-31): the grid
+/// opens on the due's month, the keyboard drives the cursor and the
+/// months, Enter and the typed path produce the identical command,
+/// a day click ≡ cursor+Enter, and Escape closes clean.
+#[test]
+fn the_due_picker_journeys_reach_the_boundary() {
+    let (fixture, mut state) = fixture::journey_state();
+    let due = chrono::Utc.with_ymd_and_hms(2030, 1, 31, 0, 0, 0).unwrap();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .duedate = Some(due);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.handle.window().invoke_task_due_picker_toggled();
+            harness.driver.advance_time(0);
+
+            // January 2030: one leading blank (Tuesday start), 31
+            // days, padded to 35 cells in 5 rows; the cursor sits on
+            // the due (flattened index 1 + 30).
+            let cursor_index = |harness: &Harness| -> Option<usize> {
+                let grid = harness.handle.window().get_task_model().due_grid;
+                let mut flat = 0usize;
+                for r in 0..grid.row_count() {
+                    let row = grid.row_data(r).expect("row");
+                    for c in 0..row.row_count() {
+                        if row.row_data(c).expect("cell").cursor {
+                            return Some(flat);
+                        }
+                        flat += 1;
+                    }
+                }
+                None
+            };
+            let grid_shape = |harness: &Harness| -> (usize, usize) {
+                let grid = harness.handle.window().get_task_model().due_grid;
+                let rows = grid.row_count();
+                let cells: usize = (0..rows)
+                    .map(|r| grid.row_data(r).expect("row").row_count())
+                    .sum();
+                (rows, cells)
+            };
+            assert_eq!(grid_shape(&harness), (5, 35));
+            assert_eq!(cursor_index(&harness), Some(31));
+
+            // Right leaves the month (no cursor flag visible); Left
+            // returns to the due.
+            harness.stroke(parse("Right").expect("Right"));
+            harness.driver.advance_time(0);
+            assert_eq!(cursor_index(&harness), None, "Feb 1 is off-grid");
+            harness.stroke(parse("Left").expect("Left"));
+            harness.driver.advance_time(0);
+            assert_eq!(cursor_index(&harness), Some(31));
+
+            // PageDown: February 2030, the cursor clamped to the 28th
+            // (leading 4 + 27 = flattened 31 again, 35 cells).
+            harness.stroke(parse("PageDown").expect("PageDown"));
+            harness.driver.advance_time(0);
+            assert_eq!(grid_shape(&harness), (5, 35));
+            assert_eq!(cursor_index(&harness), Some(31));
+
+            // Enter on the cursor dispatches the same command the
+            // typed path produces for the same date (click ≡ key).
+            harness.stroke(parse("Return").expect("Return"));
+            let picked = vec![StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    duedate: Some(Some(
+                        chrono::Utc.with_ymd_and_hms(2030, 2, 28, 0, 0, 0).unwrap(),
+                    )),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }];
+            harness.assert_commands(picked.as_slice());
+
+            // The typed path for the same date: the identical command.
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.type_text("2030-02-28");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(picked.as_slice());
+
+            // A day-cell click ≡ cursor+Enter: the 15th commits.
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.handle.window().invoke_task_due_picker_toggled();
+            harness.driver.advance_time(0);
+            harness.handle.window().invoke_task_due_day_clicked(1 + 14);
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    duedate: Some(Some(
+                        chrono::Utc.with_ymd_and_hms(2030, 1, 15, 0, 0, 0).unwrap(),
+                    )),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+
+            // Escape closes the whole editor clean — no command, and
+            // the cycle still leaves the view closable (R-c).
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            harness.handle.window().invoke_task_due_picker_toggled();
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.assert_commands(&[]);
+            assert!(!keyboard(&harness).get_vi_insert(), "back to normal");
         },
     );
 }

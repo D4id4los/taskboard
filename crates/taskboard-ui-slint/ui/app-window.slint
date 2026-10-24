@@ -18,6 +18,8 @@ import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
+import { DueDayModel } from "compositions/due-editor.slint";
+export { DueDayModel }
 import {
     SettingsView,
     SettingsModel,
@@ -232,6 +234,12 @@ export component AppWindow inherits Window {
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
                 rule-add-custom-rejected() => root.rule-add-custom-rejected();
+                due-edit-opened() => root.task-due-edit-opened();
+                due-edited(t) => root.task-due-edited(t);
+                due-accepted(t) => root.task-due-accepted(t);
+                due-picker-toggled() => root.task-due-picker-toggled();
+                due-picker-key(k) => root.task-due-picker-key(k);
+                due-day-clicked(c) => root.task-due-day-clicked(c);
             }
 
             // The board create/rename fields (r2 D21): the
@@ -473,6 +481,12 @@ export component AppWindow inherits Window {
     pure callback rule-add-preset-clicked(int);
     pure callback rule-add-custom-accepted(string);
     pure callback rule-add-custom-rejected();
+    pure callback task-due-edit-opened();
+    pure callback task-due-edited(string);
+    pure callback task-due-accepted(string);
+    pure callback task-due-picker-toggled();
+    pure callback task-due-picker-key(int);
+    pure callback task-due-day-clicked(int);
     pure callback banner-snooze-clicked(int);
     pure callback banner-mute-clicked(int);
     pure callback banner-row-activated(int);

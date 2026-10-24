@@ -13,7 +13,7 @@ use slint::{ComponentHandle as _, Model as _, ModelRc, SharedString, VecModel};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, Datelike as _, TimeDelta, Utc};
 
 use taskboard_domain::{
     AppState, BoardId, ReminderRuleId, SearchHit, SearchTarget, StackId, Task, TaskId,
@@ -26,9 +26,9 @@ use crate::responsive::Breakpoint;
 use crate::view_state::{Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
-    Breakpoint as SlintBreakpoint, DecorationKind, DueKind as SlintDueKind, FlowHintModel,
-    PaletteRowModel, Responsive, RuleRowModel, StackColumnModel, StackDetailModel, SyncBadgeModel,
-    SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme, Tone, View,
+    Breakpoint as SlintBreakpoint, DecorationKind, DueDayModel, DueKind as SlintDueKind,
+    FlowHintModel, PaletteRowModel, Responsive, RuleRowModel, StackColumnModel, StackDetailModel,
+    SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme, Tone, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -333,6 +333,17 @@ fn push_rows<T: PartialEq + Clone + 'static>(
 /// a `ListView` virtualisation (#373, the next lever on the same
 /// render budget) consumes later.
 #[must_use]
+/// The due editor's pushed state (r2 D25): the adapter owns the
+/// buffer, echo, and picker cursor across refreshes (R-d); the push
+/// only carries them into the model.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DueEditorPush<'a> {
+    pub text: &'a str,
+    pub echo: &'a str,
+    pub picker: Option<&'a crate::due_edit::DuePickerState>,
+}
+
+#[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
 pub fn push(
     window: &AppWindow,
     state: &AppState,
@@ -341,6 +352,7 @@ pub fn push(
     chain: &[ContextId],
     now: DateTime<Utc>,
     models: &mut PushModels,
+    due: &DueEditorPush<'_>,
 ) -> IdTables {
     let sets = presentation::due_sets(state, now);
     let board = vs.board().and_then(|id| state.boards.get(&id));
@@ -395,7 +407,7 @@ pub fn push(
         models,
     );
     mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, models);
-    mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models);
+    mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models, due);
     mutations += push_status_bar(window, state, vs, keymap, chain, now, &mut tables, models);
     // The decoration handles of tasks this pass dropped from every
     // surface are unreachable from the views.
@@ -687,6 +699,7 @@ fn push_stack_detail(
 /// Rule 4 (D9): the buffer stays user-owned while the flow is active —
 /// the field reads `initial-text` only on mount. Returns the diff's
 /// mutation count.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // the pass's inputs, one bundle
 fn push_task_detail(
     window: &AppWindow,
     state: &AppState,
@@ -695,6 +708,7 @@ fn push_task_detail(
     tables: &mut IdTables,
     now: DateTime<Utc>,
     models: &mut PushModels,
+    due: &DueEditorPush<'_>,
 ) -> usize {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
     let editing = matches!(vs.flow(), Flow::EditTitle { task } if vs.subject_task().is_some_and(|s| *task == s));
@@ -724,6 +738,46 @@ fn push_task_detail(
         .into_iter()
         .map(SharedString::from)
         .collect();
+    // The due editor's grid (r2 D25): rows of seven, leading blanks,
+    // cursor/today/kind markers — pushed only while the editor is
+    // open; the empty model otherwise.
+    let due_open = matches!(vs.flow(), Flow::EditDue { .. });
+    let due_grid_rows: Vec<slint::ModelRc<DueDayModel>> = due
+        .picker
+        .filter(|_| due_open)
+        .map(|picker| {
+            let today = now.date_naive();
+            picker
+                .grid()
+                .chunks(7)
+                .map(|chunk| {
+                    slint::ModelRc::new(slint::VecModel::from(
+                        chunk
+                            .iter()
+                            .map(|cell| {
+                                let date = cell.date;
+                                DueDayModel {
+                                    label: SharedString::from(
+                                        date.map_or(String::new(), |d| d.day().to_string()),
+                                    ),
+                                    blank: date.is_none(),
+                                    cursor: date.is_some_and(|d| d == picker.cursor()),
+                                    today: date.is_some_and(|d| d == today),
+                                    kind: to_slint_due_kind(
+                                        date.map_or(crate::presentation::DueKind::None, |d| {
+                                            crate::due_edit::cell_kind(d, today)
+                                        }),
+                                    ),
+                                }
+                            })
+                            .collect::<Vec<DueDayModel>>(),
+                    ))
+                })
+                .collect::<Vec<slint::ModelRc<DueDayModel>>>()
+        })
+        .unwrap_or_default();
+    let due_grid = slint::ModelRc::new(slint::VecModel::from(due_grid_rows));
+
     let presets_handle = models.task_rule_presets.get_or_insert_with(Rc::default);
     let mut mutations = diff_rows(presets_handle, &preset_rows);
     let rules_handle = models.task_rules.get_or_insert_with(Rc::default);
@@ -752,6 +806,15 @@ fn push_task_detail(
         rules: ModelRc::from(rules_handle.clone()),
         rule_presets: ModelRc::from(presets_handle.clone()),
         rules_hint: SharedString::from(presentation::rule_list_hint(task_rules.len())),
+        due_open,
+        due_text: SharedString::from(due.text),
+        due_echo: SharedString::from(due.echo),
+        due_picker_open: due.picker.is_some(),
+        due_caption: SharedString::from(
+            due.picker
+                .map_or(String::new(), |p| p.month().format("%Y-%m").to_string()),
+        ),
+        due_grid,
     });
     tables.task_rules = task_rules;
     mutations

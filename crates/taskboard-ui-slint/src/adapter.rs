@@ -104,6 +104,12 @@ pub(crate) struct Adapter {
     /// The rule-list add entry's parsed offset (chunk 6, D13); consumed
     /// by the next `reminder.rule-add` dispatch, then cleared.
     rule_add_offset: Option<ReminderOffset>,
+    /// The due editor's live state (r2 D25/R-d): the typed buffer, its
+    /// echo, and the picker cursor/month — adapter-owned so a refresh
+    /// push can never reset them; cleared when the flow ends.
+    due_buffer: String,
+    due_echo: String,
+    due_picker: Option<crate::due_edit::DuePickerState>,
     /// The id tables of the last refresh pass (D2): index → id.
     tables: IdTables,
     /// The persistent model handles of this window (r2 D9): the
@@ -211,6 +217,23 @@ impl Adapter {
         let Some(stroke) = to_stroke(text, modifiers) else {
             return false;
         };
+        // The due editor's Down-in-field opens the picker (r2 D25):
+        // consumed here, ahead of the resolver, so the insert-mode
+        // chain never has to bind it.
+        if matches!(self.view_state.flow(), Flow::EditDue { .. })
+            && self.due_picker.is_none()
+            && stroke
+                == (crate::keymap::Stroke {
+                    key: '\u{F701}',
+                    ctrl: false,
+                    alt: false,
+                    shift: false,
+                    meta: false,
+                })
+        {
+            self.open_due_picker(window);
+            return true;
+        }
         // The chain reflects the view-state machine, not a stale seam
         // write (D6: shell view/focus derive from view_state).
         self.sync_view_context();
@@ -365,6 +388,11 @@ impl Adapter {
         self.view_state.reconcile(&state);
         let chain = self.shell.chain();
         let now = chrono::Utc::now();
+        let due = crate::models::DueEditorPush {
+            text: &self.due_buffer,
+            echo: &self.due_echo,
+            picker: self.due_picker.as_ref(),
+        };
         self.tables = crate::models::push(
             window,
             &state,
@@ -373,6 +401,7 @@ impl Adapter {
             &chain,
             now,
             &mut self.models,
+            &due,
         );
         self.push_settings(window);
     }
@@ -468,6 +497,12 @@ impl Adapter {
                 let outcomes = self.view_state.cancel_move();
                 self.apply_outcomes(window, &outcomes);
             }
+            // The due editor ends without committing on a view
+            // switch (r2 D25: the clean close, like a move flow).
+            Flow::EditDue { .. } => {
+                let outcomes = self.view_state.end_edit_due();
+                self.apply_outcomes(window, &outcomes);
+            }
             // A view switch out of the palette closes it without
             // effect (the modal discipline).
             Flow::Palette { .. } => {
@@ -480,6 +515,7 @@ impl Adapter {
 
     /// The D9 interpretation table: one `match (flow, effect)` whose
     /// arms route to `view_state` methods named by what they do.
+    #[allow(clippy::too_many_lines)] // one decision table, kept flat for review
     fn interpret(&mut self, window: &AppWindow, effect: UiEffect) {
         let compact = Self::is_compact(window);
         let state = self.state.load();
@@ -523,6 +559,13 @@ impl Adapter {
                 | Flow::RenameBoard { .. },
                 effect @ (UiEffect::SetMode(Mode::Normal) | UiEffect::Activate),
             ) => self.interpret_edit(effect, &state),
+            // The due editor (r2 D25): Escape discards (the clean
+            // close — no commit, no clear); the commit itself rides
+            // the `task-due-committed` seam, so nothing else acts.
+            (Flow::EditDue { .. }, effect) => match effect {
+                UiEffect::SetMode(Mode::Normal) => self.view_state.discard_edit(),
+                _ => Vec::new(),
+            },
             // -- no flow: the intents begin things --
             (Flow::None, UiEffect::OpenPalette) => self.view_state.open_palette(),
             (
@@ -1474,6 +1517,9 @@ pub(crate) fn install(
         menu_chain: Vec::new(),
         menu_anchor: MenuAnchor::Hamburger,
         reminder_target: None,
+        due_buffer: String::new(),
+        due_echo: String::new(),
+        due_picker: None,
         board_target: None,
         rule_target: None,
         rule_add_offset: None,
@@ -1579,6 +1625,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_board_seams(window, adapter);
     install_stack_seams(window, adapter);
     install_task_seam(window, adapter);
+    install_due_seam(window, adapter);
     install_task_back_seam(window, adapter);
     install_settings_back_seam(window, adapter);
     install_board_context_seam(window, adapter);
@@ -2252,6 +2299,170 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.rule_add_offset = Some(offset);
         a.route(&window, ActionId::ReminderRuleAdd);
     });
+}
+
+/// The due-date editor's seams (r2 D25). The commit funnel is one
+/// window callback (`task-due-committed`, RFC3339 or empty=clear);
+/// the typed Return path, the picker's Enter, and the day cells'
+/// clicks all resolve through it — click ≡ key by construction. The
+/// picker's cursor/month live on the adapter (R-d) and only ride the
+/// refresh push.
+#[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
+fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let open = Rc::clone(adapter);
+    let open_weak = window.as_weak();
+    window.on_task_due_edit_opened(move || {
+        let Some(window) = open_weak.upgrade() else {
+            return;
+        };
+        let mut a = open.borrow_mut();
+        let state = a.state.load_full();
+        let outcomes = a.view_state.begin_edit_due(&state);
+        a.apply_outcomes(&window, &outcomes);
+    });
+
+    let edited = Rc::clone(adapter);
+    let edited_weak = window.as_weak();
+    window.on_task_due_edited(move |text| {
+        let Some(window) = edited_weak.upgrade() else {
+            return;
+        };
+        let mut a = edited.borrow_mut();
+        a.due_buffer = text.to_string();
+        a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now());
+        // Live echo without a full refresh: mutate the pushed struct's
+        // echo in place (the grid/caption are untouched).
+        let mut model = window.get_task_model();
+        model.due_echo = SharedString::from(a.due_echo.clone());
+        window.set_task_model(model);
+    });
+
+    let accepted = Rc::clone(adapter);
+    let accepted_weak = window.as_weak();
+    window.on_task_due_accepted(move |text| {
+        let Some(window) = accepted_weak.upgrade() else {
+            return;
+        };
+        let mut a = accepted.borrow_mut();
+        match crate::due_edit::parse(&text, chrono::Utc::now()) {
+            // A refusal keeps the buffer and dispatches nothing.
+            Err(crate::due_edit::DueParseError) => {}
+            parsed => commit_due(&mut a, &window, parsed.expect("non-error parse")),
+        }
+    });
+
+    let toggle = Rc::clone(adapter);
+    let toggle_weak = window.as_weak();
+    window.on_task_due_picker_toggled(move || {
+        let Some(window) = toggle_weak.upgrade() else {
+            return;
+        };
+        let mut a = toggle.borrow_mut();
+        if a.due_picker.take().is_some() {
+            a.refresh(&window);
+        } else {
+            a.open_due_picker(&window);
+        }
+    });
+
+    let key = Rc::clone(adapter);
+    let key_weak = window.as_weak();
+    window.on_task_due_picker_key(move |code| {
+        let Some(window) = key_weak.upgrade() else {
+            return;
+        };
+        let mut a = key.borrow_mut();
+        let Some(picker) = a.due_picker.as_mut() else {
+            return; // a stale stroke against an already-closed picker
+        };
+        match code {
+            0 => picker.move_days(-1),
+            1 => picker.move_days(1),
+            2 => picker.move_days(-7),
+            3 => picker.move_days(7),
+            4 => picker.move_months(-1),
+            5 => picker.move_months(1),
+            6 => picker.month_edge(true),
+            7 => picker.month_edge(false),
+            // Enter: the cursor's midnight through the one funnel.
+            8 => {
+                let instant = picker.cursor().and_hms_opt(0, 0, 0).map(|m| m.and_utc());
+                commit_due(&mut a, &window, instant);
+                return;
+            }
+            _ => return,
+        }
+        a.refresh(&window);
+    });
+
+    let day = Rc::clone(adapter);
+    let day_weak = window.as_weak();
+    window.on_task_due_day_clicked(move |cell| {
+        let Some(window) = day_weak.upgrade() else {
+            return;
+        };
+        let mut a = day.borrow_mut();
+        let Some(picker) = a.due_picker.as_ref() else {
+            return;
+        };
+        let Some(cell) = picker
+            .grid()
+            .get(usize::try_from(cell).unwrap_or(usize::MAX))
+            .and_then(|c| c.date)
+        else {
+            return; // a blank or a stale index
+        };
+        let date = cell;
+        a.due_picker
+            .as_mut()
+            .expect("checked above")
+            .set_cursor(date);
+        let instant = date.and_hms_opt(0, 0, 0).map(|m| m.and_utc());
+        commit_due(&mut a, &window, instant);
+    });
+}
+
+/// Opens the picker anchored on the subject task's due (or today) —
+/// the calendar button's and the Down-in-field toggle's shared path.
+impl Adapter {
+    fn open_due_picker(&mut self, window: &AppWindow) {
+        let state = self.state.load_full();
+        let due = self
+            .view_state
+            .subject_task()
+            .and_then(|id| state.tasks.get(&id))
+            .and_then(|t| t.duedate);
+        self.due_picker = Some(crate::due_edit::DuePickerState::open(
+            chrono::Utc::now().date_naive(),
+            due,
+        ));
+        self.refresh(window);
+    }
+}
+
+/// The one commit funnel (r2 D25): dispatch the typed `UpdateTask`
+/// duedate change, then end the flow. `None` clears (the empty-entry
+/// semantics).
+fn commit_due(a: &mut Adapter, window: &AppWindow, instant: Option<chrono::DateTime<chrono::Utc>>) {
+    let task = match a.view_state.flow() {
+        Flow::EditDue { task } => *task,
+        _ => return,
+    };
+    let command = StateCommand::UpdateTask {
+        id: task,
+        changes: taskboard_domain::TaskChanges {
+            duedate: Some(instant),
+            ..taskboard_domain::TaskChanges::default()
+        },
+    };
+    if a.commands.try_send(command).is_err() {
+        tracing::warn!("command channel full or closed; dropped");
+    }
+    a.due_buffer.clear();
+    a.due_echo.clear();
+    a.due_picker = None;
+    let outcomes = a.view_state.end_edit_due();
+    a.apply_outcomes(window, &outcomes);
 }
 
 /// The banner row at `index` (D2: the index resolves against the
