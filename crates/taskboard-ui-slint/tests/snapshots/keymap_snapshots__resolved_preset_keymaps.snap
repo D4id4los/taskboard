@@ -115,6 +115,20 @@ expression: rows
         - sequence:
             - Down
           action: menu.next
+    - context: palette
+      bindings:
+        - sequence:
+            - Return
+          action: menu.invoke
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
     - context: vi-insert
       bindings:
         - sequence:
@@ -243,6 +257,23 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: menu.previous
+    - context: palette
+      bindings:
+        - sequence:
+            - Return
+          action: menu.invoke
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - Ctrl+g
+          action: menu.dismiss
+        - sequence:
+            - Ctrl+n
+          action: menu.next
+        - sequence:
+            - Ctrl+p
+          action: menu.previous
     - context: vi-insert
       bindings:
         - sequence:
@@ -269,6 +300,20 @@ expression: rows
         - sequence:
             - k
           action: menu.previous
+    - context: palette
+      bindings:
+        - sequence:
+            - Return
+          action: menu.invoke
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
     - context: vi-normal
       bindings:
         - sequence:

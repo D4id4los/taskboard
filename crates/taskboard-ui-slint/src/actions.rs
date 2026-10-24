@@ -30,6 +30,8 @@ pub enum ContextId {
     TaskDetail,
     Settings,
     Menu,
+    /// The jump-to search palette (#348): a total mask like `Menu`.
+    Palette,
     ViNormal,
     ViInsert,
 }
@@ -45,6 +47,7 @@ impl ContextId {
             Self::TaskDetail => "task-detail",
             Self::Settings => "settings",
             Self::Menu => "menu",
+            Self::Palette => "palette",
             Self::ViNormal => "vi-normal",
             Self::ViInsert => "vi-insert",
         }
@@ -377,9 +380,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         label: "Search",
         contexts: GLOBAL,
         category: Category::Search,
-        enabled: false,
+        enabled: true,
         menu_rank: 50,
-        description: "Searches tasks across all boards. Not yet available — reserved.",
+        description: "Opens the jump-to search palette over all boards.",
         menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
@@ -588,7 +591,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::MenuNext,
         label: "Next menu entry",
-        contexts: &[ContextId::Menu],
+        contexts: &[ContextId::Menu, ContextId::Palette],
         category: Category::Menu,
         enabled: true,
         menu_rank: 900,
@@ -598,7 +601,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::MenuPrevious,
         label: "Previous menu entry",
-        contexts: &[ContextId::Menu],
+        contexts: &[ContextId::Menu, ContextId::Palette],
         category: Category::Menu,
         enabled: true,
         menu_rank: 900,
@@ -608,7 +611,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::MenuInvoke,
         label: "Invoke menu entry",
-        contexts: &[ContextId::Menu],
+        contexts: &[ContextId::Menu, ContextId::Palette],
         category: Category::Menu,
         enabled: true,
         menu_rank: 900,
@@ -618,7 +621,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::MenuDismiss,
         label: "Dismiss menu",
-        contexts: &[ContextId::Menu],
+        contexts: &[ContextId::Menu, ContextId::Palette],
         category: Category::Menu,
         enabled: true,
         menu_rank: 900,
@@ -753,7 +756,6 @@ mod tests {
             ActionId::AppUndo,
             ActionId::AppRedo,
             ActionId::CaptureQuick,
-            ActionId::PaletteSearch,
             // AppSettings left this set in round-1 chunk 3 (D28b): the
             // enabled bit and the router arm are pinned by the router
             // tests and the registry snapshot.
@@ -820,7 +822,6 @@ mod tests {
             ActionId::AppRedo,
             ActionId::AppHelp,
             ActionId::CaptureQuick,
-            ActionId::PaletteSearch,
         ])
     }
 }

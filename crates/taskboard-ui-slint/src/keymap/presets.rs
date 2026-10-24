@@ -50,10 +50,11 @@ impl Preset {
     /// masking (Ctrl-chords keep working while typing).
     #[must_use]
     pub const fn masks(self) -> &'static [ContextId] {
-        // Every shipped preset masks below the open menu only;
-        // `ViInsert` shadows without masking (D11).
+        // Every shipped preset masks below the open menu and the open
+        // search palette (#348): both are modal surfaces; `ViInsert`
+        // shadows without masking (D11).
         let _ = self;
-        &[ContextId::Menu]
+        &[ContextId::Menu, ContextId::Palette]
     }
 }
 
@@ -99,6 +100,13 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuPrevious, ContextId::Menu, &["Up"]),
     (ActionId::MenuInvoke, ContextId::Menu, &["Return"]),
     (ActionId::MenuDismiss, ContextId::Menu, &["Escape"]),
+    // Palette (#348): the same CUA vocabulary as the menu; Return is
+    // bound in the head context so the capture layer consumes it
+    // before the field's `accepted` — Activate is jump-to.
+    (ActionId::MenuNext, ContextId::Palette, &["Down"]),
+    (ActionId::MenuPrevious, ContextId::Palette, &["Up"]),
+    (ActionId::MenuInvoke, ContextId::Palette, &["Return"]),
+    (ActionId::MenuDismiss, ContextId::Palette, &["Escape"]),
     // D5: insert-mode exit — the same single key vi has (the insert
     // chain masks the view context; printables reach the field).
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
@@ -159,6 +167,12 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuInvoke, ContextId::Menu, &["Return"]),
     (ActionId::MenuDismiss, ContextId::Menu, &["Ctrl+g"]),
     (ActionId::MenuDismiss, ContextId::Menu, &["Escape"]),
+    // Palette (#348): the emacs menu vocabulary; both dismissals ride.
+    (ActionId::MenuNext, ContextId::Palette, &["Ctrl+n"]),
+    (ActionId::MenuPrevious, ContextId::Palette, &["Ctrl+p"]),
+    (ActionId::MenuInvoke, ContextId::Palette, &["Return"]),
+    (ActionId::MenuDismiss, ContextId::Palette, &["Ctrl+g"]),
+    (ActionId::MenuDismiss, ContextId::Palette, &["Escape"]),
     // D5: insert-mode exit (see standard's note).
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
     // Round-1 chunk 3 (D28b): Escape closes the settings surface.
@@ -210,6 +224,12 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuPrevious, ContextId::Menu, &["k"]),
     (ActionId::MenuInvoke, ContextId::Menu, &["Return"]),
     (ActionId::MenuDismiss, ContextId::Menu, &["Escape"]),
+    // Palette (#348): arrows, not j/k — the palette has a text field,
+    // so j/k are printables that must reach it.
+    (ActionId::MenuNext, ContextId::Palette, &["Down"]),
+    (ActionId::MenuPrevious, ContextId::Palette, &["Up"]),
+    (ActionId::MenuInvoke, ContextId::Palette, &["Return"]),
+    (ActionId::MenuDismiss, ContextId::Palette, &["Escape"]),
     // Round-1 chunk 3 (D28b): Escape closes the settings surface.
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
 ];

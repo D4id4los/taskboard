@@ -287,6 +287,10 @@ impl Adapter {
         self.shell.view = Some(self.view_state.context());
         self.shell.focused_task = self.view_state.focused_task();
         self.shell.focused_stack = self.view_state.focused_stack(&state);
+        self.shell.palette = matches!(
+            self.view_state.flow(),
+            crate::view_state::Flow::Palette { .. }
+        );
     }
 
     /// Applies flow outcomes verbatim (D9): the adapter never
@@ -458,6 +462,12 @@ impl Adapter {
                     let outcomes = self.view_state.cancel_move();
                     self.apply_outcomes(window, &outcomes);
                 }
+                // A view switch out of the palette closes it
+                // without effect (the modal discipline).
+                Flow::Palette { .. } => {
+                    let outcomes = self.view_state.close_palette();
+                    self.apply_outcomes(window, &outcomes);
+                }
                 Flow::None => {}
             }
         }
@@ -481,6 +491,7 @@ impl Adapter {
                 self.view_state.commit_edit(&state)
             }
             // -- no flow: the intents begin things --
+            (Flow::None, UiEffect::OpenPalette) => self.view_state.open_palette(),
             (Flow::None, UiEffect::Activate) => self.view_state.activate_focused(&state),
             (Flow::None, UiEffect::RequestMove) => self.view_state.start_move(&state),
             (Flow::None, UiEffect::BeginCreate) => {
@@ -591,7 +602,8 @@ impl Adapter {
             UiEffect::MenuNext | UiEffect::MenuPrevious => {
                 self.shell.apply(&effect, self.menu_entries.len());
             }
-            UiEffect::SetMode(_)
+            UiEffect::OpenPalette
+            | UiEffect::SetMode(_)
             | UiEffect::FocusNext
             | UiEffect::FocusPrev
             | UiEffect::NextView
@@ -2017,7 +2029,11 @@ impl crate::UiHandle {
                 ContextId::StackDetail => crate::view_state::ViewId::StackDetail,
                 ContextId::TaskDetail => crate::view_state::ViewId::TaskDetail,
                 ContextId::Settings => crate::view_state::ViewId::Settings,
-                ContextId::Global | ContextId::Menu | ContextId::ViNormal | ContextId::ViInsert => {
+                ContextId::Global
+                | ContextId::Menu
+                | ContextId::Palette
+                | ContextId::ViNormal
+                | ContextId::ViInsert => {
                     return;
                 }
             };

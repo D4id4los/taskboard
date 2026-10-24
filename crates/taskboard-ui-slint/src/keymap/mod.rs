@@ -594,13 +594,14 @@ mod tests {
         );
     }
 
-    /// Masking declarations (D8/D11): every preset masks below the
-    /// menu only; `ViInsert` shadows without masking.
+    /// Masking declarations (D8/D11): every preset masks below the two
+    /// modal surfaces — the menu and the search palette (#348) —
+    /// `ViInsert` shadows without masking.
     #[test]
-    fn presets_mask_only_the_menu() {
+    fn presets_mask_only_the_modal_contexts() {
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let masks: Vec<_> = preset.masks().to_vec();
-            assert_eq!(masks, vec![ContextId::Menu]);
+            assert_eq!(masks, vec![ContextId::Menu, ContextId::Palette]);
         }
     }
 

@@ -30,6 +30,10 @@ pub enum Mode {
 pub enum UiEffect {
     Exit,
     OpenMenu,
+    /// Open the jump-to search palette (#348, chunk 9). The adapter's
+    /// interpretation table opens the flow; any other flow is inert
+    /// (the modal discipline).
+    OpenPalette,
     CloseMenu,
     /// Level-aware menu back (round-1 D6): a submenu steps back one
     /// level, the root closes.
@@ -223,11 +227,10 @@ impl ActionRouter {
             // Round-1 chunk 3 (D28b): the settings opener is live.
             ActionId::AppSettings => DispatchOutcome::UiEffect(UiEffect::OpenSettings),
             // Reserved (§5.8) — the only disabled rows left (D6).
-            ActionId::AppUndo
-            | ActionId::AppRedo
-            | ActionId::AppHelp
-            | ActionId::CaptureQuick
-            | ActionId::PaletteSearch => DispatchOutcome::Disabled,
+            ActionId::PaletteSearch => DispatchOutcome::UiEffect(UiEffect::OpenPalette),
+            ActionId::AppUndo | ActionId::AppRedo | ActionId::AppHelp | ActionId::CaptureQuick => {
+                DispatchOutcome::Disabled
+            }
         }
     }
 }
@@ -427,14 +430,15 @@ mod tests {
     #[test]
     fn disabled_actions_are_absorbed_even_with_focus() {
         let ctx = ctx(true);
-        for id in [
-            ActionId::AppUndo,
-            ActionId::AppRedo,
-            ActionId::CaptureQuick,
-            ActionId::PaletteSearch,
-        ] {
+        for id in [ActionId::AppUndo, ActionId::AppRedo, ActionId::CaptureQuick] {
             assert_eq!(ActionRouter::dispatch(id, &ctx), DispatchOutcome::Disabled);
         }
+        // PaletteSearch flipped live (chunk 9): it yields the open
+        // effect now, focus or not.
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::PaletteSearch, &ctx),
+            DispatchOutcome::UiEffect(UiEffect::OpenPalette)
+        );
     }
 
     /// T22 — the UI-internal effect table.

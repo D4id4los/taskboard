@@ -70,9 +70,9 @@ expression: rows
   contexts:
     - global
   category: search
-  enabled: false
+  enabled: true
   menu_rank: 50
-  description: Searches tasks across all boards. Not yet available — reserved.
+  description: Opens the jump-to search palette over all boards.
   menu_group: view-nav
 - id: nav.next-view
   label: Next view
@@ -277,6 +277,7 @@ expression: rows
   label: Next menu entry
   contexts:
     - menu
+    - palette
   category: menu
   enabled: true
   menu_rank: 900
@@ -286,6 +287,7 @@ expression: rows
   label: Previous menu entry
   contexts:
     - menu
+    - palette
   category: menu
   enabled: true
   menu_rank: 900
@@ -295,6 +297,7 @@ expression: rows
   label: Invoke menu entry
   contexts:
     - menu
+    - palette
   category: menu
   enabled: true
   menu_rank: 900
@@ -304,6 +307,7 @@ expression: rows
   label: Dismiss menu
   contexts:
     - menu
+    - palette
   category: menu
   enabled: true
   menu_rank: 900

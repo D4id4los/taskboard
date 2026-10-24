@@ -13,7 +13,9 @@
 
 use std::collections::BTreeMap;
 
-use taskboard_domain::{AppState, BoardId, StackId, StateCommand, TaskChanges, TaskId};
+use taskboard_domain::{
+    AppState, BoardId, SearchTarget, StackId, StateCommand, TaskChanges, TaskId,
+};
 
 use crate::actions::ContextId;
 use crate::presentation::{live_board, live_boards, stacks_in_board};
@@ -49,6 +51,10 @@ pub enum Flow {
     EditTitle { task: TaskId },
     /// The move flow: moving `task` toward `target`.
     Move { task: TaskId, target: StackId },
+    /// The jump-to search palette (#348, chunk 9): the palette cursor
+    /// lives in the flow (subject-free — `reconcile` leaves it alone;
+    /// background refreshes re-rank through the row push instead).
+    Palette { selected: usize },
 }
 
 /// What a view-state transition asks the adapter to do (D9):
@@ -739,6 +745,88 @@ impl ViewState {
         self.flow = Flow::None;
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
+    // -- search palette (#348, chunk 9) ------------------------------------
+
+    /// `PaletteSearch`: opens the palette in insert mode with an empty
+    /// query (the `begin_create` opening shape). The empty query means
+    /// no hits — the palette opens over an empty result list.
+    pub fn open_palette(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::Palette { selected: 0 };
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// Walks the palette cursor by `direction`, wrapping over the
+    /// `visible` row count (the menu-cursor ring semantics; inert at
+    /// zero rows). The keystroke path resets the cursor to 0 on every
+    /// query change (a stale mid-list cursor on a fresh ranking is a
+    /// lie); only a refresh-shrunk list clamps here.
+    pub fn palette_cursor(&mut self, direction: i32, visible: usize) -> Vec<FlowOutcome> {
+        if let Flow::Palette { selected } = &mut self.flow {
+            if visible > 0 {
+                let len = i64::try_from(visible).unwrap_or(i64::MAX);
+                let next = i64::try_from(*selected).unwrap_or(i64::MAX) + i64::from(direction);
+                *selected = usize::try_from(next.rem_euclid(len)).unwrap_or(0);
+            }
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Every palette exit that means close-without-effect: Esc,
+    /// `MenuDismiss`, a stale-target jump. The `discard_edit` shape.
+    pub fn close_palette(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::None;
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
+    /// The jump-to matrix (design D12): retarget board/stack/focus per
+    /// hit kind against the live snapshot, then end the flow. A stale
+    /// target (the entity died between push and invoke) is inert —
+    /// close only, no retarget.
+    pub fn palette_jump(&mut self, state: &AppState, target: SearchTarget) -> Vec<FlowOutcome> {
+        let mut outcomes = match target {
+            SearchTarget::Task(task_id) => {
+                let Some(task) = state.tasks.get(&task_id) else {
+                    return self.close_palette();
+                };
+                let Some(stack) = state.stacks.get(&task.stack) else {
+                    return self.close_palette();
+                };
+                let board = stack.board;
+                let out = self.select_board(state, board);
+                self.focused_task = Some(task_id);
+                out
+            }
+            SearchTarget::Stack(stack_id) => {
+                let Some(stack) = state.stacks.get(&stack_id) else {
+                    return self.close_palette();
+                };
+                let board = stack.board;
+                let out = self.select_board(state, board);
+                self.selected_stack = Some(stack_id);
+                self.subject_stack = Some(stack_id);
+                self.focused_task = Self::first_task_of(state, stack_id);
+                self.view = ViewId::StackDetail;
+                out
+            }
+            SearchTarget::Board(board_id) => {
+                if !state.boards.contains_key(&board_id) {
+                    return self.close_palette();
+                }
+                self.select_board(state, board_id)
+            }
+        };
+        // The flow always ends (close_palette's ending; select_board
+        // already asked for the repaint).
+        self.flow = Flow::None;
+        self.buffer.clear();
+        outcomes.push(FlowOutcome::SetMode(Mode::Normal));
+        outcomes
     }
 
     // -- move flow (D8) ----------------------------------------------------
@@ -1886,6 +1974,138 @@ mod tests {
             Some(crate::widths::STACK_WIDTH_MIN_PX + 80),
             "an above-floor entry is untouched"
         );
+    }
+
+    // -- the search palette (#348, chunk 9) -----------------------------
+
+    fn palette_two_board_fixture() -> (AppState, BoardId, BoardId, StackId, TaskId) {
+        let b0 = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let b1 = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let s1 = StackId::from_uuid(uuid::Uuid::now_v7());
+        let needle = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        for (id, title) in [(b0, "board one"), (b1, "board two")] {
+            state.boards.insert(
+                id,
+                Board {
+                    id,
+                    remote: None,
+                    title: title.to_owned(),
+                    color: taskboard_domain::Color::new(""),
+                    archived: false,
+                    deleted: false,
+                    clocks: BoardClocks {
+                        title: epoch(),
+                        color: epoch(),
+                        archived: epoch(),
+                        deleted: epoch(),
+                    },
+                    remote_seen: None,
+                },
+            );
+        }
+        state.stacks.insert(s1, stack(s1, b1, 0));
+        let mut needle_task = task(needle, s1, 0);
+        needle_task.title = "zebra needle".to_owned();
+        state.tasks.insert(needle, needle_task);
+        (state, b0, b1, s1, needle)
+    }
+
+    #[test]
+    fn the_palette_opens_insert_closes_and_walks_the_cursor() {
+        let mut vs = ViewState::new();
+        // Opening: insert mode + cleared buffer + cursor at 0.
+        vs.set_buffer("stale".to_owned());
+        let outcomes = vs.open_palette();
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+        );
+        assert_eq!(vs.flow(), &Flow::Palette { selected: 0 });
+        assert_eq!(vs.buffer(), "");
+
+        // The cursor wraps over the visible count, both directions.
+        let down = vs.palette_cursor(1, 3);
+        assert_eq!(down, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.flow(), &Flow::Palette { selected: 1 });
+        vs.palette_cursor(1, 3);
+        vs.palette_cursor(1, 3);
+        assert_eq!(vs.flow(), &Flow::Palette { selected: 0 });
+        vs.palette_cursor(-1, 3);
+        assert_eq!(vs.flow(), &Flow::Palette { selected: 2 });
+
+        // Inert at zero visible rows.
+        vs.palette_cursor(1, 0);
+        assert_eq!(vs.flow(), &Flow::Palette { selected: 2 });
+
+        // Closing: normal mode, cleared buffer.
+        let outcomes = vs.close_palette();
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+        );
+        assert_eq!(vs.flow(), &Flow::None);
+        assert_eq!(vs.buffer(), "");
+    }
+
+    #[test]
+    fn the_palette_jump_matrix_retargets_per_kind() {
+        let (state, b0, b1, s1, needle) = palette_two_board_fixture();
+
+        // Task hit: the needle's board selected, the task focused, the
+        // flow ended.
+        let mut vs = ViewState::new();
+        vs.select_board(&state, b0);
+        vs.open_palette();
+        let outcomes = vs.palette_jump(&state, SearchTarget::Task(needle));
+        assert!(outcomes.contains(&FlowOutcome::SetMode(Mode::Normal)));
+        assert_eq!(vs.flow(), &Flow::None);
+        assert_eq!(vs.board(), Some(b1));
+        assert_eq!(vs.focused_task(), Some(needle));
+
+        // Stack hit: the stack subject + selection, its first task
+        // focused, StackDetail entered.
+        let mut vs = ViewState::new();
+        vs.select_board(&state, b0);
+        vs.open_palette();
+        vs.palette_jump(&state, SearchTarget::Stack(s1));
+        assert_eq!(vs.view(), ViewId::StackDetail);
+        assert_eq!(vs.board(), Some(b1));
+        assert_eq!(vs.focused_task(), Some(needle));
+
+        // Board hit: plain board select.
+        let mut vs = ViewState::new();
+        vs.select_board(&state, b1);
+        vs.open_palette();
+        vs.palette_jump(&state, SearchTarget::Board(b0));
+        assert_eq!(vs.view(), ViewId::Board);
+        assert_eq!(vs.board(), Some(b0));
+        assert_eq!(vs.flow(), &Flow::None);
+    }
+
+    #[test]
+    fn a_stale_palette_target_is_inert_close_only() {
+        let (mut state, b0, _b1, s1, needle) = palette_two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.select_board(&state, b0);
+        vs.open_palette();
+        vs.set_buffer("zebra".to_owned());
+        vs.palette_cursor(1, 1);
+
+        // The needle dies between push and invoke: close only — the
+        // board selection and focus never retarget.
+        let dead = SearchTarget::Task(needle);
+        state.tasks.remove(&needle);
+        let outcomes = vs.palette_jump(&state, dead);
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+        );
+        assert_eq!(vs.flow(), &Flow::None);
+        assert_eq!(vs.buffer(), "");
+        assert_eq!(vs.board(), Some(b0));
+        assert_eq!(vs.focused_task(), None);
+        let _ = s1;
     }
 }
 

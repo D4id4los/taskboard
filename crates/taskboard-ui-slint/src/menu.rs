@@ -363,11 +363,13 @@ mod tests {
             .iter()
             .find(|e| e.action == Some(ActionId::PaletteSearch))
             .expect("row");
-        assert!(!search.enabled, "reserved rows read disabled");
+        // The palette flipped live (chunk 9): the row reads enabled
+        // and stays hinted.
+        assert!(search.enabled, "the search row dispatches for real");
         assert_eq!(
             search.hint,
             vec!["Ctrl+F".to_owned()],
-            "bound-but-disabled still hinted"
+            "the enabled row keeps its binding hint"
         );
 
         let emacs = build(&RawKeymap {
