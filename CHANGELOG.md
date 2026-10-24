@@ -336,6 +336,31 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- The GUI review round-2 task view & text-field ergonomics (issue
+  #390, chunk 4; D22–D25): the `TextField` primitive stops feeding
+  its text-derived preferred width into the ancestor layouts — the
+  input is absolutely positioned over an explicit cell with the new
+  `Theme.space-15` token floor, so **text fields no longer grow or
+  slide leftward while typing** (the settings form's F20 symptom;
+  all ~15 call sites inherit). The primitive gains the **checkmark
+  commit affordance**: a trailing check square renders while a field
+  holds focus with a non-empty buffer and fires the same
+  `accepted()` seam as Return (click ≡ key) — enabled on the task
+  title, the reminder custom offset, the board/stack create rows,
+  the column create-task rows, and the settings fields. The reminder
+  presets row absorbs the custom-offset entry: preset chips gain
+  side padding over a `space-6` floor and a parse-missed custom
+  entry now **clears its buffer** through the new
+  `rule-add-custom-rejected` seam (the D12 silent absorb stays). The
+  task view's Due cell becomes a real **due-date editor** (#227;
+  both paths, fully keyboard-operable): typed entry (`YYYY-MM-DD` at
+  00:00 UTC, `+N<unit>` relative, empty clears, refusals keep the
+  buffer) with a live echo, plus an inline calendar picker (month
+  stepping, today marker, DueKind tint) whose grid's
+  arrows/PageUp/PageDown/Home/End/Return map onto the same seams the
+  day cells' clicks use — one `UpdateTask` duedate dispatch for
+  every path. The R1-D13 scope-cut comment is retired (W2).
+
 - Every stack column ends in an **Add Task** button (r2
   board-surface, D8): a ghost row in the column's visual language —
   empty stacks show it instead of blank space. Clicking it selects
