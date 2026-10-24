@@ -193,9 +193,16 @@ async fn v4_move_appends_and_honors_explicit_order() {
     let id = added.id.clone();
 
     // Move to the empty col2: appends → order 0.
-    let moved = tasks::move_(config.clone(), Arc::clone(&store), &id, Some("col2"), None)
-        .await
-        .expect("move to col2");
+    let moved = tasks::move_(
+        config.clone(),
+        Arc::clone(&store),
+        &id,
+        Some("col2"),
+        None,
+        None,
+    )
+    .await
+    .expect("move to col2");
     assert_eq!(moved.stack_title, "col2");
     assert_eq!(moved.order, 0);
 
@@ -209,6 +216,7 @@ async fn v4_move_appends_and_honors_explicit_order() {
         Arc::clone(&store),
         &id,
         Some("col2"),
+        None,
         Some(0),
     )
     .await
@@ -216,7 +224,7 @@ async fn v4_move_appends_and_honors_explicit_order() {
     assert_eq!(moved.order, 0);
 
     // Append after the adopted remote card in col1 (order 0) → 1.
-    let t2_moved = tasks::move_(config, store, &t2.id, Some("col1"), None)
+    let t2_moved = tasks::move_(config, store, &t2.id, Some("col1"), None, None)
         .await
         .expect("append move");
     assert_eq!(t2_moved.stack_title, "col1");
@@ -480,10 +488,14 @@ async fn v10_ambiguous_and_missing_stacks_are_typed() {
     let db = dir.path().join("v10b.db");
     common::seed_board_binding(&db, 0x00DA_000E, common::BOARD, "v10b").await;
     let config = config_for(&server.uri(), dir.path(), "v10b.db");
-    let err = tasks::add(config, store_for(&server.uri()), "t", None)
+    // The chunk-10 default (D10): one live board with zero stacks is
+    // the success path now — the Backlog is created on demand and the
+    // receipt reads it back. (The old no-stacks refusal pinned the
+    // stack-resolution era; the board-directed default replaced it.)
+    let receipt = tasks::add(config, store_for(&server.uri()), "t", None)
         .await
-        .expect_err("no stacks");
-    assert_eq!(err.error_kind(), "no-stacks");
+        .expect("backlog created on demand");
+    assert_eq!(receipt.stack_title, "Backlog");
 }
 
 /// Seeds a persisted sync status into a db through the storage actor
@@ -675,9 +687,16 @@ async fn v14_done_and_move_reject_unknown_task_selectors() {
         .expect_err("unknown uuid");
     assert_eq!(err.error_kind(), "unknown-task");
 
-    let err = tasks::move_(config, Arc::clone(&store), &missing, Some("col"), None)
-        .await
-        .expect_err("unknown uuid move");
+    let err = tasks::move_(
+        config,
+        Arc::clone(&store),
+        &missing,
+        Some("col"),
+        None,
+        None,
+    )
+    .await
+    .expect_err("unknown uuid move");
     assert_eq!(err.error_kind(), "unknown-task");
 }
 

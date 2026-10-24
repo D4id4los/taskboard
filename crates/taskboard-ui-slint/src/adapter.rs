@@ -582,6 +582,10 @@ impl Adapter {
         }
 
         let outcomes = match (&flow, effect) {
+            // The today/inbox view intents (chunk 10): pure view
+            // state; the read-side jump.
+            (_, UiEffect::FocusToday) => self.view_state.focus_today(),
+            (_, UiEffect::OpenInbox) => self.view_state.open_inbox(&state),
             // -- quick capture (chunk 10 D8): the GLOBAL action, from
             //    any flow — the XOR rule replaces without committing --
             (_, UiEffect::BeginCapture) => self.view_state.begin_capture(),
@@ -812,12 +816,6 @@ impl Adapter {
             UiEffect::BoardCreate => self.view_state.begin_create_board(),
             UiEffect::BoardDelete => self.view_state.delete_board(state),
             UiEffect::BoardRename => self.view_state.begin_rename_board(state),
-            // The today/inbox intents + capture (chunk 10): pure view
-            // state, read-side jump, flow replacement.
-            UiEffect::FocusToday => self.view_state.focus_today(),
-            UiEffect::OpenInbox => self.view_state.open_inbox(state),
-            // `BeginCapture` lands with the capture overlay (piece 6);
-            // the catch-all absorbs it until then.
             _ => Vec::new(),
         }
     }

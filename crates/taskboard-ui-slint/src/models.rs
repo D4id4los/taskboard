@@ -1075,6 +1075,9 @@ fn push_today(
             });
         }
         mutations += diff_rows(&handle, &rows);
+        // All four sections always push (the model arity is fixed —
+        // the repetition-probe discipline); the empty groups COLLAPSE
+        // in the view's conditional render (D7).
         section_models.push(TodaySectionModel {
             label: SharedString::from(*label),
             count: i32::try_from(filtered.len()).unwrap_or(i32::MAX),

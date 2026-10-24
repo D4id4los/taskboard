@@ -181,6 +181,7 @@ async fn tasks_move_routes_a_failed_credential_load_to_exit_one() {
             cmd: TasksCmd::Move {
                 task: "some-task".to_owned(),
                 stack: None,
+                board: None,
                 order: None,
             },
         },
@@ -647,6 +648,7 @@ async fn one_shot_core_verbs_route_success_end_to_end() {
         cmd: TasksCmd::Move {
             task: "t2".to_owned(),
             stack: Some("Todo".to_owned()),
+            board: None,
             order: Some(0),
         },
     });

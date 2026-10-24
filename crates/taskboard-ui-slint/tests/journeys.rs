@@ -4669,3 +4669,204 @@ fn the_due_picker_journeys_reach_the_boundary() {
         },
     );
 }
+
+/// The appended legs' view read (the earlier journeys' local helper
+/// duplicated once for the chunk-10 block).
+fn current_view(harness: &Harness) -> View {
+    harness.handle.window().get_current_view()
+}
+
+/// Chunk 10 D12 — the today leg: the desktop mount stays on Today; the
+/// section walk follows `today_tasks` in display order with the
+/// emphasis tracking; the walk retargets the board selection
+/// (selection-follows-focus); `task.complete` dispatches the exact
+/// `SetTaskDone`; the re-commit verb writes a fresh
+/// `duedate = Some(Some(_))` confirmation-free; `nav.focus-board`
+/// escapes. Rollover is NOT here — it is the models suite's
+/// stepped-`now` push proof.
+#[test]
+fn the_today_view_walks_completes_and_recommits() {
+    // SAFETY: single-threaded journey startup; the driver thread reads
+    // it only inside `run` below.
+    unsafe { std::env::set_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY", "1") };
+    let (_fixture, state, [board_one_task, _board_two_task]) = fixture::today_overdue_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The desktop default: Today, no escape.
+            assert_eq!(current_view(&harness), View::Today);
+            assert_eq!(
+                harness.handle.window().get_toolbar_title(),
+                "Today",
+                "the today view captions itself"
+            );
+
+            // The walk takes `today_tasks` display order: board one's
+            // overdue row, then board two's (order, id) — with the
+            // emphasis following.
+            harness.press(taskboard_ui_slint::actions::ActionId::NavNextItem);
+            let today = harness.handle.window().get_today_model();
+            let overdue = today.sections.row_data(0).expect("overdue section");
+            assert_eq!(overdue.count, 2, "both overdue rows render");
+            assert!(
+                overdue.rows.row_data(0).expect("row").card.emphasis,
+                "the walk enters at the first row"
+            );
+            assert_eq!(
+                harness.handle.window().get_board_bar_model().selected,
+                0,
+                "selection-follows-focus stays on board one"
+            );
+
+            harness.press(taskboard_ui_slint::actions::ActionId::NavNextItem);
+            assert!(
+                overdue.rows.row_data(1).expect("row").card.emphasis,
+                "the emphasis follows the walk"
+            );
+            assert_eq!(
+                harness.handle.window().get_board_bar_model().selected,
+                1,
+                "the walk retargets the board to board two"
+            );
+
+            // Back to the first row; complete it (the exact command).
+            harness.press(taskboard_ui_slint::actions::ActionId::NavPrevItem);
+            harness.press(taskboard_ui_slint::actions::ActionId::TaskComplete);
+            harness.assert_commands(&[StateCommand::SetTaskDone {
+                id: board_one_task,
+                done: true,
+            }]);
+            // The fake engine applies the drained command on settle
+            // (the ten-step's apply discipline).
+            harness.engine.settle(&harness.handle);
+            let today = harness.handle.window().get_today_model();
+            let done_section = today.sections.row_data(3).expect("done section");
+            assert_eq!(done_section.count, 1, "done-placement");
+
+            // The re-commit verb (no default stroke; the menu path's
+            // action): a fresh double-option due write, free of
+            // confirmations.
+            let before = harness.engine.drain().len();
+            harness
+                .handle
+                .dispatch_action(taskboard_ui_slint::actions::ActionId::TaskDueToday);
+            let drained = harness.engine.drain();
+            assert_eq!(drained.len(), before + 1);
+            assert!(
+                matches!(
+                    &drained[before],
+                    StateCommand::UpdateTask {
+                        id,
+                        changes: taskboard_domain::TaskChanges {
+                            duedate: Some(Some(_)),
+                            ..
+                        },
+                    } if *id == board_one_task
+                ),
+                "the re-commit stamps the day window's end"
+            );
+
+            // The escape: back to the kanban board.
+            harness.press(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+            assert_eq!(current_view(&harness), View::Board);
+        },
+    );
+}
+
+/// Chunk 10 D12 — the triage leg: `view.inbox` jumps to the Inbox's
+/// canonical-first stack; the move ring cycles ACROSS the board edge
+/// (the deliberate behavior change) with the hint naming the target;
+/// confirming moves; the chip then reads zero (triage-done).
+#[test]
+fn the_inbox_triage_moves_across_the_board_edge() {
+    // SAFETY: single-threaded journey startup (see the set site).
+    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
+    let (fixture, state, caught) = fixture::triage_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The chip counts the inbox from any view (desktop-only).
+            assert_eq!(
+                harness.handle.window().get_toolbar_inbox_count(),
+                1,
+                "one open inbox row"
+            );
+
+            // view.inbox jumps (read-side; StackDetail on the
+            // canonical-first stack). No default stroke (D11) — the
+            // chip click and the menu route the same action.
+            harness
+                .handle
+                .dispatch_action(taskboard_ui_slint::actions::ActionId::ViewInbox);
+            assert_eq!(current_view(&harness), View::StackDetail);
+
+            harness.press(taskboard_ui_slint::actions::ActionId::NavNextItem);
+            // The move ring: cycle once — across the board edge onto
+            // board two's stack "c" (the deliberate behavior change).
+            // task.move has no StackDetail stroke (the preset table's
+            // shape) — the menu path's action routes it. The Inbox
+            // stack sits last in the flat ring, so one step BACKWARD
+            // crosses the board edge onto board two.
+            harness
+                .handle
+                .dispatch_action(taskboard_ui_slint::actions::ActionId::TaskMove);
+            harness.press(taskboard_ui_slint::actions::ActionId::NavPrevItem);
+            let hint = harness.handle.window().get_flow_hint_model().text;
+            assert!(
+                hint.contains('\u{203a}') && hint.contains("board two"),
+                "the hint names the cross-board target: {hint}"
+            );
+            // The confirm is the Activate intent; StackDetail has no
+            // Return binding in the preset table, so the action routes
+            // it (the move flow's Activate arm is the confirm).
+            harness
+                .handle
+                .dispatch_action(taskboard_ui_slint::actions::ActionId::TaskEdit);
+            harness.assert_commands(&[StateCommand::MoveTask {
+                id: caught,
+                stack: fixture.stack_c,
+                order: 1,
+            }]);
+
+            // The fake engine applies the move on settle; the chip
+            // then reads zero.
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                harness.handle.window().get_toolbar_inbox_count(),
+                0,
+                "triage-done: the chip counts to zero"
+            );
+        },
+    );
+}
+
+/// Chunk 10 D2 — the kiosk mount pin: the kiosk profile still launches
+/// on the board view (the desktop-only default's scope).
+#[test]
+fn the_kiosk_mount_still_lands_on_the_board() {
+    // SAFETY: single-threaded journey startup (see the set site).
+    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            assert_eq!(current_view(&harness), View::Board);
+        },
+    );
+}

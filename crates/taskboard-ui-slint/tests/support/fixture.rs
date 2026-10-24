@@ -237,3 +237,58 @@ pub fn two_board_state() -> (TwoBoardFixture, AppState) {
         state,
     )
 }
+
+/// The today-view fixture (chunk 10 D12): the two-board journey state
+/// with overdue stamps on one row per board — overdue is the one
+/// section whose membership is wall-clock-proof (due < now, any run),
+/// so the journey's walk is deterministic without injecting a
+/// `DayCtx`. Returns the two walked task ids (board one's first, then
+/// board two's task in display order: overdue sorts (order, id)).
+#[must_use]
+pub fn today_overdue_state() -> (TwoBoardFixture, AppState, [TaskId; 2]) {
+    let (fixture, mut state) = two_board_state();
+    let now = chrono::Utc::now();
+    // −30 min: the caption bucket ("30m overdue") is stable for the
+    // run's lifetime and identical across runs (each run rebuilds the
+    // stamp against its own now).
+    let overdue_stamp = now - chrono::TimeDelta::try_minutes(30).unwrap();
+    let board_one_task = TaskId::from_uuid(uuid::Uuid::from_u128(0x3001));
+    let board_two_task = TaskId::from_uuid(uuid::Uuid::from_u128(0x3004));
+    for id in [board_one_task, board_two_task] {
+        let task = state.tasks.get_mut(&id).expect("fixture task");
+        task.duedate = Some(overdue_stamp);
+    }
+    (fixture, state, [board_one_task, board_two_task])
+}
+
+/// The triage fixture (chunk 10 D12): the global Inbox board ("Inbox",
+/// one stack, one open task) plus the two-board journey state's board
+/// two as the move target.
+#[must_use]
+pub fn triage_state() -> (TwoBoardFixture, AppState, TaskId) {
+    let (fixture, mut state) = two_board_state();
+    let inbox_board = BoardId::from_uuid(uuid::Uuid::from_u128(0x1003));
+    let inbox_stack = StackId::from_uuid(uuid::Uuid::from_u128(0x2004));
+    state.boards.insert(inbox_board, board(inbox_board));
+    title_board(&mut state, inbox_board, "Inbox");
+    state
+        .stacks
+        .insert(inbox_stack, stack(inbox_stack, inbox_board, "Inbox", 0));
+    let caught = TaskId::from_uuid(uuid::Uuid::from_u128(0x3005));
+    let mut t = task(caught, inbox_stack, 0);
+    "caught thought".clone_into(&mut t.title);
+    state.tasks.insert(caught, t);
+    taskboard_domain::derive_sync_states(
+        &state.boards,
+        &state.stacks,
+        &state.tasks,
+        &state.labels,
+        &[],
+        &mut state.sync,
+    );
+    (fixture, state, caught)
+}
+
+fn title_board(state: &mut AppState, id: BoardId, title: &str) {
+    title.clone_into(&mut state.boards.get_mut(&id).expect("board").title);
+}
