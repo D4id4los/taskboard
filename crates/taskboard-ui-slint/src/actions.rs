@@ -25,6 +25,8 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ContextId {
     Global,
+    /// The Today view (#346): subjectless, capture-is-the-create-path.
+    Today,
     Board,
     StackDetail,
     TaskDetail,
@@ -42,6 +44,7 @@ impl ContextId {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Global => "global",
+            Self::Today => "today",
             Self::Board => "board",
             Self::StackDetail => "stack-detail",
             Self::TaskDetail => "task-detail",
@@ -161,6 +164,8 @@ pub enum ActionId {
     AppSettings,
     AppHelp,
     CaptureQuick,
+    ViewToday,
+    ViewInbox,
     PaletteSearch,
     NavNextView,
     NavPrevView,
@@ -177,6 +182,7 @@ pub enum ActionId {
     TaskEdit,
     TaskComplete,
     TaskReopen,
+    TaskDueToday,
     TaskMove,
     TaskMoveCancel,
     TaskDelete,
@@ -214,6 +220,8 @@ impl ActionId {
             Self::AppSettings => "app.settings",
             Self::AppHelp => "app.help",
             Self::CaptureQuick => "capture.quick",
+            Self::ViewToday => "view.today",
+            Self::ViewInbox => "view.inbox",
             Self::PaletteSearch => "palette.search",
             Self::NavNextView => "nav.next-view",
             Self::NavPrevView => "nav.prev-view",
@@ -230,6 +238,7 @@ impl ActionId {
             Self::TaskEdit => "task.edit",
             Self::TaskComplete => "task.complete",
             Self::TaskReopen => "task.reopen",
+            Self::TaskDueToday => "task.due-today",
             Self::TaskMove => "task.move",
             Self::TaskMoveCancel => "task.move.cancel",
             Self::TaskDelete => "task.delete",
@@ -308,6 +317,7 @@ pub struct ActionEntry {
 
 const GLOBAL: &[ContextId] = &[ContextId::Global];
 const VIEW_NAV: &[ContextId] = &[
+    ContextId::Today,
     ContextId::Board,
     ContextId::StackDetail,
     ContextId::TaskDetail,
@@ -316,6 +326,7 @@ const VIEW_NAV: &[ContextId] = &[
 /// like the `nav.*` family — offered in every context's menu.
 const GLOBAL_VIEW_NAV: &[ContextId] = &[
     ContextId::Global,
+    ContextId::Today,
     ContextId::Board,
     ContextId::StackDetail,
     ContextId::TaskDetail,
@@ -397,10 +408,30 @@ pub const REGISTRY: &[ActionEntry] = &[
         label: "Quick capture",
         contexts: GLOBAL,
         category: Category::Capture,
-        enabled: false,
+        enabled: true,
         menu_rank: 20,
-        description: "Captures a thought into the inbox from anywhere. Not yet available — tracked as backlog #347.",
+        description: "Captures a thought into the global inbox from anywhere; Enter commits and continues, Escape closes.",
         menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ViewToday,
+        label: "Go to today",
+        contexts: GLOBAL,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 90,
+        description: "Shows the today view: overdue, scheduled, due-today, and done-today rows across all boards.",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    ActionEntry {
+        id: ActionId::ViewInbox,
+        label: "Go to inbox",
+        contexts: GLOBAL,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 100,
+        description: "Jumps to the global Inbox board's first stack; quietly no-ops when the inbox is empty of boards.",
+        menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
         id: ActionId::PaletteSearch,
@@ -635,7 +666,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::TaskEdit,
         label: "Edit task",
-        contexts: &[ContextId::Board, ContextId::TaskDetail],
+        contexts: &[ContextId::Today, ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
         menu_rank: 70,
@@ -645,7 +676,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::TaskComplete,
         label: "Complete task",
-        contexts: &[ContextId::Board, ContextId::TaskDetail],
+        contexts: &[ContextId::Today, ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
         menu_rank: 80,
@@ -655,7 +686,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::TaskReopen,
         label: "Reopen task",
-        contexts: &[ContextId::Board, ContextId::TaskDetail],
+        contexts: &[ContextId::Today, ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
         menu_rank: 85,
@@ -663,9 +694,19 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
+        id: ActionId::TaskDueToday,
+        label: "Due today (re-commit)",
+        contexts: &[ContextId::Today],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 88,
+        description: "Re-commits the focused task to today by stamping its due date at the day window's end; confirmation-free.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
         id: ActionId::TaskMove,
         label: "Move task",
-        contexts: &[ContextId::Board, ContextId::TaskDetail],
+        contexts: &[ContextId::Today, ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
         menu_rank: 90,
@@ -685,7 +726,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::TaskDelete,
         label: "Delete task",
-        contexts: &[ContextId::Board, ContextId::TaskDetail],
+        contexts: &[ContextId::Today, ContextId::Board, ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
         menu_rank: 100,
@@ -831,6 +872,8 @@ mod tests {
             ActionId::AppSettings,
             ActionId::AppHelp,
             ActionId::CaptureQuick,
+            ActionId::ViewToday,
+            ActionId::ViewInbox,
             ActionId::PaletteSearch,
             ActionId::NavNextView,
             ActionId::NavPrevView,
@@ -847,6 +890,7 @@ mod tests {
             ActionId::TaskEdit,
             ActionId::TaskComplete,
             ActionId::TaskReopen,
+            ActionId::TaskDueToday,
             ActionId::TaskMove,
             ActionId::TaskMoveCancel,
             ActionId::TaskDelete,
@@ -914,10 +958,10 @@ mod tests {
         for id in [
             ActionId::AppUndo,
             ActionId::AppRedo,
-            ActionId::CaptureQuick,
-            // AppSettings left this set in round-1 chunk 3 (D28b): the
-            // enabled bit and the router arm are pinned by the router
-            // tests and the registry snapshot.
+            // CaptureQuick left this set in the daily-driver round
+            // (D-V6's flip): the enabled bit and the BeginCapture arm
+            // are pinned by the router tests and the registry snapshot.
+            // AppSettings left it in round-1 chunk 3 (D28b).
             ActionId::AppHelp,
         ] {
             let row = entry(id);
@@ -976,11 +1020,6 @@ mod tests {
     /// The reserved set as data for the post-flip diff (the original
     /// test's list, kept in one place).
     fn reserved_globals_are_present_and_disabled_set() -> std::collections::BTreeSet<ActionId> {
-        std::collections::BTreeSet::from([
-            ActionId::AppUndo,
-            ActionId::AppRedo,
-            ActionId::AppHelp,
-            ActionId::CaptureQuick,
-        ])
+        std::collections::BTreeSet::from([ActionId::AppUndo, ActionId::AppRedo, ActionId::AppHelp])
     }
 }

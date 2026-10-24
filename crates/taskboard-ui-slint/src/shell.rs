@@ -91,6 +91,7 @@ impl KeymapShell {
             board_target: None,
             rule_target: None,
             rule_add_offset: None,
+            day_window: None,
             focused_task_done: self.focused_task_done,
         }
     }
@@ -174,7 +175,12 @@ impl KeymapShell {
             | UiEffect::BoardDelete
             | UiEffect::BoardRename
             | UiEffect::FocusFirst
-            | UiEffect::FocusLast => {}
+            | UiEffect::FocusLast
+            // Chunk 10: the today/inbox jumps and capture live in
+            // `view_state`; the shell records nothing for them.
+            | UiEffect::FocusToday
+            | UiEffect::OpenInbox
+            | UiEffect::BeginCapture => {}
         }
         true
     }

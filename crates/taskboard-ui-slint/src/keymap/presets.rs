@@ -70,6 +70,10 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AppHelp, ContextId::Global, &["F1"]),
     (ActionId::CaptureQuick, ContextId::Global, &["Ctrl+K"]),
     (ActionId::PaletteSearch, ContextId::Global, &["Ctrl+F"]),
+    // Chunk 10 (D11): the today jump is one stroke from anywhere, all
+    // presets (P10's promise); view.inbox and task.due-today stay
+    // menu-reachable without default strokes.
+    (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+PageDown"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+PageUp"]),
     (ActionId::NavFocusBoard, ContextId::Global, &["Alt+1"]),
@@ -164,6 +168,7 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AppSettings, ContextId::Global, &["Ctrl+x", "c"]),
     (ActionId::CaptureQuick, ContextId::Global, &["Ctrl+c", "c"]),
     (ActionId::PaletteSearch, ContextId::Global, &["Ctrl+s"]),
+    (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+x", "]"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+x", "["]),
     (
@@ -269,6 +274,7 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavNextView, ContextId::ViNormal, &["g", "t"]),
     (ActionId::NavPrevView, ContextId::ViNormal, &["g", "T"]),
     (ActionId::NavFocusBoard, ContextId::ViNormal, &["g", "g"]),
+    (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
     (ActionId::TaskComplete, ContextId::ViNormal, &["Space"]),
     (ActionId::TaskCreate, ContextId::ViNormal, &["o"]),
     (ActionId::StackCreate, ContextId::ViNormal, &["O"]),

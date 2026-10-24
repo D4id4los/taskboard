@@ -28,6 +28,9 @@ expression: rows
             - Ctrl+Q
           action: app.exit
         - sequence:
+            - Ctrl+T
+          action: view.today
+        - sequence:
             - Ctrl+Z
           action: app.undo
         - sequence:
@@ -189,6 +192,9 @@ expression: rows
         - sequence:
             - Escape
           action: task.move.cancel
+        - sequence:
+            - Ctrl+T
+          action: view.today
         - sequence:
             - Ctrl+c
             - c
@@ -391,6 +397,11 @@ expression: rows
           action: mode.normal
 - preset: vi
   contexts:
+    - context: global
+      bindings:
+        - sequence:
+            - Ctrl+T
+          action: view.today
     - context: settings
       bindings:
         - sequence:

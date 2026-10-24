@@ -685,11 +685,16 @@ mod tests {
     }
 
     /// The vi model (D8/D10): `ViNormal` carries everything, Global
-    /// is empty, `ViInsert` binds only the return-to-normal flip.
+    /// stays near-empty, `ViInsert` binds only the return-to-normal
+    /// flip. (Chunk 10 D11 put the one-stroke today jump on Global in
+    /// every preset — the deliberate, design-ordered exception; this
+    /// test pins it as exactly that one row, not as "no Global".)
     #[test]
     fn vi_preset_shape_matches_the_mode_model() {
         let by_context = rows_by_context(Preset::Vi);
-        assert!(!by_context.contains_key(&ContextId::Global));
+        let global = by_context.get(&ContextId::Global).expect("the today jump");
+        assert_eq!(global.len(), 1, "Global carries exactly one row");
+        assert_eq!(global[0].0, ActionId::ViewToday);
         assert_eq!(
             by_context
                 .get(&ContextId::ViInsert)

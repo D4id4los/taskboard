@@ -61,10 +61,28 @@ expression: rows
   contexts:
     - global
   category: capture
-  enabled: false
+  enabled: true
   menu_rank: 20
-  description: "Captures a thought into the inbox from anywhere. Not yet available — tracked as backlog #347."
+  description: "Captures a thought into the global inbox from anywhere; Enter commits and continues, Escape closes."
   menu_group: ~
+- id: view.today
+  label: Go to today
+  contexts:
+    - global
+  category: navigation
+  enabled: true
+  menu_rank: 90
+  description: "Shows the today view: overdue, scheduled, due-today, and done-today rows across all boards."
+  menu_group: view-nav
+- id: view.inbox
+  label: Go to inbox
+  contexts:
+    - global
+  category: navigation
+  enabled: true
+  menu_rank: 100
+  description: "Jumps to the global Inbox board's first stack; quietly no-ops when the inbox is empty of boards."
+  menu_group: view-nav
 - id: palette.search
   label: Search
   contexts:
@@ -104,6 +122,7 @@ expression: rows
 - id: nav.next-item
   label: Focus next item
   contexts:
+    - today
     - board
     - stack-detail
     - task-detail
@@ -115,6 +134,7 @@ expression: rows
 - id: nav.first-item
   label: Focus first item
   contexts:
+    - today
     - board
     - stack-detail
     - task-detail
@@ -126,6 +146,7 @@ expression: rows
 - id: nav.last-item
   label: Focus last item
   contexts:
+    - today
     - board
     - stack-detail
     - task-detail
@@ -137,6 +158,7 @@ expression: rows
 - id: nav.prev-item
   label: Focus previous item
   contexts:
+    - today
     - board
     - stack-detail
     - task-detail
@@ -149,6 +171,7 @@ expression: rows
   label: Next board
   contexts:
     - global
+    - today
     - board
     - stack-detail
     - task-detail
@@ -161,6 +184,7 @@ expression: rows
   label: Previous board
   contexts:
     - global
+    - today
     - board
     - stack-detail
     - task-detail
@@ -173,6 +197,7 @@ expression: rows
   label: Select board
   contexts:
     - global
+    - today
     - board
     - stack-detail
     - task-detail
@@ -185,6 +210,7 @@ expression: rows
   label: New board
   contexts:
     - global
+    - today
     - board
     - stack-detail
     - task-detail
@@ -197,6 +223,7 @@ expression: rows
   label: Rename board
   contexts:
     - global
+    - today
     - board
     - stack-detail
     - task-detail
@@ -209,6 +236,7 @@ expression: rows
   label: Delete board
   contexts:
     - global
+    - today
     - board
     - stack-detail
     - task-detail
@@ -221,6 +249,7 @@ expression: rows
   label: Next stack
   contexts:
     - global
+    - today
     - board
     - stack-detail
     - task-detail
@@ -233,6 +262,7 @@ expression: rows
   label: Previous stack
   contexts:
     - global
+    - today
     - board
     - stack-detail
     - task-detail
@@ -312,6 +342,7 @@ expression: rows
 - id: task.edit
   label: Edit task
   contexts:
+    - today
     - board
     - task-detail
   category: task
@@ -322,6 +353,7 @@ expression: rows
 - id: task.complete
   label: Complete task
   contexts:
+    - today
     - board
     - task-detail
   category: task
@@ -332,6 +364,7 @@ expression: rows
 - id: task.reopen
   label: Reopen task
   contexts:
+    - today
     - board
     - task-detail
   category: task
@@ -339,9 +372,19 @@ expression: rows
   menu_rank: 85
   description: Marks the focused completed task as not done.
   menu_group: task
+- id: task.due-today
+  label: Due today (re-commit)
+  contexts:
+    - today
+  category: task
+  enabled: true
+  menu_rank: 88
+  description: "Re-commits the focused task to today by stamping its due date at the day window's end; confirmation-free."
+  menu_group: task
 - id: task.move
   label: Move task
   contexts:
+    - today
     - board
     - task-detail
   category: task
@@ -361,6 +404,7 @@ expression: rows
 - id: task.delete
   label: Delete task
   contexts:
+    - today
     - board
     - task-detail
   category: task

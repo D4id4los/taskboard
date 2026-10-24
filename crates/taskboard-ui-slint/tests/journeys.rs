@@ -101,6 +101,7 @@ impl Harness {
             return vec![ContextId::ViInsert, ContextId::Global];
         }
         let view = match window.get_current_view() {
+            View::Today => Some(ContextId::Today),
             View::Board => Some(ContextId::Board),
             View::StackDetail => Some(ContextId::StackDetail),
             View::TaskDetail => Some(ContextId::TaskDetail),
@@ -292,9 +293,12 @@ fn the_ten_step_keyboard_session() {
             harness.press(ActionId::NavNextView);
             assert_eq!(
                 harness.handle.window().get_current_view(),
-                View::Board,
-                "the view cycle wraps"
+                View::Today,
+                "the view cycle wraps through Today (chunk 10 D2)"
             );
+            harness.press(ActionId::NavNextView);
+            assert_eq!(harness.handle.window().get_current_view(), View::Board);
+            harness.press(ActionId::NavPrevView);
             harness.press(ActionId::NavPrevView);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
             harness.press(ActionId::NavPrevView);
@@ -940,7 +944,9 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
 
             // The cycle wraps from any starting view (no one-way edges).
             harness.press(ActionId::NavPrevView);
-            assert_eq!(current_view(&harness), View::TaskDetail, "wrap backwards");
+            assert_eq!(current_view(&harness), View::Today, "wrap backwards");
+            harness.press(ActionId::NavPrevView);
+            assert_eq!(current_view(&harness), View::TaskDetail);
             harness.press(ActionId::NavFocusBoard);
 
             // The menu opens from the board and dismisses cleanly.
@@ -2127,8 +2133,13 @@ fn the_view_cycle_never_passes_through_settings() {
             harness.press(ActionId::AppSettings);
 
             // A full cycle walk from the board: Settings is never a
-            // member.
-            for expected in [View::StackDetail, View::TaskDetail, View::Board] {
+            // member; Today is the cycle head (chunk 10 D2).
+            for expected in [
+                View::StackDetail,
+                View::TaskDetail,
+                View::Today,
+                View::Board,
+            ] {
                 harness.press(ActionId::NavNextView);
                 assert_eq!(harness.handle.window().get_current_view(), expected);
             }
