@@ -36,6 +36,11 @@ pub struct MenuState {
 pub struct KeymapShell {
     pub mode: Mode,
     pub menu: MenuState,
+    /// The search palette is open (#348, chunk 9): the second modal
+    /// context — `chain` flips to `[Palette, ViInsert, Global]` and the
+    /// `Palette` mask makes it total. Mirrored from the view-state flow
+    /// by the adapter's `sync_view_context`.
+    pub palette: bool,
     pub view: Option<ContextId>,
     /// The [`crate::router::DispatchCtx`] carried to the router.
     pub focused_task: Option<taskboard_domain::TaskId>,
@@ -54,6 +59,12 @@ impl KeymapShell {
     pub fn chain(&self) -> Vec<ContextId> {
         if self.menu.open {
             return vec![ContextId::Menu];
+        }
+        if self.palette {
+            // The palette is the second modal context (D8): insert-mode
+            // head so the field's printables are unbound everywhere,
+            // and the `Palette` mask makes the chain total.
+            return vec![ContextId::Palette, ContextId::ViInsert, ContextId::Global];
         }
         if self.mode == Mode::Insert {
             return vec![ContextId::ViInsert, ContextId::Global];
@@ -128,8 +139,11 @@ impl KeymapShell {
             UiEffect::SetMode(mode) => self.mode = mode,
             // The chunk-3 view intents (D6/D9) live in `view_state`;
             // the shell records nothing for them. The round-1 stack
-            // width verbs (D18) likewise live in `view_state`.
-            UiEffect::FocusNext
+            // width verbs (D18) and the palette opener (#348: the bit
+            // mirrors the view-state flow in `sync_view_context`)
+            // likewise live elsewhere.
+            UiEffect::OpenPalette
+            | UiEffect::FocusNext
             | UiEffect::FocusPrev
             | UiEffect::NextView
             | UiEffect::PrevView
