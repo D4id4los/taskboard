@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The slider primitive (L1, r2 D29): a track + thumb with a
+// press/preview/release gesture — the width-drag trio's markup half.
+// `value` is one-way: the widget renders what it is told; the caller
+// (the adapter via `Theme.base-scale`) owns the truth, so live-applied
+// commits, reply reverts, and the preview itself all move the thumb —
+// one source of truth, no duplicate state.
+//
+// Step-snap on every tick: `preview` fires with the snapped, clamped
+// value during the gesture; `committed` fires exactly once on
+// release. The AT actions (increment/decrement) step ±step through
+// the SAME preview→committed path — one AT action is one commit (the
+// AT has no gesture to release).
+
+import { Theme, Semantic } from "../theme.slint";
+
+export component Slider inherits Rectangle {
+    in property <float> minimum;
+    in property <float> maximum;
+    in property <float> step;
+    in property <float> value;
+    callback preview(float);
+    callback committed(float);
+    // The gesture began (the adapter records the revert point here —
+    // the width-drag press precedent).
+    callback pressed();
+
+    accessible-role: AccessibleRole.slider;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: root.step;
+    accessible-action-increment => {
+        root.step-by(1);
+    }
+    accessible-action-decrement => {
+        root.step-by(-1);
+    }
+
+    min-height: thumb.min-height + 2 * Theme.space-1;
+
+    // One AT action = one commit: snap the current value onto the
+    // tick grid, step one tick, and go through the gesture's release
+    // path verbatim.
+    public function step-by(direction: int) {
+        root.preview(root.stepped(direction));
+        root.committed(root.stepped(direction));
+    }
+
+    // The current value snapped onto the tick grid, moved `direction`
+    // ticks, clamped into the range.
+    public function stepped(direction: int) -> float {
+        return clamp(
+            root.minimum
+                + (round((root.value - root.minimum) / root.step) + direction)
+                    * root.step,
+            root.minimum,
+            root.maximum,
+        );
+    }
+
+    // The track; the fill and the thumb read the one-way `value`
+    // (guarded against a zero/empty range).
+    track := Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: Theme.focus-ring-width;
+        border-radius: self.height / 2;
+        background: Theme.border;
+
+        Rectangle {
+            x: 0;
+            width: parent.width * self.fraction;
+            background: Semantic.focus-ring;
+            border-radius: self.height / 2;
+            in property <float> fraction:
+                clamp((root.value - root.minimum)
+                    / max(0.0001, root.maximum - root.minimum), 0.0, 1.0);
+        }
+        thumb := Rectangle {
+            x: parent.width * self.fraction - self.width / 2;
+            y: (track.height - self.height) / 2;
+            width: Theme.space-4;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: Theme.surface-raised;
+            border-width: Theme.focus-ring-width;
+            border-color: Semantic.focus-ring;
+            in property <float> fraction:
+                clamp((root.value - root.minimum)
+                    / max(0.0001, root.maximum - root.minimum), 0.0, 1.0);
+        }
+    }
+
+    // The gesture: a track-covering TouchArea. While pressed, pointer
+    // x → the snapped, clamped value → `preview` per tick; release →
+    // `committed` once (a plain click is the degenerate one-tick
+    // gesture — release still commits).
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        changed pressed => {
+            if (self.pressed) {
+                root.pressed();
+            }
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.up) {
+                root.committed(touch.value-at(touch.mouse-x));
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.preview(touch.value-at(touch.mouse-x));
+            }
+        }
+
+        // Pointer x → the snapped, clamped value.
+        public function value-at(x: length) -> float {
+            return clamp(
+                root.minimum
+                    + round(
+                        ((root.minimum
+                            + (x / max(Theme.focus-ring-width / 4, self.width))
+                                * (root.maximum - root.minimum))
+                        - root.minimum)
+                            / root.step,
+                    )
+                    * root.step,
+                root.minimum,
+                root.maximum,
+            );
+        }
+    }
+}

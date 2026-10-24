@@ -2663,6 +2663,174 @@ fn busy_status_holds_until_the_reply_lands() {
     );
 }
 
+// ---------------------------------------------------------------------
+// r2 D29: the scale slider's gesture (press / preview / release)
+// ---------------------------------------------------------------------
+
+/// The slider previews live and commits once per gesture (r2 D29):
+/// five previews move `Theme.base-scale` (the visible live feedback)
+/// while the lane stays empty — no request construction exists in the
+/// preview arm; the release routes exactly one `SetScale` carrying
+/// the final value, whose Ok reply leaves the outcome Ok and the
+/// scale persisted.
+#[test]
+fn the_slider_previews_live_and_commits_once_per_gesture() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let scale = || {
+                window
+                    .global::<taskboard_ui_slint::Theme>()
+                    .get_base_scale()
+            };
+
+            window.invoke_settings_scale_pressed();
+            for v in [1.2f32, 1.5, 1.8, 2.1, 2.4] {
+                window.invoke_settings_scale_preview(v);
+                assert_eq!(scale(), v, "the preview live-applies onto the theme");
+            }
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the preview arm writes no lane request"
+            );
+
+            window.invoke_settings_scale_released(2.0);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one SetScale per gesture");
+            // 2.0 is exactly representable — the guard pattern keeps
+            // clippy's float_cmp appeased without a magic margin.
+            assert!(matches!(
+                &requests[0],
+                taskboard_ui_slint::requests::UiRequest::SetScale { scale, .. }
+                    if scale.total_cmp(&2.0) == std::cmp::Ordering::Equal
+            ));
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Busy,
+            );
+            let taskboard_ui_slint::requests::UiRequest::SetScale { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the scale request routed");
+            };
+            reply.send(Ok(())).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Ok,
+            );
+            assert_eq!(scale(), 2.0, "the committed scale stands");
+        },
+    );
+}
+
+/// A slider gesture is inert while an operation is pending (r2 D29):
+/// the silent pending gate absorbs press, previews, and release — no
+/// `SetScale`, no scale movement, no outcome change.
+#[test]
+fn a_slider_gesture_is_inert_while_an_op_is_pending() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let scale = || {
+                window
+                    .global::<taskboard_ui_slint::Theme>()
+                    .get_base_scale()
+            };
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // Make an op pending (the preset pick; the request rides
+            // the lane and stays unanswered — pending is the state).
+            window.invoke_settings_preset_picked(2);
+            assert_eq!(harness.drain_requests().len(), 1);
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Busy,
+            );
+            assert_eq!(scale(), 1.0, "the mount scale stands");
+
+            window.invoke_settings_scale_pressed();
+            window.invoke_settings_scale_preview(2.4);
+            window.invoke_settings_scale_released(2.0);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "no SetScale while pending"
+            );
+            assert_eq!(scale(), 1.0, "the scale never moved");
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Busy,
+                "the outcome is untouched"
+            );
+        },
+    );
+}
+
+/// A slider commit reverts on a typed error reply (r2 D29): the
+/// Err reply restores the pre-**gesture** scale (the whole preview
+/// undoes), and the outcome is the typed fold of the error —
+/// outcome-agnostic revert.
+#[test]
+fn a_slider_commit_reverts_on_a_typed_error_reply() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let scale = || {
+                window
+                    .global::<taskboard_ui_slint::Theme>()
+                    .get_base_scale()
+            };
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+            assert_eq!(scale(), 1.0);
+
+            window.invoke_settings_scale_pressed();
+            window.invoke_settings_scale_preview(1.7);
+            window.invoke_settings_scale_released(2.0);
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::SetScale { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the scale request routed");
+            };
+            reply
+                .send(Err(
+                    taskboard_ui_slint::requests::SettingsError::PersistFailed,
+                ))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                scale(),
+                1.0,
+                "the revert restores the persisted scale, not the preview"
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Failed,
+                "the typed error folds to its outcome"
+            );
+        },
+    );
+}
+
 /// The rule-list journey leg (chunk 6, D12/D13): the task detail's
 /// composition renders the subject task's rules (rows + the derived
 /// hint) and its seams dispatch the exact typed commands — preset add,

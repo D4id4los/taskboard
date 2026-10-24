@@ -122,6 +122,9 @@ pub(crate) struct Adapter {
     /// drag deltas are absolute since press — idempotent against
     /// dropped events.
     width_drag: Option<(StackId, f32)>,
+    /// The active scale-slider gesture (r2 D29): the pre-gesture
+    /// base-scale — the revert point. Mirrors `width_drag`.
+    scale_drag: Option<f64>,
     /// The settings view-model (round-1 D7/D8): draft mirror, row
     /// list, liveness overrides, and the pending reply half.
     settings: SettingsVm,
@@ -1551,19 +1554,11 @@ impl Adapter {
         );
     }
 
-    /// The scale commit seam: live-apply first (the mount precedent),
-    /// then persist over the lane; an `Err` reply reverts (D9).
-    pub(crate) fn settings_scale_committed(&mut self, window: &AppWindow, text: &str) {
-        self.settings_field_committed(window);
-        let Ok(scale) = text.parse::<f64>() else {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
-            return;
-        };
-        if self.settings.pending.is_some() || !scale.is_finite() || !(0.5..=3.0).contains(&scale) {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
-            return;
-        }
-        let previous = f64::from(window.global::<crate::Theme>().get_base_scale());
+    /// The scale commit core (r2 D29): live-apply first (the mount
+    /// precedent), then persist over the lane; an `Err` reply reverts
+    /// to `previous`. Both input paths (field Return, slider release)
+    /// share it, so both clamp identically by construction.
+    fn apply_scale_commit(&mut self, window: &AppWindow, scale: f64, previous: f64) {
         #[allow(clippy::cast_possible_truncation)]
         window.global::<crate::Theme>().set_base_scale(scale as f32);
         let (reply, reply_rx) = oneshot::channel();
@@ -1583,6 +1578,68 @@ impl Adapter {
             },
             None,
         );
+    }
+
+    /// The scale commit seam (field, Return-authoritative): live-apply
+    /// first, then persist over the lane; an `Err` reply reverts (D9).
+    pub(crate) fn settings_scale_committed(&mut self, window: &AppWindow, text: &str) {
+        self.settings_field_committed(window);
+        let Ok(scale) = text.parse::<f64>() else {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        };
+        if self.settings.pending.is_some() || !scale.is_finite() || !(0.5..=3.0).contains(&scale) {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        let previous = f64::from(window.global::<crate::Theme>().get_base_scale());
+        self.apply_scale_commit(window, scale, previous);
+    }
+
+    /// The slider gesture's press (r2 D29): record the pre-gesture
+    /// base-scale as the revert point. The pending gate is silent
+    /// (the `settings_preset_picked` precedent).
+    pub(crate) fn settings_scale_pressed(&mut self, window: &AppWindow) {
+        if self.settings.pending.is_some() {
+            return;
+        }
+        self.scale_drag = Some(f64::from(window.global::<crate::Theme>().get_base_scale()));
+    }
+
+    /// The slider gesture's preview (r2 D29): clamp into the range and
+    /// live-apply onto the theme — pure visual feedback. It dispatches
+    /// nothing, writes no outcome, pushes nothing; `Theme` is
+    /// seam-written only, so **one request per gesture holds by
+    /// proof**: no lane write exists in this arm.
+    pub(crate) fn settings_scale_preview(&mut self, window: &AppWindow, value: f64) {
+        if self.scale_drag.is_none() {
+            return;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        window
+            .global::<crate::Theme>()
+            .set_base_scale(value.clamp(0.5, 3.0) as f32);
+    }
+
+    /// The slider gesture's release (r2 D29): one gate, one commit.
+    /// An out-of-gate value reverts the whole preview (base-scale
+    /// back to the pre-**gesture** value) with a seam-local Rejected;
+    /// an in-gate value goes through the shared commit core with the
+    /// pre-gesture value as the revert point, so a failed commit
+    /// undoes the whole preview too.
+    pub(crate) fn settings_scale_released(&mut self, window: &AppWindow, value: f64) {
+        let Some(previous) = self.scale_drag.take() else {
+            return;
+        };
+        if self.settings.pending.is_some() || !value.is_finite() || !(0.5..=3.0).contains(&value) {
+            #[allow(clippy::cast_possible_truncation)]
+            window
+                .global::<crate::Theme>()
+                .set_base_scale(previous as f32);
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        self.apply_scale_commit(window, value, previous);
     }
 }
 
@@ -1646,6 +1703,7 @@ pub(crate) fn install(
         tables: IdTables::default(),
         models: crate::models::PushModels::default(),
         width_drag: None,
+        scale_drag: None,
         settings: SettingsVm {
             rows: connectors,
             // The mount seed (r2 D27): the picker's initial selection
@@ -2652,9 +2710,11 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
-/// The settings seams (round-1 chunk 3, D7/D9): the form's mirror and
-/// send callbacks resolve straight onto the [`Adapter`] settings VM —
-/// never ad-hoc logic.
+/// The settings seams (round-1 chunk 3, D7/D9; the r2 D29 gesture
+/// trio joins): the form's mirror and send callbacks resolve straight
+/// onto the [`Adapter`] settings VM — never ad-hoc logic. One wiring
+/// sequence, kept flat for review.
+#[allow(clippy::too_many_lines)]
 fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     {
         let adapter = Rc::clone(adapter);
@@ -2728,6 +2788,34 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             adapter
                 .borrow_mut()
                 .settings_scale_committed(&window, &text);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_scale_pressed(move || {
+            let Some(window) = weak.upgrade() else { return };
+            adapter.borrow_mut().settings_scale_pressed(&window);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_scale_preview(move |value: f32| {
+            let Some(window) = weak.upgrade() else { return };
+            adapter
+                .borrow_mut()
+                .settings_scale_preview(&window, f64::from(value));
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_scale_released(move |value: f32| {
+            let Some(window) = weak.upgrade() else { return };
+            adapter
+                .borrow_mut()
+                .settings_scale_released(&window, f64::from(value));
         });
     }
 }
