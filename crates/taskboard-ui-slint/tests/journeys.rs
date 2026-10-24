@@ -2916,6 +2916,119 @@ fn settings_scroll_reaches_the_scale_controls_at_scale_3() {
     );
 }
 
+// ---------------------------------------------------------------------
+// r2 D31: the InfoTip help affordances
+// ---------------------------------------------------------------------
+
+/// Every settings field carries its `InfoTip` (r2 D31): with one seeded
+/// connector row the seven placements resolve by element id — the
+/// four `LabeledField` tips (Name, Server, Username, App password),
+/// the scale row's, the keymap header's, and the connection row's.
+/// Role-less elements have no accessible-label address, hence id
+/// addressing; the count pins the placements, never the text.
+#[test]
+fn every_settings_field_carries_its_info_tip() {
+    let (_fixture, state) = fixture::golden_state();
+    let settings = UiSettings {
+        connectors: vec![taskboard_ui_slint::requests::ConnectorInfo {
+            name: "nextcloud".into(),
+            server_url: "https://c.example".into(),
+            username: "alice".into(),
+            read_only: false,
+        }],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::AppSettings);
+            assert_eq!(harness.handle.window().get_current_view(), View::Settings);
+            let driver = &mut harness.driver;
+            driver.advance_time(0);
+
+            // The backend's id match reports the tip's subtree too
+            // (the chain carries the id), so every count pins DISTINCT
+            // physical squares — one per placement.
+            let distinct_spots = |driver: &SlintDriver, id: &str| {
+                let mut spots: Vec<(f32, f32)> = driver
+                    .find_all_by_id(id)
+                    .iter()
+                    .map(|tip| {
+                        let p = tip.absolute_position();
+                        (p.x, p.y)
+                    })
+                    .collect();
+                spots.sort_by(|a, b| a.partial_cmp(b).expect("no NaN positions"));
+                spots.dedup();
+                spots.len()
+            };
+            assert_eq!(
+                distinct_spots(driver, "LabeledField::help-tip"),
+                4,
+                "Name, Server, Username, and App password each carry a tip"
+            );
+            for id in [
+                "SettingsView::help-scale",
+                "SettingsView::help-keymap",
+                "SettingsView::help-rows",
+            ] {
+                assert_eq!(distinct_spots(driver, id), 1, "exactly one tip at {id}");
+            }
+        },
+    );
+}
+
+/// A hover on an `InfoTip` arms the generalized tooltip (r2 D31): the
+/// pending state arms immediately, the mock clock's 600 ms delay
+/// shows it with a non-empty description (the help fact — content
+/// never asserted), and moving away hides it.
+#[test]
+fn an_info_tip_hover_arms_the_generalized_tooltip() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            driver.bind(&harness.handle);
+            driver.advance_time(0);
+
+            let tip = driver
+                .find_all_by_id("SettingsView::help-scale")
+                .into_iter()
+                .next()
+                .expect("the scale tip is present");
+            let pos = tip.absolute_position();
+            let size = tip.size();
+            driver.hover_at(pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+
+            let tooltip = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::TooltipState>();
+            assert!(tooltip.get_pending(), "the hover armed the delay");
+            driver.advance_time(600);
+            assert!(tooltip.get_visible(), "the delay fired");
+            assert_ne!(
+                tooltip.get_description(),
+                "",
+                "the help fact rides the description slot"
+            );
+
+            // Moving away dismisses (the D13 lifecycle).
+            driver.hover_at(4.0, 4.0);
+            assert!(!tooltip.get_pending());
+            assert!(!tooltip.get_visible());
+        },
+    );
+}
+
 /// The rule-list journey leg (chunk 6, D12/D13): the task detail's
 /// composition renders the subject task's rules (rows + the derived
 /// hint) and its seams dispatch the exact typed commands — preset add,

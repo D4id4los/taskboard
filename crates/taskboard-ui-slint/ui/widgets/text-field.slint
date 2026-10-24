@@ -18,6 +18,9 @@ export component TextField inherits Rectangle {
     in property <string> placeholder;
     // The a11y label (D16).
     in property <string> label;
+    // The a11y description (r2 D31): the annotated field's help fact —
+    // one line, call-site-neutral; empty renders no description.
+    in property <string> description;
     in property <string> initial-text;
     in property <bool> selected-on-focus: false;
     // The settings form's write-only secret field (round-1 D26b): echo
@@ -43,6 +46,7 @@ export component TextField inherits Rectangle {
 
     accessible-role: AccessibleRole.text-input;
     accessible-label: root.label;
+    accessible-description: root.description;
     // The buffer exposed to ATs (r2 D24's emptiness oracle reads the
     // same seam); the secret field echoes nothing.
     accessible-value: root.secret ? "" : root.text;

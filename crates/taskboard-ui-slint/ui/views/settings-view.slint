@@ -15,6 +15,7 @@ import { TextField } from "../widgets/text-field.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { Slider } from "../widgets/slider.slint";
 import { SettingsScrollFacts } from "../settings-facts.slint";
+import { InfoTip } from "../widgets/info-tip.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 export enum SettingsRowStatus {
     idle,
@@ -56,6 +57,15 @@ export global SettingsModel {
     // The mapped status sentence (r2 D28): presentation policy lives
     // in src/settings_status.rs; the push lands the string here.
     in-out property <string> status-text: "";
+    // The D31 help-text constants (the same module): presentation
+    // constants pushed once at mount; content never asserted.
+    in-out property <string> help-name: "";
+    in-out property <string> help-server: "";
+    in-out property <string> help-username: "";
+    in-out property <string> help-app-password: "";
+    in-out property <string> help-scale: "";
+    in-out property <string> help-keymap: "";
+    in-out property <string> help-rows: "";
 }
 
 
@@ -121,6 +131,9 @@ component LabeledField inherits HorizontalLayout {
     in property <bool> secret: false;
     in property <int> field-index;
     in-out property <string> text;
+    // The help fact (r2 D31): rides the InfoTip AND the field's
+    // accessible-description — one source per help fact.
+    in property <string> help;
     callback edited(int, string);
     callback committed();
     RoleText {
@@ -129,9 +142,14 @@ component LabeledField inherits HorizontalLayout {
         min-width: Theme.space-8;
         vertical-alignment: center;
     }
+    help-tip := InfoTip {
+        about: root.label;
+        help: root.help;
+    }
     TextField {
         placeholder: root.placeholder;
         label: root.label;
+        description: root.help;
         commit-affordance: true;
         secret: root.secret;
         text <=> root.text;
@@ -257,6 +275,10 @@ export component SettingsView inherits FocusScope {
                         root.remove-clicked(index);
                     }
                 }
+                help-rows := InfoTip {
+                    about: row.name;
+                    help: SettingsModel.help-rows;
+                }
             }
         }
 
@@ -267,6 +289,7 @@ export component SettingsView inherits FocusScope {
         LabeledField {
             label: "Name";
             placeholder: "work";
+            help: SettingsModel.help-name;
             field-index: 0;
             text <=> SettingsModel.draft-name;
             edited(i, t) => {
@@ -279,6 +302,7 @@ export component SettingsView inherits FocusScope {
         LabeledField {
             label: "Server";
             placeholder: "https://cloud.example.com";
+            help: SettingsModel.help-server;
             field-index: 1;
             text <=> SettingsModel.draft-server;
             edited(i, t) => {
@@ -291,6 +315,7 @@ export component SettingsView inherits FocusScope {
         LabeledField {
             label: "Username";
             placeholder: "alice";
+            help: SettingsModel.help-username;
             field-index: 2;
             text <=> SettingsModel.draft-username;
             edited(i, t) => {
@@ -303,6 +328,7 @@ export component SettingsView inherits FocusScope {
         password-field := LabeledField {
             label: "App password";
             placeholder: "write-only; never shown";
+            help: SettingsModel.help-app-password;
             secret: true;
             field-index: 3;
             edited(i, t) => {
@@ -328,9 +354,16 @@ export component SettingsView inherits FocusScope {
         }
 
         // -- keymap preset (D27b: live-apply + persist) -----------------
-        RoleText {
-            role: Typography.title;
-            text: "Keymap";
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            RoleText {
+                role: Typography.title;
+                text: "Keymap";
+            }
+            help-keymap := InfoTip {
+                about: "Keymap";
+                help: SettingsModel.help-keymap;
+            }
         }
         // The keymap picker (r2 D26): one SegmentedControl replaces
         // the three inverted-`enabled` buttons — the selection renders
@@ -359,6 +392,10 @@ export component SettingsView inherits FocusScope {
                 text: "Scale (0.5–3.0)";
                 min-width: Theme.space-8;
                 vertical-alignment: center;
+            }
+            help-scale := InfoTip {
+                about: "Interface scale";
+                help: SettingsModel.help-scale;
             }
             // The slider (r2 D29): live preview while dragging, one
             // commit per release. `value` reads `Theme.base-scale` —
