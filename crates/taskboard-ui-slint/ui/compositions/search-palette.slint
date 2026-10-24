@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The jump-to search palette (L2 composition, #348): one query field
+// over a capped result list plus the overflow caption. Presentation
+// only — no matching, no ranking, no cap arithmetic (Rule E; the dumb
+// client): the rows arrive ranked and capped from the Rust model, the
+// highlight is `index == selected-index`, and every interaction rides
+// a callback the adapter resolves.
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TextField } from "../widgets/text-field.slint";
+import { ListRow } from "../widgets/list-row.slint";
+
+export struct PaletteRowModel {
+    // The hit's title.
+    text: string,
+    // The kind + context line, assembled Rust-side.
+    meta: string,
+    // The selection ring (`index == selected-index`).
+    emphasis: bool,
+}
+
+export component SearchPalette inherits Rectangle {
+    in property <[PaletteRowModel]> rows;
+    in property <int> selected-index;
+    // Hits beyond the visible cap (the caption's count; hidden at 0).
+    in property <int> overflow;
+    callback query-edited(string);
+    callback row-activated(int);
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-medium;
+    border-width: Theme.focus-ring-width;
+    border-color: Semantic.focus-ring;
+    drop-shadow-blur: 12px;
+
+    VerticalLayout {
+        padding: Theme.space-2;
+        spacing: Theme.space-1;
+
+        TextField {
+            placeholder: "Search…";
+            label: "Search";
+            edited(text) => root.query-edited(text);
+        }
+
+        for row[index] in root.rows: ListRow {
+            text: row.text;
+            meta: row.meta;
+            emphasis: index == root.selected-index;
+            TouchArea {
+                clicked => root.row-activated(index);
+            }
+        }
+
+        RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: "+" + root.overflow + " more";
+            visible: root.overflow > 0;
+        }
+    }
+}
