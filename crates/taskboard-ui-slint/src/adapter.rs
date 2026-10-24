@@ -39,7 +39,7 @@ use crate::resolver::{KeymapResolver, Resolution};
 use crate::router::{ActionRouter, DispatchOutcome, Mode, UiEffect};
 use crate::settings_form::{self, ConnectionDraft};
 use crate::shell::KeymapShell;
-use crate::view_state::{Flow, FlowOutcome, ViewState};
+use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState};
 use crate::{AppWindow, Breakpoint, KeyFeedback, KeyboardState, Responsive, UiStatus};
 
 /// The repaint cadence (D1): the UI-owned timer's tick, in
@@ -444,6 +444,35 @@ impl Adapter {
         )
     }
 
+    /// The leaving rule (D9, factored out of the table): a view switch
+    /// by effect commits edit flows, cancels move flows, and dismisses
+    /// the tooltip (r2 D13 — the anchor view is about to unmount).
+    fn settle_flows_on_leaving(
+        &mut self,
+        window: &AppWindow,
+        flow: &Flow,
+        state: &taskboard_domain::AppState,
+    ) {
+        Self::dismiss_tooltip(window);
+        match flow {
+            Flow::Create { .. } | Flow::CreateStack | Flow::EditTitle { .. } => {
+                let outcomes = self.view_state.commit_edit(state);
+                self.apply_outcomes(window, &outcomes);
+            }
+            Flow::Move { .. } => {
+                let outcomes = self.view_state.cancel_move();
+                self.apply_outcomes(window, &outcomes);
+            }
+            // A view switch out of the palette closes it without
+            // effect (the modal discipline).
+            Flow::Palette { .. } => {
+                let outcomes = self.view_state.close_palette();
+                self.apply_outcomes(window, &outcomes);
+            }
+            Flow::None => {}
+        }
+    }
+
     /// The D9 interpretation table: one `match (flow, effect)` whose
     /// arms route to `view_state` methods named by what they do.
     fn interpret(&mut self, window: &AppWindow, effect: UiEffect) {
@@ -463,26 +492,7 @@ impl Adapter {
         // Leaving the edit field by effect first commits the buffer;
         // a move flow ends without dispatch (D9's recorded rule).
         if leaving {
-            // Every view switch by effect dismisses the tooltip (r2
-            // D13): the anchor view is about to unmount.
-            Self::dismiss_tooltip(window);
-            match flow {
-                Flow::Create { .. } | Flow::CreateStack | Flow::EditTitle { .. } => {
-                    let outcomes = self.view_state.commit_edit(&state);
-                    self.apply_outcomes(window, &outcomes);
-                }
-                Flow::Move { .. } => {
-                    let outcomes = self.view_state.cancel_move();
-                    self.apply_outcomes(window, &outcomes);
-                }
-                // A view switch out of the palette closes it
-                // without effect (the modal discipline).
-                Flow::Palette { .. } => {
-                    let outcomes = self.view_state.close_palette();
-                    self.apply_outcomes(window, &outcomes);
-                }
-                Flow::None => {}
-            }
+            self.settle_flows_on_leaving(window, &flow, &state);
         }
 
         let outcomes = match (&flow, effect) {
@@ -494,7 +504,15 @@ impl Adapter {
                 self.view_state.cycle_move_target(&state, -1)
             }
             (Flow::Move { .. }, UiEffect::Activate) => self.view_state.confirm_move(&state),
-            (Flow::Move { .. }, UiEffect::RequestMove) => self.view_state.cancel_move(),
+            // Round 2 (D16/F-E2): every cancel-shaped effect ends the
+            // move flow without dispatching — the dedicated verb
+            // (Escape / emacs C-g), the toggle re-request, and
+            // SetMode(Normal), which no longer falls through to the
+            // inert default leaving the flow intact.
+            (
+                Flow::Move { .. },
+                UiEffect::RequestMove | UiEffect::CancelMove | UiEffect::SetMode(Mode::Normal),
+            ) => self.view_state.cancel_move(),
             // -- the edit flows (D5/D9): SetMode(Normal) discards,
             //    Activate commits, leaving commits first (above) --
             (Flow::Create { .. } | Flow::EditTitle { .. }, UiEffect::SetMode(Mode::Normal)) => {
@@ -539,13 +557,27 @@ impl Adapter {
             (_, UiEffect::BoardNext) => self.view_state.next_board(&state),
             (_, UiEffect::BoardPrevious) => self.view_state.previous_board(&state),
             (_, UiEffect::BoardSelect(board)) => self.view_state.select_board(&state, board),
-            (_, UiEffect::StackWider) => {
+            (_, effect @ (UiEffect::StackWider | UiEffect::StackNarrower)) => {
+                let direction = if effect == UiEffect::StackWider {
+                    1
+                } else {
+                    -1
+                };
                 let ceiling = self.stack_width_ceiling(&state, window);
-                self.view_state.resize_focused_stack(&state, 1, ceiling)
+                self.view_state
+                    .resize_focused_stack(&state, direction, ceiling)
             }
-            (_, UiEffect::StackNarrower) => {
-                let ceiling = self.stack_width_ceiling(&state, window);
-                self.view_state.resize_focused_stack(&state, -1, ceiling)
+            // Round 2 (D17/D20): the stack wrap-walk and the first/last
+            // jumps — pure view state, the BoardNext precedent.
+            (_, UiEffect::StackNext) => self.view_state.step_stack(&state, 1),
+            (_, UiEffect::StackPrev) => self.view_state.step_stack(&state, -1),
+            (_, effect @ (UiEffect::FocusFirst | UiEffect::FocusLast)) => {
+                let edge = if effect == UiEffect::FocusFirst {
+                    FocusEdge::First
+                } else {
+                    FocusEdge::Last
+                };
+                self.view_state.jump_focus(&state, edge, compact)
             }
             // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
             // menu row, `Ctrl+,`, and a second press all close an open
