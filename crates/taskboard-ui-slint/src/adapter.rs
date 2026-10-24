@@ -999,7 +999,7 @@ enum PendingKind {
 /// The typed last-outcome marker the model renders structurally
 /// (R5: never message text).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum SettingsOutcome {
+pub enum SettingsOutcome {
     #[default]
     None,
     Ok,

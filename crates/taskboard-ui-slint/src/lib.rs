@@ -30,6 +30,7 @@ pub mod resolver;
 pub mod responsive;
 pub mod router;
 pub mod settings_form;
+pub mod settings_status;
 pub mod shell;
 pub mod tooltip;
 pub mod view_state;
