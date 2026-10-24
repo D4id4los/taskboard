@@ -40,6 +40,20 @@ strictly to these dependency boundaries:
 - `taskboard-app`: The main executable runner that bootstraps channels,
   reads config via `figment`, and spawns Tokio actors.
 
+**Type-driven design policy (2026-10-24):** the assurance ladder starts
+at the type system. New code follows the house A1 pattern — hand-rolled
+private-field newtypes with a fallible minting constructor at the trust
+boundary; no derive crates (`nutype`/`bounded-integer`/`refined`);
+deliberate leniency documented at the type; no validate-and-forget.
+A2–A4 machinery (branding, typestate, quantity types) stays out while
+typed-id collections + composite refs + enums-with-data suffice, and
+*enters* when new code introduces shapes where they stop sufficing
+(arena/slot-recycled containers, illegal state transitions not
+expressible as enum data, operation-dense mixed-unit arithmetic).
+API/blame churn is not a decision variable while the API is internal;
+be agile. Full policy: `docs/coding_guidelines.org` §2.1; rationale:
+`.artifacts/reports/2026-10-24-type-driven-formal-methods-suitability-report.md`.
+
 ## 3. Inter-Actor Communication Protocols
 
 Never use orchestrator bottlenecks or shared mutable state locks (`RwLock`
