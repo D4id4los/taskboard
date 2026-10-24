@@ -109,6 +109,14 @@ impl Element {
         self.handle.size()
     }
 
+    /// The accessible value (a text-input's buffer) — the
+    /// buffer-emptiness oracle (r2 D24); a value is never assertion
+    /// text, only emptiness/presence is pinned.
+    #[must_use]
+    pub fn value(&self) -> Option<String> {
+        self.handle.accessible_value().map(Into::into)
+    }
+
     /// The element's position in window coordinates (logical px).
     #[must_use]
     pub fn absolute_position(&self) -> slint::LogicalPosition {

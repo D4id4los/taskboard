@@ -40,6 +40,7 @@ export component TaskView inherits FocusScope {
     callback rule-remove-clicked(int);
     callback rule-add-preset-clicked(int);
     callback rule-add-custom-accepted(string);
+    callback rule-add-custom-rejected();
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -153,6 +154,7 @@ export component TaskView inherits FocusScope {
                 remove-clicked(i) => root.rule-remove-clicked(i);
                 add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 add-custom-accepted(text) => root.rule-add-custom-accepted(text);
+                add-custom-rejected() => root.rule-add-custom-rejected();
             }
 
             // The description (read-only body text — markup rendering

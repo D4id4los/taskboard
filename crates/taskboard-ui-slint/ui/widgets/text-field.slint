@@ -43,6 +43,9 @@ export component TextField inherits Rectangle {
 
     accessible-role: AccessibleRole.text-input;
     accessible-label: root.label;
+    // The buffer exposed to ATs (r2 D24's emptiness oracle reads the
+    // same seam); the secret field echoes nothing.
+    accessible-value: root.secret ? "" : root.text;
 
     init => {
         input.text = root.initial-text;
