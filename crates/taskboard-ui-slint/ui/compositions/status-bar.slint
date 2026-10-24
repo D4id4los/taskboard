@@ -35,6 +35,9 @@ export struct BannerRowModel {
 export struct FlowHintModel {
     keys: [string],
     visible: bool,
+    // The move flow's `"<board> › <stack>"` target hint (chunk 10
+    // D6); empty for every other flow.
+    text: string,
 }
 
 export component StatusBar inherits Rectangle {
@@ -226,7 +229,11 @@ export component StatusBar inherits Rectangle {
                 RoleText {
                     role: Typography.caption;
                     text-color: Theme.text-secondary;
-                    text: "choose target · same key cancels · Return confirms";
+                    // The move flow names the target (`board › stack`,
+                    // chunk 10 D6); other flows keep the generic line.
+                    text: root.flow-hint.text != ""
+                        ? root.flow-hint.text
+                        : "choose target · same key cancels · Return confirms";
                     vertical-alignment: center;
                 }
             }

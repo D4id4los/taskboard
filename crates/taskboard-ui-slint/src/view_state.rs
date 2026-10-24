@@ -1032,13 +1032,27 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
+    /// The move ring (chunk 10 D6, the deliberate behavior change):
+    /// the *flat cross-board* candidate list — every live board's
+    /// stacks in `(order, id)` order, boards in canonical `BTreeMap`
+    /// order — wrapping across the board edge. No Inbox special-casing:
+    /// the Inbox board's stacks appear like any board's.
+    #[must_use]
+    pub fn move_ring(state: &AppState) -> Vec<StackId> {
+        live_boards(state)
+            .into_iter()
+            .flat_map(|board| stacks_in_board(state, board.id))
+            .map(|stack| stack.id)
+            .collect()
+    }
+
     /// Focus next/prev during a move flow: cycle the target stack
     /// (wrap — in compact this is exactly the switcher highlighting).
     pub fn cycle_move_target(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
         let Flow::Move { target, .. } = self.flow else {
             return Vec::new();
         };
-        let stacks = self.stack_ids(state);
+        let stacks = Self::move_ring(state);
         if stacks.is_empty() {
             return Vec::new();
         }
@@ -1390,6 +1404,101 @@ mod tests {
         state.tasks.insert(b, task(b, s0, 1));
         state.tasks.insert(c, task(c, s1, 0));
         (state, board_id, [s0, s1], [a, b, c])
+    }
+
+    /// A second live board with two stacks appended to `state` — the
+    /// cross-board ring fixture. Returns the board and its stacks in
+    /// ring order.
+    fn second_board(state: &mut AppState) -> (BoardId, [StackId; 2]) {
+        let board = BoardId::from_uuid(uuid::Uuid::now_v7());
+        let t0 = StackId::from_uuid(uuid::Uuid::now_v7());
+        let t1 = StackId::from_uuid(uuid::Uuid::now_v7());
+        state.boards.insert(
+            board,
+            Board {
+                id: board,
+                remote: None,
+                title: "board two".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: epoch(),
+                    color: epoch(),
+                    archived: epoch(),
+                    deleted: epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        state.stacks.insert(t0, stack(t0, board, 0));
+        state.stacks.insert(t1, stack(t1, board, 1));
+        (board, [t0, t1])
+    }
+
+    // -- the move ring (chunk 10 D6) -------------------------------------
+
+    #[test]
+    fn the_move_ring_is_the_flat_cross_board_candidate_list() {
+        let (mut state, _, [s0, s1], _) = fixture();
+        let (_, [t0, t1]) = second_board(&mut state);
+        assert_eq!(
+            ViewState::move_ring(&state),
+            vec![s0, s1, t0, t1],
+            "boards in canonical order, each board's stacks in (order, id)"
+        );
+    }
+
+    #[test]
+    fn the_ring_wraps_across_the_board_edge() {
+        let (mut state, _, [s0, _], [a, ..]) = fixture();
+        let (_, [t0, t1]) = second_board(&mut state);
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        // Walk to the last stack of the last board and wrap forward.
+        vs.cycle_move_target(&state, 1);
+        vs.cycle_move_target(&state, 1);
+        let Flow::Move { target, .. } = vs.flow() else {
+            panic!("flow holds");
+        };
+        assert_eq!(*target, t0, "the forward walk crosses the board edge");
+        vs.cycle_move_target(&state, 1);
+        let Flow::Move { target, .. } = vs.flow() else {
+            panic!("flow holds");
+        };
+        assert_eq!(*target, t1, "the last board's last stack");
+        vs.cycle_move_target(&state, 1);
+        let Flow::Move { target, .. } = vs.flow() else {
+            panic!("flow holds");
+        };
+        assert_eq!(
+            *target, s0,
+            "wrapping past the last board's last stack reaches the first"
+        );
+    }
+
+    #[test]
+    fn a_cross_board_move_confirms_with_the_engine_append() {
+        let (mut state, _, [s0, _], [a, ..]) = fixture();
+        let (_, [t0, _]) = second_board(&mut state);
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        vs.cycle_move_target(&state, 1);
+        vs.cycle_move_target(&state, 1);
+        let outcomes = vs.confirm_move(&state);
+        assert_eq!(
+            outcomes[..1],
+            [FlowOutcome::Command(StateCommand::MoveTask {
+                id: a,
+                stack: t0,
+                order: 0,
+            })],
+            "cross-board targets are already legal engine-side"
+        );
     }
 
     // -- the view cycle (D7) --------------------------------------------

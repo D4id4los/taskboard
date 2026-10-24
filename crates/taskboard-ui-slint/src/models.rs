@@ -892,9 +892,16 @@ fn push_status_bar(
             .unwrap_or_default(),
         _ => Vec::new(),
     };
+    // The move flow's cross-board hint (chunk 10 D6): the target's
+    // `"<board> › <stack>"`, always both parts while the flow holds.
+    let flow_hint_text = match vs.flow() {
+        Flow::Move { target, .. } => crate::presentation::move_hint(state, *target),
+        _ => String::new(),
+    };
     window.set_flow_hint_model(FlowHintModel {
         keys: string_model(&flow_hint_keys),
         visible: matches!(vs.flow(), Flow::Move { .. } | Flow::MoveStack { .. }),
+        text: flow_hint_text.into(),
     });
 
     // The palette pass rides every refresh while the flow holds (the
