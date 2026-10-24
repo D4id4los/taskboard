@@ -7,6 +7,9 @@ expression: rows
     - context: global
       bindings:
         - sequence:
+            - Escape
+          action: task.move.cancel
+        - sequence:
             - "Ctrl+,"
           action: app.settings
         - sequence:
@@ -48,14 +51,23 @@ expression: rows
             - Space
           action: task.complete
         - sequence:
+            - Ctrl+Space
+          action: task.reopen
+        - sequence:
             - B
           action: board.previous
         - sequence:
             - M
           action: task.move
         - sequence:
+            - Ctrl+Alt+M
+          action: stack.move
+        - sequence:
             - N
           action: task.create
+        - sequence:
+            - Ctrl+Shift+N
+          action: board.create
         - sequence:
             - S
           action: stack.create
@@ -66,6 +78,12 @@ expression: rows
             - Delete
           action: task.delete
         - sequence:
+            - Ctrl+Delete
+          action: stack.delete
+        - sequence:
+            - Ctrl+Shift+Delete
+          action: board.delete
+        - sequence:
             - Up
           action: nav.prev-item
         - sequence:
@@ -75,8 +93,26 @@ expression: rows
             - Ctrl+Left
           action: stack.narrower
         - sequence:
+            - Ctrl+Shift+Left
+          action: stack.prev
+        - sequence:
             - Ctrl+Right
           action: stack.wider
+        - sequence:
+            - Ctrl+Shift+Right
+          action: stack.next
+        - sequence:
+            - F2
+          action: stack.rename
+        - sequence:
+            - Ctrl+F2
+          action: board.rename
+        - sequence:
+            - Ctrl+Home
+          action: nav.first-item
+        - sequence:
+            - Ctrl+End
+          action: nav.last-item
     - context: stack-detail
       bindings:
         - sequence:
@@ -88,6 +124,12 @@ expression: rows
         - sequence:
             - Down
           action: nav.next-item
+        - sequence:
+            - Ctrl+Home
+          action: nav.first-item
+        - sequence:
+            - Ctrl+End
+          action: nav.last-item
     - context: task-detail
       bindings:
         - sequence:
@@ -96,6 +138,12 @@ expression: rows
         - sequence:
             - Down
           action: nav.next-item
+        - sequence:
+            - Ctrl+Home
+          action: nav.first-item
+        - sequence:
+            - Ctrl+End
+          action: nav.last-item
     - context: settings
       bindings:
         - sequence:
@@ -138,6 +186,9 @@ expression: rows
   contexts:
     - context: global
       bindings:
+        - sequence:
+            - Escape
+          action: task.move.cancel
         - sequence:
             - Ctrl+c
             - c
@@ -185,11 +236,48 @@ expression: rows
             - Return
           action: task.edit
         - sequence:
+            - Alt+<
+          action: nav.first-item
+        - sequence:
+            - Alt+>
+          action: nav.last-item
+        - sequence:
             - B
           action: board.previous
         - sequence:
             - b
           action: board.next
+        - sequence:
+            - Ctrl+b
+          action: stack.prev
+        - sequence:
+            - Ctrl+c
+            - Ctrl+Space
+          action: task.reopen
+        - sequence:
+            - Ctrl+c
+            - b
+          action: board.rename
+        - sequence:
+            - Ctrl+c
+            - Ctrl+b
+          action: board.create
+        - sequence:
+            - Ctrl+c
+            - Ctrl+d
+          action: board.delete
+        - sequence:
+            - Ctrl+c
+            - m
+          action: stack.move
+        - sequence:
+            - Ctrl+c
+            - r
+          action: stack.rename
+        - sequence:
+            - Ctrl+c
+            - s
+          action: stack.create
         - sequence:
             - Ctrl+c
             - Ctrl+t
@@ -199,8 +287,18 @@ expression: rows
             - Ctrl+w
           action: task.move
         - sequence:
+            - Ctrl+c
+            - Delete
+          action: stack.delete
+        - sequence:
             - Ctrl+d
           action: task.delete
+        - sequence:
+            - Ctrl+f
+          action: stack.next
+        - sequence:
+            - Ctrl+g
+          action: task.move.cancel
         - sequence:
             - Ctrl+n
           action: nav.next-item
@@ -219,6 +317,12 @@ expression: rows
     - context: stack-detail
       bindings:
         - sequence:
+            - Alt+<
+          action: nav.first-item
+        - sequence:
+            - Alt+>
+          action: nav.last-item
+        - sequence:
             - Ctrl+n
           action: nav.next-item
         - sequence:
@@ -229,6 +333,12 @@ expression: rows
           action: nav.prev-item
     - context: task-detail
       bindings:
+        - sequence:
+            - Alt+<
+          action: nav.first-item
+        - sequence:
+            - Alt+>
+          action: nav.last-item
         - sequence:
             - Ctrl+n
           action: nav.next-item
@@ -320,6 +430,9 @@ expression: rows
             - Return
           action: task.edit
         - sequence:
+            - Escape
+          action: task.move.cancel
+        - sequence:
             - Space
           action: task.complete
         - sequence:
@@ -332,8 +445,17 @@ expression: rows
             - B
           action: board.previous
         - sequence:
+            - G
+          action: nav.last-item
+        - sequence:
+            - H
+          action: nav.first-item
+        - sequence:
             - O
           action: stack.create
+        - sequence:
+            - U
+          action: task.reopen
         - sequence:
             - Z
             - Q
@@ -358,20 +480,52 @@ expression: rows
           action: task.delete
         - sequence:
             - g
+            - D
+          action: stack.delete
+        - sequence:
+            - g
+            - R
+          action: board.rename
+        - sequence:
+            - g
             - T
           action: nav.prev-view
+        - sequence:
+            - g
+            - d
+          action: board.delete
         - sequence:
             - g
             - g
           action: nav.focus-board
         - sequence:
             - g
+            - h
+          action: stack.prev
+        - sequence:
+            - g
+            - l
+          action: stack.next
+        - sequence:
+            - g
             - m
           action: task.move
         - sequence:
             - g
+            - n
+          action: board.create
+        - sequence:
+            - g
+            - r
+          action: stack.rename
+        - sequence:
+            - g
             - t
           action: nav.next-view
+        - sequence:
+            - g
+            - v
+          action: stack.move
         - sequence:
             - i
           action: mode.insert

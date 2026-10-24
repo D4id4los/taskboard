@@ -142,7 +142,8 @@ mod tests {
 
     /// T-1 — the curated root page: the four quick rows in rank
     /// order, then the parent rows in group order (every group's page
-    /// is non-empty over the board chain), then Quit last.
+    /// is non-empty over the board chain; six since the round-2
+    /// Stack/Board split), then Quit last.
     #[test]
     fn root_page_is_curated_quick_rows_parents_quit() {
         let keymap = standard_keymap();
@@ -156,7 +157,7 @@ mod tests {
         ] {
             assert_eq!(actions.next(), Some(id), "quick row order");
         }
-        // Then five parent rows (no action), then Quit.
+        // Then the parent rows (no action), then Quit.
         let parents: Vec<_> = rows
             .iter()
             .filter(|e| e.action.is_none())
@@ -229,7 +230,11 @@ mod tests {
             ActionId::TaskCreate,
             ActionId::TaskEdit,
             ActionId::TaskComplete,
+            // Round 2 (D19/D16): reopen and move-cancel join the Task
+            // group at ranks 85/95.
+            ActionId::TaskReopen,
             ActionId::TaskMove,
+            ActionId::TaskMoveCancel,
             ActionId::TaskDelete,
             ActionId::ReminderSnooze,
             ActionId::ReminderMute,
@@ -354,6 +359,10 @@ mod tests {
             ActionId::NavFocusBoard,
             ActionId::NavNextItem,
             ActionId::NavPrevItem,
+            // Round 2 (D20): the first/last jumps join the ViewNav
+            // page at ranks 105/115.
+            ActionId::NavFirstItem,
+            ActionId::NavLastItem,
         ];
         assert_eq!(
             ids(&rows),

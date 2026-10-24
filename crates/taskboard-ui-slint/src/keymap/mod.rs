@@ -439,6 +439,7 @@ mod tests {
             ActionId::StackWider,
             ActionId::StackNarrower,
             ActionId::TaskCreate,
+            ActionId::StackCreate,
             ActionId::TaskEdit,
             ActionId::TaskComplete,
             ActionId::TaskMove,
@@ -451,6 +452,20 @@ mod tests {
             // in every preset (global) and closes via Escape in the
             // Settings context.
             ActionId::AppSettings,
+            // Round 2 (D16–D21): every preset binds every new action
+            // (the R3 no-second-class-preset gate).
+            ActionId::TaskMoveCancel,
+            ActionId::TaskReopen,
+            ActionId::StackNext,
+            ActionId::StackPrev,
+            ActionId::StackDelete,
+            ActionId::StackRename,
+            ActionId::StackMove,
+            ActionId::BoardCreate,
+            ActionId::BoardDelete,
+            ActionId::BoardRename,
+            ActionId::NavFirstItem,
+            ActionId::NavLastItem,
         ];
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let bound: std::collections::BTreeSet<ActionId> =
@@ -517,6 +532,103 @@ mod tests {
                 "{preset:?} does not resolve the settings close in the settings chain"
             );
         }
+    }
+
+    /// Round 2 (D16, the dispatch (b) contract): every preset resolves
+    /// the move-cancel verb over the board chain — standard/emacs via
+    /// Global Escape (emacs additionally via Board C-g), vi via the
+    /// `ViNormal` Escape (the §3.4 carve-out).
+    #[test]
+    fn every_preset_resolves_the_move_cancel_in_the_board_chain() {
+        let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            assert!(
+                keymap
+                    .first_binding_display(ActionId::TaskMoveCancel, &chain)
+                    .is_some(),
+                "{preset:?} does not resolve task.move.cancel in the board chain"
+            );
+        }
+    }
+
+    /// Round 2 (D17/D18): the stack-verb family mirrors the
+    /// board-verb contract shape — every preset resolves each verb
+    /// over the `[Board, ViNormal, Global]` chain.
+    #[test]
+    fn every_preset_resolves_the_stack_verbs_in_the_board_chain() {
+        let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for verb in [
+                ActionId::StackNext,
+                ActionId::StackPrev,
+                ActionId::StackDelete,
+                ActionId::StackRename,
+                ActionId::StackMove,
+            ] {
+                assert!(
+                    keymap.first_binding_display(verb, &chain).is_some(),
+                    "{preset:?} does not resolve {verb} in the board chain"
+                );
+            }
+        }
+    }
+
+    /// Round 2 (D18): the board-lifecycle verbs resolve over the
+    /// board chain in every preset (the same contract shape).
+    #[test]
+    fn every_preset_resolves_the_board_lifecycle_verbs_in_the_board_chain() {
+        let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for verb in [
+                ActionId::BoardCreate,
+                ActionId::BoardDelete,
+                ActionId::BoardRename,
+            ] {
+                assert!(
+                    keymap.first_binding_display(verb, &chain).is_some(),
+                    "{preset:?} does not resolve {verb} in the board chain"
+                );
+            }
+        }
+    }
+
+    /// Round 2 (D16, the dispatch (c) C-g pin): under emacs the lone
+    /// `Ctrl+g` cancels in the board chain (exact-match in Board),
+    /// while everywhere the Board context is absent it stays a
+    /// pending prefix of `app.redo` — `Ctrl+g Ctrl+/` still resolves
+    /// the redo action. The exact-match-first resolver makes a
+    /// Global C-g impossible without killing redo; this pins the
+    /// recorded resolution.
+    #[test]
+    fn emacs_c_g_cancels_on_the_board_chain_and_stays_redos_prefix_elsewhere() {
+        let keymap = Keymap::from_preset(Preset::Emacs);
+        let board_chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        let task_chain = [
+            ContextId::TaskDetail,
+            ContextId::ViNormal,
+            ContextId::Global,
+        ];
+        let c_g = stroke::parse("Ctrl+g").expect("ctrl g");
+        let c_slash = stroke::parse("Ctrl+/").expect("ctrl slash");
+
+        let mut resolver = crate::resolver::KeymapResolver::new();
+        assert_eq!(
+            resolver.feed(c_g, &board_chain, &keymap),
+            crate::resolver::Resolution::Action(ActionId::TaskMoveCancel)
+        );
+
+        let mut resolver = crate::resolver::KeymapResolver::new();
+        assert_eq!(
+            resolver.feed(c_g, &task_chain, &keymap),
+            crate::resolver::Resolution::Pending
+        );
+        assert_eq!(
+            resolver.feed(c_slash, &task_chain, &keymap),
+            crate::resolver::Resolution::Action(ActionId::AppRedo)
+        );
     }
 
     /// Grouped rows per context for the conflict/shadow contracts.
@@ -591,6 +703,19 @@ mod tests {
                 .expect("vi binds normal")
                 .len()
                 > 1
+        );
+        // Round 2 (§3.4 carve-out): the all-preset cancel verb resolves
+        // over the `[ViNormal, Global]` chain even with vi's Global
+        // empty — the ViNormal Escape carries it.
+        let keymap = Keymap::from_preset(Preset::Vi);
+        assert!(
+            keymap
+                .first_binding_display(
+                    ActionId::TaskMoveCancel,
+                    &[ContextId::ViNormal, ContextId::Global]
+                )
+                .is_some(),
+            "vi does not resolve task.move.cancel over the ViNormal chain"
         );
     }
 
@@ -684,16 +809,18 @@ mod validation_tests {
     /// binding contexts, the new one resolves in each.
     #[test]
     fn override_replaces_all_bindings_of_the_action() {
-        let result = built(Preset::Standard, &[("task.complete", &[&["Ctrl+Space"]])]);
+        // `Ctrl+J` (not the round-1 `Ctrl+Space` pick: the standard
+        // preset binds it to `task.reopen` since round 2).
+        let result = built(Preset::Standard, &[("task.complete", &[&["Ctrl+J"]])]);
         assert_eq!(result.findings, Vec::new());
         let space = stroke::parse("Space").expect("space");
-        let ctrl_space = stroke::parse("Ctrl+Space").expect("ctrl space");
+        let override_seq = stroke::parse("Ctrl+J").expect("ctrl j");
         // The standard preset binds `task.complete` in the board
         // context (D8 draft); that is the context the override
         // replaces.
         let chain = [ContextId::Board, ContextId::Global];
         assert_eq!(
-            result.keymap.resolve(&chain, &[ctrl_space]),
+            result.keymap.resolve(&chain, &[override_seq]),
             Some(ActionId::TaskComplete)
         );
         assert_eq!(

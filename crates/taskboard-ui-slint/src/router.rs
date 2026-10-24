@@ -83,6 +83,32 @@ pub enum UiEffect {
     StackWider,
     /// Narrow the focused stack's column by one step.
     StackNarrower,
+    // --- round 2 (D16–D21): the action-registry round-up verbs. All
+    // pure view intents — target resolution is the view state's (the
+    // `StackWider` precedent); never a `Command` except the reopen
+    // gate, which is the `TaskComplete` machinery inverted.
+    /// End the active move/stack-move flow without moving anything.
+    CancelMove,
+    /// Step the stack selection to the next stack (wraps).
+    StackNext,
+    /// Step the stack selection to the previous stack (wraps).
+    StackPrev,
+    /// Delete the focused or selected stack.
+    StackDelete,
+    /// Open the stack title editor.
+    StackRename,
+    /// Start the stack-move flow (toggle semantics mid-flow).
+    StackMove,
+    /// Open the new-board field.
+    BoardCreate,
+    /// Delete the current board (engine owns the refusals).
+    BoardDelete,
+    /// Open the board title editor.
+    BoardRename,
+    /// Focus the first card in reading order.
+    FocusFirst,
+    /// Focus the last card in reading order.
+    FocusLast,
     // --- round-1 chunk 3 (D28b): the settings surface — a `ViewId`
     // excluded from the view cycle; the adapter toggles it.
     /// Open the settings view (or close it — toggle semantics).
@@ -128,6 +154,11 @@ pub struct DispatchCtx {
     /// the adapter (preset or custom); `reminder.rule-add` routes from
     /// it together with the focused task (`NoTarget` without both).
     pub rule_add_offset: Option<ReminderOffset>,
+    /// Whether the focused task is done (round 2, D19): the reopen
+    /// verb's enablement gate — `task.reopen` routes only for a
+    /// focused *completed* task (the `task.complete` machinery
+    /// inverted; the router stays pure, the adapter syncs the stamp).
+    pub focused_task_done: bool,
 }
 
 /// The pure dispatch table. Every [`ActionId`] variant is matched —
@@ -215,6 +246,25 @@ impl ActionRouter {
             ActionId::StackCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreateStack),
             ActionId::TaskEdit => DispatchOutcome::UiEffect(UiEffect::Activate),
             ActionId::TaskMove => DispatchOutcome::UiEffect(UiEffect::RequestMove),
+            // Round 2 (D16–D21): the round-up verbs — pure view
+            // intents; reopen routes from the focused task's done stamp.
+            ActionId::TaskMoveCancel => DispatchOutcome::UiEffect(UiEffect::CancelMove),
+            ActionId::StackNext => DispatchOutcome::UiEffect(UiEffect::StackNext),
+            ActionId::StackPrev => DispatchOutcome::UiEffect(UiEffect::StackPrev),
+            ActionId::StackDelete => DispatchOutcome::UiEffect(UiEffect::StackDelete),
+            ActionId::StackRename => DispatchOutcome::UiEffect(UiEffect::StackRename),
+            ActionId::StackMove => DispatchOutcome::UiEffect(UiEffect::StackMove),
+            ActionId::BoardCreate => DispatchOutcome::UiEffect(UiEffect::BoardCreate),
+            ActionId::BoardDelete => DispatchOutcome::UiEffect(UiEffect::BoardDelete),
+            ActionId::BoardRename => DispatchOutcome::UiEffect(UiEffect::BoardRename),
+            ActionId::NavFirstItem => DispatchOutcome::UiEffect(UiEffect::FocusFirst),
+            ActionId::NavLastItem => DispatchOutcome::UiEffect(UiEffect::FocusLast),
+            ActionId::TaskReopen => match (ctx.focused_task, ctx.focused_task_done) {
+                (Some(id), true) => {
+                    DispatchOutcome::Command(StateCommand::SetTaskDone { id, done: false })
+                }
+                _ => DispatchOutcome::NoTarget,
+            },
             // The board dimension (design §3.8): pure view intents.
             ActionId::BoardNext => DispatchOutcome::UiEffect(UiEffect::BoardNext),
             ActionId::BoardPrevious => DispatchOutcome::UiEffect(UiEffect::BoardPrevious),
@@ -249,6 +299,7 @@ mod tests {
             board_target: None,
             rule_target: None,
             rule_add_offset: None,
+            focused_task_done: false,
         }
     }
 
@@ -391,12 +442,51 @@ mod tests {
             (ActionId::StackCreate, UiEffect::BeginCreateStack),
             (ActionId::TaskEdit, UiEffect::Activate),
             (ActionId::TaskMove, UiEffect::RequestMove),
+            // Round 2 (D16–D21): the round-up verbs route to their
+            // named effects.
+            (ActionId::TaskMoveCancel, UiEffect::CancelMove),
+            (ActionId::StackNext, UiEffect::StackNext),
+            (ActionId::StackPrev, UiEffect::StackPrev),
+            (ActionId::StackDelete, UiEffect::StackDelete),
+            (ActionId::StackRename, UiEffect::StackRename),
+            (ActionId::StackMove, UiEffect::StackMove),
+            (ActionId::BoardCreate, UiEffect::BoardCreate),
+            (ActionId::BoardDelete, UiEffect::BoardDelete),
+            (ActionId::BoardRename, UiEffect::BoardRename),
+            (ActionId::NavFirstItem, UiEffect::FocusFirst),
+            (ActionId::NavLastItem, UiEffect::FocusLast),
         ] {
             assert_eq!(
                 ActionRouter::dispatch(id, &ctx(true)),
                 DispatchOutcome::UiEffect(effect)
             );
         }
+    }
+
+    /// Round 2 (D19, the dispatch (f) enablement pin): `task.reopen`
+    /// routes the exact inverted `SetTaskDone` for a focused completed
+    /// task, and absorbs as `NoTarget` for an open or absent one.
+    #[test]
+    fn task_reopen_routes_only_for_a_focused_done_task() {
+        let mut ctx = ctx(true);
+        ctx.focused_task_done = true;
+        let task = ctx.focused_task.expect("set");
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskReopen, &ctx),
+            DispatchOutcome::Command(StateCommand::SetTaskDone {
+                id: task,
+                done: false
+            })
+        );
+        ctx.focused_task_done = false;
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskReopen, &ctx),
+            DispatchOutcome::NoTarget
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskReopen, &DispatchCtx::default()),
+            DispatchOutcome::NoTarget
+        );
     }
 
     /// Design §3.8 — the board verbs: next/previous route to their

@@ -73,10 +73,18 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+PageDown"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+PageUp"]),
     (ActionId::NavFocusBoard, ContextId::Global, &["Alt+1"]),
+    // Round 2 (D16): move-cancel is all-preset via Escape (Global);
+    // the emacs C-g alternate lives in Board, never Global (the
+    // exact-match-first resolution keeps `app.redo`'s C-g prefix
+    // reachable everywhere the Board context is absent).
+    (ActionId::TaskMoveCancel, ContextId::Global, &["Escape"]),
     // Board
     (ActionId::NavNextItem, ContextId::Board, &["Down"]),
     (ActionId::NavPrevItem, ContextId::Board, &["Up"]),
+    (ActionId::NavFirstItem, ContextId::Board, &["Ctrl+Home"]),
+    (ActionId::NavLastItem, ContextId::Board, &["Ctrl+End"]),
     (ActionId::TaskComplete, ContextId::Board, &["Space"]),
+    (ActionId::TaskReopen, ContextId::Board, &["Ctrl+Space"]),
     (ActionId::TaskCreate, ContextId::Board, &["N"]),
     (ActionId::StackCreate, ContextId::Board, &["S"]),
     (ActionId::TaskEdit, ContextId::Board, &["Return"]),
@@ -84,6 +92,21 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskDelete, ContextId::Board, &["Delete"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
+    (ActionId::BoardCreate, ContextId::Board, &["Ctrl+Shift+N"]),
+    (ActionId::BoardRename, ContextId::Board, &["Ctrl+F2"]),
+    (
+        ActionId::BoardDelete,
+        ContextId::Board,
+        &["Ctrl+Shift+Delete"],
+    ),
+    // Round 2 (D17/D18): Ctrl+Shift+arrows (not the design's
+    // Ctrl+Alt-arrows — the GNOME/KDE workspace switch seizes those)
+    // sit one modifier beside the width pair's Ctrl+arrows.
+    (ActionId::StackNext, ContextId::Board, &["Ctrl+Shift+Right"]),
+    (ActionId::StackPrev, ContextId::Board, &["Ctrl+Shift+Left"]),
+    (ActionId::StackRename, ContextId::Board, &["F2"]),
+    (ActionId::StackMove, ContextId::Board, &["Ctrl+Alt+M"]),
+    (ActionId::StackDelete, ContextId::Board, &["Ctrl+Delete"]),
     // Round-1 chunk 2 (D18): the stack-width verbs share the CUA
     // Ctrl+arrows in the Board context.
     (ActionId::StackWider, ContextId::Board, &["Ctrl+Right"]),
@@ -91,10 +114,22 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // StackDetail
     (ActionId::NavNextItem, ContextId::StackDetail, &["Down"]),
     (ActionId::NavPrevItem, ContextId::StackDetail, &["Up"]),
+    (
+        ActionId::NavFirstItem,
+        ContextId::StackDetail,
+        &["Ctrl+Home"],
+    ),
+    (ActionId::NavLastItem, ContextId::StackDetail, &["Ctrl+End"]),
     (ActionId::TaskCreate, ContextId::StackDetail, &["N"]),
     // TaskDetail
     (ActionId::NavNextItem, ContextId::TaskDetail, &["Down"]),
     (ActionId::NavPrevItem, ContextId::TaskDetail, &["Up"]),
+    (
+        ActionId::NavFirstItem,
+        ContextId::TaskDetail,
+        &["Ctrl+Home"],
+    ),
+    (ActionId::NavLastItem, ContextId::TaskDetail, &["Ctrl+End"]),
     // Menu
     (ActionId::MenuNext, ContextId::Menu, &["Down"]),
     (ActionId::MenuPrevious, ContextId::Menu, &["Up"]),
@@ -136,9 +171,16 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Global,
         &["Ctrl+x", "Ctrl+b"],
     ),
+    // Round 2 (D16): Escape cancels a move flow everywhere; the lone
+    // C-g lives in Board only — over the Global context it is redo's
+    // pending prefix (the resolver is exact-match-first, so a Global
+    // C-g would make `app.redo` permanently unreachable).
+    (ActionId::TaskMoveCancel, ContextId::Global, &["Escape"]),
     // Board
     (ActionId::NavNextItem, ContextId::Board, &["Ctrl+n"]),
     (ActionId::NavPrevItem, ContextId::Board, &["Ctrl+p"]),
+    (ActionId::NavFirstItem, ContextId::Board, &["Alt+<"]),
+    (ActionId::NavLastItem, ContextId::Board, &["Alt+>"]),
     (
         ActionId::TaskComplete,
         ContextId::Board,
@@ -148,8 +190,40 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Board, &["Return"]),
     (ActionId::TaskMove, ContextId::Board, &["Ctrl+c", "Ctrl+w"]),
     (ActionId::TaskDelete, ContextId::Board, &["Ctrl+d"]),
+    // Round 2 (D16): the board-view C-g alternate for move-cancel.
+    (ActionId::TaskMoveCancel, ContextId::Board, &["Ctrl+g"]),
+    // Round 2 (D17): emacs' isearch/read-args chords — Ctrl+f/Ctrl+b
+    // free in the Board context (PaletteSearch is Global Ctrl+s).
+    (ActionId::StackNext, ContextId::Board, &["Ctrl+f"]),
+    (ActionId::StackPrev, ContextId::Board, &["Ctrl+b"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
+    // Round 2 (D18): the org-mode C-c family extends — bare second
+    // strokes for stack verbs, chorded for board verbs.
+    (ActionId::StackCreate, ContextId::Board, &["Ctrl+c", "s"]),
+    (ActionId::StackRename, ContextId::Board, &["Ctrl+c", "r"]),
+    (ActionId::StackMove, ContextId::Board, &["Ctrl+c", "m"]),
+    (
+        ActionId::StackDelete,
+        ContextId::Board,
+        &["Ctrl+c", "Delete"],
+    ),
+    (
+        ActionId::BoardCreate,
+        ContextId::Board,
+        &["Ctrl+c", "Ctrl+b"],
+    ),
+    (ActionId::BoardRename, ContextId::Board, &["Ctrl+c", "b"]),
+    (
+        ActionId::BoardDelete,
+        ContextId::Board,
+        &["Ctrl+c", "Ctrl+d"],
+    ),
+    (
+        ActionId::TaskReopen,
+        ContextId::Board,
+        &["Ctrl+c", "Ctrl+Space"],
+    ),
     // Round-1 chunk 2 (D18): no emacs-authentic candidate exists, so
     // the pair shares the CUA strokes (the design's recorded rule).
     (ActionId::StackWider, ContextId::Board, &["Ctrl+Right"]),
@@ -157,10 +231,14 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     // StackDetail
     (ActionId::NavNextItem, ContextId::StackDetail, &["Ctrl+n"]),
     (ActionId::NavPrevItem, ContextId::StackDetail, &["Ctrl+p"]),
+    (ActionId::NavFirstItem, ContextId::StackDetail, &["Alt+<"]),
+    (ActionId::NavLastItem, ContextId::StackDetail, &["Alt+>"]),
     (ActionId::TaskCreate, ContextId::StackDetail, &["Ctrl+o"]),
     // TaskDetail
     (ActionId::NavNextItem, ContextId::TaskDetail, &["Ctrl+n"]),
     (ActionId::NavPrevItem, ContextId::TaskDetail, &["Ctrl+p"]),
+    (ActionId::NavFirstItem, ContextId::TaskDetail, &["Alt+<"]),
+    (ActionId::NavLastItem, ContextId::TaskDetail, &["Alt+>"]),
     // Menu
     (ActionId::MenuNext, ContextId::Menu, &["Ctrl+n"]),
     (ActionId::MenuPrevious, ContextId::Menu, &["Ctrl+p"]),
@@ -197,6 +275,25 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::ViNormal, &["Return"]),
     (ActionId::TaskDelete, ContextId::ViNormal, &["d", "d"]),
     (ActionId::TaskMove, ContextId::ViNormal, &["g", "m"]),
+    // Round 2 (D16): vi's cancel lives in ViNormal, never Global (the
+    // vi-shape contract keeps Global empty); Escape conflicts with
+    // nothing there — ViInsert's Escape still wins while typing.
+    (ActionId::TaskMoveCancel, ContextId::ViNormal, &["Escape"]),
+    // Round 2 (D17/D18): the g-family extends — the d/D delete pair
+    // convention, r/R renames, v for the stack move.
+    (ActionId::StackNext, ContextId::ViNormal, &["g", "l"]),
+    (ActionId::StackPrev, ContextId::ViNormal, &["g", "h"]),
+    (ActionId::StackRename, ContextId::ViNormal, &["g", "r"]),
+    (ActionId::StackMove, ContextId::ViNormal, &["g", "v"]),
+    (ActionId::StackDelete, ContextId::ViNormal, &["g", "D"]),
+    (ActionId::BoardCreate, ContextId::ViNormal, &["g", "n"]),
+    (ActionId::BoardRename, ContextId::ViNormal, &["g", "R"]),
+    (ActionId::BoardDelete, ContextId::ViNormal, &["g", "d"]),
+    // Round 2 (D20): H/G are vim's top/bottom motions, mapped to
+    // first/last item in reading order.
+    (ActionId::NavFirstItem, ContextId::ViNormal, &["H"]),
+    (ActionId::NavLastItem, ContextId::ViNormal, &["G"]),
+    (ActionId::TaskReopen, ContextId::ViNormal, &["U"]),
     (ActionId::BoardNext, ContextId::ViNormal, &["b"]),
     (ActionId::BoardPrevious, ContextId::ViNormal, &["B"]),
     // Round-1 chunk 2 (D18): vim's own window-resize family; `Ctrl+w`

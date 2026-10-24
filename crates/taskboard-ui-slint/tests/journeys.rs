@@ -1599,9 +1599,9 @@ fn the_add_stack_glyph_is_square() {
     );
 }
 /// R2 D6 (T-7) — the add-stack button carries the stack.create binding
-/// hint: non-empty under the standard preset, structurally empty under
-/// emacs (chunk 3 binds it there). Structural emptiness only — the
-/// hint's content is never asserted.
+/// hint: non-empty under the standard preset, and (since round 2 fills
+/// the D15 gap with `Ctrl+c s`) non-empty under emacs too. Structural
+/// presence only — the hint's content is never asserted.
 #[test]
 fn the_add_stack_button_carries_the_stack_create_hint() {
     let (_fixture, state) = fixture::golden_state();
@@ -1629,10 +1629,9 @@ fn the_add_stack_button_carries_the_stack_create_hint() {
                     ..UiSettings::default()
                 },
             );
-            assert_eq!(
-                harness.handle.window().get_stack_create_hint().row_count(),
-                0,
-                "emacs leaves stack.create unbound (the D15 gap)"
+            assert!(
+                harness.handle.window().get_stack_create_hint().row_count() > 0,
+                "emacs binds stack.create (Ctrl+c s; the D15 gap closed)"
             );
         },
     );

@@ -45,6 +45,9 @@ pub struct KeymapShell {
     /// The [`crate::router::DispatchCtx`] carried to the router.
     pub focused_task: Option<taskboard_domain::TaskId>,
     pub focused_stack: Option<taskboard_domain::StackId>,
+    /// Whether the focused task is done (round 2, D19): the reopen
+    /// verb's gate, synced by the adapter from the focused task.
+    pub focused_task_done: bool,
 }
 
 impl KeymapShell {
@@ -88,6 +91,7 @@ impl KeymapShell {
             board_target: None,
             rule_target: None,
             rule_add_offset: None,
+            focused_task_done: self.focused_task_done,
         }
     }
 
@@ -157,7 +161,20 @@ impl KeymapShell {
             | UiEffect::BoardSelect(_)
             | UiEffect::StackWider
             | UiEffect::StackNarrower
-            | UiEffect::OpenSettings => {}
+            | UiEffect::OpenSettings
+            // Round 2 (D16–D21): the round-up verbs live in
+            // `view_state` too; the shell records nothing for them.
+            | UiEffect::CancelMove
+            | UiEffect::StackNext
+            | UiEffect::StackPrev
+            | UiEffect::StackDelete
+            | UiEffect::StackRename
+            | UiEffect::StackMove
+            | UiEffect::BoardCreate
+            | UiEffect::BoardDelete
+            | UiEffect::BoardRename
+            | UiEffect::FocusFirst
+            | UiEffect::FocusLast => {}
         }
         true
     }
