@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The today view (L3, chunk 10 D7, #346): the four sections of the
+// day window in display order — overdue, scheduled, due today, done —
+// each a header (label + count) over task-card rows. Empty sections
+// collapse; an all-empty day renders the empty state. Rows carry a
+// context line (the stack title, or "board › stack" when more than
+// one board is live — a state-derived presentation decision).
+
+import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
+import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
+import { EmptyState } from "../widgets/empty-state.slint";
+
+export struct TodayRowModel {
+    card: TaskCardModel,
+    // The stack title, or "<board> › <stack>" on a multi-board
+    // desktop (D-V3); suppressed on kiosk (no badges).
+    context: string,
+}
+
+export struct TodaySectionModel {
+    label: string,
+    count: int,
+    rows: [TodayRowModel],
+}
+
+export struct TodayModel {
+    sections: [TodaySectionModel],
+    // True when every section is empty — the capture-hint empty state.
+    empty: bool,
+}
+
+component TodaySection inherits VerticalLayout {
+    in property <TodaySectionModel> section;
+    callback row-activated(int);
+    callback row-clicked(int);
+    callback row-context(int, float, float);
+
+    VerticalLayout {
+        spacing: Theme.space-1;
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            RoleText {
+                role: Typography.caption;
+                text: root.section.label;
+                vertical-alignment: center;
+            }
+            RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: root.section.count;
+                vertical-alignment: center;
+            }
+        }
+        for row[rindex] in root.section.rows: TaskCard {
+            model: row.card;
+            hint-keys: [];
+            activated => {
+                root.row-activated(rindex);
+            }
+            clicked => {
+                root.row-clicked(rindex);
+            }
+            context-requested(x, y) => {
+                root.row-context(rindex, x, y);
+            }
+            VerticalLayout {
+                padding-left: Theme.space-3;
+                if (row.context != ""): RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: row.context;
+                }
+            }
+        }
+    }
+}
+
+export component TodayView inherits FocusScope {
+    in property <TodayModel> today;
+    callback row-activated(int, int);
+    callback row-clicked(int, int);
+    callback row-context(int, int, float, float);
+
+    focus-on-tab-navigation: true;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Today";
+    init => self.focus();
+
+    ring := Rectangle {
+        width: 100%;
+        height: 100%;
+        border-width: root.has-focus ? Theme.focus-ring-width : 0;
+        border-color: Semantic.focus-ring;
+        border-radius: Theme.radius-medium;
+
+        if (root.today.empty): EmptyState {
+            text: "Nothing due today";
+            hint: "Capture a thought from anywhere — it lands in the inbox.";
+        }
+        VerticalLayout {
+            padding: Theme.space-3;
+            spacing: Theme.space-3;
+            for section[sindex] in root.today.sections: TodaySection {
+                section: section;
+                row-activated(r) => {
+                    root.row-activated(sindex, r);
+                }
+                row-clicked(r) => {
+                    root.row-clicked(sindex, r);
+                }
+                row-context(r, x, y) => {
+                    root.row-context(sindex, r, x, y);
+                }
+            }
+        }
+    }
+}

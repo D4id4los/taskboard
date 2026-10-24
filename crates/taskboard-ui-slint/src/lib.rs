@@ -81,6 +81,11 @@ pub struct UiSettings {
     /// app-side via `configured_connectors` at hand-over, so the
     /// settings list is populated before the first open.
     pub connectors: Vec<requests::ConnectorInfo>,
+    /// The today window's derivation pair (chunk 10 D4): the parsed
+    /// `[preferences] day_start_time` plus the device's fixed offset,
+    /// resolved once at hand-over (the consumers contract — nothing
+    /// reads config mid-flight). Defaults to midnight + UTC.
+    pub day_start: (chrono::NaiveTime, chrono::FixedOffset),
     /// The `[ui.keymap] preset` word's typed value (round-1 D9): the
     /// settings picker's initial selection.
     pub keymap_preset: keymap::Preset,
@@ -96,6 +101,10 @@ impl Default for UiSettings {
             stack_widths: BTreeMap::new(),
             connectors: Vec::new(),
             keymap_preset: keymap::Preset::Standard,
+            day_start: (
+                chrono::NaiveTime::MIN,
+                chrono::FixedOffset::east_opt(0).expect("zero"),
+            ),
         }
     }
 }
@@ -205,6 +214,8 @@ pub fn mount(
         requests,
         settings.stack_widths,
         settings.connectors,
+        settings.day_start,
+        settings.kiosk,
         Arc::clone(&state),
         Rc::clone(&status_timer),
     );
@@ -446,6 +457,12 @@ impl UiHandle {
     #[must_use]
     pub fn window(&self) -> &AppWindow {
         &self.window
+    }
+
+    /// Routes one action through the adapter (the automation/test
+    /// seam for the action layer without a keyboard event loop).
+    pub fn dispatch_action(&self, action: crate::actions::ActionId) {
+        self.adapter.borrow_mut().route(self.window(), action);
     }
 }
 
@@ -878,6 +895,7 @@ mod font_smoke_tests {
 
 #[cfg(test)]
 mod keymap_adapter_tests {
+    use super::view_component_tests::route_action;
     use super::*;
     use crate::keymap::{Preset, RawKeymap, build};
     use crate::test_platform::on_slint_thread;
@@ -912,6 +930,9 @@ mod keymap_adapter_tests {
             },
         )
         .expect("mount succeeds on the null platform");
+        // Escape the desktop default (chunk 10 D2) for the board-level
+        // mechanics these tests exercise.
+        route_action(&handle, crate::actions::ActionId::NavFocusBoard);
         (handle, commands_rx)
     }
 
@@ -1281,7 +1302,17 @@ mod view_component_tests {
             },
         )
         .expect("mount succeeds on the null platform");
+        // The desktop default is Today (chunk 10 D2); these component
+        // tests target board mechanics, so they escape centrally the
+        // way the journeys do — one `nav.focus-board` after mount.
+        route_action(&handle, crate::actions::ActionId::NavFocusBoard);
         (handle, commands_rx)
+    }
+
+    /// Dispatches one action through the adapter's route (the
+    /// component-test-sized analogue of the journeys' press).
+    pub(super) fn route_action(handle: &UiHandle, action: crate::actions::ActionId) {
+        handle.dispatch_action(action);
     }
 
     fn press(handle: &UiHandle, text: &str) {

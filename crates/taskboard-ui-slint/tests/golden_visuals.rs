@@ -106,6 +106,9 @@ fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: 
         },
     )
     .expect("mount succeeds on the testing backend");
+    // The board goldens capture the board view: escape the desktop
+    // Today default (chunk 10 D2) before the first frame.
+    handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
     driver.bind(&handle);
     driver.advance_time(0); // instantiate conditionals
     driver.set_window_size(width, HEIGHT);

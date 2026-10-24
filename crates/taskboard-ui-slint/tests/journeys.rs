@@ -76,6 +76,17 @@ impl Harness {
             requests_rx: std::sync::Mutex::new(requests_rx),
         };
         harness.driver.bind(&harness.handle);
+        // The desktop default is Today (chunk 10 D2); the board-level
+        // journeys escape centrally — one `nav.focus-board` after
+        // mount (the deliberate regen; the today leg mounts and stays).
+        if !std::env::var("TASKBOARD_JOURNEYS_STAY_ON_TODAY").is_ok_and(|v| v == "1") {
+            // Routed, not `press`ed: the escape must not depend on the
+            // harness's preset (press resolves against the standard
+            // keymap).
+            harness
+                .handle
+                .dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+        }
         harness
     }
 

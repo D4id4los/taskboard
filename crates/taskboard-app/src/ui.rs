@@ -183,6 +183,7 @@ pub fn bare_invocation_route(mode: crate::config::AppMode, tty: bool, display: b
 #[must_use]
 pub fn resolve_ui_settings(
     ui: &crate::config::UiSection,
+    day_start: (chrono::NaiveTime, chrono::FixedOffset),
 ) -> (
     taskboard_ui_slint::UiSettings,
     Vec<taskboard_ui_slint::keymap::Finding>,
@@ -217,8 +218,28 @@ pub fn resolve_ui_settings(
             crate::config::KeymapPreset::Emacs => taskboard_ui_slint::keymap::Preset::Emacs,
             crate::config::KeymapPreset::Vi => taskboard_ui_slint::keymap::Preset::Vi,
         },
+        // The today window's derivation pair (chunk 10 D4): resolved
+        // once here — nothing reads config mid-flight.
+        day_start,
     };
     (settings, built.findings)
+}
+
+/// The today window's derivation pair (chunk 10 D4): the parsed
+/// `[preferences] day_start_time` (config validation owns the refusal)
+/// plus the device's fixed UTC offset at derivation time — the
+/// `day_window` consumers contract verbatim.
+#[must_use]
+pub fn resolve_day_start(
+    config: &crate::config::AppConfig,
+) -> (chrono::NaiveTime, chrono::FixedOffset) {
+    let day_start_time = config
+        .preferences
+        .day_start_time
+        .parse::<chrono::NaiveTime>()
+        .unwrap_or_default();
+    let offset = *chrono::Local::now().offset();
+    (day_start_time, offset)
 }
 
 /// The secret-free connector list for the settings hand-over (round-1
@@ -310,7 +331,8 @@ pub async fn run_desktop(
     // D13: the env var is read before anything slint-side.
     observe_scale_escape_hatch();
 
-    let (mut ui_settings, keymap_findings) = resolve_ui_settings(&config.ui);
+    let (mut ui_settings, keymap_findings) =
+        resolve_ui_settings(&config.ui, resolve_day_start(&config));
     surface_keymap_findings(&keymap_findings);
     let store = crate::secrets::resolve_credential_store(
         config.nextcloud.credential_store,
@@ -554,7 +576,13 @@ mod keymap_resolution_tests {
                 ]),
             },
         };
-        let (settings, findings) = resolve_ui_settings(&ui);
+        let (settings, findings) = resolve_ui_settings(
+            &ui,
+            (
+                chrono::NaiveTime::MIN,
+                chrono::FixedOffset::east_opt(0).expect("zero"),
+            ),
+        );
 
         // Structural asserts on the handed-over map (no strings).
         assert_eq!(settings.scale, 1.25);
@@ -595,7 +623,13 @@ mod keymap_resolution_tests {
             },
             ..crate::config::UiSection::default()
         };
-        let (settings, findings) = resolve_ui_settings(&ui);
+        let (settings, findings) = resolve_ui_settings(
+            &ui,
+            (
+                chrono::NaiveTime::MIN,
+                chrono::FixedOffset::east_opt(0).expect("zero"),
+            ),
+        );
         assert_eq!(findings, Vec::new());
         let colon = taskboard_ui_slint::keymap::stroke::parse(":").expect("parses");
         assert_eq!(
@@ -619,7 +653,13 @@ mod keymap_resolution_tests {
             stack_widths: BTreeMap::from([(board, BTreeMap::from([(stack, 240u32)]))]),
             ..crate::config::UiSection::default()
         };
-        let (settings, _) = resolve_ui_settings(&ui);
+        let (settings, _) = resolve_ui_settings(
+            &ui,
+            (
+                chrono::NaiveTime::MIN,
+                chrono::FixedOffset::east_opt(0).expect("zero"),
+            ),
+        );
         assert_eq!(
             settings
                 .stack_widths

@@ -45,6 +45,35 @@ expression: rows
         - sequence:
             - Ctrl+PageDown
           action: nav.next-view
+    - context: today
+      bindings:
+        - sequence:
+            - Return
+          action: task.edit
+        - sequence:
+            - Space
+          action: task.complete
+        - sequence:
+            - Ctrl+Space
+          action: task.reopen
+        - sequence:
+            - M
+          action: task.move
+        - sequence:
+            - Delete
+          action: task.delete
+        - sequence:
+            - Up
+          action: nav.prev-item
+        - sequence:
+            - Down
+          action: nav.next-item
+        - sequence:
+            - Ctrl+Home
+          action: nav.first-item
+        - sequence:
+            - Ctrl+End
+          action: nav.last-item
     - context: board
       bindings:
         - sequence:
@@ -236,6 +265,37 @@ expression: rows
             - Ctrl+x
             - u
           action: app.undo
+    - context: today
+      bindings:
+        - sequence:
+            - Return
+          action: task.edit
+        - sequence:
+            - Ctrl+Space
+          action: task.reopen
+        - sequence:
+            - Alt+<
+          action: nav.first-item
+        - sequence:
+            - Alt+>
+          action: nav.last-item
+        - sequence:
+            - Ctrl+c
+            - Ctrl+t
+          action: task.complete
+        - sequence:
+            - Ctrl+c
+            - Ctrl+w
+          action: task.move
+        - sequence:
+            - Ctrl+d
+          action: task.delete
+        - sequence:
+            - Ctrl+n
+          action: nav.next-item
+        - sequence:
+            - Ctrl+p
+          action: nav.prev-item
     - context: board
       bindings:
         - sequence:

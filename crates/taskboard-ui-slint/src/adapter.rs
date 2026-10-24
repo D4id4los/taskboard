@@ -68,6 +68,12 @@ pub(crate) enum MenuAnchor {
 /// (D3), the lock-free state read (D1), and the command channel out.
 pub(crate) struct Adapter {
     keymap: Keymap,
+    /// The today window's derivation pair (chunk 10 D4): held, never
+    /// re-read from config; `day_ctx` recomputes the window per pass.
+    day_start: (chrono::NaiveTime, chrono::FixedOffset),
+    /// The run mode's one UI bit (Q8): on kiosk the today pass filters
+    /// to the focused board's subset; the desktop is cross-board.
+    kiosk: bool,
     shell: KeymapShell,
     resolver: KeymapResolver,
     /// pub(crate) for the lib tests' flow/buffer seams only.
@@ -269,7 +275,7 @@ impl Adapter {
     }
 
     /// One action through the router (design §5 pipeline's last hop).
-    fn route(&mut self, window: &AppWindow, id: ActionId) {
+    pub(crate) fn route(&mut self, window: &AppWindow, id: ActionId) {
         let mut ctx = self.shell.dispatch_ctx();
         ctx.reminder_target = self.reminder_target;
         self.reminder_target = None;
@@ -279,6 +285,9 @@ impl Adapter {
         self.rule_target = None;
         ctx.rule_add_offset = self.rule_add_offset;
         self.rule_add_offset = None;
+        // The today window rides every dispatch (chunk 10 D4): state-
+        // derived from the held pair, never consumed.
+        ctx.day_window = Some(self.day_ctx().window);
         let outcome = ActionRouter::dispatch(id, &ctx);
         match outcome {
             DispatchOutcome::Command(command) => {
@@ -383,6 +392,15 @@ impl Adapter {
         }
     }
 
+    /// The pass's time bundle (chunk 10 D4): a fresh `now` and the
+    /// window derived from the held pair — recomputed on every pass,
+    /// so the rollover rides the existing minute-boundary repaint.
+    fn day_ctx(&self) -> crate::view_state::DayCtx {
+        let now = chrono::Utc::now();
+        let window = taskboard_domain::days::day_window(now, self.day_start.0, self.day_start.1);
+        crate::view_state::DayCtx { now, window }
+    }
+
     /// The D1 refresh: reconcile, then one full re-derive of the
     /// display models from the current snapshot (lock-free load) and
     /// a fresh id tables pass. Deterministic, timer-free; the repaint
@@ -392,7 +410,7 @@ impl Adapter {
         let state = self.state.load();
         self.view_state.reconcile(&state);
         let chain = self.shell.chain();
-        let now = chrono::Utc::now();
+        let day = self.day_ctx();
         let due = crate::models::DueEditorPush {
             text: &self.due_buffer,
             echo: &self.due_echo,
@@ -404,7 +422,8 @@ impl Adapter {
             &self.view_state,
             &self.keymap,
             &chain,
-            now,
+            day,
+            self.kiosk,
             &mut self.models,
             &due,
         );
@@ -592,8 +611,16 @@ impl Adapter {
                 self.interpret_insert(&state)
             }
             // -- the defaults: focus walk and view navigation --
-            (_, UiEffect::FocusNext) => self.view_state.advance_focus(&state, compact),
-            (_, UiEffect::FocusPrev) => self.view_state.retreat_focus(&state, compact),
+            (_, UiEffect::FocusNext) => {
+                let day = self.day_ctx();
+                self.view_state
+                    .advance_focus(&state, compact, self.kiosk, &day)
+            }
+            (_, UiEffect::FocusPrev) => {
+                let day = self.day_ctx();
+                self.view_state
+                    .retreat_focus(&state, compact, self.kiosk, &day)
+            }
             (_, UiEffect::NextView) => self.view_state.next_view(&state),
             (_, UiEffect::PrevView) => self.view_state.prev_view(&state),
             (_, UiEffect::FocusBoard) => self.view_state.focus_board(),
@@ -620,7 +647,11 @@ impl Adapter {
                 } else {
                     FocusEdge::Last
                 };
-                self.view_state.jump_focus(&state, edge, compact)
+                {
+                    let day = self.day_ctx();
+                    self.view_state
+                        .jump_focus(&state, edge, compact, self.kiosk, &day)
+                }
             }
             // Round 2 (D18/D21): the board/stack lifecycle verbs —
             // target resolution is the view state's; the engine owns
@@ -1668,6 +1699,8 @@ pub(crate) fn install(
     requests: mpsc::Sender<crate::requests::UiRequest>,
     stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
     connectors: Vec<ConnectorInfo>,
+    day_start: (chrono::NaiveTime, chrono::FixedOffset),
+    kiosk: bool,
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
 ) -> Rc<RefCell<Adapter>> {
@@ -1690,10 +1723,20 @@ pub(crate) fn install(
         .collect::<BTreeMap<BoardId, BTreeMap<StackId, u32>>>();
     let adapter = Rc::new(RefCell::new(Adapter {
         keymap,
+        day_start,
+        kiosk,
         shell: KeymapShell::default(),
         resolver: KeymapResolver::new(),
+        // The desktop-default split (chunk 10 D2): the kiosk bit —
+        // already "derived from the run mode" — picks the start view;
+        // the daemon has no UI, the kiosk's surface is the kiosk
+        // wave's.
         view_state: {
-            let mut vs = ViewState::new();
+            let mut vs = ViewState::new_starting(if kiosk {
+                crate::view_state::ViewId::Board
+            } else {
+                crate::view_state::ViewId::Today
+            });
             vs.seed_stack_widths(seeded);
             vs
         },

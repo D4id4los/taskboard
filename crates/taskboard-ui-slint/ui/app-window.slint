@@ -17,6 +17,7 @@ import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compos
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
+import { TodayView, TodayModel } from "views/today-view.slint";
 import { TaskView, TaskDetailModel } from "views/task-view.slint";
 import { DueDayModel } from "compositions/due-editor.slint";
 export { DueDayModel }
@@ -96,6 +97,7 @@ export component AppWindow inherits Window {
 
     // ---- The one-way model push surface (D2: models in, indices
     //      back — no ids cross the seam). ---------------------------
+    in-out property <TodayModel> today-model;
     in-out property <string> toolbar-title;
     in-out property <[string]> toolbar-menu-hint;
     // The nav.focus-board binding (round-1 D12; a keymap projection).
@@ -207,6 +209,12 @@ export component AppWindow inherits Window {
                 new-stack-activated() => root.board-new-stack-clicked();
                 stack-create-committed(t) => root.board-stack-create-committed(t);
                 stack-create-edited(t) => root.board-stack-create-edited(t);
+            }
+            if (root.current-view == View.today): TodayView {
+                today: root.today-model;
+                row-activated(s, r) => root.today-row-activated(s, r);
+                row-clicked(s, r) => root.today-row-clicked(s, r);
+                row-context(s, r, x, y) => root.today-row-context-requested(s, r, x, y);
             }
             if (root.current-view == View.stack-detail): StackView {
                 stack: root.stack-model;
@@ -445,6 +453,11 @@ export component AppWindow inherits Window {
     pure callback board-stack-width-drag(int, float);
     pure callback board-stack-width-release(int);
     pure callback stack-task-context-requested(int, float, float);
+    // The today view's row seams (chunk 10 D7): (section, row) — the
+    // adapter resolves the flat index against `today_tasks`.
+    pure callback today-row-activated(int, int);
+    pure callback today-row-clicked(int, int);
+    pure callback today-row-context-requested(int, int, float, float);
     pure callback board-header-activated(int);
     pure callback board-switcher-activated(int);
     // The r2 D21 right-click seams: the stack header (and the
