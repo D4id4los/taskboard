@@ -131,6 +131,15 @@ impl Element {
         self.handle.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button)
     }
 
+    /// Whether the element is an accessible radio button — the
+    /// segmented-control pin's role read (r2 D26; `accessible-checked`
+    /// has no backend read, so the checked-state contract pins on the
+    /// model instead — the plan's recorded fallback).
+    #[must_use]
+    pub fn is_radio_button(&self) -> bool {
+        self.handle.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::RadioButton)
+    }
+
     /// Invokes the element's accessible default action (the click
     /// equivalence seam, §7.1).
     pub fn invoke_default_action(&self) {
