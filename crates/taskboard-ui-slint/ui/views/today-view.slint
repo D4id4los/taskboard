@@ -102,30 +102,30 @@ export component TodayView inherits FocusScope {
             // around (the action-menu pattern — the viewport
             // auto-tracks the content's preferred size).
             content := VerticalLayout {
-            padding: Theme.space-3;
-            spacing: Theme.space-3;
-            if (root.today.empty): EmptyState {
-                text: "Nothing due today";
-                hint: "Capture a thought from anywhere — it lands in the inbox.";
-            }
-            for section[sindex] in root.today.sections: TodaySection {
-                section: section;
-                // Content-sized: the walk never stretches a section
-                // into leftover window space.
-                vertical-stretch: 0;
-                // Empty sections collapse (D7): the header and rows
-                // render only when the group has rows.
-                visible: section.count > 0;
-                row-activated(r) => {
-                    root.row-activated(sindex, r);
+                padding: Theme.space-3;
+                spacing: Theme.space-3;
+                if (root.today.empty): EmptyState {
+                    text: "Nothing due today";
+                    hint: "Capture a thought from anywhere — it lands in the inbox.";
                 }
-                row-clicked(r) => {
-                    root.row-clicked(sindex, r);
+                for section[sindex] in root.today.sections: TodaySection {
+                    section: section;
+                    // Content-sized: the walk never stretches a section
+                    // into leftover window space.
+                    vertical-stretch: 0;
+                    // Empty sections collapse (D7): the header and rows
+                    // render only when the group has rows.
+                    visible: section.count > 0;
+                    row-activated(r) => {
+                        root.row-activated(sindex, r);
+                    }
+                    row-clicked(r) => {
+                        root.row-clicked(sindex, r);
+                    }
+                    row-context(r, x, y) => {
+                        root.row-context(sindex, r, x, y);
+                    }
                 }
-                row-context(r, x, y) => {
-                    root.row-context(sindex, r, x, y);
-                }
-            }
             }
         }
     }
