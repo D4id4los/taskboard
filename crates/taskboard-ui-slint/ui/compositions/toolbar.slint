@@ -4,16 +4,25 @@
 // menu click routes the `app.menu` action via the caller (§7.1: every
 // click affordance has an action equivalent).
 
-import { Theme, Typography, RoleText } from "../theme.slint";
+import { Theme, Typography, RoleText, Tone } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
+import { Badge } from "../widgets/badge.slint";
 
 export component Toolbar inherits Rectangle {
     in property <string> title;
     // The `app.menu` binding as display strings (a keymap projection,
     // never hand-written — D19).
     in property <[string]> menu-hint;
+    // The global inbox's open count (chunk 10 D9): desktop only —
+    // the adapter pushes 0 on kiosk and the compact breakpoint hides
+    // the chip; renders at zero too (triage-done is a visible state).
+    in property <int> inbox-count;
+    // The breakpoint read (the chip's desktop-only visibility; the
+    // compact path drops its chrome).
+    in property <bool> compact;
     callback menu-clicked();
+    callback inbox-clicked();
 
     background: Theme.surface;
     height: Theme.space-8;
@@ -39,6 +48,18 @@ export component Toolbar inherits Rectangle {
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
+        }
+
+        if (root.compact == false): inbox-chip := TouchArea {
+            // Every click has an action equivalent (§7.1): the chip
+            // routes `view.inbox`.
+            clicked => root.inbox-clicked();
+            accessible-role: AccessibleRole.button;
+            accessible-label: "Go to inbox";
+            badge := Badge {
+                text: root.inbox-count;
+                tone: root.inbox-count > 0 ? Tone.warning : Tone.neutral;
+            }
         }
 
         VerticalLayout {

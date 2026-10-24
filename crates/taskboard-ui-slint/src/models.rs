@@ -395,7 +395,16 @@ pub fn push(
         selected,
     });
 
-    mutations += push_chrome(window, vs.view(), board, keymap, chain, models);
+    mutations += push_chrome(
+        window,
+        vs.view(),
+        state,
+        kiosk,
+        board,
+        keymap,
+        chain,
+        models,
+    );
     window.set_current_view(match vs.view() {
         crate::view_state::ViewId::Today => View::Today,
         crate::view_state::ViewId::Board => View::Board,
@@ -436,14 +445,24 @@ pub fn push(
 /// The toolbar chrome: board title and the `app.menu` binding hint (a
 /// keymap projection, never hand-written — D19). Returns the hint
 /// diff's mutation count.
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
 fn push_chrome(
     window: &AppWindow,
     view: crate::view_state::ViewId,
+    state: &AppState,
+    kiosk: bool,
     board: Option<&taskboard_domain::Board>,
     keymap: &Keymap,
     chain: &[ContextId],
     models: &mut PushModels,
 ) -> usize {
+    // The inbox chip's count (chunk 10 D9): desktop only — kiosk reads
+    // 0 and the compact breakpoint hides the chip.
+    window.set_toolbar_inbox_count(if kiosk {
+        0
+    } else {
+        i32::try_from(presentation::inbox_count(state)).unwrap_or(i32::MAX)
+    });
     // The Today view renders its own caption (chunk 10 D9): a fixed
     // presentation label; the board views keep the selected board's
     // title.
