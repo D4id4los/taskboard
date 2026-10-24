@@ -170,6 +170,12 @@ impl ViewState {
         &self.flow
     }
 
+    /// The flow's write seam (the palette cursor reset rides it —
+    /// the adapter's keystroke path zeroes the cursor on re-rank).
+    pub(crate) fn flow_mut(&mut self) -> &mut Flow {
+        &mut self.flow
+    }
+
     #[must_use]
     pub fn buffer(&self) -> &str {
         &self.buffer

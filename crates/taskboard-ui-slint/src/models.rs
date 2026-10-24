@@ -15,7 +15,9 @@ use std::rc::Rc;
 
 use chrono::{DateTime, TimeDelta, Utc};
 
-use taskboard_domain::{AppState, BoardId, ReminderRuleId, StackId, Task, TaskId};
+use taskboard_domain::{
+    AppState, BoardId, ReminderRuleId, SearchHit, SearchTarget, StackId, Task, TaskId,
+};
 
 use crate::actions::{ActionId, ContextId};
 use crate::keymap::Keymap;
@@ -25,13 +27,18 @@ use crate::view_state::{Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DueKind as SlintDueKind, FlowHintModel,
-    Responsive, RuleRowModel, StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi,
-    TaskCardModel, TaskDecoration, TaskDetailModel, Theme, Tone, View,
+    PaletteRowModel, Responsive, RuleRowModel, StackColumnModel, StackDetailModel, SyncBadgeModel,
+    SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme, Tone, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
 /// count; the model carries at most this many rows plus the overflow.
 pub const BANNER_ROW_CAP: usize = 3;
+
+/// The layout cap of the palette's visible result rows (design D-V10,
+/// #348): the truth is the filtered hit count; the model carries at
+/// most this many rows plus the overflow caption's count.
+pub const PALETTE_ROW_CAP: usize = 8;
 
 /// The id tables of one refresh pass (D2): same thread, rebuilt
 /// together with the models, always consistent.
@@ -53,6 +60,10 @@ pub struct IdTables {
     /// The task-detail view's reminder rules in id order (chunk 6,
     /// D12): the rule-list row indices resolve against this pass.
     pub task_rules: Vec<ReminderRuleId>,
+    /// The open palette's visible rows (chunk 9, #348): the row
+    /// indices resolve against this pass (indices-back like every
+    /// table; empty while the palette is closed).
+    pub palette: Vec<SearchTarget>,
 }
 
 impl IdTables {
@@ -129,6 +140,10 @@ pub struct PushModels {
     task_rules: Option<Rc<VecModel<RuleRowModel>>>,
     task_rule_presets: Option<Rc<VecModel<SharedString>>>,
     banner: Option<Rc<VecModel<BannerRowModel>>>,
+    /// The palette's persistent row handle (chunk 9): diffed per
+    /// keystroke — a fresh `VecModel` per push would regress the
+    /// stable-identity invariant (r2 D9).
+    palette: Option<Rc<VecModel<PaletteRowModel>>>,
     settings_rows: Option<Rc<VecModel<crate::ConnectionRow>>>,
     hints: HintModels,
     /// The tasks whose decoration models the current pass touched
@@ -183,9 +198,117 @@ pub(crate) fn diff_rows<T: PartialEq + Clone + 'static>(
     mutations
 }
 
+/// The palette row pass (#348, chunk 9): rank the open query through
+/// the one domain `find`, apply the presentation-side anchor filter
+/// (the anchor task is never a visible row — the domain stays
+/// convention-blind), cap to [`PALETTE_ROW_CAP`], and push the rows
+/// onto the persistent handle (the r2 D9 row-diff discipline — a
+/// keystroke never swaps the model). Returns the visible rows'
+/// targets, index-aligned with the pushed model, for `IdTables.palette`.
+/// One function, two callers: the per-keystroke targeted pass and the
+/// authoritative `push` — the ranking never exists twice.
+pub fn push_palette(
+    window: &AppWindow,
+    state: &AppState,
+    vs: &ViewState,
+    models: &mut PushModels,
+) -> Vec<SearchTarget> {
+    let Flow::Palette { selected } = vs.flow() else {
+        return Vec::new();
+    };
+    let selected = *selected;
+    let hits = taskboard_domain::find(state, vs.buffer());
+    let filtered: Vec<SearchHit> = hits
+        .into_iter()
+        .filter(|hit| match hit.target {
+            SearchTarget::Task(id) => state
+                .tasks
+                .get(&id)
+                .is_none_or(|task| !presentation::is_anchor_task(task)),
+            _ => true,
+        })
+        .collect();
+    let overflow = filtered.len().saturating_sub(PALETTE_ROW_CAP);
+    let targets: Vec<SearchTarget> = filtered
+        .iter()
+        .take(PALETTE_ROW_CAP)
+        .map(|hit| hit.target)
+        .collect();
+    let rows: Vec<PaletteRowModel> = targets
+        .iter()
+        .map(|target| PaletteRowModel {
+            text: SharedString::from(palette_title(state, *target)),
+            meta: SharedString::from(palette_meta(state, *target)),
+            emphasis: false,
+        })
+        .collect();
+    // The row diff's mutation count is not tracked here: the palette's
+    // property writes below are the pass's observable output.
+    push_rows(
+        &mut models.palette,
+        |rc| {
+            window.set_palette_model(rc);
+        },
+        &rows,
+    );
+    // The highlight rides outside the diff (one property write): the
+    // cursor clamps into the visible range (a refresh that shrank the
+    // rows keeps the nearest position; only a query change resets it).
+    let selected = selected.min(targets.len().saturating_sub(1));
+    window.set_palette_selected_index(i32::try_from(selected).unwrap_or(i32::MAX));
+    window.set_palette_overflow(i32::try_from(overflow).unwrap_or(i32::MAX));
+    targets
+}
+
+/// The hit's title off the snapshot (a stale target degrades to an
+/// empty title — data, not an error).
+fn palette_title(state: &AppState, target: SearchTarget) -> String {
+    match target {
+        SearchTarget::Task(id) => state
+            .tasks
+            .get(&id)
+            .map_or(String::new(), |t| t.title.clone()),
+        SearchTarget::Stack(id) => state
+            .stacks
+            .get(&id)
+            .map_or(String::new(), |s| s.title.clone()),
+        SearchTarget::Board(id) => state
+            .boards
+            .get(&id)
+            .map_or(String::new(), |b| b.title.clone()),
+    }
+}
+
+/// The kind + context line (the row's meta): `"task · <stack> ›
+/// <board>"` for tasks, `"stack · <board>"` for stacks, `"board"` for
+/// boards; a dangling parent degrades its contribution.
+fn palette_meta(state: &AppState, target: SearchTarget) -> String {
+    match target {
+        SearchTarget::Task(id) => state
+            .tasks
+            .get(&id)
+            .and_then(|t| state.stacks.get(&t.stack))
+            .map_or_else(
+                || "task".to_owned(),
+                |stack| match state.boards.get(&stack.board) {
+                    Some(board) => format!("task · {} › {}", stack.title, board.title),
+                    None => format!("task · {}", stack.title),
+                },
+            ),
+        SearchTarget::Stack(id) => state.stacks.get(&id).map_or_else(
+            || "stack".to_owned(),
+            |stack| match state.boards.get(&stack.board) {
+                Some(board) => format!("stack · {}", board.title),
+                None => "stack".to_owned(),
+            },
+        ),
+        SearchTarget::Board(_) => "board".to_owned(),
+    }
+}
+
 /// Get-or-create the persistent handle in `slot` (installing it into
 /// its window property exactly once via `install`), then diff
-/// `desired` onto it.
+/// `desired` onto it; returns the mutation count.
 fn push_rows<T: PartialEq + Clone + 'static>(
     slot: &mut Option<Rc<VecModel<T>>>,
     install: impl FnOnce(ModelRc<T>),
@@ -683,6 +806,16 @@ fn push_status_bar(
         keys: string_model(&flow_hint_keys),
         visible: matches!(vs.flow(), Flow::Move { .. }),
     });
+
+    // The palette pass rides every refresh while the flow holds (the
+    // authoritative caller of the one row pipeline): a background sync
+    // re-ranks the open palette without closing it. Closed, the table
+    // clears.
+    tables.palette = if matches!(vs.flow(), Flow::Palette { .. }) {
+        push_palette(window, state, vs, models)
+    } else {
+        Vec::new()
+    };
     mutations
 }
 
@@ -972,5 +1105,160 @@ mod tests {
             ModelRc::new(VecModel::from(field_decorations(&t))),
         );
         assert_eq!(diff_rows(&model, &[fresh]), 1);
+    }
+
+    // -- the palette row pipeline (#348, chunk 9) -----------------------
+
+    mod palette_pipeline {
+        use super::*;
+        use crate::test_platform::on_slint_thread;
+        use taskboard_domain::{Board, BoardClocks, Stack, TaskId};
+
+        fn board(id: taskboard_domain::BoardId) -> Board {
+            Board {
+                id,
+                remote: None,
+                title: "board".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: BoardClocks::epoch(),
+                    color: BoardClocks::epoch(),
+                    archived: BoardClocks::epoch(),
+                    deleted: BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            }
+        }
+
+        fn stack(id: StackId, board: taskboard_domain::BoardId) -> Stack {
+            Stack {
+                id,
+                remote: None,
+                board,
+                title: "stack".to_owned(),
+                order: 0,
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::StackClocks {
+                    title: BoardClocks::epoch(),
+                    order: BoardClocks::epoch(),
+                    deleted: BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            }
+        }
+
+        fn titled_task(id: TaskId, stack: StackId, title: &str) -> Task {
+            let mut task = task();
+            task.id = id;
+            task.stack = stack;
+            task.title = title.to_owned();
+            task
+        }
+
+        /// Eleven matching candidates (ten needles + the anchor task)
+        /// against the 8-row cap: the anchor is filtered BEFORE the cap
+        /// (it never occupies a visible row), the overflow counts real
+        /// candidates, and the returned targets align with the pushed
+        /// model rows.
+        #[test]
+        fn the_anchor_is_filtered_before_the_cap_and_tables_align() {
+            on_slint_thread(|| {
+                let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+                let stack_id = StackId::from_uuid(uuid::Uuid::now_v7());
+                let mut state = AppState::default();
+                state.boards.insert(board_id, board(board_id));
+                state.stacks.insert(stack_id, stack(stack_id, board_id));
+                for n in 0..10 {
+                    let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+                    state
+                        .tasks
+                        .insert(id, titled_task(id, stack_id, &format!("needle {n}")));
+                }
+                let anchor = TaskId::from_uuid(uuid::Uuid::now_v7());
+                state.tasks.insert(
+                    anchor,
+                    titled_task(anchor, stack_id, taskboard_domain::ANCHOR_CARD_TITLE),
+                );
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                vs.open_palette();
+                vs.set_buffer("needle".to_owned());
+                let mut models = PushModels::default();
+                let targets = push_palette(&window, &state, &vs, &mut models);
+
+                // Ten matching needles survive the filter; the anchor
+                // (also matching? no — "needle" is not in the anchor
+                // title, so this leg pins the pipeline arithmetic) —
+                // capped at 8 with an overflow of 2.
+                assert_eq!(targets.len(), PALETTE_ROW_CAP);
+                assert_eq!(window.get_palette_overflow(), 2);
+                assert_eq!(window.get_palette_selected_index(), 0);
+                assert_eq!(window.get_palette_model().row_count(), PALETTE_ROW_CAP);
+                // The table is index-aligned: every target's title
+                // names a needle, and the anchor is nowhere.
+                for target in &targets {
+                    if let SearchTarget::Task(id) = target {
+                        let title = state.tasks[id].title.clone();
+                        assert_ne!(title, taskboard_domain::ANCHOR_CARD_TITLE);
+                        assert!(title.starts_with("needle"));
+                    } else {
+                        panic!("all rows are tasks");
+                    }
+                }
+                // Tables-back: the indices resolve round-trip.
+                let table = IdTables {
+                    palette: targets,
+                    ..IdTables::default()
+                };
+                assert!(matches!(table.palette[0], SearchTarget::Task(_)));
+            });
+        }
+
+        /// The filter leg with a matching anchor: the anchor task is
+        /// live and matching, so its absence from the counts is the
+        /// filter's proof.
+        #[test]
+        fn a_matching_anchor_never_becomes_a_visible_row() {
+            on_slint_thread(|| {
+                let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+                let stack_id = StackId::from_uuid(uuid::Uuid::now_v7());
+                let mut state = AppState::default();
+                state.boards.insert(board_id, board(board_id));
+                state.stacks.insert(stack_id, stack(stack_id, board_id));
+                let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+                state.tasks.insert(
+                    id,
+                    titled_task(id, stack_id, taskboard_domain::ANCHOR_CARD_TITLE),
+                );
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                vs.open_palette();
+                // A subsequence of the anchor title matches it.
+                vs.set_buffer("taskboard".to_owned());
+                let mut models = PushModels::default();
+                let targets = push_palette(&window, &state, &vs, &mut models);
+                assert_eq!(targets, Vec::new());
+                assert_eq!(window.get_palette_model().row_count(), 0);
+                assert_eq!(window.get_palette_overflow(), 0);
+            });
+        }
+
+        /// Closed or non-palette flow: the pipeline is inert and the
+        /// table stays empty.
+        #[test]
+        fn a_closed_flow_pushes_nothing() {
+            on_slint_thread(|| {
+                let state = AppState::default();
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+                assert_eq!(push_palette(&window, &state, &vs, &mut models), Vec::new());
+            });
+        }
     }
 }

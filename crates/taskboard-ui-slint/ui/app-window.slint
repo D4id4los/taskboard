@@ -11,6 +11,7 @@
 import { Theme, Typography, Semantic } from "theme.slint";
 import { Responsive, Breakpoint } from "responsive.slint";
 import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
+import { SearchPalette, PaletteRowModel } from "compositions/search-palette.slint";
 import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
@@ -119,6 +120,12 @@ export component AppWindow inherits Window {
     in-out property <SyncBadgeModel> sync-model;
     in-out property <[BannerRowModel]> banner-model;
     in-out property <int> banner-overflow;
+    // The jump-to search palette (#348): the model rows arrive ranked,
+    // anchor-filtered, and capped from the Rust pass.
+    in-out property <bool> palette-open: false;
+    in-out property <int> palette-selected-index: 0;
+    in-out property <[PaletteRowModel]> palette-model: [];
+    in-out property <int> palette-overflow: 0;
     in-out property <FlowHintModel> flow-hint-model;
 
     // The rendering fact for tests and reviews (§6 test 2): compact
@@ -318,6 +325,31 @@ export component AppWindow inherits Window {
         if (TooltipState.pending || TooltipState.visible): TooltipPanel {
             window-width: root.width;
         }
+
+        // The search palette (#348): the menu overlay pattern — a
+        // full-window dismissal layer first (the later sibling is
+        // hit-tested first, so the panel absorbs its own clicks),
+        // then the centered panel. Width: the 560·scale cap the menu
+        // panel uses, shrinking to the window (the palette's rows are
+        // fixed-count, so unlike the menu there is no preferred-width
+        // term); height by content, clamped above the status bar.
+        if (root.palette-open): TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => root.palette-dismiss-requested();
+        }
+        if (root.palette-open): SearchPalette {
+            width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
+            x: (root.width - self.width) / 2;
+            y: max(Theme.space-4,
+                   min((root.height - status.height - self.height) / 2,
+                       status.y - self.height - Theme.space-2));
+            rows: root.palette-model;
+            selected-index: root.palette-selected-index;
+            overflow: root.palette-overflow;
+            query-edited(text) => root.palette-query-edited(text);
+            row-activated(index) => root.palette-row-activated(index);
+        }
     }
 
     // The Rust-installed interception seam (D18): converts the event
@@ -330,6 +362,11 @@ export component AppWindow inherits Window {
     // The D2 dismissal layer: an outside click is a dismissal, not a
     // level-up — the adapter routes the full close.
     pure callback menu-dismiss-requested();
+    // The search palette's seams (#348): per-keystroke ranking, the
+    // outside-click close, and row activation.
+    pure callback palette-query-edited(string);
+    pure callback palette-dismiss-requested();
+    pure callback palette-row-activated(int);
     // The two-tier seams (round-1 D6): the fly-out/replace page's
     // rows and the compact back row.
     pure callback menu-submenu-entry-invoked(int);

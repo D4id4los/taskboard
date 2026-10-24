@@ -128,6 +128,12 @@ impl Adapter {
     /// globals (D18); nothing renders it in chunk 2 — chunk 3's
     /// status bar reads these.
     fn sync(&self, window: &AppWindow) {
+        window.set_palette_open(self.shell.palette);
+        let palette_selected = match self.view_state.flow() {
+            crate::view_state::Flow::Palette { selected } => *selected,
+            _ => 0,
+        };
+        window.set_palette_selected_index(i32::try_from(palette_selected).unwrap_or(i32::MAX));
         let keyboard = window.global::<KeyboardState>();
         keyboard.set_vi_insert(self.shell.mode == crate::router::Mode::Insert);
         keyboard.set_menu_open(self.shell.menu.open);
@@ -578,29 +584,60 @@ impl Adapter {
                 self.sync_menu_models(window);
             }
             UiEffect::InvokeSelected => {
-                // Close first, then one re-dispatch — bounded (D16);
-                // the close itself lives in `invoke_entry` so the mouse
-                // path shares it (round-1 D3).
-                if let Some(index) = self.shell.selected_entry() {
+                // Palette first (defensively — `Palette` masks `Global`,
+                // so the menu cannot be open while the flow holds):
+                // Activate is jump-to.
+                if self.shell.palette {
+                    self.apply_palette_invoke(window);
+                } else if let Some(index) = self.shell.selected_entry() {
+                    // Close first, then one re-dispatch — bounded
+                    // (D16); the close itself lives in `invoke_entry`
+                    // so the mouse path shares it (round-1 D3).
                     self.invoke_entry(window, index);
                 } else {
                     self.apply_close_menu(window);
                 }
             }
-            UiEffect::CloseMenu => self.apply_close_menu(window),
-            UiEffect::MenuBack => {
-                let was_submenu = self.shell.menu.active_group.is_some();
-                self.shell.apply(&effect, self.root_entries.len());
-                if was_submenu {
-                    // Restored to the root page: the active page is the
-                    // root page again.
-                    self.menu_entries = self.root_entries.clone();
-                    self.sync_menu_models(window);
+            UiEffect::CloseMenu => {
+                if self.shell.palette {
+                    let outcomes = self.view_state.close_palette();
+                    self.apply_outcomes(window, &outcomes);
                     self.finish_mutation(window);
+                } else {
+                    self.apply_close_menu(window);
+                }
+            }
+            UiEffect::MenuBack => {
+                if self.shell.palette {
+                    // Esc / dismiss / mouse-out all mean
+                    // close-without-effect (the discard_edit shape).
+                    let outcomes = self.view_state.close_palette();
+                    self.apply_outcomes(window, &outcomes);
+                    self.finish_mutation(window);
+                } else {
+                    let was_submenu = self.shell.menu.active_group.is_some();
+                    self.shell.apply(&effect, self.root_entries.len());
+                    if was_submenu {
+                        // Restored to the root page: the active page is
+                        // the root page again.
+                        self.menu_entries = self.root_entries.clone();
+                        self.sync_menu_models(window);
+                        self.finish_mutation(window);
+                    }
                 }
             }
             UiEffect::MenuNext | UiEffect::MenuPrevious => {
-                self.shell.apply(&effect, self.menu_entries.len());
+                if self.shell.palette {
+                    let visible = self.tables.palette.len();
+                    let direction = matches!(effect, UiEffect::MenuNext);
+                    let outcomes = self
+                        .view_state
+                        .palette_cursor(i32::from(direction) * 2 - 1, visible);
+                    self.apply_outcomes(window, &outcomes);
+                    self.finish_mutation(window);
+                } else {
+                    self.shell.apply(&effect, self.menu_entries.len());
+                }
             }
             UiEffect::OpenPalette
             | UiEffect::SetMode(_)
@@ -624,6 +661,41 @@ impl Adapter {
 
     /// The full close shared by every path that means "close the
     /// menu": the shell state and both page models clear (round-1 D6).
+    /// The palette's Activate (keyboard `menu.invoke` or a row
+    /// click): resolve `tables.palette[selected]` against the fresh
+    /// snapshot and jump; a stale index is inert (close only).
+    fn apply_palette_invoke(&mut self, window: &AppWindow) {
+        let selected = match self.view_state.flow() {
+            crate::view_state::Flow::Palette { selected } => *selected,
+            _ => 0,
+        };
+        let target = self.tables.palette.get(selected).copied();
+        let state = self.state.load();
+        let outcomes = match target {
+            Some(target) => self.view_state.palette_jump(&state, target),
+            // A row count that shrank past the cursor: close only.
+            None => self.view_state.close_palette(),
+        };
+        self.apply_outcomes(window, &outcomes);
+        self.finish_mutation(window);
+    }
+
+    /// The per-keystroke palette pass (design D10): mirror the buffer,
+    /// reset the cursor (every keystroke re-ranks — a stale mid-list
+    /// cursor on a fresh ranking is a lie), then the one targeted
+    /// [`crate::models::push_palette`] call — no full refresh, no
+    /// debounce.
+    fn apply_palette_query(&mut self, window: &AppWindow, text: &str) {
+        self.view_state.set_buffer(text.to_owned());
+        if let crate::view_state::Flow::Palette { selected } = self.view_state.flow_mut() {
+            *selected = 0;
+        }
+        let state = self.state.load();
+        self.tables.palette =
+            crate::models::push_palette(window, &state, &self.view_state, &mut self.models);
+        self.finish_mutation(window);
+    }
+
     fn apply_close_menu(&mut self, window: &AppWindow) {
         // Every close (the effect, the dismissal layer, the toggle,
         // and both mouse leaf paths sharing it) dismisses the tooltip
@@ -1777,6 +1849,48 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let mirror = Rc::clone(adapter);
     window.on_stack_create_edited(move |text| {
         mirror.borrow_mut().view_state.set_buffer(text.to_string());
+    });
+
+    // The search palette (#348): per-keystroke re-rank, outside-click
+    // close, and row activation sharing the keyboard Activate path.
+    let palette = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_palette_query_edited(move |text| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        palette.borrow_mut().apply_palette_query(&window, &text);
+    });
+    let palette = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_palette_dismiss_requested(move || {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let mut a = palette.borrow_mut();
+        let outcomes = a.view_state.close_palette();
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
+    });
+    let palette = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_palette_row_activated(move |index| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let mut a = palette.borrow_mut();
+        let target = a
+            .tables
+            .palette
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied();
+        let state = a.state.load();
+        let outcomes = match target {
+            Some(target) => a.view_state.palette_jump(&state, target),
+            None => a.view_state.close_palette(),
+        };
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
     });
     let commit = Rc::clone(adapter);
     let commit_weak = window.as_weak();
