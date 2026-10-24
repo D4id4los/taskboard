@@ -117,11 +117,16 @@ pub enum InvalidKind {
 
 /// The reply payload of `SetKeymapPreset` (D9): the app re-resolves
 /// the config's overrides under the chosen preset and hands the
-/// rebuilt map back; the adapter swaps its keymap live.
+/// rebuilt map back; the adapter swaps its keymap live. The reply
+/// names the preset itself (r2 D27): the selection echoes the
+/// *replied* preset — never the click — and reconstructing one by
+/// diffing the built `Keymap` against preset tables would be unsound
+/// under user overrides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeymapUpdate {
     pub keymap: Keymap,
     pub findings: u32,
+    pub preset: Preset,
 }
 
 #[derive(Debug)]

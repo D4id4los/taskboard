@@ -1027,6 +1027,10 @@ struct SettingsVm {
     pending: Option<PendingKind>,
     replies: Vec<PendingReply>,
     outcome: SettingsOutcome,
+    /// The last-known persisted preset (r2 D27): seeded at mount,
+    /// changed only by `apply_keymap_update` — the reply, never the
+    /// click, is the selection's source.
+    preset: crate::keymap::Preset,
 }
 
 impl SettingsVm {
@@ -1070,6 +1074,18 @@ impl SettingsVm {
             | SettingsError::AttachBusy
             | SettingsError::AttachFailed => SettingsOutcome::Failed,
         }
+    }
+}
+
+/// The picker's index contract (r2 D27): `[Standard, Emacs, Vi]` —
+/// the same order the request seam maps back to presets
+/// (`settings_preset_picked`). One source for the push; the slint
+/// property is an `int`.
+fn preset_index(preset: crate::keymap::Preset) -> i32 {
+    match preset {
+        crate::keymap::Preset::Standard => 0,
+        crate::keymap::Preset::Emacs => 1,
+        crate::keymap::Preset::Vi => 2,
     }
 }
 
@@ -1219,9 +1235,12 @@ impl Adapter {
 
     /// The live keymap swap (D9): the new map drives resolution, menu
     /// hints, and tooltips from the next refresh on; the findings
-    /// counter updates the status read.
+    /// counter updates the status read. The replied preset is the
+    /// selection echo's source (r2 D27) — it lands on the model with
+    /// the next `push_settings`, never optimistically at click time.
     fn apply_keymap_update(&mut self, window: &AppWindow, update: KeymapUpdate) {
         self.keymap = update.keymap;
+        self.settings.preset = update.preset;
         window
             .global::<crate::UiStatus>()
             .set_startup_keymap_findings(i32::try_from(update.findings).unwrap_or(i32::MAX));
@@ -1264,6 +1283,7 @@ impl Adapter {
         global.set_draft_server(self.settings.draft.server_url.clone().into());
         global.set_draft_username(self.settings.draft.username.clone().into());
         global.set_save_enabled(self.settings.save_enabled());
+        global.set_preset_index(preset_index(self.settings.preset));
         global.set_last_outcome(match self.settings.outcome {
             SettingsOutcome::None => crate::SettingsOutcome::None,
             SettingsOutcome::Ok => crate::SettingsOutcome::Ok,
@@ -1529,6 +1549,10 @@ pub(crate) fn install(
         width_drag: None,
         settings: SettingsVm {
             rows: connectors,
+            // The mount seed (r2 D27): the picker's initial selection
+            // rides the VM — the first refresh's `push_settings` is
+            // the one write path.
+            preset,
             ..SettingsVm::default()
         },
         quit_requests: 0,
@@ -1537,14 +1561,6 @@ pub(crate) fn install(
     window
         .global::<UiStatus>()
         .set_startup_keymap_findings(i32::try_from(startup.keymap_findings).unwrap_or(i32::MAX));
-    // The settings picker's initial selection (round-1 D9).
-    window
-        .global::<crate::SettingsModel>()
-        .set_preset_index(match preset {
-            crate::keymap::Preset::Standard => 0,
-            crate::keymap::Preset::Emacs => 1,
-            crate::keymap::Preset::Vi => 2,
-        });
 
     {
         let adapter = Rc::clone(&adapter);

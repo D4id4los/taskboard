@@ -411,6 +411,10 @@ fn set_keymap_preset(
     Ok(KeymapUpdate {
         keymap: built.keymap,
         findings: u32::try_from(built.findings.len()).unwrap_or(u32::MAX),
+        // The replied preset itself (r2 D27): the UI's selection echoes
+        // the persisted choice — a diff against the built keymap would
+        // be unsound under user overrides.
+        preset,
     })
 }
 
