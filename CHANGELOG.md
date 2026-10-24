@@ -18,6 +18,36 @@ The workspace carries a single global version (see `docs/architecture.org`);
   (Ctrl+F / Ctrl+s / `/`): per-keystroke re-ranking capped at 8 rows
   with an overflow count, jump-to board/stack/task per hit kind, and
   the anchor card hidden from palette rows.
+=======
+- The GUI review round-2 action registry round-up & object context
+  menus (#390, chunk 3; D16–D21): twelve new actions — `task.reopen`
+  (Ctrl+Space / emacs `C-c C-Space` / vi `U`), `task.move.cancel`
+  (Escape everywhere, emacs additionally a lone `C-g` in the board
+  view — kept out of Global so `C-g C-/` redo stays reachable),
+  `stack.next`/`stack.prev` (Ctrl+Shift+Left/Right, emacs `C-f`/`C-b`,
+  vi `g h`/`g l` — wrapping, landing on the new stack's first task),
+  `stack.rename`/`stack.move`/`stack.delete` (std `F2`/`Ctrl+Alt+M`/
+  `Ctrl+Delete`; emacs org-mode `C-c` family; vi `g r`/`g v`/`g D`),
+  `board.create`/`board.rename`/`board.delete` (std
+  `Ctrl+Shift+N`/`Ctrl+F2`/`Ctrl+Shift+Delete`; emacs `C-c C-b`/
+  `C-c b`/`C-c C-d`; vi `g n`/`g R`/`g d`), and `nav.first-item`/
+  `nav.last-item` (std `Ctrl+Home`/`Ctrl+End`, emacs `Alt+<`/`Alt+>`,
+  vi `H`/`G`). Every preset binds every new action (the R3 contract);
+  emacs also gains `stack.create` = `C-c s`, closing the add-stack
+  tooltip's empty-hint gap. The two-tier menu's "Board & stack" group
+  splits into Stack and Board. Stack and board context menus join the
+  task card's: right-click a stack header, a compact switcher
+  segment, or a board-bar segment selects it and opens a flat menu
+  whose every bound row renders its keymap hint (the round-1 F-B7
+  empty-hint bug's fix — one `[Board, Global]` chain for all object
+  menus). New inline flows: board create/rename fields (window-level
+  slot), stack rename inside the locked header, and a stack-move flow
+  with insertion-slot highlight, wrap cycling, Escape/C-g cancel, and
+  a minimal re-normalization confirm; `SetMode(Normal)` during a task
+  move no longer leaves the flow dangling. Deletes stay
+  confirmation-free by design (D18's scope cut) — the engine's typed
+  refusals are the guard.
+
 - Desktop reminder toasts via `[reminders] sink = auto|log|desktop`
   (#344, chunk 8): `notify-rust` 4.18.2 enters the approved stack
   (D-R10, `z-with-tokio` executor adopted by measurement), and
