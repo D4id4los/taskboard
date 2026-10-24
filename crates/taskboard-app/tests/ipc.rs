@@ -119,6 +119,8 @@ async fn ip1_core_verbs_serve_and_persist_over_ipc() {
             &[
                 "tasks".to_owned(),
                 "add".to_owned(),
+                "--stack".to_owned(),
+                "Todo".to_owned(),
                 "first task".to_owned(),
             ],
         )
@@ -321,8 +323,8 @@ async fn ip8_concurrent_connections_serialize_and_both_answer() {
 
         let c1 = client::try_connect(&db).await.expect("daemon answers");
         let c2 = client::try_connect(&db).await.expect("daemon answers");
-        let one = argv("tasks add from-one");
-        let two = argv("tasks add from-two");
+        let one = argv("tasks add --stack Todo from-one");
+        let two = argv("tasks add --stack Todo from-two");
         let (r1, r2) = tokio::join!(c1.exec(&one), c2.exec(&two));
         assert_eq!(r1.expect("exec one").code, 0);
         assert_eq!(r2.expect("exec two").code, 0);

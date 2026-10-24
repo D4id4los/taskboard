@@ -13,6 +13,7 @@
 //!   `shutdown()`, exit (roadmap §2.4: one bootstrap, N frontends).
 
 pub mod boards;
+pub mod capture;
 pub mod config;
 pub mod connect;
 pub mod find;
@@ -136,6 +137,12 @@ pub enum CommandError {
     /// No such (live, non-archived) board on the server.
     #[error("no such board")]
     UnknownBoard(u64),
+    /// No live board matches the selector (exact uuid | exact title).
+    #[error("no live board matches {selector:?}")]
+    UnknownBoardSelector {
+        /// The rejected selector, verbatim.
+        selector: String,
+    },
     /// A different board is already bound (single-binding invariant).
     #[error("board {} is already bound to a different remote board", board)]
     BoardAlreadyBound {
@@ -399,7 +406,7 @@ impl CommandError {
             Self::AnchorTaskReserved => "anchor-task-reserved",
             Self::InvalidCredentials => "invalid-credentials",
             Self::Unreachable => "unreachable",
-            Self::UnknownBoard(_) => "unknown-board",
+            Self::UnknownBoard(_) | Self::UnknownBoardSelector { .. } => "unknown-board",
             Self::BoardAlreadyBound { .. } => "board-already-bound",
             Self::UnknownTask(_) => "unknown-task",
             Self::AmbiguousTask { .. } => "ambiguous-task",
@@ -918,6 +925,12 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             }
             Err(err) => report_to(&mut ctx.io, &err),
         },
+        Command::Capture { title, board } => {
+            run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
+                capture::capture(config, store, title, board).await
+            })
+            .await
+        }
         Command::Tasks {
             cmd: TasksCmd::Add { title, stack },
         } => {
@@ -941,13 +954,19 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             .await
         }
         Command::Tasks {
-            cmd: TasksCmd::Move { task, stack, order },
+            cmd: TasksCmd::Move {
+                task,
+                stack,
+                board,
+                order,
+            },
         } => {
             run_mutation(
                 &mut ctx.io,
                 ctx.config_path.clone(),
                 move |config, store| async move {
-                    tasks::move_(config, store, &task, stack.as_deref(), order).await
+                    tasks::move_(config, store, &task, stack.as_deref(), board.as_deref(), order)
+                        .await
                 },
             )
             .await
@@ -1407,6 +1426,11 @@ pub async fn dispatch_line(
             Some(invocation) => timers::timers_line(app, io, invocation).await,
             None => unreachable!("clap requires exactly one of --in/--at on timers add"),
         },
+        Command::Capture { title, board } => emit_result(
+            io,
+            capture::capture_on(app, title, board.as_deref()).await,
+            tasks::render_text_receipt,
+        ),
         Command::Tasks { cmd } => tasks_line(session, app, cmd, io).await,
         Command::Sync {
             no_wait,
@@ -1660,9 +1684,14 @@ async fn tasks_line(
             tasks::done_on(app, &task, undo).await,
             tasks::render_text_receipt,
         ),
-        TasksCmd::Move { task, stack, order } => emit_result(
+        TasksCmd::Move {
+            task,
+            stack,
+            board,
+            order,
+        } => emit_result(
             io,
-            tasks::move_on(app, &task, stack.as_deref(), order).await,
+            tasks::move_on(app, &task, stack.as_deref(), board.as_deref(), order).await,
             tasks::render_text_receipt,
         ),
         TasksCmd::Edit {
@@ -1821,6 +1850,9 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         | Command::Tasks { .. }
         | Command::Timers { .. }
         | Command::Find { .. }
+        // Capture rides the mutation lane (boot-local over the core,
+        // like the task verbs).
+        | Command::Capture { .. }
         | Command::Sync { .. } => IpcRoute::IpcOrLocal,
     }
 }
@@ -1913,6 +1945,43 @@ pub fn report(json: bool, err: &CommandError) -> u8 {
         json,
     };
     report_to(&mut io, err)
+}
+
+/// The shared live-board selector (chunk 10 D10, the ADR 0009
+/// cascade's shape): exact uuid or exact title among the *live*
+/// boards — one home shared by `capture --board` and
+/// `tasks move --board`.
+pub(crate) fn resolve_live_board(
+    state: &taskboard_domain::AppState,
+    selector: &str,
+) -> Result<taskboard_domain::BoardId, CommandError> {
+    let live: Vec<&taskboard_domain::Board> = state
+        .boards
+        .values()
+        .filter(|b| !b.deleted && !b.archived)
+        .collect();
+    if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
+        let id = taskboard_domain::BoardId::from_uuid(uuid);
+        if live.iter().any(|b| b.id == id) {
+            return Ok(id);
+        }
+    }
+    let matches: Vec<taskboard_domain::BoardId> = live
+        .iter()
+        .filter(|b| b.title == selector)
+        .map(|b| b.id)
+        .collect();
+    match matches.len() {
+        0 => Err(CommandError::UnknownBoardSelector {
+            selector: selector.to_owned(),
+        }),
+        1 => Ok(matches[0]),
+        // Duplicate titles: the typed ambiguity names the live boards'
+        // uuids (the AmbiguousBoard convention).
+        _ => Err(CommandError::AmbiguousBoard {
+            candidates: live.iter().map(|b| b.id.as_uuid().to_string()).collect(),
+        }),
+    }
 }
 
 #[cfg(test)]

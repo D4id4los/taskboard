@@ -324,7 +324,9 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::AnchorTaskReserved => "anchor-task-reserved",
             CommandError::InvalidCredentials => "invalid-credentials",
             CommandError::Unreachable => "unreachable",
-            CommandError::UnknownBoard(_) => "unknown-board",
+            CommandError::UnknownBoard(_) | CommandError::UnknownBoardSelector { .. } => {
+                "unknown-board"
+            }
             CommandError::BoardAlreadyBound { .. } => "board-already-bound",
             CommandError::UnknownTask(_) => "unknown-task",
             CommandError::AmbiguousTask { .. } => "ambiguous-task",

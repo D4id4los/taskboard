@@ -107,7 +107,7 @@ async fn r1_session_journey_boot_once_work_exit_durable() {
         vec![
             line("boards create \"Personal\" --json"),
             line("stacks add \"Todo\" --json"),
-            line("tasks add \"first task\" --json"),
+            line("tasks add --stack Todo \"first task\" --json"),
             line("tasks list --json"),
             line("exit"),
         ],
@@ -410,7 +410,7 @@ async fn r7_dispatch_line_routes_every_verb_family() {
             Command::Tasks {
                 cmd: TasksCmd::Add {
                     title: "first task".to_owned(),
-                    stack: None,
+                    stack: Some("Todo".to_owned()),
                 },
             },
             &mut io,
@@ -1007,6 +1007,7 @@ async fn r12_session_arms_route_success_end_to_end() {
                     cmd: TasksCmd::Move {
                         task: "t2".to_owned(),
                         stack: Some("Todo".to_owned()),
+                        board: None,
                         order: Some(0),
                     },
                 },

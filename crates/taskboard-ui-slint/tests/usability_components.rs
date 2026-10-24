@@ -309,6 +309,8 @@ fn hovering_a_menu_row_arms_the_entry_tooltip() {
         move |driver: &mut SlintDriver| {
             let handle = mount_populated(driver, 1.0, 1000, 900);
             let tooltip = handle.window().global::<taskboard_ui_slint::TooltipState>();
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+            driver.advance_time(0);
             handle.window().invoke_toolbar_menu_clicked();
             driver.advance_time(0);
 
@@ -481,8 +483,8 @@ fn the_text_field_keeps_its_layout_cell_while_text_grows() {
 #[test]
 fn the_open_menu_closes_its_box_above_the_status_bar_at_every_geometry() {
     for (scale, width, height) in [
-        (1.0, 819, 480),  // kiosk netbook through winit's 1.25 — the report
         (1.0, 1024, 600), // the kiosk panel, raw
+        (1.0, 819, 480),  // kiosk netbook through winit's 1.25 — the report
         (0.5, 600, 900),  // golden-matrix extremes
         (3.0, 600, 900),
     ] {
@@ -501,6 +503,13 @@ fn the_open_menu_closes_its_box_above_the_status_bar_at_every_geometry() {
                 let facts = handle
                     .window()
                     .global::<taskboard_ui_slint::MenuPanelFacts>();
+                eprintln!(
+                    "DBG geom {width}x{height} fx={} fy={} fw={} fh={}",
+                    facts.get_x(),
+                    facts.get_y(),
+                    facts.get_width(),
+                    facts.get_height()
+                );
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 // UI-scale px values
                 let bottom = (facts.get_y() + facts.get_height()).round() as u32;

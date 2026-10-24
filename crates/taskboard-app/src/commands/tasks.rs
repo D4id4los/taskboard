@@ -203,6 +203,37 @@ pub(crate) async fn add_on(
     stack: Option<&str>,
 ) -> Result<MutationReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
+    // The board-directed default (chunk 10 D10, the deliberate
+    // landing change): with `--stack` omitted the verb resolves the
+    // board, not the stack — exactly one live board ⇒ its Backlog
+    // (created on demand via `CaptureTask`); zero live boards keeps
+    // the typed refusal; multiple boards are the typed ambiguity
+    // naming the candidates.
+    if stack.is_none() {
+        let live_boards: Vec<&taskboard_domain::Board> = state
+            .boards
+            .values()
+            .filter(|b| !b.deleted && !b.archived)
+            .collect();
+        match live_boards.len() {
+            1 => {
+                let board = live_boards[0].id;
+                let selector = board.as_uuid().to_string();
+                drop(state);
+                return crate::commands::capture::capture_on(app, title, Some(selector.as_str()))
+                    .await;
+            }
+            0 => return Err(CommandError::AmbiguousBoard { candidates: vec![] }),
+            _ => {
+                return Err(CommandError::AmbiguousBoard {
+                    candidates: live_boards
+                        .iter()
+                        .map(|b| b.id.as_uuid().to_string())
+                        .collect(),
+                });
+            }
+        }
+    }
     let stack = resolve_target(&state, stack)?;
     let order = append_order(&state, stack);
     let outcome = app
@@ -280,12 +311,14 @@ pub async fn move_(
     store: Arc<dyn CredentialStore>,
     task: &str,
     stack: Option<&str>,
+    board: Option<&str>,
     order: Option<i64>,
 ) -> Result<MutationReceipt, CommandError> {
     let task = task.to_owned();
     let stack = stack.map(str::to_owned);
+    let board = board.map(str::to_owned);
     with_core(config, store, async |app| {
-        move_on(app, &task, stack.as_deref(), order).await
+        move_on(app, &task, stack.as_deref(), board.as_deref(), order).await
     })
     .await
 }
@@ -295,11 +328,54 @@ pub(crate) async fn move_on(
     app: &crate::App,
     task: &str,
     stack: Option<&str>,
+    board: Option<&str>,
     order: Option<i64>,
 ) -> Result<MutationReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
     let task_id = resolve_task(&state, task)?;
-    let stack = resolve_target(&state, stack)?;
+    // The optional board pre-filter (chunk 10 D10, D-V5's CLI-triage
+    // detail): stack titles colliding across boards scope through the
+    // named board; ambiguity without the filter errors as before.
+    let stack = match (stack, board) {
+        (Some(stack), Some(board)) => {
+            let board = crate::commands::resolve_live_board(&state, board)?;
+            let scoped: Vec<&Stack> = state
+                .stacks
+                .values()
+                .filter(|s| !s.deleted && s.board == board)
+                .collect();
+            if let Ok(uuid) = uuid::Uuid::parse_str(stack) {
+                let id = StackId::from_uuid(uuid);
+                scoped
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.id)
+                    .ok_or(CommandError::UnknownStack(stack.to_owned()))?
+            } else {
+                let matches: Vec<StackId> = scoped
+                    .iter()
+                    .filter(|s| s.title == stack)
+                    .map(|s| s.id)
+                    .collect();
+                match matches.len() {
+                    0 => Err(CommandError::UnknownStack(stack.to_owned()))?,
+                    1 => matches[0],
+                    _ => {
+                        return Err(CommandError::AmbiguousBoard {
+                            candidates: vec![board.as_uuid().to_string()],
+                        });
+                    }
+                }
+            }
+        }
+        (stack, None) => resolve_target(&state, stack)?,
+        // `--board` without `--stack` is a usage error at the clap
+        // level by convention; typed here for the REPL's direct line.
+        (None, Some(board)) => {
+            let _ = crate::commands::resolve_live_board(&state, board)?;
+            return Err(CommandError::AmbiguousStack { candidates: vec![] });
+        }
+    };
     let order = order.unwrap_or_else(|| append_order(&state, stack));
     drop(state);
     app.engine

@@ -30,7 +30,7 @@ const SESSION_PROMPT: &str = "taskboard> ";
 const SESSION_LINES: [&str; 4] = [
     "boards create \"Personal\"",
     "stacks add \"Todo\"",
-    "tasks add \"first task\"",
+    "tasks add --stack Todo \"first task\"",
     "exit",
 ];
 
@@ -935,7 +935,7 @@ fn tty_repl_completion_expands_verbs_and_live_titles() {
         &mut out_pipe,
         &mut seen,
         3,
-        "tasks add \"first task\"",
+        "tasks add --stack Todo \"first task\"",
     );
     feed_line(
         &mut stdin,

@@ -10,6 +10,28 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- The today view, global Inbox, quick capture, and the cross-board
+  move ring (#346, #347, chunk 10): the pure `today_sections`
+  classifier over the configured day window (nothing derived is
+  stored; every "today" question routes through `day_window` at read
+  time), the `Today` view as the desktop default launch view (kiosk
+  still launches on the board) with overdue / scheduled / due-today /
+  done-today sections across all boards, `task.due-today`
+  (confirmation-free re-commit stamping the day window's end), the
+  `CaptureTask` command with the app-global Inbox (a real board
+  created unbound on first capture — never auto-bound) and the
+  board-directed Backlog variant, the `capture` CLI/REPL verb plus
+  the capture overlay (Ctrl+K; commits-and-continues into the global
+  Inbox), the toolbar inbox chip routing `view.inbox`, and the move
+  ring widened to the flat cross-board candidate list with
+  `board › stack` hints.
+  **Deliberate behavior changes**: ordinary task moves now continue
+  across the board edge (the ring is uniform, no Inbox
+  special-casing); `tasks add` without `--stack` lands in the single
+  live board's Backlog (created on demand) instead of the ambiguous
+  all-stacks resolution — zero boards refuse typed as before,
+  multiple boards are a typed `AmbiguousBoard`; and `tasks move`
+  gains `--board` as a stack-selector pre-filter.
 - Fuzzy search (#348, chunk 9): the pure domain ranking core
   (`find.rs` — class-ordered subsequence matching over live boards,
   stacks, and tasks, ranked by `(quality, title_len, target)`, no

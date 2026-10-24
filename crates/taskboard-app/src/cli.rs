@@ -98,6 +98,19 @@ pub enum Command {
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         limit: Option<u64>,
     },
+    /// Quick capture (#347): lands the thought in the global Inbox
+    /// (created unbound on first capture); with `--board`, in that
+    /// board's Backlog stack (created on demand). Never errors on the
+    /// happy path.
+    Capture {
+        /// The captured thought, verbatim (the engine does not
+        /// validate titles; the UI trims at its edge).
+        title: String,
+        /// Target board (exact uuid | exact title among the live
+        /// boards). Omit for the global Inbox.
+        #[arg(long)]
+        board: Option<String>,
+    },
     /// Standalone timer/alarm verbs over the in-process core: fire once
     /// at `--in`/`--at`, die by settlement. Device-local — never synced.
     Timers {
@@ -687,9 +700,15 @@ pub enum TasksCmd {
         /// The task (uuid | unique ≥8-char uuid prefix | exact title).
         task: String,
         /// Target stack (exact uuid or title); required to be unambiguous
-        /// when omitted.
+        /// when omitted. Collisions across boards resolve through
+        /// `--board`.
         #[arg(long)]
         stack: Option<String>,
+        /// Scope the `--stack` selector to this board (exact uuid |
+        /// exact title among the live boards) when stack titles
+        /// collide across boards.
+        #[arg(long)]
+        board: Option<String>,
         /// Explicit sort order; default appends to the end of the target
         /// stack.
         #[arg(long)]

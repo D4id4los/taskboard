@@ -149,3 +149,82 @@ fn dummy_system() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEv
     let (_tx, rx) = tokio::sync::broadcast::channel(4);
     rx
 }
+
+/// The today-view golden matrix (chunk 10 D13): the same scale ×
+/// breakpoint extremes as the board's, through the same mount path
+/// (the bare-window model push does not produce the mounted render).
+/// Phrase stability: the fixture stamps its rows relative to the
+/// fixture-build `now` (−30 min), so every run renders the identical
+/// "30m overdue" captions — a run never lives long enough to cross
+/// the minute bucket.
+#[test]
+fn the_today_goldens_hold_across_the_scale_breakpoint_matrix() {
+    let regen = regen_requested();
+    for scale in SCALES {
+        for width in BREAKPOINTS {
+            support::driver::run(
+                DriverOptions {
+                    headless_renderer: true,
+                },
+                move |driver| {
+                    capture_today(driver, scale, width, regen);
+                },
+            );
+        }
+    }
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+fn today_golden_path(scale: f64, width: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "{}/tests/goldens/today-{scale:.1}-{width}.png",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+fn capture_today(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) {
+    let state = Arc::new(ArcSwap::from_pointee(fixture::today_overdue_state().1));
+    let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+    let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+    let handle = taskboard_ui_slint::mount(
+        state,
+        dummy_signals(),
+        dummy_system(),
+        commands,
+        requests_tx,
+        UiSettings {
+            scale,
+            ..UiSettings::default()
+        },
+    )
+    .expect("mount succeeds on the testing backend");
+    // The today goldens capture the TODAY view: no escape — the
+    // desktop default is the capture subject.
+    driver.bind(&handle);
+    driver.advance_time(0); // instantiate conditionals
+    driver.set_window_size(width, HEIGHT);
+
+    let snapshot = driver.snapshot();
+    assert_eq!(
+        (snapshot.width, snapshot.height),
+        (width, HEIGHT),
+        "renderer-presence contract at the today goldens"
+    );
+
+    let path = today_golden_path(scale, width);
+    if regen {
+        let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(&path, bytes).expect("writes");
+        return;
+    }
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+    let golden: Rgba8Image =
+        golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+    golden_compare::matches(&golden, &snapshot)
+        .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+}

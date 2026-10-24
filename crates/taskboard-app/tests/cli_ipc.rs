@@ -161,7 +161,7 @@ async fn e1_daemon_serves_verbs_then_stop_then_fallback() {
         let (code, out, err) = install.run(command);
         assert_eq!(code, Some(0), "{command:?} over ipc: {out} {err}");
     }
-    let (code, out, err) = install.run(&["tasks", "add", "first"]);
+    let (code, out, err) = install.run(&["tasks", "add", "--stack", "Todo", "first"]);
     assert_eq!(code, Some(0), "tasks add over ipc: {out} {err}");
     let (code, out, _) = install.run(&["--json", "tasks", "list"]);
     assert_eq!(code, Some(0));
@@ -205,7 +205,7 @@ async fn e1_daemon_serves_verbs_then_stop_then_fallback() {
         fallback, served,
         "fallback stdout must be byte-identical to the ipc answer"
     );
-    let (code, out, err) = install.run(&["tasks", "add", "second"]);
+    let (code, out, err) = install.run(&["tasks", "add", "--stack", "Todo", "second"]);
     assert_eq!(code, Some(0), "fallback boot works: {out} {err}");
     let _ = out;
 }
@@ -299,13 +299,29 @@ async fn e5_concurrent_cli_processes_both_serve() {
     }
 
     let first = binary_command()
-        .args(["--config", &install.config(), "tasks", "add", "from-one"])
+        .args([
+            "--config",
+            &install.config(),
+            "tasks",
+            "add",
+            "--stack",
+            "Todo",
+            "from-one",
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn first client");
     let second = binary_command()
-        .args(["--config", &install.config(), "tasks", "add", "from-two"])
+        .args([
+            "--config",
+            &install.config(),
+            "tasks",
+            "add",
+            "--stack",
+            "Todo",
+            "from-two",
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()

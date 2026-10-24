@@ -60,7 +60,7 @@ async fn e1_task_selector_cascade() {
     let config = standalone_config(dir.path(), "e1.db");
     board_with_stack(&config, "Personal", "Todo").await;
 
-    let created = tasks::add(config.clone(), forbidden_store(), "buy milk", None)
+    let created = tasks::add(config.clone(), forbidden_store(), "buy milk", Some("Todo"))
         .await
         .expect("task");
     let full_id = created.id.clone();
@@ -81,9 +81,16 @@ async fn e1_task_selector_cascade() {
     assert!(!undone.done);
 
     // Exact title.
-    let moved = tasks::move_(config.clone(), forbidden_store(), "buy milk", None, Some(0))
-        .await
-        .expect("exact title");
+    let moved = tasks::move_(
+        config.clone(),
+        forbidden_store(),
+        "buy milk",
+        None,
+        None,
+        Some(0),
+    )
+    .await
+    .expect("exact title");
     assert_eq!(moved.id, full_id);
 
     // A miss is typed.
@@ -101,10 +108,10 @@ async fn e1b_duplicate_titles_are_ambiguous_but_prefixes_disambiguate() {
     let config = standalone_config(dir.path(), "e1b.db");
     board_with_stack(&config, "Personal", "Todo").await;
 
-    let first = tasks::add(config.clone(), forbidden_store(), "dupe", None)
+    let first = tasks::add(config.clone(), forbidden_store(), "dupe", Some("Todo"))
         .await
         .expect("first");
-    let second = tasks::add(config.clone(), forbidden_store(), "dupe", None)
+    let second = tasks::add(config.clone(), forbidden_store(), "dupe", Some("Todo"))
         .await
         .expect("second");
 
@@ -143,7 +150,7 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "e2.db");
     board_with_stack(&config, "Personal", "Todo").await;
-    let created = tasks::add(config.clone(), forbidden_store(), "draft", None)
+    let created = tasks::add(config.clone(), forbidden_store(), "draft", Some("Todo"))
         .await
         .expect("task");
     let _id = created.id.clone();
@@ -239,7 +246,7 @@ async fn e3_tasks_delete_tombstones_idempotently() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "e3.db");
     board_with_stack(&config, "Personal", "Todo").await;
-    let created = tasks::add(config.clone(), forbidden_store(), "chore", None)
+    let created = tasks::add(config.clone(), forbidden_store(), "chore", Some("Todo"))
         .await
         .expect("task");
 
@@ -262,9 +269,14 @@ async fn e3_tasks_delete_tombstones_idempotently() {
     assert_eq!(repeat.id, created.id);
 
     // A done task deletes like any other.
-    let done = tasks::add(config.clone(), forbidden_store(), "finished thing", None)
-        .await
-        .expect("second task");
+    let done = tasks::add(
+        config.clone(),
+        forbidden_store(),
+        "finished thing",
+        Some("Todo"),
+    )
+    .await
+    .expect("second task");
     let _ = tasks::done(config.clone(), forbidden_store(), &done.id, false)
         .await
         .expect("complete");
@@ -281,7 +293,7 @@ async fn e3b_deleted_task_is_not_a_selector_hit() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "e3b.db");
     board_with_stack(&config, "Personal", "Todo").await;
-    let created = tasks::add(config.clone(), forbidden_store(), "gone", None)
+    let created = tasks::add(config.clone(), forbidden_store(), "gone", Some("Todo"))
         .await
         .expect("task");
     let _ = tasks::delete(config.clone(), forbidden_store(), &created.id)
@@ -453,7 +465,7 @@ async fn e6_labels_group() {
     assert_eq!(edited.color, "0000ff");
 
     // Assignment count reflects a live task carrying the label.
-    let created = tasks::add(config.clone(), forbidden_store(), "tagged", None)
+    let created = tasks::add(config.clone(), forbidden_store(), "tagged", Some("Todo"))
         .await
         .expect("task");
     let _ = tasks::label(config.clone(), forbidden_store(), &created.id, "critical")
@@ -500,7 +512,7 @@ async fn e7_tasks_label_unlabel() {
     let _ = labels::add(config.clone(), forbidden_store(), None, "someday", None)
         .await
         .expect("second label");
-    let created = tasks::add(config.clone(), forbidden_store(), "card", None)
+    let created = tasks::add(config.clone(), forbidden_store(), "card", Some("Todo"))
         .await
         .expect("task");
 
@@ -651,7 +663,7 @@ async fn e10_anchor_title_guard_refuses_rename_and_delete() {
         config.clone(),
         forbidden_store(),
         taskboard_domain::ANCHOR_CARD_TITLE,
-        None,
+        Some("Todo"),
     )
     .await
     .expect("anchor-titled task");
@@ -713,7 +725,7 @@ async fn e10_anchor_title_guard_refuses_rename_and_delete() {
     );
 
     // Non-anchor tasks pass untouched (both verbs).
-    let plain = tasks::add(config.clone(), forbidden_store(), "plain", None)
+    let plain = tasks::add(config.clone(), forbidden_store(), "plain", Some("Todo"))
         .await
         .expect("plain task");
     let receipt = tasks::edit(
@@ -745,7 +757,7 @@ async fn e11_field_edits_round_trip_and_clear() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "e11.db");
     board_with_stack(&config, "Personal", "Todo").await;
-    tasks::add(config.clone(), forbidden_store(), "estimated", None)
+    tasks::add(config.clone(), forbidden_store(), "estimated", Some("Todo"))
         .await
         .expect("task");
 
@@ -814,7 +826,7 @@ async fn e12_anchor_hides_from_the_list_but_stays_resolvable() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "e12.db");
     board_with_stack(&config, "Personal", "Todo").await;
-    tasks::add(config.clone(), forbidden_store(), "plain", None)
+    tasks::add(config.clone(), forbidden_store(), "plain", Some("Todo"))
         .await
         .expect("plain task");
     // A visible near-miss: a trailing space is not the anchor title.
@@ -822,7 +834,7 @@ async fn e12_anchor_hides_from_the_list_but_stays_resolvable() {
         config.clone(),
         forbidden_store(),
         "[taskboard] app-data ",
-        None,
+        Some("Todo"),
     )
     .await
     .expect("near-miss task");
