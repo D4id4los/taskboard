@@ -9,6 +9,7 @@
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
+import { Slider } from "../widgets/slider.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 export enum SettingsRowStatus {
     idle,
@@ -150,6 +151,11 @@ export component SettingsView inherits FocusScope {
     callback remove-clicked(int);
     callback preset-picked(int);
     callback scale-committed(string);
+    // The slider gesture (r2 D29): press / preview / release — the
+    // width-drag trio's seams.
+    callback scale-pressed();
+    callback scale-preview(float);
+    callback scale-released(float);
 
     VerticalLayout {
         padding: Theme.space-4;
@@ -318,12 +324,32 @@ export component SettingsView inherits FocusScope {
                 min-width: Theme.space-8;
                 vertical-alignment: center;
             }
+            // The slider (r2 D29): live preview while dragging, one
+            // commit per release. `value` reads `Theme.base-scale` —
+            // one source of truth; live-applied commits, reply
+            // reverts, and the preview all move the thumb.
+            Slider {
+                minimum: 0.5;
+                maximum: 3.0;
+                step: 0.1;
+                value: Theme.base-scale;
+                pressed() => {
+                    root.scale-pressed();
+                }
+                preview(v) => {
+                    root.scale-preview(v);
+                }
+                committed(v) => {
+                    root.scale-released(v);
+                }
+            }
             TextField {
                 placeholder: "1.0";
                 label: "Scale";
                 commit-affordance: true;
                 // Commit on Return only (D9): a per-keystroke commit
                 // would live-apply half-typed values and spam the lane.
+                // The field stays authoritative (r2 D29).
                 accepted(t) => {
                     root.scale-committed(t);
                 }

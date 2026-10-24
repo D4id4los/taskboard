@@ -223,6 +223,9 @@ export component AppWindow inherits Window {
                 remove-clicked(i) => root.settings-remove-clicked(i);
                 preset-picked(i) => root.settings-preset-picked(i);
                 scale-committed(t) => root.settings-scale-committed(t);
+                scale-pressed() => root.settings-scale-pressed();
+                scale-preview(v) => root.settings-scale-preview(v);
+                scale-released(v) => root.settings-scale-released(v);
             }
             if (root.current-view == View.task-detail): TaskView {
                 task: root.task-model;
@@ -474,6 +477,12 @@ export component AppWindow inherits Window {
     // The back button (round-1 D12): routes nav.focus-board — no new
     // view-state semantics.
     pure callback task-back-clicked();
+    // The scale slider's gesture seams (r2 D29): press seeds the
+    // revert point, preview live-applies (no lane write), release
+    // commits once.
+    pure callback settings-scale-pressed();
+    pure callback settings-scale-preview(float);
+    pure callback settings-scale-released(float);
     // The rule-list seams (chunk 6, D12): index-resolved against the
     // id tables / parsed at the adapter, then routed one-shot.
     pure callback task-rule-remove-clicked(int);
