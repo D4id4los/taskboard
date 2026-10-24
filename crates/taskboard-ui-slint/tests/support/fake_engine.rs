@@ -134,14 +134,20 @@ impl FakeEngine {
                         task.order = order;
                     }
                 }
+                StateCommand::MoveStack { id, order } => {
+                    if let Some(stack) = state.stacks.get_mut(&id) {
+                        stack.order = order;
+                    }
+                }
                 StateCommand::DeleteTask { id } => {
                     if let Some(task) = state.tasks.get_mut(&id) {
                         task.deleted = true;
                     }
                 }
                 // The journey session exercises only the task verbs
-                // above; anything else is continuity-relevant never —
-                // log-and-keep (the received log still records it).
+                // and the stack reorder above; anything else is
+                // continuity-relevant never — log-and-keep (the
+                // received log still records it).
                 other => tracing::debug!(?other, "fake engine: unapplied command"),
             }
         }

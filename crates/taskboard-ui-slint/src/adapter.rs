@@ -1583,6 +1583,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_settings_back_seam(window, adapter);
     install_board_context_seam(window, adapter);
     install_stack_context_seam(window, adapter);
+    install_object_context_seams(window, adapter);
     install_stack_width_seams(window, adapter);
     install_banner_seams(window, adapter);
     install_settings_seams(window, adapter);
@@ -1786,6 +1787,102 @@ fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let outcomes = a.view_state.activate_card(task, stack);
         a.apply_outcomes(&window, &outcomes);
         a.open_task_context_menu(&window, x, y);
+    });
+}
+
+/// The r2 D21 object-context seams: right-click selects first (the
+/// card precedent), then opens the object's context menu at the
+/// pointer. A right-clicked non-selected board-bar segment switches
+/// to that board — "the menu addresses what you clicked" (the
+/// recorded semantics). Stale indices are absorbed silently.
+fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // The stack header (the regular header and the compact switcher's
+    // segments share the callback).
+    let header = Rc::clone(adapter);
+    let header_weak = window.as_weak();
+    window.on_board_header_context_requested(move |column, x, y| {
+        let Some(window) = header_weak.upgrade() else {
+            return;
+        };
+        let Ok(column) = usize::try_from(column) else {
+            return;
+        };
+        let mut a = header.borrow_mut();
+        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+            return;
+        };
+        let state = a.state.load_full();
+        let outcomes = a.view_state.select_stack(&state, stack);
+        a.apply_outcomes(&window, &outcomes);
+        a.open_context_menu(&window, x, y, menu::STACK_CONTEXT);
+    });
+    // The board-bar segment.
+    let segment = Rc::clone(adapter);
+    let segment_weak = window.as_weak();
+    window.on_board_segment_context_requested(move |index, x, y| {
+        let Some(window) = segment_weak.upgrade() else {
+            return;
+        };
+        let Ok(index) = usize::try_from(index) else {
+            return;
+        };
+        let mut a = segment.borrow_mut();
+        let Some(board) = a.tables.board_ids.get(index).copied() else {
+            return;
+        };
+        let state = a.state.load_full();
+        let outcomes = a.view_state.select_board(&state, board);
+        a.apply_outcomes(&window, &outcomes);
+        a.open_context_menu(&window, x, y, menu::BOARD_CONTEXT);
+    });
+    // The stack-rename field (per-column; the flow names the stack —
+    // the mirror only needs the buffer, the commit resolves the flow).
+    let rename_mirror = Rc::clone(adapter);
+    window.on_board_stack_rename_edited(move |_column, text| {
+        rename_mirror
+            .borrow_mut()
+            .view_state
+            .set_buffer(text.to_string());
+    });
+    let rename_commit = Rc::clone(adapter);
+    let rename_commit_weak = window.as_weak();
+    window.on_board_stack_rename_committed(move |_column, text| {
+        let Some(window) = rename_commit_weak.upgrade() else {
+            return;
+        };
+        commit_text(&mut rename_commit.borrow_mut(), &window, &text);
+    });
+    // The board create/rename fields: the window-level slot's
+    // mirror/commit seams (the create-row pattern).
+    let board_mirror = Rc::clone(adapter);
+    window.on_board_create_field_edited(move |text| {
+        board_mirror
+            .borrow_mut()
+            .view_state
+            .set_buffer(text.to_string());
+    });
+    let board_commit = Rc::clone(adapter);
+    let board_commit_weak = window.as_weak();
+    window.on_board_create_field_committed(move |text| {
+        let Some(window) = board_commit_weak.upgrade() else {
+            return;
+        };
+        commit_text(&mut board_commit.borrow_mut(), &window, &text);
+    });
+    let board_rename_mirror = Rc::clone(adapter);
+    window.on_board_rename_field_edited(move |text| {
+        board_rename_mirror
+            .borrow_mut()
+            .view_state
+            .set_buffer(text.to_string());
+    });
+    let board_rename_commit = Rc::clone(adapter);
+    let board_rename_commit_weak = window.as_weak();
+    window.on_board_rename_field_committed(move |text| {
+        let Some(window) = board_rename_commit_weak.upgrade() else {
+            return;
+        };
+        commit_text(&mut board_rename_commit.borrow_mut(), &window, &text);
     });
 }
 

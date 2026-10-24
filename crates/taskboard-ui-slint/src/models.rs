@@ -554,10 +554,22 @@ fn push_board(
             tasks: ModelRc::from(cards_handle.clone()),
             // The create row opens in the flow's stack only (D8).
             create_open: matches!(&flow, Flow::Create { stack } if stack == stack_id),
+            // The rename field opens in the flow's stack only (r2
+            // D21); the buffer seeds the field's initial text (the
+            // mount-only rule — the field reads it at init).
+            rename_open: matches!(&flow, Flow::RenameStack { stack } if stack == stack_id),
+            initial_title: SharedString::from(stack.title.clone()),
             width_px: stack_width_px(vs.board(), *stack_id, vs, scale),
         });
     }
     mutations += diff_rows(models.columns.get_or_insert_with(Rc::default), &columns);
+    // The board create/rename fields' window-level slot (r2 D21).
+    window.set_board_create_open(matches!(flow, Flow::CreateBoard));
+    window.set_board_rename_open(matches!(flow, Flow::RenameBoard { .. }));
+    window.set_board_flow_initial(SharedString::from(match &flow {
+        Flow::RenameBoard { .. } => vs.buffer().to_owned(),
+        _ => String::new(),
+    }));
     // Prune the per-column card handles of stacks this pass dropped.
     models
         .column_tasks
@@ -1069,6 +1081,8 @@ mod tests {
             title: "a".into(),
             tasks: cards.clone(),
             create_open: false,
+            rename_open: false,
+            initial_title: "a".into(),
             width_px: -1.0,
         };
         let model = VecModel::from(vec![column.clone()]);

@@ -1126,7 +1126,10 @@ impl ViewState {
             // next refresh; nothing to command now.
             return vec![FlowOutcome::RefreshNow];
         };
-        let slot = slot.min(stacks.len() - 1);
+        // `slot == len` is the append-after-last slot; only a
+        // board-shrink mid-flow clamps it (never to len-1 — that would
+        // turn the append into an in-place no-op).
+        let slot = slot.min(stacks.len());
         let moved = stacks.remove(from);
         let insert_at = if from < slot { slot - 1 } else { slot };
         stacks.insert(insert_at.min(stacks.len()), moved);
