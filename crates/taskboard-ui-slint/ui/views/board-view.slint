@@ -39,11 +39,19 @@ export component BoardView inherits FocusScope {
     callback stack-width-drag(int, float);
     callback stack-width-release(int);
     callback board-bar-activated(int);
+    // The board-bar segment right-click (r2 D21).
+    callback segment-context(int, float, float);
     callback task-activated(int, int);
     callback task-clicked(int, int);
     callback task-context(int, int, float, float);
     callback header-activated(int);
     callback switcher-activated(int);
+    // The stack-header right-click (r2 D21), threaded window → view →
+    // layout; the compact switcher reuses the same seam.
+    callback header-context(int, float, float);
+    // The stack-rename field of one column (r2 D21).
+    callback rename-committed(int, string);
+    callback rename-edited(int, string);
     callback create-committed(int, string);
     callback create-edited(int, string);
     // The per-column Add Task ghost (r2 D8).
@@ -85,11 +93,15 @@ export component BoardView inherits FocusScope {
                 stack-width-drag(c, d) => root.stack-width-drag(c, d);
                 stack-width-release(c) => root.stack-width-release(c);
                 board-bar-activated(i) => root.board-bar-activated(i);
+                segment-context(i, x, y) => root.segment-context(i, x, y);
                 task-activated(c, r) => root.task-activated(c, r);
                 task-clicked(c, r) => root.task-clicked(c, r);
                 task-context(c, r, x, y) => root.task-context(c, r, x, y);
                 header-activated(c) => root.header-activated(c);
                 switcher-activated(c) => root.switcher-activated(c);
+                header-context(c, x, y) => root.header-context(c, x, y);
+                rename-committed(c, t) => root.rename-committed(c, t);
+                rename-edited(c, t) => root.rename-edited(c, t);
                 create-committed(c, t) => root.create-committed(c, t);
                 create-edited(c, t) => root.create-edited(c, t);
                 add-task-activated(c) => root.add-task-activated(c);

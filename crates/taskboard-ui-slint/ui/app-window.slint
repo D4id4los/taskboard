@@ -27,6 +27,7 @@ import {
 } from "views/settings-view.slint";
 export { SettingsModel, ConnectionRow, SettingsRowStatus, SettingsOutcome }
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
+import { TextField } from "widgets/text-field.slint";
 import { MenuPanelFacts } from "menu-facts.slint";
 
 // Re-export the globals so the generated Rust module exposes them
@@ -127,6 +128,13 @@ export component AppWindow inherits Window {
     in-out property <[PaletteRowModel]> palette-model: [];
     in-out property <int> palette-overflow: 0;
     in-out property <FlowHintModel> flow-hint-model;
+    // The board create/rename fields' window-level slot (r2 D21):
+    // one mount site covers every breakpoint, the empty-board leg,
+    // and the vi-from-settings exposure. `board-flow-initial` is the
+    // seeded buffer (the mount-only initial-text rule).
+    in-out property <bool> board-create-open: false;
+    in-out property <bool> board-rename-open: false;
+    in-out property <string> board-flow-initial;
 
     // The rendering fact for tests and reviews (§6 test 2): compact
     // mode is active (board degeneration, D8/D17).
@@ -180,11 +188,15 @@ export component AppWindow inherits Window {
                 stack-width-drag(c, d) => root.board-stack-width-drag(c, d);
                 stack-width-release(c) => root.board-stack-width-release(c);
                 board-bar-activated(i) => root.board-bar-segment-activated(i);
+                segment-context(i, x, y) => root.board-segment-context-requested(i, x, y);
                 task-activated(c, r) => root.board-task-activated(c, r);
                 task-clicked(c, r) => root.board-task-clicked(c, r);
                 task-context(c, r, x, y) => root.board-task-context-requested(c, r, x, y);
                 header-activated(c) => root.board-header-activated(c);
                 switcher-activated(c) => root.board-switcher-activated(c);
+                header-context(c, x, y) => root.board-header-context-requested(c, x, y);
+                rename-committed(c, t) => root.board-stack-rename-committed(c, t);
+                rename-edited(c, t) => root.board-stack-rename-edited(c, t);
                 create-committed(c, t) => root.board-create-committed(c, t);
                 create-edited(c, t) => root.board-create-edited(c, t);
                 add-task-activated(c) => root.board-add-task-activated(c);
@@ -219,6 +231,25 @@ export component AppWindow inherits Window {
                 rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
+            }
+
+            // The board create/rename fields (r2 D21): the
+            // window-level slot below the views — visible while the
+            // flow is open at every breakpoint; Return commits,
+            // Escape routes mode.normal (the discard arm).
+            if (root.board-create-open): TextField {
+                placeholder: "New board name";
+                label: "New board name";
+                accepted(text) => root.board-create-field-committed(text);
+                edited(text) => root.board-create-field-edited(text);
+            }
+            if (root.board-rename-open): TextField {
+                placeholder: "Board name";
+                label: "Board name";
+                initial-text: root.board-flow-initial;
+                selected-on-focus: true;
+                accepted(text) => root.board-rename-field-committed(text);
+                edited(text) => root.board-rename-field-edited(text);
             }
 
             status := StatusBar {
@@ -402,6 +433,19 @@ export component AppWindow inherits Window {
     pure callback stack-task-context-requested(int, float, float);
     pure callback board-header-activated(int);
     pure callback board-switcher-activated(int);
+    // The r2 D21 right-click seams: the stack header (and the
+    // compact switcher's segments) and the board-bar segment.
+    pure callback board-header-context-requested(int, float, float);
+    pure callback board-segment-context-requested(int, float, float);
+    // The stack-rename field (r2 D21): per-column mirror/commit.
+    pure callback board-stack-rename-committed(int, string);
+    pure callback board-stack-rename-edited(int, string);
+    // The board create/rename fields (r2 D21): the window-level
+    // slot's mirror/commit seams.
+    pure callback board-create-field-committed(string);
+    pure callback board-create-field-edited(string);
+    pure callback board-rename-field-committed(string);
+    pure callback board-rename-field-edited(string);
     pure callback board-create-committed(int, string);
     pure callback board-create-edited(int, string);
     // The per-column Add Task ghost (r2 D8): select + route

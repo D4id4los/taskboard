@@ -3017,7 +3017,500 @@ fn the_palette_searches_and_jumps_across_boards() {
                 Some((0, 1)),
                 "the needle's card is emphasized"
             );
+        },
+    );
+}
+// ---- round 2 (D16–D21): the action round-up journeys --------------------
+
+/// Presses one action through `preset`'s own binding table (the
+/// `Harness::press` pattern with a non-default keymap): resolves the
+/// chain-visible binding the same way the generated menu does and
+/// injects each stroke.
+fn press_preset(
+    harness: &mut Harness,
+    preset: taskboard_ui_slint::keymap::Preset,
+    action: ActionId,
+) {
+    let keymap = taskboard_ui_slint::keymap::Keymap::from_preset(preset);
+    let chain = harness.chain();
+    let hint = keymap
+        .first_binding_display(action, &chain)
+        .unwrap_or_else(|| panic!("{action:?} is bound in the visible chain {chain:?}"));
+    for spelling in &hint {
+        let stroke = stroke::parse(spelling)
+            .unwrap_or_else(|error| panic!("{action:?}'s hint {spelling:?}: {error}"));
+        let presses = harness.driver.press_stroke(stroke);
+        harness.guard.press_n(presses);
+    }
+}
+
+fn menu_rows(harness: &Harness) -> Vec<taskboard_ui_slint::MenuEntryModel> {
+    let entries = keyboard(harness).get_menu_entries();
+    (0..entries.row_count())
+        .map(|i| entries.row_data(i).expect("row"))
+        .collect()
+}
+
+fn menu_actions(harness: &Harness) -> Vec<String> {
+    menu_rows(harness)
+        .into_iter()
+        .map(|r| r.action.to_string())
+        .collect()
+}
+
+/// The dispatch (c) contract, journey-level: every preset's move flow
+/// cancels through Escape with zero commands drained; emacs' board-view
+/// C-g is the cancel alternate (and inert outside a move), and its
+/// `Ctrl+g Ctrl+/` sequence still resolves over the task-detail chain
+/// (the resolver-level pin's echo at the window boundary).
+#[test]
+fn move_cancel_routes_through_escape_and_emacs_c_g() {
+    for (preset, name) in [
+        (taskboard_ui_slint::keymap::Preset::Standard, "standard"),
+        (taskboard_ui_slint::keymap::Preset::Emacs, "emacs"),
+        (taskboard_ui_slint::keymap::Preset::Vi, "vi"),
+    ] {
+        let (fixture, state) = fixture::golden_state();
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |_driver| {
+                let mut harness = Harness::mount_with_settings(
+                    SlintDriver::default(),
+                    state,
+                    UiSettings {
+                        keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                        keymap_preset: preset,
+                        ..UiSettings::default()
+                    },
+                );
+                harness.handle.window().invoke_board_task_clicked(0, 0);
+                press_preset(&mut harness, preset, ActionId::TaskMove);
+                assert!(
+                    harness.handle.window().get_flow_hint_model().visible,
+                    "{name}: the move flow is visible"
+                );
+                assert!(
+                    harness.handle.window().get_board_model().move_target >= 0,
+                    "{name}: the move target highlights"
+                );
+                harness.stroke(parse("Escape").expect("Escape"));
+                assert!(
+                    !harness.handle.window().get_flow_hint_model().visible,
+                    "{name}: Escape ends the flow"
+                );
+                harness.assert_commands(&[]);
+
+                // Extra pin (emacs): the board-view C-g is inert
+                // outside a move and cancels inside one.
+                if preset == taskboard_ui_slint::keymap::Preset::Emacs {
+                    harness.stroke(parse("Ctrl+g").expect("Ctrl+g"));
+                    harness.assert_commands(&[]);
+                    press_preset(&mut harness, preset, ActionId::TaskMove);
+                    harness.stroke(parse("Ctrl+g").expect("Ctrl+g"));
+                    assert!(
+                        !harness.handle.window().get_flow_hint_model().visible,
+                        "the lone C-g cancels the move"
+                    );
+                    harness.assert_commands(&[]);
+                }
+                let _ = fixture;
+            },
+        );
+    }
+}
+
+/// The dispatch (d) contract: the stack walk wraps at both ends and
+/// lands focus on the new stack's first task.
+#[test]
+fn the_stack_walk_wraps_at_both_ends() {
+    let (fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Select the last stack first (the wrap-back check needs a
+            // real end): the header click is the established seam.
+            harness.handle.window().invoke_board_header_activated(1);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                1,
+                "the header click selected stack b"
+            );
+            harness.press(ActionId::StackNext);
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                0,
+                "next at the last stack wraps to the first"
+            );
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 0)),
+                "focus lands on the wrapped stack's first task"
+            );
+            harness.press(ActionId::StackPrev);
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                1,
+                "previous from the first stack wraps to the last"
+            );
             harness.assert_commands(&[]);
+            let _ = fixture;
+        },
+    );
+}
+
+/// The dispatch (e)/(f) contract: board create via the keyboard and
+/// via the board-bar menu click ≡ key; board delete and stack delete
+/// drain the exact typed commands; reopen routes the inverted done
+/// flag and is a no-op dispatch on an open task.
+#[test]
+fn the_lifecycle_verbs_drain_their_exact_commands() {
+    let (fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // Board create via the keyboard binding.
+            harness.press(ActionId::BoardCreate);
+            assert!(
+                harness.handle.window().get_board_create_open(),
+                "the board field opened"
+            );
+            harness.type_text("second");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[StateCommand::CreateBoard {
+                title: "second".to_owned(),
+                color: taskboard_domain::Color::new(""),
+            }]);
+            harness.engine.settle(&harness.handle);
+
+            // Stack delete via the keyboard binding: the selection
+            // (seeded to the first stack) is the target.
+            harness.press(ActionId::StackDelete);
+            harness.assert_commands(&[StateCommand::DeleteStack {
+                id: fixture.stack_a,
+            }]);
+            harness.engine.settle(&harness.handle);
+
+            // Reopen: focus a card, complete it, then invert it.
+            harness.handle.window().invoke_board_task_clicked(0, 1);
+            harness.driver.advance_time(0);
+            harness.press(ActionId::TaskComplete);
+            harness.assert_commands(&[StateCommand::SetTaskDone {
+                id: fixture.task1,
+                done: true,
+            }]);
+            harness.engine.settle(&harness.handle);
+            harness.press(ActionId::TaskReopen);
+            harness.assert_commands(&[StateCommand::SetTaskDone {
+                id: fixture.task1,
+                done: false,
+            }]);
+            harness.engine.settle(&harness.handle);
+            // An open task absorbs the verb (NoTarget at the router).
+            harness.press(ActionId::TaskReopen);
+            harness.assert_commands(&[]);
+
+            // Board delete via the keyboard binding: the exact verb,
+            // the only live board the target (matched structurally —
+            // the fixture does not expose the board id).
+            harness.press(ActionId::BoardDelete);
+            let drained = harness.engine.drain();
+            assert_eq!(drained.len(), 1);
+            assert!(
+                matches!(drained[0], StateCommand::DeleteBoard { .. }),
+                "board.delete drains DeleteBoard"
+            );
+        },
+    );
+}
+
+/// The dispatch (g) contract: the first/last jumps land on the far
+/// ends of the reading order and are idempotent at the target.
+#[test]
+fn the_first_last_jumps_land_on_the_far_ends_and_stay() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavLastItem);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((1, 0)),
+                "last lands on the reading order's end"
+            );
+            harness.press(ActionId::NavLastItem);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((1, 0)),
+                "repeating last is a stay"
+            );
+            harness.press(ActionId::NavFirstItem);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 0)),
+                "first lands on the reading order's start"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// The stack-move flow: begin highlights the moving stack's slot,
+/// cycling wraps over the insertion slots, confirm drains the exact
+/// re-normalization set, and Escape mid-flow drains nothing.
+#[test]
+fn the_stack_move_flow_cycles_and_confirms_minimally() {
+    let (fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Move stack a (selected, slot 0) after stack b (slot 1):
+            // highlight the insertion point, confirm, drain the set.
+            harness.handle.window().invoke_board_header_activated(0);
+            harness.press(ActionId::StackMove);
+            assert_eq!(
+                harness.handle.window().get_board_model().move_target,
+                0,
+                "the flow highlights the moving stack's own slot"
+            );
+            harness.stroke(parse("Down").expect("Down"));
+            assert_eq!(
+                harness.handle.window().get_board_model().move_target,
+                1,
+                "the insertion point follows the cycle"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.assert_commands(&[]);
+            harness.press(ActionId::StackMove);
+            // Two Downs: slot 2 of 0..=2 = "append after the last
+            // stack"; the highlight clamps to the last stack.
+            harness.stroke(parse("Down").expect("Down"));
+            harness.stroke(parse("Down").expect("Down"));
+            assert_eq!(
+                harness.handle.window().get_board_model().move_target,
+                1,
+                "the append slot highlights the last stack"
+            );
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[
+                StateCommand::MoveStack {
+                    id: fixture.stack_b,
+                    order: 0,
+                },
+                StateCommand::MoveStack {
+                    id: fixture.stack_a,
+                    order: 1,
+                },
+            ]);
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                1,
+                "stack a now renders at position 1"
+            );
+
+            // An in-place confirm dispatches nothing.
+            harness.press(ActionId::StackMove);
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// The dispatch (h) contract: right-clicking a stack header opens the
+/// pointer-anchored menu with exactly the stack context's ids, every
+/// bound row hinted, and an invocation routes against the clicked
+/// object (Widen stack steps the width request).
+#[test]
+fn the_header_right_click_opens_the_stack_menu_and_routes() {
+    let (fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness
+                .handle
+                .window()
+                .invoke_board_header_context_requested(1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+            assert!(keyboard(&harness).get_menu_pointer_anchored());
+            let rows = menu_rows(&harness);
+            assert!(rows.iter().all(|r| !r.submenu), "flat: no parents");
+            assert!(
+                !menu_actions(&harness).contains(&"app.exit".to_owned()),
+                "no Quit"
+            );
+            for action in [
+                "task.create",
+                "stack.move",
+                "stack.rename",
+                "stack.wider",
+                "stack.narrower",
+                "stack.delete",
+            ] {
+                assert!(
+                    menu_actions(&harness).contains(&action.to_owned()),
+                    "the stack menu offers {action}"
+                );
+            }
+            for row in &rows {
+                let keymap = UiSettings::default().keymap;
+                if let Some(id) =
+                    taskboard_ui_slint::actions::ActionId::from_id(row.action.as_str())
+                {
+                    let bound = keymap
+                        .first_binding_display(
+                            id,
+                            &[
+                                taskboard_ui_slint::actions::ContextId::Board,
+                                taskboard_ui_slint::actions::ContextId::Global,
+                            ],
+                        )
+                        .is_some();
+                    if bound {
+                        assert!(row.hint.row_count() > 0, "{} renders a hint", row.action);
+                    }
+                }
+            }
+
+            // Invoking Widen stack routes the width verb (no command,
+            // a width request over the request lane).
+            harness.driver.click_by_label("Widen stack");
+            harness.assert_commands(&[]);
+            let requests = harness.drain_requests();
+            assert!(
+                requests.iter().any(|r| matches!(
+                    r,
+                    taskboard_ui_slint::requests::UiRequest::StackWidthsChanged { .. }
+                )),
+                "the width verb stepped the persist request"
+            );
+            assert!(!keyboard(&harness).get_menu_open());
+            // The clicked stack was selected first: the moved selection
+            // addresses stack b on the next verb.
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                1,
+                "right-click selected the clicked column"
+            );
+            let _ = fixture;
+        },
+    );
+}
+
+/// Right-clicking a board-bar segment selects that board and opens
+/// the board context menu (the recorded heavier-than-card semantics).
+#[test]
+fn the_segment_right_click_selects_and_opens_the_board_menu() {
+    let (_fixture, state) = fixture::two_board_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness
+                .handle
+                .window()
+                .invoke_board_segment_context_requested(1, 200.0, 200.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+            for action in [
+                "task.create",
+                "stack.create",
+                "board.create",
+                "board.rename",
+                "board.delete",
+            ] {
+                assert!(
+                    menu_actions(&harness).contains(&action.to_owned()),
+                    "the board menu offers {action}"
+                );
+            }
+            assert!(
+                !menu_actions(&harness).contains(&"app.exit".to_owned()),
+                "no Quit"
+            );
+            // Right-click selected the clicked board (the board bar's
+            // selected index follows).
+            assert_eq!(
+                harness.handle.window().get_board_bar_model().selected,
+                1,
+                "the clicked segment is now the selected board"
+            );
+        },
+    );
+}
+
+/// The rename flows: the header menu's Rename stack opens the seeded
+/// field inside the locked header; commit drains the exact command;
+/// Escape discards. Board rename opens the window-level slot seeded
+/// from the current title.
+#[test]
+fn the_rename_flows_seed_commit_and_discard() {
+    let (fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // Stack rename via the header menu.
+            harness
+                .handle
+                .window()
+                .invoke_board_header_context_requested(0, 300.0, 300.0);
+            harness.driver.click_by_label("Rename stack");
+            harness.driver.advance_time(0);
+            let stacks = harness.handle.window().get_board_model().stacks;
+            let column = stacks.row_data(0).expect("column");
+            assert!(column.rename_open, "the header field opened");
+            assert_eq!(column.initial_title, "a", "the buffer seeded");
+            // The seeded title starts selected (the task-editor
+            // convention): typing replaces it wholesale.
+            harness.type_text("renamed");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[StateCommand::RenameStack {
+                id: fixture.stack_a,
+                new_title: "renamed".to_owned(),
+            }]);
+            harness.engine.settle(&harness.handle);
+
+            // Board rename via the board menu: seeded, Escape discards.
+            harness
+                .handle
+                .window()
+                .invoke_board_segment_context_requested(0, 200.0, 200.0);
+            harness.driver.click_by_label("Rename board");
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_board_rename_open());
+            assert_eq!(
+                harness.handle.window().get_board_flow_initial(),
+                "board",
+                "seeded from the current title"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.assert_commands(&[]);
+            assert!(!harness.handle.window().get_board_rename_open());
         },
     );
 }

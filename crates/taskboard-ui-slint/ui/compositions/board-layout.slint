@@ -25,6 +25,10 @@ export struct StackColumnModel {
     tasks: [TaskCardModel],
     // The inline create row of this column (D8), open or closed.
     create-open: bool,
+    // The stack-rename field of this column (r2 D21), open or closed;
+    // the seeded buffer (the mount-only initial-text rule).
+    rename-open: bool,
+    initial-title: string,
     // The user-set rendered column width (round-1 D16); ≤ 0 = auto —
     // the conditional layout clamps below never engage and the column
     // keeps the untouched distribution (the goldens' auto-layout
@@ -45,6 +49,13 @@ export component BoardLayout inherits Rectangle {
     callback task-context(int, int, float, float);
     callback header-activated(int);
     callback switcher-activated(int);
+    // The stack-header right-click (r2 D21): select the column, then
+    // open the stack context menu at the pointer — the card pattern
+    // (right-click selects like left-click).
+    callback header-context(int, float, float);
+    // The stack-rename field of one column (r2 D21).
+    callback rename-committed(int, string);
+    callback rename-edited(int, string);
     callback create-committed(int, string);
     callback create-edited(int, string);
     // The per-column Add Task ghost (r2 D8): select the column's
@@ -70,6 +81,8 @@ export component BoardLayout inherits Rectangle {
     callback stack-width-drag(int, float);
     callback stack-width-release(int);
     callback board-bar-activated(int);
+    // The board-bar segment right-click (r2 D21), threaded through.
+    callback segment-context(int, float, float);
     // The stack-create flow (usability D7): the on-board button and
     // the field's mirror/commit seams; open is board-level.
     in property <bool> stack-create-open;
@@ -128,6 +141,7 @@ export component BoardLayout inherits Rectangle {
             bar: root.board-bar;
             segment-hint: root.board-segment-hint;
             segment-activated(index) => root.board-bar-activated(index);
+            segment-context(i, x, y) => root.segment-context(i, x, y);
         }
 
         HorizontalLayout {
@@ -178,6 +192,18 @@ export component BoardLayout inherits Rectangle {
                     clip: true;
                     header-hit := TouchArea {
                         clicked => root.header-activated(column-index);
+                        // The r2 D21 stack-header right-click: the
+                        // task-card pattern — right-down reports the
+                        // window-coordinate pointer for the context
+                        // menu anchor (the adapter selects first).
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down
+                                    && event.button == PointerEventButton.right) {
+                                root.header-context(column-index,
+                                    self.absolute-position.x / 1px + self.mouse-x / 1px,
+                                    self.absolute-position.y / 1px + self.mouse-y / 1px);
+                            }
+                        }
                         // The D8/D11/D18 header tooltip: the stack title
                         // plus the stack.wider binding hint (a keymap
                         // projection pushed per refresh).
@@ -235,7 +261,21 @@ export component BoardLayout inherits Rectangle {
                     HorizontalLayout {
                         padding-left: Theme.space-2;
                         padding-right: Theme.space-2;
-                        RoleText {
+                        // The r2 D21 rename field swaps in for the
+                        // title row while the flow is open — inside the
+                        // locked-height control row (r2 D3 preserved).
+                        if (column.rename-open): TextField {
+                            placeholder: "Stack name";
+                            label: "Stack name";
+                            initial-text: column.initial-title;
+                            // The task-title editor's convention: the
+                            // seeded title starts selected (D14).
+                            selected-on-focus: true;
+                            horizontal-stretch: 1;
+                            accepted(text) => root.rename-committed(column-index, text);
+                            edited(text) => root.rename-edited(column-index, text);
+                        }
+                        if (!column.rename-open): RoleText {
                             role: Typography.heading;
                             text: column.title;
                             vertical-alignment: center;
@@ -404,9 +444,21 @@ export component BoardLayout inherits Rectangle {
                         }
                     }
                 }
-                // The hover cue's owner (usability D2).
+                // The hover cue's owner (usability D2). The r2 D21
+                // right-click shares the regular header's context seam
+                // (same object class — the switcher reuses the
+                // effective-selected addressing through the same
+                // column index).
                 segment-hover := TouchArea {
                     clicked => root.switcher-activated(column-index);
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down
+                                && event.button == PointerEventButton.right) {
+                            root.header-context(column-index,
+                                self.absolute-position.x / 1px + self.mouse-x / 1px,
+                                self.absolute-position.y / 1px + self.mouse-y / 1px);
+                        }
+                    }
                 }
             }
             // The compact New-stack affordance (r2 D7): inline at the
@@ -434,6 +486,16 @@ export component BoardLayout inherits Rectangle {
             // The D16 address: same list role as a regular column.
             accessible-role: AccessibleRole.list;
             accessible-label: column.title;
+            // The r2 D21 rename field (compact leg): no header exists
+            // here, so the field mounts atop the selected column.
+            if (column.rename-open): TextField {
+                placeholder: "Stack name";
+                label: "Stack name";
+                initial-text: column.initial-title;
+                selected-on-focus: true;
+                accepted(text) => root.rename-committed(root.effective-selected(), text);
+                edited(text) => root.rename-edited(root.effective-selected(), text);
+            }
             VerticalLayout {
                 alignment: start;
                 spacing: Theme.space-1;
