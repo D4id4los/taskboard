@@ -724,6 +724,22 @@ impl ViewState {
         }
     }
 
+    /// A today row's click (chunk 10 D7): the board card's click
+    /// (`activate_card`, §7.1 mouse discipline) plus the
+    /// selection-follows-focus retarget — the walk's own seam, so a
+    /// mouse-picked row leaves the board/stack selection consistent
+    /// for the task verbs, exactly as a keyboard step would.
+    pub fn activate_today_row(
+        &mut self,
+        state: &AppState,
+        task: TaskId,
+        stack: StackId,
+    ) -> Vec<FlowOutcome> {
+        let outcomes = self.activate_card(task, stack);
+        self.follow_board(state);
+        outcomes
+    }
+
     /// `stack.next`/`stack.prev` (round 2, D17): the stack selection
     /// steps with wrap (the compact switcher's segmented-control
     /// convention) and focus lands on the new stack's first task —
@@ -1116,10 +1132,6 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
-    /// The jump-to matrix (design D12): retarget board/stack/focus per
-    /// hit kind against the live snapshot, then end the flow. A stale
-    /// target (the entity died between push and invoke) is inert —
-    /// close only, no retarget.
     /// `view.inbox` (chunk 10 D9, D-V7): jumps to the global Inbox's
     /// canonical-first stack — read-side only. Quietly no-ops (no
     /// repaint, no creation) when no live Inbox board exists: an empty
@@ -1135,6 +1147,10 @@ impl ViewState {
         outcomes
     }
 
+    /// The jump-to matrix (design D12): retarget board/stack/focus per
+    /// hit kind against the live snapshot, then end the flow. A stale
+    /// target (the entity died between push and invoke) is inert —
+    /// close only, no retarget.
     pub fn palette_jump(&mut self, state: &AppState, target: SearchTarget) -> Vec<FlowOutcome> {
         let mut outcomes = match target {
             SearchTarget::Task(task_id) => {

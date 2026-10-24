@@ -1904,6 +1904,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_stack_create_seams(window, adapter);
     install_board_seams(window, adapter);
     install_stack_seams(window, adapter);
+    install_today_row_seams(window, adapter);
     install_task_seam(window, adapter);
     install_due_seam(window, adapter);
     install_task_back_seam(window, adapter);
@@ -2123,6 +2124,69 @@ fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         a.apply_outcomes(&window, &outcomes);
         a.open_task_context_menu(&window, x, y);
     });
+}
+
+/// The today view's row seams (chunk 10 D7): click, activation, and
+/// context — every one focuses the row first (the board card's §7.1
+/// discipline, with the selection-follows-focus retarget), then the
+/// activation/context seams route through the action layer's verbs.
+fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let click = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_today_row_clicked(move |section, row| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let mut a = click.borrow_mut();
+        focus_today_row(&mut a, &window, section, row);
+    });
+    let activated = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_today_row_activated(move |section, row| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let mut a = activated.borrow_mut();
+        if focus_today_row(&mut a, &window, section, row).is_some() {
+            a.route(&window, ActionId::TaskEdit);
+        }
+    });
+    let context = Rc::clone(adapter);
+    let weak = window.as_weak();
+    window.on_today_row_context_requested(move |section, row, x, y| {
+        let Some(window) = weak.upgrade() else {
+            return;
+        };
+        let mut a = context.borrow_mut();
+        if focus_today_row(&mut a, &window, section, row).is_some() {
+            a.open_task_context_menu(&window, x, y);
+        }
+    });
+}
+
+/// A today row at `(section, row)`: resolves the id tables (the
+/// per-section prefix sums over `today_tasks`) and applies the click's
+/// focus state. Returns the addressed task, or `None` for a stale
+/// index against an older tables pass.
+fn focus_today_row(
+    adapter: &mut Adapter,
+    window: &AppWindow,
+    section: i32,
+    row: i32,
+) -> Option<TaskId> {
+    let (Ok(section), Ok(row)) = (usize::try_from(section), usize::try_from(row)) else {
+        return None;
+    };
+    let task = adapter.tables.today_row(section, row)?;
+    let stack = {
+        let state = adapter.state.load();
+        state.tasks.get(&task).map(|t| t.stack)?
+    };
+    let outcomes = adapter
+        .view_state
+        .activate_today_row(&adapter.state.load(), task, stack);
+    adapter.apply_outcomes(window, &outcomes);
+    Some(task)
 }
 
 /// The r2 D21 object-context seams: right-click selects first (the

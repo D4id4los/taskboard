@@ -69,6 +69,10 @@ pub struct IdTables {
     /// sections concatenated in display order — the focus walk's
     /// domain and the row-activation seam's resolution base.
     pub today_tasks: Vec<TaskId>,
+    /// Per today section, the filtered row count (chunk 10 D7): the
+    /// `(section, row)` seams resolve their flat index against these
+    /// prefix sums over `today_tasks`.
+    pub today_section_rows: [usize; 4],
 }
 
 impl IdTables {
@@ -88,6 +92,13 @@ impl IdTables {
     #[must_use]
     pub fn stack_task(&self, row: usize) -> Option<TaskId> {
         self.stack_tasks.get(row).copied()
+    }
+
+    /// The today row at `(section, row)`, if the tables know it.
+    #[must_use]
+    pub fn today_row(&self, section: usize, row: usize) -> Option<TaskId> {
+        let offset: usize = self.today_section_rows.iter().take(section).sum();
+        self.today_tasks.get(offset + row).copied()
     }
 }
 
@@ -1041,6 +1052,7 @@ fn push_today(
     let mut mutations = 0;
     let mut section_models: Vec<TodaySectionModel> = Vec::with_capacity(4);
     let mut today_tasks: Vec<taskboard_domain::TaskId> = Vec::new();
+    let mut section_rows = tables.today_section_rows;
     for (index, (ids, label)) in display.iter().enumerate() {
         let handle = models.today_sections[index]
             .get_or_insert_with(Rc::default)
@@ -1075,6 +1087,7 @@ fn push_today(
             });
         }
         mutations += diff_rows(&handle, &rows);
+        section_rows[index] = filtered.len();
         // All four sections always push (the model arity is fixed —
         // the repetition-probe discipline); the empty groups COLLAPSE
         // in the view's conditional render (D7).
@@ -1087,6 +1100,7 @@ fn push_today(
     // Prune the handles of sections that vanished (none can — fixed
     // arity — but the discipline keeps the map honest).
     tables.today_tasks = today_tasks;
+    tables.today_section_rows = section_rows;
     let sections_handle = models.today.get_or_insert_with(Rc::default).clone();
     mutations += diff_rows(&sections_handle, &section_models);
     window.set_today_model(TodayModel {
@@ -1498,6 +1512,15 @@ mod tests {
                 let today = window.get_today_model();
                 assert_eq!(today.sections.row_count(), 4);
                 assert!(!today.empty);
+                // The `(section, row)` seam resolution round-trips
+                // through the per-section prefix sums (flat-index
+                // semantics: the rows are one concatenated table).
+                assert_eq!(tables.today_row(0, 0), Some(ids[0]), "overdue row");
+                assert_eq!(tables.today_row(1, 0), Some(ids[1]), "scheduled row");
+                assert_eq!(tables.today_row(2, 0), Some(ids[2]), "due row");
+                assert_eq!(tables.today_row(3, 0), Some(ids[4]), "done row");
+                assert_eq!(tables.today_row(3, 1), None, "past the table's end");
+                assert_eq!(tables.today_row(4, 0), None, "past the last section");
                 // Row contexts carry the board badge on a multi-board
                 // desktop (D-V3).
                 let overdue_section = today.sections.row_data(0).expect("section");
