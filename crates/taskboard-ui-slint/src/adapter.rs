@@ -455,11 +455,16 @@ impl Adapter {
     ) {
         Self::dismiss_tooltip(window);
         match flow {
-            Flow::Create { .. } | Flow::CreateStack | Flow::EditTitle { .. } => {
+            Flow::Create { .. }
+            | Flow::CreateStack
+            | Flow::CreateBoard
+            | Flow::EditTitle { .. }
+            | Flow::RenameStack { .. }
+            | Flow::RenameBoard { .. } => {
                 let outcomes = self.view_state.commit_edit(state);
                 self.apply_outcomes(window, &outcomes);
             }
-            Flow::Move { .. } => {
+            Flow::Move { .. } | Flow::MoveStack { .. } => {
                 let outcomes = self.view_state.cancel_move();
                 self.apply_outcomes(window, &outcomes);
             }
@@ -496,57 +501,41 @@ impl Adapter {
         }
 
         let outcomes = match (&flow, effect) {
-            // -- the move flow (D8/D9) --
-            (Flow::Move { .. }, UiEffect::FocusNext) => {
-                self.view_state.cycle_move_target(&state, 1)
-            }
-            (Flow::Move { .. }, UiEffect::FocusPrev) => {
-                self.view_state.cycle_move_target(&state, -1)
-            }
-            (Flow::Move { .. }, UiEffect::Activate) => self.view_state.confirm_move(&state),
-            // Round 2 (D16/F-E2): every cancel-shaped effect ends the
-            // move flow without dispatching — the dedicated verb
-            // (Escape / emacs C-g), the toggle re-request, and
-            // SetMode(Normal), which no longer falls through to the
-            // inert default leaving the flow intact.
+            // -- the move flows (D8/D9; round 2 adds the stack move) --
             (
-                Flow::Move { .. },
-                UiEffect::RequestMove | UiEffect::CancelMove | UiEffect::SetMode(Mode::Normal),
-            ) => self.view_state.cancel_move(),
+                flow @ (Flow::Move { .. } | Flow::MoveStack { .. }),
+                effect @ (UiEffect::FocusNext
+                | UiEffect::FocusPrev
+                | UiEffect::Activate
+                | UiEffect::RequestMove
+                | UiEffect::CancelMove
+                | UiEffect::SetMode(Mode::Normal)),
+            ) => self.interpret_move(flow, effect, &state),
             // -- the edit flows (D5/D9): SetMode(Normal) discards,
-            //    Activate commits, leaving commits first (above) --
-            (Flow::Create { .. } | Flow::EditTitle { .. }, UiEffect::SetMode(Mode::Normal)) => {
-                self.view_state.discard_edit()
-            }
-            (Flow::Create { .. } | Flow::EditTitle { .. }, UiEffect::Activate) => {
-                self.view_state.commit_edit(&state)
-            }
+            //    Activate commits, leaving commits first (above); the
+            //    round-2 lifecycle flows join them --
+            (
+                Flow::Create { .. }
+                | Flow::CreateStack
+                | Flow::CreateBoard
+                | Flow::EditTitle { .. }
+                | Flow::RenameStack { .. }
+                | Flow::RenameBoard { .. },
+                effect @ (UiEffect::SetMode(Mode::Normal) | UiEffect::Activate),
+            ) => self.interpret_edit(effect, &state),
             // -- no flow: the intents begin things --
             (Flow::None, UiEffect::OpenPalette) => self.view_state.open_palette(),
-            (Flow::None, UiEffect::Activate) => self.view_state.activate_focused(&state),
-            (Flow::None, UiEffect::RequestMove) => self.view_state.start_move(&state),
-            (Flow::None, UiEffect::BeginCreate) => {
-                match self.view_state.create_target_stack(&state) {
-                    Some(stack) => self.view_state.begin_create(stack),
-                    None => Vec::new(),
-                }
-            }
-            (Flow::None, UiEffect::BeginCreateStack) => {
-                // The refusal (a never-booted session offers nothing to
-                // create a stack on) lives in the view-state method —
-                // the one home for the board-existence refusal.
-                self.view_state.begin_create_stack(&state)
-            }
+            (
+                Flow::None,
+                effect @ (UiEffect::Activate
+                | UiEffect::RequestMove
+                | UiEffect::BeginCreate
+                | UiEffect::BeginCreateStack),
+            ) => self.interpret_begin(effect, &state),
             // vi's `i`/`a` open the view's editing flow rather than
             // flipping mode into the void (D5).
             (Flow::None | Flow::Move { .. }, UiEffect::SetMode(Mode::Insert)) => {
-                match self.view_state.view() {
-                    crate::view_state::ViewId::TaskDetail => self.view_state.edit_subject(&state),
-                    _ => match self.view_state.create_target_stack(&state) {
-                        Some(stack) => self.view_state.begin_create(stack),
-                        None => Vec::new(),
-                    },
-                }
+                self.interpret_insert(&state)
             }
             // -- the defaults: focus walk and view navigation --
             (_, UiEffect::FocusNext) => self.view_state.advance_focus(&state, compact),
@@ -579,6 +568,18 @@ impl Adapter {
                 };
                 self.view_state.jump_focus(&state, edge, compact)
             }
+            // Round 2 (D18/D21): the board/stack lifecycle verbs —
+            // target resolution is the view state's; the engine owns
+            // every delete refusal.
+            (
+                _,
+                effect @ (UiEffect::StackDelete
+                | UiEffect::StackRename
+                | UiEffect::StackMove
+                | UiEffect::BoardCreate
+                | UiEffect::BoardDelete
+                | UiEffect::BoardRename),
+            ) => self.interpret_lifecycle(&flow, effect, &state),
             // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
             // menu row, `Ctrl+,`, and a second press all close an open
             // settings surface.
@@ -599,6 +600,108 @@ impl Adapter {
             (_, _) => Vec::new(),
         };
         self.apply_outcomes(window, &outcomes);
+    }
+
+    /// vi's insert intent (D5): `i`/`a` open the view's editing flow
+    /// rather than flipping mode into the void; `TaskDetail` edits its
+    /// subject in place.
+    fn interpret_insert(&mut self, state: &taskboard_domain::AppState) -> Vec<FlowOutcome> {
+        match self.view_state.view() {
+            crate::view_state::ViewId::TaskDetail => self.view_state.edit_subject(state),
+            _ => match self.view_state.create_target_stack(state) {
+                Some(stack) => self.view_state.begin_create(stack),
+                None => Vec::new(),
+            },
+        }
+    }
+
+    /// The no-flow begin intents (D5/D9), factored out of the table.
+    /// The stack-create refusal (a never-booted session offers nothing
+    /// to create a stack on) stays in the view-state method — the one
+    /// home for the board-existence refusal.
+    fn interpret_begin(
+        &mut self,
+        effect: UiEffect,
+        state: &taskboard_domain::AppState,
+    ) -> Vec<FlowOutcome> {
+        match effect {
+            UiEffect::Activate => self.view_state.activate_focused(state),
+            UiEffect::RequestMove => self.view_state.start_move(state),
+            UiEffect::BeginCreateStack => self.view_state.begin_create_stack(state),
+            _ => match self.view_state.create_target_stack(state) {
+                Some(stack) => self.view_state.begin_create(stack),
+                None => Vec::new(),
+            },
+        }
+    }
+
+    /// The edit flows' commit/discard arms (D5/D9; the round-2
+    /// lifecycle flows included), factored out of the table.
+    fn interpret_edit(
+        &mut self,
+        effect: UiEffect,
+        state: &taskboard_domain::AppState,
+    ) -> Vec<FlowOutcome> {
+        match effect {
+            UiEffect::SetMode(Mode::Normal) => self.view_state.discard_edit(),
+            // The table routes only the commit/discard pair here.
+            _ => self.view_state.commit_edit(state),
+        }
+    }
+
+    /// The move flows' arms (D8/D9; the round-2 stack move joins),
+    /// factored out of the table.
+    fn interpret_move(
+        &mut self,
+        flow: &Flow,
+        effect: UiEffect,
+        state: &taskboard_domain::AppState,
+    ) -> Vec<FlowOutcome> {
+        match (flow, effect) {
+            // Focus next/prev cycle the target; Activate confirms;
+            // every cancel-shaped effect (the dedicated verb — Escape
+            // / emacs C-g —, the toggle re-request, and
+            // SetMode(Normal), which no longer falls through to the
+            // inert default leaving the flow intact) ends the flow
+            // without dispatching (D16/F-E2).
+            (_, UiEffect::FocusNext | UiEffect::FocusPrev) => {
+                let direction = if effect == UiEffect::FocusNext { 1 } else { -1 };
+                match flow {
+                    Flow::Move { .. } => self.view_state.cycle_move_target(state, direction),
+                    _ => self.view_state.cycle_move_stack_target(state, direction),
+                }
+            }
+            (Flow::Move { .. }, UiEffect::Activate) => self.view_state.confirm_move(state),
+            (Flow::MoveStack { .. }, UiEffect::Activate) => {
+                self.view_state.confirm_move_stack(state)
+            }
+            _ => self.view_state.cancel_move(),
+        }
+    }
+
+    /// The lifecycle verbs' arms (round 2, D18/D21), factored out of
+    /// the table to keep it readable: deletes dispatch through the
+    /// view state (the engine owns every typed refusal), renames and
+    /// the board create open their fields, the stack move toggles.
+    fn interpret_lifecycle(
+        &mut self,
+        flow: &Flow,
+        effect: UiEffect,
+        state: &taskboard_domain::AppState,
+    ) -> Vec<FlowOutcome> {
+        match effect {
+            UiEffect::StackDelete => self.view_state.delete_stack(state),
+            UiEffect::StackRename => self.view_state.begin_rename_stack(state),
+            UiEffect::StackMove => match flow {
+                Flow::None => self.view_state.begin_move_stack(state),
+                Flow::MoveStack { .. } => self.view_state.cancel_move(), // toggle
+                _ => Vec::new(),
+            },
+            UiEffect::BoardCreate => self.view_state.begin_create_board(),
+            UiEffect::BoardDelete => self.view_state.delete_board(state),
+            UiEffect::BoardRename => self.view_state.begin_rename_board(state),
+            _ => Vec::new(),
+        }
     }
 
     fn apply_effect(&mut self, window: &AppWindow, effect: UiEffect) {

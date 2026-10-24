@@ -55,6 +55,16 @@ pub enum Flow {
     /// lives in the flow (subject-free — `reconcile` leaves it alone;
     /// background refreshes re-rank through the row push instead).
     Palette { selected: usize },
+    // -- round 2 (D18/D21): the board/stack lifecycle flows --
+    /// The new-board field (window-level slot).
+    CreateBoard,
+    /// The stack title editor for `stack`.
+    RenameStack { stack: StackId },
+    /// The board title editor for `board`.
+    RenameBoard { board: BoardId },
+    /// The stack-move flow: repositioning `stack` to insertion slot
+    /// `slot` (`0..=len`, wrap-cycled).
+    MoveStack { stack: StackId, slot: usize },
 }
 
 /// What a view-state transition asks the adapter to do (D9):
@@ -809,6 +819,33 @@ impl ViewState {
                     }),
                 );
             }
+            // Round 2 (D18/D21): the board/stack lifecycle commits.
+            Flow::CreateBoard if !title.is_empty() => {
+                // The lenient empty color (the fixture convention); a
+                // colour picker is recorded debt for a future round.
+                outcomes.insert(
+                    0,
+                    FlowOutcome::Command(StateCommand::CreateBoard {
+                        title,
+                        color: taskboard_domain::Color::new(""),
+                    }),
+                );
+            }
+            Flow::RenameStack { stack } if !title.is_empty() => {
+                outcomes.insert(
+                    0,
+                    FlowOutcome::Command(StateCommand::RenameStack {
+                        id: stack,
+                        new_title: title,
+                    }),
+                );
+            }
+            Flow::RenameBoard { board } if !title.is_empty() => {
+                outcomes.insert(
+                    0,
+                    FlowOutcome::Command(StateCommand::RenameBoard { board, title }),
+                );
+            }
             _ => {}
         }
         outcomes
@@ -970,6 +1007,149 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
+    // -- board/stack lifecycle (round 2, D18/D21) --------------------------
+
+    /// `board.create`: always available (the zero-board first-run
+    /// escape — the `begin_create_stack` refusal does not apply);
+    /// opens the board field in insert mode.
+    pub fn begin_create_board(&mut self) -> Vec<FlowOutcome> {
+        self.flow = Flow::CreateBoard;
+        self.buffer.clear();
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// `stack.rename`: opens the stack title editor seeded with the
+    /// current title (the `edit_subject` pattern); inert without a
+    /// target (focused → selected → first).
+    pub fn begin_rename_stack(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Some(stack) = self.keyboard_resize_target(state) else {
+            return Vec::new();
+        };
+        let Some(title) = state.stacks.get(&stack).map(|s| s.title.clone()) else {
+            return Vec::new();
+        };
+        self.flow = Flow::RenameStack { stack };
+        self.buffer = title;
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// `board.rename`: opens the board title editor seeded with the
+    /// current title; inert without a current board.
+    pub fn begin_rename_board(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let Some(board) = self.board else {
+            return Vec::new();
+        };
+        let Some(title) = state.boards.get(&board).map(|b| b.title.clone()) else {
+            return Vec::new();
+        };
+        self.flow = Flow::RenameBoard { board };
+        self.buffer = title;
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// `stack.delete`: dispatches `DeleteStack` for the resolved
+    /// target (focused → selected → first); the engine owns every
+    /// typed refusal. Inert without a target; selection repair is
+    /// `reconcile`'s on the next refresh.
+    pub fn delete_stack(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Some(stack) = self.keyboard_resize_target(state) else {
+            return Vec::new();
+        };
+        vec![
+            FlowOutcome::Command(StateCommand::DeleteStack { id: stack }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
+    /// `board.delete`: dispatches `DeleteBoard` for the current board
+    /// (cascades; the engine's typed refusals are the only guard — no
+    /// confirmation UI this round). Inert without a board.
+    pub fn delete_board(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let Some(board) = self.board else {
+            return Vec::new();
+        };
+        vec![
+            FlowOutcome::Command(StateCommand::DeleteBoard { board }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
+    /// `stack.move` with no flow: the resolved stack starts moving at
+    /// its current display position. Inert without a target.
+    pub fn begin_move_stack(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Some(stack) = self.keyboard_resize_target(state) else {
+            return Vec::new();
+        };
+        let stacks = self.stack_ids(state);
+        let slot = stacks.iter().position(|s| *s == stack).unwrap_or(0);
+        self.flow = Flow::MoveStack { stack, slot };
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Focus next/prev during a stack move: wrap the insertion slot
+    /// over `0..=len` (`len + 1` slots — `len` = append after last).
+    pub fn cycle_move_stack_target(
+        &mut self,
+        state: &AppState,
+        direction: i32,
+    ) -> Vec<FlowOutcome> {
+        let Flow::MoveStack { slot, .. } = self.flow else {
+            return Vec::new();
+        };
+        let slots = self.stack_ids(state).len() + 1;
+        let next = wrapped_index(slot, direction, slots);
+        if let Flow::MoveStack { slot, .. } = &mut self.flow {
+            *slot = next;
+        }
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// `Activate` during a stack move: confirm — the re-normalization
+    /// semantics (recorded). The desired final order is the current
+    /// display order with the moving stack reinserted at `slot`; the
+    /// minimal set of `MoveStack { id, order }` commands with target
+    /// orders `0..len-1` goes out — only for stacks whose order
+    /// changes. One absolute-order command can never express a dense
+    /// insertion; renumbering the permutation is deterministic,
+    /// idempotent, and tie-free. An in-place confirm dispatches
+    /// nothing. The flow always ends.
+    pub fn confirm_move_stack(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Flow::MoveStack { stack, slot } = self.flow else {
+            return Vec::new();
+        };
+        self.flow = Flow::None;
+        let mut stacks = self.stack_ids(state);
+        let Some(from) = stacks.iter().position(|s| *s == stack) else {
+            // The moving stack vanished mid-flow: reconcile's job on the
+            // next refresh; nothing to command now.
+            return vec![FlowOutcome::RefreshNow];
+        };
+        let slot = slot.min(stacks.len() - 1);
+        let moved = stacks.remove(from);
+        let insert_at = if from < slot { slot - 1 } else { slot };
+        stacks.insert(insert_at.min(stacks.len()), moved);
+        let mut outcomes: Vec<FlowOutcome> = stacks
+            .iter()
+            .enumerate()
+            .filter(|(order, id)| {
+                state
+                    .stacks
+                    .get(*id)
+                    .is_some_and(|s| s.order != i64::try_from(*order).unwrap_or(i64::MAX))
+            })
+            .map(|(order, id)| {
+                FlowOutcome::Command(StateCommand::MoveStack {
+                    id: *id,
+                    order: i64::try_from(order).unwrap_or(i64::MAX),
+                })
+            })
+            .collect();
+        outcomes.push(FlowOutcome::RefreshNow);
+        outcomes
+    }
+
     // -- refresh-time reconciliation (D7) ---------------------------------
 
     /// Re-validates subjects and focus against a fresh snapshot: a
@@ -1017,6 +1197,14 @@ impl ViewState {
                 self.flow = Flow::None;
             }
             Flow::Move { task, .. } if !is_live(task) => self.flow = Flow::None,
+            // Round 2 (D18/D21): the lifecycle flows end silently on a
+            // vanished target (the `Flow::Move` precedent).
+            Flow::RenameStack { stack } if !stacks.contains(&stack) => {
+                self.flow = Flow::None;
+                self.buffer.clear();
+            }
+            Flow::RenameBoard { board } if self.board != Some(board) => self.flow = Flow::None,
+            Flow::MoveStack { stack, .. } if !stacks.contains(&stack) => self.flow = Flow::None,
             _ => {}
         }
     }
@@ -1925,6 +2113,227 @@ mod tests {
         vs.reconcile(&state);
         assert_eq!(vs.start_move(&state), Vec::new());
         assert_eq!(vs.confirm_move(&state), Vec::new());
+    }
+
+    // -- the board/stack lifecycle flows (r2 D18/D21) ----------------------
+
+    #[test]
+    fn board_create_flow_commits_the_lenient_color_command() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let outcomes = vs.begin_create_board();
+        assert_eq!(*vs.flow(), Flow::CreateBoard);
+        assert_eq!(vs.buffer(), "", "the field opens empty");
+        assert!(
+            outcomes.contains(&FlowOutcome::SetMode(Mode::Insert)),
+            "the field opens in insert mode"
+        );
+        vs.set_buffer("second board".to_owned());
+        assert_eq!(
+            vs.commit_edit(&state)[..1],
+            [FlowOutcome::Command(StateCommand::CreateBoard {
+                title: "second board".to_owned(),
+                color: taskboard_domain::Color::new(""),
+            })][..]
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn rename_stack_flow_seeds_the_buffer_and_commits_the_rename() {
+        let (state, _, [s0, _], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_rename_stack(&state);
+        assert!(matches!(vs.flow(), Flow::RenameStack { stack } if *stack == s0));
+        assert_eq!(vs.buffer(), "stack-0", "seeded from the current title");
+        vs.set_buffer("doing".to_owned());
+        assert_eq!(
+            vs.commit_edit(&state)[..1],
+            [FlowOutcome::Command(StateCommand::RenameStack {
+                id: s0,
+                new_title: "doing".to_owned(),
+            })][..]
+        );
+    }
+
+    #[test]
+    fn rename_board_flow_seeds_the_buffer_and_commits_the_rename() {
+        let (state, board_id, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_rename_board(&state);
+        assert!(matches!(vs.flow(), Flow::RenameBoard { board } if *board == board_id));
+        assert_eq!(vs.buffer(), "board");
+        vs.set_buffer("renamed".to_owned());
+        assert_eq!(
+            vs.commit_edit(&state)[..1],
+            [FlowOutcome::Command(StateCommand::RenameBoard {
+                board: board_id,
+                title: "renamed".to_owned(),
+            })][..]
+        );
+    }
+
+    #[test]
+    fn delete_stack_and_delete_board_dispatch_the_exact_commands() {
+        let (state, board_id, [s0, _], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        assert_eq!(
+            vs.delete_stack(&state)[..1],
+            [FlowOutcome::Command(StateCommand::DeleteStack { id: s0 })][..]
+        );
+        assert_eq!(
+            vs.delete_board(&state)[..1],
+            [FlowOutcome::Command(StateCommand::DeleteBoard {
+                board: board_id
+            })][..]
+        );
+    }
+
+    #[test]
+    fn delete_stack_is_inert_without_a_target() {
+        let mut vs = ViewState::new();
+        let bare = AppState::default();
+        vs.reconcile(&bare);
+        assert_eq!(vs.delete_stack(&bare), Vec::new());
+        assert_eq!(vs.delete_board(&bare), Vec::new());
+        assert_eq!(vs.begin_rename_stack(&bare), Vec::new());
+        assert_eq!(vs.begin_move_stack(&bare), Vec::new());
+    }
+
+    #[test]
+    fn the_stack_move_flow_begins_cycles_wrapped_and_confirms_minimally() {
+        // A wider board: [A, B, C, D] — move B after C → B:2, C:1.
+        let board_id = BoardId::from_uuid(uuid::Uuid::from_u128(0x4001));
+        let sa = StackId::from_uuid(uuid::Uuid::from_u128(0x5001));
+        let sb = StackId::from_uuid(uuid::Uuid::from_u128(0x5002));
+        let sc = StackId::from_uuid(uuid::Uuid::from_u128(0x5003));
+        let sd = StackId::from_uuid(uuid::Uuid::from_u128(0x5004));
+        let mut state = AppState::default();
+        state.boards.insert(
+            board_id,
+            Board {
+                id: board_id,
+                remote: None,
+                title: "board".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: epoch(),
+                    color: epoch(),
+                    archived: epoch(),
+                    deleted: epoch(),
+                },
+                remote_seen: None,
+            },
+        );
+        for (id, order) in [(sa, 0), (sb, 1), (sc, 2), (sd, 3)] {
+            state.stacks.insert(id, stack(id, board_id, order));
+        }
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+
+        vs.select_stack(&state, sb);
+        vs.begin_move_stack(&state);
+        assert!(
+            matches!(vs.flow(), Flow::MoveStack { stack, slot } if *stack == sb && *slot == 1),
+            "begins at the current slot"
+        );
+        // Cycle wraps over 0..=4 (len + 1 slots).
+        vs.cycle_move_stack_target(&state, -1);
+        vs.cycle_move_stack_target(&state, -1);
+        assert!(
+            matches!(vs.flow(), Flow::MoveStack { slot: 4, .. }),
+            "wraps backwards"
+        );
+        vs.cycle_move_stack_target(&state, 1);
+        assert!(matches!(vs.flow(), Flow::MoveStack { slot: 0, .. }));
+        vs.cycle_move_stack_target(&state, 1);
+        vs.cycle_move_stack_target(&state, 1);
+        vs.cycle_move_stack_target(&state, 1);
+        vs.cycle_move_stack_target(&state, 1);
+        vs.cycle_move_stack_target(&state, 1);
+        assert!(
+            matches!(vs.flow(), Flow::MoveStack { slot: 0, .. }),
+            "wraps forwards"
+        );
+
+        // Move B (slot 1) after C (insertion slot 3): B:2, C:1.
+        vs.cycle_move_stack_target(&state, 1);
+        vs.cycle_move_stack_target(&state, 1);
+        vs.cycle_move_stack_target(&state, 1); // slot 3
+        let outcomes = vs.confirm_move_stack(&state);
+        let commands: Vec<_> = outcomes
+            .iter()
+            .filter_map(|o| match o {
+                FlowOutcome::Command(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            commands,
+            vec![
+                // Desired-position order: [A, C, B, D] — C lands at 1
+                // (was 2), B at 2 (was 1); A and D keep their orders.
+                StateCommand::MoveStack { id: sc, order: 1 },
+                StateCommand::MoveStack { id: sb, order: 2 },
+            ],
+            "the minimal re-normalization set, in desired order"
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+        assert!(
+            matches!(outcomes.last(), Some(FlowOutcome::RefreshNow)),
+            "the flow's end repaints"
+        );
+    }
+
+    #[test]
+    fn an_in_place_stack_move_confirm_dispatches_nothing() {
+        let (state, _, [_s0, _], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_move_stack(&state);
+        let outcomes = vs.confirm_move_stack(&state);
+        assert!(
+            !outcomes
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::Command(_))),
+            "slot 0 for the first stack is a no-op"
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn the_stack_move_flow_cancels_and_reconciles_on_vanish() {
+        let (state, _, [s0, s1], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_move_stack(&state);
+        let outcomes = vs.cancel_move();
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(*vs.flow(), Flow::None);
+
+        vs.begin_move_stack(&state);
+        let mut gone = state.clone();
+        gone.stacks.get_mut(&s0).expect("stack").deleted = true;
+        vs.reconcile(&gone);
+        assert_eq!(
+            *vs.flow(),
+            Flow::None,
+            "a vanished moving stack ends the flow"
+        );
+
+        // A rename flow ends the same way.
+        vs.begin_rename_stack(&state);
+        let mut renamed_away = state.clone();
+        renamed_away.stacks.get_mut(&s0).expect("stack").deleted = true;
+        vs.reconcile(&renamed_away);
+        assert_eq!(*vs.flow(), Flow::None);
+        let _ = s1;
     }
 
     #[test]
