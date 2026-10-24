@@ -94,6 +94,18 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Board, &["Return"]),
     (ActionId::TaskMove, ContextId::Board, &["M"]),
     (ActionId::TaskDelete, ContextId::Board, &["Delete"]),
+    // Chunk 10 (D3/D11): the today view carries the same item walk and
+    // task-verb strokes as the board (the D3 registry widenings made
+    // them available; these rows make them resolvable).
+    (ActionId::NavNextItem, ContextId::Today, &["Down"]),
+    (ActionId::NavPrevItem, ContextId::Today, &["Up"]),
+    (ActionId::NavFirstItem, ContextId::Today, &["Ctrl+Home"]),
+    (ActionId::NavLastItem, ContextId::Today, &["Ctrl+End"]),
+    (ActionId::TaskComplete, ContextId::Today, &["Space"]),
+    (ActionId::TaskReopen, ContextId::Today, &["Ctrl+Space"]),
+    (ActionId::TaskEdit, ContextId::Today, &["Return"]),
+    (ActionId::TaskMove, ContextId::Today, &["M"]),
+    (ActionId::TaskDelete, ContextId::Today, &["Delete"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     (ActionId::BoardCreate, ContextId::Board, &["Ctrl+Shift+N"]),
@@ -195,6 +207,19 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Board, &["Return"]),
     (ActionId::TaskMove, ContextId::Board, &["Ctrl+c", "Ctrl+w"]),
     (ActionId::TaskDelete, ContextId::Board, &["Ctrl+d"]),
+    // Chunk 10 (D3/D11): the today mirror of the board rows.
+    (ActionId::NavNextItem, ContextId::Today, &["Ctrl+n"]),
+    (ActionId::NavPrevItem, ContextId::Today, &["Ctrl+p"]),
+    (ActionId::NavFirstItem, ContextId::Today, &["Alt+<"]),
+    (ActionId::NavLastItem, ContextId::Today, &["Alt+>"]),
+    (
+        ActionId::TaskComplete,
+        ContextId::Today,
+        &["Ctrl+c", "Ctrl+t"],
+    ),
+    (ActionId::TaskEdit, ContextId::Today, &["Return"]),
+    (ActionId::TaskMove, ContextId::Today, &["Ctrl+c", "Ctrl+w"]),
+    (ActionId::TaskDelete, ContextId::Today, &["Ctrl+d"]),
     // Round 2 (D16): the board-view C-g alternate for move-cancel.
     (ActionId::TaskMoveCancel, ContextId::Board, &["Ctrl+g"]),
     // Round 2 (D17): emacs' isearch/read-args chords — Ctrl+f/Ctrl+b
@@ -229,6 +254,7 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Board,
         &["Ctrl+c", "Ctrl+Space"],
     ),
+    (ActionId::TaskReopen, ContextId::Today, &["Ctrl+Space"]),
     // Round-1 chunk 2 (D18): no emacs-authentic candidate exists, so
     // the pair shares the CUA strokes (the design's recorded rule).
     (ActionId::StackWider, ContextId::Board, &["Ctrl+Right"]),

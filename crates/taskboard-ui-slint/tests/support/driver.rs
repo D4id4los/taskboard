@@ -379,6 +379,9 @@ mod tests {
                     UiSettings::default(),
                 )
                 .expect("mount succeeds on the testing backend");
+                // Escape the desktop Today default (chunk 10 D2): the
+                // self-tests address the board region.
+                handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
                 driver.bind(&handle);
                 // Instantiate conditional trees before querying.
                 driver.advance_time(0);
@@ -438,6 +441,9 @@ mod tests {
                     UiSettings::default(),
                 )
                 .expect("mount succeeds on the testing backend");
+                // Escape the desktop Today default (chunk 10 D2): the
+                // self-tests address the board region.
+                handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
                 driver.bind(&handle);
                 driver.advance_time(0);
                 driver.set_window_size(1000, 800);

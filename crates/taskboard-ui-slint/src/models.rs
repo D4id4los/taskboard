@@ -28,7 +28,8 @@ use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DueDayModel, DueKind as SlintDueKind,
     FlowHintModel, PaletteRowModel, Responsive, RuleRowModel, StackColumnModel, StackDetailModel,
-    SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme, Tone, View,
+    SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme, TodayModel,
+    TodayRowModel, TodaySectionModel, Tone, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -64,6 +65,10 @@ pub struct IdTables {
     /// indices resolve against this pass (indices-back like every
     /// table; empty while the palette is closed).
     pub palette: Vec<SearchTarget>,
+    /// The today view's rows (chunk 10 D7): the four filtered
+    /// sections concatenated in display order — the focus walk's
+    /// domain and the row-activation seam's resolution base.
+    pub today_tasks: Vec<TaskId>,
 }
 
 impl IdTables {
@@ -144,6 +149,11 @@ pub struct PushModels {
     /// keystroke — a fresh `VecModel` per push would regress the
     /// stable-identity invariant (r2 D9).
     palette: Option<Rc<VecModel<PaletteRowModel>>>,
+    /// The today view's per-section row handles (chunk 10 D7): fixed
+    /// to the four display sections — a rollover refresh must not
+    /// re-instantiate the cards (the r2 D9 discipline).
+    today_sections: [Option<Rc<VecModel<TodayRowModel>>>; 4],
+    today: Option<Rc<VecModel<TodaySectionModel>>>,
     settings_rows: Option<Rc<VecModel<crate::ConnectionRow>>>,
     hints: HintModels,
     /// The tasks whose decoration models the current pass touched
@@ -350,10 +360,12 @@ pub fn push(
     vs: &ViewState,
     keymap: &Keymap,
     chain: &[ContextId],
-    now: DateTime<Utc>,
+    day: crate::view_state::DayCtx,
+    kiosk: bool,
     models: &mut PushModels,
     due: &DueEditorPush<'_>,
 ) -> IdTables {
+    let now = day.now;
     let sets = presentation::due_sets(state, now);
     let board = vs.board().and_then(|id| state.boards.get(&id));
     let stack_ids: Vec<StackId> = vs.stack_ids(state);
@@ -383,7 +395,7 @@ pub fn push(
         selected,
     });
 
-    mutations += push_chrome(window, board, keymap, chain, models);
+    mutations += push_chrome(window, vs.view(), board, keymap, chain, models);
     window.set_current_view(match vs.view() {
         crate::view_state::ViewId::Today => View::Today,
         crate::view_state::ViewId::Board => View::Board,
@@ -407,6 +419,7 @@ pub fn push(
         now,
         models,
     );
+    mutations += push_today(window, state, vs, &sets, day, kiosk, &mut tables, models);
     mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, models);
     mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models, due);
     mutations += push_status_bar(window, state, vs, keymap, chain, now, &mut tables, models);
@@ -425,14 +438,19 @@ pub fn push(
 /// diff's mutation count.
 fn push_chrome(
     window: &AppWindow,
+    view: crate::view_state::ViewId,
     board: Option<&taskboard_domain::Board>,
     keymap: &Keymap,
     chain: &[ContextId],
     models: &mut PushModels,
 ) -> usize {
-    window.set_toolbar_title(SharedString::from(
-        board.map_or(String::new(), |b| b.title.clone()),
-    ));
+    // The Today view renders its own caption (chunk 10 D9): a fixed
+    // presentation label; the board views keep the selected board's
+    // title.
+    window.set_toolbar_title(SharedString::from(match view {
+        crate::view_state::ViewId::Today => "Today".to_string(),
+        _ => board.map_or(String::new(), |b| b.title.clone()),
+    }));
     let rows = |action| -> Vec<SharedString> {
         keymap
             .first_binding_display(action, chain)
@@ -974,6 +992,88 @@ fn task_card_model(
     }
 }
 
+/// The today pass (chunk 10 D7): the four `today_sections` in display
+/// order, the kiosk filter and the anchor filter applied at the row
+/// source, `TodayModel` pushed with persistent per-section handles,
+/// and `tables.today_tasks` filled with the filtered concat (the
+/// focus walk's domain). Rollover is proven by two `push` calls with
+/// a stepped `DayCtx` — no timer, no sleeps.
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
+fn push_today(
+    window: &AppWindow,
+    state: &AppState,
+    vs: &ViewState,
+    sets: &presentation::DueSets,
+    day: crate::view_state::DayCtx,
+    kiosk: bool,
+    tables: &mut IdTables,
+    models: &mut PushModels,
+) -> usize {
+    let sections = taskboard_domain::days::today_sections(&state.tasks, day.now, day.window);
+    let multi_board = presentation::live_boards(state).len() > 1;
+    // (ids, section) in display order, filtered before anything
+    // derived — rows, `today_tasks`, and the counts all follow.
+    let display: [(&[taskboard_domain::TaskId], &str); 4] = [
+        (&sections.overdue, "Overdue"),
+        (&sections.scheduled, "Scheduled"),
+        (&sections.due_today, "Due today"),
+        (&sections.done_today, "Done"),
+    ];
+    let mut mutations = 0;
+    let mut section_models: Vec<TodaySectionModel> = Vec::with_capacity(4);
+    let mut today_tasks: Vec<taskboard_domain::TaskId> = Vec::new();
+    for (index, (ids, label)) in display.iter().enumerate() {
+        let handle = models.today_sections[index]
+            .get_or_insert_with(Rc::default)
+            .clone();
+        let mut rows: Vec<TodayRowModel> = Vec::with_capacity(ids.len());
+        let mut filtered: Vec<taskboard_domain::TaskId> = Vec::with_capacity(ids.len());
+        for id in *ids {
+            let Some(task) = state.tasks.get(id) else {
+                continue;
+            };
+            if presentation::is_anchor_task(task) {
+                continue;
+            }
+            if kiosk
+                && state
+                    .stacks
+                    .get(&task.stack)
+                    .is_some_and(|s| Some(s.board) != vs.board())
+            {
+                continue;
+            }
+            filtered.push(*id);
+            today_tasks.push(*id);
+            rows.push(TodayRowModel {
+                card: task_card_model(task, sets, vs, day.now, decorations_model(models, task)),
+                context: SharedString::from(presentation::today_row_context(
+                    state,
+                    task,
+                    kiosk,
+                    multi_board,
+                )),
+            });
+        }
+        mutations += diff_rows(&handle, &rows);
+        section_models.push(TodaySectionModel {
+            label: SharedString::from(*label),
+            count: i32::try_from(filtered.len()).unwrap_or(i32::MAX),
+            rows: ModelRc::from(handle.clone()),
+        });
+    }
+    // Prune the handles of sections that vanished (none can — fixed
+    // arity — but the discipline keeps the map honest).
+    tables.today_tasks = today_tasks;
+    let sections_handle = models.today.get_or_insert_with(Rc::default).clone();
+    mutations += diff_rows(&sections_handle, &section_models);
+    window.set_today_model(TodayModel {
+        sections: ModelRc::from(sections_handle.clone()),
+        empty: tables.today_tasks.is_empty(),
+    });
+    mutations
+}
+
 /// The sync recency caption (D11): only when a sync succeeded within
 /// the last hour — a caption, not a badge fact.
 fn recency_caption(last_success: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
@@ -1207,6 +1307,263 @@ mod tests {
     }
 
     // -- the palette row pipeline (#348, chunk 9) -----------------------
+
+    /// The today pass (chunk 10 D7): section assembly, the kiosk and
+    /// anchor filters, the `today_tasks` concat, and the stepped-`now`
+    /// rollover proof (no sleeps, no timers — time is data).
+    mod today_pipeline {
+        use super::*;
+        use crate::test_platform::on_slint_thread;
+        use crate::view_state::DayCtx;
+        use chrono::TimeZone;
+        use taskboard_domain::{Board, BoardClocks, Stack, TaskId};
+
+        fn board(id: taskboard_domain::BoardId, title: &str) -> Board {
+            Board {
+                id,
+                remote: None,
+                title: title.to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: BoardClocks {
+                    title: BoardClocks::epoch(),
+                    color: BoardClocks::epoch(),
+                    archived: BoardClocks::epoch(),
+                    deleted: BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            }
+        }
+
+        fn stack(id: StackId, board: taskboard_domain::BoardId) -> Stack {
+            Stack {
+                id,
+                remote: None,
+                board,
+                title: "stack".to_owned(),
+                order: 0,
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::StackClocks {
+                    title: BoardClocks::epoch(),
+                    order: BoardClocks::epoch(),
+                    deleted: BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            }
+        }
+
+        fn task(id: TaskId, stack: StackId, title: &str) -> Task {
+            Task {
+                id,
+                remote: None,
+                title: title.to_owned(),
+                description: String::new(),
+                duedate: None,
+                scheduled: None,
+                done: None,
+                stack,
+                order: 0,
+                labels: std::collections::BTreeSet::default(),
+                effort: None,
+                importance: None,
+                urgency: None,
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::TaskClocks {
+                    title: BoardClocks::epoch(),
+                    description: BoardClocks::epoch(),
+                    duedate: BoardClocks::epoch(),
+                    scheduled: BoardClocks::epoch(),
+                    done: BoardClocks::epoch(),
+                    position: BoardClocks::epoch(),
+                    labels: BoardClocks::epoch(),
+                    effort: BoardClocks::epoch(),
+                    importance: BoardClocks::epoch(),
+                    urgency: BoardClocks::epoch(),
+                    archived: BoardClocks::epoch(),
+                    deleted: BoardClocks::epoch(),
+                },
+                remote_seen: None,
+            }
+        }
+
+        fn stamp(secs: i64) -> chrono::DateTime<chrono::Utc> {
+            chrono::Utc.timestamp_opt(secs, 0).unwrap()
+        }
+
+        fn day(now: i64) -> DayCtx {
+            DayCtx {
+                now: stamp(now),
+                window: (stamp(now), stamp(now + 86_400)),
+            }
+        }
+
+        /// Two boards: overdue (B), scheduled (A), due-today (A), an
+        /// anchor-titled due-today (A), done-in-window (B) — the ids
+        /// vec is in exactly that order.
+        #[allow(clippy::type_complexity)]
+        fn two_board_state() -> (
+            AppState,
+            taskboard_domain::BoardId,
+            taskboard_domain::BoardId,
+            Vec<TaskId>,
+        ) {
+            let a = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+            let b = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+            let sa = StackId::from_uuid(uuid::Uuid::now_v7());
+            let sb = StackId::from_uuid(uuid::Uuid::now_v7());
+            let mut state = AppState::default();
+            state.boards.insert(a, board(a, "alpha"));
+            state.boards.insert(b, board(b, "beta"));
+            state.stacks.insert(sa, stack(sa, a));
+            state.stacks.insert(sb, stack(sb, b));
+            let scheduled = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut t = task(scheduled, sa, "scheduled");
+            t.scheduled = Some(stamp(31_565_000));
+            state.tasks.insert(scheduled, t);
+            let overdue = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut t = task(overdue, sb, "overdue");
+            t.duedate = Some(stamp(31_500_000));
+            state.tasks.insert(overdue, t);
+            let due = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut t = task(due, sa, "due");
+            t.duedate = Some(stamp(31_580_000));
+            state.tasks.insert(due, t);
+            let anchor = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut t = task(anchor, sa, taskboard_domain::ANCHOR_CARD_TITLE);
+            t.duedate = Some(stamp(31_580_000));
+            state.tasks.insert(anchor, t);
+            let done = TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut t = task(done, sb, "done");
+            t.done = Some(stamp(31_570_000));
+            state.tasks.insert(done, t);
+            let _ = due;
+            (state, a, b, vec![overdue, scheduled, due, anchor, done])
+        }
+
+        fn push_pass(
+            window: &crate::AppWindow,
+            state: &AppState,
+            vs: &ViewState,
+            day: DayCtx,
+            kiosk: bool,
+            models: &mut PushModels,
+        ) -> IdTables {
+            let keymap = crate::keymap::Keymap::from_preset(crate::keymap::Preset::Standard);
+            let chain = [ContextId::Today, ContextId::ViNormal, ContextId::Global];
+            let due = crate::models::DueEditorPush::default();
+            push(window, state, vs, &keymap, &chain, day, kiosk, models, &due)
+        }
+
+        #[test]
+        fn sections_assemble_and_the_filters_apply() {
+            on_slint_thread(|| {
+                let (state, _a, _b, ids) = two_board_state();
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+                let tables = push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+
+                // Display order: overdue (B), scheduled (A), due-today
+                // (A), done (B) — the anchor never appears.
+                assert_eq!(
+                    tables.today_tasks,
+                    vec![ids[0], ids[1], ids[2], ids[4]],
+                    "overdue, scheduled, due, done — anchor filtered"
+                );
+                let today = window.get_today_model();
+                assert_eq!(today.sections.row_count(), 4);
+                assert!(!today.empty);
+                // Row contexts carry the board badge on a multi-board
+                // desktop (D-V3).
+                let overdue_section = today.sections.row_data(0).expect("section");
+                assert_eq!(overdue_section.count, 1);
+                let context = overdue_section
+                    .rows
+                    .row_data(0)
+                    .expect("row")
+                    .context
+                    .to_string();
+                assert!(
+                    context.contains('\u{203a}'),
+                    "board › stack on desktop: {context}"
+                );
+            });
+        }
+
+        #[test]
+        fn the_kiosk_filter_keeps_the_focused_board_subset() {
+            on_slint_thread(|| {
+                let (state, a, _b, ids) = two_board_state();
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                vs.select_board(&state, a);
+                let mut models = PushModels::default();
+                let tables = push_pass(&window, &state, &vs, day(31_563_600), true, &mut models);
+
+                // Only board A's rows survive: scheduled + due; the
+                // board part of the contexts is suppressed.
+                assert_eq!(tables.today_tasks, vec![ids[1], ids[2]]);
+                let today = window.get_today_model();
+                let overdue_section = today.sections.row_data(0).expect("section");
+                assert_eq!(overdue_section.count, 0, "board B's overdue is filtered");
+                let scheduled_section = today.sections.row_data(1).expect("section");
+                assert_eq!(scheduled_section.count, 1);
+                let context = scheduled_section
+                    .rows
+                    .row_data(0)
+                    .expect("row")
+                    .context
+                    .to_string();
+                assert!(
+                    !context.contains('\u{203a}'),
+                    "no badges on kiosk: {context}"
+                );
+            });
+        }
+
+        #[test]
+        fn a_stepped_now_rolls_the_sections_over() {
+            on_slint_thread(|| {
+                let (state, _a, _b, ids) = two_board_state();
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+
+                // Before the day boundary the task sits in the
+                // due-today section — third in display order (after the
+                // overdue and scheduled rows).
+                let first = push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                assert_eq!(
+                    first.today_tasks.iter().position(|id| *id == ids[2]),
+                    Some(2),
+                    "due-today section"
+                );
+                // Stepping `now` past the window end: the same push
+                // call recomputes — the rollover needs no timer. The
+                // task's duedate is now past, so it moved to Overdue.
+                let second = push_pass(
+                    &window,
+                    &state,
+                    &vs,
+                    day(31_563_600 + 86_400),
+                    false,
+                    &mut models,
+                );
+                // The overdue section now holds both the original
+                // overdue row and the rolled one (uuid order within
+                // (order, id)); the due-today section is empty.
+                let today = window.get_today_model();
+                let overdue_section = today.sections.row_data(0).expect("section");
+                assert_eq!(overdue_section.count, 2, "both overdue rows");
+                let due_section = today.sections.row_data(2).expect("section");
+                assert_eq!(due_section.count, 0, "the due section emptied");
+                assert!(second.today_tasks.contains(&ids[2]));
+            });
+        }
+    }
 
     mod palette_pipeline {
         use super::*;

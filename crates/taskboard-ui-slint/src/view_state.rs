@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, Utc};
 use taskboard_domain::{
     AppState, BoardId, SearchTarget, StackId, StateCommand, TaskChanges, TaskId,
 };
@@ -21,6 +22,17 @@ use crate::actions::ContextId;
 use crate::presentation::{live_board, live_boards, stacks_in_board};
 use crate::router::Mode;
 use crate::widths::{STACK_WIDTH_DEFAULT_PX, STACK_WIDTH_MIN_PX, STACK_WIDTH_STEP_PX, clamp_width};
+
+/// The pass's time bundle (chunk 10 D4): the fresh `now` and the
+/// `day_window` pair the adapter derives from its held
+/// `(day_start_time, offset)` custody — time is data, recomputed on
+/// every refresh pass (the rollover rides the existing repaint driver;
+/// no new timer, D-V4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DayCtx {
+    pub now: DateTime<Utc>,
+    pub window: (DateTime<Utc>, DateTime<Utc>),
+}
 
 /// The v0.1.0 views (D7): one tree, one cycle
 /// Today → Board → `StackDetail` → `TaskDetail` → Today (chunk 10 D2
@@ -487,17 +499,44 @@ impl ViewState {
     /// `nav.next-item` without a move flow: in compact, selection
     /// follows focus at the switcher level first (wrap — segmented
     /// control convention); the task walk itself never wraps (D7).
-    pub fn advance_focus(&mut self, state: &AppState, compact: bool) -> Vec<FlowOutcome> {
-        self.step_focus(state, 1, compact)
+    pub fn advance_focus(
+        &mut self,
+        state: &AppState,
+        compact: bool,
+        kiosk: bool,
+        day: &DayCtx,
+    ) -> Vec<FlowOutcome> {
+        self.step_focus(state, 1, compact, kiosk, day)
     }
 
     /// `nav.prev-item` without a move flow; retreating before the
     /// first card in compact returns to the switcher level.
-    pub fn retreat_focus(&mut self, state: &AppState, compact: bool) -> Vec<FlowOutcome> {
-        self.step_focus(state, -1, compact)
+    pub fn retreat_focus(
+        &mut self,
+        state: &AppState,
+        compact: bool,
+        kiosk: bool,
+        day: &DayCtx,
+    ) -> Vec<FlowOutcome> {
+        self.step_focus(state, -1, compact, kiosk, day)
     }
 
-    fn step_focus(&mut self, state: &AppState, direction: i32, compact: bool) -> Vec<FlowOutcome> {
+    fn step_focus(
+        &mut self,
+        state: &AppState,
+        direction: i32,
+        compact: bool,
+        kiosk: bool,
+        day: &DayCtx,
+    ) -> Vec<FlowOutcome> {
+        // The Today view has no stack level: the flat section walk is
+        // the domain (chunk 10 D7), even in compact.
+        if self.view == ViewId::Today {
+            let domain = self.today_domain(state, kiosk, day);
+            let outcomes = self.step_flat_domain(direction, compact, &domain);
+            self.follow_board(state);
+            return outcomes;
+        }
         // Switcher level in compact (no card focused): advance/retreat
         // move the stack selection (wrap) and land on the new stack's
         // first task — one keypress per switch (D8).
@@ -524,6 +563,18 @@ impl ViewState {
             return vec![FlowOutcome::RefreshNow];
         }
         let domain = self.focus_domain(state, compact);
+        self.step_flat_domain(direction, compact, &domain)
+    }
+
+    /// The shared flat-walk mechanics of `step_focus` (chunk 10 D7
+    /// factoring): position in `domain`, no wrap at either end, entry
+    /// at the first card.
+    fn step_flat_domain(
+        &mut self,
+        direction: i32,
+        compact: bool,
+        domain: &[TaskId],
+    ) -> Vec<FlowOutcome> {
         let Some(current) = self
             .focused_task
             .and_then(|id| domain.iter().position(|t| *t == id))
@@ -588,8 +639,14 @@ impl ViewState {
         state: &AppState,
         edge: FocusEdge,
         compact: bool,
+        kiosk: bool,
+        day: &DayCtx,
     ) -> Vec<FlowOutcome> {
-        let domain = self.focus_domain(state, compact);
+        let domain = if self.view == ViewId::Today {
+            self.today_domain(state, kiosk, day)
+        } else {
+            self.focus_domain(state, compact)
+        };
         let target = match edge {
             FocusEdge::First => domain.first(),
             FocusEdge::Last => domain.last(),
@@ -597,9 +654,68 @@ impl ViewState {
         match target {
             Some(id) => {
                 self.focused_task = Some(*id);
+                self.follow_board(state);
                 vec![FlowOutcome::RefreshNow]
             }
             None => Vec::new(),
+        }
+    }
+
+    /// The today walk's domain (chunk 10 D7): the four filtered
+    /// sections concatenated in display order — the same filters
+    /// `push_today` applies (anchor rows out; on kiosk the focused
+    /// board's subset), derived here from `(state, DayCtx)`.
+    #[must_use]
+    pub fn today_domain(&self, state: &AppState, kiosk: bool, day: &DayCtx) -> Vec<TaskId> {
+        let sections = taskboard_domain::days::today_sections(&state.tasks, day.now, day.window);
+        let focused_board = self.board;
+        let keep = |task: &taskboard_domain::entities::Task| {
+            !crate::presentation::is_anchor_task(task)
+                && (!kiosk
+                    || state
+                        .stacks
+                        .get(&task.stack)
+                        .is_some_and(|s| focused_board.is_some_and(|b| s.board == b)))
+        };
+        let mut out = Vec::new();
+        for id in sections
+            .overdue
+            .iter()
+            .chain(&sections.scheduled)
+            .chain(&sections.due_today)
+            .chain(&sections.done_today)
+        {
+            if state.tasks.get(id).is_some_and(keep) {
+                out.push(*id);
+            }
+        }
+        out
+    }
+
+    /// Selection-follows-focus (chunk 10 D7, D-V3): after each today
+    /// focus step the board retargets to the row's board and the
+    /// stack selection to the row's stack — keeping `focused_task` (a
+    /// lighter touch than `select_board`, which would reset focus and
+    /// break the walk). Keeps `task.move`'s ring and detail navigation
+    /// board-local. No-op when the board already matches.
+    fn follow_board(&mut self, state: &AppState) {
+        if self.view != ViewId::Today {
+            return;
+        }
+        let Some(task) = self.focused_task else {
+            return;
+        };
+        let Some(task) = state.tasks.get(&task) else {
+            return;
+        };
+        let Some(stack) = state.stacks.get(&task.stack) else {
+            return;
+        };
+        if self.board != Some(stack.board) {
+            self.board = Some(stack.board);
+        }
+        if self.selected_stack != Some(task.stack) {
+            self.selected_stack = Some(task.stack);
         }
     }
 
@@ -1372,6 +1488,19 @@ mod tests {
 
     /// A board with stacks s0, s1 (display order) and tasks a, b in s0
     /// and c in s1 (canonical order a, b, c).
+    /// A fixed day bundle for the focus tests: the window is far from
+    /// every fixture timestamp, so the board domains are unaffected.
+    fn day() -> DayCtx {
+        use chrono::TimeZone as _;
+        DayCtx {
+            now: Utc.timestamp_opt(1_781_481_600, 0).unwrap(),
+            window: (
+                Utc.timestamp_opt(1_781_481_600, 0).unwrap(),
+                Utc.timestamp_opt(1_781_568_000, 0).unwrap(),
+            ),
+        }
+    }
+
     fn fixture() -> (AppState, BoardId, [StackId; 2], [TaskId; 3]) {
         let board_id = BoardId::from_uuid(uuid::Uuid::now_v7());
         let s0 = StackId::from_uuid(uuid::Uuid::now_v7());
@@ -1604,21 +1733,21 @@ mod tests {
         let (state, _, _, [a, b, c]) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
-        vs.advance_focus(&state, false);
+        vs.advance_focus(&state, false, false, &day());
         assert_eq!(
             vs.focused_task(),
             Some(a),
             "entering the walk takes the first card"
         );
-        vs.advance_focus(&state, false);
-        vs.advance_focus(&state, false);
+        vs.advance_focus(&state, false, false, &day());
+        vs.advance_focus(&state, false, false, &day());
         assert_eq!(vs.focused_task(), Some(c));
-        vs.advance_focus(&state, false);
+        vs.advance_focus(&state, false, false, &day());
         assert_eq!(vs.focused_task(), Some(c), "no wrap at the end");
-        vs.retreat_focus(&state, false);
+        vs.retreat_focus(&state, false, false, &day());
         assert_eq!(vs.focused_task(), Some(b));
-        vs.retreat_focus(&state, false);
-        vs.retreat_focus(&state, false);
+        vs.retreat_focus(&state, false, false, &day());
+        vs.retreat_focus(&state, false, false, &day());
         assert_eq!(vs.focused_task(), Some(a), "no wrap at the start");
     }
 
@@ -1629,15 +1758,15 @@ mod tests {
         vs.reconcile(&state);
         // Entering the walk takes the first stack's first card
         // (one keypress per switch, D8).
-        vs.advance_focus(&state, true);
+        vs.advance_focus(&state, true, false, &day());
         assert_eq!(vs.selected_stack(), Some(s0));
         assert_eq!(vs.focused_task(), Some(a));
-        vs.advance_focus(&state, true);
+        vs.advance_focus(&state, true, false, &day());
         assert_eq!(vs.focused_task(), Some(b));
-        vs.advance_focus(&state, true);
+        vs.advance_focus(&state, true, false, &day());
         assert_eq!(vs.focused_task(), Some(b), "selected stack's end holds");
-        vs.retreat_focus(&state, true);
-        vs.retreat_focus(&state, true);
+        vs.retreat_focus(&state, true, false, &day());
+        vs.retreat_focus(&state, true, false, &day());
         assert_eq!(
             vs.focused_task(),
             None,
@@ -1645,19 +1774,19 @@ mod tests {
         );
         // Switcher level: advance moves the selection and lands on the
         // new stack's first card; selection wraps.
-        vs.advance_focus(&state, true);
+        vs.advance_focus(&state, true, false, &day());
         assert_eq!(vs.selected_stack(), Some(s1));
         assert_eq!(vs.focused_task(), Some(c));
-        vs.retreat_focus(&state, true);
-        vs.retreat_focus(&state, true);
+        vs.retreat_focus(&state, true, false, &day());
+        vs.retreat_focus(&state, true, false, &day());
         assert_eq!(
             vs.selected_stack(),
             Some(s0),
             "retreat moves the selection back"
         );
         assert_eq!(vs.focused_task(), Some(a));
-        vs.retreat_focus(&state, true);
-        vs.retreat_focus(&state, true);
+        vs.retreat_focus(&state, true, false, &day());
+        vs.retreat_focus(&state, true, false, &day());
         assert_eq!(
             vs.selected_stack(),
             Some(s1),
@@ -1744,24 +1873,24 @@ mod tests {
         vs.reconcile(&state);
         // First from anywhere (unfocused).
         assert_eq!(
-            vs.jump_focus(&state, FocusEdge::First, false),
+            vs.jump_focus(&state, FocusEdge::First, false, false, &day()),
             vec![FlowOutcome::RefreshNow]
         );
         assert_eq!(vs.focused_task(), Some(a));
         // Last.
         assert_eq!(
-            vs.jump_focus(&state, FocusEdge::Last, false),
+            vs.jump_focus(&state, FocusEdge::Last, false, false, &day()),
             vec![FlowOutcome::RefreshNow]
         );
         assert_eq!(vs.focused_task(), Some(c));
         // Last again: a stay — same state, one refresh.
         assert_eq!(
-            vs.jump_focus(&state, FocusEdge::Last, false),
+            vs.jump_focus(&state, FocusEdge::Last, false, false, &day()),
             vec![FlowOutcome::RefreshNow]
         );
         assert_eq!(vs.focused_task(), Some(c));
         // First again.
-        vs.jump_focus(&state, FocusEdge::First, false);
+        vs.jump_focus(&state, FocusEdge::First, false, false, &day());
         assert_eq!(vs.focused_task(), Some(a));
         let _ = b;
     }
@@ -1773,7 +1902,7 @@ mod tests {
         let mut vs = ViewState::new();
         vs.reconcile(&state);
         vs.select_stack(&state, s0);
-        vs.jump_focus(&state, FocusEdge::Last, true);
+        vs.jump_focus(&state, FocusEdge::Last, true, false, &day());
         assert_ne!(
             vs.focused_task(),
             Some(c),
@@ -1783,8 +1912,14 @@ mod tests {
         let mut vs = ViewState::new();
         let bare = AppState::default();
         vs.reconcile(&bare);
-        assert_eq!(vs.jump_focus(&bare, FocusEdge::First, false), Vec::new());
-        assert_eq!(vs.jump_focus(&bare, FocusEdge::Last, false), Vec::new());
+        assert_eq!(
+            vs.jump_focus(&bare, FocusEdge::First, false, false, &day()),
+            Vec::new()
+        );
+        assert_eq!(
+            vs.jump_focus(&bare, FocusEdge::Last, false, false, &day()),
+            Vec::new()
+        );
     }
 
     // -- the create flow (D8/D9) -------------------------------------------

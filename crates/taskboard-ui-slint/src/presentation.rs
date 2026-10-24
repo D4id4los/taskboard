@@ -378,6 +378,25 @@ pub fn live_boards(state: &AppState) -> Vec<&Board> {
         .collect()
 }
 
+/// The today row's context line (chunk 10 D7, D-V3): the stack title
+/// always; the `"<board> › <stack>"` board badge only on a multi-board
+/// desktop — and suppressed entirely on kiosk (no badges). A
+/// deterministic state-derived decision, made once.
+#[must_use]
+pub fn today_row_context(state: &AppState, task: &Task, kiosk: bool, multi_board: bool) -> String {
+    let Some(stack) = state.stacks.get(&task.stack) else {
+        return String::new();
+    };
+    if kiosk || !multi_board {
+        stack.title.clone()
+    } else {
+        state.boards.get(&stack.board).map_or_else(
+            || stack.title.clone(),
+            |board| format!("{} \u{203a} {}", board.title, stack.title),
+        )
+    }
+}
+
 /// The move-flow hint (chunk 10 D6, D-V5's literal vocabulary): the
 /// target stack's `"<board> › <stack>"` — always both parts, uniform,
 /// no conditional abbreviation. Empty on a dangling stack (data

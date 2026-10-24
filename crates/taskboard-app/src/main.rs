@@ -494,8 +494,10 @@ async fn run_kiosk(
             // and findings before anything slint-side, then mount with
             // the kiosk window profile set (chunk 2's consumer site).
             taskboard_app::ui::observe_scale_escape_hatch();
-            let (mut ui_settings, keymap_findings) =
-                taskboard_app::ui::resolve_ui_settings(&app.config.ui);
+            let (mut ui_settings, keymap_findings) = taskboard_app::ui::resolve_ui_settings(
+                &app.config.ui,
+                taskboard_app::ui::resolve_day_start(&app.config),
+            );
             ui_settings.kiosk = true;
             ui_settings.connectors = taskboard_app::ui::resolve_connector_infos(&app.config);
             taskboard_app::ui::surface_keymap_findings(&keymap_findings);
