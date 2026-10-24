@@ -8,6 +8,7 @@
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 import { TextField } from "../widgets/text-field.slint";
+import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 export enum SettingsRowStatus {
     idle,
@@ -289,28 +290,17 @@ export component SettingsView inherits FocusScope {
             role: Typography.title;
             text: "Keymap";
         }
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            SettingsButton {
-                text: "Standard";
-                enabled: SettingsModel.preset-index != 0;
-                clicked => {
-                    root.preset-picked(0);
-                }
-            }
-            SettingsButton {
-                text: "Emacs";
-                enabled: SettingsModel.preset-index != 1;
-                clicked => {
-                    root.preset-picked(1);
-                }
-            }
-            SettingsButton {
-                text: "Vi";
-                enabled: SettingsModel.preset-index != 2;
-                clicked => {
-                    root.preset-picked(2);
-                }
+        // The keymap picker (r2 D26): one SegmentedControl replaces
+        // the three inverted-`enabled` buttons — the selection renders
+        // `SettingsModel.preset-index`, the click emits `picked`; the
+        // echo rides the reply (r2 D27). Index order is the contract:
+        // [Standard, Emacs, Vi] (the adapter's request seam).
+        SegmentedControl {
+            options: ["Standard", "Emacs", "Vi"];
+            selected-index: SettingsModel.preset-index;
+            group-label: "Keymap preset";
+            picked(i) => {
+                root.preset-picked(i);
             }
         }
 

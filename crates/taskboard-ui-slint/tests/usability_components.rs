@@ -570,3 +570,85 @@ fn the_menu_cursor_follows_the_selection_into_the_scroll() {
         },
     );
 }
+
+/// r2 D26 — the segmented-control pin (through the app window,
+/// settings open): the three segments are addressable by label, each
+/// carries the `RadioButton` role, and invoking one routes exactly
+/// one `SetKeymapPreset` (the click ≡ AT-activation equivalence).
+///
+/// The checked *state* contract pins on `SettingsModel.preset-index`
+/// and the journeys' echo test — the testing backend exposes no
+/// `accessible-checked` read (the plan's recorded fallback); the
+/// visual exactly-one-selected reads as a Tier-4 item.
+#[test]
+fn the_segmented_picker_roles_and_routes_the_preset_pick() {
+    use taskboard_ui_slint::actions::ContextId;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = taskboard_ui_slint::mount(
+                state,
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                UiSettings::default(),
+            )
+            .expect("mount succeeds on the testing backend");
+            driver.bind(&handle);
+            driver.advance_time(0);
+
+            // The settings surface opens through the component-test
+            // seam; the refresh pushes the view switch.
+            handle.set_view_context(Some(ContextId::Settings));
+            handle.refresh();
+            driver.advance_time(0);
+            assert_eq!(
+                handle.window().get_current_view(),
+                taskboard_ui_slint::View::Settings,
+                "the settings surface is open"
+            );
+
+            // Exactly one segment per label, all RadioButton-role.
+            for label in ["Standard", "Emacs", "Vi"] {
+                let found = driver.find_all_by_label(label);
+                let roles = found
+                    .iter()
+                    .map(support::driver::Element::is_radio_button)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    roles.iter().filter(|r| **r).count(),
+                    1,
+                    "exactly one {label} RadioButton is addressable (found {roles:?})"
+                );
+            }
+
+            // The RadioButton element itself (a segment's label also
+            // resolves its container through the a11y tree).
+            let vi = driver
+                .find_all_by_label("Vi")
+                .into_iter()
+                .find(support::driver::Element::is_radio_button)
+                .expect("the Vi segment's RadioButton element");
+
+            // Invoking the AT default action routes exactly one
+            // SetKeymapPreset — click ≡ AT activation.
+            vi.invoke_default_action();
+            let mut requests =
+                std::iter::from_fn(|| requests_rx.try_recv().ok()).collect::<Vec<_>>();
+            assert_eq!(requests.len(), 1, "exactly one preset request routed");
+            assert!(matches!(
+                requests.remove(0),
+                taskboard_ui_slint::requests::UiRequest::SetKeymapPreset {
+                    preset: taskboard_ui_slint::keymap::Preset::Vi,
+                    ..
+                }
+            ));
+        },
+    );
+}
