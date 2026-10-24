@@ -2371,6 +2371,7 @@ fn the_preset_pick_routes_and_the_reply_swaps_the_keymap_live() {
                         taskboard_ui_slint::keymap::Preset::Vi,
                     ),
                     findings: 0,
+                    preset: taskboard_ui_slint::keymap::Preset::Vi,
                 }))
                 .expect("the reply lane is alive");
             harness.handle.drain_setting_replies();
@@ -2386,6 +2387,87 @@ fn the_preset_pick_routes_and_the_reply_swaps_the_keymap_live() {
                     .get_menu_open(),
                 "the swapped keymap resolves vi's colon in the settings chain"
             );
+        },
+    );
+}
+
+/// J8 — the selection echoes the *replied* preset, never the click
+/// (r2 D27): the pick leaves the index untouched until the reply's
+/// `KeymapUpdate.preset` lands through the drain, and a synthetic
+/// reply for a different preset moves it again.
+#[test]
+fn the_preset_selection_echoes_the_replied_preset_not_the_click() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            assert_eq!(harness.handle.window().get_current_view(), View::Settings);
+
+            let selection = |harness: &Harness| {
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::SettingsModel>()
+                    .get_preset_index()
+            };
+            // Mount: the standard preset, index 0.
+            assert_eq!(selection(&harness), 0);
+
+            // The pick: the request routes, but the selection does NOT
+            // move — no optimistic click-echo.
+            harness.handle.window().invoke_settings_preset_picked(2);
+            assert_eq!(
+                selection(&harness),
+                0,
+                "the click alone never moves the selection"
+            );
+
+            // The reply names vi; the drain echoes it.
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let taskboard_ui_slint::requests::UiRequest::SetKeymapPreset { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the preset request routed");
+            };
+            reply
+                .send(Ok(taskboard_ui_slint::requests::KeymapUpdate {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(
+                        taskboard_ui_slint::keymap::Preset::Vi,
+                    ),
+                    findings: 0,
+                    preset: taskboard_ui_slint::keymap::Preset::Vi,
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(selection(&harness), 2, "the replied preset is echoed");
+
+            // A second pick (now allowed — pending cleared) replies for
+            // a different preset: the reply, not the click, moves the
+            // selection again.
+            harness.handle.window().invoke_settings_preset_picked(1);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let taskboard_ui_slint::requests::UiRequest::SetKeymapPreset { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the second preset request routed");
+            };
+            reply
+                .send(Ok(taskboard_ui_slint::requests::KeymapUpdate {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(
+                        taskboard_ui_slint::keymap::Preset::Emacs,
+                    ),
+                    findings: 0,
+                    preset: taskboard_ui_slint::keymap::Preset::Emacs,
+                }))
+                .expect("the reply lane is still alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(selection(&harness), 1, "a new reply re-echoes");
         },
     );
 }
