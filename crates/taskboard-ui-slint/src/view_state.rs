@@ -72,6 +72,13 @@ pub enum FlowOutcome {
     StackWidthsChanged,
 }
 
+/// Which end of the focus domain the jump addresses (round 2, D20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusEdge {
+    First,
+    Last,
+}
+
 /// The pure view state (D7).
 #[derive(Debug, Clone, Default)]
 pub struct ViewState {
@@ -469,21 +476,7 @@ impl ViewState {
             self.focused_task = Self::first_task_of(state, next);
             return vec![FlowOutcome::RefreshNow];
         }
-        let domain: Vec<TaskId> = if compact {
-            match self
-                .selected_stack
-                .or_else(|| self.stack_ids(state).first().copied())
-            {
-                Some(stack) => state
-                    .tasks_in_stack(stack)
-                    .into_iter()
-                    .map(|t| t.id)
-                    .collect(),
-                None => Vec::new(),
-            }
-        } else {
-            self.reading_order(state)
-        };
+        let domain = self.focus_domain(state, compact);
         let Some(current) = self
             .focused_task
             .and_then(|id| domain.iter().position(|t| *t == id))
@@ -514,6 +507,81 @@ impl ViewState {
             }
             None => Vec::new(), // no wrap (D7): the ends hold
         }
+    }
+
+    /// The task ids the focus walkers address (round 2, D20 — factored
+    /// out of `step_focus` so the first/last jump shares the exact
+    /// domain choice, one behaviour one home): compact walks the
+    /// effective stack's tasks, the board walks the reading order.
+    fn focus_domain(&self, state: &AppState, compact: bool) -> Vec<TaskId> {
+        if compact {
+            match self
+                .selected_stack
+                .or_else(|| self.stack_ids(state).first().copied())
+            {
+                Some(stack) => state
+                    .tasks_in_stack(stack)
+                    .into_iter()
+                    .map(|t| t.id)
+                    .collect(),
+                None => Vec::new(),
+            }
+        } else {
+            self.reading_order(state)
+        }
+    }
+
+    /// `nav.first-item`/`nav.last-item` (round 2, D20): focus lands on
+    /// the first/last card of the same domain `step_focus` walks;
+    /// idempotent at the target (the jump emits the same single
+    /// `RefreshNow` from anywhere, including the target itself); inert
+    /// on an empty domain.
+    pub fn jump_focus(
+        &mut self,
+        state: &AppState,
+        edge: FocusEdge,
+        compact: bool,
+    ) -> Vec<FlowOutcome> {
+        let domain = self.focus_domain(state, compact);
+        let target = match edge {
+            FocusEdge::First => domain.first(),
+            FocusEdge::Last => domain.last(),
+        };
+        match target {
+            Some(id) => {
+                self.focused_task = Some(*id);
+                vec![FlowOutcome::RefreshNow]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// `stack.next`/`stack.prev` (round 2, D17): the stack selection
+    /// steps with wrap (the compact switcher's segmented-control
+    /// convention) and focus lands on the new stack's first task —
+    /// exactly `select_stack`. A `None` selection enters at the
+    /// direction-appropriate end (the `step_focus` switcher rule);
+    /// inert with zero stacks.
+    pub fn step_stack(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let stacks = self.stack_ids(state);
+        if stacks.is_empty() {
+            return Vec::new();
+        }
+        let next = match self.selected_stack {
+            None => {
+                if direction > 0 {
+                    stacks[0]
+                } else {
+                    stacks[stacks.len() - 1]
+                }
+            }
+            Some(selected) => {
+                let current = stacks.iter().position(|s| *s == selected).unwrap_or(0);
+                stacks[wrapped_index(current, direction, stacks.len())]
+            }
+        };
+        self.select_stack(state, next)
     }
 
     /// The compact switcher's selection move (keys while the switcher
@@ -1238,6 +1306,106 @@ mod tests {
         assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
         assert_eq!(vs.focused_task(), Some(a));
         assert_eq!(*vs.flow(), Flow::None, "a click never starts a flow");
+    }
+
+    // -- the stack wrap-walk and the first/last jumps (r2 D17/D20) -----
+
+    #[test]
+    fn step_stack_wraps_and_lands_on_the_new_stacks_first_task() {
+        let (state, _, [s0, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_stack(&state, s1);
+        // Forward wraps to the first stack; focus follows.
+        let outcomes = vs.step_stack(&state, 1);
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.selected_stack(), Some(s0));
+        assert_eq!(vs.focused_task(), Some(a));
+        // Backwards wraps to the last stack from the first.
+        vs.step_stack(&state, -1);
+        assert_eq!(vs.selected_stack(), Some(s1));
+        assert_eq!(
+            vs.focused_task(),
+            state.tasks_in_stack(s1).first().map(|t| t.id)
+        );
+        assert!(
+            !outcomes
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::Command(_))),
+            "the dumb-client pin: the walk dispatches nothing"
+        );
+    }
+
+    #[test]
+    fn step_stack_enters_at_the_direction_end_without_a_selection() {
+        let (state, _, [s0, s1], _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.step_stack(&state, 1);
+        assert_eq!(vs.selected_stack(), Some(s0), "forward enters at first");
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.step_stack(&state, -1);
+        assert_eq!(vs.selected_stack(), Some(s1), "backwards enters at last");
+    }
+
+    #[test]
+    fn step_stack_is_inert_with_zero_stacks() {
+        let mut vs = ViewState::new();
+        let state = AppState::default();
+        vs.reconcile(&state);
+        assert_eq!(vs.step_stack(&state, 1), Vec::new());
+        assert_eq!(vs.step_stack(&state, -1), Vec::new());
+    }
+
+    #[test]
+    fn jump_focus_lands_on_both_ends_and_is_idempotent_at_the_target() {
+        let (state, _, _, [a, b, c]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        // First from anywhere (unfocused).
+        assert_eq!(
+            vs.jump_focus(&state, FocusEdge::First, false),
+            vec![FlowOutcome::RefreshNow]
+        );
+        assert_eq!(vs.focused_task(), Some(a));
+        // Last.
+        assert_eq!(
+            vs.jump_focus(&state, FocusEdge::Last, false),
+            vec![FlowOutcome::RefreshNow]
+        );
+        assert_eq!(vs.focused_task(), Some(c));
+        // Last again: a stay — same state, one refresh.
+        assert_eq!(
+            vs.jump_focus(&state, FocusEdge::Last, false),
+            vec![FlowOutcome::RefreshNow]
+        );
+        assert_eq!(vs.focused_task(), Some(c));
+        // First again.
+        vs.jump_focus(&state, FocusEdge::First, false);
+        assert_eq!(vs.focused_task(), Some(a));
+        let _ = b;
+    }
+
+    #[test]
+    fn jump_focus_shares_the_step_focus_domain() {
+        // Compact walks the selected stack only, not the reading order.
+        let (state, _, [s0, _s1], [.., c]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_stack(&state, s0);
+        vs.jump_focus(&state, FocusEdge::Last, true);
+        assert_ne!(
+            vs.focused_task(),
+            Some(c),
+            "compact last is the selected stack's end, not the board's"
+        );
+        // An empty board is inert in both edges.
+        let mut vs = ViewState::new();
+        let bare = AppState::default();
+        vs.reconcile(&bare);
+        assert_eq!(vs.jump_focus(&bare, FocusEdge::First, false), Vec::new());
+        assert_eq!(vs.jump_focus(&bare, FocusEdge::Last, false), Vec::new());
     }
 
     // -- the create flow (D8/D9) -------------------------------------------
