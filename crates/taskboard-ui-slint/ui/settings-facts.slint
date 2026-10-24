@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The settings view's scroll facts (r2 D30): the journeys' reachability
+// seam — the `MenuPanelFacts` precedent. `content-height`/`viewport-
+// height` mirror one-way via changed handlers; `viewport-y` is two-way
+// bound so journeys can drive the scroll and the gesture writes back.
+
+export global SettingsScrollFacts {
+    in-out property <length> content-height;
+    in-out property <length> viewport-height;
+    in-out property <length> viewport-y;
+}

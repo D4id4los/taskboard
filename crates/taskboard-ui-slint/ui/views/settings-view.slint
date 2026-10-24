@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The settings view (round-1 D24b/D7): the connections form (write-only
-// secret field), the connector list with live status, the keymap preset
-// picker, and the UI scale. All labels/tone decisions are markup-owned;
-// the model carries typed data only (D18). Text entry rides the D18
-// insert-mask contract: a focused field engages insert mode via the
-// adapter's edited seams; commit returns to Normal.
+// The settings view (round-1 D24b/D7; round-2 D26-D31 per
+// .artifacts/plans/2026-10-23-ui-r2-settings-form-plan.md): the
+// connections form (write-only secret field), the connector list with
+// live status, the keymap preset picker (one SegmentedControl, D26),
+// the scale slider + field (D29), the status line (D28), the InfoTip
+// help affordances (D31), and the whole content column scrolling
+// under the pinned header (D30). All labels/tone decisions are
+// markup-owned; the model carries typed data only (D18). Text entry
+// rides the D18 insert-mask contract: a focused field engages insert
+// mode via the adapter's edited seams; commit returns to Normal.
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { Slider } from "../widgets/slider.slint";
+import { SettingsScrollFacts } from "../settings-facts.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 export enum SettingsRowStatus {
     idle,
@@ -161,7 +166,10 @@ export component SettingsView inherits FocusScope {
         padding: Theme.space-4;
         spacing: Theme.space-3;
 
+        // The pinned header (r2 D30): the only content outside the
+        // scroll — the back affordance never scrolls away.
         HorizontalLayout {
+            vertical-stretch: 0;
             spacing: Theme.space-2;
             back := IconButton {
                 icon: IconKind.chevron-left;
@@ -176,6 +184,34 @@ export component SettingsView inherits FocusScope {
                 vertical-alignment: center;
             }
         }
+
+        // The scroll host (r2 D30): a layout cell (never an overlay
+        // child — max-height is not honoured on a Flickable-hosted
+        // panel, the action-menu's recorded Slint fact), hosting the
+        // one content column. The header above stays pinned.
+        flick := Flickable {
+            vertical-stretch: 1;
+            // The journeys' scroll seam (r2 D30): two-way to the
+            // global — journeys drive the scroll, gestures write
+            // back (the two-way-to-built-in probe passed).
+            viewport-y <=> SettingsScrollFacts.viewport-y;
+            // The viewport drives the journeys' facts (the
+            // mirror-facts pattern).
+            changed height => {
+                self.mirror-facts();
+            }
+            changed viewport-height => {
+                self.mirror-facts();
+            }
+            init => {
+                self.mirror-facts();
+            }
+            public function mirror-facts() {
+                SettingsScrollFacts.content-height = self.viewport-height;
+                SettingsScrollFacts.viewport-height = self.height;
+            }
+            content := VerticalLayout {
+                spacing: Theme.space-3;
 
         // -- connections ------------------------------------------------
         RoleText {
@@ -377,6 +413,34 @@ export component SettingsView inherits FocusScope {
                 overflow: elide;
                 horizontal-stretch: 1;
             }
+        }
+            }
+        }
+
+    }
+
+    // The scroll indicator (r2 D30): the action-menu's conditional
+    // indicator, consciously inline-copied (a shared ScrollBar
+    // widget needs element-reference plumbing Slint 1.18 does not
+    // offer; revisit at the third consumer). Only while the
+    // content actually overflows.
+    if (flick.viewport-height > flick.height): Rectangle {
+        x: root.width - Theme.space-3;
+        y: flick.y + Theme.space-2;
+        width: Theme.space-1;
+        height: flick.height - 2 * Theme.space-2;
+        background: Theme.surface;
+        border-radius: self.width / 2;
+
+        Rectangle {
+            width: 100%;
+            background: Theme.border;
+            border-radius: parent.width / 2;
+            height: max(Theme.space-4, parent.height * parent.height
+                / max(Theme.focus-ring-width / 4, flick.viewport-height));
+            y: (parent.height - self.height)
+                * (-flick.viewport-y
+                    / max(Theme.focus-ring-width / 4, flick.viewport-height - flick.height));
         }
     }
 }
