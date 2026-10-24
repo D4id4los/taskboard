@@ -1712,17 +1712,19 @@ fn install_menu_dismiss_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     });
 }
 
-/// The right-click context menu opener (round-1 D13): focus the
-/// addressed card (right-click selects like left-click), then open the
-/// shared menu pipeline over the task's context — the Task group's
-/// flat page over `[TaskDetail, Global]`, anchored at the pointer.
-/// Stale indices against an older tables pass are absorbed silently.
+/// The right-click context menu opener (round-1 D13, round-2 D21):
+/// focus the addressed card (right-click selects like left-click),
+/// then open the shared menu pipeline over the named object actions —
+/// flat, anchored at the pointer. Over `[Board, Global]` (the one
+/// chain every object menu opens with) every board-surface verb's
+/// binding hint resolves — the F-B7 fix. Stale indices against an
+/// older tables pass are absorbed silently.
 impl Adapter {
-    fn open_task_context_menu(&mut self, window: &AppWindow, x: f32, y: f32) {
-        let chain = [ContextId::TaskDetail, ContextId::Global].to_vec();
+    fn open_context_menu(&mut self, window: &AppWindow, x: f32, y: f32, ids: &[ActionId]) {
+        let chain = [ContextId::Board, ContextId::Global].to_vec();
         self.menu_anchor = MenuAnchor::Pointer(x, y);
         self.menu_chain = chain;
-        self.root_entries = menu::context_entries(&self.keymap, &self.menu_chain);
+        self.root_entries = menu::object_entries(&self.keymap, &self.menu_chain, ids);
         self.menu_entries = self.root_entries.clone();
         self.shell.menu = crate::shell::MenuState {
             open: true,
@@ -1733,6 +1735,12 @@ impl Adapter {
         };
         self.sync_menu_models(window);
         self.sync(window);
+    }
+
+    /// The task card's menu list (round-2 D21 spelling of round-1
+    /// D13): the Task group's rows, reopen and move-cancel included.
+    fn open_task_context_menu(&mut self, window: &AppWindow, x: f32, y: f32) {
+        self.open_context_menu(window, x, y, menu::TASK_CONTEXT);
     }
 }
 

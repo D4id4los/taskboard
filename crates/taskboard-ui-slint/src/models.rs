@@ -585,6 +585,15 @@ fn push_board(
                 .position(|s| s == target)
                 .and_then(|i| i32::try_from(i).ok())
                 .unwrap_or(-1),
+            // Round 2 (D21): a stack move highlights the insertion
+            // point — the stack at `min(slot, len-1)` (slot == len
+            // highlights the last stack = "append after it").
+            Flow::MoveStack { slot, .. } => stack_ids
+                .len()
+                .checked_sub(1)
+                .map(|last| (*slot).min(last))
+                .and_then(|i| i32::try_from(i).ok())
+                .unwrap_or(-1),
             _ => -1,
         },
     });
@@ -800,11 +809,16 @@ fn push_status_bar(
         Flow::Move { .. } => keymap
             .first_binding_display(ActionId::TaskMove, chain)
             .unwrap_or_default(),
+        // Round 2 (D21): the stack move's hint is its own verb's
+        // binding (the `TaskMove` pattern).
+        Flow::MoveStack { .. } => keymap
+            .first_binding_display(ActionId::StackMove, chain)
+            .unwrap_or_default(),
         _ => Vec::new(),
     };
     window.set_flow_hint_model(FlowHintModel {
         keys: string_model(&flow_hint_keys),
-        visible: matches!(vs.flow(), Flow::Move { .. }),
+        visible: matches!(vs.flow(), Flow::Move { .. } | Flow::MoveStack { .. }),
     });
 
     // The palette pass rides every refresh while the flow holds (the
