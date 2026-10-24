@@ -12,6 +12,7 @@ import { Theme, Typography, Semantic } from "theme.slint";
 import { Responsive, Breakpoint } from "responsive.slint";
 import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
 import { SearchPalette, PaletteRowModel } from "compositions/search-palette.slint";
+import { CaptureOverlay } from "compositions/capture-overlay.slint";
 import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
@@ -130,6 +131,9 @@ export component AppWindow inherits Window {
     // The jump-to search palette (#348): the model rows arrive ranked,
     // anchor-filtered, and capped from the Rust pass.
     in-out property <bool> palette-open: false;
+    // The quick-capture overlay (chunk 10 D8).
+    in-out property <bool> capture-open: false;
+    in-out property <string> capture-initial-text;
     in-out property <int> palette-selected-index: 0;
     in-out property <[PaletteRowModel]> palette-model: [];
     in-out property <int> palette-overflow: 0;
@@ -391,6 +395,23 @@ export component AppWindow inherits Window {
             height: 100%;
             clicked => root.palette-dismiss-requested();
         }
+        if (root.capture-open): TouchArea {
+            // The modal scrim: an outside click discards-and-closes
+            // (the palette-dismiss precedent routed to ModeNormal).
+            width: 100%;
+            height: 100%;
+            clicked => root.capture-dismiss-requested();
+        }
+        if (root.capture-open): CaptureOverlay {
+            width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
+            x: (root.width - self.width) / 2;
+            y: max(Theme.space-4,
+                   min((root.height - status.height - self.height) / 2,
+                       status.y - self.height - Theme.space-2));
+            initial-text: root.capture-initial-text;
+            capture-edited(text) => root.capture-text-edited(text);
+            capture-accepted() => root.capture-accepted();
+        }
         if (root.palette-open): SearchPalette {
             width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
             x: (root.width - self.width) / 2;
@@ -455,6 +476,10 @@ export component AppWindow inherits Window {
     pure callback stack-task-context-requested(int, float, float);
     // The today view's row seams (chunk 10 D7): (section, row) — the
     // adapter resolves the flat index against `today_tasks`.
+    // The capture overlay's seams (chunk 10 D8).
+    pure callback capture-dismiss-requested();
+    pure callback capture-text-edited(string);
+    pure callback capture-accepted();
     pure callback today-row-activated(int, int);
     pure callback today-row-clicked(int, int);
     pure callback today-row-context-requested(int, int, float, float);

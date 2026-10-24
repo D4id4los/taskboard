@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The quick-capture overlay (L2 composition, chunk 10 D8, #347): one
+// text field plus a hint line — nothing else (no navigation, no
+// fields; at-create scheduling is ruled out). Return commits via
+// `accepted`; Escape rides the action layer (ModeNormal). Typing is
+// `ViInsert`, exactly the create row's discipline.
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TextField } from "../widgets/text-field.slint";
+
+export component CaptureOverlay inherits Rectangle {
+    // The buffer mirror seeds the field at init (the rename-field
+    // rule); commits route through `accepted`.
+    in property <string> initial-text;
+    callback capture-edited(string);
+    callback capture-accepted();
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-medium;
+    border-width: Theme.focus-ring-width;
+    border-color: Semantic.focus-ring;
+    drop-shadow-blur: 12px;
+
+    VerticalLayout {
+        padding: Theme.space-2;
+        spacing: Theme.space-1;
+
+        TextField {
+            placeholder: "Capture a thought…";
+            label: "Capture";
+            text: root.initial-text;
+            edited(text) => root.capture-edited(text);
+            accepted() => root.capture-accepted();
+        }
+
+        RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: "Return commits into the inbox and stays open · Escape closes";
+        }
+    }
+}
