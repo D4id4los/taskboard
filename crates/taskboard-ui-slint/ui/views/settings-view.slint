@@ -107,6 +107,7 @@ component LabeledField inherits HorizontalLayout {
     TextField {
         placeholder: root.placeholder;
         label: root.label;
+        commit-affordance: true;
         secret: root.secret;
         text <=> root.text;
         edited(t) => {
@@ -312,6 +313,7 @@ export component SettingsView inherits FocusScope {
             TextField {
                 placeholder: "1.0";
                 label: "Scale";
+                commit-affordance: true;
                 // Commit on Return only (D9): a per-keystroke commit
                 // would live-apply half-typed values and spam the lane.
                 accepted(t) => {

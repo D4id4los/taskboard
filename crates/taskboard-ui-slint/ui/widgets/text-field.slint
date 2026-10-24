@@ -24,6 +24,11 @@ export component TextField inherits Rectangle {
     // off. The a11y label stays the field's address, never the value.
     in property <bool> secret: false;
     in-out property <string> text <=> input.text;
+    // The checkmark commit affordance (r2 D23): when enabled, a
+    // trailing check square renders while the field holds focus and a
+    // non-empty buffer; clicking it fires the same `accepted` seam as
+    // Return — click ≡ key by construction. Reserves no space.
+    in property <bool> commit-affordance: false;
     callback edited(string);
     callback accepted(string);
 
@@ -73,5 +78,42 @@ export component TextField inherits Rectangle {
         vertical-alignment: center;
         edited() => root.edited(input.text);
         accepted() => root.accepted(input.text);
+    }
+
+    // The commit affordance (r2 D23): overlays the trailing padding —
+    // no space is reserved (the field's width term is content-free
+    // per D22). Same square language as IconButton; a11y label
+    // "Commit" with the field's label as description.
+    if (root.commit-affordance && input.has-focus && input.text != ""): commit-button := Rectangle {
+        x: parent.width - self.width - Theme.space-1;
+        y: (parent.height - self.height) / 2;
+        width: Theme.space-6;
+        height: Theme.space-6;
+        border-radius: Theme.radius-small;
+        background: commit-touch.has-hover ? Theme.surface-hover : transparent;
+        accessible-role: AccessibleRole.button;
+        accessible-label: "Commit";
+        accessible-description: root.label;
+        // The AT/keyboard activation lands on the same seam the
+        // TouchArea's click hits (§7.1's equivalence).
+        accessible-action-default => { root.accepted(input.text); }
+        commit-touch := TouchArea {
+            clicked => {
+                // The Return seam, verbatim: click ≡ key.
+                root.accepted(input.text);
+            }
+        }
+        Path {
+            width: Theme.space-3;
+            height: Theme.space-3;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            commands: "M 2 6 L 5 9 L 10 3";
+            stroke: commit-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            stroke-width: Theme.focus-ring-width;
+            fill: transparent;
+            viewbox-width: 12;
+            viewbox-height: 12;
+        }
     }
 }

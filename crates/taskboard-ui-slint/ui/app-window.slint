@@ -240,6 +240,7 @@ export component AppWindow inherits Window {
             if (root.board-create-open): TextField {
                 placeholder: "New board name";
                 label: "New board name";
+                commit-affordance: true;
                 accepted(text) => root.board-create-field-committed(text);
                 edited(text) => root.board-create-field-edited(text);
             }

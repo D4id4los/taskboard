@@ -317,6 +317,7 @@ export component BoardLayout inherits Rectangle {
                     if (column.create-open): TextField {
                         placeholder: "New task title";
                         label: "New task title";
+                        commit-affordance: true;
                         accepted(text) => root.create-committed(column-index, text);
                         edited(text) => root.create-edited(column-index, text);
                     }
@@ -398,6 +399,7 @@ export component BoardLayout inherits Rectangle {
         if (root.stack-create-open): TextField {
             placeholder: "New stack name";
             label: "New stack name";
+            commit-affordance: true;
             accepted(text) => root.stack-create-committed(text);
             edited(text) => root.stack-create-edited(text);
         }
@@ -475,6 +477,7 @@ export component BoardLayout inherits Rectangle {
         if (root.stack-create-open): TextField {
             placeholder: "New stack name";
             label: "New stack name";
+            commit-affordance: true;
             accepted(text) => root.stack-create-committed(text);
             edited(text) => root.stack-create-edited(text);
         }
@@ -511,6 +514,7 @@ export component BoardLayout inherits Rectangle {
                 if (column.create-open): TextField {
                     placeholder: "New task title";
                     label: "New task title";
+                    commit-affordance: true;
                     accepted(text) => root.create-committed(root.effective-selected(), text);
                     edited(text) => root.create-edited(root.effective-selected(), text);
                 }
