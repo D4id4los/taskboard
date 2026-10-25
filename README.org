@@ -157,7 +157,22 @@ poll_interval_secs = 30
 
 [ui]
 scale = 1.0             # theme token multiplier; 0.5–3.0 enforced at load
+
+[preferences]
+day_start_time = "00:00"  # when "today" begins (device-local, never synced)
+
+[reminders]
+sink = "auto"           # auto (default) | log | desktop
 #+end_src
+
+=[preferences] day_start_time= accepts =HH:MM[:SS]= and sets the
+wall-clock time at which "today" begins (drives the today view's
+sections); an unparseable value is a typed
+=invalid-day-start-time= configuration error, never a silent
+default. =[reminders] sink= picks the reminder delivery path:
+=auto= (the default) means the desktop mode gets toast
+notifications and daemon/kiosk keep the journald log path;
+=log= and =desktop= force either one explicitly.
 
 *Multiple connectors* (optional): the scalar shape above is the legacy
 form and still loads unchanged — a resolved =nextcloud= backend
@@ -238,6 +253,54 @@ titles; destructive verbs cascade what the server would cascade
 (=stacks delete= takes its tasks with it). =labels list= shows
 assignment counts, and =config print= dumps the effective
 (secret-free) configuration with its validity diagnosis.
+
+** Daily driving: fields, capture, timers, find
+
+Beyond deadlines, tasks carry *planning fields*: =--scheduled= (when
+you intend to begin; the =--due= vocabulary), =--effort= (bare digits
+= minutes; =s=/=m=/=h= compose), and =--importance=/=--urgency=
+(=very-low=…=very-high=); =none= clears a field:
+
+#+begin_src sh
+taskboard tasks edit "first task" --scheduled 2026-10-26 --effort 1h30m --importance high --urgency low
+#+end_src
+
+=--scheduled= accepts RFC-3339 or =YYYY-MM-DD= (the =--due=
+vocabulary), =--effort= composes =s=/=m=/=h= (bare digits = minutes),
+and the two priority fields take =very-low=…=very-high=.
+
+Quick capture files a thought without aiming it first:
+
+#+begin_src sh
+taskboard capture "idea: watering rota"          # → the global Inbox
+taskboard capture "mow the lawn" --board Personal  # → that board's Backlog
+#+end_src
+
+With no =--board=, a single live board's Backlog receives the task
+(created on demand); the global Inbox is a real board created unbound
+on first capture. In the desktop window, Ctrl+K opens the capture
+overlay (Enter commits-and-continues into the Inbox, Esc closes).
+
+Standalone timers are one-shot, host-local alarms — never synced, no
+UI surface:
+
+#+begin_src sh
+taskboard timers add --in 25m "pomodoro"
+taskboard timers add --at 17:30 "leave pickup"
+taskboard timers list
+taskboard timers cancel pomodoro
+#+end_src
+
+And =find= searches everything at once — boards, stacks, and tasks,
+best match first (exit 0 with an empty table when nothing matches):
+
+#+begin_src sh
+taskboard find water                # everything mentioning "water"
+taskboard find lawn --type task --limit 5
+#+end_src
+
+In the desktop window, the search palette (Ctrl+F / Ctrl+s or =/=)
+jumps straight to a board, stack, or task.
 ** Launching taskboard
 
 What a bare =taskboard= invocation runs depends on the =[app] mode=
@@ -279,6 +342,18 @@ switching still works). =b= / =B= walk =board.next= / =board.previous=
 in every keymap preset's board scope (no wrap at the ends), and each
 board's sync badge follows the selected board. Switching is pure view
 state — nothing is dispatched to the engine.
+
+The desktop window launches on the *Today* view — a cross-board
+surface with overdue / scheduled / due-today / done-today sections
+(it is subjectless: every live board at once; kiosk keeps launching
+on the board view). Ctrl+K opens quick capture (Enter
+commits-and-continues into the global Inbox, Esc closes); the search
+palette (Ctrl+F / Ctrl+s or =/=) jumps to boards, stacks, and tasks;
+the toolbar's inbox chip routes to the Inbox. The move ring (the
+task-move key's stack cycle) *crosses board edges* — it cycles every
+live board's stacks uniformly, with =board › stack= hints naming the
+landing spot; =tasks move --board <board>= pre-filters the cycle to
+one board when that is not wanted.
 
 ** Deploying a kiosk
 
@@ -351,6 +426,21 @@ taskboard boards select <id> --bind-local-board
 taskboard sync
 taskboard daemon                      # headless sync loop until Ctrl-C/SIGTERM
 #+end_src
+
+Once a board syncs app-only data (an effort/importance/urgency edit
+or a reminder rule), taskboard creates one card titled
+=[taskboard] app-data= in that Deck board carrying a
+=taskboard-appdata.json= attachment. That card is taskboard's
+document store for the board — *it is not a task; leave it alone*.
+The CLI refuses renaming or deleting its local mirror
+(=anchor-task-reserved=); deleting it Deck-side triggers a rebuild
+from local state on the next cycle, not data loss. The card is
+hidden from taskboard's list surfaces and search results.
+
+The =scheduled= field is two-lane: on servers whose Deck version
+supports the native start-date field (Deck ≥ 1.19) it rides that
+card slot; everywhere else (e.g. Deck 1.17.5) it rides the app-data
+document — detected automatically per server, no configuration.
 
 ** Multiple boards and connectors
 
@@ -451,8 +541,10 @@ Then bind the installation to one Deck board and go:
 #+begin_src sh
 taskboard boards list          # remote ids feed select
 taskboard boards select <id>
-# On a board with several stacks, name the target (--stack <title>);
-# a bare add requires exactly one live stack:
+# A bare add lands in the single live board's Backlog stack (created
+# on demand); aim elsewhere with --stack, or --board when several
+# boards are live (several live boards without one = typed
+# ambiguous-board):
 taskboard tasks add "first task" --stack <stack-title>
 taskboard sync                 # push now; durability is local immediately
 taskboard tasks list
