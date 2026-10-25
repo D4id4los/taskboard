@@ -400,6 +400,17 @@ export component SettingsView inherits FocusScope {
         }
 
         // -- the add/edit form ------------------------------------------
+        // The backend picker (r2 D32): presentational truth only — no
+        // lane payload carries a backend (the Save ceremony is
+        // Nextcloud-hardcoded by the config's world, F10). Standalone
+        // renders as the disabled "coming soon" segment; a pick from a
+        // disabled segment is swallowed by the widget.
+        SegmentedControl {
+            options: ["Nextcloud", "Standalone"];
+            segment-enabled: [true, false];
+            selected-index: 0;
+            group-label: "Backend";
+        }
         // The four field texts are the fields' own state (write-only
         // for the password, D26b); the edited seams mirror into the
         // adapter's draft.

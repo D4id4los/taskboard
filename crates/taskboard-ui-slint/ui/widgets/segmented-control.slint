@@ -23,9 +23,20 @@ import { Theme, Typography, RoleText } from "../theme.slint";
 export component SegmentedControl inherits Rectangle {
     in property <[string]> options;
     in property <int> selected-index: 0;
+    // Per-segment enablement (r2 D32): defaults to all-true, so every
+    // existing consumer is untouched. A disabled segment renders its
+    // label dimmed and swallows the pick — the SettingsButton
+    // `enabled` gate precedent.
+    in property <[bool]> segment-enabled;
     // The a11y name of the group (the RadioGroup's label).
     in property <string> group-label;
     callback picked(int);
+
+    // A segment is enabled unless the list names it disabled; an
+    // empty list (the default) enables everything.
+    function enabled-at(index: int) -> bool {
+        root.segment-enabled.length <= index || root.segment-enabled[index]
+    }
 
     // The grouped look (r2 D26): one bordered container.
     border-radius: Theme.radius-small;
@@ -43,7 +54,7 @@ export component SegmentedControl inherits Rectangle {
             // Selected → raised + primary; unselected hover → the
             // established hover language (action-menu rows).
             background: root.selected-index == index ? Theme.surface-raised
-                : seg-touch.has-hover ? Theme.surface-hover
+                : (root.enabled-at(index) && seg-touch.has-hover) ? Theme.surface-hover
                 : transparent;
             border-radius: Theme.radius-small;
             min-height: seg-label.preferred-height + 2 * Theme.space-2;
@@ -54,7 +65,7 @@ export component SegmentedControl inherits Rectangle {
                     role: Typography.body;
                     text: option;
                     text-color: root.selected-index == index ? Theme.text-primary
-                        : Theme.text-secondary;
+                        : root.enabled-at(index) ? Theme.text-secondary : Theme.border;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
@@ -70,13 +81,18 @@ export component SegmentedControl inherits Rectangle {
                 accessible-role: AccessibleRole.radio-button;
                 accessible-label: option;
                 accessible-checked: root.selected-index == index;
+                accessible-enabled: root.enabled-at(index);
                 accessible-action-default => {
-                    root.picked(index);
+                    if (root.enabled-at(index)) {
+                        root.picked(index);
+                    }
                 }
             }
             seg-touch := TouchArea {
                 clicked => {
-                    root.picked(index);
+                    if (root.enabled-at(index)) {
+                        root.picked(index);
+                    }
                 }
             }
         }
