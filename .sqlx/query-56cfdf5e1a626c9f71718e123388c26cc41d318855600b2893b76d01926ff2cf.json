@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT reminder,\n                      occurrence as \"occurrence: DateTime<Utc>\",\n                      dismissed_at as \"dismissed_at: DateTime<Utc>\"\n               FROM reminder_dismissals ORDER BY reminder, occurrence",
+  "describe": {
+    "columns": [
+      {
+        "name": "reminder",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reminder_dismissals",
+            "name": "reminder"
+          }
+        }
+      },
+      {
+        "name": "occurrence: DateTime<Utc>",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reminder_dismissals",
+            "name": "occurrence"
+          }
+        }
+      },
+      {
+        "name": "dismissed_at: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reminder_dismissals",
+            "name": "dismissed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "56cfdf5e1a626c9f71718e123388c26cc41d318855600b2893b76d01926ff2cf"
+}

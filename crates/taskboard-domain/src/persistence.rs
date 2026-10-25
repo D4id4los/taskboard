@@ -210,6 +210,11 @@ pub enum PersistenceAction {
     /// primary-key parity; the crash-between-apply-and-notify moment
     /// stays benign).
     RecordReminderDelivery(ReminderDelivery),
+    /// Record a user dismissal (R3). Set-union on the `(reminder,
+    /// occurrence)` key exactly like a delivery: a replayed dismissal is
+    /// a no-op — first write wins (a dismissal is permanent for its
+    /// occurrence; there is no un-dismiss).
+    RecordReminderDismissal(crate::reminders::ReminderDismissal),
     /// Record a snooze link. Replaces any prior link for the same
     /// `(reminder, occurrence)`.
     RecordReminderSnooze(ReminderSnooze),
@@ -241,11 +246,11 @@ pub enum PersistenceAction {
 /// sqlite upsert on `op_id` — contract-pinned); `CompleteOp`/`FailOp`
 /// remove by op id; `UpsertValidators` replaces the key;
 /// `UpsertSyncStatus` sets one board's phase + last success only
-/// (`pending_ops` is never stored). Reminder actions: rule upserts replace by id; a rule
-/// delete prunes the rule's deliveries and snooze links with it; a
-/// delivery insert is set-union on the `(reminder, occurrence)` key
-/// (first write wins); a snooze link replaces any prior link for the
-/// same key; mute toggles membership. A final derivation re-computes
+/// (`pending_ops` is never stored). Reminder actions: rule upserts
+/// replace by id; a rule delete prunes the rule's deliveries, dismissals,
+/// and snooze links with it; a delivery or dismissal insert is set-union
+/// on the `(reminder, occurrence)` key (first write wins); a snooze link
+/// replaces any prior link for the same key; mute toggles membership. A final derivation re-computes
 /// `sync.pending_ops` from the outbox depth, and fully-delivered snooze
 /// links are compacted — both derivations run unconditionally after
 /// every batch (both this function and `load()` derive them). Alarm
@@ -313,6 +318,10 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                     .retain(|d| d.reminder != ReminderRef::Rule(*id));
                 state
                     .reminders
+                    .dismissals
+                    .retain(|d| d.reminder != ReminderRef::Rule(*id));
+                state
+                    .reminders
                     .snoozes
                     .retain(|key, _| key.reminder != ReminderRef::Rule(*id));
             }
@@ -328,6 +337,14 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                     .is_delivered(&delivery.reminder, &delivery.occurrence)
                 {
                     state.reminders.deliveries.insert(*delivery);
+                }
+            }
+            PersistenceAction::RecordReminderDismissal(dismissal) => {
+                if !state
+                    .reminders
+                    .is_dismissed(&dismissal.reminder, &dismissal.occurrence)
+                {
+                    state.reminders.dismissals.insert(*dismissal);
                 }
             }
             PersistenceAction::RecordReminderSnooze(snooze) => {
@@ -375,8 +392,9 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                     .collect();
 
                 // Reminder facts of the board's tasks: rules prune their
-                // deliveries and snooze links (the DeleteReminderRule
-                // parity); default-reminder facts and mutes go by task.
+                // deliveries, dismissals, and snooze links (the
+                // DeleteReminderRule parity); default-reminder facts and
+                // mutes go by task.
                 let rule_ids: Vec<crate::ids::ReminderRuleId> = state
                     .reminders
                     .rules
@@ -393,6 +411,10 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                         .retain(|d| d.reminder != reminder);
                     state
                         .reminders
+                        .dismissals
+                        .retain(|d| d.reminder != reminder);
+                    state
+                        .reminders
                         .snoozes
                         .retain(|key, _| key.reminder != reminder);
                 }
@@ -402,6 +424,10 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
                     state
                         .reminders
                         .deliveries
+                        .retain(|d| d.reminder != reminder);
+                    state
+                        .reminders
+                        .dismissals
                         .retain(|d| d.reminder != reminder);
                     state
                         .reminders
@@ -883,6 +909,16 @@ mod tests {
                     occurrence: ts(2_000),
                     delivered_at: ts(2_001),
                 }),
+                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                    reminder: crate::reminders::ReminderRef::Rule(rule.id),
+                    occurrence: ts(1_000),
+                    dismissed_at: ts(1_002),
+                }),
+                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                    reminder: crate::reminders::ReminderRef::Default(task),
+                    occurrence: ts(2_000),
+                    dismissed_at: ts(2_002),
+                }),
                 PersistenceAction::SetTaskRemindersMuted(task, true),
                 // Ops: the board's own, its children's, and the other
                 // board's (untouched).
@@ -977,6 +1013,10 @@ mod tests {
         );
         assert!(state.reminders.rules.is_empty());
         assert!(state.reminders.deliveries.is_empty());
+        assert!(
+            state.reminders.dismissals.is_empty(),
+            "the board's dismissal facts clear with its content"
+        );
         assert!(!state.reminders.muted.contains(&task));
         assert_eq!(
             state.sync.aggregate().last_success,
@@ -1046,11 +1086,21 @@ mod tests {
                     occurrence: ts(2_000),
                     rescheduled_to: ts(3_000),
                 }),
+                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                    reminder: r,
+                    occurrence: ts(1_000),
+                    dismissed_at: ts(1_002),
+                }),
                 // A default-reminder row must survive the rule delete.
                 PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
                     reminder: task_ref,
                     occurrence: ts(1_000),
                     delivered_at: ts(1_001),
+                }),
+                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                    reminder: task_ref,
+                    occurrence: ts(1_000),
+                    dismissed_at: ts(1_002),
                 }),
             ],
         );
@@ -1064,7 +1114,47 @@ mod tests {
             1,
             "only the default-reminder delivery survives"
         );
+        assert_eq!(
+            state.reminders.dismissals.len(),
+            1,
+            "only the default-reminder dismissal survives"
+        );
         assert!(state.reminders.snoozes.is_empty());
+    }
+
+    #[test]
+    fn reminder_dismissal_replay_is_a_no_op_first_write_wins() {
+        let mut state = PersistedState::default();
+        let r = crate::reminders::ReminderRef::Default(crate::ids::TaskId::from(
+            uuid::Uuid::from_u128(5),
+        ));
+        let first = crate::reminders::ReminderDismissal {
+            reminder: r,
+            occurrence: ts(1_000),
+            dismissed_at: ts(1_002),
+        };
+        let replay = crate::reminders::ReminderDismissal {
+            reminder: r,
+            occurrence: ts(1_000),
+            dismissed_at: ts(9_999),
+        };
+        apply_actions(
+            &mut state,
+            &[
+                PersistenceAction::RecordReminderDismissal(first),
+                PersistenceAction::RecordReminderDismissal(replay),
+            ],
+        );
+        assert_eq!(
+            state
+                .reminders
+                .dismissals
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![first],
+            "the replay must not replace the first dismissal"
+        );
     }
 
     #[test]
@@ -1296,13 +1386,20 @@ mod tests {
                     })
                     .collect();
             prop_assert!(fired_tasks.iter().all(|t| !settled.muted.contains(t)));
-            // (d) persisted invariants: <= 1 delivery per key; compacted.
+            // (d) persisted invariants: <= 1 delivery and <= 1 dismissal
+            // per key; compacted.
             let keys: std::collections::BTreeSet<_> = settled
                 .deliveries
                 .iter()
                 .map(|d| (d.reminder, d.occurrence))
                 .collect();
             prop_assert_eq!(keys.len(), settled.deliveries.len());
+            let dismissal_keys: std::collections::BTreeSet<_> = settled
+                .dismissals
+                .iter()
+                .map(|d| (d.reminder, d.occurrence))
+                .collect();
+            prop_assert_eq!(dismissal_keys.len(), settled.dismissals.len());
             for key in settled.snoozes.keys() {
                 prop_assert!(!settled.is_delivered(&key.reminder, &key.occurrence)
                     || !settled.is_delivered(&key.reminder, &settled.snoozes[key]));
@@ -1410,11 +1507,21 @@ mod tests {
                     occurrence: ts(2_000),
                     rescheduled_to: ts(3_000),
                 }),
+                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                    reminder: crate::reminders::ReminderRef::Adhoc(a.id),
+                    occurrence: ts(1_000),
+                    dismissed_at: ts(1_002),
+                }),
                 // A task-reminder row must survive the alarm delete.
                 PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
                     reminder: task_ref,
                     occurrence: ts(1_000),
                     delivered_at: ts(1_001),
+                }),
+                PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                    reminder: task_ref,
+                    occurrence: ts(1_000),
+                    dismissed_at: ts(1_002),
                 }),
             ],
         );
@@ -1424,6 +1531,11 @@ mod tests {
             state.reminders.deliveries.len(),
             1,
             "only the task-reminder delivery survives"
+        );
+        assert_eq!(
+            state.reminders.dismissals.len(),
+            1,
+            "only the task-reminder dismissal survives"
         );
         assert!(state.reminders.snoozes.is_empty());
     }

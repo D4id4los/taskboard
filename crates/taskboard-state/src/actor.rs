@@ -407,6 +407,7 @@ async fn run_loop(
                             &system_out,
                         ),
                         &metrics,
+                        &reminder_cfg.defaults,
                         command,
                         reply,
                         &mut storage_failing,
@@ -577,6 +578,7 @@ async fn execute_command(
     signals: &broadcast::Sender<EngineSignal>,
     (repo, ids, clock, sync_outs, system_out): Seams<'_>,
     metrics: &EngineMetrics,
+    reminder_defaults: &taskboard_domain::ReminderDefaults,
     command: StateCommand,
     reply: Option<oneshot::Sender<Result<CommandOutcome, ExecuteError>>>,
     storage_failing: &mut bool,
@@ -602,7 +604,14 @@ async fn execute_command(
         return;
     }
 
-    let plan = match plan_command(&core.app(), core.outbox(), &command, ids, now) {
+    let plan = match plan_command(
+        &core.app(),
+        core.outbox(),
+        &command,
+        ids,
+        reminder_defaults,
+        now,
+    ) {
         Ok(plan) => plan,
         Err(rejection) => {
             tracing::warn!(?rejection, "command rejected");

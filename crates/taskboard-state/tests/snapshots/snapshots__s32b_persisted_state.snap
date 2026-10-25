@@ -172,6 +172,7 @@ sync:
 reminders:
   rules: {}
   deliveries: []
+  dismissals: []
   snoozes: {}
   muted: []
   alarms: {}

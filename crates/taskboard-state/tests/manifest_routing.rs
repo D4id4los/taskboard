@@ -161,6 +161,7 @@ fn routed_op(app: &AppState, field: &str) -> LocalOp {
             changes,
         },
         &CountingIds::new(),
+        &taskboard_domain::ReminderDefaults::default(),
         ts(100),
     )
     .unwrap();
@@ -236,6 +237,7 @@ fn every_manifest_row_routes_through_its_declared_lane() {
             },
         },
         &CountingIds::new(),
+        &taskboard_domain::ReminderDefaults::default(),
         ts(100),
     )
     .unwrap();
@@ -258,6 +260,7 @@ fn every_manifest_row_routes_through_its_declared_lane() {
             },
         },
         &CountingIds::new(),
+        &taskboard_domain::ReminderDefaults::default(),
         ts(100),
     )
     .unwrap();

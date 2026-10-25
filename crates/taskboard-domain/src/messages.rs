@@ -219,6 +219,21 @@ pub enum StateCommand {
         /// `true` = mute, `false` = unmute.
         muted: bool,
     },
+    /// Dismiss a fired reminder occurrence (R3): the in-app notification
+    /// surface's Dismiss button. The engine stamps `dismissed_at` via its
+    /// injected clock; the dismissal is permanent for the occurrence
+    /// (there is no un-dismiss), so a repeat is the accepted no-op. Rule
+    /// and default refs enqueue the watched task's `UpdateAppData` op —
+    /// rule-ref dismissal rows ride the synced `dismissals` document
+    /// section (default/adhoc rows stay device-local); adhoc refs enqueue
+    /// nothing (alarms do not sync). An unknown reminder ref is a typed
+    /// rejection; an unknown/unfired occurrence is accepted idempotently.
+    DismissReminder {
+        /// Which reminder's notification was dismissed.
+        reminder: ReminderRef,
+        /// The occurrence being dismissed.
+        occurrence: chrono::DateTime<chrono::Utc>,
+    },
     /// Add one reminder rule to the task's rule set — unless a rule at
     /// this exact offset already exists, in which case nothing is
     /// planned and the receipt names the surviving rule (the dedup is

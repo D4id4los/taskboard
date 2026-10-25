@@ -199,7 +199,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 8, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 9, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -885,6 +885,125 @@ mod tests {
             state.reminders,
             taskboard_domain::reminders::ReminderState::default(),
             "a pre-0004 dataset hydrates as the empty reminder section"
+        );
+        repo.close().await;
+    }
+
+    /// The 0009 upgrade backfill (design D-10): every pre-round
+    /// `reminder_deliveries` row becomes a `reminder_dismissals` row
+    /// one-for-one with `dismissed_at = delivered_at` — old behavior
+    /// ≡ everything already dismissed, so no already-fired occurrence
+    /// resurfaces as an active in-app notification after upgrade.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // the fixture IS the scope proof
+    async fn migration_0009_backfills_dismissals_from_deliveries() {
+        let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
+        let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
+            .await
+            .expect("raw connect");
+        // Simulate a pre-0009 database: run the shipped migrations, strip
+        // the 0009 artifacts and their bookkeeping row, then seed the
+        // delivery rows the backfill must convert.
+        sqlx::migrate!("./migrations")
+            .run(&raw)
+            .await
+            .expect("migrate");
+        sqlx::query("DROP TABLE reminder_dismissals")
+            .execute(&raw)
+            .await
+            .expect("strip reminder_dismissals");
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 9")
+            .execute(&raw)
+            .await
+            .expect("strip bookkeeping");
+        for (reminder, occurrence) in [
+            (
+                "rule:00000000-0000-0000-0000-0000000000aa",
+                "2026-01-01T00:00:00+00:00",
+            ),
+            (
+                "default:00000000-0000-0000-0000-0000000000bb",
+                "2026-01-02T00:00:00+00:00",
+            ),
+            (
+                "alarm:00000000-0000-0000-0000-0000000000cc",
+                "2026-01-03T00:00:00+00:00",
+            ),
+        ] {
+            sqlx::query("INSERT INTO reminder_deliveries (reminder, occurrence, delivered_at) VALUES (?, ?, ?)")
+                .bind(reminder)
+                .bind(occurrence)
+                .bind(occurrence)
+                .execute(&raw)
+                .await
+                .expect("seed delivery");
+        }
+        raw.close().await;
+
+        // The migrating open re-runs 0009 (table + backfill); `load`
+        // hydrates the reminder section with the converted rows.
+        let repo = open(file.path(), test_connector())
+            .await
+            .expect("migrating open");
+        let state = repo.load().await.expect("load");
+        let dismissals: Vec<_> = state
+            .reminders
+            .dismissals
+            .iter()
+            .map(|d| {
+                (
+                    crate::codec::reminder_ref_to_text(d.reminder),
+                    d.occurrence.to_rfc3339(),
+                    d.dismissed_at.to_rfc3339(),
+                )
+            })
+            .collect();
+        assert_eq!(dismissals.len(), 3, "one dismissal per delivery row");
+        for (reminder, occurrence) in [
+            (
+                "rule:00000000-0000-0000-0000-0000000000aa",
+                "2026-01-01T00:00:00+00:00",
+            ),
+            (
+                "default:00000000-0000-0000-0000-0000000000bb",
+                "2026-01-02T00:00:00+00:00",
+            ),
+            (
+                "alarm:00000000-0000-0000-0000-0000000000cc",
+                "2026-01-03T00:00:00+00:00",
+            ),
+        ] {
+            assert!(
+                dismissals
+                    .iter()
+                    .any(|(r, o, d)| r == reminder && o == occurrence && d == occurrence),
+                "the delivery for {reminder} must backfill to a dismissal stamped at delivery time"
+            );
+        }
+        // A replayed apply keeps the first-write-wins shape (the SQL
+        // parity): a dismissal re-record is a no-op.
+        repo.apply(vec![
+            taskboard_domain::PersistenceAction::RecordReminderDismissal(
+                taskboard_domain::ReminderDismissal {
+                    reminder: taskboard_domain::ReminderRef::Rule(
+                        taskboard_domain::ReminderRuleId::from(uuid::Uuid::from_u128(0xaa)),
+                    ),
+                    occurrence: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00+00:00")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    dismissed_at: chrono::DateTime::parse_from_rfc3339("2027-01-01T00:00:00+00:00")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                },
+            ),
+        ])
+        .await
+        .expect("apply");
+        let state = repo.load().await.expect("reload");
+        assert_eq!(
+            state.reminders.dismissals.len(),
+            3,
+            "the replayed dismissal must not replace the backfilled row"
         );
         repo.close().await;
     }

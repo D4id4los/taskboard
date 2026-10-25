@@ -37,7 +37,9 @@ use crate::ids::{BoardId, LabelId, ReminderRuleId, RemoteBoardId, StackId, TaskI
 use crate::messages::{LabelChanges, StateCommand, TaskChanges};
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
-use crate::reminders::{ReminderRef, ReminderSnooze};
+use crate::reminders::{
+    ReminderDefaults, ReminderDismissal, ReminderRef, ReminderSnooze, active_notifications,
+};
 use crate::state::AppState;
 
 /// A planned command: the persistence batch and the user-facing receipt.
@@ -312,12 +314,17 @@ fn task_rule_deletes(app: &AppState, task: TaskId) -> impl Iterator<Item = Persi
 /// `outbox` is the engine's current queue slice: the delete paths cancel
 /// a target's pending ops by id, exactly like
 /// [`crate::pipeline::apply_sync_report`] takes it.
+///
+/// `defaults` is the injected per-device reminder configuration
+/// (`[reminders] default_before`) — the only config input of the
+/// active-notification view the Mark Done planner consults.
 #[allow(clippy::too_many_lines)] // one catalogue; splitting hides the table
 pub fn plan_command(
     app: &AppState,
     outbox: &[PendingOp],
     command: &StateCommand,
     ids: &dyn IdGenerator,
+    defaults: &ReminderDefaults,
     now: DateTime<Utc>,
 ) -> Result<CommandPlan, CommandError> {
     match command {
@@ -544,7 +551,44 @@ pub fn plan_command(
             let mut updated = task.clone();
             updated.done = done.then_some(now);
             updated.clocks.done = now;
-            Ok(applied_task(&updated, ids, now))
+            let mut plan = applied_task(&updated, ids, now);
+            // The reopen hazard (R3.2, R3.5.5): completing the task also
+            // dismisses its currently-active occurrences — explicit rows
+            // in the same batch, derived from the same
+            // `active_notifications` view the UI reads (one definition,
+            // two consumers). Without them, a Done→reopen cycle would
+            // resurrect stale receipts as active notifications (the done
+            // state syncs on a different lane with different clocks).
+            // Reopening emits nothing: a dismissal is permanent. The
+            // emitted rows sync only if the watched task's document group
+            // forms — the same `UpdateAppData` op `DismissReminder`
+            // enqueues (the flush gate plans a flush from that op alone).
+            if *done {
+                let dismissals: Vec<PersistenceAction> = active_notifications(
+                    &app.tasks,
+                    &app.reminders,
+                    defaults,
+                    now,
+                )
+                .into_iter()
+                .filter(|note| {
+                    matches!(note.anchor, crate::reminders::ReminderAnchor::Task(t) if t == *id)
+                })
+                .map(|note| {
+                    PersistenceAction::RecordReminderDismissal(ReminderDismissal {
+                        reminder: note.reminder,
+                        occurrence: note.occurrence,
+                        dismissed_at: now,
+                    })
+                })
+                .collect();
+                if !dismissals.is_empty() {
+                    plan.actions.extend(dismissals);
+                    plan.actions
+                        .push(enqueue(LocalOp::UpdateAppData(*id), ids, now));
+                }
+            }
+            Ok(plan)
         }
         StateCommand::MoveTask { id, stack, order } => {
             let task = live_task(app, *id)?;
@@ -1265,6 +1309,57 @@ pub fn plan_command(
                 },
             })
         }
+        StateCommand::DismissReminder {
+            reminder,
+            occurrence,
+        } => {
+            // The ref must resolve (a dismissal of a stranger is a
+            // rejection, like every other named-target command), but the
+            // anchor's liveness is not required: a dismissal is a
+            // terminal fact, not an edit — dismissing a dead task's
+            // leftover notification is meaningful and idempotent.
+            let task = match *reminder {
+                ReminderRef::Rule(rule_id) => {
+                    let rule = app
+                        .reminders
+                        .rules
+                        .get(&rule_id)
+                        .ok_or(CommandError::UnknownReminderRule(rule_id))?;
+                    Some(rule.task)
+                }
+                ReminderRef::Default(task) => Some(task),
+                ReminderRef::Adhoc(alarm_id) => {
+                    app.reminders
+                        .alarms
+                        .get(&alarm_id)
+                        .ok_or(CommandError::UnknownAdhocAlarm(alarm_id))?;
+                    None
+                }
+            };
+            // A dismissal is permanent: the repeat is the accepted no-op
+            // (nothing changed, nothing persisted). An unfired occurrence
+            // is accepted the same way — pre-dismissing is a no-op
+            // semantics, not an error.
+            if app.reminders.is_dismissed(reminder, occurrence) {
+                return Ok(no_op());
+            }
+            let mut actions = vec![PersistenceAction::RecordReminderDismissal(
+                ReminderDismissal {
+                    reminder: *reminder,
+                    occurrence: *occurrence,
+                    dismissed_at: now,
+                },
+            )];
+            // Rule/default refs sync through the watched task's document;
+            // adhoc alarms are device-local — no op, nothing to flush.
+            if let Some(task) = task {
+                actions.push(enqueue(LocalOp::UpdateAppData(task), ids, now));
+            }
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::Applied,
+            })
+        }
         StateCommand::AddReminderRule { task, offset } => {
             // Edit-style intent: reminding a dead task is a rejection,
             // even when the offset would "dedup".
@@ -1824,7 +1919,14 @@ mod tests {
         outbox: &[PendingOp],
         command: &StateCommand,
     ) -> Result<CommandPlan, CommandError> {
-        plan_command(app, outbox, command, &CountingIds::default(), now())
+        plan_command(
+            app,
+            outbox,
+            command,
+            &CountingIds::default(),
+            &crate::reminders::ReminderDefaults::default(),
+            now(),
+        )
     }
 
     fn op_for(raw: u128, op: LocalOp) -> PendingOp {
@@ -1833,6 +1935,265 @@ mod tests {
             op,
             queued_at: ts(T0 - 60),
         }
+    }
+
+    // ---- DismissReminder + Mark Done dismissal emission (R3) ----------
+
+    /// A due-anchored fixture state: the fixture task gains a due date and
+    /// a delivered, undismissed rule occurrence, so it has exactly one
+    /// active notification.
+    fn due_task_with_fired_rule() -> (AppState, Vec<PendingOp>, ReminderRuleId) {
+        let (mut app, outbox) = base();
+        let rule_id = ReminderRuleId::from(uuid::Uuid::from_u128(4_001));
+        let task_id = task_id();
+        {
+            let task = app.tasks.get_mut(&task_id).unwrap();
+            task.duedate = Some(ts(T0 + 3_600));
+        }
+        let rule = crate::reminders::ReminderRule {
+            id: rule_id,
+            task: task_id,
+            // Two hours before the T0 + 3_600 due: the occurrence
+            // T0 - 3_600 already fired on this device.
+            offset: crate::reminders::ReminderOffset::before(
+                chrono::TimeDelta::try_hours(-2).unwrap(),
+            )
+            .unwrap(),
+            created_at: ts(T0 - 60),
+            updated_at: ts(T0 - 60),
+        };
+        app.reminders.rules.insert(rule.id, rule);
+        app.reminders
+            .deliveries
+            .insert(crate::reminders::ReminderDelivery {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence: ts(T0 - 3_600),
+                delivered_at: ts(T0 - 3_600),
+            });
+        (app, outbox, rule_id)
+    }
+
+    #[test]
+    fn dismiss_reminder_persists_and_syncs_task_anchored_refs() {
+        // Rule ref: dismissal row + UpdateAppData for the watched task.
+        let (app, outbox, rule_id) = due_task_with_fired_rule();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence: ts(T0 - 3_600),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            plan.actions[0],
+            PersistenceAction::RecordReminderDismissal(crate::reminders::ReminderDismissal {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence: ts(T0 - 3_600),
+                dismissed_at: ts(T0),
+            })
+        );
+        assert!(plan.actions[1..].iter().any(|action| matches!(
+            action,
+            PersistenceAction::EnqueueOp(op) if matches!(op.op, LocalOp::UpdateAppData(t) if t == task_id())
+        )));
+
+        // Default ref: same shape, the task is its own resolution.
+        let (mut app, outbox) = base();
+        app.reminders.rules.clear();
+        app.reminders
+            .deliveries
+            .insert(crate::reminders::ReminderDelivery {
+                reminder: ReminderRef::Default(task_id()),
+                occurrence: ts(T0 + 3_600),
+                delivered_at: ts(T0 + 3_600),
+            });
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: ReminderRef::Default(task_id()),
+                occurrence: ts(T0 + 3_600),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert!(plan.actions.iter().any(|action| matches!(
+            action,
+            PersistenceAction::EnqueueOp(op) if matches!(op.op, LocalOp::UpdateAppData(t) if t == task_id())
+        )));
+
+        // Adhoc ref: the dismissal persists, but alarms do not sync — no
+        // outbox op.
+        let (mut app, outbox) = base();
+        let alarm_id = crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(4_100));
+        app.reminders.alarms.insert(
+            alarm_id,
+            crate::reminders::AdhocAlarm {
+                id: alarm_id,
+                label: "tea".into(),
+                fire_at: ts(T0 - 60),
+                created_at: ts(T0 - 120),
+            },
+        );
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: ReminderRef::Adhoc(alarm_id),
+                occurrence: ts(T0 - 60),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(plan.actions.len(), 1);
+        assert!(matches!(
+            &plan.actions[0],
+            PersistenceAction::RecordReminderDismissal(_)
+        ));
+    }
+
+    #[test]
+    fn dismiss_reminder_repeat_is_a_no_op_and_unknown_ref_is_typed() {
+        let (mut app, outbox, rule_id) = due_task_with_fired_rule();
+        app.reminders
+            .dismissals
+            .insert(crate::reminders::ReminderDismissal {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence: ts(T0 - 3_600),
+                dismissed_at: ts(T0 - 30),
+            });
+        // Already dismissed: permanent for the occurrence, accepted no-op.
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DismissReminder {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence: ts(T0 - 3_600),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, Vec::new());
+
+        // Unknown rule / unknown alarm: the typed rejections.
+        let stranger_rule = ReminderRuleId::from(uuid::Uuid::from_u128(4_999));
+        assert!(matches!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::DismissReminder {
+                    reminder: ReminderRef::Rule(stranger_rule),
+                    occurrence: ts(T0 - 3_600),
+                },
+            ),
+            Err(CommandError::UnknownReminderRule(id)) if id == stranger_rule
+        ));
+        let stranger_alarm = crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(4_998));
+        assert!(matches!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::DismissReminder {
+                    reminder: ReminderRef::Adhoc(stranger_alarm),
+                    occurrence: ts(T0 - 60),
+                },
+            ),
+            Err(CommandError::UnknownAdhocAlarm(id)) if id == stranger_alarm
+        ));
+    }
+
+    #[test]
+    fn set_task_done_emits_dismissals_exactly_for_active_occurrences() {
+        // The fixture has one active rule occurrence; Mark Done must
+        // dismiss exactly it (the reopen hazard, R3.5.5) — and nothing
+        // else, not another reminder's, not an already-dismissed one.
+        let (app, outbox, rule_id) = due_task_with_fired_rule();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetTaskDone {
+                id: task_id(),
+                done: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let dismissals: Vec<_> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::RecordReminderDismissal(d) => Some(*d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            dismissals,
+            vec![crate::reminders::ReminderDismissal {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence: ts(T0 - 3_600),
+                dismissed_at: ts(T0),
+            }],
+            "exactly the currently-active occurrences are dismissed"
+        );
+        // The emitted rows must actually flush: the plan queues the watched
+        // task's document-group op (the only thing `has_flush_work` plans a
+        // flush from) — without it the dismissal rows would sync never on a
+        // quiet board and the reopen hazard would stay open fleet-wide.
+        assert!(plan.actions.iter().any(|action| matches!(
+            action,
+            PersistenceAction::EnqueueOp(op) if matches!(op.op, LocalOp::UpdateAppData(t) if t == task_id())
+        )));
+
+        // Reopening emits nothing (a dismissal is permanent) — and after
+        // the batch lands, the reopen cannot resurrect the stale
+        // notification: the pair is dismissed.
+        let reopen = run(
+            &app,
+            &outbox,
+            &StateCommand::SetTaskDone {
+                id: task_id(),
+                done: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            reopen
+                .actions
+                .iter()
+                .all(|action| !matches!(action, PersistenceAction::RecordReminderDismissal(_))),
+            "reopen dismisses nothing"
+        );
+    }
+
+    #[test]
+    fn set_task_done_on_a_task_without_active_notifications_emits_none() {
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetTaskDone {
+                id: task_id(),
+                done: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert!(
+            plan.actions
+                .iter()
+                .all(|action| !matches!(action, PersistenceAction::RecordReminderDismissal(_))),
+            "no active occurrences, no dismissal rows"
+        );
+        assert!(
+            plan.actions.iter().all(|action| !matches!(
+                action,
+                PersistenceAction::EnqueueOp(op) if matches!(op.op, LocalOp::UpdateAppData(_))
+            )),
+            "nothing dismissed, nothing to flush"
+        );
     }
 
     // ---- CreateTask --------------------------------------------------
@@ -3460,7 +3821,15 @@ mod tests {
             title: "second".into(),
             color: crate::entities::Color::new("000000"),
         };
-        let first = plan_command(&app, &outbox, &command, &ids, now()).unwrap();
+        let first = plan_command(
+            &app,
+            &outbox,
+            &command,
+            &ids,
+            &crate::reminders::ReminderDefaults::default(),
+            now(),
+        )
+        .unwrap();
         let CommandOutcome::CreatedBoard(first_id) = first.outcome else {
             panic!("wrong outcome");
         };
@@ -3474,7 +3843,15 @@ mod tests {
                 ..grown.boards[&board_id()].clone()
             },
         );
-        let second = plan_command(&grown, &outbox, &command, &ids, now()).unwrap();
+        let second = plan_command(
+            &grown,
+            &outbox,
+            &command,
+            &ids,
+            &crate::reminders::ReminderDefaults::default(),
+            now(),
+        )
+        .unwrap();
         let CommandOutcome::CreatedBoard(second_id) = second.outcome else {
             panic!("wrong outcome");
         };
@@ -3552,6 +3929,7 @@ mod tests {
                 connector: custom.clone(),
             },
             &CountingIds::default(),
+            &crate::reminders::ReminderDefaults::default(),
             now(),
         )
         .unwrap();
@@ -5323,126 +5701,140 @@ mod proptests {
     }
 
     proptest! {
-            #![proptest_config(proptest_config(256))]
+        #![proptest_config(proptest_config(256))]
 
-            #[test]
-            fn plan_command_is_total_and_ok_plans_are_self_consistent(
-                persisted in persisted_state_strategy(),
-                command in state_command_strategy(),
-            ) {
-                let app: AppState = AppState {
-                    boards: persisted.boards.clone(),
-                    stacks: persisted.stacks.clone(),
-                    tasks: persisted.tasks.clone(),
-                    labels: persisted.labels.clone(),
-                    reminders: persisted.reminders.clone(),
-                    sync: persisted.sync,
-                    last_updated: None,
-                };
-                let outbox = persisted.outbox.clone();
-                let result = plan_command(&app, &outbox, &command, &CountingIds::default(),
-                    chrono::Utc.timestamp_opt(36_000, 0).unwrap());
+        #[test]
+        fn plan_command_is_total_and_ok_plans_are_self_consistent(
+            persisted in persisted_state_strategy(),
+            command in state_command_strategy(),
+        ) {
+            let app: AppState = AppState {
+                boards: persisted.boards.clone(),
+                stacks: persisted.stacks.clone(),
+                tasks: persisted.tasks.clone(),
+                labels: persisted.labels.clone(),
+                reminders: persisted.reminders.clone(),
+                sync: persisted.sync,
+                last_updated: None,
+            };
+            let outbox = persisted.outbox.clone();
+            let result = plan_command(
+                &app,
+                &outbox,
+                &command,
+                &CountingIds::default(),
+                &crate::reminders::ReminderDefaults::default(),
+                chrono::Utc.timestamp_opt(36_000, 0).unwrap(),
+            );
 
-                // Totality: never a panic — always a plan or a typed error.
-                let Ok(plan) = result else {
-                    return Ok(());
-                };
+            // Totality: never a panic — always a plan or a typed error.
+            let Ok(plan) = result else {
+                return Ok(());
+            };
 
-                // No-op and rejection outcomes carry no actions.
-                if plan.outcome == CommandOutcome::NoOp {
-                    prop_assert!(plan.actions.is_empty(), "no-op must carry zero actions");
-                }
-
-                // Self-consistency: every enqueued op's target exists in the
-                // post-batch state.
-                let mut post = app;
-                for action in &plan.actions {
-                    match action {
-                        PersistenceAction::UpsertBoard(b) => { post.boards.insert(b.id, b.clone()); }
-                        PersistenceAction::UpsertStack(s) => { post.stacks.insert(s.id, s.clone()); }
-                        PersistenceAction::UpsertTask(t) => { post.tasks.insert(t.id, t.clone()); }
-                        PersistenceAction::UpsertLabel(l) => { post.labels.insert(l.id, l.clone()); }
-                        _ => {}
-                    }
-                }
-                for action in &plan.actions {
-                    if let PersistenceAction::EnqueueOp(pending) = action {
-                        prop_assert!(
-                            op_target_exists(&pending.op, &post.boards, &post.stacks, &post.tasks, &post.labels),
-                            "enqueued op {:?} must target an existing entity",
-                            pending.op
-                        );
-                    }
-                }
+            // No-op and rejection outcomes carry no actions.
+            if plan.outcome == CommandOutcome::NoOp {
+                prop_assert!(plan.actions.is_empty(), "no-op must carry zero actions");
             }
 
-            #[test]
-            fn plan_command_outcome_is_independent_of_the_outbox(
-                state in app_state_strategy(),
-                outbox_state in persisted_state_strategy(),
-                command in state_command_strategy(),
-            ) {
-                // The outbox never influences the outcome: identical
-                // rejections and identical no-ops for any queue contents; an
-                // accepted plan differs only in the FailOps the delete paths
-                // derive from the outbox. Fresh `CountingIds` on both sides
-                // keep the fresh ids (entity and op) comparable.
-                let empty: Vec<PendingOp> = Vec::new();
-                let now = chrono::Utc.timestamp_opt(36_000, 0).unwrap();
-                let baseline = plan_command(&state, &empty, &command, &CountingIds::default(), now);
-                let variant = plan_command(
-                    &state,
-                    &outbox_state.outbox,
-                    &command,
-                    &CountingIds::default(),
-                    now,
-    );
-
-                match (&baseline, &variant) {
-                    (Err(a), Err(b)) => prop_assert_eq!(a, b),
-                    (Ok(p), Ok(q)) if p.outcome == CommandOutcome::NoOp => prop_assert_eq!(p, q),
-                    (Ok(p), Ok(q)) => {
-                        let without_fails = |plan: &CommandPlan| {
-                            plan.actions
-                                .iter()
-                                .filter(|action| !matches!(action, PersistenceAction::FailOp(_)))
-                                .cloned()
-                                .collect::<Vec<_>>()
-                        };
-                        prop_assert_eq!(&p.outcome, &q.outcome);
-                        prop_assert_eq!(without_fails(p), without_fails(q));
-                    }
-                    (Err(_), Ok(_)) | (Ok(_), Err(_)) => {
-                        prop_assert!(
-                            false,
-                            "acceptance must not depend on the outbox: {baseline:?} vs {variant:?}"
-                        );
-                    }
+            // Self-consistency: every enqueued op's target exists in the
+            // post-batch state.
+            let mut post = app;
+            for action in &plan.actions {
+                match action {
+                    PersistenceAction::UpsertBoard(b) => { post.boards.insert(b.id, b.clone()); }
+                    PersistenceAction::UpsertStack(s) => { post.stacks.insert(s.id, s.clone()); }
+                    PersistenceAction::UpsertTask(t) => { post.tasks.insert(t.id, t.clone()); }
+                    PersistenceAction::UpsertLabel(l) => { post.labels.insert(l.id, l.clone()); }
+                    _ => {}
                 }
             }
-
-            #[test]
-            fn live_board_of_is_ok_exactly_for_live_boards_and_typed_otherwise(
-                persisted in persisted_state_strategy(),
-                board in crate::test_support::board_id_strategy(),
-            ) {
-                let app: AppState = AppState {
-                    boards: persisted.boards.clone(),
-                    stacks: persisted.stacks.clone(),
-                    tasks: persisted.tasks.clone(),
-                    labels: persisted.labels.clone(),
-                    reminders: persisted.reminders.clone(),
-                    sync: persisted.sync,
-                    last_updated: None,
-                };
-                let result = live_board_of(&app, board);
-                match app.boards.get(&board) {
-                    None => prop_assert_eq!(result, Err(CommandError::UnknownBoard(board))),
-                    Some(b) if b.deleted => {
-                        prop_assert_eq!(result, Err(CommandError::BoardDeleted(board)));
-                    }
-                    Some(_) => prop_assert_eq!(result, Ok(board)),
+            for action in &plan.actions {
+                if let PersistenceAction::EnqueueOp(pending) = action {
+                    prop_assert!(
+                        op_target_exists(&pending.op, &post.boards, &post.stacks, &post.tasks, &post.labels),
+                        "enqueued op {:?} must target an existing entity",
+                        pending.op
+                    );
                 }
             }
         }
+
+        #[test]
+        fn plan_command_outcome_is_independent_of_the_outbox(
+            state in app_state_strategy(),
+            outbox_state in persisted_state_strategy(),
+            command in state_command_strategy(),
+        ) {
+            // The outbox never influences the outcome: identical
+            // rejections and identical no-ops for any queue contents; an
+            // accepted plan differs only in the FailOps the delete paths
+            // derive from the outbox. Fresh `CountingIds` on both sides
+            // keep the fresh ids (entity and op) comparable.
+            let empty: Vec<PendingOp> = Vec::new();
+            let now = chrono::Utc.timestamp_opt(36_000, 0).unwrap();
+            let baseline = plan_command(
+                &state,
+                &empty,
+                &command,
+                &CountingIds::default(),
+                &crate::reminders::ReminderDefaults::default(),
+                now,
+            );
+            let variant = plan_command(
+                &state,
+                &outbox_state.outbox,
+                &command,
+                &CountingIds::default(),
+                &crate::reminders::ReminderDefaults::default(),
+                now,
+            );
+
+            match (&baseline, &variant) {
+                (Err(a), Err(b)) => prop_assert_eq!(a, b),
+                (Ok(p), Ok(q)) if p.outcome == CommandOutcome::NoOp => prop_assert_eq!(p, q),
+                (Ok(p), Ok(q)) => {
+                    let without_fails = |plan: &CommandPlan| {
+                        plan.actions
+                            .iter()
+                            .filter(|action| !matches!(action, PersistenceAction::FailOp(_)))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+                    prop_assert_eq!(&p.outcome, &q.outcome);
+                    prop_assert_eq!(without_fails(p), without_fails(q));
+                }
+                (Err(_), Ok(_)) | (Ok(_), Err(_)) => {
+                    prop_assert!(
+                        false,
+                        "acceptance must not depend on the outbox: {baseline:?} vs {variant:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn live_board_of_is_ok_exactly_for_live_boards_and_typed_otherwise(
+            persisted in persisted_state_strategy(),
+            board in crate::test_support::board_id_strategy(),
+        ) {
+            let app: AppState = AppState {
+                boards: persisted.boards.clone(),
+                stacks: persisted.stacks.clone(),
+                tasks: persisted.tasks.clone(),
+                labels: persisted.labels.clone(),
+                reminders: persisted.reminders.clone(),
+                sync: persisted.sync,
+                last_updated: None,
+            };
+            let result = live_board_of(&app, board);
+            match app.boards.get(&board) {
+                None => prop_assert_eq!(result, Err(CommandError::UnknownBoard(board))),
+                Some(b) if b.deleted => {
+                    prop_assert_eq!(result, Err(CommandError::BoardDeleted(board)));
+                }
+                Some(_) => prop_assert_eq!(result, Ok(board)),
+            }
+        }
+    }
 }
