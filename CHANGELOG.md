@@ -10,6 +10,31 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Board-scoped connection management in the settings surface
+  (#390, round-2 chunk 6; D32–D34): the Connections section becomes a
+  board selector above the connector list above the add form. The
+  selector lists every live local board with its binding badge
+  (bound-to-connector name or unbound); clicking selects (radio
+  semantics), a bound row carries Detach, and each connector row
+  gains Bind-to-this-board — attaching the connector if needed,
+  adopting the remote board by exact title (lowest id wins on
+  duplicates), binding through the engine command path, and settling
+  the first pull. Re-issuing a bind on the same connector is
+  idempotent; a board bound elsewhere refuses typed (detach first —
+  no destructive auto-rebind). Detach unbinds first and stops the
+  connector's actor only when no other live board remains bound to
+  it. Every state-changing reply carries the refreshed
+  boards+connectors pair, so neither surface goes stale (F18). The
+  save ceremony becomes visible: every Save click reacts (invalid or
+  busy clicks render their typed refusal through the status line
+  instead of absorbing silently), in-flight ceremonies mark their row
+  with a busy pulse and disable the other settings ops (one op at a
+  time), and the app logs ceremony start/success with connector name
+  and server host only — never credentials. The add form gains a
+  backend picker where Nextcloud is enabled and Standalone renders as
+  the disabled "coming soon" segment.
+
+
 - The today view, global Inbox, quick capture, and the cross-board
   move ring (#346, #347, daily-driver wave): the pure `today_sections`
   classifier over the configured day window (nothing derived is
