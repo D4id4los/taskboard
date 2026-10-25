@@ -32,8 +32,8 @@ use crate::menu::{self, MenuEntry};
 use crate::models::IdTables;
 use crate::presentation::ReminderTarget;
 use crate::requests::{
-    self, ConnectionProfile, ConnectionTarget, ConnectorInfo, KeymapUpdate, Secret, SettingsError,
-    UiRequest,
+    self, ConnectionProfile, ConnectionTarget, ConnectorInfo, InvalidKind, KeymapUpdate, Secret,
+    SettingsError, UiRequest,
 };
 use crate::resolver::{KeymapResolver, Resolution};
 use crate::router::{ActionRouter, DispatchOutcome, Mode, UiEffect};
@@ -1070,6 +1070,10 @@ enum PendingKind {
     Test,
     Save,
     Remove,
+    /// `AttachConnector` (r2 D33): the connector row's busy marker.
+    Attach,
+    /// `DetachConnector` (r2 D33): the board row's busy marker.
+    Detach,
     Preset,
     Scale,
 }
@@ -1105,6 +1109,11 @@ struct SettingsVm {
     /// Connector name → down-override (the `ConnectorLost`/
     /// `ConnectorRestored` episodes, D8); absent = no override.
     liveness: BTreeMap<String, bool>,
+    /// The selector's radio state (r2 D32): the selected board's uuid.
+    selected_board: Option<uuid::Uuid>,
+    /// The connector/board name the in-flight op addresses (r2 D34):
+    /// set by the send seams, cleared with `pending`.
+    busy_target: String,
     pending: Option<PendingKind>,
     replies: Vec<PendingReply>,
     outcome: SettingsOutcome,
@@ -1132,12 +1141,14 @@ impl SettingsVm {
         request: UiRequest,
         kind: PendingKind,
         reply: PendingReply,
+        busy_target: &str,
     ) -> bool {
         if requests.try_send(request).is_err() {
             tracing::warn!("request channel full or closed; settings op dropped");
             return false;
         }
         self.pending = Some(kind);
+        busy_target.clone_into(&mut self.busy_target);
         self.replies.push(reply);
         true
     }
@@ -1173,6 +1184,18 @@ fn preset_index(preset: crate::keymap::Preset) -> i32 {
         crate::keymap::Preset::Standard => 0,
         crate::keymap::Preset::Emacs => 1,
         crate::keymap::Preset::Vi => 2,
+    }
+}
+
+/// The form-mirror field → lane field mapping (r2 D34): the save
+/// click-through renders the same typed lattice the app-side
+/// validation would answer with.
+fn map_form_field(field: settings_form::Field) -> requests::Field {
+    match field {
+        settings_form::Field::Name => requests::Field::Name,
+        settings_form::Field::ServerUrl => requests::Field::ServerUrl,
+        settings_form::Field::Username => requests::Field::Username,
+        settings_form::Field::Password => requests::Field::Password,
     }
 }
 
@@ -1316,6 +1339,7 @@ impl Adapter {
             if settled {
                 let _ = self.settings.replies.remove(i);
                 self.settings.pending = None;
+                self.settings.busy_target.clear();
                 if let Some((outcome, detail)) = landed {
                     self.set_settings_outcome(window, outcome, detail);
                 }
@@ -1394,6 +1418,27 @@ impl Adapter {
     pub(crate) fn push_settings(&mut self, window: &AppWindow) {
         use crate::SettingsRowStatus as Row;
         let state = self.state.load();
+        // The busy machine (r2 D34): the flag timeline is the model's;
+        // the connector rows mark Save/Test/Remove/Attach ceremonies,
+        // the board rows mark Detach.
+        let connector_busy = matches!(
+            self.settings.pending,
+            Some(PendingKind::Save | PendingKind::Test | PendingKind::Remove | PendingKind::Attach)
+        );
+        let detach_busy = matches!(self.settings.pending, Some(PendingKind::Detach));
+        let boards: Vec<crate::SettingsBoardRow> = self
+            .settings
+            .boards
+            .iter()
+            .map(|board| crate::SettingsBoardRow {
+                id: board.id.to_string().into(),
+                name: board.name.clone().into(),
+                bound_connector: board.bound_connector.clone().unwrap_or_default().into(),
+                bound: board.bound_connector.is_some(),
+                selected: self.settings.selected_board == Some(board.id),
+                busy: detach_busy && self.settings.busy_target == board.name,
+            })
+            .collect();
         let rows: Vec<crate::ConnectionRow> = self
             .settings
             .rows
@@ -1408,6 +1453,7 @@ impl Adapter {
                     server: row.server_url.clone().into(),
                     username: row.username.clone().into(),
                     read_only: row.read_only,
+                    busy: connector_busy && self.settings.busy_target == row.name,
                     status: match status {
                         crate::presentation::ConnectorStatus::Idle => Row::Idle,
                         crate::presentation::ConnectorStatus::Syncing => Row::Syncing,
@@ -1420,6 +1466,15 @@ impl Adapter {
             .collect();
         let global = window.global::<crate::SettingsModel>();
         self.models.push_settings_rows(&global, &rows);
+        self.models.push_settings_boards(&global, &boards);
+        global.set_selected_board(
+            self.settings
+                .selected_board
+                .map_or(String::new(), |id| id.to_string())
+                .into(),
+        );
+        global.set_busy(self.settings.pending.is_some());
+        global.set_busy_target(self.settings.busy_target.clone().into());
         global.set_draft_name(self.settings.draft.name.clone().into());
         global.set_draft_server(self.settings.draft.server_url.clone().into());
         global.set_draft_username(self.settings.draft.username.clone().into());
@@ -1500,9 +1555,40 @@ impl Adapter {
             username: username.to_owned(),
             password: password.to_owned(),
         };
-        if self.settings.pending.is_some() || !settings_form::draft_valid(&draft) {
-            self.settings.outcome = SettingsOutcome::Rejected;
-            self.push_settings(window);
+        // The visible ceremony (r2 D34, F21): every click reacts. A
+        // refused click is a *visible* typed refusal — never a silent
+        // absorb, and never a routed request (the lane stays clean).
+        if self.settings.pending.is_some() {
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            return;
+        }
+        if let Some(err) = settings_form::validate(&draft) {
+            // The chunk-5 mapping renders the exact reason sentence
+            // with zero new presentation code.
+            let detail = match err {
+                settings_form::DraftError::Invalid {
+                    field,
+                    kind: settings_form::InvalidKind::Empty,
+                } => SettingsError::Invalid {
+                    field: map_form_field(field),
+                    kind: InvalidKind::Empty,
+                },
+                settings_form::DraftError::Invalid {
+                    field,
+                    kind: settings_form::InvalidKind::NotKebab,
+                } => SettingsError::Invalid {
+                    field: map_form_field(field),
+                    kind: InvalidKind::NotKebab,
+                },
+                settings_form::DraftError::Invalid {
+                    field,
+                    kind: settings_form::InvalidKind::BadUrl,
+                } => SettingsError::Invalid {
+                    field: map_form_field(field),
+                    kind: InvalidKind::BadUrl,
+                },
+            };
+            self.set_settings_outcome(window, SettingsOutcome::Rejected, Some(detail));
             return;
         }
         let (reply, reply_rx) = oneshot::channel();
@@ -1521,6 +1607,7 @@ impl Adapter {
             request,
             PendingKind::Save,
             PendingReply::List(reply_rx),
+            &draft.name,
         );
         self.set_settings_outcome(
             window,
@@ -1555,6 +1642,7 @@ impl Adapter {
             request,
             PendingKind::Test,
             PendingReply::Test(reply_rx),
+            &entry.name,
         );
         self.set_settings_outcome(
             window,
@@ -1577,7 +1665,7 @@ impl Adapter {
         }
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::RemoveConnection {
-            name: entry.name,
+            name: entry.name.clone(),
             reply,
         };
         let sent = self.settings.send(
@@ -1585,6 +1673,88 @@ impl Adapter {
             request,
             PendingKind::Remove,
             PendingReply::List(reply_rx),
+            &entry.name,
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
+    /// The board selector's seam (r2 D32): radio selection — the uuid
+    /// string from the row converts once here; a stale/foreign id is
+    /// absorbed silently.
+    pub(crate) fn settings_board_selected(&mut self, window: &AppWindow, id: &str) {
+        match uuid::Uuid::parse_str(id) {
+            Ok(id) => self.settings.selected_board = Some(id),
+            Err(_) => return,
+        }
+        self.push_settings(window);
+    }
+
+    /// The Bind seam (r2 D33): bind the selected board to this
+    /// connector row. The pending gate routes nothing (the row's
+    /// enabled gate is markup; the VM gate is the authority).
+    pub(crate) fn settings_bind_row(&mut self, window: &AppWindow, row: usize) {
+        let Some(entry) = self.settings.rows.get(row).cloned() else {
+            return;
+        };
+        let Some(board) = self.settings.selected_board else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::AttachConnector {
+            board: BoardId::from_uuid(board),
+            connector: entry.name.clone(),
+            reply,
+        };
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::Attach,
+            PendingReply::List(reply_rx),
+            &entry.name,
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
+    /// The Detach seam (r2 D33): unbind this board row from its
+    /// connector. A stale index is absorbed silently.
+    pub(crate) fn settings_detach_row(&mut self, window: &AppWindow, row: usize) {
+        let Some(entry) = self.settings.boards.get(row).cloned() else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::DetachConnector {
+            board: BoardId::from_uuid(entry.id),
+            connector: entry.bound_connector.clone().unwrap_or_default(),
+            reply,
+        };
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::Detach,
+            PendingReply::List(reply_rx),
+            &entry.name,
         );
         self.set_settings_outcome(
             window,
@@ -1619,6 +1789,7 @@ impl Adapter {
             request,
             PendingKind::Preset,
             PendingReply::Keymap(reply_rx),
+            "",
         );
         self.set_settings_outcome(
             window,
@@ -1645,6 +1816,7 @@ impl Adapter {
             request,
             PendingKind::Scale,
             PendingReply::Scale(reply_rx, previous),
+            "",
         );
         self.set_settings_outcome(
             window,
@@ -2966,6 +3138,36 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 return;
             };
             adapter.borrow_mut().settings_remove_row(&window, row);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_board_selected(move |id| {
+            let Some(window) = weak.upgrade() else { return };
+            adapter.borrow_mut().settings_board_selected(&window, &id);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_bind_clicked(move |row| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(row) = usize::try_from(row) else {
+                return;
+            };
+            adapter.borrow_mut().settings_bind_row(&window, row);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_detach_clicked(move |row| {
+            let Some(window) = weak.upgrade() else { return };
+            let Ok(row) = usize::try_from(row) else {
+                return;
+            };
+            adapter.borrow_mut().settings_detach_row(&window, row);
         });
     }
     {

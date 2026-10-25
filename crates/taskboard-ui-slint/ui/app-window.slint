@@ -120,6 +120,10 @@ export component AppWindow inherits Window {
     callback settings-save-clicked(string, string, string, string);
     callback settings-test-clicked(int);
     callback settings-remove-clicked(int);
+    // The board-scoped binding surface (r2 D32/D33).
+    callback settings-board-selected(string);
+    callback settings-bind-clicked(int);
+    callback settings-detach-clicked(int);
     callback settings-preset-picked(int);
     callback settings-scale-committed(string);
     in-out property <BoardModel> board-model;
@@ -239,6 +243,9 @@ export component AppWindow inherits Window {
                 save-clicked(n, s, u, p) => root.settings-save-clicked(n, s, u, p);
                 test-clicked(i) => root.settings-test-clicked(i);
                 remove-clicked(i) => root.settings-remove-clicked(i);
+                board-selected(id) => root.settings-board-selected(id);
+                bind-clicked(i) => root.settings-bind-clicked(i);
+                detach-clicked(i) => root.settings-detach-clicked(i);
                 preset-picked(i) => root.settings-preset-picked(i);
                 scale-committed(t) => root.settings-scale-committed(t);
                 scale-pressed() => root.settings-scale-pressed();

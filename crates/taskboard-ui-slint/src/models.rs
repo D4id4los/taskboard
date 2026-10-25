@@ -166,6 +166,9 @@ pub struct PushModels {
     today_sections: [Option<Rc<VecModel<TodayRowModel>>>; 4],
     today: Option<Rc<VecModel<TodaySectionModel>>>,
     settings_rows: Option<Rc<VecModel<crate::ConnectionRow>>>,
+    /// The board-selector's persistent row handle (r2 D32): the same
+    /// diff pattern — stable identity across refreshes.
+    settings_boards: Option<Rc<VecModel<crate::SettingsBoardRow>>>,
     hints: HintModels,
     /// The tasks whose decoration models the current pass touched
     /// (cleared at pass start) — the prune set for
@@ -685,6 +688,20 @@ impl PushModels {
         desired: &[crate::ConnectionRow],
     ) -> usize {
         push_rows(&mut self.settings_rows, |rc| global.set_rows(rc), desired)
+    }
+
+    /// Diffs the board-selector rows onto their persistent handle
+    /// (r2 D32) — the same pattern as the connector rows.
+    pub(crate) fn push_settings_boards(
+        &mut self,
+        global: &crate::SettingsModel<'_>,
+        desired: &[crate::SettingsBoardRow],
+    ) -> usize {
+        push_rows(
+            &mut self.settings_boards,
+            |rc| global.set_boards(rc),
+            desired,
+        )
     }
 }
 
