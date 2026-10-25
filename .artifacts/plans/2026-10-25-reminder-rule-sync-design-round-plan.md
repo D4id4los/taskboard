@@ -527,7 +527,7 @@ closed:**
    notification system supports action buttons, native toasts may
    grow Dismiss/Snooze/Mute buttons — considered future enhancement,
    gated on case-by-case functional tests per platform (not a v1
-   commitment; issue filing left to the user's promotion).
+   commitment; tracked as issue #444).
 5. **Mark Done: planner-emitted dismissal rows** (the recommended
    shape stands; the reopen hazard stays closed).
 
