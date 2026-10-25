@@ -35,6 +35,19 @@ machine with a human console used to die with =ModeNotImplemented=
 (Phase 7 placeholder); it now gets a REPL — strictly more useful
 pre-Phase-7. Non-TTY deployments are byte-for-byte unaffected.
 
+#+begin_quote
+*Amendment (2026-10-25):* the accepted consequence above — a kiosk
+machine with a console "now gets a REPL" — described the pre-Phase-7
+world and was superseded twice: Phase 7's routing made =Kiosk=
+TTY-independent, and the kiosk wave (ADR 0016) now routes bare kiosk
+to the *appliance* lifecycle (the display-gated fullscreen window
+with a loud headless fallback) in every TTY cell. A kiosk console
+gets neither a REPL nor a daemon refusal; =Desktop= is the mode the
+daemon gate refuses. The routing formula
+(=has_command × stdin_tty × mode=) and the default-mode decision
+stand. (Audit F15-17.)
+#+end_quote
+
 To make that consequence real, the =[app] mode= gate moved out of
 =bootstrap= into the daemon/UI entry (superseding the bit of ADR 0008
 that put it in the bootstrap): the core is mode-agnostic, the REPL

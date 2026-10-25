@@ -210,3 +210,17 @@ field, exactly like stacks and labels. Details:
   to a *different* field that lands inside our pull→push window, for
   any of the four fields. Same documented Deck limitation as before —
   the "field-level merge refinement" backlog entry owns it.
+
+* Amendment 2026-10-25 — the granularity pin's tier (audit F10-01)
+
+The Decision's sentence "a Phase 4 docker-tier scenario pins the
+behavior" never matched the tree: no tier-4 journey drives the
+granularity-loss case (the docker journeys pin round-trips, moves,
+archive, cascade, labels, and field writes). The binding enforcement
+is the pure-merge tier —
+=granularity_trap_remote_entity_touch_overwrites_local_title= in
+=crates/taskboard-domain/src/merge.rs=. That tier is the right one:
+the trap is a property of the merge algebra, not of the actor wiring
+a docker journey exercises. This amendment corrects the citation
+only; the decision — granularity data loss documented and deliberate
+— stands unchanged.
