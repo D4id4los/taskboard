@@ -534,6 +534,15 @@ impl Adapter {
                 let outcomes = self.view_state.cancel_move();
                 self.apply_outcomes(window, &outcomes);
             }
+            // The pointer drag (r2 chunk-8): the same no-dispatch
+            // cancel, plus the native drag's teardown — the runtime
+            // owns the in-flight gesture and `PointerExited` is the
+            // one public cancel ([`Self::teardown_runtime_drag`]).
+            Flow::DragMove { .. } => {
+                let outcomes = self.view_state.cancel_move();
+                self.apply_outcomes(window, &outcomes);
+                Self::teardown_runtime_drag(window);
+            }
             // The due editor ends without committing on a view
             // switch (r2 D25: the clean close, like a move flow) —
             // the picker closes with it; a reopen starts collapsed.
@@ -577,6 +586,7 @@ impl Adapter {
 
         // Leaving the edit field by effect first commits the buffer;
         // a move flow ends without dispatch (D9's recorded rule).
+        let mut drag_teardown = false;
         if leaving {
             self.settle_flows_on_leaving(window, &flow, &state);
         }
@@ -594,6 +604,29 @@ impl Adapter {
             // deliberately keeps the flow.
             (Flow::Capture, UiEffect::Activate) => self.view_state.commit_capture(),
             (Flow::Capture, UiEffect::SetMode(Mode::Normal)) => self.view_state.close_capture(),
+            // -- the pointer drag (r2 chunk-8): every cancel-shaped
+            //    effect ends it without dispatching (Escape / C-g via
+            //    `CancelMove`, the toggle re-request, mode.normal);
+            //    Activate confirms the hovered target (the same
+            //    "Activate confirms a move flow" semantic); the
+            //    pointer owns target cycling, so the keyboard ring
+            //    walk is absorbed mid-drag --
+            (
+                Flow::DragMove { .. },
+                effect @ (UiEffect::Activate
+                | UiEffect::CancelMove
+                | UiEffect::RequestMove
+                | UiEffect::SetMode(Mode::Normal)),
+            ) => {
+                let outcomes = if effect == UiEffect::Activate {
+                    self.view_state.confirm_drag_move(&state)
+                } else {
+                    self.view_state.cancel_move()
+                };
+                drag_teardown = true;
+                outcomes
+            }
+            (Flow::DragMove { .. }, UiEffect::FocusNext | UiEffect::FocusPrev) => Vec::new(),
             // -- the move flows (D8/D9; round 2 adds the stack move) --
             (
                 flow @ (Flow::Move { .. } | Flow::MoveStack { .. }),
@@ -716,6 +749,26 @@ impl Adapter {
             (_, _) => Vec::new(),
         };
         self.apply_outcomes(window, &outcomes);
+        if drag_teardown {
+            // After the outcomes: the cancel/confirm has ended the
+            // view-state flow; the synthetic exit now tears the
+            // native drag down and its `drag-finished(none)` echo is
+            // absorbed by the flow-guarded seam.
+            Self::teardown_runtime_drag(window);
+        }
+    }
+
+    /// The native drag's teardown seam (r2 chunk-8 D-G): a synthetic
+    /// `PointerExited` — the runtime tears any in-flight drag down
+    /// and fires `drag-finished(none)` — absorbed by the flow-guarded
+    /// seam: the view-state flow is already gone), and `TouchArea`'s
+    /// Exit arm clears `pressed`/hover so the real release cannot
+    /// degrade into `clicked`. The one synthetic event: the runtime
+    /// exposes no other public in-flight-drag cancel.
+    fn teardown_runtime_drag(window: &AppWindow) {
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerExited);
     }
 
     /// vi's insert intent (D5): `i`/`a` open the view's editing flow

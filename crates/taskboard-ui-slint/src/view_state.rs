@@ -90,6 +90,14 @@ pub enum Flow {
     /// The stack-move flow: repositioning `stack` to insertion slot
     /// `slot` (`0..=len`, wrap-cycled).
     MoveStack { stack: StackId, slot: usize },
+    /// The pointer drag-to-move flow (r2 chunk-8, D-B): dragging
+    /// `task` toward `target` (the hovered column, seeded to the
+    /// source stack). A distinct variant, *not* a `Flow::Move` reuse:
+    /// the keyboard flow's arms keep byte-identical semantics, the
+    /// pointer-shaped intents (set-target-by-column) have no table
+    /// precedent, and the model push derives the ghost/dim/highlight
+    /// from the flow. Refresh-survival is model-push by construction.
+    DragMove { task: TaskId, target: StackId },
 }
 
 /// What a view-state transition asks the adapter to do (D9):
@@ -154,6 +162,17 @@ pub fn append_order(state: &AppState, stack: StackId) -> i64 {
         .tasks_in_stack(stack)
         .last()
         .map_or(0, |t| t.order + 1)
+}
+
+/// The one `MoveTask` construction site (r2 chunk-8 D-F): the
+/// keyboard confirm and the pointer drop both build their end-of-stack
+/// append here — command equivalence by construction.
+fn append_move_command(state: &AppState, task: TaskId, target: StackId) -> FlowOutcome {
+    FlowOutcome::Command(StateCommand::MoveTask {
+        id: task,
+        stack: target,
+        order: append_order(state, target),
+    })
 }
 
 /// The canonical append position on `board`: the board's live stacks'
@@ -1252,16 +1271,60 @@ impl ViewState {
         let Flow::Move { task, target } = self.flow else {
             return Vec::new();
         };
-        let order = append_order(state, target);
+        let command = append_move_command(state, task, target);
         self.flow = Flow::None;
-        vec![
-            FlowOutcome::Command(StateCommand::MoveTask {
-                id: task,
-                stack: target,
-                order,
-            }),
-            FlowOutcome::RefreshNow,
-        ]
+        vec![command, FlowOutcome::RefreshNow]
+    }
+
+    // -- pointer drag-to-move (r2 chunk-8, D-B/D-F) ------------------------
+
+    /// The pointer arm: a card drag crossing the slop starts the
+    /// drag flow with `target` seeded to the task's own stack.
+    /// Refuses (inert) when any other flow holds (the D9 XOR rule —
+    /// the slint side additionally disables the `DragArea`s while a
+    /// flow is open, belt and suspenders) or the task is unknown/not
+    /// live (the reconcile path re-checks).
+    pub fn begin_drag_move(&mut self, state: &AppState, task: TaskId) -> Vec<FlowOutcome> {
+        if self.flow != Flow::None {
+            return Vec::new();
+        }
+        let Some(target) = state
+            .tasks
+            .get(&task)
+            .filter(|t| t.is_live())
+            .map(|t| t.stack)
+        else {
+            return Vec::new();
+        };
+        self.flow = Flow::DragMove { task, target };
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The pointer's column report (r2 D-E): a `DropArea`'s hover
+    /// address, resolved to its stack by the adapter. `RefreshNow` only
+    /// on an actual change; inert without the drag flow.
+    pub fn drag_target(&mut self, _state: &AppState, stack: StackId) -> Vec<FlowOutcome> {
+        let Flow::DragMove { target, .. } = &mut self.flow else {
+            return Vec::new();
+        };
+        if *target == stack {
+            return Vec::new();
+        }
+        *target = stack;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The drop (r2 D-F): the same `MoveTask` command the keyboard
+    /// flow confirms — both funnel through [`append_move_command`],
+    /// the one construction site (equivalence by construction; the
+    /// pin test compares the commands).
+    pub fn confirm_drag_move(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        let Flow::DragMove { task, target } = self.flow else {
+            return Vec::new();
+        };
+        let command = append_move_command(state, task, target);
+        self.flow = Flow::None;
+        vec![command, FlowOutcome::RefreshNow]
     }
 
     /// `RequestMove` during a move flow: cancel, nothing dispatched.
@@ -1469,6 +1532,12 @@ impl ViewState {
                 self.flow = Flow::None;
             }
             Flow::Move { task, .. } if !is_live(task) => self.flow = Flow::None,
+            // The pointer drag (r2 chunk-8): a vanished dragged task
+            // *or* target stack ends the flow — the ghost/dim/highlight
+            // unpush on the next model pass (the subject-repair rule).
+            Flow::DragMove { task, target } if !is_live(task) || !stacks.contains(&target) => {
+                self.flow = Flow::None;
+            }
             // Round 2 (D18/D21): the lifecycle flows end silently on a
             // vanished target (the `Flow::Move` precedent).
             Flow::RenameStack { stack } if !stacks.contains(&stack) => {
@@ -1691,6 +1760,166 @@ mod tests {
                 order: 0,
             })],
             "cross-board targets are already legal engine-side"
+        );
+    }
+
+    // -- the pointer drag flow (r2 chunk-8, D-B/D-F) ----------------------
+
+    /// A drag journey's helper: select nothing, arm the drag directly.
+    #[test]
+    fn a_drag_seeds_the_target_to_the_source_stack_and_refuses_when_busy() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let outcomes = vs.begin_drag_move(&state, a);
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow], "one repaint");
+        assert_eq!(
+            *vs.flow(),
+            Flow::DragMove {
+                task: a,
+                target: s0
+            },
+            "the target is the task's own stack"
+        );
+
+        // The D9 XOR rule: no second flow while one holds.
+        let mut busy = ViewState::new();
+        busy.reconcile(&state);
+        busy.activate_card(a, s0);
+        busy.start_move(&state);
+        assert!(
+            busy.begin_drag_move(&state, a).is_empty(),
+            "an active flow refuses the drag arm"
+        );
+        assert!(
+            matches!(busy.flow(), Flow::Move { .. }),
+            "the refused arm left the existing flow intact"
+        );
+
+        // An unknown task refuses.
+        let unknown = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut fresh = ViewState::new();
+        fresh.reconcile(&state);
+        assert_eq!(
+            fresh.begin_drag_move(&state, unknown),
+            [] as [FlowOutcome; 0]
+        );
+        assert_eq!(*fresh.flow(), Flow::None);
+    }
+
+    #[test]
+    fn a_drag_target_reports_only_on_change_and_is_inert_without_the_flow() {
+        let (state, _, [s0, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_drag_move(&state, a);
+
+        assert!(
+            vs.drag_target(&state, s0).is_empty(),
+            "re-reporting the current target is inert"
+        );
+        assert_eq!(
+            vs.drag_target(&state, s1),
+            vec![FlowOutcome::RefreshNow],
+            "an actual change repaints"
+        );
+        assert_eq!(
+            *vs.flow(),
+            Flow::DragMove {
+                task: a,
+                target: s1
+            }
+        );
+
+        let mut idle = ViewState::new();
+        idle.reconcile(&state);
+        assert!(
+            idle.drag_target(&state, s1).is_empty(),
+            "no drag flow: the target report is inert"
+        );
+    }
+
+    /// The D-F pin: the drag drop and the keyboard confirm produce
+    /// **equal `StateCommand::MoveTask`s** for the same (task → stack)
+    /// transition — the commands are compared, not the outcome
+    /// vectors' other effects.
+    #[test]
+    fn the_drag_drop_and_the_keyboard_confirm_produce_the_same_move_command() {
+        let (state, _, [s0, s1], [a, ..]) = fixture();
+        let keyboard = {
+            let mut vs = ViewState::new();
+            vs.reconcile(&state);
+            vs.activate_card(a, s0);
+            vs.start_move(&state);
+            vs.cycle_move_target(&state, 1); // ring: s0 → s1
+            vs.confirm_move(&state)
+        };
+        let drag = {
+            let mut vs = ViewState::new();
+            vs.reconcile(&state);
+            vs.begin_drag_move(&state, a);
+            vs.drag_target(&state, s1);
+            vs.confirm_drag_move(&state)
+        };
+        let pick = |outcomes: &[FlowOutcome]| {
+            outcomes.iter().find_map(|o| match o {
+                FlowOutcome::Command(cmd @ StateCommand::MoveTask { .. }) => Some(cmd.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            pick(&keyboard),
+            pick(&drag),
+            "one MoveTask construction site"
+        );
+    }
+
+    #[test]
+    fn cancel_move_resets_a_drag_flow() {
+        let (state, _, [_, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_drag_move(&state, a);
+        let outcomes = vs.cancel_move();
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(*vs.flow(), Flow::None);
+        assert!(
+            vs.confirm_drag_move(&state).is_empty(),
+            "the ended flow cannot confirm afterwards"
+        );
+    }
+
+    #[test]
+    fn reconcile_cancels_a_drag_whose_task_or_target_vanished() {
+        let (mut state, _, [_, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_drag_move(&state, a);
+        vs.drag_target(&state, s1);
+
+        // The dragged task vanishes.
+        let vanished = state.tasks.get_mut(&a).expect("task");
+        vanished.deleted = true;
+        vs.reconcile(&state);
+        assert_eq!(
+            *vs.flow(),
+            Flow::None,
+            "a vanished dragged task ends the flow"
+        );
+
+        // The target stack vanishes.
+        let mut vs2 = ViewState::new();
+        let mut state2 = state.clone();
+        state2.tasks.get_mut(&a).expect("task").deleted = false;
+        vs2.reconcile(&state2);
+        vs2.begin_drag_move(&state2, a);
+        vs2.drag_target(&state2, s1);
+        state2.stacks.get_mut(&s1).expect("stack").deleted = true;
+        vs2.reconcile(&state2);
+        assert_eq!(
+            *vs2.flow(),
+            Flow::None,
+            "a vanished target stack ends the flow"
         );
     }
 
