@@ -153,3 +153,24 @@ No new dependencies; no `Cargo.toml` touched; no derive crates.
   instead of minting a value that matched nothing.
 - `mutants.out/` is gitignored; the evidence summary above is the
   record.
+
+## 6. Stage-3 corrections (2026-10-25, review pass)
+
+The census above missed two production `From` sites, fixed on the
+branch during review:
+
+1. `bootstrap.rs` (~:830): the standalone default-tag fallback minted
+   `DEFAULT_CONNECTOR_NAME` via the total `From` — the stage-1 plan's
+   D2 table mandated the const-mint `expect` here and it was skipped.
+   Now mints with the same documented `expect` as
+   `configured_connectors`' legacy arm.
+2. `ui_requests.rs` (~:408): the *remove* choreography's named detach
+   (a site adjacent to — but absent from — the plan's census table)
+   minted via the total `From`. Now mints and skips the detach on
+   failure; a non-kebab name was never minted at any attach, so the
+   skip preserves the choreography's observable outcome.
+
+Also removed a stray `mutants.out.old/` directory (the previous
+mutant run's output, renamed aside by the evidence run) that had been
+committed; `mutants.out.old/` is now gitignored. The "all mint" claim
+above holds only after these corrections.

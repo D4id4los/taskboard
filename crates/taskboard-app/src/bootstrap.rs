@@ -830,7 +830,12 @@ async fn bootstrap_with_modules(
     // exist to decode; a legacy bound db flipped to standalone decodes
     // its NULLs against the stable name and nothing consumes the tag).
     let default_connector = modules.first().map_or_else(
-        || taskboard_domain::ConnectorId::from(crate::connectors::DEFAULT_CONNECTOR_NAME),
+        || {
+            // The const is `"nextcloud"`; proven kebab by the pinned
+            // unit test in `connectors.rs`, so the mint cannot fail.
+            taskboard_domain::ConnectorId::from_kebab(crate::connectors::DEFAULT_CONNECTOR_NAME)
+                .expect("DEFAULT_CONNECTOR_NAME is kebab")
+        },
         |module| module.id().clone(),
     );
     tracing::info!(
