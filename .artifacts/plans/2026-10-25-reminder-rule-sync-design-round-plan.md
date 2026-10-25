@@ -49,10 +49,11 @@
 - **Branch / worktree**: `docs/reminder-rule-sync-design-round` in
   `../taskboard-WT-docs-reminder-rule-sync-design-round`, off `main` @
   `abc5aa7`.
-- **Status**: DRAFT agenda — stage 2 unblocked. One ruling received
-  during stage 1 (2026-10-25, user direction), recorded at §4(b)-R:
-  the roam-set is fixed (dismissals sync; snoozes/mutes stay
-  per-device). All other §4 questions remain open.
+- **Status**: DRAFT agenda — stage 2 unblocked. Two ruling passes
+  received during stage 1 (2026-10-25, user direction), recorded at
+  §4(b)-R and §4(b)-R2: every §4 question is resolved in direction;
+  stage 2's remaining work is the design doc, the audit recordings
+  (§4(e)/§4(f)/§4(g)), and confirming the §4(d).1 mechanism default.
 
 ---
 
@@ -300,6 +301,63 @@ is fixed:**
   the default-reminder offset are confirmed device-local; F16-16's
   settings inventory stays fenced out (the §4(c) answer is (c-1) up to
   recording).
+
+**Second ruling pass (2026-10-25, user direction, stage 1) — the
+remaining §4 questions resolved in direction:**
+
+- **§4(a): no capability flag until a native path exists** (option
+  a-3). A `DeckFeatures` placeholder would be the table's first flag
+  no behavior reads, and there is no Deck reminders surface to probe.
+  The ADR 0010 amendment fires the day a native path is designed.
+- **§4(b) asymmetry shape: section-level, fail-closed.** The proofs
+  section's writer emits **only Rule-ref rows** (a naive all-rows
+  serializer would leak `default:<local-task-uuid>` keys — the type
+  alone does not prevent it); the fold ignores `default:`/`alarm:`
+  keys; one property test pins that no local `TaskId` reaches the
+  wire. Confirmed context: alarms cannot sync (no op, no section,
+  `ids.rs:61–63`), default reminders have no stored rows — the
+  device-local enforcement "happens on its own" everywhere except the
+  serializer.
+- **§4(d).1 (semantic, now clarified):** "dismissal" was the agenda's
+  loose word — there is no dismiss verb or state in the model. The
+  `ReminderDelivery` proof is written automatically when a reminder
+  *fires* (durable-then-notify, ADR 0013), and it is the at-most-once
+  guard; a UI dismiss button closes the toast only. What syncs is the
+  fire receipt: once one device has fired an occurrence, the others
+  suppress it. **Mechanism default recorded: the tick arm's batch
+  enqueues the ordinary `UpdateAppData(task)` op for each task whose
+  reminder just settled** — one more `PersistenceAction` in a batch
+  the tick already plans, reusing the landed op→group→flush path
+  (no second trigger mechanism, no new gate state). Stage 2 confirms
+  or improves; the outbox-write-from-a-non-command-path consequence
+  is named and accepted.
+- **§4(d).2: clock LWW, for uniformity** (user ruling: "every sync
+  primitive uses the same functionality"). Sound because a proof has
+  exactly one write site: the recording tick stamps the clock (the
+  delivery stamp), so the embedded-clock union machinery applies
+  unchanged and no special-cased set primitive exists.
+- **§4(d).3: evidence-decided, no ruling needed.** Proofs fold at the
+  landed §5b position beside the rules fold, and are **guard-immune**:
+  the self-clobber guard protects local *edits* a same-cycle sync
+  must not overwrite; receipts are append-only facts, never edited.
+- **§4(d).4: evidence-decided, no ruling needed.** Accept
+  proofs-section growth (one tiny row per fired occurrence; trivial
+  at kiosk scale); no synced tombstones, no synced GC; cleanup stays
+  with the backloged local age-pruning entry (its terms already
+  require pruning only proofs too old to refire). Receipts of deleted
+  rules are inert (evaluation consults live rules only) and harmless
+  to re-fold; card-absence GC prunes their entries when the card goes.
+- **§4(e): not a fork — a recording.** Content fixed by §4(a)'s
+  ruling: no vocabulary movement, no flag; stage 2 writes the
+  no-movement note into the design doc (the F16-15/F16-08 discharge).
+- **§4(f)/§4(g): evidence-decided records.** Verbatim relay covers
+  mixed fleets (old devices keep firing — accepted); receipts persist
+  at fire time and join the next flush (record-and-forward); offline
+  devices fire independently and converge on reconnect (accepted
+  at-least-once window); read-only kiosks fold without flushing.
+  Stage 2 pins the fold-order property: rules fold before proofs in
+  the same pass, so an adopted rule is immediately suppressed by
+  already-present receipts.
 
 ### (c) The state home (F16-16) — verification, not invention
 
