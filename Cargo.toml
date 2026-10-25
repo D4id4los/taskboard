@@ -23,6 +23,12 @@ publish = false
 all = "warn"
 pedantic = "warn"
 
+[workspace.lints.rust]
+# `cfg(kani)` is set only by Kani's own rustc driver (the BMC pilot,
+# issue #426); registering it keeps `clippy -D warnings` green while
+# the gated harness modules stay invisible to every stable build.
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
+
 [workspace.dependencies]
 # Internal crates
 taskboard-domain = { path = "crates/taskboard-domain" }
