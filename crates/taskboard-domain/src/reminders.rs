@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Reminder model: due-anchored rules, occurrence-keyed delivery proofs,
-//! snooze chains, and mute — pure data plus the pure evaluator that turns
-//! them into firings.
+//! synced dismissals, snooze chains, and mute — pure data plus the pure
+//! evaluator that turns them into firings and the derived notification
+//! surface.
 //!
 //! Time is always a parameter (the `clock.rs` contract): nothing here
 //! reads a clock, generates ids, or touches IO. The suppression guard is
@@ -234,10 +235,11 @@ pub struct AdhocAlarm {
     pub created_at: DateTime<Utc>,
 }
 
-/// Proof that an occurrence was notified — the at-most-once guard.
-/// Keyed by `(reminder, occurrence)`, NOT by rule alone: moving the due
-/// date or snoozing creates a new occurrence and re-arms. Additive,
-/// set-union-mergeable by construction.
+/// Proof that an occurrence was notified — the per-device at-most-once
+/// guard for the OS toast. Keyed by `(reminder, occurrence)`, NOT by rule
+/// alone: moving the due date or snoozing creates a new occurrence and
+/// re-arms. Additive, set-union-mergeable by construction. Stays out of
+/// the sync document entirely (R3: fire receipts are per-device facts).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ReminderDelivery {
     /// Which reminder fired.
@@ -246,6 +248,32 @@ pub struct ReminderDelivery {
     pub occurrence: DateTime<Utc>,
     /// When the engine recorded it (stamped at fire time).
     pub delivered_at: DateTime<Utc>,
+}
+
+/// A user dismissal of a fired occurrence — the fleet-wide "stop showing
+/// this" fact (the R3 two-fact split: the delivery receipt stays local,
+/// the dismissal is the synced surface). Keyed by `(reminder,
+/// occurrence)` like [`ReminderDelivery`]; a dismissal is permanent for
+/// its occurrence (there is no un-dismiss), so the set is additive and
+/// tombstone-free by construction.
+///
+/// The state-side type is representable for **all** [`ReminderRef`]
+/// kinds: local dismissal of default-reminder and adhoc-alarm
+/// notifications must clear them in-app, and their occurrences are
+/// per-device facts (they never roam). Only `Rule`-ref rows ever
+/// serialize into the synced `dismissals` document section — the wire
+/// type carries a bare `ReminderRuleId` (the fail-closed mint, design
+/// D-4), and the section's emission filter enforces the split; nothing in
+/// this crate ever serializes a `Default`/`Adhoc` row to the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ReminderDismissal {
+    /// Which reminder's notification was dismissed.
+    pub reminder: ReminderRef,
+    /// The occurrence the dismissal settles.
+    pub occurrence: DateTime<Utc>,
+    /// When the user dismissed (stamped at the dismiss command) — the
+    /// row's LWW write clock for the document lane.
+    pub dismissed_at: DateTime<Utc>,
 }
 
 /// A "show me again later": the occurrence is *rescheduled*, not
@@ -331,9 +359,9 @@ pub enum ReminderAnchor {
 }
 
 /// Persisted reminder facts carried in `AppState`/`PersistedState`.
-/// Field order is the snapshot order: rules, deliveries, snoozes, muted,
-/// alarms. Delivered-ness and snoozed-ness are plain set/map membership
-/// checks.
+/// Field order is the snapshot order: rules, deliveries, dismissals,
+/// snoozes, muted, alarms. Delivered-ness, dismissed-ness, and
+/// snoozed-ness are plain set/map membership checks.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReminderState {
     /// Explicit rules by id.
@@ -342,6 +370,11 @@ pub struct ReminderState {
     /// by [`apply_actions`](crate::persistence::apply_actions), pinned by
     /// property).
     pub deliveries: BTreeSet<ReminderDelivery>,
+    /// User dismissals (≤ 1 row per `(reminder, occurrence)` — the same
+    /// first-write-wins discipline as `deliveries`). Superset of the
+    /// synced lane by construction: Rule-ref rows roam, Default/Adhoc
+    /// rows stay device-local.
+    pub dismissals: BTreeSet<ReminderDismissal>,
     /// Snooze chain links: `(reminder, occurrence) → rescheduled`
     /// instant. Chains compose (a snooze target is itself snoozable).
     pub snoozes: BTreeMap<ReminderSnoozeKey, DateTime<Utc>>,
@@ -360,6 +393,16 @@ impl ReminderState {
     #[must_use]
     pub fn is_delivered(&self, reminder: &ReminderRef, occurrence: &DateTime<Utc>) -> bool {
         self.deliveries
+            .iter()
+            .any(|d| &d.reminder == reminder && &d.occurrence == occurrence)
+    }
+
+    /// Dismissal lookup on the `(reminder, occurrence)` key — the
+    /// [`is_delivered`](Self::is_delivered) sibling, same linear-scan
+    /// rationale.
+    #[must_use]
+    pub fn is_dismissed(&self, reminder: &ReminderRef, occurrence: &DateTime<Utc>) -> bool {
+        self.dismissals
             .iter()
             .any(|d| &d.reminder == reminder && &d.occurrence == occurrence)
     }
@@ -450,9 +493,9 @@ pub fn compact_snooze_chains(reminders: &mut ReminderState) {
     reminders.snoozes.retain(|key, _| keep.contains(key));
 }
 
-/// Removes an alarm row and prunes its `Adhoc`-ref deliveries and
-/// snooze links with it — the `DeleteReminderRule` cascade shape, one
-/// definition site shared by the
+/// Removes an alarm row and prunes its `Adhoc`-ref deliveries,
+/// dismissals, and snooze links with it — the `DeleteReminderRule`
+/// cascade shape, one definition site shared by the
 /// [`DeleteAdhocAlarm`](crate::persistence::PersistenceAction::DeleteAdhocAlarm)
 /// arm and [`prune_settled_alarms`] (nothing can re-fire from a pruned
 /// map row).
@@ -460,6 +503,7 @@ pub(crate) fn remove_alarm(reminders: &mut ReminderState, id: AdhocAlarmId) {
     reminders.alarms.remove(&id);
     let reminder = ReminderRef::Adhoc(id);
     reminders.deliveries.retain(|d| d.reminder != reminder);
+    reminders.dismissals.retain(|d| d.reminder != reminder);
     reminders.snoozes.retain(|key, _| key.reminder != reminder);
 }
 
@@ -580,7 +624,9 @@ fn base_occurrence(
 /// Task-side eligibility: the task must be live and open with a due date
 /// and not muted; a task's explicit rules (in rule-id order) replace its
 /// implicit default. A reminder fires iff its effective occurrence is ≤
-/// `now` and undelivered.
+/// `now` and neither delivered nor dismissed (the local receipt guards
+/// the OS toast on this device; a dismissal — local or synced-in —
+/// suppresses the occurrence everywhere, R3).
 #[must_use]
 pub fn due_firings(
     tasks: &BTreeMap<TaskId, Task>,
@@ -608,6 +654,7 @@ pub fn due_firings(
             if let Some(effective) = reminders.effective_occurrence(&reminder, tasks, defaults)
                 && effective <= now
                 && !reminders.is_delivered(&reminder, &effective)
+                && !reminders.is_dismissed(&reminder, &effective)
             {
                 firings.push(ReminderFiring {
                     reminder,
@@ -623,6 +670,7 @@ pub fn due_firings(
         if let Some(effective) = alarm_occurrence(reminders, id)
             && effective <= now
             && !reminders.is_delivered(&ReminderRef::Adhoc(id), &effective)
+            && !reminders.is_dismissed(&ReminderRef::Adhoc(id), &effective)
         {
             firings.push(ReminderFiring {
                 reminder: ReminderRef::Adhoc(id),
@@ -633,6 +681,74 @@ pub fn due_firings(
     }
     firings.sort_by_key(|f| (f.occurrence, f.reminder));
     firings
+}
+
+/// The in-app notification surface (R3, design D-6): one
+/// [`Notification`] per occurrence this device **fired** (a delivery
+/// receipt exists for `(reminder, effective occurrence)`) that is **not
+/// dismissed** — derived at read time, never stored, so nothing can
+/// drift. The pure view the dumb presentation client reads (exactly like
+/// [`overdue_tasks`]) and the Mark Done planner consults for the
+/// currently-active occurrences its dismissal rows must cover (one
+/// definition, two consumers).
+///
+/// Eligibility mirrors [`due_firings`]: the anchor must still resolve
+/// (a live, open, due-anchored task; or a live alarm row) and mute hides
+/// a task's notifications while it holds (mute = stop nagging; the
+/// receipts survive, so un-muting restores the surface). A dismissed
+/// occurrence never returns — there is no un-dismiss. Sorted by
+/// `(occurrence, reminder)` — the house deterministic order.
+#[must_use]
+pub fn active_notifications(
+    tasks: &BTreeMap<TaskId, Task>,
+    reminders: &ReminderState,
+    defaults: &ReminderDefaults,
+    now: DateTime<Utc>,
+) -> Vec<Notification> {
+    let mut firings = Vec::new();
+    for task in tasks.values() {
+        if !is_remindable(task) || reminders.muted.contains(&task.id) {
+            continue;
+        }
+        let rules: Vec<&ReminderRule> = reminders
+            .rules
+            .values()
+            .filter(|rule| rule.task == task.id)
+            .collect();
+        let candidates: Vec<ReminderRef> = if rules.is_empty() {
+            vec![ReminderRef::Default(task.id)]
+        } else {
+            rules.iter().map(|r| ReminderRef::Rule(r.id)).collect()
+        };
+        for reminder in candidates {
+            if let Some(effective) = reminders.effective_occurrence(&reminder, tasks, defaults)
+                && effective <= now
+                && reminders.is_delivered(&reminder, &effective)
+                && !reminders.is_dismissed(&reminder, &effective)
+            {
+                firings.push(ReminderFiring {
+                    reminder,
+                    anchor: ReminderAnchor::Task(task.id),
+                    occurrence: effective,
+                });
+            }
+        }
+    }
+    for &id in reminders.alarms.keys() {
+        if let Some(effective) = alarm_occurrence(reminders, id)
+            && effective <= now
+            && reminders.is_delivered(&ReminderRef::Adhoc(id), &effective)
+            && !reminders.is_dismissed(&ReminderRef::Adhoc(id), &effective)
+        {
+            firings.push(ReminderFiring {
+                reminder: ReminderRef::Adhoc(id),
+                anchor: ReminderAnchor::Alarm(id),
+                occurrence: effective,
+            });
+        }
+    }
+    firings.sort_by_key(|f| (f.occurrence, f.reminder));
+    notifications_for(&firings, tasks, reminders)
 }
 
 /// Kiosk banner: live, open tasks with due date < `now`, in canonical
@@ -816,7 +932,10 @@ mod tests {
                     }
                     effective = target;
                 }
-                if effective <= now && !reminders.is_delivered(&reminder, &effective) {
+                if effective <= now
+                    && !reminders.is_delivered(&reminder, &effective)
+                    && !reminders.is_dismissed(&reminder, &effective)
+                {
                     expected.push((effective, reminder));
                 }
             }
@@ -836,11 +955,127 @@ mod tests {
                 }
                 effective = target;
             }
-            if effective <= now && !reminders.is_delivered(&reminder, &effective) {
+            if effective <= now
+                && !reminders.is_delivered(&reminder, &effective)
+                && !reminders.is_dismissed(&reminder, &effective)
+            {
                 expected.push((effective, reminder));
             }
         }
         expected.sort();
+        expected
+    }
+
+    /// Independent re-derivation of the active-notification surface: does
+    /// not call `effective_occurrence` or `active_notifications` — walks
+    /// base occurrence and the snooze chain by hand, gates on
+    /// delivered ∧ ¬dismissed, resolves titles from the task/alarm rows,
+    /// and skips missing anchors (the `notifications_for` contract).
+    fn expected_active(
+        tasks: &std::collections::BTreeMap<TaskId, Task>,
+        reminders: &ReminderState,
+        defaults: &ReminderDefaults,
+        now: DateTime<Utc>,
+    ) -> Vec<Notification> {
+        let mut expected = Vec::new();
+        let mut active: Vec<(DateTime<Utc>, ReminderRef, ReminderAnchor)> = Vec::new();
+        for task in tasks.values() {
+            if !(task.is_live() && task.is_open() && task.duedate.is_some()) {
+                continue;
+            }
+            if reminders.muted.contains(&task.id) {
+                continue;
+            }
+            let mut rule_refs: Vec<ReminderRef> = reminders
+                .rules
+                .values()
+                .filter(|r| r.task == task.id)
+                .map(|r| ReminderRef::Rule(r.id))
+                .collect();
+            if rule_refs.is_empty() {
+                rule_refs.push(ReminderRef::Default(task.id));
+            }
+            for reminder in rule_refs {
+                let base = match reminder {
+                    ReminderRef::Rule(id) => {
+                        let Some(rule) = reminders.rules.get(&id) else {
+                            continue;
+                        };
+                        let Some(duedate) = tasks.get(&rule.task).and_then(|t| t.duedate) else {
+                            continue;
+                        };
+                        duedate + rule.offset.as_duration()
+                    }
+                    ReminderRef::Default(task_id) => {
+                        let Some(duedate) = tasks.get(&task_id).and_then(|t| t.duedate) else {
+                            continue;
+                        };
+                        duedate + defaults.default_before.as_duration()
+                    }
+                    ReminderRef::Adhoc(_) => continue,
+                };
+                let mut effective = base;
+                let mut seen = BTreeSet::from([base]);
+                while let Some(&target) = reminders.snoozes.get(&ReminderSnoozeKey {
+                    reminder,
+                    occurrence: effective,
+                }) {
+                    if !seen.insert(target) {
+                        break;
+                    }
+                    effective = target;
+                }
+                if effective <= now
+                    && reminders.is_delivered(&reminder, &effective)
+                    && !reminders.is_dismissed(&reminder, &effective)
+                {
+                    active.push((effective, reminder, ReminderAnchor::Task(task.id)));
+                }
+            }
+        }
+        for (&id, alarm) in &reminders.alarms {
+            let reminder = ReminderRef::Adhoc(id);
+            let mut effective = alarm.fire_at;
+            let mut seen = BTreeSet::from([alarm.fire_at]);
+            while let Some(&target) = reminders.snoozes.get(&ReminderSnoozeKey {
+                reminder,
+                occurrence: effective,
+            }) {
+                if !seen.insert(target) {
+                    break;
+                }
+                effective = target;
+            }
+            if effective <= now
+                && reminders.is_delivered(&reminder, &effective)
+                && !reminders.is_dismissed(&reminder, &effective)
+            {
+                active.push((effective, reminder, ReminderAnchor::Alarm(id)));
+            }
+        }
+        active.sort();
+        for (occurrence, reminder, anchor) in active {
+            let title = match anchor {
+                ReminderAnchor::Task(task_id) => {
+                    let Some(task) = tasks.get(&task_id) else {
+                        continue;
+                    };
+                    task.title.clone()
+                }
+                ReminderAnchor::Alarm(alarm_id) => {
+                    let Some(alarm) = reminders.alarms.get(&alarm_id) else {
+                        continue;
+                    };
+                    alarm.label.clone()
+                }
+            };
+            expected.push(Notification {
+                reminder,
+                anchor,
+                title,
+                occurrence,
+            });
+        }
         expected
     }
 
@@ -1241,6 +1476,89 @@ mod tests {
     }
 
     #[test]
+    fn is_dismissed_keys_on_the_pair_not_dismissed_at() {
+        let mut state = ReminderState::default();
+        let r = ref_of(3);
+        state.dismissals.insert(ReminderDismissal {
+            reminder: r,
+            occurrence: ts(1_000),
+            dismissed_at: ts(1_001),
+        });
+        assert!(state.is_dismissed(&r, &ts(1_000)));
+        assert!(!state.is_dismissed(&r, &ts(2_000)), "other occurrence");
+        assert!(
+            !state.is_dismissed(&ref_of(4), &ts(1_000)),
+            "other reminder"
+        );
+    }
+
+    #[test]
+    fn dismissal_suppresses_refire_and_clears_the_active_surface() {
+        let now = ts(20_000);
+        let task = live_task(1, Some(ts(19_000)), 0);
+        let tasks = BTreeMap::from([(task.id, task.clone())]);
+        let rule = ReminderRule {
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+            task: task.id,
+            offset: ReminderOffset::at_due(),
+            created_at: ts(100),
+            updated_at: ts(100),
+        };
+        let reminder = ReminderRef::Rule(rule.id);
+        let mut reminders = ReminderState::default();
+        reminders.rules.insert(rule.id, rule);
+        let defaults = ReminderDefaults::default();
+
+        // Fires at the due instant...
+        let fired = due_firings(&tasks, &reminders, &defaults, now);
+        assert_eq!(fired.len(), 1);
+        let occurrence = fired[0].occurrence;
+        reminders.deliveries.insert(ReminderDelivery {
+            reminder,
+            occurrence,
+            delivered_at: now,
+        });
+        // ...is quiet afterwards, but active on the surface...
+        assert_eq!(due_firings(&tasks, &reminders, &defaults, now), Vec::new());
+        let active = active_notifications(&tasks, &reminders, &defaults, now);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].reminder, reminder);
+        assert_eq!(active[0].occurrence, occurrence);
+        assert_eq!(active[0].title, task.title);
+        // ...until the dismissal clears it everywhere: no refire, no
+        // surface entry, at `now` or ever after.
+        reminders.dismissals.insert(ReminderDismissal {
+            reminder,
+            occurrence,
+            dismissed_at: now,
+        });
+        assert_eq!(due_firings(&tasks, &reminders, &defaults, now), Vec::new());
+        assert_eq!(
+            due_firings(
+                &tasks,
+                &reminders,
+                &defaults,
+                now + chrono::TimeDelta::try_hours(1).unwrap()
+            ),
+            Vec::new()
+        );
+        assert_eq!(
+            active_notifications(&tasks, &reminders, &defaults, now),
+            Vec::new()
+        );
+        // The dismissal is permanent for the occurrence only: a new
+        // occurrence (the due date moved) re-arms by construction.
+        let mut moved = tasks.get(&task.id).unwrap().clone();
+        moved.duedate = Some(ts(40_000));
+        let tasks = BTreeMap::from([(moved.id, moved)]);
+        assert_eq!(
+            due_firings(&tasks, &reminders, &defaults, ts(40_000)).len(),
+            1,
+            "a new occurrence re-arms"
+        );
+    }
+
+    #[test]
     fn snooze_key_text_form_roundtrips() {
         let key = ReminderSnoozeKey {
             reminder: ref_of(7),
@@ -1389,6 +1707,11 @@ mod tests {
             }
             roundtrip(&rule);
             roundtrip(&delivery);
+            roundtrip(&crate::reminders::ReminderDismissal {
+                reminder: delivery.reminder,
+                occurrence: delivery.occurrence,
+                dismissed_at: delivery.delivered_at,
+            });
             roundtrip(&snooze);
             roundtrip(&offset);
             roundtrip(&alarm);
@@ -1691,6 +2014,100 @@ mod tests {
                     prop_assert!(dur > chrono::TimeDelta::zero());
                 }
             }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(test_support::proptest_config(256))]
+
+        #[test]
+        fn p10_dismissed_occurrences_never_refire(
+            (tasks, reminders, defaults, now) in eval_input(),
+        ) {
+            let f1 = due_firings(&tasks, &reminders, &defaults, now);
+            let mut dismissed = reminders.clone();
+            for f in &f1 {
+                dismissed.dismissals.insert(ReminderDismissal {
+                    reminder: f.reminder,
+                    occurrence: f.occurrence,
+                    dismissed_at: now,
+                });
+            }
+            let f2 = due_firings(&tasks, &dismissed, &defaults, now);
+            prop_assert!(f2.is_empty(), "dismissed firings must not re-fire at the same now");
+            // And the surface is empty for exactly those occurrences...
+            let active = active_notifications(&tasks, &dismissed, &defaults, now);
+            prop_assert!(
+                active
+                    .iter()
+                    .all(|n| !f1.iter().any(|f| f.reminder == n.reminder && f.occurrence == n.occurrence)),
+                "a just-dismissed occurrence must not surface as active",
+            );
+        }
+
+        #[test]
+        fn p11_active_notifications_equal_the_independently_derived_set(
+            (tasks, reminders, defaults, now) in eval_input(),
+        ) {
+            prop_assert_eq!(
+                active_notifications(&tasks, &reminders, &defaults, now),
+                expected_active(&tasks, &reminders, &defaults, now),
+            );
+        }
+
+        #[test]
+        fn p12_due_and_active_are_disjoint(
+            (tasks, reminders, defaults, now) in eval_input(),
+        ) {
+            // Due = ¬delivered ∧ ¬dismissed; active = delivered ∧
+            // ¬dismissed: no (reminder, occurrence) pair can be both.
+            let due: BTreeSet<_> = due_firings(&tasks, &reminders, &defaults, now)
+                .into_iter()
+                .map(|f| (f.reminder, f.occurrence))
+                .collect();
+            let active: BTreeSet<_> = active_notifications(&tasks, &reminders, &defaults, now)
+                .into_iter()
+                .map(|n| (n.reminder, n.occurrence))
+                .collect();
+            prop_assert!(due.is_disjoint(&active));
+        }
+
+        #[test]
+        fn p13_mark_done_dismissal_rows_cover_the_active_surface(
+            (tasks, reminders, defaults, now) in eval_input(),
+        ) {
+            // The planner's dismissal emission derives from the same view
+            // the UI reads (one definition, two consumers): completing a
+            // task dismisses exactly the notifications that were active
+            // for it — so after the batch, the surface has no entry for
+            // the completed task's reminders.
+            let Some((&task_id, _)) = tasks.iter().next() else {
+                return Ok(());
+            };
+            let mut done = tasks.clone();
+            let mut updated = done[&task_id].clone();
+            updated.done = Some(now);
+            done.insert(task_id, updated);
+            let active_before: BTreeSet<_> = active_notifications(&tasks, &reminders, &defaults, now)
+                .into_iter()
+                .filter(|n| matches!(n.anchor, ReminderAnchor::Task(t) if t == task_id))
+                .map(|n| (n.reminder, n.occurrence))
+                .collect();
+            let mut after = reminders.clone();
+            for (reminder, occurrence) in &active_before {
+                after.dismissals.insert(ReminderDismissal {
+                    reminder: *reminder,
+                    occurrence: *occurrence,
+                    dismissed_at: now,
+                });
+            }
+            let still_active: BTreeSet<_> =
+                active_notifications(&done, &after, &defaults, now)
+                    .into_iter()
+                    .filter(|n| matches!(n.anchor, ReminderAnchor::Task(t) if t == task_id))
+                    .map(|n| (n.reminder, n.occurrence))
+                    .collect();
+            prop_assert!(still_active.is_disjoint(&active_before));
         }
     }
 

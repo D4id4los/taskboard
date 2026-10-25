@@ -1,0 +1,113 @@
+---
+source: crates/taskboard-state/tests/snapshots.rs
+assertion_line: 115
+expression: "&persisted"
+---
+boards:
+  00000000-0000-0000-0000-000000000001:
+    id: 00000000-0000-0000-0000-000000000001
+    remote: ~
+    title: kiosk
+    color: 0000ff
+    archived: false
+    deleted: false
+    clocks:
+      title: "0001-01-01T00:00:00Z"
+      color: "0001-01-01T00:00:00Z"
+      archived: "0001-01-01T00:00:00Z"
+      deleted: "0001-01-01T00:00:00Z"
+    remote_seen: ~
+stacks:
+  00000000-0000-0000-0000-000000000001:
+    id: 00000000-0000-0000-0000-000000000001
+    remote: ~
+    board: 00000000-0000-0000-0000-000000000001
+    title: todo
+    order: 1
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:00:00Z"
+      order: "1970-01-01T10:00:00Z"
+      deleted: "1970-01-01T10:00:00Z"
+    remote_seen: ~
+tasks:
+  00000000-0000-0000-0000-000000000002:
+    id: 00000000-0000-0000-0000-000000000002
+    remote: ~
+    title: fired task
+    description: ""
+    duedate: "1970-01-01T11:00:00Z"
+    scheduled: ~
+    done: "1970-01-01T10:01:00Z"
+    stack: 00000000-0000-0000-0000-000000000001
+    order: 1
+    labels: []
+    effort: ~
+    importance: ~
+    urgency: ~
+    archived: false
+    deleted: false
+    clocks:
+      title: "1970-01-01T10:00:00Z"
+      description: "1970-01-01T10:00:00Z"
+      duedate: "1970-01-01T10:00:00Z"
+      scheduled: "1970-01-01T10:00:00Z"
+      done: "1970-01-01T10:01:00Z"
+      position: "1970-01-01T10:00:00Z"
+      labels: "1970-01-01T10:00:00Z"
+      effort: "1970-01-01T10:00:00Z"
+      importance: "1970-01-01T10:00:00Z"
+      urgency: "1970-01-01T10:00:00Z"
+      archived: "1970-01-01T10:00:00Z"
+      deleted: "1970-01-01T10:00:00Z"
+    remote_seen: ~
+labels: {}
+outbox:
+  - op_id: 00000000-0000-0000-0000-000000000001
+    op:
+      UpdateTask: 00000000-0000-0000-0000-000000000002
+    queued_at: "1970-01-01T10:01:00Z"
+  - op_id: 00000000-0000-0000-0000-000000000002
+    op:
+      UpdateAppData: 00000000-0000-0000-0000-000000000002
+    queued_at: "1970-01-01T10:01:00Z"
+validators: {}
+sync:
+  00000000-0000-0000-0000-000000000001:
+    phase: Idle
+    last_success: ~
+    pending_ops: 2
+    counters:
+      cycles: 0
+      pushes: 0
+      pulls: 0
+      failures: 0
+      offline_episodes: 0
+      last_cycle: ~
+    sidecar: Healthy
+    features:
+      card_startdate: false
+reminders:
+  rules:
+    00000000-0000-0000-0000-000000000003:
+      id: 00000000-0000-0000-0000-000000000003
+      task: 00000000-0000-0000-0000-000000000002
+      offset:
+        - -7200
+        - 0
+      created_at: "1970-01-01T09:59:00Z"
+      updated_at: "1970-01-01T09:59:00Z"
+  deliveries:
+    - reminder:
+        Rule: 00000000-0000-0000-0000-000000000003
+      occurrence: "1970-01-01T09:00:00Z"
+      delivered_at: "1970-01-01T09:00:00Z"
+  dismissals:
+    - reminder:
+        Rule: 00000000-0000-0000-0000-000000000003
+      occurrence: "1970-01-01T09:00:00Z"
+      dismissed_at: "1970-01-01T10:01:00Z"
+  snoozes: {}
+  muted: []
+  alarms: {}

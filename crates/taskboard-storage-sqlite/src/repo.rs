@@ -19,8 +19,8 @@ use taskboard_domain::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
 };
 use taskboard_domain::reminders::{
-    AdhocAlarm, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderSnoozeKey,
-    ReminderState,
+    AdhocAlarm, ReminderDelivery, ReminderDismissal, ReminderOffset, ReminderRef, ReminderRule,
+    ReminderSnoozeKey, ReminderState,
 };
 use taskboard_domain::state::{SyncPhase, SyncStates, derive_sync_states};
 use uuid::Uuid;
@@ -179,6 +179,13 @@ struct ReminderSnoozeRow {
     reminder: String,
     occurrence: DateTime<Utc>,
     rescheduled_to: DateTime<Utc>,
+}
+
+/// Raw `reminder_dismissals` row.
+struct ReminderDismissalRow {
+    reminder: String,
+    occurrence: DateTime<Utc>,
+    dismissed_at: DateTime<Utc>,
 }
 
 fn decode_adhoc_alarm(row: &AdhocAlarmRow) -> Result<AdhocAlarm, RepositoryError> {
@@ -475,6 +482,16 @@ fn decode_reminder_delivery(
     })
 }
 
+fn decode_reminder_dismissal(
+    row: &ReminderDismissalRow,
+) -> Result<ReminderDismissal, RepositoryError> {
+    Ok(ReminderDismissal {
+        reminder: decode_reminder_ref(&row.reminder)?,
+        occurrence: row.occurrence,
+        dismissed_at: row.dismissed_at,
+    })
+}
+
 fn decode_reminder_snooze(
     row: &ReminderSnoozeRow,
 ) -> Result<(ReminderSnoozeKey, DateTime<Utc>), RepositoryError> {
@@ -632,6 +649,17 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
+        let reminder_dismissal_rows = sqlx::query_as!(
+            ReminderDismissalRow,
+            r#"SELECT reminder,
+                      occurrence as "occurrence: DateTime<Utc>",
+                      dismissed_at as "dismissed_at: DateTime<Utc>"
+               FROM reminder_dismissals ORDER BY reminder, occurrence"#
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
         let reminder_snooze_rows = sqlx::query_as!(
             ReminderSnoozeRow,
             r#"SELECT reminder,
@@ -730,6 +758,10 @@ impl SqliteTaskRepository {
         for row in reminder_delivery_rows {
             deliveries.insert(decode_reminder_delivery(&row)?);
         }
+        let mut dismissals = BTreeSet::new();
+        for row in reminder_dismissal_rows {
+            dismissals.insert(decode_reminder_dismissal(&row)?);
+        }
         let mut snoozes = BTreeMap::new();
         for row in reminder_snooze_rows {
             let (key, rescheduled_to) = decode_reminder_snooze(&row)?;
@@ -747,6 +779,7 @@ impl SqliteTaskRepository {
         let reminders = ReminderState {
             rules,
             deliveries,
+            dismissals,
             snoozes,
             muted,
             alarms,
@@ -840,6 +873,7 @@ async fn execute_batch(
     let mut alarm_upserts = Vec::new();
     let mut alarm_deletes = Vec::new();
     let mut deliveries = Vec::new();
+    let mut dismissals = Vec::new();
     let mut snoozes = Vec::new();
     let mut mute_toggles = Vec::new();
     let mut clear_board_content = Vec::new();
@@ -867,6 +901,7 @@ async fn execute_batch(
             PersistenceAction::UpsertAdhocAlarm(alarm) => alarm_upserts.push(alarm),
             PersistenceAction::DeleteAdhocAlarm(alarm_id) => alarm_deletes.push(alarm_id),
             PersistenceAction::RecordReminderDelivery(delivery) => deliveries.push(delivery),
+            PersistenceAction::RecordReminderDismissal(dismissal) => dismissals.push(dismissal),
             PersistenceAction::RecordReminderSnooze(snooze) => snoozes.push(snooze),
             PersistenceAction::SetTaskRemindersMuted(task, muted) => {
                 mute_toggles.push((task, muted));
@@ -1202,10 +1237,11 @@ async fn execute_batch(
 
     // Reminder partitions (tasks precede rules — the only FK). Within
     // each partition batch order is preserved, mirroring `apply_actions`:
-    // rule upserts replace by id; a rule delete prunes its deliveries and
-    // snooze links with it; a delivery insert is set-union on the
-    // `(reminder, occurrence)` key (first write wins); a snooze link
-    // replaces the prior link for the same key; mute toggles membership.
+    // rule upserts replace by id; a rule delete prunes its deliveries,
+    // dismissals, and snooze links with it; a delivery or dismissal
+    // insert is set-union on the `(reminder, occurrence)` key (first
+    // write wins); a snooze link replaces the prior link for the same
+    // key; mute toggles membership.
     for rule in rule_upserts {
         // Whole-second column granularity: sub-second offsets
         // truncate toward zero (due-date reminders are minute-scale;
@@ -1234,6 +1270,13 @@ async fn execute_batch(
         let reminder = codec::reminder_ref_to_text(ReminderRef::Rule(*rule_id));
         sqlx::query!(
             r#"DELETE FROM reminder_deliveries WHERE reminder = ?"#,
+            reminder
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM reminder_dismissals WHERE reminder = ?"#,
             reminder
         )
         .execute(&mut *tx)
@@ -1285,6 +1328,13 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         sqlx::query!(
+            r#"DELETE FROM reminder_dismissals WHERE reminder = ?"#,
+            reminder
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
             r#"DELETE FROM reminder_snoozes WHERE reminder = ?"#,
             reminder
         )
@@ -1316,6 +1366,23 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(reminder = %codec::reminder_ref_to_text(delivery.reminder), "reminder delivery recorded");
+    }
+
+    for dismissal in dismissals {
+        // First write wins (the deliveries parity): a replayed dismissal
+        // is a no-op in SQL too.
+        sqlx::query!(
+            r#"INSERT INTO reminder_dismissals (reminder, occurrence, dismissed_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(reminder, occurrence) DO NOTHING"#,
+            codec::reminder_ref_to_text(dismissal.reminder),
+            dismissal.occurrence.to_rfc3339(),
+            dismissal.dismissed_at.to_rfc3339(),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(reminder = %codec::reminder_ref_to_text(dismissal.reminder), "reminder dismissal recorded");
     }
 
     for snooze in snoozes {
@@ -1366,6 +1433,20 @@ async fn execute_batch(
         // board's tasks; another board's rule facts are untouched).
         sqlx::query!(
             r#"DELETE FROM reminder_deliveries
+               WHERE reminder IN (SELECT 'rule:' || r.rule_id FROM reminder_rules r
+                                  WHERE r.task_id IN (SELECT t.id FROM tasks t
+                                                      JOIN stacks s ON t.stack = s.id
+                                                      WHERE s.board = ?1))
+                  OR reminder IN (SELECT 'default:' || t.id FROM tasks t
+                                  JOIN stacks s ON t.stack = s.id
+                                  WHERE s.board = ?1)"#,
+            board_uuid
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        sqlx::query!(
+            r#"DELETE FROM reminder_dismissals
                WHERE reminder IN (SELECT 'rule:' || r.rule_id FROM reminder_rules r
                                   WHERE r.task_id IN (SELECT t.id FROM tasks t
                                                       JOIN stacks s ON t.stack = s.id

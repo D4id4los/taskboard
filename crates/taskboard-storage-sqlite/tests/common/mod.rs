@@ -38,6 +38,9 @@ pub fn actions_from_state(state: &PersistedState) -> Vec<PersistenceAction> {
     for delivery in &state.reminders.deliveries {
         actions.push(PersistenceAction::RecordReminderDelivery(*delivery));
     }
+    for dismissal in &state.reminders.dismissals {
+        actions.push(PersistenceAction::RecordReminderDismissal(*dismissal));
+    }
     for (key, rescheduled_to) in &state.reminders.snoozes {
         actions.push(PersistenceAction::RecordReminderSnooze(ReminderSnooze {
             reminder: key.reminder,

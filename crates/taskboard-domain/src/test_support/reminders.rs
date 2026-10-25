@@ -131,7 +131,7 @@ pub fn task_map_strategy() -> impl Strategy<Value = BTreeMap<TaskId, Task>> {
 #[derive(Debug, Clone)]
 pub struct ReminderRow {
     /// Row kind: 0 = rule, 1 = delivery, 2 = snooze, 3 = mute,
-    /// 4 = adhoc alarm.
+    /// 4 = adhoc alarm, 5 = dismissal.
     pub kind: usize,
     /// Rule id (rule rows) / part of the reminder pick (delivery, snooze).
     pub rule: ReminderRuleId,
@@ -161,7 +161,7 @@ pub struct ReminderRow {
     pub label: String,
 }
 
-/// Raw reminder rows: `0..5` kinds × a handful of rows each.
+/// Raw reminder rows: `0..=5` kinds × a handful of rows each.
 ///
 /// # Panics
 ///
@@ -170,7 +170,7 @@ pub struct ReminderRow {
 pub fn reminder_rows_strategy() -> impl Strategy<Value = Vec<ReminderRow>> {
     prop::collection::vec(
         (
-            prop_oneof![Just(0_usize), Just(1), Just(2), Just(3), Just(4)],
+            prop_oneof![Just(0_usize), Just(1), Just(2), Just(3), Just(4), Just(5)],
             reminder_rule_id_strategy(),
             task_id_strategy(),
             adhoc_alarm_id_strategy(),
@@ -224,8 +224,8 @@ pub fn reminder_rows_strategy() -> impl Strategy<Value = Vec<ReminderRow>> {
 /// the `Default` of an existing task, or an existing alarm; muted tasks
 /// ⊆ generated tasks; alarm rows are referentially self-contained (the
 /// alarm map never references tasks). Normalizes to the persisted
-/// invariants (≤1 delivery per key, first wins; compacted snooze
-/// chains).
+/// invariants (≤1 delivery and ≤1 dismissal per key, first wins;
+/// compacted snooze chains).
 #[must_use]
 pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -> ReminderState {
     let task_ids: Vec<TaskId> = tasks.keys().copied().collect();
@@ -283,6 +283,19 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
                 };
                 alarm_ids.push(alarm.id);
                 state.alarms.insert(alarm.id, alarm);
+            }
+            5 => {
+                let Some(reminder) = pick_ref(&rule_ids, &task_ids, &alarm_ids, row.pick) else {
+                    continue;
+                };
+                let dismissal = crate::reminders::ReminderDismissal {
+                    reminder,
+                    occurrence: row.occurrence,
+                    dismissed_at: row.delivered_at,
+                };
+                if !state.is_dismissed(&reminder, &row.occurrence) {
+                    state.dismissals.insert(dismissal);
+                }
             }
             _ => {
                 state.muted.insert(task_ids[row.pick % task_ids.len()]);
@@ -342,6 +355,13 @@ mod tests {
             }
             for delivery in &state.deliveries {
                 match delivery.reminder {
+                    ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
+                    ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
+                    ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),
+                }
+            }
+            for dismissal in &state.dismissals {
+                match dismissal.reminder {
                     ReminderRef::Rule(id) => prop_assert!(state.rules.contains_key(&id)),
                     ReminderRef::Default(task) => prop_assert!(tasks.contains_key(&task)),
                     ReminderRef::Adhoc(id) => prop_assert!(state.alarms.contains_key(&id)),

@@ -939,6 +939,152 @@ async fn s32_capture_adopts_a_live_inbox_not_an_archived_one() {
     ));
 }
 
+/// A fired-notification seed: board + stack + a live open task with a due
+/// date, one explicit rule (2 h before due, so the occurrence is in the
+/// past at T0), and the delivery receipt for that occurrence — exactly
+/// one active notification, no prior dismissals.
+fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
+    use taskboard_domain::idgen::IdGenerator as _;
+    use taskboard_domain::{
+        PersistedState, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, Stack,
+        StackClocks, Task, TaskClocks,
+    };
+    let ids = CountingIds::new();
+    let board = common::board("kiosk");
+    let stack = Stack {
+        id: ids.new_stack_id(),
+        remote: None,
+        board: board.id,
+        title: "todo".into(),
+        order: 1,
+        archived: false,
+        deleted: false,
+        clocks: StackClocks {
+            title: ts(T0),
+            order: ts(T0),
+            deleted: ts(T0),
+        },
+        remote_seen: None,
+    };
+    let task = Task {
+        id: ids.new_task_id(),
+        remote: None,
+        title: "fired task".into(),
+        description: String::new(),
+        duedate: Some(ts(T0 + 3_600)),
+        scheduled: None,
+        done: None,
+        stack: stack.id,
+        order: 1,
+        labels: std::collections::BTreeSet::default(),
+        effort: None,
+        importance: None,
+        urgency: None,
+        archived: false,
+        deleted: false,
+        clocks: TaskClocks {
+            title: ts(T0),
+            description: ts(T0),
+            duedate: ts(T0),
+            scheduled: ts(T0),
+            done: ts(T0),
+            position: ts(T0),
+            labels: ts(T0),
+            effort: ts(T0),
+            importance: ts(T0),
+            urgency: ts(T0),
+            archived: ts(T0),
+            deleted: ts(T0),
+        },
+        remote_seen: None,
+    };
+    let rule = ReminderRule {
+        id: ids.new_reminder_rule_id(),
+        task: task.id,
+        offset: ReminderOffset::before(chrono::TimeDelta::try_hours(-2).unwrap())
+            .expect("negative offset"),
+        created_at: ts(T0 - 60),
+        updated_at: ts(T0 - 60),
+    };
+    let mut state = taskboard_domain::PersistedState {
+        boards: [(board.id, board)].into_iter().collect(),
+        stacks: [(stack.id, stack)].into_iter().collect(),
+        tasks: [(task.id, task)].into_iter().collect(),
+        ..PersistedState::default()
+    };
+    let rule_id = rule.id;
+    state.reminders.rules.insert(rule.id, rule);
+    state.reminders.deliveries.insert(ReminderDelivery {
+        reminder: ReminderRef::Rule(rule_id),
+        occurrence: ts(T0 - 3_600),
+        delivered_at: ts(T0 - 3_600),
+    });
+    state
+}
+
+/// S34 — user dismissal (R3): the in-app Dismiss button's command
+/// persists the dismissal stamped by the injected clock and queues the
+/// watched task's `UpdateAppData` op (rule refs ride the synced
+/// `dismissals` section via the document lane); the repeat is the
+/// accepted no-op.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s34_dismiss_reminder_persists_and_repeats_as_noop() {
+    let seed = seed_fired_rule_state();
+    let rule_id = *seed.reminders.rules.keys().next().expect("one rule");
+    let task_id = *seed.tasks.keys().next().expect("one task");
+    let mut s = Scenario::start_with(seed).await;
+    s.run(StateCommand::DismissReminder {
+        reminder: taskboard_domain::ReminderRef::Rule(rule_id),
+        occurrence: ts(T0 - 3_600),
+    })
+    .await;
+    // Repeat: a dismissal is permanent for the occurrence.
+    s.run(StateCommand::DismissReminder {
+        reminder: taskboard_domain::ReminderRef::Rule(rule_id),
+        occurrence: ts(T0 - 3_600),
+    })
+    .await;
+    let persisted = s.repo.snapshot();
+    assert_eq!(persisted.reminders.dismissals.len(), 1, "first write wins");
+    assert!(persisted.outbox.iter().any(|op| matches!(
+        op.op,
+        taskboard_domain::LocalOp::UpdateAppData(t) if t == task_id
+    )));
+    s.snap("s34");
+    drop(s);
+}
+
+/// S35 — the reopen hazard (R3.5.5): Mark Done dismisses the task's
+/// currently-active occurrences as explicit rows in the same batch;
+/// reopening emits nothing, and the stale occurrence stays dismissed.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s35_mark_done_dismisses_active_occurrences_reopen_does_not_resurrect() {
+    let seed = seed_fired_rule_state();
+    let task_id = *seed.tasks.keys().next().expect("one task");
+    let mut s = Scenario::start_with(seed).await;
+    s.run(StateCommand::SetTaskDone {
+        id: task_id,
+        done: true,
+    })
+    .await;
+    s.snap("s35a");
+    s.run(StateCommand::SetTaskDone {
+        id: task_id,
+        done: false,
+    })
+    .await;
+    let persisted = s.repo.snapshot();
+    assert_eq!(
+        persisted.reminders.dismissals.len(),
+        1,
+        "the reopen emits nothing and dismisses nothing away"
+    );
+    s.snap("s35b");
+    drop(s);
+}
+
 /// An id guaranteed absent from the state (the rejection test's target).
 fn stranger_board_id() -> taskboard_domain::BoardId {
     common::stranger_board_id()

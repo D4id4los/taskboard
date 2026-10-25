@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reminder_dismissals WHERE reminder = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "ebc525ac8995118a159f86531477288fd344bc428ce2262f9d583bb227b844c5"
+}
