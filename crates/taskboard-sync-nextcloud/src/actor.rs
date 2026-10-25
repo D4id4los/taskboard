@@ -662,6 +662,7 @@ async fn cycle(
                     tasks: &persisted.tasks,
                     stacks: &persisted.stacks,
                     rules: &persisted.reminders.rules,
+                    dismissals: &persisted.reminders.dismissals,
                 })
                 .await;
                 match verdict {

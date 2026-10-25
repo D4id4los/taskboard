@@ -36,9 +36,9 @@ use crate::merge::{
     RULE_R1, RULE_R3, RULE_R4, RULE_R5, RULE_R6, RULE_R9, adopt_board_after_delete_push,
     adopt_board_after_push, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
     adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, adopt_task_after_push,
-    finalize_pushed_task_delete, fold_reminder_rules, fold_task_app_data, merge_board, merge_label,
-    merge_stack, merge_task, remote_wins, tombstone_board, tombstone_label, tombstone_stack,
-    tombstone_task, utc_min,
+    finalize_pushed_task_delete, fold_reminder_dismissals, fold_reminder_rules, fold_task_app_data,
+    merge_board, merge_label, merge_stack, merge_task, remote_wins, tombstone_board,
+    tombstone_label, tombstone_stack, tombstone_task, utc_min,
 };
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
@@ -675,6 +675,10 @@ pub fn apply_sync_report(
     let mut folded_rules: Option<
         std::collections::BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
     > = None;
+    let mut dismissal_actions: Vec<PersistenceAction> = Vec::new();
+    let mut folded_dismissals: Option<
+        std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
+    > = None;
     if let crate::messages::AppDataEvidence::Document(document) = app_data {
         let task_intents = pending_task_intents(outbox, read_at);
         for remote in &snapshot.tasks {
@@ -703,6 +707,21 @@ pub fn apply_sync_report(
                 }
                 for rule_id in changes.deletes {
                     rule_actions.push(PersistenceAction::DeleteReminderRule(rule_id));
+                }
+            }
+            // The dismissals fold rides the same pass, AFTER the rules
+            // fold (design D-9's fold-order property: a rule adopted in
+            // this cycle is immediately suppressed by already-present
+            // dismissal rows, before the local device can fire once).
+            // Guard-immune by construction: no intent flag is consulted
+            // — a dismissal is an append-only fact, never edited.
+            if let Some(entries) = &document.sections.dismissals
+                && let Some(entry) = entries.get(&card_key)
+            {
+                let dismissals =
+                    folded_dismissals.get_or_insert_with(|| current.reminders.dismissals.clone());
+                for dismissal in fold_reminder_dismissals(dismissals, entry) {
+                    dismissal_actions.push(PersistenceAction::RecordReminderDismissal(dismissal));
                 }
             }
         }
@@ -811,6 +830,7 @@ pub fn apply_sync_report(
     // The rules fold's deltas ride the same batch: the persistence view
     // and the memory view below are the same deltas by construction.
     actions.extend(rule_actions);
+    actions.extend(dismissal_actions);
     // Outbox order, not the HashMap's: equal inputs must yield equal
     // batches (the convergence property; the map is a lookup index).
     for entry in outbox {
@@ -855,6 +875,7 @@ pub fn apply_sync_report(
         // everything else carries through untouched.
         reminders: crate::reminders::ReminderState {
             rules: folded_rules.unwrap_or_else(|| current.reminders.rules.clone()),
+            dismissals: folded_dismissals.unwrap_or_else(|| current.reminders.dismissals.clone()),
             ..current.reminders.clone()
         },
         sync,
@@ -1578,6 +1599,14 @@ mod tests {
         entries: &[(u64, TaskEntry)],
         rules: Option<&[(u64, RulesEntry)]>,
     ) -> AppDataEvidence {
+        document_with_dismissals(entries, rules, None)
+    }
+
+    fn document_with_dismissals(
+        entries: &[(u64, TaskEntry)],
+        rules: Option<&[(u64, RulesEntry)]>,
+        dismissals: Option<&[(u64, crate::appdata::DismissalsEntry)]>,
+    ) -> AppDataEvidence {
         let mut tasks_map = std::collections::BTreeMap::new();
         for (card, entry) in entries {
             tasks_map.insert(card.to_string(), entry.clone());
@@ -1589,12 +1618,20 @@ mod tests {
             }
             m
         });
+        let dismissals_map = dismissals.map(|ds| {
+            let mut m = std::collections::BTreeMap::new();
+            for (card, entry) in ds {
+                m.insert(card.to_string(), entry.clone());
+            }
+            m
+        });
         AppDataEvidence::Document(Box::new(AppDataDocument {
             format: crate::appdata::APPDATA_FORMAT,
             board: board(REMOTE_BOARD_NUM),
             sections: AppDataSections {
                 tasks: (!tasks_map.is_empty()).then_some(tasks_map),
                 reminder_rules: rules_map,
+                dismissals: dismissals_map,
                 unknown: std::collections::BTreeMap::new(),
             },
             unknown: std::collections::BTreeMap::new(),
@@ -1719,6 +1756,169 @@ mod tests {
             actions.iter().any(
                 |a| matches!(a, PersistenceAction::UpsertReminderRule(r) if r.id == adopted_id)
             )
+        );
+    }
+
+    // ---- chunk B: the dismissals fold (design D-4/D-9) ----------------
+
+    use crate::appdata::{DismissalEntry, dismissal_wire_key};
+    use crate::reminders::{ReminderDefaults, ReminderDismissal, ReminderRef};
+
+    fn dismissals_entry_for_test(
+        entries: &[(String, DismissalEntry)],
+    ) -> crate::appdata::DismissalsEntry {
+        crate::appdata::DismissalsEntry {
+            dismissals: entries.iter().cloned().collect(),
+            unknown: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn the_dismissals_fold_suppresses_the_adopted_rules_occurrences() {
+        // The fold-order property (D-9/P4): a rule and its dismissal
+        // rows arrive in the SAME document pass — the adopted rule must
+        // be suppressed before this device can fire once, while a
+        // sibling rule without dismissals still fires.
+        let task = bound_task(1);
+        let mut state = base_state(task);
+        let task_id = task_by_card(&state, 1).id;
+        let mut task = state.tasks.get(&task_id).unwrap().clone();
+        task.duedate = Some(ts(BASE + 1_000));
+        task.clocks.duedate = ts(BASE + 1_000);
+        state.tasks.insert(task_id, task);
+
+        let dismissed_rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xa));
+        let live_rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xb));
+        let rule = |id| crate::reminders::ReminderRule {
+            id,
+            task: task_id,
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: ts(BASE + 100),
+            updated_at: ts(BASE + 100),
+        };
+        let rules_entry = RulesEntry {
+            rules: [
+                (
+                    "00000000-0000-0000-0000-00000000000a".to_owned(),
+                    RuleEntry::Rule {
+                        offset: crate::reminders::ReminderOffset::at_due(),
+                        created: ts(BASE + 100),
+                        clock: ts(BASE + 100),
+                    },
+                ),
+                (
+                    "00000000-0000-0000-0000-00000000000b".to_owned(),
+                    RuleEntry::Rule {
+                        offset: crate::reminders::ReminderOffset::at_due(),
+                        created: ts(BASE + 100),
+                        clock: ts(BASE + 100),
+                    },
+                ),
+            ]
+            .into(),
+            unknown: std::collections::BTreeMap::new(),
+        };
+        let occurrence = ts(BASE + 1_000);
+        let dismissals = dismissals_entry_for_test(&[(
+            dismissal_wire_key(dismissed_rule, occurrence),
+            DismissalEntry::Dismissed {
+                dismissed_at: ts(BASE + 200),
+            },
+        )]);
+        let evidence =
+            document_with_dismissals(&[], Some(&[(1, rules_entry)]), Some(&[(1, dismissals)]));
+        let (app, actions) = fold_report(
+            &state,
+            &[],
+            &single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE),
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        // Both rules adopted; the dismissal row folded into the state.
+        let adopted_dismissed = rule(dismissed_rule);
+        let adopted_live = rule(live_rule);
+        assert_eq!(
+            app.reminders.rules.get(&dismissed_rule),
+            Some(&adopted_dismissed)
+        );
+        assert_eq!(app.reminders.rules.get(&live_rule), Some(&adopted_live));
+        let folded_row = ReminderDismissal {
+            reminder: ReminderRef::Rule(dismissed_rule),
+            occurrence,
+            dismissed_at: ts(BASE + 200),
+        };
+        assert!(app.reminders.dismissals.contains(&folded_row));
+        assert!(actions.contains(&PersistenceAction::RecordReminderDismissal(folded_row)));
+
+        // The suppression, evaluated the way the tick does: the
+        // dismissed rule fires nothing, the sibling rule still fires its
+        // occurrence — same pass, one derivation.
+        let firings = crate::reminders::due_firings(
+            &app.tasks,
+            &app.reminders,
+            &ReminderDefaults::default(),
+            ts(BASE + 3_600),
+        );
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].reminder, ReminderRef::Rule(live_rule));
+        assert_eq!(firings[0].occurrence, occurrence);
+    }
+
+    #[test]
+    fn the_dismissals_fold_is_guard_immune() {
+        // The D-S6 intent flag protects local rule EDITS; a dismissal is
+        // an append-only fact, so the guarded task still folds its
+        // dismissal rows (D-9) — only the rules fold collapses.
+        let task = bound_task(1);
+        let state = base_state(task);
+        let task_id = task_by_card(&state, 1).id;
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(555)),
+            op: LocalOp::UpdateAppData(task_id),
+            queued_at: ts(BASE + 10), // after read_at: the guard holds
+        };
+        let rules_entry = RulesEntry {
+            rules: [(
+                "00000000-0000-0000-0000-00000000000a".to_owned(),
+                RuleEntry::Rule {
+                    offset: crate::reminders::ReminderOffset::at_due(),
+                    created: ts(BASE + 100),
+                    clock: ts(BASE + 100),
+                },
+            )]
+            .into(),
+            unknown: std::collections::BTreeMap::new(),
+        };
+        let occurrence = ts(BASE + 1_000);
+        let dismissals = dismissals_entry_for_test(&[(
+            dismissal_wire_key(
+                crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xa)),
+                occurrence,
+            ),
+            DismissalEntry::Dismissed {
+                dismissed_at: ts(BASE + 200),
+            },
+        )]);
+        let evidence =
+            document_with_dismissals(&[], Some(&[(1, rules_entry)]), Some(&[(1, dismissals)]));
+        let (app, actions) = fold_report(
+            &state,
+            &[op],
+            &single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE),
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE,
+        );
+        assert!(
+            app.reminders.rules.is_empty(),
+            "the guarded rules fold collapses"
+        );
+        assert_eq!(app.reminders.dismissals.len(), 1, "the dismissal folded");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::RecordReminderDismissal(_)))
         );
     }
 

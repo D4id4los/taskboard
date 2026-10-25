@@ -3144,6 +3144,43 @@ mod flush_seed {
         Arc::new(InMemoryRepository::with_state(state))
     }
 
+    /// A bound task carrying one rule, one Rule-ref dismissal of that
+    /// rule, one Default-ref dismissal (device-local — must never reach
+    /// the wire), and the queued `UpdateAppData` op the dismiss command
+    /// enqueued (design D-8).
+    pub(crate) fn repo_with_dismissal_flush_work() -> Arc<InMemoryRepository> {
+        let mut state = flush_work_state(false, true, false);
+        let task_id = taskboard_domain::TaskId::from(uuid(100));
+        let rule_id = taskboard_domain::ReminderRuleId::from(uuid(10));
+        state.reminders.rules.insert(
+            rule_id,
+            taskboard_domain::ReminderRule {
+                id: rule_id,
+                task: task_id,
+                offset: taskboard_domain::ReminderOffset::at_due(),
+                created_at: ts(T),
+                updated_at: ts(T),
+            },
+        );
+        state
+            .reminders
+            .dismissals
+            .insert(taskboard_domain::ReminderDismissal {
+                reminder: taskboard_domain::ReminderRef::Rule(rule_id),
+                occurrence: ts(T + 1_800),
+                dismissed_at: ts(T + 3_600),
+            });
+        state
+            .reminders
+            .dismissals
+            .insert(taskboard_domain::ReminderDismissal {
+                reminder: taskboard_domain::ReminderRef::Default(task_id),
+                occurrence: ts(T + 1_800),
+                dismissed_at: ts(T + 3_600),
+            });
+        Arc::new(InMemoryRepository::with_state(state))
+    }
+
     /// The attachment-write routes: content PUT (update), restore, and
     /// the create-path upload. Each mock records its hits via the
     /// server's received-requests log (no counters needed).
@@ -3704,6 +3741,79 @@ async fn f19_rebuild_trigger_widens_the_scope_past_the_group() {
         tasks.contains_key("55") && tasks.contains_key("56"),
         "the rebuild carries the group's task AND the bystander: {tasks:?}"
     );
+}
+
+/// G-20 (chunk B): the dismissal lane rides the flush — a local
+/// Rule-ref dismissal plus its `UpdateAppData` op lands as a
+/// `dismissals` section on the wire, keyed by
+/// `"<rule uuid>|<rfc3339 occurrence>"`, with no `default:`/`alarm:`
+/// content anywhere in the uploaded document (the fail-closed emission
+/// filter, design D-4; the fold side + suppression is pinned at the
+/// pipeline layer, `the_dismissals_fold_suppresses_the_adopted_rules_occurrences`).
+#[tokio::test(start_paused = true)]
+async fn f20_dismissal_rows_flush_rule_ref_only_through_the_document() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+    flush_seed::mount_content_put(&server, 200).await;
+
+    let mut actor = spawn(&server, flush_seed::repo_with_dismissal_flush_work());
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { pushes, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert!(
+        pushes.iter().any(|outcome| {
+            outcome.op == OpId(uuid(999))
+                && matches!(outcome.result, PushResult::Applied { echo: None })
+        }),
+        "the dismissal flush op completes: {pushes:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    let put = requests
+        .iter()
+        .find(|r| r.url.path().contains("/attachment/deck_file:"))
+        .unwrap();
+    let raw = String::from_utf8_lossy(&put.body);
+    let json_start = raw.find("{\"format\"").unwrap();
+    let mut de = serde_json::Deserializer::from_str(&raw[json_start..]);
+    let body: serde_json::Value = serde::Deserialize::deserialize(&mut de).unwrap();
+    let dismissals = body["sections"]["dismissals"]["55"]["dismissals"]
+        .as_object()
+        .expect("the dismissals section rode the flush");
+    let rule_uuid = uuid(10).to_string();
+    let row_key = dismissals
+        .keys()
+        .find(|k| k.starts_with(&rule_uuid))
+        .expect("the task's Rule-ref dismissal row is on the wire");
+    assert!(
+        row_key.ends_with(&format!("|{}", ts(T + 1_800).to_rfc3339())),
+        "the occurrence rides the key: {row_key}"
+    );
+    assert_eq!(
+        dismissals[row_key]["dismissed_at"].as_str(),
+        Some(
+            ts(T + 3_600)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                .as_str()
+        ),
+        "the embedded LWW clock rides the row"
+    );
+    // The fail-closed pin at the wire: no local identity, no
+    // default:/alarm: key form anywhere in the uploaded document.
+    let full = body.to_string();
+    assert!(
+        !full.contains(&uuid(100).to_string()),
+        "the local TaskId leaked: {full}"
+    );
+    assert!(!full.contains("default:"), "{full}");
+    assert!(!full.contains("alarm:"), "{full}");
 }
 
 /// F5: a transport-class upload failure strands — zero outcomes, the

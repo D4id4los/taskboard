@@ -498,6 +498,51 @@ pub fn fold_reminder_rules(
     changes
 }
 
+/// The sidecar document fold for one card's synced dismissals (design
+/// D-4/D-9, the §5b position right after [`fold_reminder_rules`]).
+/// Rows fold **additively** into the dismissal set — append-only facts,
+/// never edited, so no clock comparison and no tombstones (a dismissal
+/// is permanent for its occurrence):
+///
+/// - A `Dismissed` row whose key parses as a `(rule uuid, occurrence)`
+///   pair inserts `ReminderDismissal { Rule(rule), occurrence,
+///   dismissed_at }` unless the `(reminder, occurrence)` key is already
+///   present (first-write-wins, the deliveries-fold discipline).
+/// - **Guard-immune**: no `protected` parameter — the D-S6 intent flag
+///   protects local *edits*; there is no "edit a dismissal" verb.
+/// - [`crate::appdata::DismissalEntry::Verbatim`] rows never fold.
+/// - Unparseable keys — a hand-edited document's `default:`/`alarm:`
+///   rows, malformed pairs — are **ignored without being dropped**: the
+///   codec carried them as `Verbatim`, and the union's additivity keeps
+///   them in the document (the verbatim relay, design D-4's fold side).
+///
+/// Returns the newly folded rows (the pipeline turns them into
+/// `RecordReminderDismissal` actions — batch and view are the same
+/// deltas by construction).
+pub fn fold_reminder_dismissals(
+    dismissals: &mut std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
+    entry: &crate::appdata::DismissalsEntry,
+) -> Vec<crate::reminders::ReminderDismissal> {
+    let mut folded = Vec::new();
+    for (key, row) in &entry.dismissals {
+        let crate::appdata::DismissalEntry::Dismissed { dismissed_at } = row else {
+            continue; // verbatim content never folds
+        };
+        let Some((rule_id, occurrence)) = crate::appdata::parse_dismissal_wire_key(key) else {
+            continue; // not a modeled key: ignored, kept verbatim
+        };
+        let dismissal = crate::reminders::ReminderDismissal {
+            reminder: crate::reminders::ReminderRef::Rule(rule_id),
+            occurrence,
+            dismissed_at: *dismissed_at,
+        };
+        if dismissals.insert(dismissal) {
+            folded.push(dismissal);
+        }
+    }
+    folded
+}
+
 /// R3 — observed remote absence of a bound card: delete-wins fallback.
 /// The tombstone's write time is the *observation* time (`observed_at`,
 /// i.e. "now" passed in by the engine); the remote binding is cleared.
@@ -2403,5 +2448,84 @@ mod tests {
                 prop_assert_eq!(merged.clocks.effort, ts(doc_secs));
             }
         }
+    }
+
+    // ---- chunk B: the dismissals fold (design D-4/D-9) ----------------
+
+    use crate::appdata::{DismissalEntry, DismissalsEntry, dismissal_wire_key};
+    use crate::reminders::{ReminderDismissal, ReminderRef};
+
+    fn dismissals_entry(entries: &[(&str, DismissalEntry)]) -> DismissalsEntry {
+        DismissalsEntry {
+            dismissals: entries
+                .iter()
+                .map(|(k, e)| ((*k).to_owned(), e.clone()))
+                .collect(),
+            unknown: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn dismissals_fold_adopts_rows_and_replays_are_no_ops() {
+        let mut dismissals = BTreeSet::new();
+        let key = dismissal_wire_key(
+            crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xa)),
+            ts(BASE + 100),
+        );
+        let entry = dismissals_entry(&[(
+            &key,
+            DismissalEntry::Dismissed {
+                dismissed_at: ts(BASE + 110),
+            },
+        )]);
+        let folded = fold_reminder_dismissals(&mut dismissals, &entry);
+        assert_eq!(folded.len(), 1);
+        assert_eq!(
+            folded[0],
+            ReminderDismissal {
+                reminder: ReminderRef::Rule(crate::ids::ReminderRuleId::from(
+                    uuid::Uuid::from_u128(0xa)
+                )),
+                occurrence: ts(BASE + 100),
+                dismissed_at: ts(BASE + 110),
+            }
+        );
+        // The replayed row (the next cycle re-folds the same document)
+        // is the accepted no-op.
+        let replayed = fold_reminder_dismissals(&mut dismissals, &entry);
+        assert_eq!(replayed, Vec::new());
+        assert_eq!(dismissals.len(), 1);
+    }
+
+    #[test]
+    fn dismissals_fold_ignores_verbatim_and_unmodeled_keys() {
+        let mut dismissals = BTreeSet::new();
+        let entry = dismissals_entry(&[
+            (
+                "default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
+                DismissalEntry::Dismissed {
+                    dismissed_at: ts(BASE + 1),
+                },
+            ),
+            (
+                "alarm:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00",
+                DismissalEntry::Dismissed {
+                    dismissed_at: ts(BASE + 2),
+                },
+            ),
+            (
+                "future-shape",
+                DismissalEntry::Verbatim(serde_json::json!(1)),
+            ),
+            (
+                "garbage",
+                DismissalEntry::Dismissed {
+                    dismissed_at: ts(BASE),
+                },
+            ),
+        ]);
+        let folded = fold_reminder_dismissals(&mut dismissals, &entry);
+        assert_eq!(folded, Vec::new());
+        assert!(dismissals.is_empty());
     }
 }
