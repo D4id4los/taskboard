@@ -57,8 +57,9 @@ pub mod test_support;
 pub(crate) mod merge_testutil;
 
 pub use appdata::{
-    ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections, MODELED_TASK_FIELD_KEYS,
-    ModeledValue, RuleEntry, RulesEntry, TaskEntry, TaskFieldWrite, derive_rule_tombstones,
+    ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections, DismissalEntry,
+    DismissalsEntry, MODELED_TASK_FIELD_KEYS, ModeledValue, RuleEntry, RulesEntry, TaskEntry,
+    TaskFieldWrite, derive_rule_tombstones, dismissal_wire_key, dismissals_entry_for,
     lane_gc_scheduled, modeled_key, prune_absent_cards, rules_entry_for, task_entry_for, union,
 };
 pub use capabilities::{DeckFeatures, flags_for};
@@ -81,8 +82,9 @@ pub use ids::{
 pub use merge::{
     RuleFoldChanges, adopt_board_if_newer, adopt_label_after_push, adopt_remote_board,
     adopt_remote_label, adopt_remote_stack, adopt_remote_task, adopt_stack_after_push,
-    adopt_task_after_push, finalize_pushed_task_delete, fold_reminder_rules, merge_label,
-    merge_stack, merge_task, tombstone_label, tombstone_stack, tombstone_task,
+    adopt_task_after_push, finalize_pushed_task_delete, fold_reminder_dismissals,
+    fold_reminder_rules, merge_label, merge_stack, merge_task, tombstone_label, tombstone_stack,
+    tombstone_task,
 };
 pub use messages::{
     AppDataEvidence, AppDataUnreadable, EngineSignal, LabelChanges, StateCommand, SyncCommand,

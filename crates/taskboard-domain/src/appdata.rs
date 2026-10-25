@@ -57,8 +57,11 @@ pub struct AppDataDocument {
     pub unknown: BTreeMap<String, Value>,
 }
 
-/// The day-one sections. Reserved names (`proofs`, `settings`) and
-/// unknown sections land in `unknown` verbatim.
+/// The day-one sections. The `proofs` name stays **reserved-but-
+/// unclaimed** (it misnames the synced fact under the R3 model — the
+/// user dismissal, not a mechanical fire proof — and no future wave may
+/// invent a colliding meaning for it); `settings` stays reserved. Both,
+/// and any unknown section, land in `unknown` verbatim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AppDataSections {
     /// Per-card app-field entries, keyed by decimal remote card id.
@@ -71,6 +74,10 @@ pub struct AppDataSections {
         skip_serializing_if = "Option::is_none"
     )]
     pub reminder_rules: Option<BTreeMap<String, RulesEntry>>,
+    /// Per-card synced user-dismissal entries, keyed by decimal remote
+    /// card id (the `dismissals` section, design D-1/D-9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissals: Option<BTreeMap<String, DismissalsEntry>>,
     /// Unknown sections: carried verbatim.
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, Value>,
@@ -421,6 +428,147 @@ fn decode_offset(raw: Option<&Value>) -> Result<ReminderOffset, ()> {
     ReminderOffset::before(chrono::TimeDelta::seconds(secs)).map_err(|_| ())
 }
 
+/// One card's synced-dismissal entry (the `dismissals` section, design
+/// D-1/D-9) — the [`RulesEntry`] shape discipline over a tombstone-free
+/// payload: dismissals are permanent for their occurrence, so there are
+/// no deletion tombstones to model.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DismissalsEntry {
+    /// Keyed by [`dismissal_wire_key`] — `"<rule uuid>|<rfc3339
+    /// occurrence>"` (JSON map keys must be strings; the
+    /// `ReminderSnoozeKey` string-encoding precedent). The rule UUID's
+    /// document presence *is* its remote identity (D-S9); no local
+    /// `TaskId`/`AdhocAlarmId` text form is ever representable here.
+    pub dismissals: BTreeMap<String, DismissalEntry>,
+    /// Unknown keys beside `dismissals`: carried verbatim.
+    pub unknown: BTreeMap<String, Value>,
+}
+
+impl Serialize for DismissalsEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serde_json::Map::new();
+        if !self.dismissals.is_empty() {
+            let mut dismissals = serde_json::Map::new();
+            for (key, entry) in &self.dismissals {
+                dismissals.insert(
+                    key.clone(),
+                    serde_json::to_value(entry).map_err(serde::ser::Error::custom)?,
+                );
+            }
+            map.insert("dismissals".to_owned(), Value::Object(dismissals));
+        }
+        for (key, value) in &self.unknown {
+            map.insert(key.clone(), value.clone());
+        }
+        Value::Object(map).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DismissalsEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        let mut entry = DismissalsEntry::default();
+        let Value::Object(map) = raw else {
+            return Err(serde::de::Error::custom(
+                "a dismissals entry must be an object",
+            ));
+        };
+        for (key, value) in map {
+            if key == "dismissals" {
+                let Value::Object(dismissals) = value else {
+                    // A non-object section body is unmodeled content,
+                    // never a document failure.
+                    entry.unknown.insert("dismissals".to_owned(), value);
+                    continue;
+                };
+                for (row_key, row_value) in dismissals {
+                    entry
+                        .dismissals
+                        .insert(row_key, DismissalEntry::deserialize_verbatim(row_value));
+                }
+            } else {
+                entry.unknown.insert(key, value);
+            }
+        }
+        Ok(entry)
+    }
+}
+
+/// One synced dismissal's document shape, or a shape this version does
+/// not model (preserved verbatim, never folded — D-S2's materialization
+/// rule). Wire shape: `{ "dismissed_at": rfc3339 }` — the embedded LWW
+/// clock (D-7); the `(rule, occurrence)` identity lives in the map key,
+/// so the wire carries a bare rule UUID and can never carry a local
+/// `TaskId`/`AdhocAlarmId` (the fail-closed mint, design D-4).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DismissalEntry {
+    /// `{ "dismissed_at": rfc3339 }`.
+    Dismissed { dismissed_at: DateTime<Utc> },
+    /// A shape this version does not model: preserved verbatim.
+    Verbatim(Value),
+}
+
+impl DismissalEntry {
+    /// The entry's write clock; `None` for verbatim content (which the
+    /// union therefore never orders against a clocked entry).
+    #[must_use]
+    pub fn clock(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Dismissed { dismissed_at } => Some(*dismissed_at),
+            Self::Verbatim(_) => None,
+        }
+    }
+
+    /// Decodes one dismissal row; an unmodelable shape stays `Verbatim`
+    /// with the original value (never an error).
+    fn deserialize_verbatim(raw: Value) -> Self {
+        let Value::Object(map) = &raw else {
+            return Self::Verbatim(raw);
+        };
+        if let Ok(dismissed_at) =
+            serde_json::from_value(map.get("dismissed_at").cloned().unwrap_or(Value::Null))
+        {
+            return Self::Dismissed { dismissed_at };
+        }
+        Self::Verbatim(raw)
+    }
+}
+
+impl Serialize for DismissalEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Dismissed { dismissed_at } => {
+                serde_json::json!({ "dismissed_at": dismissed_at }).serialize(serializer)
+            }
+            Self::Verbatim(value) => value.serialize(serializer),
+        }
+    }
+}
+
+/// The dismissal row's wire key: `"<rule uuid>|<rfc3339 occurrence>"`.
+/// Neither component can contain `|` (a UUID is hex+dashes, rfc3339 is
+/// digits/punct), so the encoding is injective.
+#[must_use]
+pub fn dismissal_wire_key(rule: crate::ids::ReminderRuleId, occurrence: DateTime<Utc>) -> String {
+    format!("{}|{}", rule.as_uuid(), occurrence.to_rfc3339())
+}
+
+/// Parses [`dismissal_wire_key`]; `None` for any key this version does
+/// not model (a `default:`/`alarm:`-prefixed row a hand-edited document
+/// might carry, a malformed pair, …) — the fold ignores it, the codec
+/// relays it verbatim.
+pub(crate) fn parse_dismissal_wire_key(
+    key: &str,
+) -> Option<(crate::ids::ReminderRuleId, DateTime<Utc>)> {
+    let (uuid_part, occurrence_part) = key.split_once('|')?;
+    let uuid = uuid::Uuid::parse_str(uuid_part).ok()?;
+    let occurrence = DateTime::parse_from_rfc3339(occurrence_part).ok()?;
+    Some((
+        crate::ids::ReminderRuleId::from(uuid),
+        occurrence.with_timezone(&Utc),
+    ))
+}
+
 /// The read-modify-write merge the flush performs (D-S4 item 4): per-key
 /// embedded-clock LWW — the newer clock wins, equal clocks resolve to
 /// `overlay` (the local side being flushed); every part the union does
@@ -459,6 +607,21 @@ pub fn union(base: &AppDataDocument, overlay: &AppDataDocument) -> AppDataDocume
                     merged
                         .entry(card.clone())
                         .and_modify(|base_entry| union_rules_entry(base_entry, overlay_entry))
+                        .or_insert_with(|| overlay_entry.clone());
+                }
+                Some(merged)
+            }
+            (Some(b), None) => Some(b.clone()),
+            (None, Some(o)) => Some(o.clone()),
+            (None, None) => None,
+        },
+        dismissals: match (&base.sections.dismissals, &overlay.sections.dismissals) {
+            (Some(b), Some(o)) => {
+                let mut merged = b.clone();
+                for (card, overlay_entry) in o {
+                    merged
+                        .entry(card.clone())
+                        .and_modify(|base_entry| union_dismissals_entry(base_entry, overlay_entry))
                         .or_insert_with(|| overlay_entry.clone());
                 }
                 Some(merged)
@@ -534,6 +697,34 @@ fn union_rules_entry(base: &mut RulesEntry, overlay: &RulesEntry) {
     }
 }
 
+/// Per-row embedded-clock LWW on `dismissed_at` (D-7 — the same
+/// machinery as the rules union; a dismissal's single write site makes
+/// LWW degenerate to set-union in practice). Verbatim shapes are
+/// additive and never displaced by overlay content this version cannot
+/// order.
+fn union_dismissals_entry(base: &mut DismissalsEntry, overlay: &DismissalsEntry) {
+    for (key, overlay_entry) in &overlay.dismissals {
+        let winner = match base.dismissals.get(key) {
+            None => Some(overlay_entry.clone()),
+            Some(base_entry) => match (base_entry, overlay_entry) {
+                (DismissalEntry::Verbatim(_), _) | (_, DismissalEntry::Verbatim(_)) => None,
+                (b, o) => match (b.clock(), o.clock()) {
+                    (Some(bc), Some(oc)) if bc >= oc => None,
+                    _ => Some(o.clone()),
+                },
+            },
+        };
+        if let Some(winner) = winner {
+            base.dismissals.insert(key.clone(), winner);
+        }
+    }
+    for (key, value) in &overlay.unknown {
+        base.unknown
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+}
+
 /// The flush GC (D-S2): removes the entries — both known sections,
 /// tombstones included — whose decimal card key is absent from
 /// `present_cards` (the cycle's complete snapshot's card set). Entries
@@ -560,6 +751,10 @@ pub fn prune_absent_cards(
     if let Some(rules) = &document.sections.reminder_rules {
         let kept = keep(rules, present_cards);
         pruned.sections.reminder_rules = (!kept.is_empty()).then_some(kept);
+    }
+    if let Some(dismissals) = &document.sections.dismissals {
+        let kept = keep(dismissals, present_cards);
+        pruned.sections.dismissals = (!kept.is_empty()).then_some(kept);
     }
     pruned
 }
@@ -638,6 +833,50 @@ pub fn rules_entry_for(
         .collect();
     RulesEntry {
         rules: mapped,
+        unknown: BTreeMap::new(),
+    }
+}
+
+/// Builds one card's overlay `DismissalsEntry` from the local dismissal
+/// set: the task's **Rule-ref** dismissals only, each as
+/// `Dismissed { dismissed_at }` keyed by [`dismissal_wire_key`] (D-11).
+///
+/// **Fail-closed emission filter (design D-4).** The state-side
+/// `ReminderDismissal` is representable for all [`ReminderRef`] kinds
+/// (local Default/Adhoc dismissals must clear in-app), so the filter —
+/// not the type — is the boundary: `Default(TaskId)` and
+/// `Adhoc(AdhocAlarmId)` rows are skipped here and can never reach the
+/// wire, because the wire key shape admits a rule UUID only. The rule's
+/// task scoping mirrors [`rules_entry_for`] (`rule.task == task`), and
+/// the proptest pin (`no_local_ids_reach_the_dismissals_wire`) is the
+/// tripwire against a future widening. Orphan rows (rule deleted
+/// locally) are filtered by the same scoping; their already-uploaded
+/// rows persist in the base document via the union's additivity.
+#[must_use]
+pub fn dismissals_entry_for(
+    dismissals: &std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
+    rules: &BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>,
+    task: crate::ids::TaskId,
+) -> DismissalsEntry {
+    let mapped: BTreeMap<String, DismissalEntry> = dismissals
+        .iter()
+        .filter_map(|d| match d.reminder {
+            crate::reminders::ReminderRef::Rule(rule_id) => {
+                rules.get(&rule_id).filter(|rule| rule.task == task)?;
+                Some((
+                    dismissal_wire_key(rule_id, d.occurrence),
+                    DismissalEntry::Dismissed {
+                        dismissed_at: d.dismissed_at,
+                    },
+                ))
+            }
+            crate::reminders::ReminderRef::Default(_) | crate::reminders::ReminderRef::Adhoc(_) => {
+                None
+            }
+        })
+        .collect();
+    DismissalsEntry {
+        dismissals: mapped,
         unknown: BTreeMap::new(),
     }
 }
@@ -1407,7 +1646,224 @@ mod tests {
         sections
             .unknown
             .insert("proofs".to_owned(), serde_json::json!({"hash": "abc"}));
+        sections.dismissals = Some(
+            [(
+                "55".to_owned(),
+                DismissalsEntry {
+                    dismissals: [(
+                        dismissal_wire_key(
+                            crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(
+                                0x018f_0000_0000_7000_8000_0000_0000_0001,
+                            )),
+                            ts(100),
+                        ),
+                        DismissalEntry::Dismissed {
+                            dismissed_at: ts(120),
+                        },
+                    )]
+                    .into(),
+                    unknown: BTreeMap::new(),
+                },
+            )]
+            .into(),
+        );
         document(2, sections)
+    }
+
+    // ---- chunk B: the dismissals section (design D-1/D-4/D-7/D-9) ----
+
+    use crate::ids::AdhocAlarmId;
+    use crate::reminders::{ReminderDismissal, ReminderRef};
+
+    fn dismissal(reminder: ReminderRef, occurrence: i64, clock: i64) -> ReminderDismissal {
+        ReminderDismissal {
+            reminder,
+            occurrence: ts(occurrence),
+            dismissed_at: ts(clock),
+        }
+    }
+
+    #[test]
+    fn dismissal_rows_round_trip_and_unknown_shapes_stay_verbatim() {
+        // The modeled row decodes typed; a future shape, a
+        // `default:`-keyed row, and an unknown key beside `dismissals`
+        // relay value-verbatim (the reserved-names discipline).
+        let raw = serde_json::json!({
+            "dismissals": {
+                "018f0000-0000-7000-8000-000000000001|2026-04-01T08:00:00+00:00":
+                    { "dismissed_at": "2026-04-01T09:00:00Z" },
+                "future-shape-key": { "withdrawn": true },
+                "default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00":
+                    { "dismissed_at": "2026-04-01T09:00:00Z" }
+            },
+            "peer-extension": 1
+        });
+        let entry: DismissalsEntry = serde_json::from_value(raw.clone()).unwrap();
+        assert!(matches!(
+            entry.dismissals["018f0000-0000-7000-8000-000000000001|2026-04-01T08:00:00+00:00"],
+            DismissalEntry::Dismissed { .. }
+        ));
+        assert!(matches!(
+            entry.dismissals["future-shape-key"],
+            DismissalEntry::Verbatim(_)
+        ));
+        // The `default:`-keyed row rides the same entry envelope (its
+        // value decodes fine); what keeps it off the wire-local state is
+        // the fold — its key never parses as a rule identity.
+        assert!(
+            parse_dismissal_wire_key(
+                "default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00"
+            )
+            .is_none()
+        );
+        assert_eq!(entry.unknown["peer-extension"], 1);
+        // Decode→encode is value-verbatim on everything unmodeled.
+        let back = serde_json::to_value(&entry).unwrap();
+        assert_eq!(
+            back["dismissals"]["future-shape-key"],
+            raw["dismissals"]["future-shape-key"]
+        );
+        assert_eq!(
+            back["dismissals"]["default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00"],
+            raw["dismissals"]["default:00000000-0000-0000-0000-000000000009|2026-04-01T08:00:00+00:00"]
+        );
+        assert_eq!(back["peer-extension"], 1);
+    }
+
+    #[test]
+    fn the_wire_key_is_injective_and_round_trips() {
+        let rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xabc));
+        let occurrence = ts(1_234_567);
+        let key = dismissal_wire_key(rule, occurrence);
+        assert_eq!(key.matches('|').count(), 1);
+        let (parsed_rule, parsed_occurrence) = parse_dismissal_wire_key(&key).unwrap();
+        assert_eq!(parsed_rule, rule);
+        assert_eq!(parsed_occurrence, occurrence);
+        // The fold-ignore keys never parse.
+        assert!(parse_dismissal_wire_key("default:abc|2026-04-01T08:00:00+00:00").is_none());
+        assert!(parse_dismissal_wire_key("alarm:abc|2026-04-01T08:00:00+00:00").is_none());
+        assert!(parse_dismissal_wire_key("garbage").is_none());
+    }
+
+    #[test]
+    fn dismissal_emission_is_rule_ref_only_and_task_scoped() {
+        let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(1));
+        let other = crate::ids::TaskId::from(uuid::Uuid::from_u128(2));
+        let own_rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10));
+        let foreign_rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(11));
+        let orphan_rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(12));
+        let mk_rule = |id, task| crate::reminders::ReminderRule {
+            id,
+            task,
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: ts(1),
+            updated_at: ts(2),
+        };
+        let mut rules = BTreeMap::new();
+        rules.insert(own_rule, mk_rule(own_rule, task));
+        rules.insert(foreign_rule, mk_rule(foreign_rule, other));
+        let mut dismissals = std::collections::BTreeSet::new();
+        dismissals.insert(dismissal(ReminderRef::Rule(own_rule), 100, 110));
+        // Another task's rule: never this card's row.
+        dismissals.insert(dismissal(ReminderRef::Rule(foreign_rule), 100, 111));
+        // Orphan (rule deleted locally): filtered by the same scoping.
+        dismissals.insert(dismissal(ReminderRef::Rule(orphan_rule), 100, 112));
+        // The device-local arms: unrepresentable on the wire, ever.
+        dismissals.insert(dismissal(ReminderRef::Default(task), 100, 113));
+        dismissals.insert(dismissal(
+            ReminderRef::Adhoc(AdhocAlarmId::from(uuid::Uuid::from_u128(20))),
+            100,
+            114,
+        ));
+        let entry = dismissals_entry_for(&dismissals, &rules, task);
+        assert_eq!(entry.dismissals.len(), 1);
+        assert!(
+            entry
+                .dismissals
+                .contains_key(&dismissal_wire_key(own_rule, ts(100)))
+        );
+        assert_eq!(
+            entry.dismissals[&dismissal_wire_key(own_rule, ts(100))],
+            DismissalEntry::Dismissed {
+                dismissed_at: ts(110)
+            }
+        );
+        assert!(entry.unknown.is_empty());
+    }
+
+    #[test]
+    fn union_dismissals_picks_newer_clocks_ties_to_the_overlay_and_keeps_verbatim() {
+        let key = dismissal_wire_key(
+            crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(1)),
+            ts(100),
+        );
+        let mk = |clock: i64| DismissalsEntry {
+            dismissals: [(
+                key.clone(),
+                DismissalEntry::Dismissed {
+                    dismissed_at: ts(clock),
+                },
+            )]
+            .into(),
+            unknown: BTreeMap::new(),
+        };
+        let mut base = mk(100);
+        base.dismissals.insert(
+            "verbatim-key".to_owned(),
+            DismissalEntry::Verbatim(serde_json::json!({"future": true})),
+        );
+        let mut overlay = mk(50);
+        overlay.dismissals.insert(
+            "fresh-key".to_owned(),
+            DismissalEntry::Dismissed {
+                dismissed_at: ts(1),
+            },
+        );
+        union_dismissals_entry(&mut base, &overlay);
+        assert_eq!(
+            base.dismissals[&key].clock(),
+            Some(ts(100)),
+            "the newer embedded clock wins"
+        );
+        assert_eq!(base.dismissals.len(), 3, "verbatim + fresh are additive");
+        assert!(matches!(
+            base.dismissals["verbatim-key"],
+            DismissalEntry::Verbatim(_)
+        ));
+        // An equal clock resolves to the overlay — and a Verbatim slot is
+        // never displaced by a clocked entry.
+        let mut base = mk(100);
+        base.dismissals.insert(
+            "v".to_owned(),
+            DismissalEntry::Verbatim(serde_json::json!(7)),
+        );
+        let mut overlay = mk(100);
+        overlay.dismissals.insert(
+            "v".to_owned(),
+            DismissalEntry::Dismissed {
+                dismissed_at: ts(1),
+            },
+        );
+        union_dismissals_entry(&mut base, &overlay);
+        assert!(matches!(base.dismissals["v"], DismissalEntry::Verbatim(_)));
+    }
+
+    #[test]
+    fn prune_removes_exactly_the_absent_cards_dismissal_entries() {
+        let mut doc = sample_document();
+        doc.sections
+            .dismissals
+            .as_mut()
+            .unwrap()
+            .insert("77".to_owned(), DismissalsEntry::default());
+        let present: std::collections::BTreeSet<String> =
+            ["55"].into_iter().map(str::to_owned).collect();
+        let pruned = prune_absent_cards(&doc, &present);
+        let dismissals = pruned.sections.dismissals.as_ref().unwrap();
+        assert_eq!(dismissals.len(), 1);
+        assert!(dismissals.contains_key("55"));
+        let empty = prune_absent_cards(&doc, &std::collections::BTreeSet::new());
+        assert!(empty.sections.dismissals.is_none());
     }
 
     // ---- proptest: verbatim preservation is the load-bearing property --
@@ -1563,6 +2019,128 @@ mod tests {
             let pruned = prune_absent_cards(&doc, &present);
             prop_assert!(!pruned.sections.tasks.as_ref().unwrap().contains_key(&absent));
             prop_assert_eq!(pruned.sections.unknown["proofs"].clone(), serde_json::json!({ "p": payload }));
+        }
+
+        // P1 (design D-7): the dismissals section rides the document
+        // union's embedded-clock LWW — idempotent, and the winner's
+        // clock is never older than either side's.
+        #[test]
+        fn dismissal_union_lww_laws(
+            base_clock in 0_i64..4_000_000_000,
+            overlay_clock in 0_i64..4_000_000_000,
+        ) {
+            let key = dismissal_wire_key(
+                crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(1)),
+                ts(100),
+            );
+            let mk = |clock: i64| DismissalsEntry {
+                dismissals: [(
+                    key.clone(),
+                    DismissalEntry::Dismissed { dismissed_at: ts(clock) },
+                )]
+                .into(),
+                unknown: BTreeMap::new(),
+            };
+            let mut base = mk(base_clock);
+            let overlay = mk(overlay_clock);
+            union_dismissals_entry(&mut base, &overlay);
+            prop_assert_eq!(
+                base.dismissals[&key].clock(),
+                Some(ts(base_clock.max(overlay_clock))),
+                "the newer embedded clock wins"
+            );
+            // Idempotence: re-unioning the overlay changes nothing.
+            let once = base.clone();
+            union_dismissals_entry(&mut base, &overlay);
+            prop_assert_eq!(base, once);
+        }
+
+        // P2 (design D-4, the fail-closed pin): for an arbitrary local
+        // dismissal set — Default- and Adhoc-ref rows included — no
+        // local TaskId or AdhocAlarmId identity and no default:/alarm:
+        // key form can reach the serialized dismissals wire content.
+        #[test]
+        fn no_local_ids_reach_the_dismissals_wire(
+            task_seed in 0_u128..1_000_000,
+            alarm_seed in 0_u128..1_000_000,
+            rule_seed in 0_u128..1_000_000,
+            occurrence in 0_i64..4_000_000_000,
+            with_default_row in proptest::bool::ANY,
+            with_adhoc_row in proptest::bool::ANY,
+            with_rule_row in proptest::bool::ANY,
+        ) {
+            let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(task_seed));
+            let alarm = AdhocAlarmId::from(uuid::Uuid::from_u128(alarm_seed));
+            let rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(rule_seed));
+            let mut rules = BTreeMap::new();
+            rules.insert(
+                rule,
+                crate::reminders::ReminderRule {
+                    id: rule,
+                    task,
+                    offset: crate::reminders::ReminderOffset::at_due(),
+                    created_at: ts(1),
+                    updated_at: ts(2),
+                },
+            );
+            let mut dismissals = std::collections::BTreeSet::new();
+            if with_rule_row {
+                dismissals.insert(dismissal(ReminderRef::Rule(rule), occurrence, occurrence + 1));
+            }
+            if with_default_row {
+                dismissals.insert(dismissal(ReminderRef::Default(task), occurrence, occurrence + 2));
+            }
+            if with_adhoc_row {
+                dismissals.insert(dismissal(ReminderRef::Adhoc(alarm), occurrence, occurrence + 3));
+            }
+            let entry = dismissals_entry_for(&dismissals, &rules, task);
+            let wire = serde_json::to_string(&entry).unwrap();
+            prop_assert!(
+                !wire.contains(&task.as_uuid().to_string()),
+                "the local TaskId reached the wire: {wire}"
+            );
+            prop_assert!(
+                !wire.contains(&alarm.as_uuid().to_string()),
+                "the local AdhocAlarmId reached the wire: {wire}"
+            );
+            prop_assert!(!wire.contains("default:"), "{wire}");
+            prop_assert!(!wire.contains("alarm:"), "{wire}");
+        }
+
+        // The pre-dismissals relay (agenda §4(f)/M6 extended to the
+        // third section): `dismissals`-section content this version
+        // does not model — verbatim rows, unknown keys — survives
+        // decode→encode value-verbatim.
+        #[test]
+        fn unmodeled_dismissals_content_is_value_verbatim_across_decode_encode(
+            row_key in "[a-z:-]{1,20}",
+            peer_key in "[a-z-]{1,12}",
+            payload in "[a-zA-Z0-9 ]{0,40}",
+        ) {
+            let raw = serde_json::json!({
+                "format": 1,
+                "board": 7,
+                "sections": {
+                    "dismissals": {
+                        "55": {
+                            "dismissals": {
+                                row_key.clone(): { "strange": payload.clone() }
+                            },
+                            peer_key.clone(): payload.clone(),
+                        }
+                    },
+                },
+            });
+            let doc: AppDataDocument = serde_json::from_value(raw.clone()).unwrap();
+            let back = serde_json::to_value(&doc).unwrap();
+            prop_assert_eq!(
+                &back["sections"]["dismissals"]["55"]["dismissals"][row_key.as_str()],
+                &raw["sections"]["dismissals"]["55"]["dismissals"][row_key.as_str()]
+            );
+            prop_assert_eq!(
+                &back["sections"]["dismissals"]["55"][peer_key.as_str()],
+                &raw["sections"]["dismissals"]["55"][peer_key.as_str()]
+            );
         }
     }
 }

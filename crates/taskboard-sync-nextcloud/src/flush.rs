@@ -23,8 +23,8 @@ use taskboard_domain::{
     AppDataDocument, AppDataEvidence, AppDataSections, AppDataUnreadable, BoardId, DeckFeatures,
     EntityTables, LocalOp, PendingOp, PushGroup, PushOutcome, PushResult, ReminderRule,
     ReminderRuleId, RemoteBoardId, RemoteBoardSnapshot, Stack, SyncErrorKind, Task, TaskId,
-    derive_rule_tombstones, lane_gc_scheduled, prune_absent_cards, rules_entry_for, task_entry_for,
-    union,
+    derive_rule_tombstones, dismissals_entry_for, lane_gc_scheduled, prune_absent_cards,
+    rules_entry_for, task_entry_for, union,
 };
 
 use crate::anchor::{self, ANCHOR_ATTACHMENT_FILENAME, ANCHOR_ATTACHMENT_MIME, AnchorAction};
@@ -79,6 +79,10 @@ pub(crate) struct FlushCtx<'a> {
     pub tasks: &'a BTreeMap<TaskId, Task>,
     pub stacks: &'a BTreeMap<taskboard_domain::StackId, Stack>,
     pub rules: &'a BTreeMap<ReminderRuleId, ReminderRule>,
+    /// The local dismissal set — the `dismissals` section's overlay
+    /// input (the emission filter inside `dismissals_entry_for` keeps
+    /// the wire Rule-ref-only, design D-4).
+    pub dismissals: &'a BTreeSet<taskboard_domain::ReminderDismissal>,
 }
 
 /// D12's lazy gate: any live task of `board` carrying app-data (the
@@ -200,6 +204,8 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
 
     let mut overlay_tasks: BTreeMap<String, taskboard_domain::TaskEntry> = BTreeMap::new();
     let mut overlay_rules: BTreeMap<String, taskboard_domain::RulesEntry> = BTreeMap::new();
+    let mut overlay_dismissals: BTreeMap<String, taskboard_domain::DismissalsEntry> =
+        BTreeMap::new();
     for (task_id, stamp) in &scoped {
         let Some(task) = ctx.tasks.get(task_id) else {
             continue;
@@ -231,7 +237,13 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
                 rules_entry.rules.insert(key, tombstone);
             }
         }
-        overlay_rules.insert(card_key, rules_entry);
+        overlay_rules.insert(card_key.clone(), rules_entry);
+        // The dismissal rows join the same overlay card (design D-1/D-9):
+        // the builder's filter emits the task's Rule-ref rows only.
+        let dismissals_entry = dismissals_entry_for(ctx.dismissals, ctx.rules, *task_id);
+        if !dismissals_entry.dismissals.is_empty() {
+            overlay_dismissals.insert(card_key, dismissals_entry);
+        }
     }
     let overlay = AppDataDocument {
         format: taskboard_domain::APPDATA_FORMAT,
@@ -239,6 +251,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
         sections: AppDataSections {
             tasks: (!overlay_tasks.is_empty()).then_some(overlay_tasks),
             reminder_rules: (!overlay_rules.is_empty()).then_some(overlay_rules),
+            dismissals: (!overlay_dismissals.is_empty()).then_some(overlay_dismissals),
             unknown: BTreeMap::new(),
         },
         unknown: BTreeMap::new(),
