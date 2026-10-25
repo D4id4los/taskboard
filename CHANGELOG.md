@@ -10,6 +10,27 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 
 ### Added
+- Pointer drag-to-move on the board (#226, #444's D38, round-2
+  chunk 8): pressing a task card and moving past an 8-px slop lifts a
+  ghost — the card's own snapshot at half opacity, centred under the
+  cursor — dims the source card, and highlights the hovered stack
+  column. Releasing over a column moves the task to the end of that
+  stack by dispatching the exact `MoveTask` command the keyboard move
+  flow confirms (click ≡ key, one shared construction site; dropping
+  on the source column reorders to its own end, the keyboard ring's
+  legal move). Releasing outside any column, Escape (the D16 cancel
+  binding), or switching views cancels with nothing dispatched, and a
+  release after a cancel never degrades into a click. Below the slop
+  the old pointer semantics are untouched: single click selects,
+  double click opens, right click opens the context menu. The ghost,
+  dim, and highlight are model-push derived, so interleaved refreshes
+  cannot disturb an in-flight drag; a refresh that drops the dragged
+  task or its target stack cancels cleanly. Built on the Slint 1.18
+  native drag surface (the #226 re-check overturned the hand-rolled
+  fallback: `DragArea`/`DropArea` ship slop, grab, click-preservation
+  and cancel semantics); touch rides the synthesized-mouse path.
+  Compact mode has no drag (the keyboard move flow remains its move
+  affordance).
 - Board-scoped connection management in the settings surface
   (#390, round-2 chunk 6; D32–D34): the Connections section becomes a
   board selector above the connector list above the add form. The
