@@ -106,7 +106,8 @@ yanked = "warn"
 # vulnerability known) — merged into `zbus` 6 as modules. The 5.x line
 # arrives transitively via slint → accesskit → atspi, so no safe
 # upgrade exists below that stack; revisit at the zbus-6 refresh
-# (#311).
+# (#440 — successor of the closed #311, whose CI-failure half these
+# ignores remediated).
 ignore = [
     "RUSTSEC-2026-0192",
     "RUSTSEC-2026-0370",
