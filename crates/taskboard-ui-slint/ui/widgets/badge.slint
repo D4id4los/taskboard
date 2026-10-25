@@ -10,7 +10,11 @@ export component Badge inherits Rectangle {
     in property <Tone> tone: Tone.neutral;
 
     border-radius: Theme.radius-small;
-    background: root.tone == Tone.neutral ? Theme.surface
+    // The neutral chip rides the ladder's content step (r2 D35): on
+    // the `surface` column card and toolbar it must read as a chip,
+    // not dissolve into the parent. Translucent semantic tones below
+    // are unaffected.
+    background: root.tone == Tone.neutral ? Theme.surface-raised
         : root.tone == Tone.info ? Theme.surface-raised
         : root.tone == Tone.success ? Semantic.success.with-alpha(0.2)
         : root.tone == Tone.warning ? Semantic.warning.with-alpha(0.2)

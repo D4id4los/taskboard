@@ -1462,10 +1462,11 @@ fn stored_widths_fill_the_window_as_floors() {
                 );
                 total += width;
             }
-            // Two inter-column gaps (space-3 = 12 px at scale 1) plus
+            // Two inter-column gaps (space-3 = 12 px at scale 1), the
+            // row's side strip padding (r2 D35, another 2 × 12), plus
             // the trailing add-column counted above; ±1 px of physical
             // rounding.
-            let expected = 1500.0 - 2.0 * 12.0;
+            let expected = 1500.0 - 4.0 * 12.0;
             assert!(
                 (total - expected).abs() <= 1.0,
                 "the columns row fills the window: {total} vs {expected}"
