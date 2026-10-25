@@ -37,7 +37,7 @@
 //! let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
 //! // The notifier channel: bootstrap owns the halves; a closed channel
 //! // (receiver dropped) is the sanctioned no-op.
-//! let (notifier, _notifications) = tokio::sync::mpsc::channel::<taskboard_domain::Notification>(64);
+//! let (notifier, _notifications) = tokio::sync::mpsc::channel::<taskboard_domain::NotifierMessage>(64);
 //!
 //! let (engine, join) = spawn_state_engine(
 //!     Arc::new(InMemoryRepository::new()),

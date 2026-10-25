@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The in-app notification surface (R3 chunk C, design D-10): the
+// universal dismissal surface — one row per fired, undismissed
+// occurrence, derived at read. Desktop-only: the kiosk's model-side
+// gate (R3.5.3) empties it, leaving the banner as the appliance's only
+// reminder surface. Layout only; the commands live in the adapter.
+
+import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
+import { Badge } from "../widgets/badge.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { ListRow } from "../widgets/list-row.slint";
+
+// One notification row: the title snapshot plus the elapsed phrase.
+// The command targets are Rust-side (the IdTables index convention —
+// the banner rows' precedent); the row carries only its index.
+export struct NotificationRowModel {
+    title: string,
+    fired-phrase: string,
+}
+
+export component NotificationSurface inherits Rectangle {
+    in property <[NotificationRowModel]> notifications;
+    in property <int> notification-overflow;
+    callback dismiss-clicked(int);
+    callback done-clicked(int);
+    callback snooze-clicked(int);
+    callback mute-clicked(int);
+
+    background: Theme.background;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Reminder notifications";
+
+    VerticalLayout {
+        padding-left: Theme.space-4;
+        padding-right: Theme.space-4;
+        padding-top: Theme.space-1;
+        padding-bottom: Theme.space-1;
+        spacing: Theme.space-1;
+
+        for row[row-index] in root.notifications: HorizontalLayout {
+            spacing: Theme.space-2;
+
+            row-info := ListRow {
+                horizontal-stretch: 1;
+                text: row.title;
+                meta: row.fired-phrase;
+                tone: Tone.info;
+            }
+            VerticalLayout {
+                IconButton {
+                    icon: IconKind.check;
+                    tone: Tone.info;
+                    label: "Dismiss notification";
+                    clicked => root.dismiss-clicked(row-index);
+                }
+            }
+            VerticalLayout {
+                IconButton {
+                    icon: IconKind.check;
+                    tone: Tone.info;
+                    label: "Mark task done";
+                    clicked => root.done-clicked(row-index);
+                }
+            }
+            VerticalLayout {
+                IconButton {
+                    icon: IconKind.snooze;
+                    tone: Tone.info;
+                    label: "Snooze reminder";
+                    clicked => root.snooze-clicked(row-index);
+                }
+            }
+            VerticalLayout {
+                IconButton {
+                    icon: IconKind.mute;
+                    tone: Tone.info;
+                    label: "Mute reminders";
+                    clicked => root.mute-clicked(row-index);
+                }
+            }
+        }
+
+        if (root.notification-overflow > 0): HorizontalLayout {
+            Badge {
+                text: "\{root.notification-overflow} more notifications";
+                tone: Tone.info;
+            }
+        }
+    }
+}

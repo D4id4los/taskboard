@@ -27,14 +27,19 @@ use crate::view_state::{Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
-    FlowHintModel, PaletteRowModel, Responsive, RuleRowModel, StackColumnModel, StackDetailModel,
-    SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme, TodayModel,
-    TodayRowModel, TodaySectionModel, Tone, View,
+    FlowHintModel, NotificationRowModel, PaletteRowModel, Responsive, RuleRowModel,
+    StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration,
+    TaskDetailModel, Theme, TodayModel, TodayRowModel, TodaySectionModel, Tone, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
 /// count; the model carries at most this many rows plus the overflow.
 pub const BANNER_ROW_CAP: usize = 3;
+
+/// The in-app notification surface's row cap (R3 chunk C): same flood
+/// guard discipline as the banner — the truth is the row count; the
+/// model carries at most this many rows.
+pub const NOTIFICATION_ROW_CAP: usize = 3;
 
 /// The layout cap of the palette's visible result rows (design D-V10,
 /// #348): the truth is the filtered hit count; the model carries at
@@ -58,6 +63,10 @@ pub struct IdTables {
     /// The banner rows (targets included, index-aligned with the
     /// pushed banner model up to the cap).
     pub banner: Vec<presentation::BannerRow>,
+    /// The in-app notification rows (R3 chunk C, D-10): targets
+    /// included, index-aligned with the pushed surface model up to the
+    /// cap; empty on kiosk (the banner-only gate, R3.5.3).
+    pub notifications: Vec<presentation::NotificationRow>,
     /// The task-detail view's reminder rules in id order (chunk 6,
     /// D12): the rule-list row indices resolve against this pass.
     pub task_rules: Vec<ReminderRuleId>,
@@ -156,6 +165,8 @@ pub struct PushModels {
     task_rules: Option<Rc<VecModel<RuleRowModel>>>,
     task_rule_presets: Option<Rc<VecModel<SharedString>>>,
     banner: Option<Rc<VecModel<BannerRowModel>>>,
+    /// The notification surface's persistent row handle (R3 chunk C).
+    notifications: Option<Rc<VecModel<NotificationRowModel>>>,
     /// The palette's persistent row handle (chunk 9): diffed per
     /// keystroke — a fresh `VecModel` per push would regress the
     /// stable-identity invariant (r2 D9).
@@ -356,6 +367,51 @@ pub struct DueEditorPush<'a> {
     pub picker: Option<&'a crate::due_edit::DuePickerState>,
 }
 
+/// The in-app notification surface (R3 chunk C, design D-10/D-6): the
+/// derived-at-read rows pushed onto the persistent surface model. The
+/// kiosk gate lives HERE (R3.5.3, banner-only appliance mode): the
+/// model is emptied, never rendered — the scheduler-free banner stays
+/// the kiosk's only reminder surface. Returns the diff's mutation count.
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
+fn push_notifications(
+    window: &AppWindow,
+    state: &AppState,
+    reminder_defaults: &taskboard_domain::ReminderDefaults,
+    now: DateTime<Utc>,
+    kiosk: bool,
+    tables: &mut IdTables,
+    models: &mut PushModels,
+) -> usize {
+    let rows: Vec<presentation::NotificationRow> = if kiosk {
+        Vec::new()
+    } else {
+        presentation::notification_rows(state, reminder_defaults, now)
+    };
+    tables.notifications.clone_from(&rows);
+    let shown: Vec<NotificationRowModel> = rows
+        .iter()
+        .take(NOTIFICATION_ROW_CAP)
+        .map(|row| NotificationRowModel {
+            title: SharedString::from(row.title.clone()),
+            fired_phrase: SharedString::from(presentation::notification_phrase(
+                row.occurrence,
+                now,
+            )),
+        })
+        .collect();
+    let mutations = push_rows(
+        &mut models.notifications,
+        |rc| {
+            window.set_notification_model(rc);
+        },
+        &shown,
+    );
+    window.set_notification_overflow(
+        i32::try_from(rows.len().saturating_sub(NOTIFICATION_ROW_CAP)).unwrap_or(i32::MAX),
+    );
+    mutations
+}
+
 /// One refresh pass (D1): reconcile the view state against `state`,
 /// then push the full display model one-way onto the window and
 /// return the id tables. Deterministic and timer-free — the repaint
@@ -376,6 +432,7 @@ pub fn push(
     chain: &[ContextId],
     day: crate::view_state::DayCtx,
     kiosk: bool,
+    reminder_defaults: &taskboard_domain::ReminderDefaults,
     models: &mut PushModels,
     due: &DueEditorPush<'_>,
 ) -> IdTables {
@@ -446,6 +503,15 @@ pub fn push(
     mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, models);
     mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models, due);
     mutations += push_status_bar(window, state, vs, keymap, chain, now, &mut tables, models);
+    mutations += push_notifications(
+        window,
+        state,
+        reminder_defaults,
+        now,
+        kiosk,
+        &mut tables,
+        models,
+    );
     // The decoration handles of tasks this pass dropped from every
     // surface are unreachable from the views.
     let pass = std::mem::take(&mut models.pass_tasks);
@@ -1522,7 +1588,18 @@ mod tests {
             let keymap = crate::keymap::Keymap::from_preset(crate::keymap::Preset::Standard);
             let chain = [ContextId::Today, ContextId::ViNormal, ContextId::Global];
             let due = crate::models::DueEditorPush::default();
-            push(window, state, vs, &keymap, &chain, day, kiosk, models, &due)
+            push(
+                window,
+                state,
+                vs,
+                &keymap,
+                &chain,
+                day,
+                kiosk,
+                &taskboard_domain::ReminderDefaults::default(),
+                models,
+                &due,
+            )
         }
 
         #[test]

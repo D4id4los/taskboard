@@ -93,6 +93,12 @@ pub struct UiSettings {
     /// The `[ui.keymap] preset` word's typed value (round-1 D9): the
     /// settings picker's initial selection.
     pub keymap_preset: keymap::Preset,
+    /// The injected reminder defaults (R3 chunk C): the derivation
+    /// input the in-app notification surface's `active_notifications`
+    /// read needs for the implicit default reminder's occurrence —
+    /// resolved app-side at hand-over, held, never re-read (the
+    /// `day_start` consumers contract).
+    pub reminder_defaults: taskboard_domain::ReminderDefaults,
 }
 
 impl Default for UiSettings {
@@ -110,6 +116,7 @@ impl Default for UiSettings {
                 chrono::NaiveTime::MIN,
                 chrono::FixedOffset::east_opt(0).expect("zero"),
             ),
+            reminder_defaults: taskboard_domain::ReminderDefaults::default(),
         }
     }
 }
@@ -221,6 +228,7 @@ pub fn mount(
         settings.connectors,
         settings.day_start,
         settings.kiosk,
+        settings.reminder_defaults,
         settings.boards,
         Arc::clone(&state),
         Rc::clone(&status_timer),
@@ -1688,6 +1696,154 @@ mod view_component_tests {
                 }
             );
             assert!(commands.try_recv().is_err(), "nothing else dispatched");
+        });
+    }
+
+    /// R3 chunk C — the notification surface end-to-end: a fired,
+    /// undismissed occurrence renders one row, and each button
+    /// dispatches exactly its engine command (Dismiss →
+    /// `DismissReminder`, Done → `SetTaskDone`, Snooze/Mute the routed
+    /// verbs over the row's target).
+    #[test]
+    fn notification_surface_buttons_send_exact_commands() {
+        on_slint_thread(|| {
+            let defaults = taskboard_domain::ReminderDefaults::default();
+            let mut state = fixture_state();
+            let overdue_id = {
+                let now = chrono::Utc::now();
+                taskboard_domain::overdue_tasks(&state.tasks, now)
+                    .into_iter()
+                    .map(|t| t.id)
+                    .next()
+                    .expect("fixture has one overdue task")
+            };
+            // The fixture task is rule-less: the implicit default fires
+            // at its effective occurrence; the delivery row IS the
+            // fired fact (design D-6).
+            let occurrence = taskboard_domain::effective_occurrence(
+                &taskboard_domain::ReminderRef::Default(overdue_id),
+                &state.reminders,
+                &state.tasks,
+                &defaults,
+            )
+            .expect("the default's occurrence derives");
+            state
+                .reminders
+                .deliveries
+                .insert(taskboard_domain::ReminderDelivery {
+                    reminder: taskboard_domain::ReminderRef::Default(overdue_id),
+                    occurrence,
+                    delivered_at: chrono::Utc::now(),
+                });
+
+            let (handle, mut commands) = handover_with(state, UiSettings::default().keymap);
+            assert_eq!(
+                handle.window.get_notification_model().row_count(),
+                1,
+                "one fired, undismissed occurrence renders one row"
+            );
+
+            handle.window.invoke_notification_dismiss_clicked(0);
+            match commands.try_recv().expect("the dismiss command arrived") {
+                StateCommand::DismissReminder {
+                    reminder,
+                    occurrence: dismissed,
+                } => {
+                    assert_eq!(reminder, taskboard_domain::ReminderRef::Default(overdue_id));
+                    assert_eq!(dismissed, occurrence);
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+
+            handle.window.invoke_notification_done_clicked(0);
+            assert_eq!(
+                commands.try_recv().expect("the done command arrived"),
+                StateCommand::SetTaskDone {
+                    id: overdue_id,
+                    done: true
+                }
+            );
+
+            handle.window.invoke_notification_snooze_clicked(0);
+            match commands.try_recv().expect("the snooze command arrived") {
+                StateCommand::SnoozeReminder {
+                    reminder,
+                    occurrence: snoozed,
+                    postpone,
+                } => {
+                    assert_eq!(reminder, taskboard_domain::ReminderRef::Default(overdue_id));
+                    assert_eq!(snoozed, occurrence);
+                    assert_eq!(postpone, TimeDelta::hours(1));
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+
+            handle.window.invoke_notification_mute_clicked(0);
+            assert_eq!(
+                commands.try_recv().expect("the mute command arrived"),
+                StateCommand::SetTaskRemindersMuted {
+                    task: overdue_id,
+                    muted: true
+                }
+            );
+            assert!(commands.try_recv().is_err(), "nothing else dispatched");
+        });
+    }
+
+    /// R3.5.3 — the kiosk gate: the same fired occurrence renders zero
+    /// notification rows in appliance mode (the banner-only ruling).
+    #[test]
+    fn the_notification_surface_stays_empty_on_kiosk() {
+        on_slint_thread(|| {
+            let defaults = taskboard_domain::ReminderDefaults::default();
+            let mut state = fixture_state();
+            let overdue_id = {
+                let now = chrono::Utc::now();
+                taskboard_domain::overdue_tasks(&state.tasks, now)
+                    .into_iter()
+                    .map(|t| t.id)
+                    .next()
+                    .expect("fixture has one overdue task")
+            };
+            let occurrence = taskboard_domain::effective_occurrence(
+                &taskboard_domain::ReminderRef::Default(overdue_id),
+                &state.reminders,
+                &state.tasks,
+                &defaults,
+            )
+            .expect("the default's occurrence derives");
+            state
+                .reminders
+                .deliveries
+                .insert(taskboard_domain::ReminderDelivery {
+                    reminder: taskboard_domain::ReminderRef::Default(overdue_id),
+                    occurrence,
+                    delivered_at: chrono::Utc::now(),
+                });
+
+            let (commands_tx, _commands_rx) = mpsc::channel(16);
+            let (requests_tx, _requests_rx) = mpsc::channel(16);
+            let (system_tx, system_rx) = broadcast::channel(16);
+            let (signals_tx, signals_rx) = broadcast::channel(16);
+            drop(system_tx);
+            drop(signals_tx);
+            let handle = mount(
+                Arc::new(ArcSwap::from_pointee(state)),
+                signals_rx,
+                system_rx,
+                commands_tx,
+                requests_tx,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+            )
+            .expect("mount succeeds on the null platform");
+            assert_eq!(
+                handle.window.get_notification_model().row_count(),
+                0,
+                "kiosk is banner-only: the surface model stays empty"
+            );
         });
     }
 

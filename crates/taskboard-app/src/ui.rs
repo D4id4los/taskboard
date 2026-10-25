@@ -222,6 +222,9 @@ pub fn resolve_ui_settings(
         // The today window's derivation pair (chunk 10 D4): resolved
         // once here — nothing reads config mid-flight.
         day_start,
+        // Overwritten by the lifecycle from the engine config right
+        // after this returns (the kiosk/connectors/boards precedent).
+        reminder_defaults: taskboard_domain::ReminderDefaults::default(),
     };
     (settings, built.findings)
 }
@@ -365,6 +368,10 @@ pub async fn run_desktop(
 
     let (mut ui_settings, keymap_findings) =
         resolve_ui_settings(&config.ui, resolve_day_start(&config));
+    // The reminder defaults ride the hand-over (R3 chunk C): the
+    // notification surface derives from the same value the engine
+    // evaluates with.
+    ui_settings.reminder_defaults = config.reminder_engine_config().defaults;
     surface_keymap_findings(&keymap_findings);
     let store = crate::secrets::resolve_credential_store(
         config.nextcloud.credential_store,

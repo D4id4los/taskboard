@@ -499,6 +499,7 @@ async fn run_kiosk(
                 taskboard_app::ui::resolve_day_start(&app.config),
             );
             ui_settings.kiosk = true;
+            ui_settings.reminder_defaults = app.config.reminder_engine_config().defaults;
             ui_settings.connectors = taskboard_app::ui::resolve_connector_infos(&app.config);
             ui_settings.boards = taskboard_app::ui::resolve_board_infos(&app.engine);
             taskboard_app::ui::surface_keymap_findings(&keymap_findings);
