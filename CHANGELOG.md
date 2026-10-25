@@ -380,6 +380,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
   (standard preset `S`, vi preset `O`) opens the inline create row on
   an empty or populated board and appends the stack after the
   existing ones.
+- Developer-facing MCP harness documentation: the dev-gated
+  `mcp = ["slint/mcp"]` feature, the headless `mcp_smoke` integration
+  test it powers, the `ui-mcp-smoke` CI job, and the feature-off
+  release assertions that keep the shipped binary MCP-free.
+- Documentation of the UTC-only due-date semantics: a bare
+  `YYYY-MM-DD` due date means midnight UTC, an RFC-3339 timestamp
+  with an explicit offset is accepted and normalized to UTC,
+  offset-less timestamps are refused, and storage plus all display
+  (list/banner, overdue/due-soon comparisons) are UTC — stated in the
+  `--due` CLI help and the README quickstart.
 
 ### Changed
 - Stack columns render as cards on the re-anchored surface ladder
@@ -934,10 +944,12 @@ The workspace carries a single global version (see `docs/architecture.org`);
   union-by-identity semantics — see ADR 0010).
 
 - The typed `sync-disabled` refusal (`--json` kind `sync-disabled`,
-  exit 1) for the connector-only verbs — `sync`, `daemon`, `boards
-  list/select/publish`, and `login` under an *explicit* `standalone`
-  backend — enforced at handler entry before any core boot or client
-  construction.
+  exit 1) for the connector-only verbs — `sync`, `boards
+  list/select/publish` — enforced at handler entry before any core
+  boot or client construction. `login` under an *explicit*
+  `standalone` backend refuses with the distinct kind
+  `backend-explicit-standalone`; the daemon itself no longer refuses
+  under standalone (the Changed entry above).
 
 - The human `tasks list` stand-alone footer (`stand-alone: N changes
   waiting for a sync connector`); presentation-only, the `--json`
