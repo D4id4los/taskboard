@@ -18,6 +18,7 @@ import { Badge } from "../widgets/badge.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { PlusGlyph } from "../widgets/plus-glyph.slint";
 import { BoardBar, BoardBarModel } from "board-bar.slint";
+import { DragState } from "../drag-state.slint";
 
 // One kanban column (rule B: a display model, not a bag of strings).
 export struct StackColumnModel {
@@ -80,6 +81,20 @@ export component BoardLayout inherits Rectangle {
     callback stack-width-press(int, float);
     callback stack-width-drag(int, float);
     callback stack-width-release(int);
+    // The pointer drag-to-move seams (r2 chunk-8, D-E/D-F): a card's
+    // DragArea reports the arm (column, row); a column DropArea
+    // reports the hovered column and the drop. Index-only, the D2
+    // convention — the adapter resolves the id tables.
+    callback board-card-drag-armed(int, int);
+    callback board-drag-hovered(int);
+    callback board-card-dropped(int);
+    // The bool is the negotiated outcome (`drag-finished`): true = a
+    // completed drop (the dropped seam already confirmed), false = a
+    // cancelled drag.
+    callback board-card-drag-finished(int, int, bool);
+    // Any flow holds (the D9 XOR belt): the DragAreas refuse to arm
+    // while a flow is open — the view-state refusal is the suspenders.
+    in property <bool> flow-open: false;
     callback board-bar-activated(int);
     // The board-bar segment right-click (r2 D21), threaded through.
     callback segment-context(int, float, float);
@@ -89,6 +104,22 @@ export component BoardLayout inherits Rectangle {
     callback new-stack-activated();
     callback stack-create-committed(string);
     callback stack-create-edited(string);
+
+    // The dead-zone catch-all (r2 chunk-8, D-D): the whole board
+    // surface beneath every column (declared first = lowest z, the
+    // later-sibling-is-hit-tested-first order). It rejects every drop
+    // — a release over it is the native no-accepted-target cancel —
+    // but still reports the pointer, so the ghost tracks across the
+    // column gaps and the board bar.
+    DropArea {
+        width: 100%;
+        height: 100%;
+        can-drop(event) => {
+            DragState.pointer-x = self.absolute-position.x + event.position.x;
+            DragState.pointer-y = self.absolute-position.y + event.position.y;
+            DragAction.none
+        }
+    }
 
     // The rendering fact for tests and reviews (§6 test 2): compact
     // mode is active — switcher visible, single column, collapsed
@@ -155,224 +186,262 @@ export component BoardLayout inherits Rectangle {
             padding-left: Theme.space-3;
             padding-right: Theme.space-3;
             padding-bottom: Theme.space-3;
-            for column[column-index] in root.stacks: card := Rectangle {
-                // The stack card (r2 D35): each column wraps in a
-                // `surface` container — the existing ladder re-anchored
-                // (background < surface card < surface-raised task
-                // card), the segmented control's track/thumb language.
-                // D35's literal `surface-raised` card token is boxed by
-                // the hover-distinctness guard (no valid raised-again
-                // step exists under the current hover token; the plan
-                // §2.1 records the deviation).
-                background: Theme.surface;
-                border-radius: Theme.radius-medium;
-                // Inner padding (space-2) is deliberately smaller than
-                // the outer strip (space-3) — content groups tighter
-                // than the group. Nothing reaches the rounded corners,
-                // so no clip is needed.
-                padding: Theme.space-2;
-                // The user-set width (r2 D1) is a *floor*, never a pin:
-                // the min carries the stored width while every column
-                // keeps equal stretch, so the solver gives each column
-                // max(content, floor) + an equal share of the surplus —
-                // a fully-resized board still fills the window and no
-                // refresh can render a column below its floor. ≤ 0 (the
-                // auto sentinel) keeps the floor at 0. No max-width
-                // binding anywhere (the round-1 solver-perturbation
-                // caution stands).
+            for column[column-index] in root.stacks: drop-zone := DropArea {
+                // The column's drop target (r2 chunk-8, D-E): wraps the
+                // whole stack card — a generous, column-granular target
+                // matching the keyboard flow's ring. The native DragMove
+                // hit-testing designates this element; no column
+                // geometry crosses to Rust. The filter forwards every
+                // non-drag event to the card beneath, so clicks, hovers
+                // and the resize handle are untouched (D-H).
+                can-drop(event) => {
+                    DragState.pointer-x = self.absolute-position.x + event.position.x;
+                    DragState.pointer-y = self.absolute-position.y + event.position.y;
+                    root.board-drag-hovered(column-index);
+                    DragAction.move
+                }
+                dropped(event) => {
+                    root.board-card-dropped(column-index);
+                    return event.proposed-action;
+                }
+                // The layout constraints live on the DropArea (the
+                // row's child); the card fills it (D1's floor, the
+                // solver perturbation caution — unchanged semantics).
                 min-width: column.width-px > 0 * Theme.space-1
                     ? column.width-px
                     : 0 * Theme.space-1;
                 horizontal-stretch: 1;
-                // Lift the content-derived max cap (a Text child caps
-                // the column's layout max at its preferred width, and
-                // max-capped items receive no growth): bounded by the
-                // row itself, so it never over-constrains the solver.
                 max-width: root.width;
-                // The D16 address stays on the body (the card is an
-                // unnamed paint wrapper; the accessible tree shape is
-                // unchanged for the driver and ATs).
-                column-body := VerticalLayout {
-                    spacing: Theme.space-1;
-                    // The D16 address: the column is a list labelled by
-                    // its stack title.
-                    accessible-role: AccessibleRole.list;
-                    accessible-label: column.title;
-                    // Column header: display + activation (D13 — stack
-                    // management is CLI-only in v0.1.0); a labelled button
-                    // (D16), click = select the column's stack.
-                    header := Rectangle {
-                        accessible-role: AccessibleRole.button;
-                        accessible-label: column.title;
-                        // The AT/keyboard activation lands on the same
-                        // selection seam the TouchArea's click hits (the
-                        // add-col FocusScope pattern; the plan's T-10
-                        // click-by-label address).
-                        accessible-action-default => root.header-activated(column-index);
-                        // One locked control row (r2 D3, the D20b board-bar
-                        // constant inline — no new theme token; the token
-                        // ladder is chunk 7's): the height no longer depends
-                        // on column content, so a 0-task stack's title
-                        // renders at every other stack's height.
-                        min-height: Theme.space-6 + 2 * Theme.space-1;
-                        max-height: Theme.space-6 + 2 * Theme.space-1;
-                        // A shrunken column's content stays inside its bounds.
-                        clip: true;
-                        header-hit := TouchArea {
-                            clicked => root.header-activated(column-index);
-                            // The r2 D21 stack-header right-click: the
-                            // task-card pattern — right-down reports the
-                            // window-coordinate pointer for the context
-                            // menu anchor (the adapter selects first).
-                            pointer-event(event) => {
-                                if (event.kind == PointerEventKind.down
-                                        && event.button == PointerEventButton.right) {
-                                    root.header-context(column-index,
-                                        self.absolute-position.x / 1px + self.mouse-x / 1px,
-                                        self.absolute-position.y / 1px + self.mouse-y / 1px);
-                                }
-                            }
-                            // The D8/D11/D18 header tooltip: the stack title
-                            // plus the stack.wider binding hint (a keymap
-                            // projection pushed per refresh).
-                            changed has-hover => {
-                                if (self.has-hover) {
-                                    TooltipState.hover(column.title, "",
-                                        root.stack-header-hint,
-                                        self.absolute-position.x, self.absolute-position.y,
-                                        self.width, self.height);
-                                } else {
-                                    TooltipState.unhover();
-                                }
-                            }
-                        }
-                        // The column resize handle (round-1 D17): the builtin
-                        // tableview's exact pattern — a 10 px-wide TouchArea
-                        // with the ew-resize cursor at the column's right
-                        // edge (the inter-column gap visually belongs to
-                        // it). Full header height.
-                        resize-handle := TouchArea {
-                            x: parent.width - self.width;
-                            width: Theme.resize-handle-width;
-                            height: 100%;
-                            mouse-cursor: ew-resize;
-                            pointer-event(event) => {
-                                if (event.kind == PointerEventKind.down) {
-                                    root.stack-width-press(column-index,
-                                        column-body.width / 1px);
-                                }
-                                if (event.kind == PointerEventKind.up) {
-                                    root.stack-width-release(column-index);
-                                }
-                            }
-                            moved => {
-                                if (self.pressed) {
-                                    root.stack-width-drag(column-index,
-                                        (self.mouse-x - self.pressed-x) / 1px);
-                                }
-                            }
-                        }
-                        // The selected stack paints in regular mode (r2
-                        // D4): raised fill + focus ring (the compact
-                        // switcher's selected language). Move-target keeps
-                        // its distinct arm (raised, no ring) and wins when
-                        // both apply — the ring returns when the move flow
-                        // ends. clip keeps the ring inside the radius.
-                        background: header-hit.has-hover ? Theme.surface-hover
-                            : column-index == root.move-target ? Theme.surface-raised
-                            : column-index == root.selected-stack ? Theme.surface-raised
-                            : transparent;
-                        border-width: column-index == root.selected-stack
-                            ? Theme.focus-ring-width : 0;
-                        border-color: Semantic.focus-ring;
-                        border-radius: Theme.radius-small;
-                        HorizontalLayout {
-                            padding-left: Theme.space-2;
-                            padding-right: Theme.space-2;
-                            // The r2 D21 rename field swaps in for the
-                            // title row while the flow is open — inside the
-                            // locked-height control row (r2 D3 preserved).
-                            if (column.rename-open): TextField {
-                                placeholder: "Stack name";
-                                label: "Stack name";
-                                initial-text: column.initial-title;
-                                // The task-title editor's convention: the
-                                // seeded title starts selected (D14).
-                                selected-on-focus: true;
-                                horizontal-stretch: 1;
-                                accepted(text) => root.rename-committed(column-index, text);
-                                edited(text) => root.rename-edited(column-index, text);
-                            }
-                            if (!column.rename-open): RoleText {
-                                role: Typography.heading;
-                                text: column.title;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                // The D19 mechanical half (round-1 §5): a
-                                // long stack title may not force the
-                                // layout min above the window floors. The
-                                // conditional engagement resolved as
-                                // recorded debt: elide stays unconditional
-                                // (chunk 1's window-floor requirement), the
-                                // auto-layout guarantee rides only on the
-                                // width-px binding above (plan §9.1).
-                                overflow: elide;
-                            }
-                            Badge {
-                                text: "\{column.tasks.length}";
-                                tone: column-index == root.move-target ? Tone.sync-active : Tone.neutral;
-                            }
-                        }
-                    }
-
-                    VerticalLayout {
-                        alignment: start;
-                        // The task area absorbs the column's surplus height
-                        // (r2 D3): with the header locked, every leftover
-                        // pixel flows here (F-A6's equal-split fix).
-                        vertical-stretch: 1;
+                card := Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    // The stack card (r2 D35): each column wraps in a
+                    // `surface` container — the existing ladder re-anchored
+                    // (background < surface card < surface-raised task
+                    // card), the segmented control's track/thumb language.
+                    // D35's literal `surface-raised` card token is boxed by
+                    // the hover-distinctness guard (no valid raised-again
+                    // step exists under the current hover token; the plan
+                    // §2.1 records the deviation).
+                    background: Theme.surface;
+                    border-radius: Theme.radius-medium;
+                    // Inner padding (space-2) is deliberately smaller than
+                    // the outer strip (space-3) — content groups tighter
+                    // than the group. Nothing reaches the rounded corners,
+                    // so no clip is needed.
+                    padding: Theme.space-2;
+                    // The D16 address stays on the body (the card is an
+                    // unnamed paint wrapper; the accessible tree shape is
+                    // unchanged for the driver and ATs).
+                    column-body := VerticalLayout {
                         spacing: Theme.space-1;
-                        for task[task-index] in column.tasks: TaskCard {
-                            model: task;
-                            hint-keys: root.task-card-hint;
-                            activated => root.task-activated(column-index, task-index);
-                            clicked => root.task-clicked(column-index, task-index);
-                            context-requested(x, y) => root.task-context(column-index, task-index, x, y);
-                        }
-
-                        // The inline create row (D8): single-line field,
-                        // auto-focused, insert mode.
-                        if (column.create-open): TextField {
-                            placeholder: "New task title";
-                            label: "New task title";
-                            commit-affordance: true;
-                            accepted(text) => root.create-committed(column-index, text);
-                            edited(text) => root.create-edited(column-index, text);
-                        }
-
-                        // The per-column Add Task ghost (r2 D8): the
-                        // add-column's visual language at one control row;
-                        // empty stacks show it instead of blank space.
-                        add-task := Rectangle {
+                        // The D16 address: the column is a list labelled by
+                        // its stack title.
+                        accessible-role: AccessibleRole.list;
+                        accessible-label: column.title;
+                        // Column header: display + activation (D13 — stack
+                        // management is CLI-only in v0.1.0); a labelled button
+                        // (D16), click = select the column's stack.
+                        header := Rectangle {
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: column.title;
+                            // The AT/keyboard activation lands on the same
+                            // selection seam the TouchArea's click hits (the
+                            // add-col FocusScope pattern; the plan's T-10
+                            // click-by-label address).
+                            accessible-action-default => root.header-activated(column-index);
+                            // One locked control row (r2 D3, the D20b board-bar
+                            // constant inline — no new theme token; the token
+                            // ladder is chunk 7's): the height no longer depends
+                            // on column content, so a 0-task stack's title
+                            // renders at every other stack's height.
                             min-height: Theme.space-6 + 2 * Theme.space-1;
                             max-height: Theme.space-6 + 2 * Theme.space-1;
-                            border-radius: Theme.radius-small;
-                            background: add-task-hit.has-hover ? Theme.surface-hover : transparent;
-                            add-task-hit := TouchArea {
-                                clicked => root.add-task-activated(column-index);
+                            // A shrunken column's content stays inside its bounds.
+                            clip: true;
+                            header-hit := TouchArea {
+                                clicked => root.header-activated(column-index);
+                                // The r2 D21 stack-header right-click: the
+                                // task-card pattern — right-down reports the
+                                // window-coordinate pointer for the context
+                                // menu anchor (the adapter selects first).
+                                pointer-event(event) => {
+                                    if (event.kind == PointerEventKind.down
+                                            && event.button == PointerEventButton.right) {
+                                        root.header-context(column-index,
+                                            self.absolute-position.x / 1px + self.mouse-x / 1px,
+                                            self.absolute-position.y / 1px + self.mouse-y / 1px);
+                                    }
+                                }
+                                // The D8/D11/D18 header tooltip: the stack title
+                                // plus the stack.wider binding hint (a keymap
+                                // projection pushed per refresh).
+                                changed has-hover => {
+                                    if (self.has-hover) {
+                                        TooltipState.hover(column.title, "",
+                                            root.stack-header-hint,
+                                            self.absolute-position.x, self.absolute-position.y,
+                                            self.width, self.height);
+                                    } else {
+                                        TooltipState.unhover();
+                                    }
+                                }
                             }
-                            add-task-focus := FocusScope {
+                            // The column resize handle (round-1 D17): the builtin
+                            // tableview's exact pattern — a 10 px-wide TouchArea
+                            // with the ew-resize cursor at the column's right
+                            // edge (the inter-column gap visually belongs to
+                            // it). Full header height.
+                            resize-handle := TouchArea {
+                                x: parent.width - self.width;
+                                width: Theme.resize-handle-width;
+                                height: 100%;
+                                mouse-cursor: ew-resize;
+                                pointer-event(event) => {
+                                    if (event.kind == PointerEventKind.down) {
+                                        root.stack-width-press(column-index,
+                                            column-body.width / 1px);
+                                    }
+                                    if (event.kind == PointerEventKind.up) {
+                                        root.stack-width-release(column-index);
+                                    }
+                                }
+                                moved => {
+                                    if (self.pressed) {
+                                        root.stack-width-drag(column-index,
+                                            (self.mouse-x - self.pressed-x) / 1px);
+                                    }
+                                }
+                            }
+                            // The selected stack paints in regular mode (r2
+                            // D4): raised fill + focus ring (the compact
+                            // switcher's selected language). Move-target keeps
+                            // its distinct arm (raised, no ring) and wins when
+                            // both apply — the ring returns when the move flow
+                            // ends. clip keeps the ring inside the radius.
+                            background: header-hit.has-hover ? Theme.surface-hover
+                                : column-index == root.move-target ? Theme.surface-raised
+                                : column-index == root.selected-stack ? Theme.surface-raised
+                                : transparent;
+                            border-width: column-index == root.selected-stack
+                                ? Theme.focus-ring-width : 0;
+                            border-color: Semantic.focus-ring;
+                            border-radius: Theme.radius-small;
+                            HorizontalLayout {
+                                padding-left: Theme.space-2;
+                                padding-right: Theme.space-2;
+                                // The r2 D21 rename field swaps in for the
+                                // title row while the flow is open — inside the
+                                // locked-height control row (r2 D3 preserved).
+                                if (column.rename-open): TextField {
+                                    placeholder: "Stack name";
+                                    label: "Stack name";
+                                    initial-text: column.initial-title;
+                                    // The task-title editor's convention: the
+                                    // seeded title starts selected (D14).
+                                    selected-on-focus: true;
+                                    horizontal-stretch: 1;
+                                    accepted(text) => root.rename-committed(column-index, text);
+                                    edited(text) => root.rename-edited(column-index, text);
+                                }
+                                if (!column.rename-open): RoleText {
+                                    role: Typography.heading;
+                                    text: column.title;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    // The D19 mechanical half (round-1 §5): a
+                                    // long stack title may not force the
+                                    // layout min above the window floors. The
+                                    // conditional engagement resolved as
+                                    // recorded debt: elide stays unconditional
+                                    // (chunk 1's window-floor requirement), the
+                                    // auto-layout guarantee rides only on the
+                                    // width-px binding above (plan §9.1).
+                                    overflow: elide;
+                                }
+                                Badge {
+                                    text: "\{column.tasks.length}";
+                                    tone: column-index == root.move-target ? Tone.sync-active : Tone.neutral;
+                                }
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: start;
+                            // The task area absorbs the column's surplus height
+                            // (r2 D3): with the header locked, every leftover
+                            // pixel flows here (F-A6's equal-split fix).
+                            vertical-stretch: 1;
+                            spacing: Theme.space-1;
+                            // The tasks loop: each card is wrapped in a
+                            // DragArea (r2 chunk-8 D-A) — the pointer drag's
+                            // source. Below the slop the filter forwards
+                            // everything to the card (click/double-click/
+                            // context untouched, D-H); past the 8-px slop the
+                            // runtime owns the drag and the arm seam fires.
+                            // The explicit height carries the card's
+                            // preferred: a DragArea reports no intrinsic
+                            // size, and the `alignment: start` list never
+                            // stretches.
+                            for task[task-index] in column.tasks: drag-zone := DragArea {
+                            width: 100%;
+                            height: drag-card.preferred-height;
+                            allow-move: !root.flow-open;
+                            data: DragState.payload;
+                            changed dragging => {
+                                if (self.dragging) {
+                                    root.board-card-drag-armed(column-index, task-index);
+                                }
+                            }
+                            drag-finished(action) => {
+                                root.board-card-drag-finished(column-index, task-index,
+                                    action != DragAction.none);
+                            }
+                            drag-card := TaskCard {
                                 width: 100%;
                                 height: 100%;
-                                focus-on-tab-navigation: true;
-                                accessible-role: AccessibleRole.button;
-                                accessible-label: "Add task";
-                                accessible-action-default => root.add-task-activated(column-index);
+                                model: task;
+                                hint-keys: root.task-card-hint;
+                                activated => root.task-activated(column-index, task-index);
+                                clicked => root.task-clicked(column-index, task-index);
+                                context-requested(x, y) => root.task-context(column-index, task-index, x, y);
                             }
-                            PlusGlyph {
-                                x: (parent.width - self.width) / 2;
-                                y: (parent.height - self.height) / 2;
-                                glyph-color: add-task-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        }
+
+                            // The inline create row (D8): single-line field,
+                            // auto-focused, insert mode.
+                            if (column.create-open): TextField {
+                                placeholder: "New task title";
+                                label: "New task title";
+                                commit-affordance: true;
+                                accepted(text) => root.create-committed(column-index, text);
+                                edited(text) => root.create-edited(column-index, text);
+                            }
+
+                            // The per-column Add Task ghost (r2 D8): the
+                            // add-column's visual language at one control row;
+                            // empty stacks show it instead of blank space.
+                            add-task := Rectangle {
+                                min-height: Theme.space-6 + 2 * Theme.space-1;
+                                max-height: Theme.space-6 + 2 * Theme.space-1;
+                                border-radius: Theme.radius-small;
+                                background: add-task-hit.has-hover ? Theme.surface-hover : transparent;
+                                add-task-hit := TouchArea {
+                                    clicked => root.add-task-activated(column-index);
+                                }
+                                add-task-focus := FocusScope {
+                                    width: 100%;
+                                    height: 100%;
+                                    focus-on-tab-navigation: true;
+                                    accessible-role: AccessibleRole.button;
+                                    accessible-label: "Add task";
+                                    accessible-action-default => root.add-task-activated(column-index);
+                                }
+                                PlusGlyph {
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    glyph-color: add-task-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                }
                             }
                         }
                     }

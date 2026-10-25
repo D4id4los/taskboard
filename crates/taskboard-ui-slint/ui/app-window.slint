@@ -31,13 +31,15 @@ import {
 } from "views/settings-view.slint";
 export { SettingsModel, ConnectionRow, SettingsRowStatus, SettingsOutcome }
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
+import { TaskCard } from "widgets/task-card.slint";
+import { DragState } from "drag-state.slint";
 import { TextField } from "widgets/text-field.slint";
 import { MenuPanelFacts } from "menu-facts.slint";
 import { SettingsScrollFacts } from "settings-facts.slint";
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState }
 export { BoardBarModel, BoardSegmentModel }
 
 export enum KeyFeedback {
@@ -148,6 +150,13 @@ export component AppWindow inherits Window {
     // and the vi-from-settings exposure. `board-flow-initial` is the
     // seeded buffer (the mount-only initial-text rule).
     in-out property <bool> board-create-open: false;
+    // The pointer drag-to-move's open flag (r2 chunk-8 D-D): mounts
+    // the ghost; pushed by the models pass while the drag flow holds
+    // (refresh-survival by construction).
+    in-out property <bool> board-drag-open: false;
+    // Any flow holds on the board (the drag arm's XOR belt); pushed
+    // by the models pass.
+    in-out property <bool> board-flow-open: false;
     in-out property <bool> board-rename-open: false;
     in-out property <string> board-flow-initial;
 
@@ -218,6 +227,11 @@ export component AppWindow inherits Window {
                 create-committed(c, t) => root.board-create-committed(c, t);
                 create-edited(c, t) => root.board-create-edited(c, t);
                 add-task-activated(c) => root.board-add-task-activated(c);
+                flow-open: root.board-flow-open;
+                card-drag-armed(c, r) => root.board-card-drag-armed(c, r);
+                drag-hovered(c) => root.board-drag-hovered(c);
+                card-dropped(c) => root.board-card-dropped(c);
+                card-drag-finished(c, r, ok) => root.board-card-drag-finished(c, r, ok);
                 new-stack-activated() => root.board-new-stack-clicked();
                 stack-create-committed(t) => root.board-stack-create-committed(t);
                 stack-create-edited(t) => root.board-stack-create-edited(t);
@@ -435,6 +449,22 @@ export component AppWindow inherits Window {
             query-edited(text) => root.palette-query-edited(text);
             row-activated(index) => root.palette-row-activated(index);
         }
+        // The pointer drag's ghost (r2 chunk-8, D-D): the dragged
+        // card's snapshot at half opacity, centred under the cursor
+        // (DragState.pointer-x/y, fed by the board DropAreas' can-drop
+        // reports). Mounted as the last sibling: mid-drag the runtime
+        // suppresses hover/press over it, so it shadows no drop
+        // target; no other overlay can be open while a drag is.
+        if (root.board-drag-open): Rectangle {
+            width: 100%;
+            height: 100%;
+            TaskCard {
+                model: DragState.ghost-model;
+                x: DragState.pointer-x - self.width / 2;
+                y: DragState.pointer-y - self.height / 2;
+                opacity: 0.5;
+            }
+        }
     }
 
     // The Rust-installed interception seam (D18): converts the event
@@ -515,6 +545,13 @@ export component AppWindow inherits Window {
     // The per-column Add Task ghost (r2 D8): select + route
     // task.create — the keyboard's exact dispatch.
     pure callback board-add-task-activated(int);
+    // The pointer drag-to-move seams (r2 chunk-8): the DragArea arm
+    // (column, row), the DropArea hover/drop reports, and the
+    // drag-finished outcome (true = completed drop).
+    pure callback board-card-drag-armed(int, int);
+    pure callback board-drag-hovered(int);
+    pure callback board-card-dropped(int);
+    pure callback board-card-drag-finished(int, int, bool);
     // The stack-create flow (usability D7): the on-board button
     // routes the same registry action as the `S` binding (§7.1).
     pure callback board-new-stack-clicked();

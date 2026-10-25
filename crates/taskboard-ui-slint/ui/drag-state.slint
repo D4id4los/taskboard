@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The pointer drag-to-move shared state (r2 chunk-8, D-D): the
+// ghost's pointer feed, its card snapshot, and the opaque payload the
+// DragAreas declare. Pointer coordinates are runtime-written (the
+// board DropAreas' can-drop callbacks); the ghost model and the open
+// flag ride the refresh push (models.rs) — refresh-survival by
+// construction, the chunk-2 stable-models invariant.
+
+import { TaskCardModel } from "widgets/task-card.slint";
+
+export global DragState {
+    // The pointer's window coordinates, written by the board's
+    // DropArea callbacks; never touched by the model push.
+    in-out property <length> pointer-x: 0;
+    in-out property <length> pointer-y: 0;
+    // The dragged card's display-model snapshot (the exact pixels the
+    // source card had at drag start); pushed by the models pass while
+    // the drag flow holds.
+    in-out property <TaskCardModel> ghost-model;
+    // The opaque drag payload (data-transfer values are opaque in
+    // slint). Non-empty: the runtime refuses to start a drag without
+    // one. Minted once at mount from Rust; the adapter addresses
+    // drags through the id tables, not the payload.
+    in-out property <data-transfer> payload;
+}

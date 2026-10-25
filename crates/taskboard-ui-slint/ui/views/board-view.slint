@@ -59,6 +59,14 @@ export component BoardView inherits FocusScope {
     // The stack-create flow (usability D7): the on-board button and
     // the field's mirror/commit seams.
     callback new-stack-activated();
+    // The pointer drag-to-move seams (r2 chunk-8), threaded window →
+    // view → layout; index-only, the D2 convention.
+    callback card-drag-armed(int, int);
+    callback drag-hovered(int);
+    callback card-dropped(int);
+    callback card-drag-finished(int, int, bool);
+    // Any flow holds: the DragAreas refuse to arm (the XOR belt).
+    in property <bool> flow-open: false;
     callback stack-create-committed(string);
     callback stack-create-edited(string);
 
@@ -82,6 +90,11 @@ export component BoardView inherits FocusScope {
             BoardLayout {
                 stacks: root.board.stacks;
                 selected-stack: root.board.selected-stack;
+                flow-open: root.flow-open;
+                board-card-drag-armed(c, r) => root.card-drag-armed(c, r);
+                board-drag-hovered(c) => root.drag-hovered(c);
+                board-card-dropped(c) => root.card-dropped(c);
+                board-card-drag-finished(c, r, ok) => root.card-drag-finished(c, r, ok);
                 move-target: root.board.move-target;
                 stack-create-open: root.board.stack-create-open;
                 board-bar: root.board-bar;

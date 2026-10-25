@@ -26,7 +26,7 @@ use crate::responsive::Breakpoint;
 use crate::view_state::{Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel,
-    Breakpoint as SlintBreakpoint, DecorationKind, DueDayModel, DueKind as SlintDueKind,
+    Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
     FlowHintModel, PaletteRowModel, Responsive, RuleRowModel, StackColumnModel, StackDetailModel,
     SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel, Theme, TodayModel,
     TodayRowModel, TodaySectionModel, Tone, View,
@@ -629,6 +629,20 @@ fn push_board(
     mutations += diff_rows(models.columns.get_or_insert_with(Rc::default), &columns);
     // The board create/rename fields' window-level slot (r2 D21).
     window.set_board_create_open(matches!(flow, Flow::CreateBoard));
+    // The pointer drag's window bits (r2 chunk-8 D-D): the ghost's
+    // open flag and its card snapshot rebuild on every pass while the
+    // drag flow holds (the chunk-2 refresh-survival invariant made
+    // constructive); `DragState.pointer-x/y` are runtime-owned and
+    // never written here.
+    window.set_board_drag_open(matches!(flow, Flow::DragMove { .. }));
+    window.set_board_flow_open(flow != Flow::None);
+    if let Flow::DragMove { task, .. } = &flow
+        && let Some(dragged) = state.tasks.get(task)
+    {
+        let mut ghost = task_card_model(dragged, sets, vs, now, decorations_model(models, dragged));
+        ghost.dragging_source = false;
+        window.global::<DragState>().set_ghost_model(ghost);
+    }
     window.set_board_rename_open(matches!(flow, Flow::RenameBoard { .. }));
     window.set_board_flow_initial(SharedString::from(match &flow {
         Flow::RenameBoard { .. } => vs.buffer().to_owned(),
@@ -656,7 +670,7 @@ fn push_board(
             .and_then(|i| i32::try_from(i).ok())
             .unwrap_or(-1),
         move_target: match &flow {
-            Flow::Move { target, .. } => stack_ids
+            Flow::Move { target, .. } | Flow::DragMove { target, .. } => stack_ids
                 .iter()
                 .position(|s| s == target)
                 .and_then(|i| i32::try_from(i).ok())
@@ -1035,6 +1049,7 @@ fn task_card_model(
         due_kind: to_slint_due_kind(kind),
         done: task.done.is_some(),
         emphasis: vs.focused_task().is_some_and(|f| f == task.id),
+        dragging_source: matches!(vs.flow(), Flow::DragMove { task: dragged, .. } if *dragged == task.id),
         decorations,
     }
 }

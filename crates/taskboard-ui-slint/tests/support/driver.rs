@@ -69,6 +69,14 @@ pub trait JourneyDriver {
     /// Delivers a pointer move (hover) at the logical window
     /// position — the tooltip trigger's seam (round-1 D8).
     fn hover_at(&mut self, x: f32, y: f32);
+    /// The pointer-drag primitives (r2 chunk-8): raw left press /
+    /// move / release dispatches, the slint `native_drag.rs` driving
+    /// pattern — a press, moves past the 8-px slop, a release. The
+    /// mock clock's handler pass (`advance_time`) delivers the
+    /// property-change callbacks between them.
+    fn press_at(&mut self, x: f32, y: f32);
+    fn drag_move_to(&mut self, x: f32, y: f32);
+    fn release_at(&mut self, x: f32, y: f32);
     /// Sets the window size in logical px (scale factor 1 → also
     /// physical); drives the `Responsive` breakpoints.
     fn set_window_size(&mut self, width: u32, height: u32);
@@ -204,8 +212,6 @@ impl JourneyDriver for SlintDriver {
     }
 
     fn click_at(&mut self, x: f32, y: f32) {
-        let component = self.window();
-        let window = component.window();
         let position = slint::LogicalPosition::new(x, y);
         let button = i_slint_core::items::PointerEventButton::Left;
         for event in [
@@ -213,15 +219,33 @@ impl JourneyDriver for SlintDriver {
             slint::platform::WindowEvent::PointerPressed { position, button },
             slint::platform::WindowEvent::PointerReleased { position, button },
         ] {
-            window.dispatch_event(event);
+            self.dispatch_pointer(event);
         }
     }
 
     fn hover_at(&mut self, x: f32, y: f32) {
-        let component = self.window();
-        let window = component.window();
-        window.dispatch_event(slint::platform::WindowEvent::PointerMoved {
+        self.dispatch_pointer(slint::platform::WindowEvent::PointerMoved {
             position: slint::LogicalPosition::new(x, y),
+        });
+    }
+
+    fn press_at(&mut self, x: f32, y: f32) {
+        self.dispatch_pointer(slint::platform::WindowEvent::PointerPressed {
+            position: slint::LogicalPosition::new(x, y),
+            button: i_slint_core::items::PointerEventButton::Left,
+        });
+    }
+
+    fn drag_move_to(&mut self, x: f32, y: f32) {
+        self.dispatch_pointer(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(x, y),
+        });
+    }
+
+    fn release_at(&mut self, x: f32, y: f32) {
+        self.dispatch_pointer(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(x, y),
+            button: i_slint_core::items::PointerEventButton::Left,
         });
     }
 
@@ -278,6 +302,20 @@ impl JourneyDriver for SlintDriver {
             .unwrap_or_else(|| panic!("the labelled element {label:?} is present"));
         element.invoke_default_action();
     }
+}
+
+impl SlintDriver {
+    fn dispatch_pointer(&mut self, event: slint::platform::WindowEvent) {
+        let component = self.window();
+        component.window().dispatch_event(event);
+    }
+}
+
+/// The card/element centre helper the drag journeys address by.
+pub fn centre(element: &Element) -> (f32, f32) {
+    let pos = element.absolute_position();
+    let size = element.size();
+    (pos.x + size.width / 2.0, pos.y + size.height / 2.0)
 }
 
 fn dispatch(window: &slint::Window, text: SharedString, pressed: bool) {
