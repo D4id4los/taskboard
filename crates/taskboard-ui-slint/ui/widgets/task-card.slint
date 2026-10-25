@@ -52,10 +52,13 @@ export component TaskCard inherits Rectangle {
     in property <[string]> hint-keys;
 
     // Hover stays distinct from the emphasis ring (focus ≠ hover,
-    // both may coexist — usability D2).
+    // both may coexist — usability D2). At rest the card paints the
+    // content step of the ladder (r2 D35): on a `surface` column card
+    // it is one step up, on the bare compact/today boards it is the
+    // segmented-control's thumb step off the background.
     background: touch.has-hover ? Theme.surface-hover
         : root.model.done ? Theme.background
-        : Theme.surface;
+        : Theme.surface-raised;
     border-radius: Theme.radius-medium;
     border-width: root.model.emphasis ? Theme.focus-ring-width : 0;
     border-color: Semantic.focus-ring;

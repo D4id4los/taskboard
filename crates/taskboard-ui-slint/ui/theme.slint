@@ -27,6 +27,14 @@ export global Theme {
     //      them, views never name them) --------------------------------
     // Contrast-checked pair list lives in the Rust token tests
     // (src/token_tests.rs §9.1); tuning palette values re-runs it.
+    // The surface ladder (r2 D35) — each step may paint only over the
+    // steps below it: `background` = the window shell / board strip,
+    // `surface` = containers (column cards, toolbar, tracks, chips),
+    // `surface-raised` = content on a container (task cards, fields,
+    // panels, selected paints). There is no raised-again step: any new
+    // paint above `surface-raised` must stay distinct from
+    // `surface-hover`'s guard below, which boxes the arithmetic (the
+    // r2 visual-identity plan §2.1).
     out property <color> background: #14161c;
     out property <color> surface: #1d2028;
     out property <color> surface-raised: #262a35;
@@ -62,6 +70,7 @@ export global Theme {
     out property <length> radius-small: 4px * base-scale;
     out property <length> radius-medium: 8px * base-scale;
     out property <length> focus-ring-width: 2px * base-scale;
+
 
     // ---- Window default dimensions (a spacing-class dimension, so it
     //      lives here — keeps the token lint's rule 3 total) -----------

@@ -382,6 +382,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
   existing ones.
 
 ### Changed
+- Stack columns render as cards on the re-anchored surface ladder
+  (GUI review round-2 chunk 7; D35): each regular-mode column wraps
+  in a `surface` card (`radius-medium`, `space-2` inner padding)
+  with the bare board background showing through as the strip
+  between and around cards; task cards re-step from `surface` to
+  `surface-raised` and the neutral badge chip from `surface` to
+  `surface-raised` so both read one step up from their container
+  (done cards become recessed wells inside the card). The columns
+  row gains a `space-3` background strip (side/bottom padding) and
+  the leg's rhythm below the board bar widens to `space-2`. The
+  compact leg keeps the bare single-column layout, and the trailing
+  add-column affordance stays on the strip, outside the cards.
 - The GUI review round-2 settings form, feedback, and help (issue
   #390, chunk 5; D26–D31): the keymap preset picker becomes a real
   **segmented control** (one grouped container, exactly-one-selected;
