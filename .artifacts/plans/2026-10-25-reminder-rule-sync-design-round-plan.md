@@ -54,9 +54,10 @@
   roam-set), §4(b)-R2 (the remaining §4 questions), and §4-R3 (the
   notification model — **supersedes parts of R and R2**: fire
   receipts stay local, the synced fact becomes the user dismissal,
-  and the notification surface enters the round). Stage 2's work: the
-  design doc, the audit recordings, and the open details listed in
-  §4-R3.5.
+  and the notification surface enters the round). R3.5's open details
+  are **resolved** (see R3.5 resolutions): every direction input the
+  round needed is in. Stage 2's work: the design doc and the audit
+  recordings.
 
 ---
 
@@ -502,6 +503,33 @@ wanted, none blocking the design doc):**
 5. **Mark Done dismissal shape**: planner-emitted dismissal rows
    (recommended; closes the reopen hazard) vs done-derivation coupling
    — stage 2 confirms.
+
+**R3.5 resolutions (2026-10-25, user direction) — the open details are
+closed:**
+
+1. **Start Task: deferred to issue #210 (time tracking subsystem).**
+   The v1 button set is Dismiss / Mark Done / Snooze / Mute; #210 is
+   charged (by issue comment, recorded 2026-10-25) with adding the
+   Start Task button to the reminder UI when it lands, carrying the
+   implicit-dismissal semantic.
+2. **Section name: `dismissals`.** The reserved `proofs` name stays
+   reserved-but-unclaimed (documented in the section-registry notes so
+   no future wave invents a colliding meaning).
+3. **Kiosk: banner-only.** The in-app notification surface is a
+   full-GUI feature — it requires interaction to be useful, and
+   interactive cases run the full GUI (kiosk appliance mode keeps the
+   scheduler-free banner as its only reminder surface).
+4. **Native toast close ≠ dismissal: confirmed**, with the rationale
+   recorded — several notification systems are fire-and-forget, and
+   cross-OS/display-manager/WM support therefore *requires* the fully
+   in-app path as the universal dismissal surface (it is the source of
+   truth). **Backlog candidate recorded**: where the platform's
+   notification system supports action buttons, native toasts may
+   grow Dismiss/Snooze/Mute buttons — considered future enhancement,
+   gated on case-by-case functional tests per platform (not a v1
+   commitment; issue filing left to the user's promotion).
+5. **Mark Done: planner-emitted dismissal rows** (the recommended
+   shape stands; the reopen hazard stays closed).
 
 ### (c) The state home (F16-16) — verification, not invention
 
