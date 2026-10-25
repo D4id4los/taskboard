@@ -49,11 +49,14 @@
 - **Branch / worktree**: `docs/reminder-rule-sync-design-round` in
   `../taskboard-WT-docs-reminder-rule-sync-design-round`, off `main` @
   `abc5aa7`.
-- **Status**: DRAFT agenda — stage 2 unblocked. Two ruling passes
-  received during stage 1 (2026-10-25, user direction), recorded at
-  §4(b)-R and §4(b)-R2: every §4 question is resolved in direction;
-  stage 2's remaining work is the design doc, the audit recordings
-  (§4(e)/§4(f)/§4(g)), and confirming the §4(d).1 mechanism default.
+- **Status**: DRAFT agenda — stage 2 unblocked. Three ruling passes
+  received during stage 1 (2026-10-25, user direction): §4(b)-R (the
+  roam-set), §4(b)-R2 (the remaining §4 questions), and §4-R3 (the
+  notification model — **supersedes parts of R and R2**: fire
+  receipts stay local, the synced fact becomes the user dismissal,
+  and the notification surface enters the round). Stage 2's work: the
+  design doc, the audit recordings, and the open details listed in
+  §4-R3.5.
 
 ---
 
@@ -359,6 +362,147 @@ remaining §4 questions resolved in direction:**
   the same pass, so an adopted rule is immediately suppressed by
   already-present receipts.
 
+### §4-R3 — Third ruling pass: the notification model (2026-10-25)
+
+The user clarified the intended *user-facing* semantics, which the
+landed model does not implement (it auto-settles every occurrence at
+fire time and has no user-facing dismiss at all — the interactive
+surface was deferred to the reminders plan's "plan 5"). The direction,
+from the user's perspective:
+
+> Three synchronized devices; a reminder fires; **all three devices
+> show the notification** (OS toast where available, and an in-app
+> notification in the app itself). The in-app notification persists on
+> every device **until the user acts**, with buttons **Dismiss**,
+> **Mark Done** (implicitly dismisses), **Start Task** (implicitly
+> dismisses), **Snooze**, and **Mute**. Dismissal — explicit, or
+> implicit via Done/Start — is a **globally synced action**: it clears
+> the in-app notification on all devices and withdraws the OS
+> notifications where the platform allows. Snooze and Mute remain
+> **local** operations, revisited only after experience with the
+> system.
+
+**R3.1 — Supersessions (this pass wins over R and R2 where they
+conflict):**
+
+- **Fire receipts do not sync and do not suppress other devices.** R's
+  "dismissals (= fire receipts) suppress fleet-wide" is replaced: every
+  device fires its own toast/in-app notification for an occurrence.
+  `ReminderDelivery` remains a **local, per-device** at-most-once toast
+  guard, written automatically at fire time (durable-then-notify
+  survives unchanged — it now guards only the OS toast, not the user
+  settlement).
+- **The synced fact becomes the user dismissal** — a new domain fact
+  with a new write site (a user command), which dissolves §4(d).1's
+  flush-trigger question: R2's tick-arm `UpdateAppData` enqueue default
+  is **superseded**; the dismissal command enqueues the ordinary
+  `UpdateAppData(task)` op inside `plan_command` exactly like every
+  other command. No tick-arm enqueue, no new trigger mechanism, no
+  outbox-contract change.
+- Snooze/mute per-device (R) is unchanged and now has its final
+  reasons; §4(d).2's clock-LWW ruling carries over to dismissal rows;
+  §4(d).3's guard-immunity carries over (a dismissal is append-only,
+  never edited); §4(d).4's growth acceptance carries over.
+
+**R3.2 — The model delta (design sketch for stage 2; the two-fact
+split):**
+
+- **Local fire receipt** — the existing `ReminderDelivery`
+  (`reminders.rs:241–249`), unchanged role: written at fire time,
+  prevents the OS toast from re-firing on this device, prune-safe by
+  the existing cascade. **Stays out of the document entirely.**
+- **Synced dismissal** — new fact, shape ruled by R2:
+  `{ reminder: Rule-ref only, occurrence, dismissed_at (= the LWW
+  clock) }`; one write site (the dismiss command's stamp); set-shaped
+  membership; explicit tombstones never needed (dismissals are
+  permanent for the occurrence). Proposed home: `ReminderState`
+  gains a `dismissals` collection (additive, snapshot-breaking once);
+  new persistence action `RecordReminderDismissal`; new storage table
+  in the next free migration (0009), additive.
+- **Evaluator changes:** `due_firings` suppresses an occurrence that is
+  delivered (local) **or dismissed** (synced in) — a dismissal stops
+  future firings fleet-wide; new pure derived view
+  `active_notifications(tasks, reminders, defaults, now)` — the
+  in-app surface reads it like `overdue_tasks`: active ⇔ this device
+  fired the occurrence ∧ not dismissed. (A device offline at fire time
+  fires on reconnect via the normal tick — the existing kiosk
+  shutdown-recovery story — unless a synced dismissal beat it there;
+  that race resolves correctly by derivation.)
+- **The dismiss surface → engine:** new
+  `StateCommand::DismissReminder { reminder, occurrence }` (stamps
+  `dismissed_at`, persists, enqueues `UpdateAppData(task)`). Buttons:
+  - **Mark Done** sends the existing `SetTaskDone`; the recommended
+    shape is that the *command planner* also emits dismissals for the
+    task's currently-active occurrences (the done state syncs natively
+    and would clear derived notifications everywhere anyway, but the
+    explicit rows close the **reopen hazard**: a task reopened after
+    Done must not resurrect old occurrences as active notifications).
+    Stage 2 confirms planner-emitted dismissals vs derivation coupling.
+  - **Start Task** — open detail (R3.5): the model has no in-progress
+    state, so Start = dismiss + (a UI affordance or a `scheduled`
+    stamp — the user session picks).
+  - **Snooze / Mute** dispatch the existing `SnoozeReminder` /
+    `SetTaskRemindersMuted` commands unchanged (local).
+- **Withdrawal:** the notification sink port grows a best-effort
+  withdraw direction (the engine currently only sends *out*): the
+  fire/withdraw messages share the notifier channel as a two-variant
+  payload; `LogSink` withdraw is a no-op; the desktop sink withdraws
+  per platform support (documented matrix — several notification
+  servers cannot withdraw; the in-app notification is the source of
+  truth, OS withdrawal is best-effort in both directions: closing an
+  OS toast natively is not a dismissal).
+- **Upgrade compat:** pre-R3 data has delivery rows only and no
+  dismissal rows — without a backfill, every already-fired occurrence
+  would surface as an active in-app notification after upgrade.
+  Migration 0009 backfills one dismissal per existing
+  `reminder_deliveries` row (`dismissed_at = delivered_at`), pinning
+  "old behavior ≡ everything already dismissed". Mixed fleets: an
+  old (pre-R3) device auto-settles occurrences and never shows or
+  clears the new in-app surface; it relays the dismissal section
+  verbatim (landed relay guarantee) — accepted, recorded.
+- **Section naming:** the reserved `proofs` name (`appdata.rs:60–61`)
+  now misnames the content; stage 2 picks the section name
+  (`dismissals` recommended, `proofs` stays reserved/undocumented-out)
+  — additive either way, the verbatim relay is name-blind.
+- **Asymmetry (carried from R2, semantics shifted):** only Rule-ref
+  dismissals sync. Default-ref occurrences differ per device (M3:
+  per-device `default_before`), so their notifications clear locally
+  only; alarms stay device-local end to end. Same fail-closed
+  emission/fold filters and property pin, now on dismissals.
+
+**R3.3 — ADR/docs impact:** ADR 0013's decisions 2–3 are amended by
+this round (the at-most-once guard splits into the local fire receipt
+and the synced user dismissal; durable-then-notify narrows to the OS
+toast); the reminders design's deferred "plan 5" (desktop sink +
+interactive surface) is **absorbed into this round** (R3.4 chunk C).
+
+**R3.4 — Revised implementation breakdown (supersedes §6's estimate):**
+
+| Chunk | Scope | Size |
+|---|---|---|
+| A — domain/state/storage | `ReminderDismissal` fact + `ReminderState.dismissals`, `DismissReminder` command (+ planner-emitted dismissals for Mark Done, reopen hazard), evaluator changes (`due_firings` dismissed-check, `active_notifications` view), `RecordReminderDismissal` action + `apply_actions`, migration 0009 (table + delivery backfill), proptests | M |
+| B — sync lane | dismissals document section (codec, clock-LWW union, Rule-ref-only emission filter + fold ignore + property pin), fold at the §5b position (after rules), `UpdateAppData` enqueue site, flush/fence reuse, snapshot/fixture pass | S/M |
+| C — notification surface (absorbs plan 5) | in-app notification view (derived-at-read, action buttons → commands), `DismissReminder` UI path, desktop sink (`notify-rust` or platform equivalent), sink withdraw direction + platform matrix, `cargo deny` for the new tree, kiosk in-app question | M |
+
+Stage 2 (design doc + recordings) sized M — the two-fact split, the
+Mark Done/reopen handling, and the withdrawal direction are real
+design surface.
+
+**R3.5 — Open details for stage 2's decision session (user inputs
+wanted, none blocking the design doc):**
+
+1. **Start Task semantics** beyond dismissing: pure UI navigation, or
+   also stamp `scheduled` (the startdate field) to now?
+2. **Section name**: `dismissals` (recommended) vs keeping `proofs`.
+3. **Kiosk in-app notifications**: does the kiosk show the in-app
+   surface too (it has the banner already), or banner-only?
+4. **OS toast dismissal**: accepted that closing the native toast is
+   *not* a dismissal (the in-app notification is the source of truth)
+   — confirm.
+5. **Mark Done dismissal shape**: planner-emitted dismissal rows
+   (recommended; closes the reopen hazard) vs done-derivation coupling
+   — stage 2 confirms.
+
 ### (c) The state home (F16-16) — verification, not invention
 
 **The question.** F16-16: "anything that roams must become engine state
@@ -608,6 +752,13 @@ the priority of the backloged age-pruning entry.
 
 ## 6. Estimated round size
 
+**Superseded by §4-R3.4** (the notification-model ruling): stage 2 is
+sized M, implementation is three chunks — A (domain/state/storage,
+M), B (sync lane, S/M), C (notification surface, M, absorbing the
+reminders plan's deferred plan 5). The original single-S/M-chunk
+estimate below is kept for the record of what the round looked like
+before the dismissal-model direction landed.
+
 - **Stage 2 (design + decision record + ADR-side effects):** S–M. The
   question count is moderate and most substrate constraints are
   binding; the genuinely open forks are §4(b)'s roam-set, §4(d)'s
@@ -626,7 +777,9 @@ the priority of the backloged age-pruning entry.
   "the protocol design round"; roughly half its content (transport,
   rules section, rule clocks, tombstones, the capability seam) landed
   with the daily-driver wave before the round started. Stage 2 should
-  note the de-scope on the issue when the round closes.
+  note the de-scope on the issue when the round closes — and, per
+  R3.2, the *addition* (dismissal sync + notification surface), which
+  issue #202 never scoped.
 
 ## 7. Stage-2 checklist (the handoff)
 
@@ -641,6 +794,21 @@ the priority of the backloged age-pruning entry.
    ADR 0010 amendment if and only if §4(e) selects movement.
 4. Record F16-16's disposition (§4(c)).
 5. Update issue #202 (comment or body note) with the landed-half
-   de-scope (§6) when the round closes.
+   de-scope (§6) when the round closes — and the R3 addition
+   (dismissal sync + the notification surface), which the issue never
+   scoped.
 6. Amend the age-based-proof-pruning backlog entry's terms if §4(d).4
-   changes them.
+   changes them (per R3: it now prunes local fire receipts *and*
+   synced dismissal rows; the too-old-to-refire term applies to
+   both).
+7. Spec the ADR 0013 amendment (R3.3): the at-most-once guard splits
+   into the local fire receipt and the synced user dismissal;
+   durable-then-notify narrows to the OS toast; the interactive
+   dismiss/snooze surface note moves from "plan 5" to this round.
+8. Run the R3.5 open-details items through the user decision session
+   (Start Task semantics, section name, kiosk in-app, OS-toast-close
+   semantics, Mark Done dismissal shape).
+9. Pin the migration-0009 backfill as a dedicated upgrade test:
+   pre-R3 delivery rows must become dismissal rows one-for-one, so no
+   already-fired occurrence resurfaces as an active in-app
+   notification after upgrade.
