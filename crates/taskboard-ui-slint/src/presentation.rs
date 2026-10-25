@@ -350,6 +350,70 @@ fn snooze_target(state: &AppState, task: &Task) -> (ReminderRef, DateTime<Utc>) 
     (ReminderRef::Default(task.id), anchor)
 }
 
+/// One in-app notification row (R3 chunk C, design D-10): the fired
+/// occurrence's command targets its buttons dispatch. `task` is `None`
+/// for an alarm row (no Done/Mute button exists for an anchor-less
+/// alarm; Dismiss and Snooze carry the ref + occurrence themselves).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationRow {
+    /// The watched task (the Done/Mute buttons' target); `None` marks
+    /// an adhoc-alarm row.
+    pub task: Option<TaskId>,
+    /// The reminder ref both the dismiss and snooze commands carry.
+    pub reminder: ReminderRef,
+    /// The effective occurrence that fired.
+    pub occurrence: DateTime<Utc>,
+    /// The title snapshot the domain view assembled (task title or
+    /// alarm label) — carried, never re-derived.
+    pub title: String,
+}
+
+/// The in-app notification rows for `now` (design D-6): the domain's
+/// own `active_notifications` — set-membership over fired-∧-not-
+/// dismissed, never reinvented here — in its canonical
+/// `(occurrence, reminder)` order. The anchor card is filtered (the
+/// banner's DDF-5 precedent: the anchor is never a reminder surface).
+/// Desktop-only surface: the kiosk's mount gate sits model-side.
+#[must_use]
+pub fn notification_rows(
+    state: &AppState,
+    defaults: &taskboard_domain::ReminderDefaults,
+    now: DateTime<Utc>,
+) -> Vec<NotificationRow> {
+    taskboard_domain::active_notifications(&state.tasks, &state.reminders, defaults, now)
+        .into_iter()
+        .filter(|note| match note.anchor {
+            taskboard_domain::ReminderAnchor::Task(task) => {
+                state.tasks.get(&task).is_none_or(|t| !is_anchor_task(t))
+            }
+            taskboard_domain::ReminderAnchor::Alarm(_) => true,
+        })
+        .map(|note| NotificationRow {
+            task: match note.anchor {
+                taskboard_domain::ReminderAnchor::Task(task) => Some(task),
+                taskboard_domain::ReminderAnchor::Alarm(_) => None,
+            },
+            reminder: note.reminder,
+            occurrence: note.occurrence,
+            title: note.title,
+        })
+        .collect()
+}
+
+/// The notification row's context phrase (mono role): elapsed since the
+/// fired occurrence, bucketed by [`duration_bucket`] — the due phrase's
+/// tested contract, past-direction ("fired now" / "fired {q} ago").
+#[must_use]
+pub fn notification_phrase(occurrence: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let bucket = duration_bucket(now - occurrence);
+    match bucket {
+        DurationBucket::Now => "fired now".to_owned(),
+        DurationBucket::Minutes(n) => format!("fired {n}m ago"),
+        DurationBucket::Hours(n) => format!("fired {n}h ago"),
+        DurationBucket::Days(n) => format!("fired {n}d ago"),
+    }
+}
+
 /// The board's live stacks in display order (D10): `(order, id)`
 /// ascending — presentation's own reading of the domain's persisted
 /// sort position (the domain owns the concept and the write side;
@@ -844,6 +908,109 @@ mod tests {
             ReminderAnchor::Task(task_id),
             "banner targets carry Task anchors only"
         );
+    }
+
+    #[test]
+    fn notification_rows_follow_the_domain_view_and_filter_the_anchor() {
+        use taskboard_domain::ReminderDelivery;
+        let now = Utc::now();
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let ruled = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let rule_id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mut t = task(ruled, stack, 0);
+        t.duedate = Some(now - TimeDelta::hours(1));
+        state.tasks.insert(ruled, t);
+        state.reminders.rules.insert(
+            rule_id,
+            taskboard_domain::ReminderRule {
+                id: rule_id,
+                task: ruled,
+                offset: ReminderOffset::at_due(),
+                created_at: now,
+                updated_at: now,
+            },
+        );
+        // No delivery yet: not active (the surface is fired ∧ not
+        // dismissed — the domain view's contract, not a UI rule).
+        assert_eq!(
+            notification_rows(&state, &defaults(), now),
+            [] as [NotificationRow; 0]
+        );
+
+        let occurrence = now - TimeDelta::hours(1);
+        state.reminders.deliveries.insert(ReminderDelivery {
+            reminder: ReminderRef::Rule(rule_id),
+            occurrence,
+            delivered_at: now,
+        });
+        let rows = notification_rows(&state, &defaults(), now);
+        assert_eq!(
+            rows,
+            vec![NotificationRow {
+                task: Some(ruled),
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence,
+                title: state
+                    .tasks
+                    .get(&ruled)
+                    .map(|t| t.title.clone())
+                    .unwrap_or_default(),
+            }]
+        );
+
+        // Dismissed: gone from the surface, permanently.
+        state
+            .reminders
+            .dismissals
+            .insert(taskboard_domain::ReminderDismissal {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence,
+                dismissed_at: now,
+            });
+        assert_eq!(
+            notification_rows(&state, &defaults(), now),
+            [] as [NotificationRow; 0]
+        );
+    }
+
+    /// The anchor card never renders as a notification row (DDF-5, the
+    /// banner precedent).
+    #[test]
+    fn notification_rows_exclude_the_anchor() {
+        use taskboard_domain::ReminderDelivery;
+        let now = Utc::now();
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let anchor = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mut t = task(anchor, stack, 0);
+        t.title = taskboard_domain::ANCHOR_CARD_TITLE.to_owned();
+        t.duedate = Some(now - TimeDelta::hours(1));
+        state.tasks.insert(anchor, t);
+        state.reminders.deliveries.insert(ReminderDelivery {
+            reminder: ReminderRef::Default(anchor),
+            occurrence: now - TimeDelta::hours(1),
+            delivered_at: now,
+        });
+        assert_eq!(
+            notification_rows(&state, &defaults(), now),
+            [] as [NotificationRow; 0]
+        );
+    }
+
+    #[test]
+    fn notification_phrase_buckets_the_elapsed_time() {
+        let now = Utc::now();
+        assert_eq!(notification_phrase(now, now), "fired now");
+        // Structural facts only (AGENTS §5): past-direction at every
+        // bucket, monotone wording, never a future tense.
+        let past = notification_phrase(now - TimeDelta::hours(2), now);
+        assert!(past.starts_with("fired ") && past.ends_with(" ago"));
+        assert_ne!(past, notification_phrase(now - TimeDelta::hours(3), now));
+    }
+
+    fn defaults() -> taskboard_domain::ReminderDefaults {
+        taskboard_domain::ReminderDefaults::default()
     }
 
     #[test]

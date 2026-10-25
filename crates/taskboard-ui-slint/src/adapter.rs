@@ -74,6 +74,11 @@ pub(crate) struct Adapter {
     /// The run mode's one UI bit (Q8): on kiosk the today pass filters
     /// to the focused board's subset; the desktop is cross-board.
     kiosk: bool,
+    /// The injected reminder defaults (R3 chunk C): the derivation
+    /// input `active_notifications` needs for the implicit default's
+    /// occurrence — held, never re-read from config (the `day_start`
+    /// consumers contract).
+    reminder_defaults: taskboard_domain::ReminderDefaults,
     shell: KeymapShell,
     resolver: KeymapResolver,
     /// pub(crate) for the lib tests' flow/buffer seams only.
@@ -287,6 +292,15 @@ impl Adapter {
         window.global::<KeyboardState>().set_last_feedback(feedback);
     }
 
+    /// One fire-and-forget command send (the route arm's convention):
+    /// a full or closed inbox is logged and dropped — never a panic
+    /// (D16's forwarder convention).
+    pub(crate) fn send(&self, command: StateCommand) {
+        if self.commands.try_send(command).is_err() {
+            tracing::warn!("command channel full or closed; dropped");
+        }
+    }
+
     /// One action through the router (design §5 pipeline's last hop).
     pub(crate) fn route(&mut self, window: &AppWindow, id: ActionId) {
         let mut ctx = self.shell.dispatch_ctx();
@@ -437,6 +451,7 @@ impl Adapter {
             &chain,
             day,
             self.kiosk,
+            &self.reminder_defaults,
             &mut self.models,
             &due,
         );
@@ -1961,6 +1976,7 @@ pub(crate) fn install(
     connectors: Vec<ConnectorInfo>,
     day_start: (chrono::NaiveTime, chrono::FixedOffset),
     kiosk: bool,
+    reminder_defaults: taskboard_domain::ReminderDefaults,
     boards: Vec<requests::BoardInfo>,
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
@@ -1986,6 +2002,7 @@ pub(crate) fn install(
         keymap,
         day_start,
         kiosk,
+        reminder_defaults,
         shell: KeymapShell::default(),
         resolver: KeymapResolver::new(),
         // The desktop-default split (chunk 10 D2): the kiosk bit —
@@ -2154,6 +2171,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_stack_width_seams(window, adapter);
     install_drag_seams(window, adapter);
     install_banner_seams(window, adapter);
+    install_notification_seams(window, adapter);
     install_settings_seams(window, adapter);
 }
 
@@ -3264,6 +3282,107 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.reminder_target = Some(banner_row.target);
         a.route(&window, ActionId::ReminderMute);
     });
+}
+
+/// The notification row at `index` (D2: the index resolves against the
+/// refresh pass's row table).
+fn notification_row(adapter: &Adapter, index: i32) -> Option<crate::presentation::NotificationRow> {
+    adapter
+        .tables
+        .notifications
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .cloned()
+}
+
+/// The notification surface's seams (R3 chunk C, design D-10): each
+/// button dispatches exactly one engine command and nothing else (the
+/// thin-client rule). No Start Task button — deferred to the
+/// time-tracking subsystem (issue #210), which is charged with adding
+/// it and carrying the implicit-dismissal semantic.
+fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // Dismiss: the synced dismissal fact (the universal surface's one
+    // write command).
+    let dismiss = Rc::clone(adapter);
+    window.on_notification_dismiss_clicked(move |index| {
+        let a = dismiss.borrow();
+        let Some(row) = notification_row(&a, index) else {
+            return;
+        };
+        a.send(taskboard_domain::StateCommand::DismissReminder {
+            reminder: row.reminder,
+            occurrence: row.occurrence,
+        });
+    });
+
+    // Mark Done: the existing done command — the planner emits the
+    // dismissal rows for the task's active occurrences (R3.5.5). An
+    // alarm row has no task to done (the button's absence is the
+    // presentation's job; a stray index degrades to a no-op).
+    let done = Rc::clone(adapter);
+    window.on_notification_done_clicked(move |index| {
+        let a = done.borrow();
+        let Some(row) = notification_row(&a, index) else {
+            return;
+        };
+        let Some(task) = row.task else { return };
+        a.send(taskboard_domain::StateCommand::SetTaskDone {
+            id: task,
+            done: true,
+        });
+    });
+
+    // Snooze / Mute: the banner's routed verbs over the one-shot
+    // target — the same registry actions, unchanged. The target's
+    // anchor mirrors the ref (task rows task-anchored; alarm rows
+    // adhoc-anchored — mute has no button there anyway).
+    let snooze = Rc::clone(adapter);
+    let snooze_weak = window.as_weak();
+    window.on_notification_snooze_clicked(move |index| {
+        let Some(window) = snooze_weak.upgrade() else {
+            return;
+        };
+        let mut a = snooze.borrow_mut();
+        let Some(row) = notification_row(&a, index) else {
+            return;
+        };
+        a.reminder_target = Some(notification_target(&row));
+        a.route(&window, ActionId::ReminderSnooze);
+    });
+
+    let mute = Rc::clone(adapter);
+    let mute_weak = window.as_weak();
+    window.on_notification_mute_clicked(move |index| {
+        let Some(window) = mute_weak.upgrade() else {
+            return;
+        };
+        let mut a = mute.borrow_mut();
+        let Some(row) = notification_row(&a, index) else {
+            return;
+        };
+        a.reminder_target = Some(notification_target(&row));
+        a.route(&window, ActionId::ReminderMute);
+    });
+}
+
+/// The one-shot reminder target a notification row feeds the routed
+/// snooze/mute verbs with.
+fn notification_target(
+    row: &crate::presentation::NotificationRow,
+) -> crate::presentation::ReminderTarget {
+    let anchor = match row.reminder {
+        taskboard_domain::ReminderRef::Adhoc(alarm) => {
+            taskboard_domain::ReminderAnchor::Alarm(alarm)
+        }
+        _ => taskboard_domain::ReminderAnchor::Task(
+            row.task
+                .expect("a non-adhoc notification row carries its task"),
+        ),
+    };
+    crate::presentation::ReminderTarget {
+        anchor,
+        reminder: row.reminder,
+        occurrence: row.occurrence,
+    }
 }
 
 /// The settings seams (round-1 chunk 3, D7/D9; the r2 D29 gesture
