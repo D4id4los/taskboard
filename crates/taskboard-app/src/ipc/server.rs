@@ -410,7 +410,8 @@ async fn handle(app: &App, session: &BasicSession, req: Request) -> Response {
             // (standalone) has no connector to drop regardless of the
             // identity.
             use crate::ipc::protocol::DetachWireOutcome;
-            let specs = crate::connectors::configured_connectors(&app.config);
+            let specs = crate::connectors::configured_connectors(&app.config)
+                .expect("connector names validated at boot — App.config is a validated AppConfig");
             let target = specs
                 .iter()
                 .find(|spec| spec.server_url == server_url && spec.username == username);

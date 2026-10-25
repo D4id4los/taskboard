@@ -104,7 +104,7 @@ async fn connect_session(
     //    detach + re-attach rebuilds the client; a re-point needs the
     //    swap anyway. The named swap detaches only the default — a
     //    second live connector survives the rewrite of entry 0.
-    let default_id = default_connector_id(&session.config);
+    let default_id = default_connector_id(&session.config)?;
     if let Some(id) = &default_id
         && app.connector_attached()
     {
@@ -192,10 +192,13 @@ fn refresh_session_config(
 /// The session's default connector id off the refreshed config (the
 /// first spec; `None` in a zero-connector world — a `connect` that left
 /// the core standalone has nothing to swap).
-fn default_connector_id(config: &AppConfig) -> Option<taskboard_domain::ConnectorId> {
-    crate::connectors::configured_connectors(config)
+fn default_connector_id(
+    config: &AppConfig,
+) -> Result<Option<taskboard_domain::ConnectorId>, CommandError> {
+    Ok(crate::connectors::configured_connectors(config)
+        .map_err(CommandError::from)?
         .first()
-        .map(|spec| spec.name.clone())
+        .map(|spec| spec.name.clone()))
 }
 
 /// The refreshed config's default connector spec (D5-14: the session's
@@ -204,6 +207,7 @@ pub(crate) fn default_spec(
     config: &AppConfig,
 ) -> Result<crate::connectors::ConnectorSpec, CommandError> {
     crate::connectors::configured_connectors(config)
+        .map_err(CommandError::from)?
         .into_iter()
         .next()
         .ok_or(CommandError::NotConfigured)
@@ -258,7 +262,16 @@ pub(crate) async fn attach_from_persisted(
     //    The request's identity must equal the target entry's pair —
     //    the identity check survives as the guard that the client
     //    connected *that* connector.
-    let specs = crate::connectors::configured_connectors(&config);
+    let specs = match crate::connectors::configured_connectors(&config) {
+        Ok(specs) => specs,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "attach: the daemon's config resolves no connector set"
+            );
+            return W::NotConfigured;
+        }
+    };
     let target = match name {
         Some(name) => specs
             .iter()

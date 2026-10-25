@@ -196,6 +196,12 @@ fn board_row(state: &AppState, board: taskboard_domain::BoardId) -> SyncStatus {
 impl StatusView {
     /// The daemon-side answer: live state off the engine's `ArcSwap` —
     /// never boots anything, never triggers a cycle.
+    ///
+    /// # Panics
+    ///
+    /// Never on a validated config: `App.config` is minted at boot and
+    /// `AppConfig::load` validates, so the connector-name mint cannot
+    /// fail (same rule as `AppConfig::server_url`).
     #[must_use]
     pub fn server(app: &crate::App) -> Self {
         let backend = match app.config.resolved_default_backend() {
@@ -204,7 +210,8 @@ impl StatusView {
         };
         let connector_attached = Some(app.connector_attached());
         let state = app.engine.shared_state().load_full();
-        let configured = crate::connectors::configured_connectors(&app.config);
+        let configured = crate::connectors::configured_connectors(&app.config)
+            .expect("connector names validated at boot — App.config is a validated AppConfig");
         let (connectors, boards) = derive_connector_views(&state, &configured);
         Self {
             daemon: true,
@@ -249,9 +256,16 @@ impl StatusView {
     /// core — the same derivation as `server` — while `sync` stays
     /// `None` (its documented presence rule is "present when `daemon`",
     /// unchanged).
+    ///
+    /// # Panics
+    ///
+    /// Never on a validated config: the session's `AppConfig` was
+    /// validated at boot, so the connector-name mint cannot fail (same
+    /// rule as `AppConfig::server_url`).
     #[must_use]
     pub fn in_session(app: &crate::App) -> Self {
-        let configured = crate::connectors::configured_connectors(&app.config);
+        let configured = crate::connectors::configured_connectors(&app.config)
+            .expect("connector names validated at boot — App.config is a validated AppConfig");
         let connector_attached = connector_flag(!configured.is_empty(), app.connector_attached());
         let state = app.engine.shared_state().load_full();
         let (connectors, boards) = derive_connector_views(&state, &configured);

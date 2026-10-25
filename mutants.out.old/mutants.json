@@ -1,0 +1,802 @@
+[
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace ConnectorId::is_kebab_name -> bool with true\n@@ -128,23 +128,17 @@\n     pub name: String,\n }\n \n impl ConnectorId {\n     /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n-        !name.is_empty()\n-            && name\n-                .bytes()\n-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n-            && !name.starts_with('-')\n-            && !name.ends_with('-')\n-            && !name.contains(\"--\")\n+        true /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n     ///\n     /// # Errors\n     ///\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-domain/src/ids.rs:136:9: replace ConnectorId::is_kebab_name -> bool with true",
+    "package": "taskboard-domain",
+    "replacement": "true",
+    "span": {
+      "end": {
+        "column": 36,
+        "line": 142
+      },
+      "start": {
+        "column": 9,
+        "line": 136
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace ConnectorId::is_kebab_name -> bool with false\n@@ -128,23 +128,17 @@\n     pub name: String,\n }\n \n impl ConnectorId {\n     /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n-        !name.is_empty()\n-            && name\n-                .bytes()\n-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n-            && !name.starts_with('-')\n-            && !name.ends_with('-')\n-            && !name.contains(\"--\")\n+        false /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n     ///\n     /// # Errors\n     ///\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-domain/src/ids.rs:136:9: replace ConnectorId::is_kebab_name -> bool with false",
+    "package": "taskboard-domain",
+    "replacement": "false",
+    "span": {
+      "end": {
+        "column": 36,
+        "line": 142
+      },
+      "start": {
+        "column": 9,
+        "line": 136
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace && with || in ConnectorId::is_kebab_name\n@@ -134,17 +134,17 @@\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n             && name\n                 .bytes()\n                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n             && !name.starts_with('-')\n             && !name.ends_with('-')\n-            && !name.contains(\"--\")\n+            || /* ~ changed by cargo-mutants ~ */ !name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n     ///\n     /// # Errors\n     ///\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:142:13: replace && with || in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 142
+      },
+      "start": {
+        "column": 13,
+        "line": 142
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace && with || in ConnectorId::is_kebab_name\n@@ -133,17 +133,17 @@\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n             && name\n                 .bytes()\n                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n             && !name.starts_with('-')\n-            && !name.ends_with('-')\n+            || /* ~ changed by cargo-mutants ~ */ !name.ends_with('-')\n             && !name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n     ///\n     /// # Errors\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:141:13: replace && with || in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 141
+      },
+      "start": {
+        "column": 13,
+        "line": 141
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace && with || in ConnectorId::is_kebab_name\n@@ -132,17 +132,17 @@\n     /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n             && name\n                 .bytes()\n                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n-            && !name.starts_with('-')\n+            || /* ~ changed by cargo-mutants ~ */ !name.starts_with('-')\n             && !name.ends_with('-')\n             && !name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n     ///\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:140:13: replace && with || in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 140
+      },
+      "start": {
+        "column": 13,
+        "line": 140
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace && with || in ConnectorId::is_kebab_name\n@@ -129,17 +129,17 @@\n }\n \n impl ConnectorId {\n     /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n-            && name\n+            || /* ~ changed by cargo-mutants ~ */ name\n                 .bytes()\n                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n             && !name.starts_with('-')\n             && !name.ends_with('-')\n             && !name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:137:13: replace && with || in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "||",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 137
+      },
+      "start": {
+        "column": 13,
+        "line": 137
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ delete ! in ConnectorId::is_kebab_name\n@@ -128,17 +128,17 @@\n     pub name: String,\n }\n \n impl ConnectorId {\n     /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n-        !name.is_empty()\n+         /* ~ changed by cargo-mutants ~ */name.is_empty()\n             && name\n                 .bytes()\n                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n             && !name.starts_with('-')\n             && !name.ends_with('-')\n             && !name.contains(\"--\")\n     }\n \n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:136:9: delete ! in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 136
+      },
+      "start": {
+        "column": 9,
+        "line": 136
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace || with && in ConnectorId::is_kebab_name\n@@ -131,17 +131,17 @@\n impl ConnectorId {\n     /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n             && name\n                 .bytes()\n-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() && /* ~ changed by cargo-mutants ~ */ b == b'-')\n             && !name.starts_with('-')\n             && !name.ends_with('-')\n             && !name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:139:71: replace || with && in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "&&",
+    "span": {
+      "end": {
+        "column": 73,
+        "line": 139
+      },
+      "start": {
+        "column": 71,
+        "line": 139
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace || with && in ConnectorId::is_kebab_name\n@@ -131,17 +131,17 @@\n impl ConnectorId {\n     /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n             && name\n                 .bytes()\n-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n+                .all(|b| b.is_ascii_lowercase() && /* ~ changed by cargo-mutants ~ */ b.is_ascii_digit() || b == b'-')\n             && !name.starts_with('-')\n             && !name.ends_with('-')\n             && !name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:139:49: replace || with && in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "&&",
+    "span": {
+      "end": {
+        "column": 51,
+        "line": 139
+      },
+      "start": {
+        "column": 49,
+        "line": 139
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace == with != in ConnectorId::is_kebab_name\n@@ -131,17 +131,17 @@\n impl ConnectorId {\n     /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n             && name\n                 .bytes()\n-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b != /* ~ changed by cargo-mutants ~ */ b'-')\n             && !name.starts_with('-')\n             && !name.ends_with('-')\n             && !name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:139:76: replace == with != in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "!=",
+    "span": {
+      "end": {
+        "column": 78,
+        "line": 139
+      },
+      "start": {
+        "column": 76,
+        "line": 139
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ delete ! in ConnectorId::is_kebab_name\n@@ -132,17 +132,17 @@\n     /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n             && name\n                 .bytes()\n                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n-            && !name.starts_with('-')\n+            &&  /* ~ changed by cargo-mutants ~ */name.starts_with('-')\n             && !name.ends_with('-')\n             && !name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n     ///\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:140:16: delete ! in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 140
+      },
+      "start": {
+        "column": 16,
+        "line": 140
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ delete ! in ConnectorId::is_kebab_name\n@@ -133,17 +133,17 @@\n     /// trailing `-`, no `--`).\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n             && name\n                 .bytes()\n                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n             && !name.starts_with('-')\n-            && !name.ends_with('-')\n+            &&  /* ~ changed by cargo-mutants ~ */name.ends_with('-')\n             && !name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n     ///\n     /// # Errors\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:141:16: delete ! in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 141
+      },
+      "start": {
+        "column": 16,
+        "line": 141
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ delete ! in ConnectorId::is_kebab_name\n@@ -134,17 +134,17 @@\n     #[must_use]\n     pub fn is_kebab_name(name: &str) -> bool {\n         !name.is_empty()\n             && name\n                 .bytes()\n                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')\n             && !name.starts_with('-')\n             && !name.ends_with('-')\n-            && !name.contains(\"--\")\n+            &&  /* ~ changed by cargo-mutants ~ */name.contains(\"--\")\n     }\n \n     /// The mint: the only construction path for a `ConnectorId` that\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n     ///\n     /// # Errors\n     ///\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::is_kebab_name",
+      "return_type": "-> bool",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 143
+        },
+        "start": {
+          "column": 5,
+          "line": 132
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "crates/taskboard-domain/src/ids.rs:142:16: delete ! in ConnectorId::is_kebab_name",
+    "package": "taskboard-domain",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 17,
+        "line": 142
+      },
+      "start": {
+        "column": 16,
+        "line": 142
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace ConnectorId::from_kebab -> Result<Self, InvalidConnectorName> with Ok(Default::default())\n@@ -146,23 +146,17 @@\n     /// enters from user-controlled text (config load, settings forms,\n     /// raw config re-reads).\n     ///\n     /// # Errors\n     ///\n     /// [`InvalidConnectorName`] with the offending name verbatim when\n     /// the kebab predicate fails.\n     pub fn from_kebab(name: &str) -> Result<Self, InvalidConnectorName> {\n-        if Self::is_kebab_name(name) {\n-            Ok(Self(name.to_owned()))\n-        } else {\n-            Err(InvalidConnectorName {\n-                name: name.to_owned(),\n-            })\n-        }\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// The connector name as a string slice.\n     #[must_use]\n     pub fn as_str(&self) -> &str {\n         &self.0\n     }\n }\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::from_kebab",
+      "return_type": "-> Result<Self, InvalidConnectorName>",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 161
+        },
+        "start": {
+          "column": 5,
+          "line": 145
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-domain/src/ids.rs:154:9: replace ConnectorId::from_kebab -> Result<Self, InvalidConnectorName> with Ok(Default::default())",
+    "package": "taskboard-domain",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 160
+      },
+      "start": {
+        "column": 9,
+        "line": 154
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace ConnectorId::as_str -> &str with \"\"\n@@ -158,17 +158,17 @@\n                 name: name.to_owned(),\n             })\n         }\n     }\n \n     /// The connector name as a string slice.\n     #[must_use]\n     pub fn as_str(&self) -> &str {\n-        &self.0\n+        \"\" /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// The lenient decode/fixture constructor; see the type doc for the\n /// scoped ruling (deserialization and fixtures only — never\n /// input-adjacent).\n impl From<&str> for ConnectorId {\n     fn from(name: &str) -> Self {\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::as_str",
+      "return_type": "-> &str",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 167
+        },
+        "start": {
+          "column": 5,
+          "line": 163
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-domain/src/ids.rs:166:9: replace ConnectorId::as_str -> &str with \"\"",
+    "package": "taskboard-domain",
+    "replacement": "\"\"",
+    "span": {
+      "end": {
+        "column": 16,
+        "line": 166
+      },
+      "start": {
+        "column": 9,
+        "line": 166
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace ConnectorId::as_str -> &str with \"xyzzy\"\n@@ -158,17 +158,17 @@\n                 name: name.to_owned(),\n             })\n         }\n     }\n \n     /// The connector name as a string slice.\n     #[must_use]\n     pub fn as_str(&self) -> &str {\n-        &self.0\n+        \"xyzzy\" /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// The lenient decode/fixture constructor; see the type doc for the\n /// scoped ruling (deserialization and fixtures only — never\n /// input-adjacent).\n impl From<&str> for ConnectorId {\n     fn from(name: &str) -> Self {\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "ConnectorId::as_str",
+      "return_type": "-> &str",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 167
+        },
+        "start": {
+          "column": 5,
+          "line": 163
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-domain/src/ids.rs:166:9: replace ConnectorId::as_str -> &str with \"xyzzy\"",
+    "package": "taskboard-domain",
+    "replacement": "\"xyzzy\"",
+    "span": {
+      "end": {
+        "column": 16,
+        "line": 166
+      },
+      "start": {
+        "column": 9,
+        "line": 166
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace <impl From<&str> for ConnectorId>::from -> Self with Default::default()\n@@ -167,17 +167,17 @@\n     }\n }\n \n /// The lenient decode/fixture constructor; see the type doc for the\n /// scoped ruling (deserialization and fixtures only — never\n /// input-adjacent).\n impl From<&str> for ConnectorId {\n     fn from(name: &str) -> Self {\n-        Self(name.to_owned())\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// See the `From<&str>` impl and the type doc.\n impl From<String> for ConnectorId {\n     fn from(name: String) -> Self {\n         Self(name)\n     }\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "<impl From<&str> for ConnectorId>::from",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 176
+        },
+        "start": {
+          "column": 5,
+          "line": 174
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-domain/src/ids.rs:175:9: replace <impl From<&str> for ConnectorId>::from -> Self with Default::default()",
+    "package": "taskboard-domain",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 30,
+        "line": 175
+      },
+      "start": {
+        "column": 9,
+        "line": 175
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace <impl From<String> for ConnectorId>::from -> Self with Default::default()\n@@ -174,17 +174,17 @@\n     fn from(name: &str) -> Self {\n         Self(name.to_owned())\n     }\n }\n \n /// See the `From<&str>` impl and the type doc.\n impl From<String> for ConnectorId {\n     fn from(name: String) -> Self {\n-        Self(name)\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl std::fmt::Display for ConnectorId {\n     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n         f.write_str(&self.0)\n     }\n }\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "<impl From<String> for ConnectorId>::from",
+      "return_type": "-> Self",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 183
+        },
+        "start": {
+          "column": 5,
+          "line": 181
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-domain/src/ids.rs:182:9: replace <impl From<String> for ConnectorId>::from -> Self with Default::default()",
+    "package": "taskboard-domain",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 19,
+        "line": 182
+      },
+      "start": {
+        "column": 9,
+        "line": 182
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-domain/src/ids.rs\n+++ replace <impl std::fmt::Display for ConnectorId>::fmt -> std::fmt::Result with Ok(Default::default())\n@@ -180,17 +180,17 @@\n impl From<String> for ConnectorId {\n     fn from(name: String) -> Self {\n         Self(name)\n     }\n }\n \n impl std::fmt::Display for ConnectorId {\n     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n-        f.write_str(&self.0)\n+        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// A board's remote binding: the remote board *and* the connector that\n /// owns it. The connector tag is config-minted (DF-3): one name from\n /// config through the registry, the module, and the storage row.\n #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]\n pub struct RemoteBoardBinding {\n",
+    "file": "crates/taskboard-domain/src/ids.rs",
+    "function": {
+      "function_name": "<impl std::fmt::Display for ConnectorId>::fmt",
+      "return_type": "-> std::fmt::Result",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 189
+        },
+        "start": {
+          "column": 5,
+          "line": 187
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-domain/src/ids.rs:188:9: replace <impl std::fmt::Display for ConnectorId>::fmt -> std::fmt::Result with Ok(Default::default())",
+    "package": "taskboard-domain",
+    "replacement": "Ok(Default::default())",
+    "span": {
+      "end": {
+        "column": 29,
+        "line": 188
+      },
+      "start": {
+        "column": 9,
+        "line": 188
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-ui-slint/src/scale.rs\n+++ replace UiScale::get -> f64 with 0.0\n@@ -47,17 +47,17 @@\n             return Err(UiScaleError::OutOfRange);\n         }\n         Ok(Self(raw))\n     }\n \n     /// The quantity as `f64` (TOML persistence, layout arithmetic).\n     #[must_use]\n     pub const fn get(self) -> f64 {\n-        self.0\n+        0.0 /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Slint `float` properties are `f32`; the validated `0.5–3.0`\n     /// window converts with precision far below any visible scale\n     /// step. The one `as f32` cast in the crate.\n     #[must_use]\n     #[allow(clippy::cast_possible_truncation)]\n     pub const fn get_f32(self) -> f32 {\n",
+    "file": "crates/taskboard-ui-slint/src/scale.rs",
+    "function": {
+      "function_name": "UiScale::get",
+      "return_type": "-> f64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 56
+        },
+        "start": {
+          "column": 5,
+          "line": 52
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-ui-slint/src/scale.rs:55:9: replace UiScale::get -> f64 with 0.0",
+    "package": "taskboard-ui-slint",
+    "replacement": "0.0",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 55
+      },
+      "start": {
+        "column": 9,
+        "line": 55
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-ui-slint/src/scale.rs\n+++ replace UiScale::get -> f64 with 1.0\n@@ -47,17 +47,17 @@\n             return Err(UiScaleError::OutOfRange);\n         }\n         Ok(Self(raw))\n     }\n \n     /// The quantity as `f64` (TOML persistence, layout arithmetic).\n     #[must_use]\n     pub const fn get(self) -> f64 {\n-        self.0\n+        1.0 /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Slint `float` properties are `f32`; the validated `0.5–3.0`\n     /// window converts with precision far below any visible scale\n     /// step. The one `as f32` cast in the crate.\n     #[must_use]\n     #[allow(clippy::cast_possible_truncation)]\n     pub const fn get_f32(self) -> f32 {\n",
+    "file": "crates/taskboard-ui-slint/src/scale.rs",
+    "function": {
+      "function_name": "UiScale::get",
+      "return_type": "-> f64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 56
+        },
+        "start": {
+          "column": 5,
+          "line": 52
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-ui-slint/src/scale.rs:55:9: replace UiScale::get -> f64 with 1.0",
+    "package": "taskboard-ui-slint",
+    "replacement": "1.0",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 55
+      },
+      "start": {
+        "column": 9,
+        "line": 55
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-ui-slint/src/scale.rs\n+++ replace UiScale::get -> f64 with -1.0\n@@ -47,17 +47,17 @@\n             return Err(UiScaleError::OutOfRange);\n         }\n         Ok(Self(raw))\n     }\n \n     /// The quantity as `f64` (TOML persistence, layout arithmetic).\n     #[must_use]\n     pub const fn get(self) -> f64 {\n-        self.0\n+        -1.0 /* ~ changed by cargo-mutants ~ */\n     }\n \n     /// Slint `float` properties are `f32`; the validated `0.5–3.0`\n     /// window converts with precision far below any visible scale\n     /// step. The one `as f32` cast in the crate.\n     #[must_use]\n     #[allow(clippy::cast_possible_truncation)]\n     pub const fn get_f32(self) -> f32 {\n",
+    "file": "crates/taskboard-ui-slint/src/scale.rs",
+    "function": {
+      "function_name": "UiScale::get",
+      "return_type": "-> f64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 56
+        },
+        "start": {
+          "column": 5,
+          "line": 52
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-ui-slint/src/scale.rs:55:9: replace UiScale::get -> f64 with -1.0",
+    "package": "taskboard-ui-slint",
+    "replacement": "-1.0",
+    "span": {
+      "end": {
+        "column": 15,
+        "line": 55
+      },
+      "start": {
+        "column": 9,
+        "line": 55
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-ui-slint/src/scale.rs\n+++ replace UiScale::get_f32 -> f32 with 0.0\n@@ -56,17 +56,17 @@\n     }\n \n     /// Slint `float` properties are `f32`; the validated `0.5–3.0`\n     /// window converts with precision far below any visible scale\n     /// step. The one `as f32` cast in the crate.\n     #[must_use]\n     #[allow(clippy::cast_possible_truncation)]\n     pub const fn get_f32(self) -> f32 {\n-        self.0 as f32\n+        0.0 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl Default for UiScale {\n     fn default() -> Self {\n         Self(1.0)\n     }\n }\n",
+    "file": "crates/taskboard-ui-slint/src/scale.rs",
+    "function": {
+      "function_name": "UiScale::get_f32",
+      "return_type": "-> f32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 65
+        },
+        "start": {
+          "column": 5,
+          "line": 58
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-ui-slint/src/scale.rs:64:9: replace UiScale::get_f32 -> f32 with 0.0",
+    "package": "taskboard-ui-slint",
+    "replacement": "0.0",
+    "span": {
+      "end": {
+        "column": 22,
+        "line": 64
+      },
+      "start": {
+        "column": 9,
+        "line": 64
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-ui-slint/src/scale.rs\n+++ replace UiScale::get_f32 -> f32 with 1.0\n@@ -56,17 +56,17 @@\n     }\n \n     /// Slint `float` properties are `f32`; the validated `0.5–3.0`\n     /// window converts with precision far below any visible scale\n     /// step. The one `as f32` cast in the crate.\n     #[must_use]\n     #[allow(clippy::cast_possible_truncation)]\n     pub const fn get_f32(self) -> f32 {\n-        self.0 as f32\n+        1.0 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl Default for UiScale {\n     fn default() -> Self {\n         Self(1.0)\n     }\n }\n",
+    "file": "crates/taskboard-ui-slint/src/scale.rs",
+    "function": {
+      "function_name": "UiScale::get_f32",
+      "return_type": "-> f32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 65
+        },
+        "start": {
+          "column": 5,
+          "line": 58
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-ui-slint/src/scale.rs:64:9: replace UiScale::get_f32 -> f32 with 1.0",
+    "package": "taskboard-ui-slint",
+    "replacement": "1.0",
+    "span": {
+      "end": {
+        "column": 22,
+        "line": 64
+      },
+      "start": {
+        "column": 9,
+        "line": 64
+      }
+    }
+  },
+  {
+    "diff": "--- crates/taskboard-ui-slint/src/scale.rs\n+++ replace UiScale::get_f32 -> f32 with -1.0\n@@ -56,17 +56,17 @@\n     }\n \n     /// Slint `float` properties are `f32`; the validated `0.5–3.0`\n     /// window converts with precision far below any visible scale\n     /// step. The one `as f32` cast in the crate.\n     #[must_use]\n     #[allow(clippy::cast_possible_truncation)]\n     pub const fn get_f32(self) -> f32 {\n-        self.0 as f32\n+        -1.0 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n impl Default for UiScale {\n     fn default() -> Self {\n         Self(1.0)\n     }\n }\n",
+    "file": "crates/taskboard-ui-slint/src/scale.rs",
+    "function": {
+      "function_name": "UiScale::get_f32",
+      "return_type": "-> f32",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 65
+        },
+        "start": {
+          "column": 5,
+          "line": 58
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/taskboard-ui-slint/src/scale.rs:64:9: replace UiScale::get_f32 -> f32 with -1.0",
+    "package": "taskboard-ui-slint",
+    "replacement": "-1.0",
+    "span": {
+      "end": {
+        "column": 22,
+        "line": 64
+      },
+      "start": {
+        "column": 9,
+        "line": 64
+      }
+    }
+  }
+]

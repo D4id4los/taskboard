@@ -806,16 +806,20 @@ pub async fn run_session_with_parts(
     // The gate half is set-emptiness; the display half is the default
     // connector's kind word (D5-9).
     let backend = config.resolved_default_backend();
-    let connectors_configured = !crate::connectors::configured_connectors(&config).is_empty();
+    let configured = match crate::connectors::configured_connectors(&config) {
+        Ok(specs) => specs,
+        Err(err) => return crate::commands::report_to(io, &CommandError::from(err)),
+    };
+    let connectors_configured = !configured.is_empty();
     let sink = crate::bootstrap::resolve_notifier_sink(&config);
     let app = match crate::bootstrap::bootstrap(config, store.clone(), sink).await {
         Ok(app) => app,
         Err(err) => return crate::commands::report_to(io, &CommandError::from(err)),
     };
-    let connector_names: Vec<String> = crate::connectors::configured_connectors(&app.config)
-        .iter()
-        .map(|spec| spec.name.to_string())
-        .collect();
+    let connector_names: Vec<String> = match crate::connectors::configured_connectors(&app.config) {
+        Ok(specs) => specs.iter().map(|spec| spec.name.to_string()).collect(),
+        Err(err) => return crate::commands::report_to(io, &CommandError::from(err)),
+    };
     let editor_io = editor_io(app.engine.shared_state(), connector_names);
     let session = ReplSession {
         config: app.config.clone(),

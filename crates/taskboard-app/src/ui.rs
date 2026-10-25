@@ -180,6 +180,13 @@ pub fn bare_invocation_route(mode: crate::config::AppMode, tty: bool, display: b
 /// keymap layer owns value validation. Findings are *returned* (the
 /// caller surfaces them via `tracing`); nothing here can fail —
 /// a hostile keymap never blocks UI start (Q15).
+///
+/// # Panics
+///
+/// Never on a validated config: `ui.scale` is minted via
+/// `UiScale::new` and `AppConfig::validate` has already range-checked
+/// it. Calling on an unvalidated `[ui]` table panics — same rule as
+/// `AppConfig::server_url`/`username`.
 #[must_use]
 pub fn resolve_ui_settings(
     ui: &crate::config::UiSection,
@@ -203,7 +210,8 @@ pub fn resolve_ui_settings(
     };
     let built = taskboard_ui_slint::keymap::build(&raw);
     let settings = taskboard_ui_slint::UiSettings {
-        scale: ui.scale,
+        scale: taskboard_ui_slint::UiScale::new(ui.scale)
+            .expect("ui.scale validated by AppConfig::validate — call only on a validated config"),
         startup: taskboard_ui_slint::adapter::StartupWarnings {
             keymap_findings: built.findings.len().try_into().unwrap_or(u32::MAX),
         },
@@ -251,14 +259,19 @@ pub fn resolve_day_start(
 /// connectors exist") mapped onto the UI crate's row type. Resolved by
 /// both UI lifecycles from the full config — `resolve_ui_settings`
 /// deliberately sees only the `[ui]` table.
-#[must_use]
+///
+/// # Errors
+///
+/// [`ConfigError::InvalidConnectorName`] when the config's connector
+/// names fail the kebab predicate — a raw, unvalidated config.
+#[allow(clippy::result_large_err)] // mirrors the enum's one grant above
 pub fn resolve_connector_infos(
     config: &crate::config::AppConfig,
-) -> Vec<taskboard_ui_slint::requests::ConnectorInfo> {
+) -> Result<Vec<taskboard_ui_slint::requests::ConnectorInfo>, crate::config::ConfigError> {
     // The legacy-singleton world (no array) synthesizes its one row
     // read-only (D4): displayed, refused on mutation.
     let legacy = config.sync.connectors.is_none();
-    crate::connectors::configured_connectors(config)
+    Ok(crate::connectors::configured_connectors(config)?
         .into_iter()
         .map(|spec| taskboard_ui_slint::requests::ConnectorInfo {
             name: spec.name.to_string(),
@@ -266,7 +279,7 @@ pub fn resolve_connector_infos(
             username: spec.username,
             read_only: legacy,
         })
-        .collect()
+        .collect())
 }
 
 /// The board-selector rows for the settings hand-over (r2 D32): the
@@ -399,7 +412,7 @@ pub async fn run_desktop(
         },
     );
 
-    ui_settings.connectors = resolve_connector_infos(&app.config);
+    ui_settings.connectors = resolve_connector_infos(&app.config)?;
     ui_settings.boards = resolve_board_infos(&app.engine);
     let handle = taskboard_ui_slint::mount(
         app.engine.shared_state(),
@@ -625,7 +638,7 @@ mod keymap_resolution_tests {
         );
 
         // Structural asserts on the handed-over map (no strings).
-        assert_eq!(settings.scale, 1.25);
+        assert_eq!(settings.scale.get(), 1.25);
         assert_eq!(
             settings.startup.keymap_findings,
             u32::try_from(findings.len()).expect("findings fit u32")

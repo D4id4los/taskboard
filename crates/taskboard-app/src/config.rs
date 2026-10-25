@@ -47,10 +47,11 @@ pub const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 pub const DEFAULT_UI_SCALE: f64 = 1.0;
 
 /// `[ui] scale`'s enforced range bounds (inclusive), per the design's
-/// "clamped 0.5–3.0" — enforced, never silently clamped.
-pub const UI_SCALE_MIN: f64 = 0.5;
+/// "clamped 0.5–3.0" — enforced, never silently clamped. Delegates to
+/// the `UiScale` quantity's consts (same numbers, one source).
+pub const UI_SCALE_MIN: f64 = taskboard_ui_slint::UiScale::MIN;
 /// See [`UI_SCALE_MIN`].
-pub const UI_SCALE_MAX: f64 = 3.0;
+pub const UI_SCALE_MAX: f64 = taskboard_ui_slint::UiScale::MAX;
 
 /// `[reminders] tick_secs`: engine tick cadence.
 pub const DEFAULT_REMINDER_TICK_SECS: u64 = 30;
@@ -869,7 +870,7 @@ impl AppConfig {
         if let Some(entries) = &self.sync.connectors {
             let mut seen: Vec<&str> = Vec::with_capacity(entries.len());
             for entry in entries {
-                if !is_kebab_name(&entry.name) {
+                if !taskboard_domain::ConnectorId::is_kebab_name(&entry.name) {
                     return Err(ConfigError::InvalidConnectorName {
                         name: entry.name.clone(),
                     });
@@ -975,7 +976,7 @@ impl AppConfig {
         }
         // Finite first: NaN/±inf must fail closed, not slip through
         // range comparisons (NaN compares false both ways).
-        if !self.ui.scale.is_finite() || !(UI_SCALE_MIN..=UI_SCALE_MAX).contains(&self.ui.scale) {
+        if taskboard_ui_slint::UiScale::new(self.ui.scale).is_err() {
             return Err(ConfigError::InvalidScale { field: "ui.scale" });
         }
         // `[web]`: the decoded (or default) table validates always —
@@ -1112,21 +1113,6 @@ impl AppConfig {
             .as_deref()
             .expect("username validated")
     }
-}
-
-/// The connector-name predicate (DF-3's config-half filter): non-empty,
-/// every char in `[a-z0-9-]`, no leading or trailing `-`, no `--`. This
-/// is `validate`'s input filter for the `ConnectorId` mint; the domain
-/// newtype itself stays unfiltered (config validates, domain trusts).
-#[must_use]
-pub(crate) fn is_kebab_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && !name.starts_with('-')
-        && !name.ends_with('-')
-        && !name.contains("--")
 }
 
 /// F12-03 (#261): pure cleartext classifier — true iff the scheme is
@@ -1371,6 +1357,14 @@ mod tests {
             .extract()
             .expect("defaults extract");
         assert!((round.ui.scale - DEFAULT_UI_SCALE).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ui_scale_default_agrees_with_the_quantity_default() {
+        assert_eq!(
+            taskboard_ui_slint::UiScale::default().get(),
+            DEFAULT_UI_SCALE
+        );
     }
 
     #[test]
@@ -2022,10 +2016,16 @@ mod tests {
     #[test]
     fn kebab_predicate_pins_both_lists() {
         for name in ["work", "nc-2", "personal", "a0"] {
-            assert!(is_kebab_name(name), "{name} must pass");
+            assert!(
+                taskboard_domain::ConnectorId::is_kebab_name(name),
+                "{name} must pass"
+            );
         }
         for name in ["Work", "a_b", "-a", "a-", "a--b", "", "a b", "Ärger"] {
-            assert!(!is_kebab_name(name), "{name} must fail");
+            assert!(
+                !taskboard_domain::ConnectorId::is_kebab_name(name),
+                "{name} must fail"
+            );
         }
     }
 
