@@ -24,6 +24,11 @@ pub mod ocs;
 pub mod poll;
 pub mod push_exec;
 
+/// Kani bounded-model-checking harnesses (compiled only under Kani's
+/// own rustc driver — never by tests, clippy, or coverage).
+#[cfg(kani)]
+mod verify;
+
 pub use actor::{SyncActorConfig, spawn_sync_actor};
 pub use backoff::BackoffPolicy;
 pub use client::{
