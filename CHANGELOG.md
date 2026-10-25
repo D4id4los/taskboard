@@ -11,7 +11,7 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Added
 - The today view, global Inbox, quick capture, and the cross-board
-  move ring (#346, #347, chunk 10): the pure `today_sections`
+  move ring (#346, #347, daily-driver wave): the pure `today_sections`
   classifier over the configured day window (nothing derived is
   stored; every "today" question routes through `day_window` at read
   time), the `Today` view as the desktop default launch view (kiosk
@@ -32,7 +32,7 @@ The workspace carries a single global version (see `docs/architecture.org`);
   all-stacks resolution — zero boards refuse typed as before,
   multiple boards are a typed `AmbiguousBoard`; and `tasks move`
   gains `--board` as a stack-selector pre-filter.
-- Fuzzy search (#348, chunk 9): the pure domain ranking core
+- Fuzzy search (#348, daily-driver wave): the pure domain ranking core
   (`find.rs` — class-ordered subsequence matching over live boards,
   stacks, and tasks, ranked by `(quality, title_len, target)`, no
   numeric score), the top-level `taskboard find` verb + REPL line
@@ -40,7 +40,112 @@ The workspace carries a single global version (see `docs/architecture.org`);
   (Ctrl+F / Ctrl+s / `/`): per-keystroke re-ranking capped at 8 rows
   with an overflow count, jump-to board/stack/task per hit kind, and
   the anchor card hidden from palette rows.
-=======
+- Desktop reminder toasts via `[reminders] sink = auto|log|desktop`
+  (#344, daily-driver wave): `notify-rust` 4.18.2 enters the approved stack
+  (D-R10, `z-with-tokio` executor adopted by measurement), and
+  `DesktopSink` renders fired reminders as passive toasts behind the
+  unmoved `NotificationSink` port (D-R11) — no action buttons, no
+  sound, no escalation (D-R12). `auto` (the default) resolves by
+  `[app] mode` at boot: desktop gets toasts with zero configuration,
+  daemon/kiosk keep the journald `LogSink` path byte-for-byte (D-R13).
+  A failed delivery is a logged `NotifyError` — never retried, never
+  fallback-sent; the sink choice is boot-time config, not
+  runtime-switchable.
+- Standalone timers & alarms, `taskboard timers add/list/cancel`
+  (#211, daily-driver wave): task-independent one-shot alarms (`--in <dur>` or
+  `--at <instant|date|HH:MM[:SS]>` host-local at the CLI edge; a bare
+  time already past means tomorrow), resolved by uuid/uuid-prefix/
+  label-prefix and cancelled typedly. An alarm fires within one tick
+  of its (snooze-chain-moved) instant, notifies with its label, and
+  dies by settlement — the post-batch prune removes it with its
+  delivery proofs and snooze links. Device-local: never synced, no UI
+  surface (the banner and the reminder center are unchanged). The
+  one-tick cadence is the firing precision bound, stated honestly.
+  Migration 0008 adds the additive `adhoc_alarms` table (0004
+  conventions).
+- The task-field surfaces + anchor hiding + the sidecar badge (#209,
+  daily-driver wave): `tasks edit` grows `--scheduled` (the `--due` vocabulary),
+  `--effort` (bare digits = minutes, `s`/`m`/`h` compose), and
+  `--importance`/`--urgency` (`very-low`…`very-high`), each clearing
+  on `none`, in the CLI and the REPL alike with completion for the
+  literals. `tasks list` rows (`--json` and human) carry the new
+  fields in their canonical text forms. The UI card renders
+  scheduled/effort phrases and importance/urgency chips from the
+  presentation layer only (no slint-side semantics). The app-data
+  anchor card disappears from list surfaces (CLI rows and counts, UI
+  board/stack cards, the overdue banner) while staying resolvable
+  behind its typed guard, and the status bar renders the selected
+  board's sidecar health as an update-this-app warning when the
+  document is unreadable.
+- The app-data sidecar fold, flush, and rules section (#207 + #244,
+  daily-driver wave): app-field edits and rule mutations now enqueue the
+  `UpdateAppData` op (mixed edits enqueue both lanes; `scheduled` is
+  flag-routed per the capability seam) and converge through the
+  document lane end to end — the engine folds the downloaded document
+  into local state behind the self-clobber guard (value **and** clock
+  copy; a rule's remote identity is its UUID; absence is never a
+  deletion; a too-new/corrupt/foreign document folds nothing louder),
+  and the sync actor flushes local truth back as a read-modify-write
+  union between each cycle's pull and its report (one PUT per board,
+  embedded-clock LWW with verbatim preservation, lane GC while the
+  connector owns `startdate`, snapshot-absence GC; rebuild triggers
+  re-seed the document from local state; the lazy gate keeps
+  native-only boards anchor-free). Fence rows land typed: transport,
+  decode, format-too-new, and moved-card evidence never re-encodes
+  the document and warns through CLI `status`
+  (`sidecar.reason`, additive — no protocol bump); permanent
+  bad-requests dead-letter as counted `FailOp`s. The per-board anchor
+  card is guarded app-layer against rename/delete
+  (`anchor-task-reserved`). Manifest assertion 4 pins every
+  `TASK_FIELDS` row's lane through the planner; tier-2 convergence
+  fixtures (two engine+actor pairs on one board) cover the field,
+  rule, echo-idempotence, and Deck-1.17.5 `scheduled` fallback
+  journeys.
+- The app-data sidecar transport + the Deck capability seam (#207,
+  daily-driver wave): one capabilities probe per sync-actor lifetime
+  (`GET ocs/v2.php/cloud/capabilities`) derives a typed
+  `DeckFeatures` flag table (the codebase's only version switch —
+  unknown versions and probe failures degrade to the conservative
+  arm), and `scheduled`'s card-write encoding gates on it: native
+  `startdate` on a capable server, an explicit wire-null everywhere
+  else. The attachment-create form carries the additive `data` field
+  unconditionally (required by Deck 1.17.5, tolerated by 1.19.0) and
+  the create/update echo decode folds `extendedData.info.filename`
+  into the stored filename, so one wire form serves every measured
+  server; tier-2 gate fixtures pin both tiers (Deck 1.19.0 round trip,
+  the Deck 1.17.5 measured silent write-drop, and the capabilities
+  probe end-to-end). The sidecar half lands the versioned document
+  codec (`format` + board envelope over the `tasks`/`reminder-rules`
+  registry, unknown content preserved verbatim, `scheduled` as the
+  fourth modeled key), the typed `AppDataEvidence` on completed sync
+  reports, the `UpdateAppData` outbox op + storage tag (nothing
+  enqueues it yet), and the anchor-card ceremony's discovery/pick/
+  evidence half with the per-board in-memory document cache — the
+  document fold/flush and the scheduled lane rule are the next chunk.
+- The day-boundary preference (#345, daily-driver wave): `[preferences] day_start_time`
+  (default `"00:00"`, device-local, never synced) sets the
+  wall-clock time at which "today" begins — an unparseable value is
+  the typed `invalid-day-start-time` config error, never a silent
+  default — plus the pure domain `day_window(now, day_start_time,
+  offset)` primitive computing the 24h "today" window in any fixed
+  UTC offset (fixed-offset arithmetic per the DST ruling; consumers
+  receive time and offset as data). No consumer wiring yet: the today
+  view and CLI markers hook it up in a later chunk.
+- The task field family (#208, #209, daily-driver wave): `scheduled` (the "when do I
+  intend to begin" half of the deadline split), `effort` (whole-second
+  estimate), and `importance`/`urgency` (two distinct five-level enums,
+  sortable by severity) on every task — editable data model only in
+  this increment: values stamp per-field write clocks, persist through
+  migration 0007 (additive, epoch-defaulted so pre-migration rows keep
+  the remote-wins merge behavior), and `scheduled` rides Deck's native
+  `startdate` card slot end-to-end (per-field last-writer-wins merge,
+  create/update wire pins). Effort/importance/urgency are local-only
+  until the app-data sidecar lane lands; no user surface exposes them
+  yet.
+- The `TASK_FIELDS` lockstep manifest (#244, daily-driver wave): one exported table
+  mapping every mergeable task field to its clock set and Deck sync
+  lane, pinned by domain and storage assertions so the field skeleton
+  cannot grow half-landed.
 - The GUI review round-2 action registry round-up & object context
   menus (#390, chunk 3; D16–D21): twelve new actions — `task.reopen`
   (Ctrl+Space / emacs `C-c C-Space` / vi `U`), `task.move.cancel`
@@ -70,112 +175,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
   confirmation-free by design (D18's scope cut) — the engine's typed
   refusals are the guard.
 
-- Desktop reminder toasts via `[reminders] sink = auto|log|desktop`
-  (#344, chunk 8): `notify-rust` 4.18.2 enters the approved stack
-  (D-R10, `z-with-tokio` executor adopted by measurement), and
-  `DesktopSink` renders fired reminders as passive toasts behind the
-  unmoved `NotificationSink` port (D-R11) — no action buttons, no
-  sound, no escalation (D-R12). `auto` (the default) resolves by
-  `[app] mode` at boot: desktop gets toasts with zero configuration,
-  daemon/kiosk keep the journald `LogSink` path byte-for-byte (D-R13).
-  A failed delivery is a logged `NotifyError` — never retried, never
-  fallback-sent; the sink choice is boot-time config, not
-  runtime-switchable.
-- Standalone timers & alarms, `taskboard timers add/list/cancel`
-  (#211, chunk 7): task-independent one-shot alarms (`--in <dur>` or
-  `--at <instant|date|HH:MM[:SS]>` host-local at the CLI edge; a bare
-  time already past means tomorrow), resolved by uuid/uuid-prefix/
-  label-prefix and cancelled typedly. An alarm fires within one tick
-  of its (snooze-chain-moved) instant, notifies with its label, and
-  dies by settlement — the post-batch prune removes it with its
-  delivery proofs and snooze links. Device-local: never synced, no UI
-  surface (the banner and the reminder center are unchanged). The
-  one-tick cadence is the firing precision bound, stated honestly.
-  Migration 0008 adds the additive `adhoc_alarms` table (0004
-  conventions).
-- The task-field surfaces + anchor hiding + the sidecar badge (#209,
-  chunk 5): `tasks edit` grows `--scheduled` (the `--due` vocabulary),
-  `--effort` (bare digits = minutes, `s`/`m`/`h` compose), and
-  `--importance`/`--urgency` (`very-low`…`very-high`), each clearing
-  on `none`, in the CLI and the REPL alike with completion for the
-  literals. `tasks list` rows (`--json` and human) carry the new
-  fields in their canonical text forms. The UI card renders
-  scheduled/effort phrases and importance/urgency chips from the
-  presentation layer only (no slint-side semantics). The app-data
-  anchor card disappears from list surfaces (CLI rows and counts, UI
-  board/stack cards, the overdue banner) while staying resolvable
-  behind its typed guard, and the status bar renders the selected
-  board's sidecar health as an update-this-app warning when the
-  document is unreadable.
-- The app-data sidecar fold, flush, and rules section (#207 + #244,
-  chunk 4): app-field edits and rule mutations now enqueue the
-  `UpdateAppData` op (mixed edits enqueue both lanes; `scheduled` is
-  flag-routed per the capability seam) and converge through the
-  document lane end to end — the engine folds the downloaded document
-  into local state behind the self-clobber guard (value **and** clock
-  copy; a rule's remote identity is its UUID; absence is never a
-  deletion; a too-new/corrupt/foreign document folds nothing louder),
-  and the sync actor flushes local truth back as a read-modify-write
-  union between each cycle's pull and its report (one PUT per board,
-  embedded-clock LWW with verbatim preservation, lane GC while the
-  connector owns `startdate`, snapshot-absence GC; rebuild triggers
-  re-seed the document from local state; the lazy gate keeps
-  native-only boards anchor-free). Fence rows land typed: transport,
-  decode, format-too-new, and moved-card evidence never re-encodes
-  the document and warns through CLI `status`
-  (`sidecar.reason`, additive — no protocol bump); permanent
-  bad-requests dead-letter as counted `FailOp`s. The per-board anchor
-  card is guarded app-layer against rename/delete
-  (`anchor-task-reserved`). Manifest assertion 4 pins every
-  `TASK_FIELDS` row's lane through the planner; tier-2 convergence
-  fixtures (two engine+actor pairs on one board) cover the field,
-  rule, echo-idempotence, and Deck-1.17.5 `scheduled` fallback
-  journeys.
-- The app-data sidecar transport + the Deck capability seam (#207,
-  chunk 3): one capabilities probe per sync-actor lifetime
-  (`GET ocs/v2.php/cloud/capabilities`) derives a typed
-  `DeckFeatures` flag table (the codebase's only version switch —
-  unknown versions and probe failures degrade to the conservative
-  arm), and `scheduled`'s card-write encoding gates on it: native
-  `startdate` on a capable server, an explicit wire-null everywhere
-  else. The attachment-create form carries the additive `data` field
-  unconditionally (required by Deck 1.17.5, tolerated by 1.19.0) and
-  the create/update echo decode folds `extendedData.info.filename`
-  into the stored filename, so one wire form serves every measured
-  server; tier-2 gate fixtures pin both tiers (Deck 1.19.0 round trip,
-  the Deck 1.17.5 measured silent write-drop, and the capabilities
-  probe end-to-end). The sidecar half lands the versioned document
-  codec (`format` + board envelope over the `tasks`/`reminder-rules`
-  registry, unknown content preserved verbatim, `scheduled` as the
-  fourth modeled key), the typed `AppDataEvidence` on completed sync
-  reports, the `UpdateAppData` outbox op + storage tag (nothing
-  enqueues it yet), and the anchor-card ceremony's discovery/pick/
-  evidence half with the per-board in-memory document cache — the
-  document fold/flush and the scheduled lane rule are the next chunk.
-- The day-boundary preference (#345): `[preferences] day_start_time`
-  (default `"00:00"`, device-local, never synced) sets the
-  wall-clock time at which "today" begins — an unparseable value is
-  the typed `invalid-day-start-time` config error, never a silent
-  default — plus the pure domain `day_window(now, day_start_time,
-  offset)` primitive computing the 24h "today" window in any fixed
-  UTC offset (fixed-offset arithmetic per the DST ruling; consumers
-  receive time and offset as data). No consumer wiring yet: the today
-  view and CLI markers hook it up in a later chunk.
-- The task field family (#208, #209): `scheduled` (the "when do I
-  intend to begin" half of the deadline split), `effort` (whole-second
-  estimate), and `importance`/`urgency` (two distinct five-level enums,
-  sortable by severity) on every task — editable data model only in
-  this increment: values stamp per-field write clocks, persist through
-  migration 0007 (additive, epoch-defaulted so pre-migration rows keep
-  the remote-wins merge behavior), and `scheduled` rides Deck's native
-  `startdate` card slot end-to-end (per-field last-writer-wins merge,
-  create/update wire pins). Effort/importance/urgency are local-only
-  until the app-data sidecar lane lands; no user surface exposes them
-  yet.
-- The `TASK_FIELDS` lockstep manifest (#244): one exported table
-  mapping every mergeable task field to its clock set and Deck sync
-  lane, pinned by domain and storage assertions so the field skeleton
-  cannot grow half-landed.
 - The encrypted-file credential store: `[nextcloud] credential_store =
   "file"` selects a third `CredentialStore` implementation for kiosk
   machines without a Secret Service — a machine-generated 0600 key
@@ -443,7 +442,7 @@ The workspace carries a single global version (see `docs/architecture.org`);
   window at any size. The board surface itself now actually receives
   the window width (previously the columns row collapsed to
   min-content; a pre-existing layout gap the chunk fixes en route).
-- **Reminder rules are N-rule additive** (#204, chunk 6) — a semantic
+- **Reminder rules are N-rule additive** (#204, daily-driver wave) — a semantic
   change to a live verb: `tasks remind <task> --before <dur>` (and the
   REPL/UI equivalents) now **adds** one reminder rule instead of
   replacing the task's rules; a rule at the same offset is unique (a
