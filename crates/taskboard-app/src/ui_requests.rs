@@ -405,10 +405,12 @@ async fn remove_connection(
     );
     crate::connections::overlay_remove_connector(&workspace.config_write_path, name)
         .map_err(|err| map_io_error(&err))?;
-    let _ = workspace
-        .control
-        .detach_connector_named(&ConnectorId::from(name.to_owned()))
-        .await;
+    // A non-kebab name was never minted at any attach, so the named
+    // detach is a no-op for it — skipping the mint failure preserves
+    // the remove choreography's observable outcome exactly.
+    if let Ok(id) = ConnectorId::from_kebab(name) {
+        let _ = workspace.control.detach_connector_named(&id).await;
+    }
     if let Some((server, user)) = identity {
         match workspace.store.delete(&server, &user) {
             Ok(()) | Err(CredentialError::NotFound | CredentialError::Unsupported) => {}

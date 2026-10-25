@@ -6,7 +6,9 @@ lcov.info
 *.profraw
 
 # Mutation testing output
+cargo-mutants renames the previous run's dir aside with a .old suffix
 mutants.out/
+mutants.out.old/
 
 # Local environment / secrets (Nextcloud app passwords etc.)
 .env
