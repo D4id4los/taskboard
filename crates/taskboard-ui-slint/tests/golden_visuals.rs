@@ -101,7 +101,7 @@ fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: 
         commands,
         requests_tx,
         UiSettings {
-            scale,
+            scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
             ..UiSettings::default()
         },
     )
@@ -196,7 +196,7 @@ fn capture_today(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) 
         commands,
         requests_tx,
         UiSettings {
-            scale,
+            scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
             ..UiSettings::default()
         },
     )

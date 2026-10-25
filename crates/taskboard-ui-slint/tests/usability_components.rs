@@ -37,7 +37,7 @@ fn mount_populated(
         commands,
         requests_tx,
         UiSettings {
-            scale,
+            scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
             ..UiSettings::default()
         },
     )

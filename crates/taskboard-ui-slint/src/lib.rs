@@ -17,6 +17,8 @@
 
 slint::include_modules!();
 
+pub use scale::{UiScale, UiScaleError};
+
 pub mod actions;
 pub mod adapter;
 pub mod due_edit;
@@ -29,6 +31,7 @@ pub mod requests;
 pub mod resolver;
 pub mod responsive;
 pub mod router;
+pub mod scale;
 pub mod settings_form;
 pub mod settings_status;
 pub mod shell;
@@ -58,8 +61,9 @@ mod token_tests;
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiSettings {
     /// The `[ui] scale` value: `Theme.base-scale`'s initial value
-    /// (§6.1), validated app-side to the 0.5–3.0 range.
-    pub scale: f64,
+    /// (§6.1), minted app-side ([`UiScale`]) — validated by
+    /// construction.
+    pub scale: UiScale,
     /// The validated effective keymap (D14): preset ⊕ surviving
     /// overrides, built app-side — the crate receives typed values.
     pub keymap: keymap::Keymap,
@@ -104,7 +108,7 @@ pub struct UiSettings {
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
-            scale: 1.0,
+            scale: UiScale::default(),
             keymap: keymap::Keymap::from_preset(keymap::Preset::Standard),
             startup: adapter::StartupWarnings::default(),
             kiosk: false,
@@ -198,12 +202,9 @@ pub fn mount(
     let window = AppWindow::new().map_err(UiMountError::WindowCreation)?;
     // The §6.1 root multiplier, one line per window construction — a
     // future second window re-runs it; no global-once init exists.
-    // Slint `float` properties are f32; the validated 0.5–3.0 range
-    // converts with precision far below any visible scale step.
-    #[allow(clippy::cast_possible_truncation)]
     window
         .global::<Theme>()
-        .set_base_scale(settings.scale as f32);
+        .set_base_scale(settings.scale.get_f32());
     // The kiosk window profile (Q5): fullscreen on the shared desktop
     // window. Slint 1.18.1 has no independent decoration control; on
     // the winit backend fullscreen suppresses decorations by
@@ -584,7 +585,7 @@ mod mount_tests {
                 commands,
                 requests_tx,
                 UiSettings {
-                    scale: 2.0,
+                    scale: UiScale::new(2.0).expect("valid"),
                     ..UiSettings::default()
                 },
             )

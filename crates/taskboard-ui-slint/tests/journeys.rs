@@ -2882,7 +2882,7 @@ fn settings_scroll_reaches_the_scale_controls_at_scale_3() {
         },
         move |driver: &mut SlintDriver| {
             let settings = UiSettings {
-                scale: 3.0,
+                scale: taskboard_ui_slint::UiScale::new(3.0).expect("valid"),
                 ..UiSettings::default()
             };
             let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
