@@ -49,8 +49,10 @@
 - **Branch / worktree**: `docs/reminder-rule-sync-design-round` in
   `../taskboard-WT-docs-reminder-rule-sync-design-round`, off `main` @
   `abc5aa7`.
-- **Status**: DRAFT agenda — stage 2 unblocked; nothing here is a
-  decision.
+- **Status**: DRAFT agenda — stage 2 unblocked. One ruling received
+  during stage 1 (2026-10-25, user direction), recorded at §4(b)-R:
+  the roam-set is fixed (dismissals sync; snoozes/mutes stay
+  per-device). All other §4 questions remain open.
 
 ---
 
@@ -280,6 +282,24 @@ D-a ("whether they roam is a policy question for the future round").
 the `ReminderDelivery` asymmetry shape if Rule-ref proofs roam; and
 explicit confirmation (or overturn) of the alarm and default-offset
 device-local records.
+
+**Ruling received (2026-10-25, user direction, stage 1) — the roam-set
+is fixed:**
+
+- **Rule-ref proofs (dismissals) roam** and suppress fleet-wide (the
+  §4(d).5 suppression policy is answered with them): a folded proof
+  stops the local device's firing of that `(rule, occurrence)`.
+- **Snoozes stay per-device**; revisit only on demonstrated need.
+- **Mutes stay per-device**; revisit only on demonstrated need.
+- Consequences accepted with the ruling: (i) a snooze on one device
+  does *not* protect the others — they fire the original occurrence
+  (S1's documented noise mode); (ii) `Default`-ref and `Adhoc`-ref
+  proofs stay device-local by the M2/M3 facts (the `ReminderDelivery`
+  asymmetry is confirmed as section-level or type-level — its exact
+  shape remains §4(b)'s one open mechanical sub-item); (iii) alarms and
+  the default-reminder offset are confirmed device-local; F16-16's
+  settings inventory stays fenced out (the §4(c) answer is (c-1) up to
+  recording).
 
 ### (c) The state home (F16-16) — verification, not invention
 
