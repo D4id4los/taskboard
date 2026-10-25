@@ -657,3 +657,84 @@ fn the_segmented_picker_roles_and_routes_the_preset_pick() {
         },
     );
 }
+
+/// r2 D32 — the backend picker: two segments through the settings
+/// instance, exactly one `RadioButton` per option; the settings
+/// instance pins `[enabled, disabled]` and selected index 0 by
+/// structure — the disabled "coming soon" segment swallows the pick
+/// (the widget gate; the keymap trio stays fully enabled and routable,
+/// the existing D26 pin). The visual exactly-one-selected contract is
+/// the shared `SegmentedControl` Tier-4 item.
+#[test]
+fn the_backend_picker_renders_two_segments_with_only_nextcloud_enabled() {
+    use taskboard_ui_slint::actions::ContextId;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = taskboard_ui_slint::mount(
+                state,
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                UiSettings::default(),
+            )
+            .expect("mount succeeds on the testing backend");
+            driver.bind(&handle);
+            driver.advance_time(0);
+
+            handle.set_view_context(Some(ContextId::Settings));
+            handle.refresh();
+            driver.advance_time(0);
+
+            // Exactly one segment per option, both RadioButton-role.
+            for label in ["Nextcloud", "Standalone"] {
+                let found = driver.find_all_by_label(label);
+                let roles = found
+                    .iter()
+                    .map(support::driver::Element::is_radio_button)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    roles.iter().filter(|r| **r).count(),
+                    1,
+                    "exactly one {label} RadioButton is addressable (found {roles:?})"
+                );
+            }
+
+            // The disabled segment's AT activation routes nothing: the
+            // widget gate swallows the pick (and the settings instance
+            // wires no backend pick at all — presentational truth).
+            let standalone = driver
+                .find_all_by_label("Standalone")
+                .into_iter()
+                .find(support::driver::Element::is_radio_button)
+                .expect("the Standalone segment's RadioButton element");
+            standalone.invoke_default_action();
+            let requests = std::iter::from_fn(|| requests_rx.try_recv().ok()).collect::<Vec<_>>();
+            assert!(
+                requests.is_empty(),
+                "the disabled segment's pick is swallowed"
+            );
+
+            // Regression: the keymap trio (all segments enabled) still
+            // routes its pick through the same widget.
+            let vi = driver
+                .find_all_by_label("Vi")
+                .into_iter()
+                .find(support::driver::Element::is_radio_button)
+                .expect("the Vi segment's RadioButton element");
+            vi.invoke_default_action();
+            let requests = std::iter::from_fn(|| requests_rx.try_recv().ok()).collect::<Vec<_>>();
+            assert_eq!(requests.len(), 1, "the enabled picker still routes");
+            assert!(matches!(
+                requests[0],
+                taskboard_ui_slint::requests::UiRequest::SetKeymapPreset { .. }
+            ));
+        },
+    );
+}
