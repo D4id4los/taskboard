@@ -38,6 +38,18 @@ export component BoardBar inherits Rectangle {
     // uncapped layout share that caused the tall whitespace is gone.
     height: Theme.space-6 + 2 * Theme.space-1;
 
+    // The tab strip's baseline rule (r2 D36): one hairline of
+    // `border` colour under the whole strip. Declared first, so the
+    // tabs declared after paint over it — the active tab covers the
+    // rule (it visibly "breaks" and merges into the board
+    // background below, F-7's background-coloured gap).
+    baseline := Rectangle {
+        y: parent.height - self.height;
+        width: 100%;
+        height: Theme.hairline-width;
+        background: Theme.border;
+    }
+
     // A zero-segment model (a never-booted install) renders no row.
     if (root.bar.segments.length > 0): HorizontalLayout {
         spacing: Theme.space-1;
@@ -53,15 +65,36 @@ export component BoardBar inherits Rectangle {
             // caps at 160·scale and elides.
             max-width: 160px * Theme.base-scale;
             height: 100%;
+            // The tab paint (r2 D36): the active tab is merged with
+            // the content — full-height `background` paint with
+            // rounded top corners only, no border (it covers the
+            // rule and flows across the bar-to-content gap into the
+            // board background); the inactive tab is a bordered
+            // marker whose paint box ends on the rule (the uniform
+            // Rectangle border is handled by geometry — the box is
+            // one hairline short, the sides run down to the rule).
+            // Rectangle borders are uniform, so there is no
+            // open-bottom variant to omit.
             Rectangle {
                 width: 100%;
-                height: 100%;
-                border-radius: Theme.radius-small;
-                background: segment-hover.has-hover ? Theme.surface-hover
-                    : segment-index == root.bar.selected ? Theme.surface-raised
+                height: segment-index == root.bar.selected
+                    ? parent.height
+                    : parent.height - Theme.hairline-width;
+                border-top-left-radius: Theme.radius-medium;
+                border-top-right-radius: Theme.radius-medium;
+                background: segment-index == root.bar.selected
+                    ? Theme.background
+                    : segment-hover.has-hover ? Theme.surface-hover
                     : transparent;
-                border-width: tab.has-focus ? Theme.focus-ring-width : 0;
-                border-color: Semantic.focus-ring;
+                // Keyboard focus swaps the frame to the ring in both
+                // states (D-15) — the active tab's paint is otherwise
+                // invisible against the content, so the ring is what
+                // keeps keyboard focus visible (the a11y point).
+                border-width: tab.has-focus ? Theme.focus-ring-width
+                    : segment-index == root.bar.selected ? 0
+                    : Theme.hairline-width;
+                border-color: tab.has-focus ? Semantic.focus-ring
+                    : Theme.border;
                 HorizontalLayout {
                     padding-left: Theme.space-2;
                     padding-right: Theme.space-2;

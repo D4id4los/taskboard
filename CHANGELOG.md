@@ -394,6 +394,17 @@ The workspace carries a single global version (see `docs/architecture.org`);
   the leg's rhythm below the board bar widens to `space-2`. The
   compact leg keeps the bare single-column layout, and the trailing
   add-column affordance stays on the strip, outside the cards.
+- The board bar renders as a tab strip (GUI review round-2 chunk 7;
+  D36): a `border`-colour hairline baseline rule runs under the whole
+  strip; the active tab is merged with the content below — full-height
+  board-background paint with rounded top corners that covers the rule
+  and flows into the board background — while inactive tabs are
+  bordered hairline markers ending on the rule with a `surface-hover`
+  lift. Keyboard focus swaps the frame to the focus ring in both
+  states. Fixed one-control-row height, the 160·scale elide cap,
+  tooltips, right-click menus, and the #411 scalability deferral are
+  untouched; a new `Theme.hairline-width` dimension token carries the
+  1·scale rule and border width (no colour token added).
 - The GUI review round-2 settings form, feedback, and help (issue
   #390, chunk 5; D26–D31): the keymap preset picker becomes a real
   **segmented control** (one grouped container, exactly-one-selected;
