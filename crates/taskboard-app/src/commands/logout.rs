@@ -206,7 +206,7 @@ fn strip_config_keys(path: &Path, server: &str, username: &str) -> Result<bool, 
     if !cleared {
         return Ok(false);
     }
-    crate::config::write_owner_only_atomic(path, doc.to_string().as_str())?;
+    crate::config::write_config_atomic(path, doc.to_string().as_str())?;
     Ok(true)
 }
 
@@ -215,14 +215,12 @@ mod detach_tests {
     use super::{DaemonConnectorState, NudgeOutcome, map_nudge, nudge_warning};
     use crate::ipc::protocol::DetachWireOutcome;
 
-    /// F12-01 (#297): the logout strip rewrite (the same tmp+rename
-    /// mechanism as the connect overlay) keeps the config owner-only
-    /// and re-establishes the mode on a loosened file.
-    #[cfg(unix)]
+    /// The strip-correctness contract: a matching identity pair is
+    /// removed from the file (and a rewrite happens only when
+    /// something was removed). The mode contract lives on the shared
+    /// writer (`crate::config::write_config_atomic`).
     #[test]
-    fn the_logout_strip_rewrite_keeps_the_config_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn the_logout_strip_removes_the_matched_identity_keys() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(
@@ -230,20 +228,15 @@ mod detach_tests {
             "[nextcloud]\nserver_url = \"https://c.example.com\"\nusername = \"alice\"\n",
         )
         .expect("seed config");
-        let mut perms = std::fs::metadata(&config).expect("meta").permissions();
-        perms.set_mode(0o644);
-        std::fs::set_permissions(&config, perms).expect("loosen");
 
         let stripped =
             super::strip_config_keys(&config, "https://c.example.com", "alice").expect("strip");
         assert!(stripped, "the keys were present and must be removed");
 
-        let mode = std::fs::metadata(&config)
-            .expect("config exists")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600, "the strip rewrite must leave the file 0600");
+        let doc = crate::config::overlay_document(&config).expect("reload");
+        let table = doc["nextcloud"].as_table().expect("nextcloud table");
+        assert!(table.get("server_url").is_none(), "server_url stripped");
+        assert!(table.get("username").is_none(), "username stripped");
     }
 
     /// WI-H tier 8: the pure nudge → receipt-field/warning mapping

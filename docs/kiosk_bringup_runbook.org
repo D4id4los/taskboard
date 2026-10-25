@@ -256,12 +256,6 @@ migrates X to =:1= and breaks the env file's =DISPLAY=:0= (D250
 finding F4 — clean the lock; the =.xinitrc= above survives it).
 =graphical.target= is the default target.
 
-Operational caution until #386 lands: =taskboard connect= run as
-root tightens =/etc/taskboard/taskboard.toml= to =0600 root:root=,
-which the =taskboard= appliance user cannot read — the unit
-restart-loops with =kind="decode"= in =journalctl=. After any
-root-run =connect=: =chmod 0644 /etc/taskboard/taskboard.toml=.
-
 * 7. On-device measurement — the four budget-verdict slots
 
 Each slot is a fill-in row (device, binary leg, number, verdict,

@@ -560,7 +560,7 @@ fn write_config_overlay(
         }
     }
 
-    crate::config::write_owner_only_atomic(path, doc.to_string().as_str())
+    crate::config::write_config_atomic(path, doc.to_string().as_str())
 }
 
 /// The hermetic input of the attach nudge's degradation mapping: the
@@ -647,43 +647,20 @@ mod tests {
     use super::{AppConfig, ConnectArgs, PromptReader, StdinPrompts, parse_confirm};
     use crate::config::{ConnectorCfg, SyncBackend};
 
-    // -- owner-only config modes (F12-01) ------------------------------------
+    // -- config mode contract (issue #386) ------------------------------------
 
-    /// Asserts the mode bits recorded in the metadata view (never the
-    /// access-as-another-user view, which root would defeat).
-    #[cfg(unix)]
-    fn owner_mode_is(path: &std::path::Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .expect("config exists")
-            .permissions()
-            .mode()
-            & 0o777
-            == 0o600
-    }
+    // The create/preserve mode matrix lives on the shared writer
+    // (`crate::config::write_config_atomic`); this command-level pin
+    // exercises the issue's own journey through connect's overlay.
 
-    /// F12-01 (#297): a config file written by the connect overlay is
-    /// owner read/write only (ADR 0012 — the file sits in the same
-    /// trust story as the db and lock beside it).
+    /// Issue #386 (kiosk F7): a world-readable config at a
+    /// non-default path (`install -m 0644 /etc/taskboard/…`) survives
+    /// a root-run connect's overlay still readable by the appliance
+    /// user — and its content still decodes afterwards.
     #[cfg(unix)]
     #[test]
-    fn the_written_config_overlay_is_owner_only() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("taskboard.toml");
-
-        super::write_config_overlay(&config, "https://c.example.com", "alice", false)
-            .expect("overlay written");
-
-        assert!(owner_mode_is(&config), "the written config must be 0600");
-    }
-
-    /// F12-01 (#297): every overlay rewrite re-establishes owner-only
-    /// modes, so a pre-hardening (or otherwise loosened) config
-    /// self-heals at the next ceremony.
-    #[cfg(unix)]
-    #[test]
-    fn an_overlay_rewrite_tightens_a_preexisting_world_readable_config() {
-        use std::os::unix::fs::PermissionsExt;
+    fn a_connect_overlay_on_a_world_readable_config_leaves_it_readable() {
+        use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
@@ -695,7 +672,16 @@ mod tests {
         super::write_config_overlay(&config, "https://c.example.com", "alice", false)
             .expect("overlay written");
 
-        assert!(owner_mode_is(&config), "the rewrite must tighten to 0600");
+        let mode = std::fs::metadata(&config)
+            .expect("config exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o644,
+            "the rewrite must not tighten the operator's mode"
+        );
+        AppConfig::extract_raw(Some(&config)).expect("the overlay still decodes");
     }
 
     /// The confirm grammar's truth table: y/yes in any case consent;

@@ -193,7 +193,8 @@ fn flush(
 /// other table preserved by construction; comments *inside* the
 /// subtree are machine territory). An empty map *removes* the subtree
 /// instead — no empty husk. The whole-document write is atomic
-/// (temp + rename, owner-only).
+/// (temp + rename; the file's mode is preserved, a created file is
+/// owner-only).
 fn overlay_stack_widths(
     path: &std::path::Path,
     widths: &BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
@@ -230,7 +231,7 @@ fn overlay_stack_widths(
             subtree.insert(&board.to_string(), toml_edit::Item::Table(board_table));
         }
     }
-    crate::config::write_owner_only_atomic(path, doc.to_string().as_str())
+    crate::config::write_config_atomic(path, doc.to_string().as_str())
 }
 
 /// The bounded, offline-first settle after a settings save (the boot
