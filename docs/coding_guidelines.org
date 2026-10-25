@@ -91,6 +91,17 @@ executable:
   match on specific failure modes (e.g., =NetworkTimeout= vs =Unauthorized=).
 - *Application Binary:* Use =color-eyre= in =taskboard-app= to catch errors
   and panics with rich backtraces and colorized context.
+- *The entry-path reading of the binary rule:* =color-eyre= is for the
+  functions that *are* the binary's entry paths, not every line
+  physically inside =taskboard-app=. Entry paths are =main.rs= and
+  lib-located lifecycle entrypoints whose only callers live in the
+  binary's own entry dispatch — e.g. =run_desktop=, the desktop
+  lifecycle's =main=-equivalent, whose =color_eyre::Result= is
+  formatted by the same top-level =color_eyre::install()=. Everything
+  below an entry path returns typed errors (=thiserror=); a
+  lib-located function with any caller outside the binary's entry
+  dispatch does not qualify. (The 2026-10-16 audit's recorded ruling,
+  F8-07.)
 - *No =unwrap=/=expect= in non-test library code* unless the invariant is
   proven locally and documented; prefer returning typed errors.
 
@@ -154,12 +165,15 @@ Types: =feat=, =fix=, =refactor=, =test=, =docs=, =ci=, =chore=.
 Example:
 
 #+begin_example
-feat(decoder): Reject BCD-invalid timecode values in decoded results
+fix(app): config rewrites preserve the operator's file mode (#386)
 
-New backend-neutral ltc_integrity post-pass over decoded frame
-lists, wired into the builtin build_result and the chunked merge.
-Finds any decoded values outside LTC's BCD ranges.
+A rewrite adopts the destination's existing permission bits (masked
+to 0o777) instead of re-tightening every rewrite to 0600 — the
+file's mode is operator territory. A config the writer creates (no
+prior mode) still lands 0600 (F12-01/ADR 0012).
 #+end_example
+
+(A real commit from this repository's history, body trimmed.)
 
 ** Feature/Issue Branches
 
@@ -177,7 +191,7 @@ categories:
 - =ci/=: Pipeline tweaks, GitHub Actions updates, cargo-deny configuration.
 - =chore/=: Dependency bumps, toolchain updates, repository maintenance.
 
-Examples: =feat/ui-slint-overdue-banner=, =feat/state-kiosk-rotation-timer=,
+Examples: =feat/ui-slint-overdue-banner=, =feat/ui-r2-drag-to-move=,
 =fix/issue-42-sqlite-cache-deadlock=, =fix/nextcloud-auth-token-refresh=,
 =ci/cargo-deny-license-check=, =docs/update-agents-artifact-spec=.
 
