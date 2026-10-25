@@ -2225,13 +2225,18 @@ fn the_settings_form_routes_the_save_ceremony() {
             else {
                 panic!("the save request routed");
             };
+            // The r2 D32 reply carries the full pair (boards +
+            // connectors): both surfaces re-render from one reply.
             reply
-                .send(Ok(vec![taskboard_ui_slint::requests::ConnectorInfo {
-                    name: "home".into(),
-                    server_url: "https://c.example".into(),
-                    username: "alice".into(),
-                    read_only: false,
-                }]))
+                .send(Ok(taskboard_ui_slint::requests::ConnectionsSnapshot {
+                    boards: Vec::new(),
+                    connectors: vec![taskboard_ui_slint::requests::ConnectorInfo {
+                        name: "home".into(),
+                        server_url: "https://c.example".into(),
+                        username: "alice".into(),
+                        read_only: false,
+                    }],
+                }))
                 .expect("the reply lane is alive");
             harness.handle.drain_setting_replies();
             let rows = window
@@ -2659,13 +2664,18 @@ fn busy_status_holds_until_the_reply_lands() {
             else {
                 panic!("the save request routed");
             };
+            // The r2 D32 reply carries the full pair (boards +
+            // connectors): both surfaces re-render from one reply.
             reply
-                .send(Ok(vec![taskboard_ui_slint::requests::ConnectorInfo {
-                    name: "home".into(),
-                    server_url: "https://c.example".into(),
-                    username: "alice".into(),
-                    read_only: false,
-                }]))
+                .send(Ok(taskboard_ui_slint::requests::ConnectionsSnapshot {
+                    boards: Vec::new(),
+                    connectors: vec![taskboard_ui_slint::requests::ConnectorInfo {
+                        name: "home".into(),
+                        server_url: "https://c.example".into(),
+                        username: "alice".into(),
+                        read_only: false,
+                    }],
+                }))
                 .expect("the reply lane is alive");
             harness.handle.drain_setting_replies();
             assert_eq!(

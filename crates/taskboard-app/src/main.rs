@@ -500,6 +500,7 @@ async fn run_kiosk(
             );
             ui_settings.kiosk = true;
             ui_settings.connectors = taskboard_app::ui::resolve_connector_infos(&app.config);
+            ui_settings.boards = taskboard_app::ui::resolve_board_infos(&app.engine);
             taskboard_app::ui::surface_keymap_findings(&keymap_findings);
             let (commands_tx, commands_rx) = taskboard_app::ui::ui_command_channel();
             let forwarder =

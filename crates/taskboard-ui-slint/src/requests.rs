@@ -43,6 +43,27 @@ pub struct ConnectorInfo {
     pub read_only: bool,
 }
 
+/// One local board for the settings board selector — secret-free,
+/// id in the uuid hand-over form (the stack-widths precedent: the
+/// domain newtypes carry no serde, and the adapter converts at the
+/// seam; r2 D32/D2-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardInfo {
+    pub id: uuid::Uuid,
+    pub name: String,
+    /// The connector name this board is bound to, `None` when unbound.
+    pub bound_connector: Option<String>,
+}
+
+/// The refreshed boards+connectors pair every state-changing settings
+/// reply carries (r2 D32): rows and the selector re-render from the
+/// same reply, so neither surface goes stale (F18).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConnectionsSnapshot {
+    pub boards: Vec<BoardInfo>,
+    pub connectors: Vec<ConnectorInfo>,
+}
+
 /// The full draft the settings form commits (the `ConnectionTarget`
 /// shape plus the kebab name — an upsert keyed on `name`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +113,12 @@ pub enum SettingsError {
     AttachFailed,
     /// The lane or the config vanished mid-flight (a stale form).
     Gone,
+    /// No live, unclaimed remote board on this connector matches the
+    /// local board's title — there is nothing to adopt (r2 D33).
+    NoRemoteMatch,
+    /// The engine refused the bind/unbind (board/remote already bound,
+    /// stale board id) (r2 D33).
+    BindRefused,
 }
 
 /// The validated field of a [`SettingsError::Invalid`].
@@ -146,16 +173,32 @@ pub enum UiRequest {
     },
     /// The verify-first Save ceremony (D3): nothing persists before
     /// the server verified the draft; the reply carries the fresh
-    /// connector list.
+    /// connections snapshot (r2 D32).
     SaveConnection {
         profile: ConnectionProfile,
-        reply: oneshot::Sender<Result<Vec<ConnectorInfo>, SettingsError>>,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
     },
     /// Removes the named connector: config entry, live actor, stored
-    /// secret. The reply carries the fresh list.
+    /// secret. The reply carries the fresh snapshot.
     RemoveConnection {
         name: String,
-        reply: oneshot::Sender<Result<Vec<ConnectorInfo>, SettingsError>>,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
+    /// Bind the named local board to the named connector, attaching
+    /// the connector if needed (r2 D33). The remote id is derived
+    /// app-side (the title-adopt rule).
+    AttachConnector {
+        board: BoardId,
+        connector: String,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
+    /// Unbind the board from its connector; the connector's actor
+    /// stops only when no other live board remains bound to it
+    /// (r2 D33, the recorded multi-board guard).
+    DetachConnector {
+        board: BoardId,
+        connector: String,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
     },
     /// Persists the keymap preset and replies with the rebuilt keymap
     /// (overrides re-resolved under the chosen preset, D9).
