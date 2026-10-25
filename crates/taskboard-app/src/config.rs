@@ -599,6 +599,21 @@ pub enum ConfigError {
     /// `TASKBOARD_CONFIG`) does not exist.
     #[error("explicit config file not found")]
     FileNotFound(PathBuf),
+    /// The config file exists but cannot be opened for reading
+    /// (`PermissionDenied` is the common case; EIO/ELOOP et al. fold
+    /// into the same honest bucket — one variant, not an errno
+    /// taxonomy); the payload names the path. Distinct from
+    /// [`ConfigError::Decode`]: the content was never seen, so a
+    /// decode verdict would be a lie (issue #386 — the kiosk's
+    /// root-tightened config restart-looped on `kind="decode"`).
+    #[error("config file unreadable")]
+    UnreadableFile {
+        /// The config path that could not be opened.
+        path: PathBuf,
+        /// The underlying open failure.
+        #[source]
+        source: std::io::Error,
+    },
     /// The providers produced an undecodable tree; the source is logged
     /// by the caller, never matched on.
     #[error("configuration failed to decode")]
@@ -702,6 +717,7 @@ impl ConfigError {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::FileNotFound(_) => "file-not-found",
+            Self::UnreadableFile { .. } => "unreadable-file",
             Self::Decode(_) => "decode",
             Self::InvalidServerUrl => "invalid-server-url",
             Self::EmptyUsername => "empty-username",
@@ -784,10 +800,13 @@ impl AppConfig {
     ///
     /// # Errors
     ///
-    /// [`ConfigError::Decode`] when the providers produce an
-    /// undecodable tree.
+    /// [`ConfigError::UnreadableFile`] when the file at `path` exists
+    /// but cannot be opened; [`ConfigError::Decode`] when the providers
+    /// produce an undecodable tree.
     #[allow(clippy::result_large_err)] // the figment source, once at boot
     pub fn extract_raw(path: Option<&Path>) -> Result<Self, ConfigError> {
+        let probe_path = path.map_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH), Path::to_path_buf);
+        probe_readable(&probe_path)?;
         let mut config: Self = figment(path.map(PathBuf::from))
             .extract()
             .map_err(ConfigError::Decode)?;
@@ -1174,15 +1193,46 @@ pub(crate) fn overlay_document(path: &Path) -> std::io::Result<toml_edit::Docume
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
 }
 
+/// Distinguishes "exists but cannot be read" from a content failure
+/// before the figment read: figment folds every provider failure into
+/// `Decode`, so a permission denial on the config used to surface as
+/// `kind="decode"` ("configuration rejected") — issue #386's second
+/// half. An open failure other than a raced delete (the absent-file
+/// path, as before the probe) is [`ConfigError::UnreadableFile`].
+/// TOCTOU window: permissions may change between this probe and
+/// figment's own read — a boot-once race, accepted.
+#[allow(clippy::result_large_err)] // same enum, same once-at-boot shape
+fn probe_readable(path: &Path) -> Result<(), ConfigError> {
+    if !path.is_file() {
+        return Ok(());
+    }
+    match std::fs::File::open(path) {
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(ConfigError::UnreadableFile {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 /// Atomically rewrites the config file at `path` with `contents`
 /// (overlay on connect, key strip on logout — the only two writers of
 /// this artifact): tmp sidecar in the same directory, then rename.
 /// The sidecar is created owner-only (F12-01; ADR 0012 — the
 /// `repl_history` idiom, never a process-global umask mutation) and
-/// the rename carries the mode onto the final file, so every rewrite
-/// re-establishes 0600 and a pre-hardening permissive config
-/// self-heals at the next ceremony.
-pub(crate) fn write_owner_only_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+/// before the rename adopts the destination's existing permission
+/// bits: the file's mode is operator territory (issue #386 — a
+/// root-run `connect` on the kiosk appliance must not tighten the
+/// runbook-installed 0644 config to 0600 `root:root`), so a rewrite
+/// preserves it; only a file this writer *creates* (no prior mode)
+/// lands 0600. The sidecar itself only ever carries the mode it
+/// finalizes to — owner-only until the destination's stat (any stat
+/// failure means "no mode to preserve" and fails safe toward the
+/// stricter created-mode) may re-mode it to the preserved bits. That
+/// preserved mode is masked to `0o777` — a config never carries
+/// setuid/setgid/sticky.
+pub(crate) fn write_config_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -1199,6 +1249,13 @@ pub(crate) fn write_owner_only_atomic(path: &Path, contents: &str) -> std::io::R
         }
         let mut file = options.open(&tmp)?;
         std::io::Write::write_all(&mut file, contents.as_bytes())?;
+        #[cfg(unix)]
+        if let Ok(meta) = std::fs::metadata(path) {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut perms = std::fs::metadata(&tmp)?.permissions();
+            perms.set_mode(meta.permissions().mode() & 0o777);
+            std::fs::set_permissions(&tmp, perms)?;
+        }
         file.sync_all().ok();
     }
     std::fs::rename(&tmp, path)
@@ -1683,6 +1740,125 @@ mod tests {
         );
     }
 
+    // ---- the config write contract (issue #386) ----------------------
+    // The mode rule lives here, on the shared atomic writer, not on any
+    // command: preserve the existing file's mode (operator territory —
+    // the kiosk runbook installs 0644 and a root-run `connect` must not
+    // tighten it to 0600 root:root); only a *created* file lands 0600
+    // (F12-01/ADR 0012), as does the sidecar at every point before the
+    // rename finalizes it.
+
+    /// Asserts the mode bits recorded in the metadata view (never the
+    /// access-as-another-user view, which root would defeat).
+    #[cfg(unix)]
+    fn mode_is(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path)
+            .expect("file exists")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    /// Seeds `path` with `contents` at exactly `mode` (the runbook's
+    /// `install -m` equivalent).
+    #[cfg(unix)]
+    fn seed_with_mode(path: &Path, contents: &str, mode: u32) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::write(path, contents).expect("seed written");
+        let mut perms = std::fs::metadata(path).expect("meta").permissions();
+        perms.set_mode(mode);
+        std::fs::set_permissions(path, perms).expect("mode set");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rewrite_preserves_an_existing_configs_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        seed_with_mode(&config, "[app]\nmode = \"desktop\"\n", 0o644);
+
+        write_config_atomic(&config, "[app]\nmode = \"kiosk\"\n").expect("rewrite");
+
+        assert_eq!(mode_is(&config), 0o644, "the operator's mode survives");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rewrite_preserves_a_group_readable_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        seed_with_mode(&config, "[sync]\n", 0o640);
+
+        write_config_atomic(&config, "[sync]\n").expect("rewrite");
+
+        assert_eq!(mode_is(&config), 0o640, "no floor, no widening");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rewrite_preserves_owner_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        seed_with_mode(&config, "[sync]\n", 0o600);
+
+        write_config_atomic(&config, "[sync]\n").expect("rewrite");
+
+        assert_eq!(mode_is(&config), 0o600, "a tightened install stays tight");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_created_config_is_owner_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+
+        write_config_atomic(&config, "[sync]\n").expect("create");
+
+        assert_eq!(mode_is(&config), 0o600, "no prior mode: fail-safe 0600");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_preserved_mode_is_masked_to_permission_bits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        seed_with_mode(&config, "[sync]\n", 0o2644);
+
+        write_config_atomic(&config, "[sync]\n").expect("rewrite");
+
+        assert_eq!(
+            mode_is(&config),
+            0o644,
+            "setgid/setuid/sticky never carry onto a config"
+        );
+    }
+
+    /// Issue #386's second half: a config that exists but cannot be
+    /// opened is `UnreadableFile`, never `Decode` — the content was
+    /// never seen, so "configuration rejected" would be a lie. Skips
+    /// honestly when even 0000 is readable (euid 0, ACL override).
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_config_file_is_typed_not_decode() {
+        use std::io::Read as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        seed_with_mode(&config, "[sync]\n", 0o000);
+        if std::fs::File::open(&config).is_ok_and(|mut f| f.read(&mut [0u8]).is_ok()) {
+            return; // root (or equivalent): the pin is not exercisable here
+        }
+
+        let err = AppConfig::extract_raw(Some(&config)).expect_err("unreadable config is an error");
+
+        assert!(
+            matches!(err, ConfigError::UnreadableFile { .. }),
+            "an unreadable file is its own kind, got {:?}",
+            err.kind()
+        );
+        assert_eq!(err.kind(), "unreadable-file");
+    }
+
     // ---- the [[sync.connectors]] plural world (chunk 5) --------------
 
     fn two_entry_toml() -> &'static str {
@@ -2070,6 +2246,14 @@ mod tests {
         assert_eq!(
             ConfigError::FileNotFound(PathBuf::from("/x")).kind(),
             "file-not-found"
+        );
+        assert_eq!(
+            ConfigError::UnreadableFile {
+                path: PathBuf::from("/x"),
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            }
+            .kind(),
+            "unreadable-file"
         );
     }
 

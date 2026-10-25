@@ -165,7 +165,8 @@ fn backend_word(backend: SyncBackend) -> &'static str {
 /// Overlays one named `[[sync.connectors]]` entry into the config file
 /// via `toml_edit` read-modify-write (comments, formatting, and every
 /// other table preserved by construction; the whole-document write is
-/// atomic temp + rename, owner-only). An entry with the same `name` is
+/// atomic temp + rename; the file's mode is preserved, a created file
+/// is owner-only). An entry with the same `name` is
 /// replaced in place (document order preserved); otherwise the entry
 /// is appended. Both array renderings are navigated (array-of-tables
 /// and plain array of inline tables — the REPL writer's rule). The
@@ -223,7 +224,7 @@ pub fn overlay_upsert_connector(path: &Path, entry: &ConnectorCfg) -> std::io::R
         }
     }
     match outcome {
-        Upsert::Landed => crate::config::write_owner_only_atomic(path, doc.to_string().as_str()),
+        Upsert::Landed => crate::config::write_config_atomic(path, doc.to_string().as_str()),
         Upsert::NotAnArray => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "sync.connectors is not an array",
@@ -284,7 +285,7 @@ pub fn overlay_remove_connector(path: &Path, name: &str) -> std::io::Result<bool
             sync.remove("connectors");
         }
     }
-    crate::config::write_owner_only_atomic(path, doc.to_string().as_str())?;
+    crate::config::write_config_atomic(path, doc.to_string().as_str())?;
     Ok(true)
 }
 
@@ -298,7 +299,7 @@ pub fn overlay_remove_connector(path: &Path, name: &str) -> std::io::Result<bool
 pub fn overlay_set_ui_scale(path: &Path, scale: f64) -> std::io::Result<()> {
     let mut doc = crate::config::overlay_document(path)?;
     ui_table(&mut doc)?["scale"] = toml_edit::value(scale);
-    crate::config::write_owner_only_atomic(path, doc.to_string().as_str())
+    crate::config::write_config_atomic(path, doc.to_string().as_str())
 }
 
 /// Overlays `ui.keymap.preset = preset` (the config word:
@@ -311,7 +312,7 @@ pub fn overlay_set_ui_scale(path: &Path, scale: f64) -> std::io::Result<()> {
 pub fn overlay_set_keymap_preset(path: &Path, preset: &str) -> std::io::Result<()> {
     let mut doc = crate::config::overlay_document(path)?;
     ui_table(&mut doc)?["keymap"]["preset"] = toml_edit::value(preset);
-    crate::config::write_owner_only_atomic(path, doc.to_string().as_str())
+    crate::config::write_config_atomic(path, doc.to_string().as_str())
 }
 
 /// The `[ui]` table access shared by the two `[ui]` overlay writers:
