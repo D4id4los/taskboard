@@ -4877,6 +4877,390 @@ fn the_kiosk_mount_still_lands_on_the_board() {
                 },
             );
             assert_eq!(current_view(&harness), View::Board);
+// -- r2 D32/D33/D34: the board-scoped connection surface -------------
+
+use taskboard_ui_slint::requests::{BoardInfo, ConnectionsSnapshot, ConnectorInfo};
+
+/// The secret-free board rows the tests hand over at mount.
+fn board_row(id: uuid::Uuid, name: &str, bound: Option<&str>) -> BoardInfo {
+    BoardInfo {
+        id,
+        name: name.to_owned(),
+        bound_connector: bound.map(str::to_owned),
+    }
+}
+
+/// The secret-free connector rows the tests hand over at mount.
+fn connector_row(name: &str) -> ConnectorInfo {
+    ConnectorInfo {
+        name: name.to_owned(),
+        server_url: "https://c.example".into(),
+        username: "alice".into(),
+        read_only: false,
+    }
+}
+
+/// J1 — the board selector (r2 D32): rows render from the mount seed
+/// (count, badge, selection flags as model facts); a click selects
+/// (radio semantics, one selected); a reply snapshot re-renders both
+/// surfaces (F18's no-stale pin) — the boards *and* the connector
+/// rows move together off one reply.
+#[test]
+fn the_board_selector_renders_selects_and_refreshes_from_the_reply() {
+    let (_fixture, state) = fixture::golden_state();
+    let home = uuid::Uuid::new_v4();
+    let away = uuid::Uuid::new_v4();
+    let settings = UiSettings {
+        boards: vec![
+            board_row(home, "home", None),
+            board_row(away, "away", Some("work")),
+        ],
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            let boards = model().get_boards();
+            assert_eq!(boards.row_count(), 2, "the mount seed landed");
+            assert!(!boards.row_data(0).expect("row").bound);
+            let away_row = boards.row_data(1).expect("row");
+            assert!(away_row.bound);
+            assert_eq!(away_row.bound_connector, "work");
+            assert!(
+                !model().get_boards().row_data(0).expect("row").selected,
+                "nothing is selected at mount"
+            );
+
+            // A click selects (radio semantics).
+            window.invoke_settings_board_selected(home.to_string().into());
+            assert_eq!(model().get_selected_board(), home.to_string());
+            let boards = model().get_boards();
+            assert!(boards.row_data(0).expect("row").selected);
+            assert!(!boards.row_data(1).expect("row").selected);
+
+            // A reply snapshot re-renders both surfaces: route the
+            // save ceremony and answer with the pair.
+            window.invoke_settings_field_edited(0, "newc".into());
+            window.invoke_settings_field_edited(1, "https://n.example".into());
+            window.invoke_settings_field_edited(2, "alice".into());
+            window.invoke_settings_field_edited(3, "pw".into());
+            window.invoke_settings_save_clicked(
+                "newc".into(),
+                "https://n.example".into(),
+                "alice".into(),
+                "pw".into(),
+            );
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::SaveConnection { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the save routed");
+            };
+            reply
+                .send(Ok(ConnectionsSnapshot {
+                    boards: vec![
+                        board_row(home, "home", Some("newc")),
+                        board_row(away, "away", Some("work")),
+                    ],
+                    connectors: vec![connector_row("work"), connector_row("newc")],
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+
+            let boards = model().get_boards();
+            assert_eq!(
+                boards.row_data(0).expect("row").bound_connector,
+                "newc",
+                "the reply's binding landed on the selector"
+            );
+            assert_eq!(
+                model().get_rows().row_count(),
+                2,
+                "the reply's connector list landed on the rows"
+            );
+        },
+    );
+}
+
+/// J2 — bind routing (r2 D33): a selected board + a connector row's
+/// Bind routes exactly one `AttachConnector` with the typed ids; the
+/// Ok snapshot lands both surfaces; a `BindRefused` reply lands
+/// `Rejected` with non-empty status text (structure, never strings).
+#[test]
+fn bind_routes_attach_and_the_typed_reply_lands() {
+    let (_fixture, state) = fixture::golden_state();
+    let home = uuid::Uuid::new_v4();
+    let settings = UiSettings {
+        boards: vec![board_row(home, "home", None)],
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+            window.invoke_settings_board_selected(home.to_string().into());
+
+            window.invoke_settings_bind_clicked(0);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one attach routed");
+            assert!(matches!(
+                &requests[0],
+                taskboard_ui_slint::requests::UiRequest::AttachConnector {
+                    board, connector, ..
+                } if board.as_uuid() == home && connector == "work"
+            ));
+            assert!(model().get_busy(), "the gate is busy mid-flight");
+
+            // The Ok snapshot lands both surfaces.
+            let taskboard_ui_slint::requests::UiRequest::AttachConnector { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the attach routed");
+            };
+            reply
+                .send(Ok(ConnectionsSnapshot {
+                    boards: vec![board_row(home, "home", Some("work"))],
+                    connectors: vec![connector_row("work")],
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                model()
+                    .get_boards()
+                    .row_data(0)
+                    .expect("row")
+                    .bound_connector,
+                "work",
+                "the badge shows the fresh binding"
+            );
+
+            // A BindRefused reply lands Rejected + non-empty text.
+            window.invoke_settings_bind_clicked(0);
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::AttachConnector { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the second attach routed");
+            };
+            let _ = reply.send(Err(
+                taskboard_ui_slint::requests::SettingsError::BindRefused,
+            ));
+            harness.handle.drain_setting_replies();
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected,
+                "the bind refusal is Rejected"
+            );
+            assert!(
+                !model().get_status_text().is_empty(),
+                "the refusal sentence is visible"
+            );
+        },
+    );
+}
+
+/// J3 — detach routing from a bound board row (r2 D33): the lane
+/// carries the typed pair; the Ok snapshot clears the badge.
+#[test]
+fn detach_routes_from_the_board_row_and_the_ok_snapshot_clears_the_badge() {
+    let (_fixture, state) = fixture::golden_state();
+    let home = uuid::Uuid::new_v4();
+    let settings = UiSettings {
+        boards: vec![board_row(home, "home", Some("work"))],
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            window.invoke_settings_detach_clicked(0);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "exactly one detach routed");
+            assert!(matches!(
+                &requests[0],
+                taskboard_ui_slint::requests::UiRequest::DetachConnector {
+                    board, connector, ..
+                } if board.as_uuid() == home && connector == "work"
+            ));
+            let taskboard_ui_slint::requests::UiRequest::DetachConnector { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the detach routed");
+            };
+            reply
+                .send(Ok(ConnectionsSnapshot {
+                    boards: vec![board_row(home, "home", None)],
+                    connectors: vec![connector_row("work")],
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            let row = model().get_boards().row_data(0).expect("row");
+            assert!(!row.bound, "the badge cleared");
+            assert_eq!(row.bound_connector, "");
+        },
+    );
+}
+
+/// J4 — the busy gate (r2 D34): with an attach pending, Save/Test/a
+/// second Bind route nothing (one op at a time); the initiating row's
+/// busy flag is set; the reply clears it (reply-driven — no clock).
+#[test]
+fn the_busy_gate_holds_one_op_and_the_reply_clears_the_row_marker() {
+    let (_fixture, state) = fixture::golden_state();
+    let home = uuid::Uuid::new_v4();
+    let settings = UiSettings {
+        boards: vec![board_row(home, "home", None)],
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+            window.invoke_settings_board_selected(home.to_string().into());
+
+            // The initiating op: an attach, left unanswered.
+            window.invoke_settings_bind_clicked(0);
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            assert!(model().get_busy());
+            assert_eq!(model().get_busy_target(), "work");
+            assert!(
+                model().get_rows().row_data(0).expect("row").busy,
+                "the initiating connector row carries the busy flag"
+            );
+
+            // While pending: a valid Save routes nothing (visible
+            // Rejected instead), Test and a second Bind route nothing.
+            window.invoke_settings_save_clicked(
+                "x".into(),
+                "https://x.example".into(),
+                "alice".into(),
+                "pw".into(),
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+            window.invoke_settings_test_clicked(0);
+            window.invoke_settings_bind_clicked(0);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the pending gate routed nothing"
+            );
+
+            // The reply clears the row marker (reply-driven); the
+            // initiating request was retained from the first drain.
+            let taskboard_ui_slint::requests::UiRequest::AttachConnector { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the attach routed");
+            };
+            let _ = reply.send(Ok(ConnectionsSnapshot {
+                boards: vec![board_row(home, "home", Some("work"))],
+                connectors: vec![connector_row("work")],
+            }));
+            harness.handle.drain_setting_replies();
+            assert!(!model().get_busy(), "the gate cleared");
+            assert!(
+                !model().get_rows().row_data(0).expect("row").busy,
+                "the row busy flag cleared with the reply"
+            );
+        },
+    );
+}
+
+/// J5 — the save click-through (r2 D34, F21): every Save click reacts.
+/// An invalid draft lands a typed Rejected with non-empty status text
+/// and an empty lane; a valid-but-pending click lands Rejected with
+/// the lane untouched; a valid idle click routes (covered by the
+/// save-ceremony journey, unchanged).
+#[test]
+fn every_save_click_produces_a_visible_reaction_and_the_lane_stays_clean() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // Invalid draft (empty name): the click fires *through*
+            // the disabled button and the refusal is visible.
+            window.invoke_settings_save_clicked(
+                "".into(),
+                "https://c.example".into(),
+                "alice".into(),
+                "pw".into(),
+            );
+            assert!(harness.drain_requests().is_empty(), "no request routed");
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected,
+                "the invalid-draft refusal is visible"
+            );
+            assert!(
+                !model().get_status_text().is_empty(),
+                "the status line carries the mapped sentence"
+            );
+
+            // Valid draft, but a click while pending: visible
+            // Rejected, lane untouched.
+            window.invoke_settings_field_edited(0, "home".into());
+            window.invoke_settings_field_edited(1, "https://c.example".into());
+            window.invoke_settings_field_edited(2, "alice".into());
+            window.invoke_settings_field_edited(3, "pw".into());
+            window.invoke_settings_save_clicked(
+                "home".into(),
+                "https://c.example".into(),
+                "alice".into(),
+                "pw".into(),
+            );
+            assert_eq!(harness.drain_requests().len(), 1, "the idle click routed");
+            window.invoke_settings_save_clicked(
+                "home".into(),
+                "https://c.example".into(),
+                "alice".into(),
+                "pw".into(),
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the pending click routed nothing"
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected,
+                "the busy-click refusal is visible"
+            );
         },
     );
 }

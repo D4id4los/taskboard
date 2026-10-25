@@ -43,11 +43,36 @@ export struct ConnectionRow {
     // The legacy `[nextcloud]` singleton world's row (D4): displayed,
     // but Test/Remove are dead controls.
     read-only: bool,
+    // The row-level busy marker (r2 D34): this connector's ceremony
+    // is in flight — the dot slot renders the busy state.
+    busy: bool,
+}
+
+// One local board of the settings board selector (r2 D32): a
+// *binding* surface — selection (radio semantics), the binding badge,
+// and Detach. Board lifecycle lives on the board surface, not here.
+export struct SettingsBoardRow {
+    // The board's uuid (the hand-over form; the adapter converts).
+    id: string,
+    name: string,
+    bound-connector: string,
+    bound: bool,
+    selected: bool,
+    busy: bool,
 }
 
 
 export global SettingsModel {
     in-out property <[ConnectionRow]> rows: [];
+    // The board selector's rows (r2 D32) and the current selection
+    // (a board uuid string; empty = none — Bind stays disabled).
+    in-out property <[SettingsBoardRow]> boards: [];
+    in-out property <string> selected-board: "";
+    // The busy machine (r2 D34): any op in flight disables every
+    // settings op; busy-target names the connector/board the spinner
+    // markers render on.
+    in-out property <bool> busy: false;
+    in-out property <string> busy-target: "";
     in-out property <string> draft-name: "";
     in-out property <string> draft-server: "";
     in-out property <string> draft-username: "";
@@ -97,9 +122,31 @@ component StatusDot inherits Rectangle {
         : Semantic.warning;
 }
 
+// The ceremony's busy dot (r2 D34): the status line's busy token in
+// the row's dot slot — structure is the model flag; the pulse is
+// purely decorative and never asserted (the mock-clock tests assert
+// the flag timeline, not pixels).
+component BusyDot inherits Rectangle {
+    width: Theme.space-2;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: Semantic.sync-active;
+    opacity: 1.0;
+    states [
+        pulse when true: {
+            opacity: 0.45;
+            in { animate opacity { duration: 600ms; iteration-count: -1; } }
+        }
+    ]
+}
+
 component SettingsButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
+    // The visible-ceremony variant (r2 D34, F21): when true, the click
+    // fires *regardless of enablement* — the adapter renders the
+    // refusal. Default false: every other consumer keeps the gate.
+    in property <bool> click-through: false;
     callback clicked();
     border-radius: Theme.radius-small;
     background: enabled ? Theme.surface-raised : Theme.surface;
@@ -111,7 +158,7 @@ component SettingsButton inherits Rectangle {
     accessible-label: root.text;
     touch := TouchArea {
         clicked => {
-            if (root.enabled) {
+            if (root.enabled || root.click-through) {
                 root.clicked();
             }
         }
@@ -172,6 +219,12 @@ export component SettingsView inherits FocusScope {
     callback save-clicked(string, string, string, string);
     callback test-clicked(int);
     callback remove-clicked(int);
+    // The board-scoped binding surface (r2 D32/D33): selecting a board
+    // (radio), binding the selected board to a connector row, and
+    // detaching a bound board row.
+    callback board-selected(string);
+    callback bind-clicked(int);
+    callback detach-clicked(int);
     callback preset-picked(int);
     callback scale-committed(string);
     // The slider gesture (r2 D29): press / preview / release — the
@@ -237,6 +290,54 @@ export component SettingsView inherits FocusScope {
             text: "Connections";
         }
 
+        // The board selector (r2 D32): one row per live board, radio
+        // selection, the binding badge, and Detach on bound rows. A
+        // *binding* surface — board lifecycle is the board surface's
+        // job (chunk 3).
+        for board[index] in SettingsModel.boards: Rectangle {
+            background: board.selected ? Theme.surface-raised : Theme.surface;
+            border-radius: Theme.radius-small;
+            min-height: board-layout.min-height + 2 * Theme.space-2;
+            border-width: board.selected ? Theme.focus-ring-width : 0;
+            border-color: Semantic.focus-ring;
+            board-layout := HorizontalLayout {
+                padding: Theme.space-2;
+                spacing: Theme.space-2;
+                // The binding badge: the RowDot-family status element
+                // (bound → the syncing token; unbound → nothing) plus
+                // the connector name text.
+                VerticalLayout {
+                    if board.bound: RowDot {
+                        status: SettingsRowStatus.syncing;
+                    }
+                }
+                VerticalLayout {
+                    spacing: 0;
+                    board-touch := TouchArea {
+                        clicked => {
+                            root.board-selected(board.id);
+                        }
+                    }
+                    RoleText {
+                        role: Typography.body;
+                        text: board.name;
+                    }
+                    if board.bound: RoleText {
+                        role: Typography.body;
+                        text: board.bound-connector;
+                        text-color: Theme.text-secondary;
+                    }
+                }
+                if board.bound: SettingsButton {
+                    text: "Detach";
+                    enabled: !board.busy && !SettingsModel.busy;
+                    clicked => {
+                        root.detach-clicked(index);
+                    }
+                }
+            }
+        }
+
         for row[index] in SettingsModel.rows: Rectangle {
             background: Theme.surface;
             border-radius: Theme.radius-small;
@@ -245,7 +346,10 @@ export component SettingsView inherits FocusScope {
                 padding: Theme.space-2;
                 spacing: Theme.space-2;
                 VerticalLayout {
-                    RowDot {
+                    // The busy ceremony renders the pulse in the dot
+                    // slot (r2 D34); otherwise the live status dot.
+                    if row.busy: BusyDot {}
+                    if !row.busy: RowDot {
                         status: row.status;
                     }
                 }
@@ -266,6 +370,19 @@ export component SettingsView inherits FocusScope {
                     enabled: !row.read-only;
                     clicked => {
                         root.test-clicked(index);
+                    }
+                }
+                // Bind-to-this-board (r2 D33): binds the selected
+                // board to this connector. Re-issuing on the same
+                // connector is defined (idempotent); bound elsewhere
+                // refuses typed. No selection → disabled (only Save
+                // carries click-through — the recorded decision).
+                SettingsButton {
+                    text: "Bind";
+                    enabled: !row.read-only && !SettingsModel.busy
+                        && SettingsModel.selected-board != "";
+                    clicked => {
+                        root.bind-clicked(index);
                     }
                 }
                 SettingsButton {
@@ -338,12 +455,16 @@ export component SettingsView inherits FocusScope {
                 root.field-committed();
             }
         }
+        // Save carries click-through (r2 D34, F21): every click
+        // produces a visible reaction — the disabled/invalid paths
+        // render the refusal through the status line instead of
+        // absorbing silently. The password rides the callback args
+        // only — it never lands on any pushed model property (D26b).
         SettingsButton {
             text: "Save";
             enabled: SettingsModel.save-enabled;
+            click-through: true;
             clicked => {
-                // The password rides the callback args only — it never
-                // lands on any pushed model property (D26b).
                 root.save-clicked(
                     SettingsModel.draft-name,
                     SettingsModel.draft-server,
