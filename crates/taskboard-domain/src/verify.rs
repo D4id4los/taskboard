@@ -85,7 +85,9 @@ fn mint_row(
             failures: u64::from(counters.failures),
             offline_episodes: u64::from(counters.offline_episodes),
             last_cycle: if last_cycle_some {
-                Some(std::time::Duration::from_secs(u64::from(counters.last_cycle)))
+                Some(std::time::Duration::from_secs(u64::from(
+                    counters.last_cycle,
+                )))
             } else {
                 None
             },
@@ -122,7 +124,8 @@ struct SymCounters {
 ///
 /// Unwind: the fold's `for` loop over 3 rows. Bound-doubling check:
 /// identical verdict at `#[kani::unwind(4)]` and
-/// `#[kani::unwind(8)]` (proven, both bounds).
+/// `#[kani::unwind(8)]` (proven, 690 checks, 5 unreachable — both
+/// bounds).
 #[kani::proof]
 #[kani::unwind(4)]
 fn prop_aggregate_rows_dominance_max_saturating_proven() {
@@ -205,4 +208,47 @@ fn prop_aggregate_rows_dominance_max_saturating_proven() {
         expected_counters.fold_into(&row.counters);
     }
     assert_eq!(aggregated.counters, expected_counters);
+}
+
+/// Escalates `window_contains_now` / `window_is_exactly_24_hours`
+/// (`days.rs` proptests) to exhaustive-within-bounds over
+/// [`crate::days::day_window`]:
+///
+/// 1. **Panic-freedom/totality** (primary; implicit — Kani checks
+///    every reachable panic/overflow/assert on the symbolic path,
+///    including chrono's internal debug asserts).
+/// 2. `start <= now < end`.
+/// 3. `end - start == 24 h`.
+///
+/// Symbolic surface (anchor-relative, narrowest-type): `now` = `i32`
+/// seconds since 2020-01-01 (±68 y), nanos concrete zero;
+/// `day_start_time` = `u32` in `0..=86_399` (the proptest's range —
+/// keeping parity *is* the sampled→exhaustive escalation claim);
+/// `offset` = `i32` in `±86_399` via `FixedOffset::east_opt`.
+///
+/// Unwind: chrono date math on these paths is loop-light.
+/// Bound-doubling check: identical verdict at `#[kani::unwind(8)]`
+/// and `#[kani::unwind(16)]` (see pilot report for the recorded
+/// numbers).
+#[kani::proof]
+#[kani::unwind(8)]
+fn prop_day_window_total_24h_contains_now_proven() {
+    let now_secs: i32 = kani::any();
+    // 2020-01-01T00:00:00Z
+    let now = chrono::DateTime::from_timestamp(1_577_836_800_i64 + i64::from(now_secs), 0)
+        .expect("i32 range keeps the anchor-relative instant representable");
+    let start_secs: u32 = kani::any();
+    kani::assume(start_secs <= 86_399);
+    let day_start_time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(start_secs, 0);
+    kani::assume(day_start_time.is_some());
+    let day_start_time = day_start_time.unwrap();
+    let offset_secs: i32 = kani::any();
+    kani::assume((-86_399..=86_399).contains(&offset_secs));
+    let offset = chrono::FixedOffset::east_opt(offset_secs).unwrap();
+
+    let (start, end) = crate::days::day_window(now, day_start_time, offset);
+
+    assert!(start <= now);
+    assert!(now < end);
+    assert_eq!(end - start, chrono::TimeDelta::try_hours(24).unwrap());
 }
