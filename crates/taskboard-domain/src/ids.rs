@@ -99,12 +99,67 @@ remote_id!(
 
 /// Config-minted connector name (the `[[sync.connectors]]` key; the
 /// legacy scalar backend synthesizes `"nextcloud"`) — a human-meaningful
-/// name, not a UUID. Kebab-case and uniqueness are validated at config
-/// load; this constructor cannot fail, so `From` stays total.
+/// name, not a UUID.
+///
+/// # Minting vs. leniency
+///
+/// Input-adjacent construction (config load, settings forms, raw config
+/// re-reads) must go through [`ConnectorId::from_kebab`], which enforces
+/// the kebab predicate. The total `From<&str>`/`From<String>` impls are
+/// **deliberate leniency, deserialization-only in scope**: serde
+/// payloads of already-validated persisted rows (the storage D-3 decode,
+/// where a persisted tag naming an unconfigured connector decodes as-is
+/// and the owning actor simply never finds the board), the UI adapter's
+/// trusted re-mint of a name the app handed over moments earlier, and
+/// test fixtures. They are not an input-adjacent mint; production code
+/// outside those scopes must not use them.
+///
+/// Uniqueness across the configured connector set is a set-level
+/// property and stays with `AppConfig::validate` in `taskboard-app`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ConnectorId(String);
 
+/// A `[[sync.connectors]]` name that failed the kebab predicate;
+/// carries the offending name verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("connector name invalid")]
+pub struct InvalidConnectorName {
+    /// The name that did not pass.
+    pub name: String,
+}
+
 impl ConnectorId {
+    /// The kebab predicate (`[a-z0-9-]`, non-empty, no leading or
+    /// trailing `-`, no `--`).
+    #[must_use]
+    pub fn is_kebab_name(name: &str) -> bool {
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !name.starts_with('-')
+            && !name.ends_with('-')
+            && !name.contains("--")
+    }
+
+    /// The mint: the only construction path for a `ConnectorId` that
+    /// enters from user-controlled text (config load, settings forms,
+    /// raw config re-reads).
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidConnectorName`] with the offending name verbatim when
+    /// the kebab predicate fails.
+    pub fn from_kebab(name: &str) -> Result<Self, InvalidConnectorName> {
+        if Self::is_kebab_name(name) {
+            Ok(Self(name.to_owned()))
+        } else {
+            Err(InvalidConnectorName {
+                name: name.to_owned(),
+            })
+        }
+    }
+
     /// The connector name as a string slice.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -112,12 +167,16 @@ impl ConnectorId {
     }
 }
 
+/// The lenient decode/fixture constructor; see the type doc for the
+/// scoped ruling (deserialization and fixtures only — never
+/// input-adjacent).
 impl From<&str> for ConnectorId {
     fn from(name: &str) -> Self {
         Self(name.to_owned())
     }
 }
 
+/// See the `From<&str>` impl and the type doc.
 impl From<String> for ConnectorId {
     fn from(name: String) -> Self {
         Self(name)
@@ -249,5 +308,46 @@ mod tests {
                 serde_json::from_str(&serde_json::to_string(&label).unwrap()).unwrap();
             prop_assert_eq!(label2, label);
         }
+
+        #[test]
+        fn predicate_and_mint_agree_everywhere(s in ".*") {
+            prop_assert_eq!(ConnectorId::is_kebab_name(&s), ConnectorId::from_kebab(&s).is_ok());
+        }
+    }
+
+    #[test]
+    fn kebab_accept_table() {
+        for ok in ["a", "0", "nextcloud", "nc-2", "a-1-b", "abc123"] {
+            assert!(ConnectorId::is_kebab_name(ok), "accept {ok:?}");
+            assert!(ConnectorId::from_kebab(ok).is_ok(), "accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn kebab_reject_table() {
+        for bad in [
+            "", "-", "--", "-a", "a-", "a--b", "A", "aB", "a_b", "a b", "ä", "a.b", "/",
+        ] {
+            assert!(!ConnectorId::is_kebab_name(bad), "reject {bad:?}");
+            let err = ConnectorId::from_kebab(bad).expect_err("reject");
+            assert_eq!(err.name, bad, "offending name carried verbatim");
+        }
+    }
+
+    #[test]
+    fn minted_name_round_trips_identity() {
+        let minted = ConnectorId::from_kebab("nextcloud").unwrap();
+        assert_eq!(minted.as_str(), "nextcloud");
+        assert_eq!(minted.to_string(), "nextcloud");
+    }
+
+    #[test]
+    fn total_from_documents_the_lenient_decode_path() {
+        // Deliberate leniency pin: the total `From` exists for serde
+        // decode of persisted rows and test fixtures, not for
+        // input-adjacent minting. It constructs a non-kebab value
+        // as-is; policy, not endorsement.
+        let lenient = ConnectorId::from("NOT_KEBAB");
+        assert_eq!(lenient.as_str(), "NOT_KEBAB");
     }
 }
