@@ -413,6 +413,19 @@ The workspace carries a single global version (see `docs/architecture.org`);
   `--due` CLI help and the README quickstart.
 
 ### Changed
+- Config-validated quantities become minted newtypes (#425; internal —
+  no user-visible behavior or output changed): `ConnectorId` gains the
+  fallible `from_kebab` mint (the kebab predicate moves into
+  `taskboard-domain` as `ConnectorId::is_kebab_name`, one copy), and
+  every production construction path — config resolution, the settings
+  save/attach/detach choreographies, the attach re-read — mints through
+  it, so a hand-edited non-kebab connector name refuses typed at the
+  boundary instead of minting a value that can match nothing. The total
+  `From` impls stay, documented as the deserialization-and-fixtures
+  leniency scope. `ui.scale` travels as `UiScale` (finite, 0.5–3.0,
+  minted at the config check and the runtime set-scale request) through
+  the UI hand-over to the mount seam; accept/reject semantics, typed
+  errors, and config error discriminants are unchanged.
 - Stack columns render as cards on the re-anchored surface ladder
   (GUI review round-2 chunk 7; D35): each regular-mode column wraps
   in a `surface` card (`radius-medium`, `space-2` inner padding)
