@@ -48,6 +48,11 @@ pub mod reminders;
 pub mod remote;
 pub mod state;
 
+/// Kani bounded-model-checking harnesses (compiled only under Kani's
+/// own rustc driver — never by tests, clippy, or coverage).
+#[cfg(kani)]
+mod verify;
+
 /// Compiled for our own tests (dev-dep `proptest`) and for downstream
 /// crates that enable the `test-support` feature.
 #[cfg(any(test, feature = "test-support"))]
