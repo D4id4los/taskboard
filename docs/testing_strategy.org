@@ -18,10 +18,11 @@ through Rust traits.
 - *Define IO Traits in the Domain:* =taskboard-domain= defines async traits
   for all external operations (e.g., =pub trait TaskRepository=).
 - *Inject Dependencies:* The state engine and sync actors receive these
-  dependencies via generics (=T: TaskRepository=) or dynamic dispatch
-  (=Box<dyn TaskRepository>=).
+  dependencies via dynamic dispatch (=Arc<dyn TaskRepository>=; the
+  engine consumes the port as a trait object — no =Box<dyn>=, no
+  generic repository parameter in production).
 - *The TDD Benefit:* In production, =taskboard-app= injects the real
-  =SqliteRepository=. In tests, an in-memory fake runs database-dependent
+  =SqliteTaskRepository= (via the storage port adapter). In tests, an in-memory fake runs database-dependent
   logic in microseconds without touching the disk.
 
 * 2. "Black Box" Actor Testing via Channels
@@ -31,7 +32,7 @@ frameworks.
 
 - *The Pattern:* Treat the actor as a black box. In a =#[tokio::test]=,
   instantiate the actor and hand it the receiving ends of its channels.
-- *Execution:* Send an explicit command (e.g., =Command::TaskCompleted(id)=)
+- *Execution:* Send an explicit command (e.g., =StateCommand::SetTaskDone { id, done: true }= wrapped in an =EngineEnvelope::Execute=)
   down the =mpsc::Sender=.
 - *Assertion:* Await the actor's response on the outgoing channel and
   assert the typed result. This proves the actor processes messages
@@ -61,8 +62,8 @@ runtime.
 - *Pure Functions:* Domain logic takes inputs and returns outputs, rather
   than mutating hidden state.
 - *Property-Based Testing:* Because the domain is pure, =proptest= can
-  bombard task sorting rules, recurrence generators, or Kiosk rotation
-  schedules with thousands of randomized inputs to catch edge-case panics.
+  bombard the conflict-policy merge algebra, the push-plan laws, or the
+  keymap stroke resolver with thousands of randomized inputs to catch edge-case panics.
 
 * 5. Snapshot Testing the App State
 
@@ -283,7 +284,8 @@ Hard rules binding the real-server tiers (2 and 3):
 ** App-level E2E (binary-driving, tier-2 reuse)
 
 Phase 6 adds a fourth live surface to Tier 2: the =it_nextcloud_docker_cli_*=
-journeys (=crates/taskboard-app/tests/it_cli.rs=) drive the *real
+journeys (=crates/taskboard-app/tests/it_cli.rs= and
+=crates/taskboard-app/tests/it_docker.rs=) drive the *real
 binary* — =Command::new(env!("CARGO_BIN_EXE_taskboard"))= — through the
 multi-process login → boards select → tasks add → sync choreography
 against the dockerized Deck server. They exist to prove only what only
@@ -544,10 +546,12 @@ RUSTFLAGS="-Zsanitizer=address" cargo +nightly test \
 - *Coverage:* =cargo-llvm-cov --all-features --workspace --nextest= in CI;
   review diff coverage before merging.
 - *Mutation Testing:* =cargo-mutants= runs weekly (and on demand) against
-  =taskboard-domain= and =taskboard-state=. Surviving mutants are recorded
-  as =.artifacts/reports/YYYY-MM-DD-mutation-testing-report.md=.
-- *Benchmarks:* =criterion= tracks hot paths (SQLite caching actor, task
-  sorting) in the =benchmark.yml= lane — every =main= push plus a weekly
+  =taskboard-domain= and =taskboard-state=. Surviving mutants are
+  retained as CI artifacts of the =mutation-testing.yml= runs (weekly +
+  manual dispatch); no report file is committed under =.artifacts/=.
+- *Benchmarks:* =criterion= tracks hot paths (currently the storage hot
+  path, the sync mapping planner, and the UI refresh/draw — see the
+  crates' =benches/=) in the =benchmark.yml= lane — every =main= push plus a weekly
   Thursday 04:00 UTC run and manual dispatch (off the PR lane since
   2026-10-21: a 14–19 min job whose per-PR results were discarded; PRs
   keep =clippy --all-targets= compiling the bench targets). Uploads feed
