@@ -761,7 +761,7 @@ impl Adapter {
     /// The native drag's teardown seam (r2 chunk-8 D-G): a synthetic
     /// `PointerExited` — the runtime tears any in-flight drag down
     /// and fires `drag-finished(none)` — absorbed by the flow-guarded
-    /// seam: the view-state flow is already gone), and `TouchArea`'s
+    /// seam: the view-state flow is already gone, and `TouchArea`'s
     /// Exit arm clears `pressed`/hover so the real release cannot
     /// degrade into `clicked`. The one synthetic event: the runtime
     /// exposes no other public in-flight-drag cancel.
@@ -2152,6 +2152,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_stack_context_seam(window, adapter);
     install_object_context_seams(window, adapter);
     install_stack_width_seams(window, adapter);
+    install_drag_seams(window, adapter);
     install_banner_seams(window, adapter);
     install_settings_seams(window, adapter);
 }
@@ -2242,6 +2243,129 @@ fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
         if a.requests.try_send(request).is_err() {
             tracing::warn!("request channel full or closed; dropped");
         }
+    });
+}
+
+/// The pointer drag-to-move seams (r2 chunk-8, D-B/D-F/D-G): the
+/// `DragArea` arm, the `DropArea` hover/drop reports, and the
+/// drag-finished outcome. Every handler is flow-guarded — a seam
+/// arriving with no active `Flow::DragMove` is a post-teardown echo
+/// and is absorbed (the cancel matrix's race arm).
+fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // The payload minted once at mount (the plan's P-3): non-empty
+    // (the runtime refuses to start a drag without one); the adapter
+    // addresses drags through the id tables, never the payload.
+    window
+        .global::<crate::DragState>()
+        .set_payload(slint::DataTransfer::from(SharedString::from(
+            "taskboard-task",
+        )));
+
+    // The arm: a DragArea crossed the slop. Dismisses the source
+    // card's possibly held-open tooltip (the open-menu precedent),
+    // then opens the drag flow with the target seeded to the source
+    // stack. A stale (column, row) against an older tables pass is
+    // absorbed (the `focus_board_card` precedent).
+    let armed = Rc::clone(adapter);
+    let armed_weak = window.as_weak();
+    window.on_board_card_drag_armed(move |column, row| {
+        let Some(window) = armed_weak.upgrade() else {
+            return;
+        };
+        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+            return;
+        };
+        let mut a = armed.borrow_mut();
+        if a.view_state.flow() != &Flow::None {
+            return;
+        }
+        let Some((_, task)) = a.tables.board_task(column, row) else {
+            return;
+        };
+        Adapter::dismiss_tooltip(&window);
+        let state = a.state.load_full();
+        let outcomes = a.view_state.begin_drag_move(&state, task);
+        a.apply_outcomes(&window, &outcomes);
+    });
+
+    // The hover report: a column DropArea sees the DragMove (the
+    // runtime's DragMove hit-testing designated it — no geometry
+    // crosses to Rust, D-E). Resolves the column against the id
+    // tables and reports the target; inert without the drag flow.
+    let hovered = Rc::clone(adapter);
+    let hovered_weak = window.as_weak();
+    window.on_board_drag_hovered(move |column| {
+        let Some(window) = hovered_weak.upgrade() else {
+            return;
+        };
+        let Ok(column) = usize::try_from(column) else {
+            return;
+        };
+        let mut a = hovered.borrow_mut();
+        let Flow::DragMove { .. } = a.view_state.flow() else {
+            return;
+        };
+        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+            return;
+        };
+        let state = a.state.load_full();
+        let outcomes = a.view_state.drag_target(&state, stack);
+        a.apply_outcomes(&window, &outcomes);
+    });
+
+    // The drop: re-assert the target from the drop column, then
+    // confirm — the shared construction site builds exactly the
+    // `MoveTask` the keyboard flow confirms (D-F, equivalence by
+    // construction; the journey pins the command).
+    let dropped = Rc::clone(adapter);
+    let dropped_weak = window.as_weak();
+    window.on_board_card_dropped(move |column| {
+        let Some(window) = dropped_weak.upgrade() else {
+            return;
+        };
+        let Ok(column) = usize::try_from(column) else {
+            return;
+        };
+        let mut a = dropped.borrow_mut();
+        let Flow::DragMove { .. } = a.view_state.flow() else {
+            return;
+        };
+        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+            return;
+        };
+        let state = a.state.load_full();
+        let mut outcomes = a.view_state.drag_target(&state, stack);
+        outcomes.extend(a.view_state.confirm_drag_move(&state));
+        a.apply_outcomes(&window, &outcomes);
+    });
+
+    // The finished outcome: `false` (a cancelled drag — release
+    // outside any accepting column, the runtime's Exit rewrite)
+    // cancels the flow. `true` is a completed drop — the dropped seam
+    // already confirmed. `try_borrow_mut`: the adapter's synthetic
+    // `PointerExited` teardown (Escape / a leaving effect / an
+    // Activate confirm mid-drag) fires `drag-finished(none)`
+    // synchronously *inside* an `interpret` borrow; that echo is
+    // absorbed here — the view-state flow is already gone, which the
+    // flow guard would assert anyway.
+    let finished = Rc::clone(adapter);
+    let finished_weak = window.as_weak();
+    window.on_board_card_drag_finished(move |column, row, completed| {
+        let Some(window) = finished_weak.upgrade() else {
+            return;
+        };
+        let _ = (column, row);
+        if completed {
+            return;
+        }
+        let Ok(mut a) = finished.try_borrow_mut() else {
+            return;
+        };
+        let Flow::DragMove { .. } = a.view_state.flow() else {
+            return;
+        };
+        let outcomes = a.view_state.cancel_move();
+        a.apply_outcomes(&window, &outcomes);
     });
 }
 

@@ -36,6 +36,10 @@ export struct TaskCardModel {
     due-kind: DueKind,
     done: bool,
     emphasis: bool,
+    // The pointer drag's source dim (r2 chunk-8 D-D): set by the
+    // models pass on the card being dragged; the ghost copy carries
+    // `false`. Model-driven, so it survives refreshes.
+    dragging-source: bool,
     decorations: [TaskDecoration],
 }
 
@@ -62,6 +66,9 @@ export component TaskCard inherits Rectangle {
     border-radius: Theme.radius-medium;
     border-width: root.model.emphasis ? Theme.focus-ring-width : 0;
     border-color: Semantic.focus-ring;
+    // The drag-source dim (r2 D-D): the literal is Tier-4-tunable, no
+    // token (the plan §3.3 records why).
+    opacity: root.model.dragging-source ? 0.35 : 1.0;
 
     accessible-role: AccessibleRole.list-item;
     // The D16 address: task title (+ due phrase).

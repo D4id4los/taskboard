@@ -5269,3 +5269,439 @@ fn every_save_click_produces_a_visible_reaction_and_the_lane_stays_clean() {
         },
     );
 }
+
+// -- the pointer drag-to-move journeys (r2 chunk-8, T-6..T-10) ----------
+
+/// The drag journeys' geometry helper: the accessible button whose
+/// label addresses the column (the header; the column list carries
+/// the same label — the `is_accessible_button` disambiguator).
+fn column_header(harness: &Harness, title: &str) -> (f32, f32) {
+    let button = harness
+        .driver
+        .find_all_by_label(title)
+        .into_iter()
+        .find(support::driver::Element::is_accessible_button)
+        .unwrap_or_else(|| panic!("the {title:?} header button is present"));
+    let pos = button.absolute_position();
+    let size = button.size();
+    (pos.x + size.width / 2.0, pos.y + size.height / 2.0)
+}
+
+/// The drag flow's model surface (r2 D-D): the ghost's open flag, the
+/// ghost card's snapshot title, and the target highlight index.
+fn drag_surface(harness: &Harness) -> (bool, String, i32) {
+    let window = harness.handle.window();
+    let ghost = window
+        .global::<taskboard_ui_slint::DragState>()
+        .get_ghost_model();
+    (
+        window.get_board_drag_open(),
+        ghost.title.to_string(),
+        window.get_board_model().move_target,
+    )
+}
+
+/// The D-F acceptance (b): press-hold-drag past the slop lifts the
+/// ghost (the source card dims), moving over another column
+/// highlights it, and the release dispatches **the same `MoveTask`**
+/// the keyboard flow confirms — two mounts, one fixture shape, one
+/// literal expected command.
+#[test]
+fn the_pointer_drag_drops_the_keyboard_move_command() {
+    let (fixture, state) = fixture::golden_state();
+    let task0 = state
+        .tasks
+        .values()
+        .find(|task| task.title == "task-0")
+        .map(|task| task.id)
+        .expect("the fixture's first task");
+    let expected = StateCommand::MoveTask {
+        id: task0,
+        stack: fixture.stack_b,
+        order: 1,
+    };
+
+    // The drag path.
+    let (drag_state, expected_drag) = (state.clone(), expected.clone());
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), drag_state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            harness.driver.press_at(cx, cy);
+            let (hx, hy) = column_header(&harness, "b");
+            // The arming move is consumed by the StartDrag hand-off;
+            // the next move is the first DragMove the DropAreas see.
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.advance_time(0);
+            let (open, ghost_title, target) = drag_surface(&harness);
+            assert!(open, "the drag is on the model surface");
+            assert_eq!(ghost_title, "task-0", "the ghost carries the snapshot");
+            assert_eq!(target, 1, "the hovered column highlights");
+            let source_dimmed = harness
+                .handle
+                .window()
+                .get_board_model()
+                .stacks
+                .row_data(0)
+                .expect("column")
+                .tasks
+                .row_data(0)
+                .expect("card")
+                .dragging_source;
+            assert!(source_dimmed, "the source card carries the dim bit");
+            harness.driver.release_at(hx, hy);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[expected_drag]);
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "the drop closes the ghost"
+            );
+        },
+    );
+
+    // The keyboard path: the same transition, the same literal command.
+    let expected_kb = expected;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.window().invoke_board_task_clicked(0, 0);
+            harness.press(ActionId::TaskMove);
+            harness.stroke(parse("Down").expect("Down"));
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[expected_kb]);
+        },
+    );
+}
+
+/// The (d) acceptance: a background refresh mid-drag re-derives the
+/// ghost flag, the ghost snapshot, and the highlight from the flow —
+/// they survive — and the release still dispatches (T-7).
+#[test]
+fn the_drag_surface_survives_interleaved_refreshes() {
+    let (fixture, state) = fixture::golden_state();
+    let task0 = state
+        .tasks
+        .values()
+        .find(|task| task.title == "task-0")
+        .map(|task| task.id)
+        .expect("the fixture's first task");
+    // The mid-drag engine snapshot: the SAME fixture (stable ids —
+    // the dragged task must survive) plus a new task in stack b.
+    let mut changed = state.clone();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            harness.driver.press_at(cx, cy);
+            let (hx, hy) = column_header(&harness, "b");
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.advance_time(0);
+
+            // A concurrent engine change (the width journey's shape).
+            changed.tasks.insert(
+                taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7()),
+                taskboard_domain::Task {
+                    id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7()),
+                    remote: None,
+                    title: "mid-drag".into(),
+                    description: String::new(),
+                    duedate: None,
+                    scheduled: None,
+                    done: None,
+                    stack: fixture.stack_b,
+                    order: 0,
+                    labels: std::collections::BTreeSet::new(),
+                    effort: None,
+                    importance: None,
+                    urgency: None,
+                    archived: false,
+                    deleted: false,
+                    clocks: taskboard_domain::TaskClocks {
+                        title: taskboard_domain::BoardClocks::epoch(),
+                        description: taskboard_domain::BoardClocks::epoch(),
+                        duedate: taskboard_domain::BoardClocks::epoch(),
+                        scheduled: taskboard_domain::BoardClocks::epoch(),
+                        done: taskboard_domain::BoardClocks::epoch(),
+                        position: taskboard_domain::BoardClocks::epoch(),
+                        labels: taskboard_domain::BoardClocks::epoch(),
+                        effort: taskboard_domain::BoardClocks::epoch(),
+                        importance: taskboard_domain::BoardClocks::epoch(),
+                        urgency: taskboard_domain::BoardClocks::epoch(),
+                        archived: taskboard_domain::BoardClocks::epoch(),
+                        deleted: taskboard_domain::BoardClocks::epoch(),
+                    },
+                    remote_seen: None,
+                },
+            );
+            harness.engine.replace_state(changed, &harness.handle);
+            let (open, ghost_title, target) = drag_surface(&harness);
+            assert!(open, "the refresh keeps the drag open");
+            assert_eq!(ghost_title, "task-0", "the ghost snapshot re-derives");
+            assert_eq!(target, 1, "the highlight re-derives");
+            harness.driver.release_at(hx, hy);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::MoveTask {
+                id: task0,
+                stack: fixture.stack_b,
+                order: 1,
+            }]);
+        },
+    );
+}
+
+/// The (c) acceptance, arm 1: a release outside any column (over the
+/// toolbar) cancels — no dispatch, the ghost closes (T-8a).
+#[test]
+fn a_release_outside_any_column_cancels_the_drag() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            harness.driver.press_at(cx, cy);
+            harness.driver.drag_move_to(500.0, 12.0);
+            harness.driver.drag_move_to(500.0, 12.0);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_board_drag_open(),
+                "the drag opened over the dead zone"
+            );
+            harness.driver.release_at(500.0, 12.0);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "the cancel closes the ghost"
+            );
+            assert_eq!(
+                harness.handle.window().get_board_model().move_target,
+                -1,
+                "no highlight survives"
+            );
+        },
+    );
+}
+
+/// The (c) acceptance, arm 2: Escape mid-drag cancels through D16's
+/// binding with no dispatch, tears the native drag down, and the real
+/// release afterwards cannot degrade into a click (T-8b).
+#[test]
+fn escape_mid_drag_cancels_and_the_release_clicks_nothing() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            harness.driver.press_at(cx, cy);
+            let (hx, hy) = column_header(&harness, "b");
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_board_drag_open());
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "Escape ends the drag"
+            );
+            // The real release after the teardown: no spurious click.
+            harness.driver.release_at(hx, hy);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                harness.emphasized_card().is_none(),
+                "the post-teardown release selects nothing"
+            );
+        },
+    );
+}
+
+/// The (c) acceptance, arm 3: a leaving effect (nav.next-view)
+/// mid-drag cancels without dispatch (T-8c).
+#[test]
+fn a_leaving_effect_mid_drag_cancels_the_drag() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            harness.driver.press_at(cx, cy);
+            let (hx, hy) = column_header(&harness, "b");
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_board_drag_open());
+            harness.press(ActionId::NavNextView);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "the view switch cancels the drag"
+            );
+        },
+    );
+}
+
+/// The D-H slop boundary (T-9): below the 8-px slop a release is a
+/// click (the typed selection outcome); past it, the same gesture is
+/// a drag whose release on the source column reorders the task to its
+/// own stack's end — the keyboard ring's legal move, and still no
+/// click.
+#[test]
+fn the_slop_boundary_separates_clicks_from_drags() {
+    // Sub-slop: a click.
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            harness.driver.press_at(cx, cy);
+            harness.driver.drag_move_to(cx + 4.0, cy);
+            harness.driver.release_at(cx + 4.0, cy);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 0)),
+                "the sub-slop release selected the card"
+            );
+        },
+    );
+
+    // Past the slop: a drag that drops back on the source column.
+    let (fixture, state) = fixture::golden_state();
+    let task0 = state
+        .tasks
+        .values()
+        .find(|task| task.title == "task-0")
+        .map(|task| task.id)
+        .expect("the fixture's first task");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            harness.driver.press_at(cx, cy);
+            harness.driver.drag_move_to(cx + 20.0, cy);
+            harness.driver.drag_move_to(cx + 20.0, cy);
+            harness.driver.advance_time(0);
+            let (open, _, _) = drag_surface(&harness);
+            assert!(open, "the drag armed past the slop");
+            harness.driver.release_at(cx + 20.0, cy);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::MoveTask {
+                id: task0,
+                stack: fixture.stack_a,
+                order: 2,
+            }]);
+            assert!(
+                harness.emphasized_card().is_none(),
+                "the dragged release never clicked"
+            );
+        },
+    );
+}
+
+/// The T-10 refusal: with a flow already open (the create row), a
+/// press-move on a card arms nothing — the `DragArea`s are disabled and
+/// the view state refuses — and the open flow's field survives.
+#[test]
+fn a_drag_never_arms_while_another_flow_holds() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::TaskCreate);
+            let create_open = |harness: &Harness| {
+                harness
+                    .handle
+                    .window()
+                    .get_board_model()
+                    .stacks
+                    .row_data(0)
+                    .expect("column")
+                    .create_open
+            };
+            assert!(create_open(&harness), "the create row opened");
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            harness.driver.press_at(cx, cy);
+            harness.driver.drag_move_to(cx + 20.0, cy);
+            harness.driver.drag_move_to(cx + 20.0, cy);
+            harness.driver.advance_time(0);
+            let (open, _, target) = drag_surface(&harness);
+            assert!(!open, "the busy flow refuses the drag arm");
+            assert_eq!(target, -1, "no highlight from the refused arm");
+            assert!(create_open(&harness), "the create row survived");
+            harness.assert_commands(&[]);
+        },
+    );
+}
