@@ -42,7 +42,8 @@ python3 scripts/package_release.py          # build + archive into target/dist/
 python3 scripts/package_release.py --check  # verify an existing archive
 #+end_src
 
-Until the first release is cut, build from source:
+Build from source (the development path — the release archives above
+carry a pre-built binary):
 
 #+begin_src sh
 cargo build --release -p taskboard-app
@@ -253,6 +254,13 @@ titles; destructive verbs cascade what the server would cascade
 (=stacks delete= takes its tasks with it). =labels list= shows
 assignment counts, and =config print= dumps the effective
 (secret-free) configuration with its validity diagnosis.
+
+Due dates are UTC-only: a bare =YYYY-MM-DD= (=--due 2026-10-20=)
+means midnight UTC; an RFC-3339 timestamp with an explicit offset is
+accepted and normalized to UTC (=2026-10-24T09:00:00+02:00= is stored
+as 07:00 UTC); a timestamp without an offset is refused. Storage and
+all display — lists, the day banner, and the overdue/due-soon
+colouring — are UTC.
 
 ** Daily driving: fields, capture, timers, find
 

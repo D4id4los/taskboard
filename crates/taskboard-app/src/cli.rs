@@ -424,8 +424,10 @@ fn parse_color_rejects_everything_else() {
     }
 }
 
-/// `--due` grammar: set (RFC-3339 or bare `YYYY-MM-DD` → midnight UTC)
-/// or clear (`none`).
+/// `--due` grammar: set (RFC-3339 with an explicit offset, normalized
+/// to UTC, or bare `YYYY-MM-DD` → midnight UTC) or clear (`none`).
+/// Due dates are stored and displayed in UTC only; offset-less
+/// timestamps are refused.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DueSpec {
     /// Set the due date.
@@ -434,8 +436,11 @@ pub enum DueSpec {
     Clear,
 }
 
-/// Parses the `--due` value: RFC-3339, a bare date (midnight UTC), or
-/// the literal `none`. A malformed value is a clap usage error (exit 2).
+/// Parses the `--due` value: RFC-3339 with an explicit offset
+/// (normalized to UTC), a bare `YYYY-MM-DD` (midnight UTC), or the
+/// literal `none`. Due dates are stored and displayed in UTC only;
+/// offset-less timestamps are refused. A malformed value is a clap
+/// usage error (exit 2).
 fn parse_due(raw: &str) -> Result<DueSpec, String> {
     if raw == "none" {
         return Ok(DueSpec::Clear);
@@ -724,7 +729,10 @@ pub enum TasksCmd {
         /// New description.
         #[arg(long)]
         description: Option<String>,
-        /// RFC-3339, YYYY-MM-DD (midnight UTC), or `none` (clears).
+        /// RFC-3339 with an explicit offset (normalized to UTC),
+        /// YYYY-MM-DD (midnight UTC), or `none` (clears). Due dates
+        /// are stored and displayed in UTC only; offset-less
+        /// timestamps are refused.
         #[arg(long, value_parser = parse_due)]
         due: Option<DueSpec>,
         /// Scheduled start — the `--due` vocabulary (RFC-3339,
