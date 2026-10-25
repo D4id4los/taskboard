@@ -184,7 +184,7 @@ avoiding central runtime bottlenecks.
 |---+---+---|
 | *UI → State Engine* | =tokio::sync::mpsc= | Sends user intent commands (=StateCommand=) asynchronously; the mpsc is drained by the UI-command forwarder (=taskboard_app::ui::spawn_ui_command_forwarder=: =recv()= → =EngineHandle::dispatch= over the =CommandSink= trait, dropped-command logging, capacity 64), spawned in =run_desktop=, not by bootstrap. |
 | *State Engine → UI (Read)* | =arc_swap::ArcSwap<AppState>= | Provides lock-free, zero-contention state inspection during UI repaints. |
-| *State Engine → UI (Signal)* | =tokio::sync::broadcast= | Emits lightweight triggers (=EngineSignal::StateUpdated=) to prompt GUI repaints. |
+| *State Engine → UI (Signal)* | =tokio::sync::broadcast= | Emits lightweight triggers (=EngineSignal::StateUpdated=) to prompt GUI repaints. The UI is not the only subscriber: the boot-pull waiter also subscribes (=wait_for_boot_pull= in the boot ceremony, ADR 0014), and the bus legally runs with zero subscribers — a plain daemon's publishes are fire-and-forget (the send result is deliberately ignored). |
 | *UI/CLI → State Engine* | =tokio::sync::mpsc= + =oneshot= | =EngineEnvelope::Execute= carries a =StateCommand= payload with an optional oneshot receipt (typed =Result<CommandOutcome, ExecuteError>=; a received reply implies durability). =EngineEnvelope::Flush= is the reply-less dispatch durability barrier (CLI exit). |
 | *State Engine → Sync Actor* | =tokio::sync::mpsc= | =SyncCommand= nudges: =SyncNow= (forwarded iff an accepted batch enqueued an op, or on =RequestSync= / =NetworkRestored=). The actor dedupes =SyncNow= while a cycle runs. There is no targeting message: the retired =SetBoard= pull-target command is gone — each sync actor derives its per-cycle board set from the persisted connector-tagged bindings (the broadcast =SyncNow= is the only nudge). |
 | *Sync Actor → State Engine* | =tokio::sync::mpsc= | =SyncReport::{Completed, Failed}= ingestion through the conflict pipeline (ADR 0007's evidence-then-verdict: =Completed= carries snapshot + validators + pushes + =read_at=; =Failed= carries the pushes that landed before the abort). |
@@ -288,9 +288,8 @@ dependency hierarchies.
    codec is pure serde + pure functions (=serde_json= for verbatim
    preservation is its only new dependency).
 
-   Dependencies:
-   minimal (=serde=, =chrono=, =uuid=, =thiserror=, =tracing= for
-   pure-macro event instrumentation of the conflict policy — no I/O, no
+   Dependencies: minimal (see the crate's =Cargo.toml= for the exact
+   set — no I/O, no
    subscriber, no runtime). Zero UI, network, database, or
    async-runtime dependencies; async ports return a
    hand-rolled =BoxFuture=. Channel-bearing envelopes (e.g. a =Flush=
@@ -331,8 +330,8 @@ dependency hierarchies.
    resolves the app-global Inbox board (created/adopted unbound,
    canonical-first) or the board-directed Backlog. Command *semantics*
    (rejections, no-ops, cascades) live in the domain; this crate owns
-   channels, publishing, and sequencing only. Dependencies:
-   =taskboard-domain=, =arc-swap=, =chrono=, =tokio=.
+   channels, publishing, and sequencing only. Dependencies: see the
+   crate's =Cargo.toml=.
 
 3. *taskboard-sync-nextcloud* — The sync actor (ADR 0007): a scheduled
    cycle that reads the engine's persisted state through the domain's
@@ -373,9 +372,8 @@ dependency hierarchies.
    re-encoding; =LoopState= keeps the in-memory document + feature
    caches; and =plan_pushes= emits one document push per board, after
    its =CreateTask= groups. Stateless across
-   restarts except the injected =DeckClient=. Dependencies:
-   =taskboard-domain=, =reqwest=, =serde=, =serde_json=, =chrono=,
-   =tokio=, =thiserror=, =tracing=.
+   restarts except the injected =DeckClient=. Dependencies: see the
+   crate's =Cargo.toml=.
 
 4. *taskboard-storage-sqlite* — Manages local SQLite disk persistence.
    Ensures the app boots immediately with cached data if network
@@ -401,8 +399,8 @@ dependency hierarchies.
    =StorageCommand= actor inbox (=StorageHandle=, oneshot replies —
    ADR 0005). Compile-time checked =query!= SQL against the committed
    =.sqlx/= offline cache; refresh it with =scripts/sqlx-prepare.sh= after
-   touching a query or migration. Dependencies: =taskboard-domain=,
-   =sqlx=, =tokio=.
+   touching a query or migration. Dependencies: see the crate's
+   =Cargo.toml=.
 
 5. *taskboard-ui-slint* — The Slint presentation layer (ADR 0015). The
    module map: =theme= (the token module — colour/text-role/spacing
@@ -442,13 +440,12 @@ dependency hierarchies.
    loads and the broadcast receivers; config arrives as typed
    =UiSettings= — no IO crates, no business logic, no state
    mutation (AGPL-3.0-only, with the ADR 0003 =unsafe= exception for
-   Slint-generated code). Dependencies: =taskboard-domain=,
-   =slint= (default renderer features + the additive
-   =unstable-fontique-011= font-registration feature), =arc-swap=,
-   =tokio= (channel types only — the mandated fabric, not an IO
-   dependency), =chrono=, =thiserror=, =tracing=; =slint-build= at
-   build time (the UI codegen); dev-only: =i-slint-backend-testing=
-   (exact pin), =insta=, =proptest=, =png=, =uuid=, =serde=.
+   Slint-generated code). Dependencies: see the crate's =Cargo.toml=
+   for the exact set; two standing notes: =tokio= is the mandated
+   channel fabric, not an IO dependency, and the
+   =unstable-fontique-011= font-registration feature is additive; the
+   exact-pinned =i-slint-backend-testing= is dev-only and moves with
+   the =slint= pin.
 
 6. *taskboard-app* — The bootstrap library (ADR 0008) plus the thin
    =taskboard= binary. The library owns =config= (figment hierarchy
@@ -561,10 +558,10 @@ dependency hierarchies.
    (0.5–3.0, typed-validated) and =keymap.preset= /
    =keymap.overrides=.
    Dependencies: all workspace
-   crates, =figment=, =clap=, =keyring= (platform features via
-   target-specific deps), =rpassword=, =fd-lock=, =toml_edit=,
-   =serde_json=, =dirs=, =color-eyre=, =tracing=, =tokio=, =rustyline=,
-   =shell-words=, =interprocess=.
+   crates plus the manifest's set (see the crate's =Cargo.toml=;
+   =keyring= rides platform features via target-specific deps, and the
+   optional =console-subscriber= feature gates =tokio-console=
+   support).
 
 * Tech Stack & External Crates Specification
 
@@ -600,7 +597,7 @@ dependency hierarchies.
 | *Test Execution* | =cargo-nextest= | Executes test binaries in isolated OS processes in parallel. Faster runs, better output, automatic flakiness management for async/multi-threaded integration tests. |
 | *Property Testing* | =proptest= | Generates randomized inputs to uncover edge cases and panic bugs in domain logic. |
 | *Snapshot Testing* | =insta= | Snapshot testing of the =StateEngine='s =AppState= trees. |
-| *Benchmarking* | =criterion= | Statistical tracking of execution timing across commits to prevent performance regressions in hot paths (SQLite caching, task sorting). |
+| *Benchmarking* | =criterion= | Statistical tracking of execution timing across commits to prevent performance regressions in hot paths (currently the storage hot path, the sync mapping planner, and the UI refresh/draw — see the crates' =benches/=). |
 | *Code Coverage* | =cargo-llvm-cov= | Native =rustc= source-based instrumentation; precise line/branch coverage across threads and async tasks. |
 | *Mutation Testing* | =cargo-mutants= | Weekly scheduled CI job plus manual =workflow_dispatch=. |
 | *Dependency Audit* | =cargo-deny= | Unified linter for =Cargo.lock=: RustSec vulnerabilities, license compliance, crate sources, duplicate versions. |
@@ -612,16 +609,18 @@ dependency hierarchies.
 The project uses a single global semantic version shared by all crates:
 
 #+begin_example
-taskboard v0.2.3
-├── crates/taskboard-domain         @ 0.2.3
-├── crates/taskboard-state          @ 0.2.3
-├── crates/taskboard-sync-nextcloud @ 0.2.3
-├── crates/taskboard-storage-sqlite @ 0.2.3
-├── crates/taskboard-ui-slint       @ 0.2.3
-└── crates/taskboard-app            @ 0.2.3
+taskboard v0.1.0
+├── crates/taskboard-domain         @ 0.1.0
+├── crates/taskboard-state          @ 0.1.0
+├── crates/taskboard-sync-nextcloud @ 0.1.0
+├── crates/taskboard-storage-sqlite @ 0.1.0
+├── crates/taskboard-ui-slint       @ 0.1.0
+└── crates/taskboard-app            @ 0.1.0
 #+end_example
 
 The version is defined once in =[workspace.package] version= in the root
 =Cargo.toml=; every member crate inherits it via =version.workspace = true=.
 Releases are cut exclusively with =./scripts/bump_version.sh
-<major|minor|patch>= (see =docs/coding_guidelines.org=).
+<major|minor|patch>= (see =docs/coding_guidelines.org=). The numbers in
+the example tree are illustrative — =[workspace.package] version= in
+the root manifest is the only truth.
