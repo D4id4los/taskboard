@@ -4877,6 +4877,10 @@ fn the_kiosk_mount_still_lands_on_the_board() {
                 },
             );
             assert_eq!(current_view(&harness), View::Board);
+        },
+    );
+}
+
 // -- r2 D32/D33/D34: the board-scoped connection surface -------------
 
 use taskboard_ui_slint::requests::{BoardInfo, ConnectionsSnapshot, ConnectorInfo};

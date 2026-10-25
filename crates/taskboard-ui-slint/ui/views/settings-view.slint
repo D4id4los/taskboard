@@ -367,7 +367,7 @@ export component SettingsView inherits FocusScope {
                 }
                 SettingsButton {
                     text: "Test";
-                    enabled: !row.read-only;
+                    enabled: !row.read-only && !SettingsModel.busy;
                     clicked => {
                         root.test-clicked(index);
                     }
@@ -387,7 +387,7 @@ export component SettingsView inherits FocusScope {
                 }
                 SettingsButton {
                     text: "Remove";
-                    enabled: !row.read-only;
+                    enabled: !row.read-only && !SettingsModel.busy;
                     clicked => {
                         root.remove-clicked(index);
                     }
