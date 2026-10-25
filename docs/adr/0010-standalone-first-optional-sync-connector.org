@@ -173,3 +173,41 @@ config file), not the backlog sketch's "none".
 - Board reset/delete landed with PR #334's verbs; title-match
   reconciliation (#170) lands with the multi-board wave; =logout='s
   interaction with =backend= is WI-3's question.
+
+* Amendment (2026-10-25) — audit corrections (issues #281, #269)
+
+Four facts in this ADR lagged the code; the decisions stand, the text
+is corrected:
+
+- *Bootstrap after WI-H (F10-03).* The Bootstrap section's "dropped
+  immediately" and "=App= holds the sync actor as =Option<SyncActor>="
+  describe the pre-attach shape. Since WI-H (ADR 0014) the
+  sync-command *receiver* is dropped under standalone, but the
+  sync-report *sender* deliberately parks in =App= as the fan-in
+  inbox's twin, so an in-session attach needs no rewiring; =App= holds
+  a connector registry (=Mutex<Vec<SyncActor>>=, at-most-one in v1)
+  rather than an =Option=. Fail-closed sends when no connector is live
+  and join-only-live-actors shutdown are unchanged.
+- *The SyncDisabled surface (F10-04).* =daemon= no longer refuses under
+  standalone — the 2026-10-11 amendment (recorded until now only in
+  the daemon gate's code comment) made the daemon backend-agnostic:
+  its purpose is "own the core, serve commands over IPC", and a
+  standalone daemon gives scripters the same no-boot-per-command
+  latency. =login= under an *explicit* standalone backend refuses with
+  the distinct kind =backend-explicit-standalone= — it guards an
+  explicitly written dead config, not a connector-absent default.
+  =sync= and =boards list/select/publish= refuse =sync-disabled= at
+  handler entry exactly as decided.
+- *Board-edit commands exist (F15-18).* The CreateBoard section's
+  "there are still no local board-edit commands" is superseded: WI-3
+  shipped =boards rename= (ADR 0004's 2026-10-11 amendment) and
+  ADR 0004's 2026-10-18 amendment generalized field-wise merging to
+  all four board fields with local verbs. The named =BoardExists=
+  refusal is also gone (the multi-board wave lifted the single-board
+  invariant; =boards create= always mints). Only the creation decision
+  — =CreateBoard= mints locally, no outbox op — stands.
+- *Ceremonies flow.* The publish/select flows' "→ =BindBoard= →
+  =SetBoard= → wait" step names the retired =SetBoard= command: the
+  bind is now followed by the engine fanning a broadcast =SyncNow= to
+  every registered connector, and the ceremony waits on the bound
+  board's own sync row (=SyncCommand= is ={SyncNow, Detach}=).

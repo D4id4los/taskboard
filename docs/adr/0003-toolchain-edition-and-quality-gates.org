@@ -68,3 +68,14 @@ fuzzing, sanitizers) enters the pipeline.
   — development and the quality-gate CI jobs (fmt, clippy) ride the
   current stable compiler; the MSRV job is the backstop that keeps the
   declared floor honest as stable advances past it.
+
+* Amendment (2026-10-25) — the Slint deferral completed (audit F15-19)
+
+The Decision's "dependency-free until UI work starts" clause completed
+on its own condition: UI work started (Phase 7, ADR 0015) and
+=slint= 1.18.1 — plus =slint-build= and the additive font-registration
+feature — is pinned in =[workspace.dependencies]= and declared by the
+UI crate. The deferral did its job (headless builds and CI ran
+Slint-free until Phase 7) and is recorded here as completed, not
+reverted; the =#![forbid(unsafe_code)]= exception for Slint-generated
+code is its surviving legacy.
