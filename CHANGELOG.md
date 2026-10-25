@@ -525,6 +525,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- `connect`, `logout`, `connections`, and the UI settings writers no
+  longer tighten an existing config file to owner-only 0600 on
+  rewrite: the file's existing permission bits are preserved (a
+  created config still lands 0600). A root-run `connect` against the
+  kiosk runbook's `install -m 0644 /etc/taskboard/taskboard.toml` no
+  longer leaves the `taskboard` appliance user unable to read its own
+  config — the unit restart-looped on that (issue #386). An unreadable
+  config file now also surfaces as its own typed error kind
+  (`unreadable-file`) instead of being misreported as a decode
+  failure ("configuration rejected").
 - The GUI review round-2 interaction repairs (issue #390 and the
   round-2 ledger's F7/F8/F11/F13/F28 family): refreshes no longer
   rebuild every slint model wholesale — the push pass diffs the
