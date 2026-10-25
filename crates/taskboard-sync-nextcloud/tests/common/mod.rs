@@ -868,30 +868,61 @@ pub(crate) mod suite {
     }
 
     /// The D-V1 seam pinned end-to-end against a real server: the
-    /// capabilities probe decodes the Deck version and the derived flag
-    /// matches the tier's pinned expectation. `expected_version` is the
-    /// tier's measured Deck version; `expect_startdate` its measured
-    /// `card_startdate` row.
+    /// capabilities probe decodes the Deck version, the decoded version
+    /// meets the tier's measured floor, and the derived flag matches the
+    /// tier's measured `card_startdate` row. `min_version` is a
+    /// `(major, minor, patch)` floor — not an exact pin — so image
+    /// refreshes within the measured generation (patch and minor drift)
+    /// survive while a regression below the measured generation fails.
     pub(crate) async fn capabilities_probe(
         client: &DeckClient,
-        expected_version: &str,
+        min_version: (u64, u64, u64),
         expect_startdate: bool,
     ) {
         let caps = client
             .capabilities()
             .await
             .expect("the capabilities probe must succeed against a real server");
-        assert_eq!(
-            caps.deck_version.as_deref(),
-            Some(expected_version),
-            "the probe must decode the deck section's version"
+        let decoded = parse_deck_version(
+            caps.deck_version
+                .as_deref()
+                .expect("the probe must decode the deck section's version"),
+        )
+        .expect("the server-reported Deck version must decode");
+        assert!(
+            decoded >= min_version,
+            "the tier's Deck version must meet the measured floor: \
+             decoded {decoded:?} < floor {min_version:?}"
         );
-        let features =
-            taskboard_domain::flags_for(caps.deck_version.as_deref().expect("checked above"));
+        let version = caps.deck_version.expect("checked above");
+        let features = taskboard_domain::flags_for(&version);
         assert_eq!(
             features.card_startdate, expect_startdate,
             "the derived flag must match the tier's pinned capability row"
         );
+    }
+
+    /// Parses a server-reported Deck version into `(major, minor, patch)`
+    /// for floor comparison, mirroring the domain's documented leniency
+    /// (`parse_major_minor` + `leading_digits`): a leading-digits prefix
+    /// per component, any suffix ignored, `major.minor` required and
+    /// patch defaulting to 0 when absent — a future `"1.20"`-style or
+    /// suffix-bearing report must still decode, exactly as the
+    /// production derivation tolerates it. `None` (missing or
+    /// non-numeric major/minor) is a probe-contract failure.
+    fn parse_deck_version(version: &str) -> Option<(u64, u64, u64)> {
+        let mut parts = version.split('.');
+        let major = leading_digits(parts.next()?)?;
+        let minor = leading_digits(parts.next()?)?;
+        let patch = parts.next().map_or(Some(0), leading_digits)?;
+        Some((major, minor, patch))
+    }
+
+    /// The digits prefix of one version component (`"19"` → 19, `"5beta"`
+    /// → 5, `""`/`"beta"` → `None`).
+    fn leading_digits(part: &str) -> Option<u64> {
+        let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
     }
 
     /// Deleting a missing board yields a typed error. Nextcloud 35 answers
@@ -904,5 +935,31 @@ pub(crate) mod suite {
             matches!(err, DeckError::NotFound | DeckError::Forbidden),
             "unexpected error variant: {err:?}"
         );
+    }
+
+    /// The below-floor branch of `parse_deck_version` + the tuple
+    /// compare is unexercisable through any real tier (servers only
+    /// report current versions — precisely what broke the old literal
+    /// pin), so this unit is the only layer that can hold it.
+    #[cfg(test)]
+    mod version_floor {
+        use super::parse_deck_version;
+
+        #[test]
+        fn decodes_with_patch_leniency_and_compares() {
+            assert_eq!(parse_deck_version("1.19.1"), Some((1, 19, 1)));
+            // Two-component report: patch defaults to 0.
+            assert_eq!(parse_deck_version("1.20"), Some((1, 20, 0)));
+            // Suffix-bearing patch component decodes to its digit prefix.
+            assert_eq!(parse_deck_version("1.19.0rc3"), Some((1, 19, 0)));
+            // At-floor and patch-above pass; minor-below fails.
+            let floor = (1, 19, 0);
+            assert!(parse_deck_version("1.19.0").unwrap() >= floor);
+            assert!(parse_deck_version("1.19.2").unwrap() >= floor);
+            assert!(parse_deck_version("1.18.9").unwrap() < floor);
+            // Non-decodable reports are None (probe-contract failure).
+            assert_eq!(parse_deck_version(""), None);
+            assert_eq!(parse_deck_version("deck"), None);
+        }
     }
 }
