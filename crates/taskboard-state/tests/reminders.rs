@@ -16,6 +16,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use taskboard_domain::NotifierMessage;
 use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::persistence::{
     BoxFuture, PersistedState, PersistenceAction, RepositoryError, TaskRepository,
@@ -178,14 +179,14 @@ struct Harness {
     handle: EngineHandle,
     clock: Arc<FixedClock>,
     system_tx: tokio::sync::broadcast::Sender<SystemEvent>,
-    notifications: tokio::sync::mpsc::Receiver<Notification>,
+    notifications: tokio::sync::mpsc::Receiver<NotifierMessage>,
 }
 
 async fn spawn(spawner: Spawner) -> Harness {
     let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
     let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
-    let (notifier, notifications) = tokio::sync::mpsc::channel::<Notification>(64);
+    let (notifier, notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
     let (handle, _join) = spawn_state_engine(
         spawner.repo.clone(),
         Arc::new(CountingIds::new()),
@@ -269,7 +270,24 @@ fn drain_signals(rx: &mut tokio::sync::broadcast::Receiver<EngineSignal>) -> usi
     count
 }
 
-fn drain_notifications(rx: &mut tokio::sync::mpsc::Receiver<Notification>) -> Vec<Notification> {
+fn drain_notifications(rx: &mut tokio::sync::mpsc::Receiver<NotifierMessage>) -> Vec<Notification> {
+    // The tick path only ever fires; a `Withdraw` here would mean a
+    // dismissal landed where none was commanded.
+    let mut drained = Vec::new();
+    loop {
+        match rx.try_recv() {
+            Ok(NotifierMessage::Fire(note)) => drained.push(note),
+            Ok(NotifierMessage::Withdraw { .. }) => {
+                panic!("unexpected withdraw in a tick-path test")
+            }
+            Err(_) => break,
+        }
+    }
+    drained
+}
+
+#[expect(dead_code)]
+fn drain_messages(rx: &mut tokio::sync::mpsc::Receiver<NotifierMessage>) -> Vec<NotifierMessage> {
     let mut out = Vec::new();
     while let Ok(note) = rx.try_recv() {
         out.push(note);
@@ -790,4 +808,130 @@ async fn r9_muted_task_never_fires() {
         drain_notifications(&mut h.notifications),
         [] as [Notification; 0]
     );
+}
+
+// ---- The withdraw direction (R3, design D-10) ---------------------------
+
+/// Waits for the next `Withdraw` on the notifier, advancing paused time
+/// in 1 ms turns — the suite's deadline discipline. A command's receipt
+/// implies its withdrawals are already in the channel (sent before the
+/// reply), so this only ever waits on the boot tick's racing fire.
+async fn next_withdraw(rx: &mut tokio::sync::mpsc::Receiver<NotifierMessage>) -> NotifierMessage {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match rx.try_recv() {
+                Ok(message @ NotifierMessage::Withdraw { .. }) => return message,
+                Ok(_) => {}
+                Err(_) => tokio::time::advance(Duration::from_millis(1)).await,
+            }
+        }
+    })
+    .await
+    .expect("withdraw within the deadline")
+}
+
+/// The local `DismissReminder` lands one best-effort `Withdraw` on the
+/// notifier channel, and the accepted no-op repeat lands nothing.
+#[tokio::test(start_paused = true)]
+async fn local_dismiss_withdraws_the_toast_once() {
+    let mut h = harness().await;
+    let task_id = {
+        let app = h.handle.shared_state().load_full();
+        *app.tasks.keys().next().expect("seeded task")
+    };
+    let occurrence = {
+        let app = h.handle.shared_state().load_full();
+        app.tasks
+            .get(&task_id)
+            .and_then(|t| t.duedate)
+            .expect("seeded duedate")
+    };
+    settle_boot_tick().await;
+
+    h.handle
+        .execute(StateCommand::DismissReminder {
+            reminder: ReminderRef::Default(task_id),
+            occurrence,
+        })
+        .await
+        .expect("accepted");
+    h.handle.flush().await;
+    // The command's receipt implies the withdraw is already in the
+    // channel (sent before the reply); a pending boot-tick `Fire` may
+    // sit ahead of it in the FIFO.
+    let NotifierMessage::Withdraw {
+        reminder,
+        occurrence: withdrawn,
+    } = next_withdraw(&mut h.notifications).await
+    else {
+        unreachable!("next_withdraw only returns Withdraw")
+    };
+    assert_eq!(reminder, ReminderRef::Default(task_id));
+    assert_eq!(withdrawn, occurrence);
+
+    // The repeat is the accepted no-op: no second withdraw (any pending
+    // boot-tick fire is a `Fire`, never a `Withdraw`).
+    h.handle
+        .execute(StateCommand::DismissReminder {
+            reminder: ReminderRef::Default(task_id),
+            occurrence,
+        })
+        .await
+        .expect("accepted no-op");
+    h.handle.flush().await;
+    while let Ok(message) = h.notifications.try_recv() {
+        assert!(
+            !matches!(message, NotifierMessage::Withdraw { .. }),
+            "the no-op repeat withdraws nothing"
+        );
+    }
+}
+
+/// Mark Done's planner-emitted dismissal rows (the reopen hazard, R3.5.5)
+/// withdraw through the same derivation — one `Withdraw` per active
+/// occurrence, emitted from the applied batch.
+#[tokio::test(start_paused = true)]
+async fn mark_done_dismissals_withdraw_too() {
+    let mut h = harness().await;
+    let task_id = {
+        let app = h.handle.shared_state().load_full();
+        *app.tasks.keys().next().expect("seeded task")
+    };
+    settle_boot_tick().await;
+    // The occurrence must have FIRED on this device before it is active
+    // (the surface is fired ∧ not dismissed): one tick past the due
+    // instant, exactly one fire notification.
+    advance_both(&h.clock, 60).await;
+    let fired = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let drained = drain_notifications(&mut h.notifications);
+            if !drained.is_empty() {
+                return drained;
+            }
+            tokio::time::advance(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the boot fire within the deadline");
+    assert_eq!(fired.len(), 1, "the tick fires the overdue occurrence");
+
+    h.handle
+        .execute(StateCommand::SetTaskDone {
+            id: task_id,
+            done: true,
+        })
+        .await
+        .expect("accepted");
+    h.handle.flush().await;
+    let NotifierMessage::Withdraw { reminder, .. } = next_withdraw(&mut h.notifications).await
+    else {
+        unreachable!("next_withdraw only returns Withdraw")
+    };
+    assert_eq!(reminder, ReminderRef::Default(task_id));
+    while let Ok(message) = h.notifications.try_recv() {
+        assert!(
+            !matches!(message, NotifierMessage::Withdraw { .. }),
+            "exactly one withdraw for the single active occurrence"
+        );
+    }
 }

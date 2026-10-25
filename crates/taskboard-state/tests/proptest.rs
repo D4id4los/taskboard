@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use proptest::prelude::*;
+use taskboard_domain::NotifierMessage;
 use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::persistence::TaskRepository;
 use taskboard_domain::test_support::{
@@ -24,8 +25,8 @@ use taskboard_domain::test_support::{
 };
 use taskboard_domain::{
     AppState, Board, BoardClocks, BoardId, Clock, Color, CommandOutcome, Label, LabelClocks,
-    LocalOp, Notification, OpId, PendingOp, PersistedState, PersistenceAction, Stack, StackClocks,
-    StackId, SyncPhase, Task, TaskClocks, TaskId, apply_sync_report,
+    LocalOp, OpId, PendingOp, PersistedState, PersistenceAction, Stack, StackClocks, StackId,
+    SyncPhase, Task, TaskClocks, TaskId, apply_sync_report,
 };
 use taskboard_domain::{StateCommand, SyncCounters};
 use taskboard_state::{EngineCore, ReminderEngineConfig, spawn_state_engine};
@@ -481,7 +482,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
         let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<taskboard_domain::SyncReport>(8);
         let (system_tx, system_rx) =
             tokio::sync::broadcast::channel::<taskboard_domain::SystemEvent>(8);
-        let (notifier, _notifications) = tokio::sync::mpsc::channel::<Notification>(64);
+        let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
         let (handle, _join) = spawn_state_engine(
             repo.clone(),
             Arc::new(CountingIds::new()),

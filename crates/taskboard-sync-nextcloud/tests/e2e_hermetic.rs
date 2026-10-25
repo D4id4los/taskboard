@@ -78,7 +78,7 @@ async fn boot(server: MockServer, repo_state: taskboard_domain::PersistedState) 
     let (report_tx, report_rx) = mpsc::channel(16);
     let (system_tx, system_engine_rx) = broadcast::channel(16);
 
-    let (notifier, _notifications) = mpsc::channel::<taskboard_domain::Notification>(64);
+    let (notifier, _notifications) = mpsc::channel::<taskboard_domain::NotifierMessage>(64);
     let (engine, engine_join) = spawn_state_engine(
         repo.clone(),
         ids,

@@ -19,7 +19,7 @@ use taskboard_domain::persistence::{
 };
 use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{
-    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, Notification, RemoteBoard,
+    AppState, Clock, CommandOutcome, EngineSignal, IdGenerator, NotifierMessage, RemoteBoard,
     RemoteBoardId, RemoteBoardSnapshot, Stack, StackClocks, StackId, StateCommand, SyncCommand,
     SyncErrorKind, SyncPhase, SyncReport, SystemEvent,
 };
@@ -27,7 +27,7 @@ use taskboard_state::{EngineStartupError, ExecuteError, ReminderEngineConfig, sp
 
 mod common;
 
-use common::{FixedClock, T0, seed_board_state, test_validators, ts};
+use common::{FixedClock, T0, seed_board_state, seed_bound_board_state, test_validators, ts};
 
 /// Fails the first `failures` applies with `Unavailable`, then delegates —
 /// non-mutating on failure, matching transactional reality.
@@ -158,6 +158,9 @@ struct Harness {
     sync_in: tokio::sync::mpsc::Receiver<SyncCommand>,
     report_tx: tokio::sync::mpsc::Sender<SyncReport>,
     system_tx: tokio::sync::broadcast::Sender<SystemEvent>,
+    /// The engine's notifier out half: the withdraw direction's witness
+    /// (the reminder suite owns fire-path coverage).
+    notifications: tokio::sync::mpsc::Receiver<NotifierMessage>,
     join: tokio::task::JoinHandle<()>,
 }
 
@@ -165,10 +168,7 @@ async fn spawn(spawner: Spawner) -> Harness {
     let (sync_out, sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
     let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
-    // The receiver is dropped immediately: no engine.rs test consumes
-    // notifications (the reminder suite owns that; the disabled config
-    // never sends anyway).
-    let (notifier, _notifications) = tokio::sync::mpsc::channel::<Notification>(64);
+    let (notifier, notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
     let (handle, join) = spawn_state_engine(
         spawner.repo,
         spawner.ids,
@@ -187,6 +187,7 @@ async fn spawn(spawner: Spawner) -> Harness {
         sync_in,
         report_tx,
         system_tx,
+        notifications,
         join,
     }
 }
@@ -874,7 +875,7 @@ async fn a12_boot_failure_surfaces_load_error() {
     let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
     let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
-    let (notifier, _notifications) = tokio::sync::mpsc::channel::<Notification>(64);
+    let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
     let result = spawn_state_engine(
         Arc::new(DeadRepository),
         Arc::new(CountingIds::new()),
@@ -1492,7 +1493,7 @@ async fn a14_create_board_always_mints_a_distinct_board() {
 async fn a15_bind_board_sets_the_remote_binding() {
     // The harness board ships bound (the configured-install fixture);
     // the binding act itself needs an unbound one.
-    let mut unbound = common::seed_board_state("board");
+    let mut unbound = common::seed_bound_board_state("board");
     for board in unbound.boards.values_mut() {
         board.remote = None;
     }
@@ -2601,5 +2602,218 @@ async fn k8_the_handle_counts_commands_rejections_and_signals() {
             rejections: 1,
             signals: 1,
         }
+    );
+}
+
+// ---- The withdraw direction, folded-synced arm (R3, design D-10) --------
+
+/// A synced dismissal folded from a `Completed` report's document lands
+/// the best-effort `Withdraw` on the notifier channel — the same
+/// derivation the local `DismissReminder` path uses. A relayed section
+/// re-folds nothing (the fold emits newly-inserted rows only), so the
+/// withdrawal is exactly one.
+#[tokio::test(start_paused = true)]
+#[allow(clippy::too_many_lines)] // the fixture is the length; the assertions are two
+async fn folded_synced_dismissal_withdraws_the_toast() {
+    use taskboard_domain::{
+        AppDataDocument, AppDataEvidence, AppDataSections, DeckFeatures, DismissalEntry,
+        DismissalsEntry, ReminderRuleId, RemoteCardId, RemoteCardRef, RemoteStackId,
+        RemoteStackRef, dismissal_wire_key, test_support::test_connector,
+    };
+
+    const CARD: u64 = 7;
+    const STACK: u64 = 5;
+
+    // Local truth: a bound board, one bound stack, one bound task.
+    let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(1));
+    let stack_id = taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(2));
+    let task_id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(3));
+    let mut state = seed_bound_board_state("board");
+    let board = state.boards.values_mut().next().expect("one board");
+    board.id = board_id;
+    state.stacks.insert(
+        stack_id,
+        taskboard_domain::Stack {
+            id: stack_id,
+            remote: Some(taskboard_domain::RemoteStackRef {
+                board: RemoteBoardId(42),
+                stack: RemoteStackId(STACK),
+            }),
+            board: board_id,
+            title: "backlog".into(),
+            order: 1,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: ts(T0),
+                order: ts(T0),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+        },
+    );
+    state.tasks.insert(
+        task_id,
+        taskboard_domain::Task {
+            id: task_id,
+            remote: Some(RemoteCardRef {
+                board: RemoteBoardId(42),
+                stack: RemoteStackId(STACK),
+                card: RemoteCardId(CARD),
+            }),
+            title: "task".into(),
+            description: String::new(),
+            duedate: Some(ts(T0)),
+            scheduled: None,
+            done: None,
+            stack: stack_id,
+            order: 1,
+            labels: std::collections::BTreeSet::new(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::TaskClocks {
+                title: ts(T0),
+                description: ts(T0),
+                duedate: ts(T0),
+                scheduled: ts(T0),
+                done: ts(T0),
+                position: ts(T0),
+                labels: ts(T0),
+                effort: ts(T0),
+                importance: ts(T0),
+                urgency: ts(T0),
+                archived: ts(T0),
+                deleted: ts(T0),
+            },
+            remote_seen: None,
+        },
+    );
+
+    let spawner = Spawner {
+        repo: Arc::new(taskboard_domain::test_support::InMemoryRepository::with_state(state)),
+        ..Spawner::default()
+    };
+    let mut h = spawn(spawner).await;
+
+    // The synced fact: rule 0xa's occurrence at the task's due instant
+    // was dismissed on another device.
+    let dismissed_rule = ReminderRuleId::from(uuid::Uuid::from_u128(0xa));
+    let occurrence = ts(T0);
+    let evidence = AppDataEvidence::Document(Box::new(AppDataDocument {
+        format: taskboard_domain::appdata::APPDATA_FORMAT,
+        board: RemoteBoardId(42),
+        sections: AppDataSections {
+            tasks: None,
+            reminder_rules: None,
+            dismissals: Some(
+                [(
+                    CARD.to_string(),
+                    DismissalsEntry {
+                        dismissals: [(
+                            dismissal_wire_key(dismissed_rule, occurrence),
+                            DismissalEntry::Dismissed {
+                                dismissed_at: ts(T0 - 30),
+                            },
+                        )]
+                        .into(),
+                        unknown: std::collections::BTreeMap::new(),
+                    },
+                )]
+                .into(),
+            ),
+            unknown: std::collections::BTreeMap::new(),
+        },
+        unknown: std::collections::BTreeMap::new(),
+    }));
+
+    h.report_tx
+        .send(SyncReport::Completed {
+            app_data: evidence,
+            duration: Duration::ZERO,
+            connector: test_connector(),
+            snapshot: Box::new(RemoteBoardSnapshot {
+                board: RemoteBoard {
+                    id: RemoteBoardId(42),
+                    title: "remote board".into(),
+                    color: "00ff00".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0),
+                },
+                stacks: vec![taskboard_domain::RemoteStack {
+                    id: RemoteStackRef {
+                        board: RemoteBoardId(42),
+                        stack: RemoteStackId(STACK),
+                    },
+                    title: "backlog".into(),
+                    order: 1,
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0),
+                }],
+                tasks: vec![taskboard_domain::RemoteTask {
+                    id: RemoteCardRef {
+                        board: RemoteBoardId(42),
+                        stack: RemoteStackId(STACK),
+                        card: RemoteCardId(CARD),
+                    },
+                    title: "task".into(),
+                    description: String::new(),
+                    duedate: Some(ts(T0)),
+                    scheduled: None,
+                    done: None,
+                    stack: RemoteStackId(STACK),
+                    order: 1,
+                    labels: std::collections::BTreeSet::new(),
+                    archived: false,
+                    last_modified: ts(T0),
+                }],
+                labels: vec![],
+            }),
+            validators: test_validators(),
+            pushes: vec![],
+            read_at: ts(T0),
+            features: DeckFeatures::CONSERVATIVE,
+        })
+        .await
+        .expect("report channel open");
+
+    eventually(&h.handle, |app| {
+        app.reminders
+            .dismissals
+            .contains(&taskboard_domain::ReminderDismissal {
+                reminder: taskboard_domain::ReminderRef::Rule(dismissed_rule),
+                occurrence,
+                dismissed_at: ts(T0 - 30),
+            })
+    })
+    .await;
+
+    // The fold landed exactly one new row, so exactly one withdrawal.
+    // Bounded wait: the withdrawal follows the publish the predicate
+    // above observed.
+    let message = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match h.notifications.try_recv() {
+                Ok(message) => return message,
+                Err(_) => tokio::time::advance(Duration::from_millis(1)).await,
+            }
+        }
+    })
+    .await
+    .expect("the withdraw lands within the deadline");
+    assert_eq!(
+        message,
+        NotifierMessage::Withdraw {
+            reminder: taskboard_domain::ReminderRef::Rule(dismissed_rule),
+            occurrence,
+        }
+    );
+    assert!(
+        h.notifications.try_recv().is_err(),
+        "a re-folded row is not re-withdrawn"
     );
 }

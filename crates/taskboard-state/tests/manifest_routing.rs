@@ -419,7 +419,7 @@ async fn the_engine_execute_path_routes_like_the_planner() {
     let (system_tx, system_rx) =
         tokio::sync::broadcast::channel::<taskboard_domain::SystemEvent>(8);
     let (notifier, _notifications) =
-        tokio::sync::mpsc::channel::<taskboard_domain::Notification>(8);
+        tokio::sync::mpsc::channel::<taskboard_domain::NotifierMessage>(8);
     let (handle, join) = spawn_state_engine(
         repo.clone(),
         Arc::new(CountingIds::new()),

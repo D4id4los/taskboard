@@ -10,11 +10,10 @@
 
 use std::sync::Arc;
 
+use taskboard_domain::NotifierMessage;
 use taskboard_domain::persistence::TaskRepository;
 use taskboard_domain::test_support::CountingIds;
-use taskboard_domain::{
-    CommandOutcome, Notification, StateCommand, SyncCommand, SyncReport, SystemEvent,
-};
+use taskboard_domain::{CommandOutcome, StateCommand, SyncCommand, SyncReport, SystemEvent};
 use taskboard_state::{ReminderEngineConfig, spawn_state_engine};
 
 mod common;
@@ -49,7 +48,7 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
         let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
 
-        let (notifier, _notifications) = tokio::sync::mpsc::channel::<Notification>(64);
+        let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
         let (engine, engine_join) = spawn_state_engine(
             repo_port,
             Arc::new(CountingIds::new()),

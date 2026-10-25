@@ -438,6 +438,29 @@ pub struct Notification {
     pub occurrence: DateTime<Utc>,
 }
 
+/// The engine→notifier channel payload (R3, design D-10): the fire and
+/// withdraw directions share the notifier channel as a two-variant
+/// enum. `Fire` is the v1 toast (unchanged semantics); `Withdraw` is
+/// the best-effort OS-toast withdrawal a landing dismissal asks for —
+/// best-effort by contract: a sink that cannot withdraw no-ops, and a
+/// failed withdrawal is never an error surface (the in-app notification
+/// is the universal source of truth; closing a toast natively is not a
+/// dismissal).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotifierMessage {
+    /// Render one reminder notification.
+    Fire(Notification),
+    /// A dismissal landed (a local `DismissReminder`, the Mark Done
+    /// planner's rows, or a folded synced fact): withdraw the toast for
+    /// the occurrence.
+    Withdraw {
+        /// Which reminder's notification to withdraw.
+        reminder: ReminderRef,
+        /// The occurrence whose toast should go.
+        occurrence: DateTime<Utc>,
+    },
+}
+
 /// Pure payload assembly: one [`Notification`] per firing, with the
 /// title snapshot from the task map (task anchors) or the alarm row's
 /// label (alarm anchors). A firing whose anchor cannot resolve — a task

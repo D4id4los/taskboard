@@ -780,7 +780,9 @@ pub async fn bootstrap(
 #[must_use]
 pub fn resolve_notifier_sink(config: &AppConfig) -> Arc<dyn NotificationSink> {
     match crate::notifications::resolve_sink(config.reminders.sink, config.app.mode) {
-        crate::notifications::SinkKind::Desktop => Arc::new(crate::notifications::DesktopSink),
+        crate::notifications::SinkKind::Desktop => {
+            Arc::new(crate::notifications::DesktopSink::default())
+        }
         crate::notifications::SinkKind::Log => Arc::new(crate::notifications::LogSink),
     }
 }
@@ -847,7 +849,7 @@ async fn bootstrap_with_modules(
     let (sync_commands, sync_rx) = mpsc::channel::<SyncCommand>(SYNC_COMMAND_CAPACITY);
     let (reports, report_rx) = mpsc::channel::<SyncReport>(SYNC_REPORT_CAPACITY);
     let (notifier, notifications) =
-        mpsc::channel::<taskboard_domain::Notification>(NOTIFIER_CAPACITY);
+        mpsc::channel::<taskboard_domain::NotifierMessage>(NOTIFIER_CAPACITY);
 
     // The all-down authority (DF-7): seeded from the module set (all
     // up) and subscribed *before any module spawns*, so a first-cycle
