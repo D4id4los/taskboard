@@ -748,6 +748,20 @@ impl taskboard_app::notifications::NotificationSink for RecordingSink {
             Ok(())
         })
     }
+
+    fn withdraw<'a>(
+        &'a self,
+        _: &'a taskboard_domain::ReminderRef,
+        _: &'a chrono::DateTime<chrono::Utc>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), taskboard_app::notifications::NotifyError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move { Ok(()) })
+    }
 }
 
 /// A reminder-enabled config over a tempdir db with a fast logical tick.

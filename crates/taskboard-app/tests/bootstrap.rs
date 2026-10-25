@@ -877,6 +877,20 @@ impl taskboard_app::notifications::NotificationSink for GateSink {
             Ok(())
         })
     }
+
+    fn withdraw<'a>(
+        &'a self,
+        _: &'a taskboard_domain::ReminderRef,
+        _: &'a chrono::DateTime<chrono::Utc>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), taskboard_app::notifications::NotifyError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move { Ok(()) })
+    }
 }
 
 /// The consumer join ordering: a notification parked mid-delivery does

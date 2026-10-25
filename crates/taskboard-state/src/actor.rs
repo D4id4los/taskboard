@@ -25,9 +25,9 @@ use tokio::task::JoinHandle;
 
 use taskboard_domain::{
     AppState, Clock, CommandOutcome, DeckFeatures, EngineSignal, IdGenerator, Notification,
-    PersistedState, PersistenceAction, ReminderFiring, RepositoryError, SidecarHealth,
-    StateCommand, SyncCommand, SyncCounters, SyncPhase, SyncStateReader, SyncStates, SyncStatus,
-    SystemEvent, TaskRepository, ValidatorKey, apply_push_report, apply_sync_report,
+    NotifierMessage, PersistedState, PersistenceAction, ReminderFiring, RepositoryError,
+    SidecarHealth, StateCommand, SyncCommand, SyncCounters, SyncPhase, SyncStateReader, SyncStates,
+    SyncStatus, SystemEvent, TaskRepository, ValidatorKey, apply_push_report, apply_sync_report,
     notifications_for, plan_command,
 };
 
@@ -259,7 +259,7 @@ pub async fn spawn_state_engine(
     sync_reports: mpsc::Receiver<taskboard_domain::SyncReport>,
     system_out: broadcast::Sender<SystemEvent>,
     system: broadcast::Receiver<SystemEvent>,
-    notifier: mpsc::Sender<Notification>,
+    notifier: mpsc::Sender<NotifierMessage>,
     reminder_cfg: ReminderEngineConfig,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
@@ -319,7 +319,7 @@ struct EngineParts {
     sync_out: mpsc::Sender<SyncCommand>,
     metrics: Arc<EngineMetrics>,
     system_out: broadcast::WeakSender<SystemEvent>,
-    notifier: mpsc::Sender<Notification>,
+    notifier: mpsc::Sender<NotifierMessage>,
     reminders: ReminderEngineConfig,
 }
 
@@ -405,6 +405,7 @@ async fn run_loop(
                             clock.as_ref(),
                             &mut sync_outs,
                             &system_out,
+                            &notifier,
                         ),
                         &metrics,
                         &reminder_cfg.defaults,
@@ -444,7 +445,12 @@ async fn run_loop(
                         &mut core,
                         &shared,
                         &signals,
-                        (&repo, ids.as_ref(), clock.as_ref()),
+                        (
+                            &repo,
+                            ids.as_ref(),
+                            clock.as_ref(),
+                            &notifier,
+                        ),
                         &metrics,
                         report,
                     )
@@ -562,13 +568,14 @@ fn publish(
     let _ = signals.send(EngineSignal::StateUpdated);
 }
 
-/// The seams tuple: `(repo, ids, clock, sync_outs, system_out)`.
+/// The seams tuple: `(repo, ids, clock, sync_outs, system_out, notifier)`.
 type Seams<'a> = (
     &'a Arc<dyn TaskRepository>,
     &'a dyn IdGenerator,
     &'a dyn Clock,
     &'a mut Vec<mpsc::Sender<SyncCommand>>,
     &'a broadcast::WeakSender<SystemEvent>,
+    &'a mpsc::Sender<NotifierMessage>,
 );
 
 #[allow(clippy::too_many_arguments)] // the seams + receipt + metrics are the context
@@ -576,7 +583,7 @@ async fn execute_command(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock, sync_outs, system_out): Seams<'_>,
+    (repo, ids, clock, sync_outs, system_out, notifier): Seams<'_>,
     metrics: &EngineMetrics,
     reminder_defaults: &taskboard_domain::ReminderDefaults,
     command: StateCommand,
@@ -657,6 +664,11 @@ async fn execute_command(
     if changed || marked_syncing {
         publish(core, shared, signals, metrics);
     }
+    // The withdraw direction (design D-10): every landing dismissal — a
+    // local `DismissReminder` or the Mark Done planner's rows — asks the
+    // sinks to withdraw the OS toast. Derived from the applied batch, so
+    // both write sites share one mechanism.
+    send_withdrawals(notifier, withdrawals_for(&plan.actions)).await;
     if let Some(reply) = reply {
         let _ = reply.send(Ok(plan.outcome));
     }
@@ -695,7 +707,12 @@ async fn ingest_sync_report(
     core: &mut EngineCore,
     shared: &Arc<ArcSwap<AppState>>,
     signals: &broadcast::Sender<EngineSignal>,
-    (repo, ids, clock): (&Arc<dyn TaskRepository>, &dyn IdGenerator, &dyn Clock),
+    (repo, ids, clock, notifier): (
+        &Arc<dyn TaskRepository>,
+        &dyn IdGenerator,
+        &dyn Clock,
+        &mpsc::Sender<NotifierMessage>,
+    ),
     metrics: &EngineMetrics,
     report: taskboard_domain::SyncReport,
 ) {
@@ -857,6 +874,10 @@ async fn ingest_sync_report(
         if changed || counted {
             publish(core, shared, signals, metrics);
         }
+        // The withdraw direction for folded synced dismissals (design
+        // D-10): the fold only emits newly-inserted rows, so a relayed
+        // section never re-withdraws already-settled occurrences.
+        send_withdrawals(notifier, withdrawals_for(&actions)).await;
     }
 }
 
@@ -1053,7 +1074,7 @@ type TickSeams<'a> = (
     &'a Arc<dyn TaskRepository>,
     &'a dyn Clock,
     &'a broadcast::WeakSender<SystemEvent>,
-    &'a mpsc::Sender<Notification>,
+    &'a mpsc::Sender<NotifierMessage>,
 );
 
 /// One reminder tick, shaped like [`ingest_sync_report`]: read the clock
@@ -1113,10 +1134,44 @@ fn delivery_batch(
 /// `try_send`: a full channel backpressures the tick (at-most-once by
 /// construction; drop-on-full would be a lost toast by choice). A closed
 /// channel is a `debug!` no-op — headless configs are legal.
-async fn send_notifications(notifier: &mpsc::Sender<Notification>, payloads: Vec<Notification>) {
+async fn send_notifications(notifier: &mpsc::Sender<NotifierMessage>, payloads: Vec<Notification>) {
     for payload in payloads {
-        if notifier.send(payload).await.is_err() {
+        if notifier.send(NotifierMessage::Fire(payload)).await.is_err() {
             tracing::debug!("notification dropped: no notifier consumer");
+        }
+    }
+}
+
+/// The withdraw direction (design D-10): every `RecordReminderDismissal`
+/// in an applied batch becomes one best-effort `Withdraw` to the sinks.
+/// Covers all three dismissal write sites — the local `DismissReminder`
+/// command, the Mark Done planner's rows, and a folded synced fact —
+/// with one derivation, so the emission sites cannot drift.
+fn withdrawals_for(actions: &[PersistenceAction]) -> Vec<NotifierMessage> {
+    actions
+        .iter()
+        .filter_map(|action| match action {
+            PersistenceAction::RecordReminderDismissal(dismissal) => {
+                Some(NotifierMessage::Withdraw {
+                    reminder: dismissal.reminder,
+                    occurrence: dismissal.occurrence,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Best-effort by contract: a closed channel (headless config) or a
+/// failed send is a `debug!` no-op — a withdrawal failure is never an
+/// error surface.
+async fn send_withdrawals(
+    notifier: &mpsc::Sender<NotifierMessage>,
+    withdrawals: Vec<NotifierMessage>,
+) {
+    for message in withdrawals {
+        if notifier.send(message).await.is_err() {
+            tracing::debug!("withdrawal dropped: no notifier consumer");
         }
     }
 }

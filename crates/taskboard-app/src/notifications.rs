@@ -12,9 +12,11 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local, Utc};
 
+use std::collections::HashMap;
+
 use crate::config::{AppMode, SinkChoice};
 
-use taskboard_domain::Notification;
+use taskboard_domain::{Notification, NotifierMessage, ReminderRef};
 
 /// Channel capacity of the notifier inbox (engine → sink consumer).
 /// The engine's tick bursts are bounded by the firing evaluation, so 64
@@ -34,6 +36,19 @@ pub struct NotifyError;
 /// `futures` dependency — the std `Pin<Box<…>>` spelling of the same
 /// contract.
 pub trait NotificationSink: Send + Sync + std::fmt::Debug {
+    /// Asks the sink to withdraw the OS toast for one dismissed
+    /// occurrence (design D-10). Best-effort by contract in BOTH
+    /// directions: a sink whose platform cannot withdraw returns
+    /// `Ok(())` and does nothing, and a failed attempt surfaces
+    /// [`NotifyError`] — logged and dropped by the consumer, never an
+    /// error surface. Closing a toast natively is NOT a dismissal (the
+    /// in-app surface is the universal source of truth).
+    fn withdraw<'a>(
+        &'a self,
+        reminder: &'a ReminderRef,
+        occurrence: &'a chrono::DateTime<chrono::Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>>;
+
     /// Delivers one reminder notification.
     ///
     /// # Errors
@@ -79,6 +94,14 @@ impl NotificationSink for LogSink {
             Ok(())
         })
     }
+
+    fn withdraw<'a>(
+        &'a self,
+        _reminder: &'a ReminderRef,
+        _occurrence: &'a chrono::DateTime<chrono::Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+        Box::pin(async move { Ok(()) })
+    }
 }
 
 /// The desktop-toast sink: renders the payload mapping (D-R11) and
@@ -90,8 +113,47 @@ impl NotificationSink for LogSink {
 /// in-app. A failed delivery logs the backend cause and surfaces the
 /// port's [`NotifyError`] — never retried, never fallback-sent
 /// (D-R13).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct DesktopSink;
+///
+/// # Withdrawal support (the D-10 platform matrix)
+///
+/// The sink remembers the platform toast handle of each fire, so a
+/// later [`NotificationSink::withdraw`] can close it:
+///
+/// - **Linux / the BSDs (DBus/FDO)**: withdrawal works where the
+///   notification server implements `CloseNotification` — the standard
+///   case. Servers that keep toasts fire-and-forget simply ignore the
+///   close; the attempt is best-effort and never surfaces.
+/// - **Windows / macOS (the other release targets)**: fire-and-forget —
+///   the backend's toast handles are not retained closable, so
+///   `withdraw` is a typed no-op (the in-app surface clears).
+///
+/// Tracked handles are capped: past [`DesktopSink::TRACK_CAP`] live
+/// toasts the tracked set is dropped and those toasts become
+/// fire-and-forget. Closing a toast natively (the user, or the
+/// desktop's timeout) is NOT a dismissal — the dismissal is the synced
+/// engine fact (design D-10, issue #444 tracks native action buttons).
+#[derive(Default)]
+pub struct DesktopSink {
+    /// The fire-time toast handles keyed by `(reminder, occurrence)` —
+    /// exactly the identity a `Withdraw` message carries.
+    recent: std::sync::Mutex<HashMap<ToastKey, notify_rust::NotificationHandle>>,
+}
+
+/// The tracked-toast key: the `(reminder, occurrence)` pair.
+type ToastKey = (ReminderRef, chrono::DateTime<chrono::Utc>);
+
+impl std::fmt::Debug for DesktopSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopSink")
+            .field("tracked", &self.recent.lock().map_or(0, |m| m.len()))
+            .finish_non_exhaustive()
+    }
+}
+
+impl DesktopSink {
+    /// The tracked-toast cap (see the platform matrix above).
+    const TRACK_CAP: usize = 256;
+}
 
 impl NotificationSink for DesktopSink {
     fn deliver<'a>(
@@ -108,16 +170,49 @@ impl NotificationSink for DesktopSink {
             // The anchor rides in the payload (the `Notification`
             // already carries it) and is rendered nowhere — ready for
             // #203's click-through.
-            if let Err(err) = toast.show_async().await {
-                // `NotifyError` is a frozen unit struct (port
-                // discipline), so the backend cause is logged here
-                // before the typed class surfaces at the consumer.
-                tracing::warn!(
-                    error = %err,
-                    reminder = %notification.reminder.text_form(),
-                    "desktop toast delivery failed"
-                );
-                return Err(NotifyError);
+            match toast.show_async().await {
+                // The handle is the withdrawal permit (the platform
+                // matrix above); drop it silently where the OS cannot
+                // close toasts (fire-and-forget targets).
+                Ok(handle) => {
+                    if let Ok(mut recent) = self.recent.lock() {
+                        if recent.len() >= Self::TRACK_CAP {
+                            recent.clear();
+                        }
+                        recent.insert((notification.reminder, notification.occurrence), handle);
+                    }
+                    Ok(())
+                }
+                Err(err) => {
+                    // `NotifyError` is a frozen unit struct (port
+                    // discipline), so the backend cause is logged here
+                    // before the typed class surfaces at the consumer.
+                    tracing::warn!(
+                        error = %err,
+                        reminder = %notification.reminder.text_form(),
+                        "desktop toast delivery failed"
+                    );
+                    Err(NotifyError)
+                }
+            }
+        })
+    }
+
+    fn withdraw<'a>(
+        &'a self,
+        reminder: &'a ReminderRef,
+        occurrence: &'a chrono::DateTime<chrono::Utc>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+        Box::pin(async move {
+            // Remove first: one withdrawal per tracked toast, whatever
+            // the close attempt's outcome (best-effort, never retried).
+            let handle = self
+                .recent
+                .lock()
+                .ok()
+                .and_then(|mut recent| recent.remove(&(*reminder, *occurrence)));
+            if let Some(handle) = handle {
+                handle.close_async().await;
             }
             Ok(())
         })
@@ -200,18 +295,36 @@ pub(crate) fn resolve_sink(choice: SinkChoice, mode: AppMode) -> SinkKind {
 /// delivery is logged and skipped — never fatal.
 #[must_use]
 pub fn spawn_notifier(
-    mut notifications: tokio::sync::mpsc::Receiver<Notification>,
+    mut notifications: tokio::sync::mpsc::Receiver<NotifierMessage>,
     sink: Arc<dyn NotificationSink>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         tracing::debug!("notifier: consumer started");
-        while let Some(notification) = notifications.recv().await {
-            if let Err(err) = sink.deliver(&notification).await {
-                tracing::warn!(
-                    ?err,
-                    reminder = %notification.reminder.text_form(),
-                    "notification delivery failed"
-                );
+        while let Some(message) = notifications.recv().await {
+            match message {
+                NotifierMessage::Fire(notification) => {
+                    if let Err(err) = sink.deliver(&notification).await {
+                        tracing::warn!(
+                            ?err,
+                            reminder = %notification.reminder.text_form(),
+                            "notification delivery failed"
+                        );
+                    }
+                }
+                // Withdrawal failures are logged, never surfaced (the
+                // in-app notification is the source of truth).
+                NotifierMessage::Withdraw {
+                    reminder,
+                    occurrence,
+                } => {
+                    if let Err(err) = sink.withdraw(&reminder, &occurrence).await {
+                        tracing::debug!(
+                            ?err,
+                            reminder = %reminder.text_form(),
+                            "toast withdrawal failed"
+                        );
+                    }
+                }
             }
         }
         tracing::debug!("notifier: channel closed, consumer exiting");
@@ -222,7 +335,7 @@ pub fn spawn_notifier(
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
-    use taskboard_domain::{AdhocAlarmId, ReminderAnchor, ReminderRef, TaskId};
+    use taskboard_domain::{AdhocAlarmId, NotifierMessage, ReminderAnchor, ReminderRef, TaskId};
 
     const FIRED_AT: DateTime<Utc> =
         chrono::DateTime::<Utc>::from_timestamp(1_792_000_000, 0).expect("valid instant");
@@ -281,6 +394,75 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn log_sink_withdraw_is_the_contracted_no_op() {
+        // D-10: a sink that cannot withdraw answers Ok and does nothing;
+        // `LogSink` is that sink on every platform.
+        let outcome = LogSink
+            .withdraw(
+                &ReminderRef::Default(TaskId::from_uuid(uuid::Uuid::from_u128(8))),
+                &FIRED_AT,
+            )
+            .await;
+        assert!(outcome.is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_consumer_routes_withdraw_to_the_sink() {
+        // The two-variant channel contract (D-10): Fire reaches
+        // `deliver`, Withdraw reaches `withdraw`, in order.
+        #[derive(Default)]
+        struct CollectingSink {
+            fires: std::sync::atomic::AtomicUsize,
+            withdrawals: std::sync::atomic::AtomicUsize,
+        }
+        impl NotificationSink for CollectingSink {
+            fn deliver<'a>(
+                &'a self,
+                _: &'a Notification,
+            ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+                Box::pin(async move {
+                    self.fires.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }
+            fn withdraw<'a>(
+                &'a self,
+                _: &'a ReminderRef,
+                _: &'a chrono::DateTime<chrono::Utc>,
+            ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+                Box::pin(async move {
+                    self.withdrawals.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }
+        }
+        impl std::fmt::Debug for CollectingSink {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("CollectingSink")
+            }
+        }
+
+        let sink = Arc::new(CollectingSink::default());
+        let (tx, rx) = tokio::sync::mpsc::channel(NOTIFIER_CAPACITY);
+        let consumer = spawn_notifier(rx, Arc::clone(&sink) as Arc<dyn NotificationSink>);
+        tx.send(NotifierMessage::Fire(notification(ReminderAnchor::Task(
+            TaskId::from_uuid(uuid::Uuid::from_u128(9)),
+        ))))
+        .await
+        .expect("fire send");
+        tx.send(NotifierMessage::Withdraw {
+            reminder: ReminderRef::Default(TaskId::from_uuid(uuid::Uuid::from_u128(9))),
+            occurrence: FIRED_AT,
+        })
+        .await
+        .expect("withdraw send");
+        drop(tx);
+        consumer.await.expect("consumer survives both variants");
+        assert_eq!(sink.fires.load(Ordering::SeqCst), 1);
+        assert_eq!(sink.withdrawals.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn resolve_sink_matrix() {
         use AppMode::{Daemon, Desktop, Kiosk};
@@ -329,6 +511,14 @@ mod tests {
                     Ok(())
                 })
             }
+
+            fn withdraw<'a>(
+                &'a self,
+                _: &'a ReminderRef,
+                _: &'a chrono::DateTime<chrono::Utc>,
+            ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+                Box::pin(async move { Ok(()) })
+            }
         }
         impl std::fmt::Debug for FailingSink {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -343,16 +533,13 @@ mod tests {
         });
         let (tx, rx) = tokio::sync::mpsc::channel(NOTIFIER_CAPACITY);
         let consumer = spawn_notifier(rx, Arc::clone(&sink) as Arc<dyn NotificationSink>);
-        tx.send(notification(ReminderAnchor::Task(TaskId::from_uuid(
-            uuid::Uuid::from_u128(6),
-        ))))
-        .await
-        .expect("first send");
-        tx.send(notification(ReminderAnchor::Task(TaskId::from_uuid(
-            uuid::Uuid::from_u128(7),
-        ))))
-        .await
-        .expect("second send");
+        let fire = |u: u128| {
+            NotifierMessage::Fire(notification(ReminderAnchor::Task(TaskId::from_uuid(
+                uuid::Uuid::from_u128(u),
+            ))))
+        };
+        tx.send(fire(6)).await.expect("first send");
+        tx.send(fire(7)).await.expect("second send");
         drop(tx);
         consumer.await.expect("consumer survives a failed delivery");
         // Both notifications were offered, exactly the first failed,
