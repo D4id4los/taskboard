@@ -585,6 +585,17 @@ mod d {
 
         let a = boot_pair(client.clone()).await;
         a.set_board(board.id).await;
+        // The fire-and-forget SyncNow leaves the first pull in flight; the
+        // cycle's *merge* is what adopts the remote stacks — wait for that
+        // before CreateTask reads A's stacks map (the C-series boot race).
+        eventually(&a, |app| {
+            !app.stacks.is_empty()
+                && app.boards.values().any(|b| {
+                    b.remote.as_ref().map(|r| r.board)
+                        == Some(taskboard_domain::RemoteBoardId(board.id))
+                })
+        })
+        .await;
         let b = boot_pair(client.clone()).await;
         b.set_board(board.id).await;
 
@@ -1021,7 +1032,7 @@ async fn it_nextcloud_docker_capabilities() {
     let Some(cfg) = live_docker_config() else {
         return;
     };
-    with_deadline(capabilities_probe(&deck_client(&cfg), "1.19.0", true))
+    with_deadline(capabilities_probe(&deck_client(&cfg), (1, 19, 0), true))
         .await
         .expect("test must finish within the live deadline");
 }
@@ -1033,7 +1044,7 @@ async fn it_nextcloud_docker_deck1175_capabilities() {
     let Some(cfg) = live_docker_deck1175_config() else {
         return;
     };
-    with_deadline(capabilities_probe(&deck_client(&cfg), "1.17.5", false))
+    with_deadline(capabilities_probe(&deck_client(&cfg), (1, 17, 5), false))
         .await
         .expect("test must finish within the live deadline");
 }
