@@ -324,7 +324,7 @@ async fn save_connection(
             kind: InvalidKind::Empty,
         });
     }
-    let draft = validated_draft(&raw, profile)?;
+    let (draft, id) = validated_draft(&raw, profile)?;
 
     crate::connections::verify_credentials(
         &profile.server_url,
@@ -359,7 +359,6 @@ async fn save_connection(
     .map_err(map_ceremony_error)?;
 
     // Detach-first, then attach (the session ceremony's swap rule).
-    let id = ConnectorId::from(profile.name.clone());
     let _ = workspace.control.detach_connector_named(&id).await;
     let client = DeckClient::new(&profile.server_url, &profile.username, &profile.password.0)
         .map_err(|err| {
@@ -505,7 +504,11 @@ async fn attach_connection(
     // Ensure attached: the named lookup guards the healthy-attached
     // case — an unconditional attach would refuse ConnectorNameInUse
     // and surface the misleading AttachBusy text.
-    let id = ConnectorId::from(connector_name.to_owned());
+    let id = ConnectorId::from_kebab(connector_name).map_err(|_| {
+        map_config_error(&ConfigError::InvalidConnectorName {
+            name: connector_name.to_owned(),
+        })
+    })?;
     if workspace.control.connector_commands(&id).is_none() {
         let client = DeckClient::new(&entry.server_url, &entry.username, stored.expose()).map_err(
             |err| {
@@ -515,7 +518,7 @@ async fn attach_connection(
         )?;
         workspace
             .control
-            .attach_connector(id, client)
+            .attach_connector(id.clone(), client)
             .await
             .map_err(map_attach_error)?;
     }
@@ -527,7 +530,7 @@ async fn attach_connection(
         .execute(StateCommand::BindBoard {
             board,
             remote,
-            connector: ConnectorId::from(connector_name.to_owned()),
+            connector: id.clone(),
         })
         .await
         .map_err(|e| map_execute_error(&e))?;
@@ -575,7 +578,9 @@ async fn detach_connection(
     if !still_bound {
         let _ = workspace
             .control
-            .detach_connector_named(&ConnectorId::from(connector_name.to_owned()))
+            .detach_connector_named(
+                &ConnectorId::from_kebab(connector_name).map_err(|_| SettingsError::Gone)?,
+            )
             .await;
     }
     tracing::info!(connector = %connector_name, "settings detach succeeded");
@@ -647,18 +652,13 @@ fn set_keymap_preset(
 /// Validates typed (finite, `0.5–3.0` — the config's own rule) and
 /// persists (plan D9).
 fn set_scale(workspace: &ConnectionWorkspace, scale: f64) -> Result<(), SettingsError> {
-    if !scale.is_finite() {
-        return Err(SettingsError::Invalid {
-            field: Field::Scale,
-            kind: InvalidKind::NotFinite,
-        });
-    }
-    if !(0.5..=3.0).contains(&scale) {
-        return Err(SettingsError::Invalid {
-            field: Field::Scale,
-            kind: InvalidKind::OutOfRange,
-        });
-    }
+    let scale = taskboard_ui_slint::UiScale::new(scale).map_err(|err| SettingsError::Invalid {
+        field: Field::Scale,
+        kind: match err {
+            taskboard_ui_slint::UiScaleError::NonFinite => InvalidKind::NotFinite,
+            taskboard_ui_slint::UiScaleError::OutOfRange => InvalidKind::OutOfRange,
+        },
+    })?;
     crate::connections::overlay_set_ui_scale(&workspace.config_write_path, scale)
         .map_err(|err| map_io_error(&err))
 }
@@ -673,7 +673,13 @@ fn read_raw_config(workspace: &ConnectionWorkspace) -> Result<AppConfig, Setting
 /// source, resolved through the raw config).
 fn current_connectors(workspace: &ConnectionWorkspace) -> Vec<ConnectorInfo> {
     match AppConfig::extract_raw(Some(&workspace.config_write_path)) {
-        Ok(raw) => crate::ui::resolve_connector_infos(&raw),
+        // The raw config was never validated, so the mint can fail;
+        // same failure class as an unreadable config — the display-only
+        // list falls back to empty, loud in the log.
+        Ok(raw) => crate::ui::resolve_connector_infos(&raw).unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "settings: the fresh connector list is unreadable");
+            Vec::new()
+        }),
         Err(err) => {
             tracing::warn!(error = %err, "settings: the fresh connector list is unreadable");
             Vec::new()
@@ -713,7 +719,7 @@ fn current_connections(workspace: &ConnectionWorkspace) -> ConnectionsSnapshot {
 fn validated_draft(
     raw: &AppConfig,
     profile: &ConnectionProfile,
-) -> Result<ConnectorCfg, SettingsError> {
+) -> Result<(ConnectorCfg, ConnectorId), SettingsError> {
     let draft = ConnectorCfg {
         name: profile.name.clone(),
         backend: SyncBackend::Nextcloud,
@@ -728,7 +734,14 @@ fn validated_draft(
     let mut candidate = raw.clone();
     candidate.sync.connectors = Some(entries);
     candidate.validate().map_err(|err| map_config_error(&err))?;
-    Ok(draft)
+    // The mint rides the validation that just passed: parse once, hand
+    // the proof forward — the save choreography re-mints nothing.
+    let id = ConnectorId::from_kebab(&draft.name).map_err(|_| {
+        map_config_error(&crate::config::ConfigError::InvalidConnectorName {
+            name: draft.name.clone(),
+        })
+    })?;
+    Ok((draft, id))
 }
 
 /// The config-rule → typed-field mapping (the UI mirror's authority;

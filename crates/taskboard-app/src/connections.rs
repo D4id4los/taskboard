@@ -296,9 +296,12 @@ pub fn overlay_remove_connector(path: &Path, name: &str) -> std::io::Result<bool
 /// # Errors
 ///
 /// [`std::io::Error`] — parse and write failures, typed.
-pub fn overlay_set_ui_scale(path: &Path, scale: f64) -> std::io::Result<()> {
+pub fn overlay_set_ui_scale(
+    path: &Path,
+    scale: taskboard_ui_slint::UiScale,
+) -> std::io::Result<()> {
     let mut doc = crate::config::overlay_document(path)?;
-    ui_table(&mut doc)?["scale"] = toml_edit::value(scale);
+    ui_table(&mut doc)?["scale"] = toml_edit::value(scale.get());
     crate::config::write_config_atomic(path, doc.to_string().as_str())
 }
 
@@ -495,7 +498,11 @@ mod overlay_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = seed_config(&dir, AOT_FILE);
 
-        overlay_set_ui_scale(&config, 2.0).expect("scale lands");
+        overlay_set_ui_scale(
+            &config,
+            taskboard_ui_slint::UiScale::new(2.0).expect("valid"),
+        )
+        .expect("scale lands");
         overlay_set_keymap_preset(&config, "emacs").expect("preset lands");
 
         let written = std::fs::read_to_string(&config).expect("read");

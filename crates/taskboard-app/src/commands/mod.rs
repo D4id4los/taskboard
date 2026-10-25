@@ -51,7 +51,10 @@ pub fn require_connector(config: &AppConfig) -> Result<(), CommandError> {
     // array world counts entries (an empty array is a valid
     // zero-connector world), the legacy scalar world resolves through
     // the same set.
-    if crate::connectors::configured_connectors(config).is_empty() {
+    if crate::connectors::configured_connectors(config)
+        .map_err(CommandError::from)?
+        .is_empty()
+    {
         return Err(CommandError::SyncDisabled);
     }
     Ok(())
@@ -69,7 +72,8 @@ pub(crate) fn resolve_connector(
     config: &AppConfig,
     flag: Option<&str>,
 ) -> Result<crate::connectors::ConnectorSpec, CommandError> {
-    let configured = crate::connectors::configured_connectors(config);
+    let configured =
+        crate::connectors::configured_connectors(config).map_err(CommandError::from)?;
     match flag {
         None => configured
             .into_iter()
@@ -612,6 +616,12 @@ pub(crate) fn resolve_board_or_none_for_bind(
 /// `0` success (including idempotent `NoOp` repeats), `1` runtime
 /// failure. Exit `2` (clap usage errors) and `130` (second-signal force
 /// exit) never flow through here.
+///
+/// # Panics
+///
+/// Never on a validated config: `core_ctx` yields `AppConfig::load`ed
+/// configs only, so the connector-name mint in the `tasks list` arm
+/// cannot fail (same rule as `AppConfig::server_url`).
 #[allow(clippy::too_many_lines)] // one arm per subcommand, kept flat for review
 pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
     let json = ctx.io.json;
@@ -916,7 +926,9 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             cmd: TasksCmd::List { stack },
         } => match core_ctx(ctx.config_path.clone()) {
             Ok((config, store)) => {
-                let standalone = crate::connectors::configured_connectors(&config).is_empty();
+                let standalone = crate::connectors::configured_connectors(&config)
+                    .expect("connector names validated by AppConfig::load — core_ctx yields validated configs")
+                    .is_empty();
                 emit_result(
                     &mut ctx.io,
                     tasks::list(config, store, stack.as_deref()).await,
@@ -1668,8 +1680,9 @@ async fn tasks_line(
 ) -> u8 {
     match cmd {
         TasksCmd::List { stack } => {
-            let standalone =
-                crate::connectors::configured_connectors(session.session_config()).is_empty();
+            let standalone = crate::connectors::configured_connectors(session.session_config())
+                .expect("connector names validated at session boot — the session config is a validated AppConfig")
+                .is_empty();
             emit_result(io, tasks::list_on(app, stack.as_deref()), |list| {
                 tasks::render_text_list(list, standalone)
             })

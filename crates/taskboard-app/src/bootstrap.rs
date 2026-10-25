@@ -754,7 +754,7 @@ pub async fn bootstrap(
     // The module list derives from the legacy scalar config
     // (synthesis-of-one; the loop body below is the seam a second
     // connector kind plugs into — a match arm, nothing else).
-    let specs = crate::connectors::configured_connectors(&config);
+    let specs = crate::connectors::configured_connectors(&config)?;
     let modules: Vec<Arc<dyn crate::connectors::ConnectorModule>> = specs
         .iter()
         .map(|spec| match spec.backend {

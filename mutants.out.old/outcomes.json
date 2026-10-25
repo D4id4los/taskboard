@@ -1,0 +1,48 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Failure",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 143.92870042,
+          "process_status": "Success",
+          "argv": [
+            "/home/viktoria/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=taskboard-domain@0.1.0",
+            "--package=taskboard-ui-slint@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 64.076190449,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/home/viktoria/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=taskboard-domain@0.1.0",
+            "--package=taskboard-ui-slint@0.1.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 0,
+  "missed": 0,
+  "caught": 0,
+  "timeout": 0,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-10-25T22:10:32.199538393Z",
+  "end_time": "2026-10-25T22:14:00.312332696Z",
+  "cargo_mutants_version": "27.1.0"
+}

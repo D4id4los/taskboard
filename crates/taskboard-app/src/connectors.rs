@@ -23,7 +23,7 @@ use taskboard_domain::{ConnectorId, SyncCommand, SyncReport, SyncStateReader, Sy
 use taskboard_sync_nextcloud::{DeckClient, SyncActorConfig, spawn_sync_actor};
 
 use crate::bootstrap::AttachError;
-use crate::config::{AppConfig, SyncBackend};
+use crate::config::{AppConfig, ConfigError, SyncBackend};
 use crate::secrets::CredentialStore;
 
 /// The name the legacy scalar world synthesizes (DF-3's mint-chain head).
@@ -166,26 +166,36 @@ pub struct ConnectorSpec {
 ///   `sync_backend()`'s auto rule stands; a resolved `nextcloud`
 ///   synthesizes exactly one connector named `nextcloud` with the
 ///   `[nextcloud]` identity; a resolved `standalone` synthesizes none.
-pub(crate) fn configured_connectors(config: &AppConfig) -> Vec<ConnectorSpec> {
+#[allow(clippy::result_large_err)] // mirrors the enum's one grant above
+pub(crate) fn configured_connectors(config: &AppConfig) -> Result<Vec<ConnectorSpec>, ConfigError> {
     if let Some(entries) = &config.sync.connectors {
         return entries
             .iter()
-            .map(|entry| ConnectorSpec {
-                name: ConnectorId::from(entry.name.clone()),
-                backend: entry.backend,
-                server_url: entry.server_url.clone(),
-                username: entry.username.clone(),
+            .map(|entry| {
+                ConnectorId::from_kebab(&entry.name)
+                    .map(|name| ConnectorSpec {
+                        name,
+                        backend: entry.backend,
+                        server_url: entry.server_url.clone(),
+                        username: entry.username.clone(),
+                    })
+                    .map_err(|_| ConfigError::InvalidConnectorName {
+                        name: entry.name.clone(),
+                    })
             })
             .collect();
     }
     match config.sync_backend() {
-        SyncBackend::Nextcloud => vec![ConnectorSpec {
-            name: ConnectorId::from(DEFAULT_CONNECTOR_NAME),
+        SyncBackend::Nextcloud => Ok(vec![ConnectorSpec {
+            // The const is `"nextcloud"`; proven kebab by the pinned
+            // unit test below, so the mint cannot fail by construction.
+            name: ConnectorId::from_kebab(DEFAULT_CONNECTOR_NAME)
+                .expect("DEFAULT_CONNECTOR_NAME is kebab"),
             backend: SyncBackend::Nextcloud,
             server_url: config.server_url().to_owned(),
             username: config.username().to_owned(),
-        }],
-        SyncBackend::Standalone => Vec::new(),
+        }]),
+        SyncBackend::Standalone => Ok(Vec::new()),
     }
 }
 
@@ -204,7 +214,7 @@ mod tests {
 
     #[test]
     fn resolved_nextcloud_synthesizes_exactly_one_connector_named_nextcloud() {
-        let specs = configured_connectors(&config_with_backend(SyncBackend::Nextcloud));
+        let specs = configured_connectors(&config_with_backend(SyncBackend::Nextcloud)).unwrap();
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name.as_str(), "nextcloud");
         assert_eq!(specs[0].backend, SyncBackend::Nextcloud);
@@ -215,14 +225,14 @@ mod tests {
         // server_url set, backend unset: the auto rule resolves nextcloud.
         let mut config = config_with_backend(SyncBackend::Nextcloud);
         config.sync.backend = None;
-        let specs = configured_connectors(&config);
+        let specs = configured_connectors(&config).unwrap();
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].name.as_str(), "nextcloud");
     }
 
     #[test]
     fn resolved_standalone_synthesizes_none() {
-        let specs = configured_connectors(&config_with_backend(SyncBackend::Standalone));
+        let specs = configured_connectors(&config_with_backend(SyncBackend::Standalone)).unwrap();
         assert_eq!(specs, Vec::new(), "standalone synthesizes no connector");
     }
 
@@ -252,7 +262,7 @@ mod tests {
             ("alpha", "nextcloud", "https://a.example", "ua"),
             ("beta", "nextcloud", "https://b.example", "ub"),
         ]);
-        let specs = configured_connectors(&config);
+        let specs = configured_connectors(&config).unwrap();
         assert_eq!(specs.len(), 2);
         assert_eq!(specs[0].name.as_str(), "alpha", "first entry = default");
         assert_eq!(specs[0].server_url, "https://a.example");
@@ -266,6 +276,13 @@ mod tests {
         let mut config = config_with_array(&[]);
         config.storage.db_path = Some(std::path::PathBuf::from("/tmp/t.db"));
         config.validate().expect("valid world");
-        assert_eq!(configured_connectors(&config), Vec::new());
+        assert_eq!(configured_connectors(&config).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn the_default_connector_name_is_kebab() {
+        // Pins the `expect` in `configured_connectors`'s legacy-synthesis
+        // arm: the const mint cannot fail by construction.
+        assert!(ConnectorId::is_kebab_name(DEFAULT_CONNECTOR_NAME));
     }
 }
