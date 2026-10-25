@@ -228,8 +228,8 @@ fn prop_aggregate_rows_dominance_max_saturating_proven() {
 ///
 /// Unwind: chrono date math on these paths is loop-light.
 /// Bound-doubling check: identical verdict at `#[kani::unwind(8)]`
-/// and `#[kani::unwind(16)]` (see pilot report for the recorded
-/// numbers).
+/// and `#[kani::unwind(16)]` (447 checks, 0 failed, 8 unreachable —
+/// both bounds).
 #[kani::proof]
 #[kani::unwind(8)]
 fn prop_day_window_total_24h_contains_now_proven() {
@@ -251,4 +251,75 @@ fn prop_day_window_total_24h_contains_now_proven() {
     assert!(start <= now);
     assert!(now < end);
     assert_eq!(end - start, chrono::TimeDelta::try_hours(24).unwrap());
+}
+
+// ---- H2: ReminderOffset canonical text round-trip (containment ladder) ----
+
+use crate::reminders::ReminderOffset;
+
+/// Harness-local specification mirror of `parse_text_form`'s
+/// digit-sum semantics (the production fn is the verification
+/// target; a drift between the two surfaces as a counterexample).
+fn spec_parse_total(raw: &str) -> Option<i64> {
+    let bytes = raw.as_bytes();
+    let mut total: i64 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let digits_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == digits_start {
+            return None; // a component without its number
+        }
+        let value = i64::try_from(raw[digits_start..i].parse::<u64>().ok()?).ok()?;
+        let unit_secs = match bytes.get(i)? {
+            b's' => 1,
+            b'm' => 60,
+            b'h' => 3_600,
+            b'd' => 86_400,
+            _ => return None,
+        };
+        i += 1;
+        total = total.checked_add(value.checked_mul(unit_secs)?)?;
+    }
+    Some(total)
+}
+
+/// Rung C of the H2 containment ladder (pilot plan §3.2): the real
+/// `parse_text_form` over genuinely symbolic bytes. The `format!`
+/// render side (Rung A, killed at the 6 GiB cap — the measured String
+/// wall) is severed; what remains proven is the parse side:
+///
+/// 1. **Grammar totality**: never panics over any 4-byte input drawn
+///    from the grammar's charset (digits + `s m h d`).
+/// 2. **`Some` iff well-formed** and **value == Σ digit·unit** with
+///    the non-positive sign discipline, against the spec mirror
+///    (including the overflow ⇒ `None` path).
+///
+/// *What is lost* vs the full law (Rung D territory): no evidence
+/// about the actual `format!`-rendered bytes — the canonical
+/// round-trip stays with its proptest.
+///
+/// Unwind 12: the loops' structural need is outer ≤ 2 + inner ≤ 4
+/// iterations; 12 ≥ 2× that need. The 2×-bound doubling re-run at 24
+/// exceeded the 6 GiB local cap and could not be completed (recorded
+/// in the pilot report; bump checklist: re-attempt on a bigger
+/// runner).
+#[kani::proof]
+#[kani::unwind(12)]
+fn prop_parse_text_form_total_spec_conformant_rung_c() {
+    let bytes: [u8; 4] = kani::any(); // rung C shrink: 4 bytes (one component class)
+    for b in bytes {
+        kani::assume(b.is_ascii_digit() || matches!(b, b's' | b'm' | b'h' | b'd'));
+    }
+    let raw = std::str::from_utf8(&bytes).expect("charset is ASCII");
+    let parsed = ReminderOffset::parse_text_form(raw);
+    let expected_secs = spec_parse_total(raw).and_then(|total| {
+        chrono::TimeDelta::try_seconds(-total).and_then(|d| ReminderOffset::before(d).ok())
+    });
+    assert_eq!(parsed, expected_secs);
+    if let Some(off) = parsed {
+        assert!(off.as_duration() <= chrono::TimeDelta::zero());
+    }
 }

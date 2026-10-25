@@ -1,0 +1,51 @@
+name: Kani
+
+# Weekly out-of-band bounded-model-checking sweep over the pure core
+# harnesses (#[cfg(kani)]). Kani compiles under its own pinned nightly
+# and is never in the PR pipeline; scope + budget: the pilot plan
+# (.artifacts/plans/2026-10-25-kani-pilot-plan.md) and issue #426.
+
+on:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC (one hour behind Miri)
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kani-domain:
+    name: cargo kani (taskboard-domain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Install Kani (version-pinned; Kani manages its own nightly)
+        run: |
+          cargo install kani-verifier --locked --version 0.68.0
+          cargo kani setup
+      - name: Verify domain harnesses (one per harness in the log, sequential)
+        run: cargo kani -p taskboard-domain --output-format terse
+
+  kani-sync-backoff:
+    name: cargo kani (taskboard-sync-nextcloud — backoff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Install Kani (version-pinned; Kani manages its own nightly)
+        run: |
+          cargo install kani-verifier --locked --version 0.68.0
+          cargo kani setup
+      - name: Verify backoff harnesses
+        run: "cargo kani -p taskboard-sync-nextcloud --harness verify:: --output-format terse"
