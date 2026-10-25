@@ -43,7 +43,7 @@ const UNAVAILABLE_GENERIC: &str = "The server or store is unreachable.";
 const FAILED_GENERIC: &str = "The operation failed.";
 
 /// One typed failure's sentence (r2 D28/F21): short, present tense,
-/// user-actionable. Exhaustive, 13 arms — no wildcard.
+/// user-actionable. Exhaustive, 15 arms — no wildcard.
 fn error_text(err: &SettingsError) -> &'static str {
     match err {
         SettingsError::LegacyConfig => {
@@ -69,6 +69,12 @@ fn error_text(err: &SettingsError) -> &'static str {
         }
         SettingsError::AttachFailed => "The connection could not be started; check the server.",
         SettingsError::Gone => "The form went stale; reopen the settings and try again.",
+        SettingsError::NoRemoteMatch => {
+            "No remote board with this title was found; create or rename it on the server first."
+        }
+        SettingsError::BindRefused => {
+            "That board is already bound to another connection; detach it there first."
+        }
     }
 }
 
@@ -164,7 +170,7 @@ mod tests {
         }
     }
 
-    /// The `SettingsError` totality loop: all 13 variants map to
+    /// The `SettingsError` totality loop: all 15 variants map to
     /// non-empty text through `status_text`'s detail path.
     #[test]
     fn every_settings_error_variant_maps_to_text() {
@@ -185,8 +191,10 @@ mod tests {
             SettingsError::AttachBusy,
             SettingsError::AttachFailed,
             SettingsError::Gone,
+            SettingsError::NoRemoteMatch,
+            SettingsError::BindRefused,
         ];
-        assert_eq!(all.len(), 13, "the variant list is the enum's totality");
+        assert_eq!(all.len(), 15, "the variant list is the enum's totality");
         for err in all {
             assert_ne!(
                 status_text(SettingsOutcome::Rejected, Some(&err)),
@@ -256,6 +264,8 @@ mod tests {
             Just(SettingsError::AttachBusy),
             Just(SettingsError::AttachFailed),
             Just(SettingsError::Gone),
+            Just(SettingsError::NoRemoteMatch),
+            Just(SettingsError::BindRefused),
         ]
     }
 
@@ -299,6 +309,8 @@ mod tests {
             SettingsError::AttachBusy => "attach-busy",
             SettingsError::AttachFailed => "attach-failed",
             SettingsError::Gone => "gone",
+            SettingsError::NoRemoteMatch => "no-remote-match",
+            SettingsError::BindRefused => "bind-refused",
         }
     }
 

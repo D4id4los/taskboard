@@ -213,6 +213,7 @@ pub fn resolve_ui_settings(
         // uuid-keyed both sides, the mount converts to domain newtypes.
         stack_widths: ui.stack_widths.clone(),
         connectors: Vec::new(), // filled by the lifecycle (spawn sites) from the full config
+        boards: Vec::new(),     // filled by the lifecycle from the engine state (r2 D32)
         keymap_preset: match ui.keymap.preset {
             crate::config::KeymapPreset::Standard => taskboard_ui_slint::keymap::Preset::Standard,
             crate::config::KeymapPreset::Emacs => taskboard_ui_slint::keymap::Preset::Emacs,
@@ -263,6 +264,37 @@ pub fn resolve_connector_infos(
             read_only: legacy,
         })
         .collect()
+}
+
+/// The board-selector rows for the settings hand-over (r2 D32): the
+/// live boards (`!deleted && !archived` — the same rule the board
+/// surface renders by, so the surface and the selector agree) with
+/// their binding's connector name. Pure over the state snapshot; the
+/// [`EngineHandle`](taskboard_state::EngineHandle) wrapper below is
+/// the lifecycle-facing convenience.
+#[must_use]
+pub fn resolve_board_infos_from_state(
+    state: &taskboard_domain::AppState,
+) -> Vec<taskboard_ui_slint::requests::BoardInfo> {
+    taskboard_ui_slint::presentation::live_boards(state)
+        .into_iter()
+        .map(|board| taskboard_ui_slint::requests::BoardInfo {
+            id: board.id.as_uuid(),
+            name: board.title.clone(),
+            bound_connector: board
+                .remote
+                .as_ref()
+                .map(|binding| binding.connector.to_string()),
+        })
+        .collect()
+}
+
+/// The engine-facing wrapper over
+/// [`resolve_board_infos_from_state`] — the shape both UI lifecycles
+/// call at hand-over (r2 D32).
+#[must_use]
+pub fn resolve_board_infos(engine: &EngineHandle) -> Vec<taskboard_ui_slint::requests::BoardInfo> {
+    resolve_board_infos_from_state(&engine.shared_state().load())
 }
 
 /// The OS-DPI escape hatch (§6.2, D13): reads `SLINT_SCALE_FACTOR`
@@ -361,6 +393,7 @@ pub async fn run_desktop(
     );
 
     ui_settings.connectors = resolve_connector_infos(&app.config);
+    ui_settings.boards = resolve_board_infos(&app.engine);
     let handle = taskboard_ui_slint::mount(
         app.engine.shared_state(),
         app.engine.subscribe(),
@@ -667,5 +700,58 @@ mod keymap_resolution_tests {
                 .and_then(|s| s.get(&stack)),
             Some(&240u32)
         );
+    }
+
+    /// A1 (r2 D32) — the board-selector resolution over a hand-built
+    /// `AppState`: live boards only (deleted/archived drop), the
+    /// binding's connector name rides the row, uuid round-trips.
+    #[test]
+    fn board_infos_resolve_live_boards_with_binding_names() {
+        use taskboard_domain::{Board, BoardClocks, BoardId, RemoteBoardBinding, RemoteBoardId};
+        let live_unbound = BoardId::from_uuid(uuid::Uuid::from_u128(0x1001));
+        let live_bound = BoardId::from_uuid(uuid::Uuid::from_u128(0x1002));
+        let archived = BoardId::from_uuid(uuid::Uuid::from_u128(0x1003));
+        let deleted = BoardId::from_uuid(uuid::Uuid::from_u128(0x1004));
+        let epoch = BoardClocks::epoch();
+        let board = |id, title: &str, remote| Board {
+            id,
+            remote,
+            title: title.to_owned(),
+            color: taskboard_domain::Color::new(""),
+            archived: id == archived,
+            deleted: id == deleted,
+            clocks: BoardClocks {
+                title: epoch,
+                color: epoch,
+                archived: epoch,
+                deleted: epoch,
+            },
+            remote_seen: None,
+        };
+        let mut state = taskboard_domain::AppState::default();
+        state.boards.insert(
+            live_bound,
+            board(
+                live_bound,
+                "bound",
+                Some(RemoteBoardBinding {
+                    connector: taskboard_domain::ConnectorId::from("work"),
+                    board: RemoteBoardId(7),
+                }),
+            ),
+        );
+        state
+            .boards
+            .insert(live_unbound, board(live_unbound, "free", None));
+        state.boards.insert(archived, board(archived, "old", None));
+        state.boards.insert(deleted, board(deleted, "gone", None));
+
+        let rows = resolve_board_infos_from_state(&state);
+        assert_eq!(rows.len(), 2, "only the live boards resolve");
+        let bound = rows.iter().find(|r| r.name == "bound").expect("row");
+        assert_eq!(bound.id, live_bound.as_uuid(), "uuid round-trips");
+        assert_eq!(bound.bound_connector.as_deref(), Some("work"));
+        let free = rows.iter().find(|r| r.name == "free").expect("row");
+        assert_eq!(free.bound_connector, None);
     }
 }

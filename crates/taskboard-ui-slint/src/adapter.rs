@@ -32,7 +32,7 @@ use crate::menu::{self, MenuEntry};
 use crate::models::IdTables;
 use crate::presentation::ReminderTarget;
 use crate::requests::{
-    ConnectionProfile, ConnectionTarget, ConnectorInfo, KeymapUpdate, Secret, SettingsError,
+    self, ConnectionProfile, ConnectionTarget, ConnectorInfo, KeymapUpdate, Secret, SettingsError,
     UiRequest,
 };
 use crate::resolver::{KeymapResolver, Resolution};
@@ -1054,8 +1054,9 @@ impl Adapter {
 enum PendingReply {
     /// `TestConnection`'s typed outcome.
     Test(oneshot::Receiver<Result<(), SettingsError>>),
-    /// The list-carrying replies (`SaveConnection`/`RemoveConnection`).
-    List(oneshot::Receiver<Result<Vec<ConnectorInfo>, SettingsError>>),
+    /// The list-carrying replies (`SaveConnection`/`RemoveConnection`/
+    /// `AttachConnector`/`DetachConnector`) — the full pair (r2 D32).
+    List(oneshot::Receiver<Result<requests::ConnectionsSnapshot, SettingsError>>),
     /// `SetKeymapPreset`'s rebuilt keymap.
     Keymap(oneshot::Receiver<Result<KeymapUpdate, SettingsError>>),
     /// `SetScale`, with the scale to revert to on an `Err` reply.
@@ -1098,6 +1099,9 @@ pub enum SettingsOutcome {
 struct SettingsVm {
     draft: ConnectionDraft,
     rows: Vec<ConnectorInfo>,
+    /// The board-selector rows (r2 D32): mounted once from
+    /// `UiSettings.boards`, refreshed only from reply snapshots.
+    boards: Vec<requests::BoardInfo>,
     /// Connector name → down-override (the `ConnectorLost`/
     /// `ConnectorRestored` episodes, D8); absent = no override.
     liveness: BTreeMap<String, bool>,
@@ -1146,7 +1150,9 @@ impl SettingsVm {
             | SettingsError::StoreUnsupported
             | SettingsError::VerifyRejected
             | SettingsError::PersistRejected
-            | SettingsError::Gone => SettingsOutcome::Rejected,
+            | SettingsError::Gone
+            | SettingsError::NoRemoteMatch
+            | SettingsError::BindRefused => SettingsOutcome::Rejected,
             SettingsError::VerifyUnreachable | SettingsError::StoreFailed => {
                 SettingsOutcome::Unavailable
             }
@@ -1250,8 +1256,12 @@ impl Adapter {
                     }
                 },
                 PendingReply::List(rx) => match rx.try_recv() {
-                    Ok(Ok(rows)) => {
-                        self.settings.rows = rows;
+                    Ok(Ok(snapshot)) => {
+                        // Both surfaces re-render from the same reply
+                        // (r2 D32): rows and the board selector never
+                        // go stale against each other (F18).
+                        self.settings.rows = snapshot.connectors;
+                        self.settings.boards = snapshot.boards;
                         landed = Some((SettingsOutcome::Ok, None));
                         true
                     }
@@ -1726,6 +1736,7 @@ pub(crate) fn install(
     connectors: Vec<ConnectorInfo>,
     day_start: (chrono::NaiveTime, chrono::FixedOffset),
     kiosk: bool,
+    boards: Vec<requests::BoardInfo>,
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
 ) -> Rc<RefCell<Adapter>> {
@@ -1785,6 +1796,9 @@ pub(crate) fn install(
         scale_drag: None,
         settings: SettingsVm {
             rows: connectors,
+            // The mount seed (r2 D32): the board-selector rows ride
+            // the same hand-over — the first refresh's push lands both.
+            boards,
             // The mount seed (r2 D27): the picker's initial selection
             // rides the VM — the first refresh's `push_settings` is
             // the one write path.

@@ -86,6 +86,10 @@ pub struct UiSettings {
     /// resolved once at hand-over (the consumers contract — nothing
     /// reads config mid-flight). Defaults to midnight + UTC.
     pub day_start: (chrono::NaiveTime, chrono::FixedOffset),
+    /// The live local boards for the settings board selector (r2
+    /// D32): secret-free rows with the binding name, resolved
+    /// app-side at hand-over; refreshed only from reply snapshots.
+    pub boards: Vec<requests::BoardInfo>,
     /// The `[ui.keymap] preset` word's typed value (round-1 D9): the
     /// settings picker's initial selection.
     pub keymap_preset: keymap::Preset,
@@ -100,6 +104,7 @@ impl Default for UiSettings {
             kiosk: false,
             stack_widths: BTreeMap::new(),
             connectors: Vec::new(),
+            boards: Vec::new(),
             keymap_preset: keymap::Preset::Standard,
             day_start: (
                 chrono::NaiveTime::MIN,
@@ -216,6 +221,7 @@ pub fn mount(
         settings.connectors,
         settings.day_start,
         settings.kiosk,
+        settings.boards,
         Arc::clone(&state),
         Rc::clone(&status_timer),
     );
