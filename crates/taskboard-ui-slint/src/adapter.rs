@@ -37,6 +37,7 @@ use crate::requests::{
 };
 use crate::resolver::{KeymapResolver, Resolution};
 use crate::router::{ActionRouter, DispatchOutcome, Mode, UiEffect};
+use crate::scale::UiScale;
 use crate::settings_form::{self, ConnectionDraft};
 use crate::shell::KeymapShell;
 use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState};
@@ -1905,7 +1906,9 @@ impl Adapter {
             self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
             return;
         };
-        if self.settings.pending.is_some() || !scale.is_finite() || !(0.5..=3.0).contains(&scale) {
+        if self.settings.pending.is_some() || UiScale::new(scale).is_err()
+        // presentation mirror; the authoritative check is the app-side mint
+        {
             self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
             return;
         }
