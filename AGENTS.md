@@ -234,6 +234,14 @@ implementation specs into the root directory or source folders.
     already exists); never `git worktree add <path> main` — a worktree
     sitting on a primary branch looks exactly like an abandoned one to
     the doctor.
+  - Spell the worktree path suffix flat: replace `/` in the branch
+    name with `-` (`fix/worktree-doctor-sweep` →
+    `../taskboard-WT-fix-worktree-doctor-sweep`), never use the
+    verbatim branch name as the suffix — a branch containing a slash
+    then nests the real worktree under a plain
+    `taskboard-WT-<parent>/` directory that is not itself a worktree
+    (#395), hiding it from path-glob tooling and masquerading as a
+    worktree sibling to everything that scans the layout.
   - Never remove a worktree via a relative path: anchor teardown to the
     main checkout (`git -C /home/viktoria/src/taskboard worktree remove
     ../<project-root>-WT-<branch-name>`) and confirm via `git worktree
