@@ -70,6 +70,11 @@ export global Theme {
     out property <length> radius-small: 4px * base-scale;
     out property <length> radius-medium: 8px * base-scale;
     out property <length> focus-ring-width: 2px * base-scale;
+    // The one-logical-pixel hairline (r2 D36): baseline rules and
+    // hairline borders (the board tab strip). A spacing-class
+    // dimension, so the theme is its only legal home; no colour rides
+    // it (the token tests' colour set is untouched).
+    out property <length> hairline-width: 1px * base-scale;
 
 
     // ---- Window default dimensions (a spacing-class dimension, so it
