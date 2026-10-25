@@ -136,7 +136,44 @@ the domain crate). Each frontend owns its own:
   =presentation::live_board= when absent or no longer live); the board
   switcher — =select_board= and the =board.next/previous= walk,
   mirroring the stack switcher — is its only mutator. Switching is
-  pure view state — nothing is dispatched to the engine.
+  pure view state — nothing is dispatched to the engine. The
+  daily-driver wave's =ViewId::Today= is the one cross-board surface:
+  it renders every live board at once, and selection-follows-focus
+  retargets =ViewState.board= from the focused row; it is the desktop
+  default start view (kiosk keeps Board via =UiSettings.kiosk=). The
+  caller-owned rule stands.
+
+** The app-data sidecar
+
+The daily-driver wave split each mergeable task field's sync lane by
+its =TASK_FIELDS= manifest row (=FieldFamily=): nine fields ride
+Deck's *native* card slots (=title=, =description=, =due=, =order=,
+=archived=, …, plus =scheduled= wherever the server's Deck version
+exposes =CARD_STARTDATE= — detected once per sync actor via the
+=capabilities.rs= probe), and three ride the *app-data sidecar
+document* (=effort=, =importance=, =urgency=, plus =scheduled=
+elsewhere and the reminder-rule registry). The document is one JSON
+attachment (=?taskboard-appdata.json=) on one reserved carrier card
+per board (exact title =[taskboard] app-data=), maintained by the
+connector actor's anchor ceremony (lazy creation, adoption, pick,
+restore-then-replace) and flushed each cycle as a read-modify-write
+union — versioned envelope, embedded-clock last-writer-wins,
+unknown content preserved verbatim (a v1 device acts as a
+transparent relay, never a destroyer), the reserved key space
+(=proofs= / =settings= / =task-kind= / =respite= / =recurrence=)
+kept out of v1's reach.
+
+Evidence travels the existing =SyncReport= path: each completed
+cycle reports =AppDataEvidence= per board; the engine derives
+per-board sidecar health onto =SyncStatus.sidecar= (memory-only),
+and an unreadable document surfaces *loudly* — the CLI =status=
+warning (=sidecar.reason=, additive) and the UI's sidecar badge —
+with the format-too-new fence never re-encoding the document
+downstream. Device-local things never enter the document:
+=AdhocAlarm=s and the delivery/snooze/mute records stay in the
+local SQLite tables (0004/0008). Accepted limitation: a card moved
+between boards loses its app-side fields (the document is
+per-board; issue #350 tracks the repair).
 
 * Inter-Component Communication Protocol
 
@@ -154,7 +191,7 @@ avoiding central runtime bottlenecks.
 | *Sync Actor → Everyone* | =tokio::sync::broadcast= | Produces =SystemEvent::ConnectorLost= / =ConnectorRestored(ConnectorId)= for its own connector (episode-edge: exactly once per offline episode, report-then-restore order) and consumes only =Shutdown= from the same channel. The global =NetworkLost= / =NetworkRestored= names belong to the app-layer authority (next row). |
 | *App authority → Everyone* | =tokio::sync::broadcast= | The all-down authority (=taskboard-app/src/authority.rs=): an app-layer counting task seeded from the configured connector module set and updated by the registry's attach/detach hooks. It subscribes the system broadcast and emits the global =SystemEvent::NetworkLost= on the all-down crossing (the last up connector flips down) and =NetworkRestored= on the first up — so one connector down while others respond is normal operation, not an outage. Single-connector installs keep the old semantics exactly. |
 | *Sync Actor → State Engine (reads)* | domain port =SyncStateReader= | =EngineEnvelope::ReadState= envelope behind the port: the cycle reads outbox, bindings, and validators via the engine, never direct SQL (ADR 0005/0007). |
-| *State Engine → Notifier* | =tokio::sync::mpsc= | =Notification= payloads (capacity 64, =NOTIFIER_CAPACITY=) consumed by the notifier task (=spawn_notifier=), which delivers them through the =NotificationSink= port (=LogSink= v1 — ADR 0013). Delivery is durable-then-notify: delivery markers persist before any send and a failed batch fires nothing; =send= (not =try_send=) backpressures the tick; the consumer exits when the engine's exit closes the channel. Derived edge: =docs/flow_model.org= E-20 / actor NTF. |
+| *State Engine → Notifier* | =tokio::sync::mpsc= | =Notification= payloads (capacity 64, =NOTIFIER_CAPACITY=) consumed by the notifier task (=spawn_notifier=), which delivers them through the =NotificationSink= port (=LogSink= v1 and the daily-driver wave's =DesktopSink=, selected by =[reminders] sink= — ADR 0013). Delivery is durable-then-notify: delivery markers persist before any send and a failed batch fires nothing; =send= (not =try_send=) backpressures the tick; the consumer exits when the engine's exit closes the channel. Derived edge: =docs/flow_model.org= E-20 / actor NTF. |
 | *Actors ↔ Actors* | =tokio::sync::mpsc= | Direct point-to-point command delivery between backend actors (e.g., State Engine → Storage via the =TaskRepository= port adapter). |
 | *System Notifications* | =tokio::sync::broadcast= | Broadcasts global status changes (=SystemEvent::NetworkLost=) to all interested actors. |
 | *CLI ⇄ Daemon (local socket)* | =interprocess= local sockets + length-framed JSON | Transport-only reuse of =dispatch_line= (ADR 0012): the daemon serves the per-database socket (<db>.sock sidecar); a CLI invocation relays raw argv and prints the daemon's rendered ={code, out, err}= verbatim — byte-identical to the in-process dispatch. Versioned envelopes (v1); one request per connection; serial execution on one dispatcher task. |
@@ -215,7 +252,43 @@ dependency hierarchies.
    the per-board =SyncStates(BTreeMap<BoardId, SyncStatus>)= map with
    the =aggregate()= fold — attribution stays derived from bindings,
    never stored. The policy is
-   executed by the *state engine*, never by the sync actor. Dependencies:
+   executed by the *state engine*, never by the sync actor.
+
+   The daily-driver wave grew the entity/message inventory: the
+   *task field family* — =Task.scheduled= / =Task.effort= /
+   =Task.importance= / =Task.urgency= with their four =TaskClocks=
+   slots (=Effort= is the u64-seconds newtype; =Importance= and
+   =Urgency= are two distinct five-level enums whose declaration
+   order is severity), each slot a =TaskChanges= double option
+   (=Some(None)= clears and stamps) — and the exported =TASK_FIELDS=
+   lockstep manifest assigning every mergeable field its clock set,
+   its =FieldFamily::{Native, AppData}= sync lane, and its =TaskChanges=
+   slot (four homes pin it: the domain pipeline tests, the storage
+   schema tests, the appdata modeled-key set, and the engine's
+   manifest op routing). New pure modules: =days.rs=
+   (=day_window=, =today_sections= — fixed-offset day arithmetic;
+   consumers receive time and offset as data), =find.rs= (the
+   class-ordered fuzzy ranking core behind the =find= verb and the
+   palette — the crate-swap firewall), =appdata.rs= (the versioned
+   per-board document codec: embedded-clock union + snapshot-absence
+   GC, verbatim unknown-content preservation, =scheduled= as the
+   fourth modeled key), and =capabilities.rs= (=DeckFeatures= +
+   =flags_for= — the codebase's only version switch).
+   =merge.rs= carries =fold_task_app_data= and =fold_reminder_rules=
+   (the document fold);
+   =reminders.rs= carries =AdhocAlarm= / =ReminderRef::Adhoc= /
+   =ReminderAnchor{Task|Alarm}=, the tick's alarms pass and the
+   settlement prune; =CaptureTask= carries the quick-capture intent
+   with its Inbox/Backlog resolution rules; the reminder verbs are
+   =AddReminderRule= / =RemoveReminderRule= / =ClearReminderRules=
+   (=SetReminderRule= retired; N-rule additive); and
+   =SyncReport::Completed= carries =app_data: AppDataEvidence=
+   (=Document | Absent | Unreadable{FormatTooNew|Transport|Decode|
+   ForeignBoard}=) per board. The purity sentence stands: the sidecar
+   codec is pure serde + pure functions (=serde_json= for verbatim
+   preservation is its only new dependency).
+
+   Dependencies:
    minimal (=serde=, =chrono=, =uuid=, =thiserror=, =tracing= for
    pure-macro event instrumentation of the conflict policy — no I/O, no
    subscriber, no runtime). Zero UI, network, database, or
@@ -244,7 +317,19 @@ dependency hierarchies.
    left undelivered before a shutdown fire on the next boot; disarmed
    while the engine drains) that runs the pure reminder evaluator over
    =EngineCore=, persists delivery markers, interprets, publishes, and
-   only then notifies (ADR 0013). Command *semantics*
+   only then notifies (ADR 0013). The engine's *sidecar half* (the
+   daily-driver wave): =apply_sync_report= runs =fold_task_app_data=
+   and =fold_reminder_rules= over the downloaded document after the
+   task merge loop, behind the self-clobber guard mirror (=UpdateAppData=
+   intents set all app-field flags + rules; the fold copies values
+   *and* embedded clocks); per-board sidecar health is derived onto
+   =SyncStatus.sidecar= (memory-only, from the report's
+   =AppDataEvidence=); op routing is driven from the =TASK_FIELDS=
+   manifest (every manifest row routes through its declared lane); the
+   tick runs the alarms pass over =AdhocAlarm=s and the settlement
+   prune after snooze compaction; and the =CaptureTask= handler
+   resolves the app-global Inbox board (created/adopted unbound,
+   canonical-first) or the board-directed Backlog. Command *semantics*
    (rejections, no-ops, cascades) live in the domain; this crate owns
    channels, publishing, and sequencing only. Dependencies:
    =taskboard-domain=, =arc-swap=, =chrono=, =tokio=.
@@ -267,7 +352,27 @@ dependency hierarchies.
    =SystemEvent::ConnectorLost/ConnectorRestored= for its own
    connector, failure backoff, cycle-in-flight dedupe; binding happens
    by adoption in the engine, and the broadcast =SyncNow= is the only
-   nudge it consumes. Stateless across
+   nudge it consumes. The connector's *sidecar half* (the daily-driver
+   wave): a one-per-actor-lifetime capability probe
+   (=GET ocs/v2.php/cloud/capabilities=, =deck.version= →
+   =DeckFeatures=, conservative fallback) gates card conversion
+   (=scheduled= encodes as wire =startdate= only when native); the
+   attachment-create form carries the additive =data= field
+   unconditionally and the echo decode folds
+   =extendedData.info.filename= into the stored filename (the
+   Deck 1.17.5 parity wire changes); the *anchor ceremony* discovers
+   each board's app-data carrier by exact-title
+   =([taskboard] app-data)= scan of active+archived cards, confirms by
+   detail read, picks newest-stamp-then-lowest-id, adopts exactly one
+   unconfirmed candidate, and creates lazily actor-side; documents
+   download during the pull and flush between pull and report as a
+   read-modify-write union (lane GC + snapshot-absence GC; rebuild
+   mode re-seeds from all local entries; restore-then-replace for
+   tombstoned carriers); the D-S7 fences classify
+   format-too-new/corrupt/foreign/moved-card evidence without
+   re-encoding; =LoopState= keeps the in-memory document + feature
+   caches; and =plan_pushes= emits one document push per board, after
+   its =CreateTask= groups. Stateless across
    restarts except the injected =DeckClient=. Dependencies:
    =taskboard-domain=, =reqwest=, =serde=, =serde_json=, =chrono=,
    =tokio=, =thiserror=, =tracing=.
@@ -284,7 +389,12 @@ dependency hierarchies.
    upserts write the tag, so legacy NULLs are read-only relics),
    plus the four reminder tables of migration 0004: =reminder_rules= /
    =reminder_deliveries= / =reminder_snoozes= / =reminder_muted=,
-   ADR 0013)
+   ADR 0013), the daily-driver wave's two additive migrations —
+   *0007* (the four task-field value columns + four epoch-defaulted
+   clock columns so pre-migration rows keep the remote-wins merge
+   behavior, plus =reminder_rules.updated_at=, the rule write clock
+   the codec reads and writes since chunk 4 of the wave) and *0008*
+   (the =adhoc_alarms= table on the 0004 conventions) —
    applied at boot from embedded migrations; WAL + =synchronous=NORMAL= on
    a single connection; =SqliteTaskRepository= implements the domain's
    =TaskRepository= port (one transaction per batch) behind the
@@ -312,6 +422,19 @@ dependency hierarchies.
    layout hides it while keyboard switching keeps working; the =push=
    builder derives its board argument from the selection, so
    =IdTables= are not re-keyed, and switching is pure view state),
+   widened again by the daily-driver wave: =ViewId::Today= (the
+   subjectless cross-board today surface — the *desktop default start
+   view*; kiosk keeps Board via =UiSettings.kiosk=), =ContextId::{Today,
+   Palette}=, =Flow::{Capture, Palette}=, the compositions
+   =today-view.slint= / =capture-overlay.slint= (the Ctrl+K quick
+   capture) / =search-palette.slint= (the jump-to palette) /
+   =rule-list.slint= (the task editor's reminder-rule list), the flat
+   cross-board move ring (=board › stack= hints), the toolbar inbox
+   chip, =IdTables.{today_tasks, palette}=, the field-decoration
+   carriers (=TaskCardModel.decorations= + the presentation phrase
+   helpers), and the sidecar badge (the selected board's document
+   health rendered as an update-this-app warning). No slint-side
+   semantics — presentation only.
    the L1 widget / L2 composition / L3 view component layering
    under =ui/=, and =presentation= (pure display helpers reusing the
    domain's overdue/due-soon semantics) + =responsive= (unscaled
@@ -334,8 +457,12 @@ dependency hierarchies.
    =--config= > =TASKBOARD_CONFIG= > the XDG candidate
    =$XDG_CONFIG_HOME/taskboard/taskboard.toml= when it exists >
    =./taskboard.toml=, absent files tolerated; the =[reminders]=
-   table — =enabled= / =tick_secs= / =default_before= — is validated
-   with typed =invalid-duration= rejections, ADR 0013), =secrets= (the =CredentialStore=
+   table — =enabled= / =tick_secs= / =default_before= / =sink=
+   (=?auto|log|desktop=; =auto= resolves by =AppMode= at boot via
+   =notifications::resolve_sink=) — and the =[preferences]= table
+   (=?day_start_time=, device-local, never synced) are validated
+   with typed rejections (=invalid-duration= /
+   =invalid-day-start-time=), ADR 0013), =secrets= (the =CredentialStore=
    port with the keyring and env stores, config-selected, no silent
    fallback; redacting =AppPassword=), =bootstrap=: one async fn
    that wires the whole channel graph (the system broadcast, both sync
@@ -357,8 +484,12 @@ dependency hierarchies.
    shared by every frontend, =lockfile= (the per-database instance lock — an
    OS-released advisory lock on a =<db>.lock= sidecar acquired before
    the db open, ADR 0009), =notifications= (the =NotificationSink=
-   port with =LogSink= v1 — one log line per delivery; desktop toasts
-   are a follow-up behind the same port, ADR 0013), and =commands=
+   port carrying both sinks — =LogSink= v1, one log line per
+   delivery, and the daily-driver wave's =DesktopSink=
+   (=notify-rust= 4.18.2: passive toasts; a failed delivery is a
+   logged error, never retried, never fallback-sent), selected by
+   =[reminders] sink= with =auto= resolving by =AppMode= at boot,
+   ADR 0013), and =commands=
    (ADR 0009): the operator
    CLI's typed handlers — =connect= (introduces a connection; =login=
    is its deprecated alias, ADR 0014), =logout=, =boards= (list/select/
@@ -368,8 +499,16 @@ dependency hierarchies.
    =--connector <name>= scopes =boards list/select/publish= and
    =sync=), =stacks= (add/rename/delete/move), =tasks=
    (list/add/done/move/edit/delete/label/unlabel/remind — the
-   =remind= mode flags =--before=/=--list=/=--clear=/=--off=/=--on=,
-   ADR 0013), =labels=
+   =remind= mode flags =--before=/=--list=/=--clear=/=--off=/=--on=
+   plus the =--remove= rule selectors, ADR 0013; =edit= carries the
+   daily-driver wave's field flags =--scheduled=/=--effort=/
+   =--importance=/=--urgency= (=?none= clears) beside =--due=;
+   =move= gains =--board= as a stack-selector pre-filter; the app
+   layer refuses rename/delete on the app-data anchor card with the
+   typed =AnchorTaskReserved= (=anchor-task-reserved=)), the
+   top-level =find= verb (=?--type task|stack|board=,
+   =?--limit=), =capture= (the quick-capture intent), =timers=
+   (add/list/cancel — =--in=/=--at=, device-local), =labels=
    (list/add/edit/delete), =sync=, =status= (the additive
    per-connector =connectors= array and flat per-board =boards= array
    beside the unchanged aggregate =sync= field), =config print= — with the =--json=
@@ -442,6 +581,7 @@ dependency hierarchies.
 | *REPL Word Splitting* | =shell-words= | POSIX-ish word splitting for REPL lines (one line = one CLI invocation). |
 | *Instance Lock* | =fd-lock= | Cross-platform advisory file lock; the per-database instance lock sidecar. |
 | *Local Sockets* | =interprocess= (tokio feature) | Cross-platform local sockets for the daemon IPC frontend (ADR 0012): unix-domain sockets on Linux/macOS, named pipes on Windows; MIT OR Apache-2.0. |
+| *Desktop Notifications* | =notify-rust= | Desktop toast delivery for the =DesktopSink= (ADR 0013 as shipped by the daily-driver wave); pinned 4.18.2 in =[workspace.dependencies]=, default features off with =z-with-tokio= adopted by measurement. |
 | *Identifiers* | =uuid= | Generates collision-resistant v4/v7 UUIDs for client-side task creation before remote synchronization. |
 | *Date & Time* | =chrono= | Time, schedule, and timezone handling with support for =sqlx= and API string formatting. |
 | *Domain Errors* | =thiserror= | Derives static, strongly-typed error enums in library crates for programmatic pattern matching. |
