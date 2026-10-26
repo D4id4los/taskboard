@@ -295,6 +295,57 @@ pub enum StateCommand {
         /// The alarm to cancel.
         alarm: crate::ids::AdhocAlarmId,
     },
+    /// Start tracking the named live task: every open entry closes at the
+    /// engine-stamped `now` (the single-global intent — starting anywhere
+    /// stops what any device left running), a fresh open entry is minted
+    /// (title snapshotted), and the task's currently-active reminder
+    /// occurrences are dismissed exactly as `SetTaskDone` dismisses them.
+    /// Idempotent repeat: exactly one open entry exists and it is this
+    /// task's — the accepted no-op. Unknown/deleted task is a typed
+    /// rejection.
+    StartTracking {
+        /// The task to track.
+        task: TaskId,
+    },
+    /// Close every open entry at the engine-stamped `now`. Nothing open
+    /// is the accepted no-op.
+    StopTracking,
+    /// Log a retroactive, closed entry for the live task. The span must
+    /// validate (`end > start`) or the command is a typed rejection.
+    /// Never touches the open set (logging yesterday's block while
+    /// today's timer runs is legal). Overlaps with other entries are
+    /// legal by design.
+    LogTime {
+        /// The task the block belongs to.
+        task: TaskId,
+        /// Span start.
+        start: chrono::DateTime<chrono::Utc>,
+        /// Span end (strictly after `start`).
+        end: chrono::DateTime<chrono::Utc>,
+    },
+    /// Adjust an entry's span. Each field is a *change mask*: `None` =
+    /// unchanged; there is deliberately no way to clear an `end` (a
+    /// history edit can never resurrect a running timer — ADR 0017).
+    /// Setting an end on an open entry closes it. The resulting span
+    /// must validate; a mask naming only unchanged values is the
+    /// accepted no-op. Entries of soft-deleted tasks stay adjustable
+    /// (history outlives the task).
+    AdjustTimeEntry {
+        /// The entry to adjust.
+        id: crate::ids::TimeEntryId,
+        /// New start, or unchanged.
+        start: Option<chrono::DateTime<chrono::Utc>>,
+        /// New end, or unchanged. `None` never *clears* an end.
+        end: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    /// Delete one entry — globally (the storage/roaming chunk drives a
+    /// wire tombstone). An id naming no entry is the accepted no-op: a
+    /// synced tombstone may have folded the row away already, making the
+    /// local repeat redundant rather than wrong.
+    DeleteTimeEntry {
+        /// The entry to delete.
+        id: crate::ids::TimeEntryId,
+    },
     /// User-visible refresh request; the engine forwards it to the sync
     /// actor.
     RequestSync,
