@@ -295,7 +295,7 @@ async fn it_nextcloud_docker_cli_standalone_publish() {
     let Some(cfg) = common::live_docker_config() else {
         return; // skip, never fail: tier not configured
     };
-    common::with_deadline(standalone_publish_journey(&cfg))
+    Box::pin(common::with_deadline(standalone_publish_journey(&cfg)))
         .await
         .expect("test must finish within the live deadline");
 

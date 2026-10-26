@@ -442,20 +442,55 @@ pub struct KeymapSection {
 }
 
 /// `[kiosk]`: the kiosk appliance's deployment profile. An absent table
-/// decodes to the default (no pin) — today's behaviour; the table grows
-/// rotation keys only in the ambient-view chunk (K13).
+/// decodes to the default (no pin, no rotation) — today's behaviour.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KioskSection {
     /// The board the wall display pins to, resolved typed against the
-    /// live boards at kiosk boot (see [`AppConfig::resolve_fixed_board`]):
-    /// absent pin + N live boards is the ambient view's rotation scope,
-    /// absent pin + 1 board is that board (KDF-10). Skipped when absent
-    /// so pin-less configs serialize unchanged (the `sync.connectors`
-    /// precedent).
+    /// live boards at kiosk boot — see
+    /// [`AppConfig::resolve_fixed_board`] for the full pin matrix.
+    /// Skipped when absent so pin-less configs serialize unchanged
+    /// (the `sync.connectors` precedent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_board: Option<uuid::Uuid>,
+    /// The display-mode rotation (K13, issue #363). Its presence *is*
+    /// the enablement — an absent table is no rotation, the pre-K13
+    /// behaviour byte-for-byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<RotationSection>,
 }
+
+/// `[kiosk.rotation]`: the kiosk ambient display's rotation profile
+/// (issue #363, KDF-10's reserved key space). Both keys are required
+/// inside a present table — an implicit `modes`/`dwell_secs` default
+/// would be a silent rotation nobody configured.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RotationSection {
+    /// The display modes to cycle, in declared rotation order. Exactly
+    /// two distinct entries (validated typed in [`AppConfig::validate`]
+    /// and mirrored by the UI-side minting constructor).
+    pub modes: Vec<KioskRotationMode>,
+    /// Per-mode display time in seconds; the [`KIOSK_ROTATION_MIN_DWELL_SECS`]
+    /// floor is enforced typed in [`AppConfig::validate`].
+    pub dwell_secs: u64,
+}
+
+/// One rotation display mode. Lowercase TOML spelling; the order of
+/// the enum's declaration is the stable config vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KioskRotationMode {
+    /// The pinned board's kanban reading.
+    Board,
+    /// The today view's upcoming-oriented reading.
+    Today,
+}
+
+/// `[kiosk.rotation] dwell_secs` typed floor: a wall display flipping
+/// faster than this is a strobe, never an ambient cadence — refused,
+/// never clamped (the [`WEB_REFRESH_MIN_SECS`] precedent).
+pub const KIOSK_ROTATION_MIN_DWELL_SECS: u64 = 10;
 
 /// `[web]`: the web kiosk dashboard's deployment profile (K11). The
 /// table's presence *plus* `enabled` spawns the read-only HTTP surface;
@@ -692,6 +727,24 @@ pub enum ConfigError {
         /// The pin that does not resolve.
         id: uuid::Uuid,
     },
+    /// A `[kiosk.rotation]` value is unusable: fewer than two distinct
+    /// modes (a one-mode "rotation" is a no-op wearing a config), or a
+    /// `dwell_secs` below the typed floor. The payload names the field.
+    #[error("kiosk setting invalid")]
+    InvalidKioskConfig {
+        /// The dotted config key that is invalid.
+        field: &'static str,
+    },
+    /// `[kiosk]` has no `fixed_board` but two or more live boards at
+    /// kiosk boot: with no ring (the pin is the scope), the only
+    /// correct pin-less multi-board boot is a typed refusal naming the
+    /// remedy — set `fixed_board`. The payload carries the live-board
+    /// count.
+    #[error("kiosk pin required")]
+    KioskPinRequired {
+        /// How many live boards the boot saw.
+        count: usize,
+    },
     /// A `[web]` field carries an unusable value: `refresh_secs` below
     /// the typed floor, or a `bind` that does not parse as a socket
     /// address. The payload names the field.
@@ -731,6 +784,8 @@ impl ConfigError {
             Self::InvalidConnectorName { .. } => "invalid-connector-name",
             Self::InvalidConnectorEntry { .. } => "invalid-connector-entry",
             Self::UnknownFixedBoard { .. } => "unknown-fixed-board",
+            Self::InvalidKioskConfig { .. } => "kiosk-setting-invalid",
+            Self::KioskPinRequired { .. } => "kiosk-pin-required",
             Self::InvalidWebConfig { .. } => "invalid-web-config",
             Self::InvalidDayStartTime { .. } => "invalid-day-start-time",
         }
@@ -990,30 +1045,62 @@ impl AppConfig {
         if self.web.bind.parse::<std::net::SocketAddr>().is_err() {
             return Err(ConfigError::InvalidWebConfig { field: "web.bind" });
         }
+        // `[kiosk.rotation]`: a present table validates its shape —
+        // two distinct modes (a one-mode rotation or a duplicate are
+        // config mistakes, not runtime fallbacks) and the dwell floor.
+        if let Some(rotation) = &self.kiosk.rotation {
+            let distinct = rotation
+                .modes
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            if rotation.modes.len() < 2 || distinct < rotation.modes.len() {
+                return Err(ConfigError::InvalidKioskConfig {
+                    field: "kiosk.rotation.modes",
+                });
+            }
+            if rotation.dwell_secs < KIOSK_ROTATION_MIN_DWELL_SECS {
+                return Err(ConfigError::InvalidKioskConfig {
+                    field: "kiosk.rotation.dwell_secs",
+                });
+            }
+        }
         Ok(())
     }
 
     /// Resolves the `[kiosk] fixed_board` pin against the live board
     /// ids captured at boot. Pure — the caller owns capturing the
-    /// boards. A pin naming no live board (unknown UUID, or a deleted
-    /// board) is the typed [`ConfigError::UnknownFixedBoard`]: never a
-    /// silent default, never a runtime warning (the deployment
-    /// contract is that the wall shows the pinned board or nothing
-    /// boots). Called only under `mode = "kiosk"` — the pin is the
-    /// kiosk deployment's contract, not a global invariant, so other
-    /// modes (the operator's maintenance session on the same config
-    /// file) ignore it.
+    /// boards. The full pin matrix (K13):
+    ///
+    /// | pin | live boards | outcome |
+    /// |---|---|---|
+    /// | some | pin live | the pin |
+    /// | some | pin absent | [`ConfigError::UnknownFixedBoard`] |
+    /// | none | 0 or 1 | `Ok(None)` — the seed rule picks the single live board deterministically, and an empty boot seeds nothing until boards arrive |
+    /// | none | ≥ 2 | [`ConfigError::KioskPinRequired`] — the deployment contract is "the wall shows the pinned board or nothing boots"; a multi-board ring is explicitly out of scope |
+    ///
+    /// Never a silent default, never a runtime warning. Called only
+    /// under `mode = "kiosk"` — the pin is the kiosk deployment's
+    /// contract, not a global invariant, so other modes (the
+    /// operator's maintenance session on the same config file) ignore
+    /// it. Boards arriving *after* a 0/1-board boot are out of this
+    /// function's reach by construction: the seed rule pins the first
+    /// live board then, the recorded fallback (no runtime refusal).
     ///
     /// # Errors
     ///
     /// [`ConfigError::UnknownFixedBoard`] when the pin names no live
-    /// board.
+    /// board; [`ConfigError::KioskPinRequired`] when no pin faces a
+    /// multi-board boot.
     #[allow(clippy::result_large_err)] // mirrors the enum's one grant above
     pub fn resolve_fixed_board(
         &self,
         live_board_ids: &[uuid::Uuid],
     ) -> Result<Option<uuid::Uuid>, ConfigError> {
         match self.kiosk.fixed_board {
+            None if live_board_ids.len() >= 2 => Err(ConfigError::KioskPinRequired {
+                count: live_board_ids.len(),
+            }),
             None => Ok(None),
             Some(pin) if live_board_ids.contains(&pin) => Ok(Some(pin)),
             Some(pin) => Err(ConfigError::UnknownFixedBoard { id: pin }),
@@ -2152,6 +2239,109 @@ mod tests {
     }
 
     #[test]
+    fn rotation_section_absent_decodes_to_no_rotation() {
+        let config = decode("[kiosk]\n").expect("decodes");
+        assert_eq!(
+            config.kiosk.rotation, None,
+            "an absent [kiosk.rotation] table is no rotation"
+        );
+        let mut config = config;
+        config.storage.db_path = Some(PathBuf::from("/tmp/t.db"));
+        config.validate().expect("the absent table validates");
+        // The absent-table shape serializes unchanged (the deny/
+        // skip contract over the whole `[kiosk]` section).
+        let value = serde_json::to_value(config.kiosk).expect("serializes");
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn rotation_section_decodes_modes_and_dwell() {
+        let toml = "[kiosk.rotation]\nmodes = ['today', 'board']\ndwell_secs = 30\n";
+        let config = decode(toml).expect("decodes");
+        let rotation = config.kiosk.rotation.as_ref().expect("table present");
+        assert_eq!(
+            rotation.modes,
+            vec![KioskRotationMode::Today, KioskRotationMode::Board],
+            "declared order is preserved, lowercase spellings decode"
+        );
+        assert_eq!(rotation.dwell_secs, 30);
+    }
+
+    #[test]
+    fn rotation_missing_modes_is_a_decode_error() {
+        let err =
+            decode("[kiosk.rotation]\ndwell_secs = 30\n").expect_err("no silent default mode list");
+        assert!(matches!(err, ConfigError::Decode(_)));
+    }
+
+    #[test]
+    fn rotation_missing_dwell_is_a_decode_error() {
+        let err = decode("[kiosk.rotation]\nmodes = ['board', 'today']\n")
+            .expect_err("no silent default dwell");
+        assert!(matches!(err, ConfigError::Decode(_)));
+    }
+
+    #[test]
+    fn rotation_unknown_key_is_a_decode_error() {
+        let err = decode("[kiosk.rotation]\nmodes = ['board', 'today']\ndwell_sec = 30\n")
+            .expect_err("the rotation table's typo guard");
+        assert!(matches!(err, ConfigError::Decode(_)));
+    }
+
+    #[test]
+    fn rotation_needs_two_distinct_modes_is_typed() {
+        let mut config = valid();
+        config.kiosk.rotation = Some(RotationSection {
+            modes: vec![KioskRotationMode::Board],
+            dwell_secs: 30,
+        });
+        match config.validate() {
+            Err(ConfigError::InvalidKioskConfig { field }) => {
+                assert_eq!(field, "kiosk.rotation.modes");
+            }
+            other => panic!("expected InvalidKioskConfig, got {other:?}"),
+        }
+        config.kiosk.rotation = Some(RotationSection {
+            modes: vec![KioskRotationMode::Board, KioskRotationMode::Board],
+            dwell_secs: 30,
+        });
+        match config.validate() {
+            Err(ConfigError::InvalidKioskConfig { field }) => {
+                assert_eq!(field, "kiosk.rotation.modes");
+            }
+            other => panic!("expected InvalidKioskConfig for duplicates, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rotation_dwell_below_the_floor_is_typed() {
+        let mut config = valid();
+        config.kiosk.rotation = Some(RotationSection {
+            modes: vec![KioskRotationMode::Board, KioskRotationMode::Today],
+            dwell_secs: KIOSK_ROTATION_MIN_DWELL_SECS - 1,
+        });
+        match config.validate() {
+            Err(ConfigError::InvalidKioskConfig { field }) => {
+                assert_eq!(field, "kiosk.rotation.dwell_secs");
+            }
+            other => panic!("expected InvalidKioskConfig, got {other:?}"),
+        }
+        // The floor itself passes — a floor, never a ceiling.
+        config.kiosk.rotation.as_mut().expect("set").dwell_secs = KIOSK_ROTATION_MIN_DWELL_SECS;
+        config.validate().expect("the floor value validates");
+    }
+
+    #[test]
+    fn resolve_fixed_board_refuses_an_unpinned_multi_board_boot() {
+        let config = valid();
+        let live = [uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
+        match config.resolve_fixed_board(&live) {
+            Err(ConfigError::KioskPinRequired { count }) => assert_eq!(count, 2),
+            other => panic!("expected KioskPinRequired, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn resolve_fixed_board_returns_none_without_a_pin() {
         let config = valid();
         assert_eq!(config.resolve_fixed_board(&[]).expect("resolves"), None);
@@ -2215,6 +2405,16 @@ mod tests {
                     field: "server_url",
                 },
                 "invalid-connector-entry",
+            ),
+            (
+                ConfigError::InvalidKioskConfig {
+                    field: "kiosk.rotation.dwell_secs",
+                },
+                "kiosk-setting-invalid",
+            ),
+            (
+                ConfigError::KioskPinRequired { count: 2 },
+                "kiosk-pin-required",
             ),
         ] {
             assert_eq!(err.kind(), kind);
