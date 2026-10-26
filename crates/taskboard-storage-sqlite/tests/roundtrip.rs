@@ -309,6 +309,52 @@ async fn reminder_rule_round_trips_the_write_clock_and_epoch_decodes() {
     db.close().await;
 }
 
+/// The `offset_seconds` column stores the offset exactly: every
+/// whole-second value in the type's domain round-trips identically
+/// through write and reload (the double-fire guard — a lossy column
+/// would recompute a different occurrence on reload). Exhaustive over
+/// the domain's scale points, extending the single −5 min fixture.
+#[tokio::test]
+async fn rule_offset_roundtrips_identically_through_sqlite() {
+    use taskboard_domain::ids::ReminderRuleId;
+    use taskboard_domain::reminders::{ReminderOffset, ReminderRule};
+
+    for (i, secs) in [0_i64, -1, -90, -3_600, -86_400, -2_592_000]
+        .into_iter()
+        .enumerate()
+    {
+        let mut db = common::FileDb::new().await;
+        let repo = db.repo();
+        let b = board(11);
+        let s = stack(2, &b);
+        let t = task(1, &s, BTreeSet::default());
+        let rule_id = ReminderRuleId::from(uuid::Uuid::from_u128(20 + i as u128));
+        let rule = ReminderRule {
+            id: rule_id,
+            task: t.id,
+            offset: ReminderOffset::before(chrono::TimeDelta::try_seconds(secs).unwrap())
+                .expect("whole-second"),
+            created_at: ts(1_000),
+            updated_at: ts(2_000),
+        };
+        repo.apply(vec![
+            PersistenceAction::UpsertBoard(b),
+            PersistenceAction::UpsertStack(s),
+            PersistenceAction::UpsertTask(t),
+            PersistenceAction::UpsertReminderRule(rule.clone()),
+        ])
+        .await
+        .expect("apply");
+        let loaded = repo.load().await.expect("load");
+        assert_eq!(
+            loaded.reminders.rules.get(&rule_id),
+            Some(&rule),
+            "offset {secs} s round-trips identically"
+        );
+        db.close().await;
+    }
+}
+
 /// Chunk-7 board-clear pin (storage-side): an alarm row and its
 /// `alarm:`-keyed deliveries/snoozes ride the text codec and survive a
 /// `ClearBoardContent` — the `'rule:'`/`'default:'` subqueries cannot
@@ -638,6 +684,17 @@ async fn corrupt_rows_decode_to_corrupted() {
         "INSERT INTO boards (id, title, color, archived, deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000005', 'x', 'x', 0, 0);
          INSERT INTO stacks (id, board, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000006', '0197c0ff-eeee-7ccc-8ddd-000000000005', 's', 0, 0, 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00');
          INSERT INTO tasks (id, stack, title, description, sort_order, archived, deleted, ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, ck_archived, ck_deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000007', '0197c0ff-eeee-7ccc-8ddd-000000000006', 't', '', 0, 0, 0, 'junk', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
+    )
+    .await;
+    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+
+    // Positive reminder-rule offset (the mint rejects it; never a
+    // clamped value).
+    let result = corrupt_and_load(
+        "INSERT INTO boards (id, title, color, archived, deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-00000000000b', 'x', 'x', 0, 0);
+         INSERT INTO stacks (id, board, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-00000000000c', '0197c0ff-eeee-7ccc-8ddd-00000000000b', 's', 0, 0, 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00');
+         INSERT INTO tasks (id, stack, title, description, sort_order, archived, deleted, ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, ck_archived, ck_deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-00000000000d', '0197c0ff-eeee-7ccc-8ddd-00000000000c', 't', '', 0, 0, 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00');
+         INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at) VALUES ('0197c0ff-eeee-7ccc-8ddd-00000000000e', '0197c0ff-eeee-7ccc-8ddd-00000000000d', 60, '2026-01-01T00:00:00+00:00')",
     )
     .await;
     assert!(matches!(result, Err(RepositoryError::Corrupted)));

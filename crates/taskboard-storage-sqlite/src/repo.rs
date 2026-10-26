@@ -1243,9 +1243,10 @@ async fn execute_batch(
     // write wins); a snooze link replaces the prior link for the same
     // key; mute toggles membership.
     for rule in rule_upserts {
-        // Whole-second column granularity: sub-second offsets
-        // truncate toward zero (due-date reminders are minute-scale;
-        // config durations are seconds-granularity).
+        // The type guarantees the offset is whole-second and
+        // non-positive, so the integer column stores it exactly — no
+        // truncation, no divergence between the evaluated offset and
+        // the reloaded one.
         sqlx::query!(
             r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?)
