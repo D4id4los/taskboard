@@ -20,26 +20,36 @@ use crate::entities::Task;
 use crate::ids::{AdhocAlarmId, ReminderRuleId, TaskId};
 
 /// A due-anchored offset that can only be "at or before" the due date:
-/// the inner `chrono::TimeDelta` is ≤ 0 by construction — [`before`] is
-/// the only non-zero construction path.
+/// the inner `chrono::TimeDelta` is ≤ 0 and whole-second by
+/// construction — [`before`] is the only non-zero construction path.
+/// Whole-second matters because every persistence lane (the sqlite
+/// `offset_seconds` column, the sidecar document's integer field, the
+/// text form) stores whole seconds; a sub-second offset would diverge
+/// from its persisted form on reload and re-fire a delivered
+/// occurrence.
 ///
 /// [`before`]: ReminderOffset::before
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ReminderOffset(chrono::TimeDelta);
 
 impl ReminderOffset {
     /// The only construction path for a non-zero offset: `dur` must not
     /// be positive ("after due" nagging is the repeat-policy question,
-    /// not an offset sign).
+    /// not an offset sign) and must be a whole number of seconds — the
+    /// sub-second component would be truncated by every persistence
+    /// lane. The positive check runs first: a positive sub-second input
+    /// answers [`InvalidReminderOffset::AfterDue`].
     ///
     /// # Errors
     ///
-    /// [`InvalidReminderOffset`] when `dur` is after the due date.
+    /// [`InvalidReminderOffset::AfterDue`] when `dur` is after the due
+    /// date; [`InvalidReminderOffset::NotWholeSecond`] when `dur`
+    /// carries a sub-second component.
     pub fn before(dur: chrono::TimeDelta) -> Result<Self, InvalidReminderOffset> {
         if dur > chrono::TimeDelta::zero() {
             Err(InvalidReminderOffset::AfterDue)
+        } else if dur.subsec_nanos() != 0 {
+            Err(InvalidReminderOffset::NotWholeSecond)
         } else {
             Ok(Self(dur))
         }
@@ -63,9 +73,9 @@ impl ReminderOffset {
     /// shared by the list rows, the receipts, and the UI rule list; the
     /// [`parse_text_form`](Self::parse_text_form) inverse round-trips it.
     ///
-    /// The form is defined on whole seconds: sub-second offsets —
-    /// constructible only outside the grammar/config/document surfaces —
-    /// truncate.
+    /// The form is defined on whole seconds, which the type guarantees:
+    /// every offset is whole-second by construction, so the rendering
+    /// never discards information.
     #[must_use]
     pub fn text_form(self) -> String {
         use std::fmt::Write as _;
@@ -125,12 +135,45 @@ impl ReminderOffset {
     }
 }
 
-/// `dur > zero` — positive offsets are not constructible.
+/// Positive offsets and sub-second offsets are not constructible; both
+/// rejections happen at the [`before`](ReminderOffset::before) mint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum InvalidReminderOffset {
     /// The proposed offset lies after the due date.
     #[error("reminder offset must not be after the due date")]
     AfterDue,
+    /// The proposed offset carries a sub-second component. Offsets are
+    /// whole-second so the storage column, the text form, and the synced
+    /// document field can never diverge from the evaluated value (a
+    /// reload would recompute a different occurrence and re-fire a
+    /// delivered reminder).
+    #[error("reminder offset must be a whole number of seconds")]
+    NotWholeSecond,
+}
+
+impl Serialize for ReminderOffset {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // The same `(seconds, nanoseconds)` tuple the derived chrono
+        // impl produced — the wire shape is unchanged.
+        <(i64, i32) as Serialize>::serialize(
+            &(self.0.num_seconds(), self.0.subsec_nanos()),
+            serializer,
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for ReminderOffset {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (secs, nanos) = <(i64, i32) as Deserialize>::deserialize(deserializer)?;
+        let nanos = u32::try_from(nanos)
+            .map_err(|_| serde::de::Error::custom("invalid reminder offset"))?;
+        let dur = chrono::TimeDelta::new(secs, nanos)
+            .ok_or_else(|| serde::de::Error::custom("TimeDelta out of bounds"))?;
+        // The mint is the integrity check: positive or sub-second data
+        // is corruption, not a clamped value (the storage codec's
+        // standing precedent, applied to the serde lane).
+        Self::before(dur).map_err(|_| serde::de::Error::custom("invalid reminder offset"))
+    }
 }
 
 /// Which reminder a firing/delivery/snooze refers to: an explicit rule,
@@ -1471,6 +1514,90 @@ mod tests {
             ReminderOffset::at_due().as_duration(),
             chrono::TimeDelta::zero()
         );
+    }
+
+    /// The double-fire impossibility, pinned at the mint: a sub-second
+    /// offset — which every persistence lane would truncate, diverging
+    /// the reload-recomputed occurrence — is rejected typed, not
+    /// truncated or clamped.
+    #[test]
+    fn before_rejects_sub_second_durations() {
+        assert!(matches!(
+            ReminderOffset::before(chrono::TimeDelta::try_milliseconds(-500).unwrap()),
+            Err(InvalidReminderOffset::NotWholeSecond)
+        ));
+        // Whole-second inputs (including zero) stay accepted.
+        assert!(ReminderOffset::before(chrono::TimeDelta::zero()).is_ok());
+        assert!(
+            ReminderOffset::before(chrono::TimeDelta::try_seconds(-90).unwrap()).is_ok(),
+            "whole-second negative still mints"
+        );
+    }
+
+    /// Precedence pin: the positive check dominates, so a positive
+    /// sub-second input answers `AfterDue` — same as any other positive
+    /// input.
+    #[test]
+    fn after_due_dominates_the_precedence() {
+        assert!(matches!(
+            ReminderOffset::before(chrono::TimeDelta::try_milliseconds(500).unwrap()),
+            Err(InvalidReminderOffset::AfterDue)
+        ));
+    }
+
+    /// The text-form grammar only ever produces whole-second offsets:
+    /// every accepted form mints a value whose evaluated duration has no
+    /// sub-second component (deterministic sweep over the grammar's
+    /// units and magnitudes; P9 round-trips the forms).
+    #[test]
+    fn text_form_and_parse_stay_whole_second() {
+        for form in [
+            "0s",
+            "1s",
+            "90s",
+            "10m",
+            "59m",
+            "1h",
+            "1h30m",
+            "23h59m59s",
+            "1d",
+            "2d",
+            "48h",
+            "1d2h3m4s",
+        ] {
+            let offset = ReminderOffset::parse_text_form(form).unwrap_or_else(|| {
+                panic!("grammar accepts {form}");
+            });
+            assert_eq!(
+                offset.as_duration().subsec_nanos(),
+                0,
+                "{form} parses whole-second"
+            );
+        }
+    }
+
+    /// Serde keeps the derived chrono tuple wire shape
+    /// (`(seconds, nanoseconds)`) but mints through `before`: sub-second
+    /// or positive tuples are corruption, rejected typed — never
+    /// clamped.
+    #[test]
+    fn serde_roundtrips_whole_second_and_rejects_corruption() {
+        for secs in [0_i64, -1, -90, -86_400] {
+            let offset = ReminderOffset::before(chrono::TimeDelta::try_seconds(secs).unwrap())
+                .expect("whole-second");
+            let json = serde_json::to_string(&offset).expect("serializes");
+            assert_eq!(json, format!("[{secs},0]"), "unchanged tuple wire shape");
+            let back: ReminderOffset = serde_json::from_str(&json).expect("round-trips");
+            assert_eq!(back, offset);
+        }
+        for corrupt in ["[-600,500000000]", "[1,0]", "[0,-500000000]"] {
+            let err = serde_json::from_str::<ReminderOffset>(corrupt)
+                .expect_err("corrupt tuple rejected");
+            assert!(
+                err.is_data(),
+                "corruption is a data error, not a syntax one: {corrupt}"
+            );
+        }
     }
 
     #[test]
