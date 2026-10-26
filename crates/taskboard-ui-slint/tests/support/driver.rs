@@ -457,11 +457,18 @@ mod tests {
     /// element reads its logical size back (window-filling region),
     /// the find-all queries address repetition instances (empty over
     /// an absent id / a single over the one labelled element).
+    ///
+    /// Uses the house `headless_renderer: true` convention: `run`
+    /// pins one `DriverOptions` per process (`#431`), so both
+    /// self-tests in this binary must agree; every journey uses
+    /// `true` and the geometry reads below do not depend on the
+    /// renderer-name arm that `false` skips. Covering that arm is a
+    /// separate test binary's job, deliberately out of scope here.
     #[test]
     fn driver_reads_element_geometry_and_queries_all_instances() {
         run(
             DriverOptions {
-                headless_renderer: false,
+                headless_renderer: true,
             },
             |driver: &mut SlintDriver| {
                 let (commands_tx, _commands_rx) = mpsc::channel(16);
