@@ -5,8 +5,17 @@
 // collapse; an all-empty day renders the empty state. Rows carry a
 // context line (the stack title, or "board › stack" when more than
 // one board is live — a state-derived presentation decision).
+//
+// The section body is deliberately inlined into the section loop's
+// delegate (#373): a `ListView` whose model flows through a child
+// component's `in property` does not instantiate on the pinned slint
+// (isolated in tests/virtualisation_probe.slint's InnerList shape) —
+// reading the model from the delegate's own row data is the board
+// legs' proven shape.
 
 import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
+import { FocusScrollHint } from "../focus-scroll.slint";
+import { ListView } from "../widgets/listview.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 
@@ -29,58 +38,13 @@ export struct TodayModel {
     empty: bool,
 }
 
-component TodaySection inherits VerticalLayout {
-    in property <TodaySectionModel> section;
-    callback row-activated(int);
-    callback row-clicked(int);
-    callback row-context(int, float, float);
-
-    VerticalLayout {
-        spacing: Theme.space-1;
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            RoleText {
-                role: Typography.caption;
-                text: root.section.label;
-                vertical-alignment: center;
-            }
-            RoleText {
-                role: Typography.caption;
-                text-color: Theme.text-secondary;
-                text: root.section.count;
-                vertical-alignment: center;
-            }
-        }
-        for row[rindex] in root.section.rows: VerticalLayout {
-            spacing: Theme.space-1;
-            vertical-stretch: 0;
-            TaskCard {
-                model: row.card;
-                hint-keys: [];
-                activated => {
-                    root.row-activated(rindex);
-                }
-                clicked => {
-                    root.row-clicked(rindex);
-                }
-                context-requested(x, y) => {
-                    root.row-context(rindex, x, y);
-                }
-            }
-            // The context line (D-V3): the stack, or "board › stack"
-            // on a multi-board desktop.
-            RoleText {
-                role: Typography.caption;
-                text-color: Theme.text-secondary;
-                text: row.context;
-                visible: row.context != "";
-            }
-        }
-    }
-}
-
 export component TodayView inherits FocusScope {
     in property <TodayModel> today;
+    // The window's logical height, pushed from the app window (the
+    // #373 D-7 section bound's base): deliberately NOT a
+    // content-derived height — reading any content height here
+    // re-enters the page's own layout info and binds in a loop.
+    in property <length> viewport-height;
     callback row-activated(int, int);
     callback row-clicked(int, int);
     callback row-context(int, int, float, float);
@@ -97,33 +61,142 @@ export component TodayView inherits FocusScope {
         border-color: Semantic.focus-ring;
         border-radius: Theme.radius-medium;
 
-        Flickable {
+        page := Flickable {
             // The sections scroll: a long day never pushes the chrome
             // around (the action-menu pattern — the viewport
             // auto-tracks the content's preferred size).
             content := VerticalLayout {
                 padding: Theme.space-3;
                 spacing: Theme.space-3;
+                // The section viewports' convergence transients can
+                // temporarily overflow this content; the Flickable only
+                // re-clamps its scroll position on interaction, so a
+                // shrink here re-clamps explicitly (the padding must
+                // stay visible at rest).
+                changed height => {
+                    page.content-y = Math.min(0, Math.max(
+                        page.content-y,
+                        page.height - self.height,
+                    ));
+                }
                 if (root.today.empty): EmptyState {
                     text: "Nothing due today";
                     hint: "Capture a thought from anywhere — it lands in the inbox.";
                 }
-                for section[sindex] in root.today.sections: TodaySection {
-                    section: section;
+                for section[sindex] in root.today.sections: section-block := VerticalLayout {
                     // Content-sized: the walk never stretches a section
                     // into leftover window space.
                     vertical-stretch: 0;
                     // Empty sections collapse (D7): the header and rows
                     // render only when the group has rows.
                     visible: section.count > 0;
-                    row-activated(r) => {
-                        root.row-activated(sindex, r);
+                    spacing: Theme.space-1;
+
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+                        RoleText {
+                            role: Typography.caption;
+                            text: section.label;
+                            vertical-alignment: center;
+                        }
+                        RoleText {
+                            role: Typography.caption;
+                            text-color: Theme.text-secondary;
+                            text: section.count;
+                            vertical-alignment: center;
+                        }
                     }
-                    row-clicked(r) => {
-                        root.row-clicked(sindex, r);
+
+                    // The section's row viewport (#373 D-7): content-sized
+                    // below the page bound, capped above it. The cycle this
+                    // shape must avoid: the repeater's content-height update
+                    // reads the viewport it fills, so the update may not
+                    // read what `height` reads. The decoupling: the repeater
+                    // fills the *bound* (`visible-height`, window-derived)
+                    // while the element's layout height is the content-sized
+                    // min. Consequence: a fitting section keeps up to a
+                    // bound-scale window of live rows (bounded, never
+                    // N-scale); `clip` keeps the surplus off the next
+                    // section.
+                    row-viewport-clip := Rectangle {
+                        // The clip host owns the content-sized min (clip
+                        // is Rectangle-only). The height is *assigned* by
+                        // the changed handlers below, never bound: the
+                        // compiler adds a conservative
+                        // height -> content-height edge to every ListView,
+                        // so any declarative min(content-height, cap) is
+                        // rejected as a binding loop, and an assignment
+                        // (which replaces, never re-enters) is the only
+                        // escape. The update itself fills `visible-height`
+                        // — the window-derived bound — so one adjustment
+                        // converges: measure, then min(content, cap).
+                        clip: true;
+                        row-viewport := ListView {
+                            height: 100%;
+                            visible-height: Math.max(root.viewport-height - 2 * Theme.space-3, 0);
+                            changed content-height => {
+                                parent.height = Math.min(
+                                    self.content-height,
+                                    Math.max(root.viewport-height - 2 * Theme.space-3, 0),
+                                );
+                            }
+                            request-row: FocusScrollHint.target-a == sindex
+                            ? FocusScrollHint.target-b
+                            : -1;
+                        request-nonce: FocusScrollHint.target-a == sindex
+                            ? FocusScrollHint.nonce
+                            : 0;
+                        total-rows: section.rows.length;
+                        for row[rindex] in section.rows: today-row := VerticalLayout {
+                            spacing: Theme.space-1;
+                            vertical-stretch: 0;
+                            // The explicit height carries the card's
+                            // preferred plus the conditional context line
+                            // (the board delegate's pattern): the
+                            // repeater's implicit preferred-height binding
+                            // under-solves the wrapped card.
+                            height: row-card.preferred-height
+                                + (context-line.visible
+                                    ? Theme.space-1 + context-line.preferred-height
+                                    : 0);
+                            row-card := TaskCard {
+                                model: row.card;
+                                hint-keys: [];
+                                activated => {
+                                    root.row-activated(sindex, rindex);
+                                }
+                                clicked => {
+                                    root.row-clicked(sindex, rindex);
+                                }
+                                context-requested(x, y) => {
+                                    root.row-context(sindex, rindex, x, y);
+                                }
+                            }
+                            // The context line (D-V3): the stack, or
+                            // "board › stack" on a multi-board desktop.
+                            context-line := RoleText {
+                                role: Typography.caption;
+                                text-color: Theme.text-secondary;
+                                text: row.context;
+                                visible: row.context != "";
+                            }
+                        }
+                        }
                     }
-                    row-context(r, x, y) => {
-                        root.row-context(sindex, r, x, y);
+
+                    // Window resizes ride the section's viewport-height
+                    // (the window height push) via this watch property
+                    // (a changed handler can only attach to the element
+                    // owning the property, and `viewport-height` lives on
+                    // the view); content changes ride the row viewport's
+                    // content-height (above). Both re-apply the same
+                    // bound; a no-op write re-fires nothing.
+                    property <length> watch-viewport-height: root.viewport-height;
+                    changed watch-viewport-height => {
+                        row-viewport-clip.height = Math.min(
+                            row-viewport.content-height,
+                            Math.max(root.viewport-height - 2 * Theme.space-3, 0),
+                        );
                     }
                 }
             }

@@ -6,6 +6,8 @@ import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 import { TextField } from "../widgets/text-field.slint";
+import { FocusScrollHint } from "../focus-scroll.slint";
+import { ListView } from "../widgets/listview.slint";
 
 // The stack-detail model (D22).
 export struct StackDetailModel {
@@ -36,6 +38,11 @@ export component StackView inherits FocusScope {
         border-radius: Theme.radius-medium;
 
         VerticalLayout {
+            // The ring is a plain Rectangle (no layout): without an
+            // explicit fill this layout solves to its preferred — and
+            // the viewport's Flickable preferred is 0, collapsing it.
+            width: 100%;
+            height: 100%;
             spacing: Theme.space-2;
 
             RoleText {
@@ -51,23 +58,39 @@ export component StackView inherits FocusScope {
                 hint: "Create one to get started";
             }
 
-            VerticalLayout {
-                alignment: start;
-                spacing: Theme.space-1;
-                for task[task-index] in root.stack.tasks: TaskCard {
+            // The stack's task viewport (#373 M3): the unchanged card
+            // loop inside the in-house ListView — viewport-scale
+            // instantiation at any N. The seams keep the global model
+            // index. The viewport absorbs the pane's surplus (the only
+            // stretchable child between the heading and the create
+            // field), so the create field stays visible where a deep
+            // list used to push it off-window.
+            task-viewport := ListView {
+                vertical-stretch: 1;
+                min-height: 0;
+                // The stack-detail surface reads the hint's row alone
+                // (target-a is −1 there — focus-scroll.slint).
+                request-row: FocusScrollHint.target-a == -1
+                    ? FocusScrollHint.target-b
+                    : -1;
+                request-nonce: FocusScrollHint.target-a == -1
+                    ? FocusScrollHint.nonce
+                    : 0;
+                total-rows: root.stack.tasks.length;
+                for task[task-index] in root.stack.tasks: detail-task := TaskCard {
                     model: task;
                     activated => root.task-activated(task-index);
                     clicked => root.task-clicked(task-index);
                     context-requested(x, y) => root.task-context(task-index, x, y);
                 }
+            }
 
-                if (root.stack.create-open): TextField {
-                    placeholder: "New task title";
-                    label: "New task title";
-                    commit-affordance: true;
-                    accepted(text) => root.create-committed(text);
-                    edited(text) => root.create-edited(text);
-                }
+            if (root.stack.create-open): TextField {
+                placeholder: "New task title";
+                label: "New task title";
+                commit-affordance: true;
+                accepted(text) => root.create-committed(text);
+                edited(text) => root.create-edited(text);
             }
         }
     }

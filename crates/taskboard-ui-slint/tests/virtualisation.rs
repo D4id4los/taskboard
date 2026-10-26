@@ -399,3 +399,238 @@ fn tables_state_head(state: &AppState) -> taskboard_domain::TaskId {
     column0.sort_by_key(|task| (task.order, task.id));
     column0[0].id
 }
+
+// -- the today sections and stack detail (stage-1 plan §3.3, M3) ----------
+
+/// Engagement, Today sections: a deep overdue fixture renders a
+/// viewport-scale window of rows, not all of them.
+#[test]
+fn the_today_sections_virtualise() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            // The bench fixture's due dates are in the past: ~N/3 rows
+            // land in the Overdue section.
+            let state = Arc::new(ArcSwap::from_pointee(build_state(600)));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = mount(
+                state,
+                dummy_receiver(),
+                dummy_system_receiver(),
+                commands,
+                requests_tx,
+                UiSettings::default(),
+            )
+            .expect("mount succeeds on the testing backend");
+            driver.bind(&handle);
+            driver.set_window_size(1000, 900);
+            driver.advance_time(0);
+
+            let rows = driver.find_all_by_id("TodayView::today-row");
+            assert!(
+                !rows.is_empty(),
+                "the engaged Today view still renders its head rows"
+            );
+            assert!(
+                rows.len() * 4 < 600,
+                "the Today sections must render viewport-scale, got {} live \
+                 rows of 600 — the eager shape means a section lost the \
+                 ListView",
+                rows.len()
+            );
+        },
+    );
+}
+
+/// Engagement, stack detail: the stack's task list virtualises.
+#[test]
+fn the_stack_detail_list_virtualises() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (handle, _engine) = mount_board(driver, 1000, 1000, 900);
+            // One view step from the board lands on the stack-detail
+            // surface (the view cycle Today → Board → StackDetail →
+            // TaskDetail).
+            handle.dispatch_action(ActionId::NavNextView);
+            driver.advance_time(0);
+
+            // The stack delegates' element ids are not addressable on
+            // the pinned slint (the id query returns them empty — the
+            // board's and the today view's are fine), so the
+            // engagement observable here is the labelled-card count:
+            // half of the selected stack's 250 cards probed (i ≡ 0
+            // mod 4, first 500 canonical positions). An eager list
+            // has every probed head live and fails the ratio; an
+            // engaged viewport keeps only its window.
+            let mut live_heads = 0;
+            let mut probed = 0;
+            for i in (0..500).step_by(4) {
+                probed += 1;
+                if driver.find_by_label(&bench_label(i)).is_some() {
+                    live_heads += 1;
+                }
+            }
+            assert!(
+                live_heads > 0,
+                "the engaged stack list still renders its head cards"
+            );
+            assert!(
+                live_heads * 4 < probed,
+                "the stack list must render viewport-scale, got {live_heads} \
+                 live head cards of the {probed} probed — the eager shape \
+                 means the stack view lost the ListView",
+            );
+
+            // The focus-into-view seam reaches the stack surface too.
+            // The regular stack view's keyboard walk roams the whole
+            // reading order, so no stroke addresses a deep row of the
+            // subject stack deterministically; the test writes the
+            // hint global in the exact shape the adapter writes for a
+            // focused subject-stack row (target-a = −1 — the stack
+            // surface's shape per focus-scroll.slint; the adapter-side
+            // resolution is `IdTables::stack_position`, unit-tested in
+            // models.rs, and the board journeys exercise the full
+            // adapter path end-to-end).
+            assert!(
+                driver.find_by_label(&bench_label(996)).is_none(),
+                "the stack's last card starts off-viewport"
+            );
+            let hint = handle
+                .window()
+                .global::<taskboard_ui_slint::FocusScrollHint>();
+            hint.set_target_a(-1);
+            hint.set_target_b(249);
+            hint.set_nonce(hint.get_nonce() + 1);
+            driver.advance_time(0);
+
+            let last = driver
+                .find_by_label(&bench_label(996))
+                .unwrap_or_else(|| panic!("the seek made the stack's last card live"));
+            let position = last.absolute_position();
+            let size = last.size();
+            assert!(
+                position.y >= 0.0 && position.y + size.height <= 900.0,
+                "the focused stack card is fully visible, got y={} h={}",
+                position.y,
+                size.height
+            );
+        },
+    );
+}
+
+/// Anchor-on-removal (#461): with the Today overdue viewport driven
+/// deep by the keyboard walk, flipping an above-viewport overdue
+/// task's `done` removes it from the section — and the on-screen
+/// rows do not move (the repeater's row-anchored offset shift).
+/// A pixel-anchored repeater shifts every visible row up by the
+/// removed row's height and fails this pin.
+#[test]
+fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(build_state(600)));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = mount(
+                Arc::clone(&state),
+                dummy_receiver(),
+                dummy_system_receiver(),
+                commands,
+                requests_tx,
+                UiSettings::default(),
+            )
+            .expect("mount succeeds on the testing backend");
+            driver.bind(&handle);
+            driver.set_window_size(1000, 900);
+            driver.advance_time(0);
+
+            // Drive the walk deep: each stroke lands on the next row
+            // of the today domain; past the viewport the seek
+            // top-anchors, so the viewport ends far from row 0.
+            for _ in 0..30 {
+                handle.dispatch_action(ActionId::NavNextItem);
+                driver.advance_time(0);
+            }
+
+            let focused = driver
+                .find_by_label(&bench_label(87))
+                .unwrap_or_else(|| panic!("the walked-to card is live"));
+            let rest = focused.absolute_position();
+
+            // Flip overdue row 0's `done` (the fixture's first task is
+            // the oldest overdue): a removal above the viewport.
+            let mut next = (**state.load()).clone();
+            let first = next
+                .tasks
+                .values()
+                .find(|task| task.title == bench_label(0))
+                .expect("the fixture's first task")
+                .id;
+            next.tasks.get_mut(&first).expect("task").done = Some(chrono::Utc::now());
+            state.store(Arc::new(next));
+            handle.refresh();
+            driver.advance_time(0);
+
+            let focused = driver
+                .find_by_label(&bench_label(87))
+                .unwrap_or_else(|| panic!("the focused card stays live across the removal"));
+            let after = focused.absolute_position();
+            assert_eq!(
+                rest.y, after.y,
+                "the removal above the viewport must not move the on-screen rows"
+            );
+        },
+    );
+}
+
+/// Compact stack-switch remount (r2 D8): switching stacks by keyboard
+/// re-mounts the single column's viewport cleanly — the new stack's
+/// head card renders at the rest position, the old stack's cards are
+/// gone.
+#[test]
+fn a_compact_stack_switch_remounts_the_viewport_cleanly() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (handle, _engine) = mount_board(driver, 1000, 600, 900);
+            let old_head = bench_label(0);
+            // Retreating from the top hands focus back to the switcher
+            // (r2 D8) and the second stroke moves to the previous
+            // stack — the last one — landing on its first task.
+            let new_head = bench_label(3);
+            assert!(
+                driver.find_by_label(&old_head).is_some(),
+                "the selected stack's head card renders"
+            );
+
+            handle.dispatch_action(ActionId::NavPrevItem);
+            driver.advance_time(0);
+            handle.dispatch_action(ActionId::NavPrevItem);
+            driver.advance_time(0);
+
+            let card = driver
+                .find_by_label(&new_head)
+                .expect("the new stack's head card renders after the switch");
+            let position = card.absolute_position();
+            assert!(
+                position.y > 0.0 && position.y < 900.0,
+                "the new stack's head card renders at its rest position"
+            );
+            assert!(
+                driver.find_by_label(&old_head).is_none(),
+                "the old stack's cards are gone from the viewport"
+            );
+        },
+    );
+}

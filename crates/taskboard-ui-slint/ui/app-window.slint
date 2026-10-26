@@ -173,6 +173,9 @@ export component AppWindow inherits Window {
     // reads them.
     out property <float> window-w: root.width / 1px;
     out property <float> window-h: root.height / 1px;
+    // The window height as a length (the #373 today section bound's
+    // base; a token-lint-clean length source for markup consumers).
+    out property <length> window-height: root.height;
     // The rendering fact the menu sizing (usability D6) and the
     // tooltip flip (D3) are proved against: the status bar's top edge
     // in window coordinates (the inner layouts sit at the origin).
@@ -244,6 +247,7 @@ export component AppWindow inherits Window {
             }
             if (root.current-view == View.today): TodayView {
                 today: root.today-model;
+                viewport-height: root.window-height;
                 row-activated(s, r) => root.today-row-activated(s, r);
                 row-clicked(s, r) => root.today-row-clicked(s, r);
                 row-context(s, r, x, y) => root.today-row-context-requested(s, r, x, y);
