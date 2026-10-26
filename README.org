@@ -208,6 +208,15 @@ connectors at all. Note that the array cannot be expressed through
 environment variables, and setting =TASKBOARD_SYNC__BACKEND= over an
 array config is now a loud error.
 
+The kiosk wave's two deployment tables follow the same rules —
+strictly typed, every invalid value a config error that refuses the
+boot, never a silent default: =[kiosk]= (the appliance profile:
+=fixed_board= plus the optional =[kiosk.rotation]= rotation table)
+and =[web]= (the dashboard: =enabled= / =bind= / =refresh_secs= /
+=token=). Both are documented in their usage sections below
+([[*Deploying a kiosk][Deploying a kiosk]] and
+[[*Web dashboard][Web dashboard]]).
+
 ** Display scaling
 
 The desktop UI scales on two orthogonal axes (they compose; both need a
@@ -380,7 +389,65 @@ runtime contract; the deployment pieces are:
   the D250's i686 cross-build lane.
 - =[kiosk] fixed_board= — the optional board pin, resolved typed
   against the live boards at boot; an unknown board refuses the
-  boot.
+  boot, and a pin-less boot facing two or more live boards refuses
+  with =kiosk-pin-required= (one board, or an explicit pin).
+- =[kiosk.rotation]= — the ambient rotation profile. Writing the
+  table *is* the enablement; both keys are required inside it:
+
+  #+begin_src toml
+  [kiosk]
+  fixed_board = "<board-uuid>"   # optional; see the pin rules above
+
+  [kiosk.rotation]
+  modes = ["board", "today"]     # the display modes to cycle, in order
+  dwell_secs = 60                # per-mode display time; floor 10 s
+  #+end_src
+
+  With rotation configured, the appliance's window is a *passive
+  ambient display*: the pinned board's kanban reading and the today
+  view's upcoming reading alternate on the dwell timer, with no
+  keyboard or mouse input expected and no capture or edit affordance
+  reachable. Every invalid value is a typed configuration error that
+  refuses the boot — never a silent default (a =dwell_secs= under 10
+  is refused, not clamped; =modes= needs at least two distinct
+  entries from =board= / =today=). An absent =[kiosk.rotation]=
+  table keeps the pre-rotation behaviour byte-for-byte: the window
+  stays on the pinned board.
+
+** Web dashboard
+
+An optional read-only HTTP view of the running daemon, meant for the
+tablet on the wall next to the kiosk display. Opt in by writing a
+=[web]= table — inside a present table =enabled= defaults to =true=;
+=enabled = false= or an absent table never spawns a server:
+
+#+begin_src toml
+[web]
+# enabled = true                 # the default inside a present table
+# bind = "127.0.0.1:8787"        # the loopback default (the trusted arm)
+# refresh_secs = 30              # meta-refresh cadence; floor 5 s
+# token = "..."                  # explicit capability token override
+#+end_src
+
+The dashboard serves a plain HTML page over the capability-token URL
+=/d/<token>/…=: the index shows the sync phase, last success, pending
+ops, and the engine counters; each live board has a read-only column
+reading at =/d/<token>/board/<id>=. The page polls itself via
+=meta refresh= at =refresh_secs= (floored typed at 5 s — a lower
+value refuses the boot).
+
+The loopback bind is the trusted arm: anything on the machine can
+read the token. The capability token resolves in a fixed order — the
+explicit =[web] token= override, then the persisted
+=<db-path>.web-token= file, then a fresh generated =uuid= (written
+owner-only =0600= on first boot, so the operator always has a token
+to read from disk or config; a loose-permission token file is a
+typed error). A *non-loopback* bind additionally requires a
+*resolvable* token — a LAN bind whose token was just freshly minted
+refuses at boot rather than serve a capability the operator has
+never seen. The dashboard is read-only: it answers from one lock-free
+state snapshot plus one metrics read per request, and nothing can be
+mutated through it.
 
 ** Interactive shell (no arguments on a terminal)
 
