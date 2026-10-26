@@ -43,13 +43,15 @@
 - **Branch / worktree**: `docs/sync-merge-policy-design` in
   `../taskboard-WT-docs-sync-merge-policy-design`, off `origin/main`
   @ `2991f65`.
-- **Status**: PROPOSED — the five direction forks (§4, F-128 …
-  F-150b) are documented at decision-ready depth with a
-  recommendation each and are **not yet ruled on**; the user's plan
-  review is the ruling pass. The implementation issues opened with
-  this plan carry the same flags in their bodies; a ruling that flips
-  a fork edits the issue body at plan review — this plan stays the
-  single source.
+- **Status**: ACCEPTED (user ruling 2026-10-26): all six direction
+  forks — F-128, F-129, F-130, F-133, F-150, F-150b — are confirmed
+  **as recommended**. The decisions below are binding for the
+  follow-up implementation round (chunks S/G/L/D/R, issues
+  #480–#484, strictly serial); the origin issues #128/#129/#130/#150
+  close with their chunk's PR, and #133 stays open with its trigger
+  documented (chunk S posts the verification note). The draft's
+  per-fork "awaiting the user's plan-review ruling" flags are
+  resolved; the rejected-alternative records stay for the archive.
 
 ---
 
@@ -565,9 +567,12 @@ AGENTS §5.
 | **F-150** | Duplicate resolution direction | **Auto-collapse, keep older, delete our duplicate** (cards + stacks) | Report-only (leaves local + remote pollution); defer |
 | **F-150b** | Boards W2 orphan | **Adopt-by-title sweep in the publish ceremony** | Runbook-only (ADR 0010's current text — stays the floor if overruled) |
 
-One process note for the ruling: F-128's "design-only" and F-129's
-"hold" variants keep their issues open trigger-gated; every other
-fork flip changes only its own chunk's interior, not the chunk map.
+**Ruling (2026-10-26)**: every fork above is confirmed as
+recommended — tasks-only baseline scope, build the OR-set,
+automatic resurrect + `SystemEvent`, skew test-pack with the guard
+symptom-triggered, auto-collapse keep-older, and the W2
+adopt-by-title sweep. The rejected-alternative column stays for the
+archive; no implementation issue body needed a flip.
 
 ## 5. Risks
 
