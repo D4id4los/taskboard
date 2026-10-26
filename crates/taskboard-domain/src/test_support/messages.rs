@@ -46,6 +46,11 @@ pub fn label_changes_strategy() -> impl Strategy<Value = crate::messages::LabelC
 /// may reference entities that do not exist in the state under test —
 /// exercising the typed-rejection paths), payloads are bounded strings
 /// and sane orders.
+/// # Panics
+///
+/// Panics only if chrono cannot represent the bounded span offsets —
+/// a programming error, not an input condition.
+#[allow(clippy::too_many_lines)] // one strategy arm per verb family
 pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateCommand> {
     use crate::messages::StateCommand;
 
@@ -143,6 +148,31 @@ pub fn state_command_strategy() -> impl Strategy<Value = crate::messages::StateC
         (super::task_id_strategy(), reminder_offset_strategy())
             .prop_map(|(task, offset)| StateCommand::AddReminderRule { task, offset }),
         super::task_id_strategy().prop_map(|task| StateCommand::ClearReminderRules { task }),
+        // 5: tracking commands (DR-5/1)
+        super::task_id_strategy().prop_map(|task| StateCommand::StartTracking { task }),
+        Just(StateCommand::StopTracking),
+        (
+            super::task_id_strategy(),
+            super::timestamp_strategy(),
+            1_i64..=86_400,
+        )
+            .prop_map(|(task, start, span)| {
+                // Valid spans only: the rejection paths are unit tests
+                // (the strategy feeds the accepted sign domain, like the
+                // snooze postpone).
+                StateCommand::LogTime {
+                    task,
+                    start,
+                    end: start + chrono::TimeDelta::try_seconds(span).unwrap(),
+                }
+            }),
+        (
+            super::time_entry_id_strategy(),
+            prop::option::of(super::timestamp_strategy()),
+            prop::option::of(super::timestamp_strategy()),
+        )
+            .prop_map(|(id, start, end)| StateCommand::AdjustTimeEntry { id, start, end }),
+        super::time_entry_id_strategy().prop_map(|id| StateCommand::DeleteTimeEntry { id }),
         // 1: sync request
         Just(StateCommand::RequestSync),
     ]

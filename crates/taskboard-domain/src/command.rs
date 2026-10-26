@@ -1675,19 +1675,17 @@ pub fn plan_command(
             {
                 return Ok(no_op());
             }
-            let (closes, touched_tasks) = close_all_open(app, now);
-            let entries: Vec<TimeEntry> = closes
+            let (closed_rows, touched_tasks) = close_all_open(app, now);
+            let mut actions: Vec<PersistenceAction> = closed_rows
                 .iter()
-                .map(|action| match action {
-                    PersistenceAction::UpsertTimeEntry(entry) => entry.clone(),
-                    _ => unreachable!("close_all_open only mints entry upserts"),
-                })
+                .map(|row| PersistenceAction::UpsertTimeEntry(row.clone()))
                 .collect();
-            let mut actions = closes;
             actions.extend(flush_ops(&touched_tasks, ids, now));
             Ok(CommandPlan {
                 actions,
-                outcome: CommandOutcome::TrackingStopped { entries },
+                outcome: CommandOutcome::TrackingStopped {
+                    entries: closed_rows,
+                },
             })
         }
         StateCommand::LogTime { task, start, end } => {
@@ -6268,6 +6266,60 @@ mod tests {
     }
 
     #[test]
+    fn rename_never_rewrites_the_title_snapshot() {
+        // start → UpdateTask title → adjust: the entry's task_title
+        // stays the snapshot taken at start (D-T2).
+        let (app, outbox) = base();
+        let start = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking { task: task_id() },
+        )
+        .unwrap();
+        let mut disk = crate::persistence::PersistedState {
+            boards: app.boards.clone(),
+            stacks: app.stacks.clone(),
+            tasks: app.tasks.clone(),
+            labels: app.labels.clone(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut disk, &start.actions);
+        let mid: AppState = disk.clone().into();
+
+        let rename = run(
+            &mid,
+            &disk.outbox,
+            &StateCommand::UpdateTask {
+                id: task_id(),
+                changes: crate::messages::TaskChanges {
+                    title: Some("renamed".into()),
+                    ..crate::messages::TaskChanges::default()
+                },
+            },
+        )
+        .unwrap();
+        crate::persistence::apply_actions(&mut disk, &rename.actions);
+        let after_rename: AppState = disk.clone().into();
+
+        let entry_id = disk.tracking.entries.keys().copied().next().unwrap();
+        let adjust = run(
+            &after_rename,
+            &disk.outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: entry_id,
+                start: Some(ts(T0 - 60)),
+                end: None,
+            },
+        )
+        .unwrap();
+        crate::persistence::apply_actions(&mut disk, &adjust.actions);
+        let row = &disk.tracking.entries[&entry_id];
+        assert_eq!(row.task_title, "task 1", "the snapshot outlives the rename");
+        assert_eq!(app.tasks[&task_id()].title, "task 1");
+        let _ = rename;
+    }
+
+    #[test]
     fn start_tracking_rejects_unknown_and_deleted_tasks() {
         let (mut app, outbox) = base();
         let stranger = TaskId::from(uuid::Uuid::from_u128(4_242));
@@ -6591,6 +6643,161 @@ mod tests {
         .unwrap();
         assert_eq!(plan.outcome, CommandOutcome::NoOp);
         assert_eq!(plan.actions, Vec::new());
+    } // ---- Single-global convergence (DR-5/1, §5.18) -----------------------
+
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config(256))]
+
+        #[test]
+        fn single_global_convergence_prop(
+            tracking in crate::test_support::tracking_state_strategy(),
+            target in 0_u64..4,
+            stop in proptest::bool::ANY,
+        ) {
+            // A small live-task pool: the tracking verbs resolve against
+            // it, nothing else in the state matters.
+            let mut tasks = std::collections::BTreeMap::new();
+            for raw in 0_u64..4 {
+                let row = task(raw, stack_id(), false);
+                tasks.insert(row.id, row);
+            }
+            let target = TaskId::from(uuid::Uuid::from_u128(u128::from(target)));
+            let app = AppState {
+                tasks: tasks.clone(),
+                tracking: tracking.clone(),
+                ..AppState::default()
+            };
+            let command = if stop {
+                StateCommand::StopTracking
+            } else {
+                StateCommand::StartTracking { task: target }
+            };
+            let plan = plan_command(
+                &app,
+                &[],
+                &command,
+                &CountingIds::default(),
+                &crate::reminders::ReminderDefaults::default(),
+                now(),
+            )
+            .expect("the verbs accept every (state, pool) shape here");
+            let mut disk = crate::persistence::PersistedState {
+                tracking: tracking.clone(),
+                ..crate::persistence::PersistedState::default()
+            };
+            crate::persistence::apply_actions(&mut disk, &plan.actions);
+            let open: Vec<_> = disk
+                .tracking
+                .entries
+                .values()
+                .filter(|entry| entry.end.is_none())
+                .collect();
+            if stop {
+                prop_assert_eq!(open.len(), 0, "stop converges to zero open entries");
+            } else if plan.outcome == CommandOutcome::NoOp {
+                // The NoOp precondition: the open set was exactly the
+                // target's single entry.
+                let pre_open: Vec<_> = tracking
+                    .entries
+                    .values()
+                    .filter(|entry| entry.end.is_none())
+                    .cloned()
+                    .collect();
+                prop_assert_eq!(pre_open.len(), 1);
+                prop_assert_eq!(pre_open[0].task, target);
+                prop_assert_eq!(open.len(), 1);
+            } else {
+                prop_assert_eq!(open.len(), 1, "start converges to one open entry");
+                prop_assert_eq!(open[0].task, target);
+            }
+        }
+
+        #[test]
+        fn unioned_single_global_states_converge_at_the_next_write(
+            left in crate::test_support::tracking_state_strategy(),
+            right in crate::test_support::tracking_state_strategy(),
+            target in 0_u64..4,
+        ) {
+            // The single-global precondition each device maintains
+            // locally: at most one open entry per state. Both devices'
+            // open picks may name different tasks — exactly the
+            // concurrent-starts shape D-T8 rules on.
+            let open_count = |state: &crate::tracking::TrackingState| {
+                state.entries.values().filter(|entry| entry.end.is_none()).count()
+            };
+            prop_assume!(open_count(&left) <= 1, "left is single-global");
+            prop_assume!(open_count(&right) <= 1, "right is single-global");
+            // Union by a test-local per-key newer-`updated_at`-wins
+            // oracle (the documented stand-in for the storage chunk's
+            // `union_time_entries`); ties go to the overlay, matching
+            // the sidecar's union contract. The union may hold two open
+            // entries — the transient shape the next write must clean.
+            let mut union = left.clone();
+            for (id, row) in &right.entries {
+                match union.entries.get(id) {
+                    Some(known) if known.updated_at > row.updated_at => {}
+                    _ => {
+                        union.entries.insert(*id, row.clone());
+                    }
+                }
+            }
+            let mut tasks = std::collections::BTreeMap::new();
+            for raw in 0_u64..4 {
+                let row = task(raw, stack_id(), false);
+                tasks.insert(row.id, row);
+            }
+            let app = AppState {
+                tasks: tasks.clone(),
+                tracking: union.clone(),
+                ..AppState::default()
+            };
+            // The next write converges: stop → 0 open, start → 1.
+            let stop = plan_command(
+                &app,
+                &[],
+                &StateCommand::StopTracking,
+                &CountingIds::default(),
+                &crate::reminders::ReminderDefaults::default(),
+                now(),
+            )
+            .unwrap();
+            let mut disk = crate::persistence::PersistedState {
+                tracking: union,
+                ..crate::persistence::PersistedState::default()
+            };
+            crate::persistence::apply_actions(&mut disk, &stop.actions);
+            prop_assert!(
+                disk.tracking
+                    .entries
+                    .values()
+                    .all(|entry| entry.end.is_some()),
+                "the union's next stop converges to zero open"
+            );
+            let target = TaskId::from(uuid::Uuid::from_u128(u128::from(target)));
+            let app = AppState {
+                tasks: tasks.clone(),
+                tracking: disk.tracking.clone(),
+                ..AppState::default()
+            };
+            let start = plan_command(
+                &app,
+                &[],
+                &StateCommand::StartTracking { task: target },
+                &CountingIds::default(),
+                &crate::reminders::ReminderDefaults::default(),
+                now(),
+            )
+            .unwrap();
+            crate::persistence::apply_actions(&mut disk, &start.actions);
+            let open: Vec<_> = disk
+                .tracking
+                .entries
+                .values()
+                .filter(|entry| entry.end.is_none())
+                .collect();
+            prop_assert_eq!(open.len(), 1, "the union's next start converges to one");
+            prop_assert_eq!(open[0].task, target);
+        }
     }
 }
 

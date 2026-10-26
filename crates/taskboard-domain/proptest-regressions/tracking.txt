@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4f8776232f2d22cda415bff5dc5c032851aac00990e7bd8da5b680f3ca654d42 # shrinks to entries = [TimeEntry { id: TimeEntryId(00000000-0000-0000-0000-000000000000), task: TaskId(00000000-0000-0000-0000-000000000000), task_title: "", start: 1971-01-01T00:00:00Z, end: None, created_at: 1971-01-01T00:00:00Z, updated_at: 1971-01-01T00:00:00Z }], window_start = 1971-01-01T00:00:00Z, window_secs = 1, now = 1971-01-01T00:00:02Z

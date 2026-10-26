@@ -144,6 +144,20 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
     });
     let complete = any::<u128>().prop_map(|raw| PersistenceAction::CompleteOp(OpId(uuid(raw))));
     let fail = any::<u128>().prop_map(|raw| PersistenceAction::FailOp(OpId(uuid(raw))));
+    let entry_upsert = any::<u128>().prop_map(|raw| {
+        PersistenceAction::UpsertTimeEntry(taskboard_domain::TimeEntry {
+            id: taskboard_domain::TimeEntryId::from(uuid(raw)),
+            task: TaskId::from(uuid(0)),
+            task_title: "te".into(),
+            start: ts(1),
+            end: Some(ts(2)),
+            created_at: ts(1),
+            updated_at: ts(1),
+        })
+    });
+    let entry_delete = any::<u128>().prop_map(|raw| {
+        PersistenceAction::DeleteTimeEntry(taskboard_domain::TimeEntryId::from(uuid(raw)))
+    });
     prop_oneof![
         board,
         stack,
@@ -152,6 +166,8 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
         enqueue,
         complete,
         fail,
+        entry_upsert,
+        entry_delete,
         Just(PersistenceAction::UpsertSyncStatus(
             taskboard_domain::BoardId::from(uuid::Uuid::from_u128(1)),
             taskboard_domain::SyncStatus {

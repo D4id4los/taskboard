@@ -121,4 +121,4 @@ pub use state::{
     AppState, SidecarHealth, SyncCounters, SyncErrorKind, SyncPhase, SyncStates, SyncStatus,
     aggregate_rows, attributed_board, derive_sidecar_health, derive_sync_states,
 };
-pub use tracking::{ClosedSpan, SpanRejected, TimeEntry, TrackingState};
+pub use tracking::{ClosedSpan, SpanRejected, TimeEntry, TrackingState, tracked_in_window};

@@ -394,10 +394,38 @@ pub fn app_state_strategy() -> impl Strategy<Value = AppState> {
     (
         raw_app_state_strategy(),
         super::reminders::reminder_rows_strategy(),
+        super::tracking_state_strategy(),
     )
-        .prop_map(|(state, rows)| AppState {
-            reminders: super::reminders::build_reminders(&state.tasks, rows),
-            ..state
+        .prop_map(|(state, rows, mut tracking)| {
+            // Tracking entries join the referential guarantee: chunk 1
+            // mints entries only for live tasks and soft-deleted tasks
+            // keep their map rows, so a reachable entry always names a
+            // generated task (an absent-task entry becomes reachable
+            // only with the roaming chunk's fold, which skips
+            // unresolvable rows). Entries drawn against an empty pool
+            // are unreachable and dropped.
+            let pool: Vec<crate::ids::TaskId> = state.tasks.keys().copied().collect();
+            tracking.entries = tracking
+                .entries
+                .into_iter()
+                .filter_map(|(id, mut entry)| {
+                    let first = *pool.first()?;
+                    let pick = pool
+                        .get(
+                            usize::try_from(entry.id.as_uuid().as_u128() % pool.len() as u128)
+                                .unwrap_or(0),
+                        )
+                        .copied()
+                        .unwrap_or(first);
+                    entry.task = pick;
+                    Some((id, entry))
+                })
+                .collect();
+            AppState {
+                reminders: super::reminders::build_reminders(&state.tasks, rows),
+                tracking,
+                ..state
+            }
         })
 }
 
