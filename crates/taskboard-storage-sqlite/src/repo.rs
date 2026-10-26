@@ -794,6 +794,9 @@ impl SqliteTaskRepository {
             validators,
             sync,
             reminders,
+            // Chunk DR-5/2's migration 0013 hydrates this map; the empty
+            // default is the honest shape until that codec exists.
+            tracking: taskboard_domain::TrackingState::default(),
         };
         // The per-board projection is derived, never stored: stored rows
         // carry phase/last_success, `pending_ops` is attributed from the
@@ -877,6 +880,14 @@ async fn execute_batch(
     let mut snoozes = Vec::new();
     let mut mute_toggles = Vec::new();
     let mut clear_board_content = Vec::new();
+    // R-11 (DR-5/1): these two arms are the no-wildcard rule's own tax —
+    // the planner cannot emit rows otherwise. The writes below use
+    // runtime-checked `sqlx::query` (not the compile-checked macro)
+    // because the `time_entries` table arrives with migration 0013 in
+    // chunk DR-5/2; no producer emits these actions in this chunk, so
+    // the paths are dead until that migration lands.
+    let mut entry_upserts = Vec::new();
+    let mut entry_deletes = Vec::new();
     for action in actions {
         match action {
             PersistenceAction::UpsertBoard(board) => boards.push(board),
@@ -909,6 +920,8 @@ async fn execute_batch(
             PersistenceAction::ClearBoardContent(board) => {
                 clear_board_content.push(*board);
             }
+            PersistenceAction::UpsertTimeEntry(entry) => entry_upserts.push(entry),
+            PersistenceAction::DeleteTimeEntry(entry_id) => entry_deletes.push(*entry_id),
         }
     }
 
@@ -1129,6 +1142,45 @@ async fn execute_batch(
             .map_err(|e| stmt_error(&e))?;
         }
         tracing::trace!(task = ?task.id, stack = ?task.stack, labels = task.labels.len(), "task upserted");
+    }
+
+    // R-11 (DR-5/1): the time-entry writes, dead until chunk DR-5/2's
+    // migration 0013 creates the table (see the partition comment).
+    // Written against the plan's D-T9 DDL: hyphenated-UUID TEXT ids,
+    // RFC 3339 TEXT stamps, no FKs (entries outlive soft-deleted tasks).
+    // Deletes run after upserts so a batch carrying both for one id
+    // mirrors `apply_actions`' sequential last-write-wins semantics.
+    for entry in entry_upserts {
+        sqlx::query(
+            r"INSERT INTO time_entries (entry_id, task_id, task_title, start, end, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entry_id) DO UPDATE SET
+                       task_id = excluded.task_id,
+                       task_title = excluded.task_title,
+                       start = excluded.start,
+                       end = excluded.end,
+                       created_at = excluded.created_at,
+                       updated_at = excluded.updated_at",
+        )
+        .bind(codec::uuid_to_text(entry.id.as_uuid()))
+        .bind(codec::uuid_to_text(entry.task.as_uuid()))
+        .bind(&entry.task_title)
+        .bind(entry.start.to_rfc3339())
+        .bind(entry.end.map(|end| end.to_rfc3339()))
+        .bind(entry.created_at.to_rfc3339())
+        .bind(entry.updated_at.to_rfc3339())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(entry = ?entry.id, "time entry upserted");
+    }
+    for entry_id in entry_deletes {
+        sqlx::query(r"DELETE FROM time_entries WHERE entry_id = ?")
+            .bind(codec::uuid_to_text(entry_id.as_uuid()))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(entry = ?entry_id, "time entry deleted");
     }
 
     // Op removals before appends so a batch that completes and re-enqueues

@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 115
 expression: "&persisted"
 ---
 boards:
@@ -111,3 +110,5 @@ reminders:
   snoozes: {}
   muted: []
   alarms: {}
+tracking:
+  entries: {}

@@ -59,6 +59,12 @@ local_id!(
     ReminderRuleId
 );
 local_id!(
+    /// Local identity of a time entry (`UUIDv7`, generated client-side).
+    /// Roaming family: the entry UUID is the wire key of the synced
+    /// `time-entries` section (ADR 0017).
+    TimeEntryId
+);
+local_id!(
     /// Local identity of a standalone adhoc alarm (`UUIDv7`, generated
     /// client-side; device-local — never synced).
     AdhocAlarmId
@@ -260,6 +266,9 @@ mod tests {
             let alarm = AdhocAlarmId::from_uuid(raw);
             prop_assert_eq!(alarm.as_uuid(), raw);
             prop_assert_eq!(alarm, AdhocAlarmId::from(raw));
+            let entry = TimeEntryId::from_uuid(raw);
+            prop_assert_eq!(entry.as_uuid(), raw);
+            prop_assert_eq!(entry, TimeEntryId::from(raw));
         }
 
         #[test]

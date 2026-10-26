@@ -43,7 +43,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 use crate::idgen::IdGenerator;
-use crate::ids::{AdhocAlarmId, BoardId, LabelId, ReminderRuleId, StackId, TaskId};
+use crate::ids::{AdhocAlarmId, BoardId, LabelId, ReminderRuleId, StackId, TaskId, TimeEntryId};
 use crate::outbox::OpId;
 
 /// Deterministic id source: UUIDs from a monotonically increasing
@@ -81,6 +81,10 @@ impl IdGenerator for CountingIds {
 
     fn new_reminder_rule_id(&self) -> ReminderRuleId {
         ReminderRuleId::from(Uuid::from_u128(self.next()))
+    }
+
+    fn new_time_entry_id(&self) -> TimeEntryId {
+        TimeEntryId::from(Uuid::from_u128(self.next()))
     }
 
     fn new_adhoc_alarm_id(&self) -> AdhocAlarmId {

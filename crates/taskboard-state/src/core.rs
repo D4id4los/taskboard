@@ -81,6 +81,7 @@ impl EngineCore {
             tasks: self.state.tasks.clone(),
             labels: self.state.labels.clone(),
             reminders: self.state.reminders.clone(),
+            tracking: self.state.tracking.clone(),
             sync,
             last_updated: self.last_updated,
         }

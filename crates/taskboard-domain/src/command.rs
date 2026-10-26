@@ -1817,6 +1817,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             reminders: crate::reminders::ReminderState::default(),
+            tracking: crate::tracking::TrackingState::default(),
             sync: crate::state::SyncStates::with_row(
                 BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
                 crate::state::SyncStatus::default(),
@@ -3474,6 +3475,7 @@ mod tests {
             tasks: std::collections::BTreeMap::new(),
             labels: std::collections::BTreeMap::new(),
             reminders: crate::reminders::ReminderState::default(),
+            tracking: crate::tracking::TrackingState::default(),
             sync: crate::state::SyncStates::new(),
             last_updated: None,
         };
@@ -4838,6 +4840,7 @@ mod tests {
             tasks: std::collections::BTreeMap::new(),
             labels: std::collections::BTreeMap::new(),
             reminders: crate::reminders::ReminderState::default(),
+            tracking: crate::tracking::TrackingState::default(),
             sync: crate::state::SyncStates::new(),
             last_updated: None,
         };
@@ -5714,6 +5717,7 @@ mod proptests {
                 tasks: persisted.tasks.clone(),
                 labels: persisted.labels.clone(),
                 reminders: persisted.reminders.clone(),
+                tracking: persisted.tracking.clone(),
                 sync: persisted.sync,
                 last_updated: None,
             };
@@ -5824,6 +5828,7 @@ mod proptests {
                 tasks: persisted.tasks.clone(),
                 labels: persisted.labels.clone(),
                 reminders: persisted.reminders.clone(),
+                tracking: persisted.tracking.clone(),
                 sync: persisted.sync,
                 last_updated: None,
             };
