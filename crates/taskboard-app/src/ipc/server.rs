@@ -450,9 +450,9 @@ async fn handle(app: &App, session: &BasicSession, req: Request) -> Response {
             // relay into the frontend-agnostic ceremony — the body
             // (re-read, resolve the target entry, identity match, store
             // load, swap-first, attach, settle) lives in
-            // `session_ceremonies`, not on the wire. `name = None`
+            // `connector_ceremonies`, not on the wire. `name = None`
             // targets the default connector.
-            let outcome = crate::session_ceremonies::attach_from_persisted(
+            let outcome = crate::connector_ceremonies::attach_from_persisted(
                 app,
                 session.config_path.as_deref(),
                 &session.store,

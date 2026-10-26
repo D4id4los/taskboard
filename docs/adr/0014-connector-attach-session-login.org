@@ -166,7 +166,7 @@ behind an unanswered read.
 
 - taskboard-state gained one command arm + the fan-out seam;
   taskboard-app gained the connect verb + login alias, the two
-  session ceremonies (=session_ceremonies.rs=), the disposition
+  session ceremonies (=connector_ceremonies.rs=), the disposition
   protocol, the =Mutex<Vec<SyncActor>>= connector state, and the
   shutdown drop step; ADRs 0010/0011 carry amendment notes (0011's:
   both in-session refusals are replaced by ceremonies).
