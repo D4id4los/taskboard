@@ -166,3 +166,56 @@ pub fn build_state(n: usize) -> AppState {
         last_updated: None,
     }
 }
+
+/// The head-row count both flip-target sets take (the partial lane's
+/// 2026-10-26 view-pinning rework): the head of a rendered list is
+/// inside the 768-px window at any of the fixture's card heights, so
+/// a flip on these rows renders by construction. The lanes' preamble
+/// guard asserts the first target's region is nonzero, so fixture or
+/// mount drift that breaks that premise panics instead of measuring
+/// an invisible flip.
+#[allow(dead_code)] // the contract test target doesn't drive lanes
+pub const FLIP_HEAD_ROWS: usize = 6;
+
+/// The Today pin's flip targets: the head of the Overdue list, in
+/// canonical (order, id) order. Membership note: every fixture
+/// duedate is in 2024, so `is_live ∧ is_open ∧ duedate set` here is
+/// exactly `domain::reminders::overdue_tasks`'s predicate for any
+/// realistic bench clock — and a done flip on an overdue task is a
+/// *removal* from the filtered list (whole-list reflow damage), the
+/// scene the pre-pinning draw-partial numbers actually measured.
+#[allow(dead_code)] // the contract test target doesn't drive lanes
+#[must_use]
+pub fn today_flip_targets(state: &AppState) -> Vec<TaskId> {
+    state
+        .tasks
+        .values()
+        .filter(|t| t.is_live() && t.is_open() && t.duedate.is_some())
+        .take(FLIP_HEAD_ROWS)
+        .map(|t| t.id)
+        .collect()
+}
+
+/// The Board pin's flip targets: the head rows of every column in
+/// display order (stacks by `order`, tasks in canonical order). The
+/// board renders all N tasks eagerly, so a done flip there is an
+/// *in-place* card change — a different damage shape than the Today
+/// pin's removal, which is exactly what the two pins separate.
+#[allow(dead_code)] // the contract test target doesn't drive lanes
+#[must_use]
+pub fn board_flip_targets(state: &AppState) -> Vec<TaskId> {
+    let mut stack_ids: Vec<(i64, StackId)> =
+        state.stacks.values().map(|s| (s.order, s.id)).collect();
+    stack_ids.sort_unstable();
+    stack_ids
+        .into_iter()
+        .flat_map(|(_, stack)| {
+            state
+                .tasks_in_stack(stack)
+                .into_iter()
+                .take(FLIP_HEAD_ROWS)
+                .map(|t| t.id)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
