@@ -8,6 +8,18 @@ The workspace carries a single global version (see `docs/architecture.org`);
 `scripts/bump_version.sh <major|minor|patch>` cuts release entries.
 
 ## [Unreleased]
+### Fixed
+
+- `taskboard sync --wait` no longer misreports a completed, successful
+  cycle as `TimedOut` after the host clock steps backward (#283
+  F11-04): cycle freshness is detected structurally — the sync
+  status's generation counter, advanced once per ingested report —
+  instead of comparing two wall stamps; `last_success` remains a
+  display fact. Reminder offsets are now whole-second by construction
+  (the `ReminderOffset` mint rejects sub-second durations, and corrupt
+  serialized tuples are rejected, never clamped), closing the
+  storage-truncation divergence that could re-fire a delivered
+  reminder after a reload (#283 F11-03).
 
 ### Added
 - Pointer drag-to-move on the board (#226, #444's D38, round-2
