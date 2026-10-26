@@ -5705,3 +5705,191 @@ fn a_drag_never_arms_while_another_flow_holds() {
         },
     );
 }
+
+// -- K13: the kiosk ambient rotation (issue #363) ------------------------
+
+use std::time::Duration;
+
+use taskboard_ui_slint::view_state::{KioskMode, KioskRotation};
+
+/// The K13 rotation hand-over: board ⇄ today, 30 s dwell. Built
+/// directly (the journeys bypass config; the typed surface is the
+/// same `UiSettings` field the appliance hands over).
+fn rotation_settings() -> UiSettings {
+    UiSettings {
+        kiosk: true,
+        kiosk_rotation: Some(
+            KioskRotation::new(
+                vec![KioskMode::Board, KioskMode::Today],
+                Duration::from_secs(30),
+            )
+            .expect("two distinct modes mint"),
+        ),
+        ..UiSettings::default()
+    }
+}
+
+/// The today sections' per-row counts (the pinned-board filter's
+/// surface witness).
+fn today_section_counts(harness: &Harness) -> Vec<usize> {
+    let today = harness.handle.window().get_today_model();
+    (0..today.sections.row_count())
+        .map(|section| {
+            usize::try_from(today.sections.row_data(section).expect("section").count)
+                .expect("section count fits")
+        })
+        .collect()
+}
+
+/// J-K1 — the rotation flips on the dwell timer with zero input: the
+/// declared order seeds the start view, the mock clock fires the
+/// flip exactly at the dwell boundary, focus resets each flip, the
+/// banner and the sync badge carry over, and the engine's command
+/// log stays empty throughout (the no-engine-command end-to-end
+/// witness).
+#[test]
+fn the_kiosk_rotation_flips_modes_on_the_dwell_timer() {
+    // SAFETY: single-threaded journey startup (see the set site).
+    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
+    let (_fixture, state, _walked) = fixture::today_overdue_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, rotation_settings());
+            assert_eq!(
+                current_view(&harness),
+                View::Board,
+                "the appliance opens on modes[0]"
+            );
+
+            let banner_rows_before = harness.handle.window().get_banner_model().row_count();
+            let sync_phase_before = harness.handle.window().get_sync_model().phase;
+
+            harness.driver.advance_time(29_999);
+            assert_eq!(
+                current_view(&harness),
+                View::Board,
+                "one millisecond inside the dwell: no flip"
+            );
+            harness.driver.advance_time(1);
+            assert_eq!(
+                current_view(&harness),
+                View::Today,
+                "the dwell fires the flip"
+            );
+            assert_eq!(harness.emphasized_card(), None, "the flip resets focus");
+
+            harness.driver.advance_time(30_000);
+            assert_eq!(current_view(&harness), View::Board, "the cycle wraps");
+            assert_eq!(harness.emphasized_card(), None);
+
+            // The carry-over is structural (K13 D6): pinned by
+            // assertion across the flips.
+            assert_eq!(
+                harness.handle.window().get_banner_model().row_count(),
+                banner_rows_before,
+                "the banner rows are unchanged across flips"
+            );
+            assert_eq!(
+                harness.handle.window().get_sync_model().phase,
+                sync_phase_before,
+                "the sync badge's phase is unchanged across flips"
+            );
+
+            assert_eq!(
+                harness.engine.drain(),
+                [] as [StateCommand; 0],
+                "rotation must never reach the engine"
+            );
+        },
+    );
+}
+
+/// J-K2 — the passive reading: in both modes the kiosk gates hold
+/// (inbox chip 0, notification surface empty) and the today model is
+/// the PINNED board's degeneration — board one's overdue row, not
+/// the desktop's cross-board two.
+#[test]
+fn the_kiosk_today_mode_renders_only_the_pinned_board() {
+    // SAFETY: single-threaded journey startup (see the set site).
+    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
+    let (_fixture, state, _walked) = fixture::today_overdue_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, rotation_settings());
+            // Board mode (modes[0]): the gates hold.
+            assert_eq!(current_view(&harness), View::Board);
+            assert_eq!(
+                harness.handle.window().get_toolbar_inbox_count(),
+                0,
+                "kiosk is passive: the inbox chip counts to zero"
+            );
+            assert_eq!(
+                harness.handle.window().get_notification_model().row_count(),
+                0,
+                "kiosk is banner-only: the surface model stays empty"
+            );
+
+            harness.driver.advance_time(30_000);
+            assert_eq!(current_view(&harness), View::Today);
+            let counts = today_section_counts(&harness);
+            assert_eq!(
+                counts.first().copied(),
+                Some(1),
+                "the pinned board's one overdue row renders (the desktop \
+                 would show two — the filter is the kiosk degeneration)"
+            );
+            assert_eq!(
+                harness.handle.window().get_toolbar_inbox_count(),
+                0,
+                "the gates hold across the flip"
+            );
+            assert_eq!(
+                harness.handle.window().get_notification_model().row_count(),
+                0
+            );
+
+            harness.driver.advance_time(30_000);
+            assert_eq!(
+                current_view(&harness),
+                View::Board,
+                "the flip back renders the board"
+            );
+        },
+    );
+}
+
+/// J-K3 — the desktop is inert: no rotation in the hand-over, so
+/// advancing the mock clock past several would-be dwells flips
+/// nothing, dispatches nothing, and the view stays the desktop
+/// default.
+#[test]
+fn the_desktop_mount_never_rotates() {
+    // SAFETY: single-threaded journey startup (see the set site). The
+    // var stays set: the harness's board escape is suppressed so the
+    // desktop's Today default is the observed surface.
+    unsafe { std::env::set_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY", "1") };
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, UiSettings::default());
+            assert_eq!(current_view(&harness), View::Today);
+            for _ in 0..3 {
+                harness.driver.advance_time(30_000);
+                assert_eq!(current_view(&harness), View::Today, "no flips");
+            }
+            assert_eq!(harness.engine.drain(), [] as [StateCommand; 0]);
+        },
+    );
+}
