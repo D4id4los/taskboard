@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 //! Slint compiler wiring: the `.slint` sources under `ui/` are compiled
 //! at build time; `slint::include_modules!()` picks the generated code
 //! up. Default compiler config — embedded font registration happens at
@@ -15,4 +16,21 @@ fn main() {
         slint_build::CompilerConfiguration::new().with_debug_info(true),
     )
     .expect("slint compilation failed");
+
+    // The virtualisation probes' host components (#373): a separate
+    // generated module so the test tree can instantiate them — the
+    // `slint!` macro cannot enable the element debug info the
+    // backend's element queries require.
+    let manifest = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("build script runs via cargo"),
+    );
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set"));
+    let probe_source = manifest.join("tests/virtualisation_probe.slint");
+    slint_build::compile_with_output_path(
+        &probe_source,
+        out.join("virtualisation_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("virtualisation probe compilation failed");
+    println!("cargo:rerun-if-changed={}", probe_source.display());
 }

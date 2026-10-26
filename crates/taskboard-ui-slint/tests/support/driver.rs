@@ -311,6 +311,36 @@ impl SlintDriver {
     }
 }
 
+/// The test-local component seams (the #373 virtualisation probes):
+/// the same queries as the `JourneyDriver` methods, over any
+/// generated component — the probes instantiate `slint::slint!`
+/// hosts that are not the `AppWindow`, and this module stays the only
+/// file naming the testing backend.
+pub fn find_all_by_id_on<C: slint::ComponentHandle>(component: &C, id: &str) -> Vec<Element> {
+    ElementQuery::from_root(component)
+        .match_id(id)
+        .find_all()
+        .into_iter()
+        .filter(|handle| handle.id().as_deref() == Some(id))
+        .map(|handle| Element { handle })
+        .collect()
+}
+
+/// The labelled-element search over any generated component (the
+/// "engaged but renders nothing" guard's seam).
+pub fn find_by_label_on<C: slint::ComponentHandle>(component: &C, label: &str) -> Option<Element> {
+    ElementHandle::find_by_accessible_label(component, label)
+        .next()
+        .map(|handle| Element { handle })
+}
+
+/// Advances the mock clock for the platform the process registered
+/// through [`run`] (the probes instantiate their own components but
+/// share the one registered testing backend).
+pub fn advance_probe_clock(ms: u64) {
+    mock_elapsed_time(ms);
+}
+
 /// The card/element centre helper the drag journeys address by.
 pub fn centre(element: &Element) -> (f32, f32) {
     let pos = element.absolute_position();
