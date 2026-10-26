@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The keyboard focus move's scroll hint (#373 design round §3a, D-5):
+// after a keyboard focus walk the adapter resolves the newly focused
+// task through the id tables and writes this global — each ListView
+// instance filters by its own index pair and seeks only when it owns
+// the target. `target-a` is the surface's primary index (board
+// column / today section; the stack-detail surface reads `target-b`
+// alone with a = −1), `target-b` the row. One view tree is
+// instantiated at a time (Q4), so the surfaces cannot disagree about
+// who consumes a hint. The nonce makes identical re-moves
+// (same column/row twice) edge-triggered.
+
+export global FocusScrollHint {
+    in property <int> target-a: -1;
+    in property <int> target-b: -1;
+    in property <int> nonce: 0;
+}

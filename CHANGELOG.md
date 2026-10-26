@@ -22,6 +22,17 @@ The workspace carries a single global version (see `docs/architecture.org`);
   reminder after a reload (#283 F11-03).
 
 ### Added
+- Virtualised task lists (#373): every surface that draws N tasks —
+  the board columns (regular and compact legs), and the Today and
+  stack-detail lists — now renders through an in-house `ListView`
+  built on the slint compiler's virtual repeater, so a column with
+  10 000 tasks instantiates only a viewport-scale window of cards
+  (the eager board at that scale could not render at all — the #462
+  i16 ceiling). Keyboard focus moves scroll the focused card fully
+  into view; scroll positions and indices are untouched by the
+  change (all seams keep global model indices). On the board the
+  Add-Task ghost and inline create field sit at the column's bottom
+  edge instead of hugging the last card.
 - Pointer drag-to-move on the board (#226, #444's D38, round-2
   chunk 8): pressing a task card and moving past an 8-px slop lifts a
   ghost — the card's own snapshot at half opacity, centred under the

@@ -17,7 +17,8 @@ export component EagerProbe inherits Window {
     width: Theme.space-15;
     height: Theme.space-8 * 5;
     in property <[string]> items;
-    for row in root.items: item := Rectangle {
+    for row[i] in root.items: item := Rectangle {
+        y: i * Theme.space-5;
         height: Theme.space-5;
         accessible-role: text;
         accessible-label: row;

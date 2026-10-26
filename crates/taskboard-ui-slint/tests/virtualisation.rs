@@ -138,3 +138,264 @@ fn the_seek_makes_a_deep_row_live_and_visible() {
         );
     });
 }
+
+// -- the board legs (stage-1 plan §3.2, M2) -------------------------------
+
+#[path = "../benches/support/mod.rs"]
+#[allow(dead_code)] // each binary consumes its own subset of the bench fixture
+mod bench_support;
+
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use support::driver::JourneyDriver as _;
+use taskboard_domain::{AppState, StateCommand};
+use taskboard_ui_slint::actions::ActionId;
+use taskboard_ui_slint::{UiHandle, UiSettings, mount};
+
+use bench_support::build_state;
+
+fn dummy_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
+    let (_tx, rx) = tokio::sync::broadcast::channel(4);
+    rx
+}
+
+fn dummy_system_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEvent> {
+    let (_tx, rx) = tokio::sync::broadcast::channel(4);
+    rx
+}
+
+/// Mounts the bench fixture through the public `mount()`, escapes to
+/// the board (the goldens' idiom — the desktop default view is
+/// Today), sizes the window, and instantiates the conditional trees
+/// on the mock clock.
+fn mount_board(
+    driver: &mut SlintDriver,
+    n: usize,
+    width: u32,
+    height: u32,
+) -> (UiHandle, support::fake_engine::FakeEngine) {
+    let state = Arc::new(ArcSwap::from_pointee(build_state(n)));
+    let (commands, engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+    let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+    let handle = mount(
+        state,
+        dummy_receiver(),
+        dummy_system_receiver(),
+        commands,
+        requests_tx,
+        UiSettings::default(),
+    )
+    .expect("mount succeeds on the testing backend");
+    handle.dispatch_action(ActionId::NavFocusBoard);
+    driver.bind(&handle);
+    driver.set_window_size(width, height);
+    driver.advance_time(0);
+    (handle, engine)
+}
+
+/// The bench fixture's card label (the address the board tests use).
+fn bench_label(i: usize) -> String {
+    format!("Task {i:05} bench fixture")
+}
+
+/// Engagement, board regular leg: a 1 000-task fixture in a
+/// 1 000×900 window instantiates a viewport-scale window of cards per
+/// column, not all 1 000. A failure detector on the eager garbage —
+/// strictly better virtualisation still passes.
+#[test]
+fn the_board_regular_leg_virtualises() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (_handle, _engine) = mount_board(driver, 1000, 1000, 900);
+            let instances = driver.find_all_by_id("BoardLayout::drag-zone");
+            assert!(
+                !instances.is_empty(),
+                "the engaged board still renders its head cards"
+            );
+            assert!(
+                instances.len() * 4 < 1000,
+                "the board's task loops must render viewport-scale, got {} live \
+                 cards of 1000 — the eager shape means a leg lost the ListView",
+                instances.len()
+            );
+            assert!(
+                driver.find_by_label(&bench_label(0)).is_some(),
+                "the first card of column 0 renders"
+            );
+        },
+    );
+}
+
+/// Engagement, board compact leg: the single switcher column
+/// virtualises the same way (D-4b).
+#[test]
+fn the_board_compact_leg_virtualises() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (_handle, _engine) = mount_board(driver, 1000, 600, 900);
+            let instances = driver.find_all_by_id("BoardLayout::compact-task");
+            assert!(
+                !instances.is_empty(),
+                "the engaged compact column still renders its head cards"
+            );
+            assert!(
+                instances.len() * 4 < 1000,
+                "the compact column must render viewport-scale, got {} live \
+                 cards of 1000 — the eager shape means the compact leg lost \
+                 the ListView",
+                instances.len()
+            );
+        },
+    );
+}
+
+/// Focus-into-view, board regular leg (D-5's acceptance semantics): a
+/// keyboard jump to the last card of the reading order makes the far
+/// off-viewport card live and fully visible. Guarded first: the card
+/// is not even instantiated before the move, so the move provably
+/// scrolled.
+#[test]
+fn a_keyboard_jump_to_the_last_card_makes_it_fully_visible() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (handle, _engine) = mount_board(driver, 1000, 1000, 900);
+            let last = bench_label(999);
+            assert!(
+                driver.find_by_label(&last).is_none(),
+                "the reading order's last card starts off-viewport"
+            );
+
+            handle.dispatch_action(ActionId::NavFirstItem);
+            driver.advance_time(0);
+            handle.dispatch_action(ActionId::NavLastItem);
+            driver.advance_time(0);
+
+            let card = driver
+                .find_by_label(&last)
+                .unwrap_or_else(|| panic!("the seek made the last card live"));
+            let position = card.absolute_position();
+            let size = card.size();
+            assert!(
+                position.y >= 0.0 && position.y + size.height <= 900.0,
+                "the focused card is fully visible, got y={} h={}",
+                position.y,
+                size.height
+            );
+        },
+    );
+}
+
+/// Adjacent keyboard steps do not scroll away (the seek's
+/// estimated-range guard): from the top, one `FocusNext` moves focus to
+/// the second card while the first card stays at its rest position.
+#[test]
+fn an_adjacent_step_leaves_the_view_resting() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (handle, _engine) = mount_board(driver, 1000, 1000, 900);
+            handle.dispatch_action(ActionId::NavFirstItem);
+            driver.advance_time(0);
+            let first = driver
+                .find_by_label(&bench_label(0))
+                .expect("the head card renders");
+            let rest = first.absolute_position();
+
+            handle.dispatch_action(ActionId::NavNextItem);
+            driver.advance_time(0);
+
+            let first = driver
+                .find_by_label(&bench_label(0))
+                .expect("the head card stays live");
+            assert_eq!(
+                rest.y,
+                first.absolute_position().y,
+                "an adjacent step must not re-anchor the viewport"
+            );
+        },
+    );
+}
+
+/// The drag seams keep global model indices through the virtualised
+/// viewport: arming on a head card of column 0 and dropping on
+/// column 1 dispatches the exact `MoveTask` the id tables predict
+/// (`board_task(0, 0)`), at deep N where the columns are
+/// virtualised.
+#[test]
+fn a_pointer_drag_across_virtualised_columns_moves_the_tabled_task() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        |driver| {
+            let (_handle, mut engine) = mount_board(driver, 1000, 1000, 900);
+            let card = driver
+                .find_by_label(&bench_label(0))
+                .expect("the head card of column 0 renders");
+            let (cx, cy) = support::driver::centre(&card);
+            let header = driver
+                .find_all_by_label("Stack 1")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .unwrap_or_else(|| panic!("the Stack 1 header is present"));
+            let pos = header.absolute_position();
+            let size = header.size();
+            let (hx, hy) = (pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+
+            driver.press_at(cx, cy);
+            driver.drag_move_to(hx, hy);
+            driver.drag_move_to(hx, hy);
+            driver.advance_time(0);
+            driver.release_at(hx, hy);
+            driver.advance_time(0);
+
+            let moved: Vec<_> = engine
+                .drain()
+                .iter()
+                .filter_map(|command| match command {
+                    StateCommand::MoveTask { id, stack, .. } => Some((*id, *stack)),
+                    _ => None,
+                })
+                .collect();
+            let state = build_state(1000);
+            let mut stack_ids: Vec<_> = state.stacks.values().collect();
+            stack_ids.sort_by_key(|stack| stack.order);
+            let head = tables_state_head(&state);
+            assert_eq!(
+                moved,
+                vec![(head, stack_ids[1].id)],
+                "the drop moves the armed card (board_task(0, 0)) to column 1"
+            );
+        },
+    );
+}
+
+/// The fixture's head card of column 0 (canonical order): the id the
+/// drag prediction names. (A pure re-derivation, not a test
+/// double — the same canonical sort the tables are built from.)
+fn tables_state_head(state: &AppState) -> taskboard_domain::TaskId {
+    let mut column0: Vec<_> = state
+        .tasks
+        .values()
+        .filter(|task| {
+            state
+                .stacks
+                .get(&task.stack)
+                .is_some_and(|stack| stack.order == 0)
+        })
+        .collect();
+    column0.sort_by_key(|task| (task.order, task.id));
+    column0[0].id
+}

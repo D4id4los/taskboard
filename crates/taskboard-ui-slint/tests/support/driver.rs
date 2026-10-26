@@ -276,17 +276,19 @@ impl JourneyDriver for SlintDriver {
 
     fn find_all_by_id(&self, id: &str) -> Vec<Element> {
         let window = self.window();
-        ElementQuery::from_root(&window)
-            .match_descendants()
-            .match_id(id)
-            .find_all()
-            .into_iter()
-            // The backend's chain match also reports a match for
-            // descendants of the addressed element; only the exact
-            // qualified id is the element itself.
-            .filter(|handle| handle.id().as_deref() == Some(id))
-            .map(|handle| Element { handle })
-            .collect()
+        dedupe_instances(
+            ElementQuery::from_root(&window)
+                .match_descendants()
+                .match_id(id)
+                .find_all()
+                .into_iter()
+                // The backend's chain match also reports a match for
+                // descendants of the addressed element; only the exact
+                // qualified id is the element itself.
+                .filter(|handle| handle.id().as_deref() == Some(id))
+                .map(|handle| Element { handle })
+                .collect(),
+        )
     }
 
     fn find_all_by_label(&self, label: &str) -> Vec<Element> {
@@ -317,12 +319,41 @@ impl SlintDriver {
 /// hosts that are not the `AppWindow`, and this module stays the only
 /// file naming the testing backend.
 pub fn find_all_by_id_on<C: slint::ComponentHandle>(component: &C, id: &str) -> Vec<Element> {
-    ElementQuery::from_root(component)
-        .match_id(id)
-        .find_all()
+    dedupe_instances(
+        ElementQuery::from_root(component)
+            .match_id(id)
+            .find_all()
+            .into_iter()
+            .filter(|handle| handle.id().as_deref() == Some(id))
+            .map(|handle| Element { handle })
+            .collect(),
+    )
+}
+
+/// Collapses the testing backend's element-query traversal
+/// duplicates to one `Element` per real instance. The backend's
+/// `visit_descendants` yields the same node once per multi-element
+/// ancestor it is reached through (the #373 instrument lesson: an
+/// id query over a deep tree reported an 11x multiplicity the
+/// repeater — `ops.len()` — did not have), so identity is taken
+/// from the node's own geometry: duplicates of one instance read
+/// back exactly equal positions and sizes; distinct list
+/// delegates never overlap.
+fn dedupe_instances(elements: Vec<Element>) -> Vec<Element> {
+    let mut seen = std::collections::HashSet::new();
+    elements
         .into_iter()
-        .filter(|handle| handle.id().as_deref() == Some(id))
-        .map(|handle| Element { handle })
+        .filter(|element| {
+            let position = element.absolute_position();
+            let size = element.size();
+            let key = (
+                position.x.to_bits(),
+                position.y.to_bits(),
+                size.width.to_bits(),
+                size.height.to_bits(),
+            );
+            seen.insert(key)
+        })
         .collect()
 }
 
