@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use taskboard_app::secrets::{AppPassword, CredentialError, CredentialStore};
 
@@ -470,6 +471,49 @@ pub fn write_test_config(
     );
     toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
     std::fs::write(path, toml)
+}
+
+/// Polls `pred` with a real-time deadline (process synchronization —
+/// the hermetic suites' tokio-clock rules do not reach subprocesses).
+/// The wait yields to the runtime (`tokio::time::sleep`), keeping the
+/// async test body free of blocking calls.
+pub async fn wait_until(mut pred: impl FnMut() -> bool, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !pred() {
+        assert!(Instant::now() < deadline, "{what} did not happen in time");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Kills the child on drop so a failing assertion cannot leak a
+/// lock-holding daemon into the next test.
+pub struct Child(pub std::process::Child);
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Spawns `taskboard daemon` against `config` (output swallowed; a full
+/// pipe would deadlock a chatty daemon). The password variable is
+/// always scrubbed from the child first: presence/absence is each
+/// test's explicit choice, never the invoking shell's (an inherited
+/// export would flip the credential-miss arm into a spurious attach).
+pub fn spawn_daemon(config: &Path, password: Option<&str>) -> Child {
+    let mut command = binary_command();
+    command
+        .args(["--config"])
+        .arg(config.as_os_str())
+        .arg("daemon")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .env_remove("TASKBOARD_APP_PASSWORD");
+    if let Some(password) = password {
+        command.env("TASKBOARD_APP_PASSWORD", password);
+    }
+    Child(command.spawn().expect("spawn daemon"))
 }
 
 use taskboard_sync_nextcloud::DeckClient;
