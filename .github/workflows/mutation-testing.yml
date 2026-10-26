@@ -2,7 +2,10 @@ name: Mutation Testing
 
 # Weekly sweep of cargo-mutants over the pure & core crates, plus manual
 # dispatch on feature branches prior to major releases. Mutants are slow:
-# this deliberately runs out-of-band, never in the PR pipeline.
+# this deliberately runs out-of-band, never in the PR pipeline. The
+# ui-pure-modules job sweeps the three pure presentation modules (#427);
+# component-journey tests stay out of scope by mutant-surface selection,
+# not test filtering.
 
 on:
   schedule:
@@ -77,3 +80,67 @@ jobs:
       # .artifacts/reports/YYYY-MM-DD-mutation-testing-report.md
       # (template in AGENTS.md §7) and triage them into fixes or the
       # improvements backlog.
+
+  ui-pure-modules:
+    name: cargo-mutants (ui pure modules)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system deps (slint goldens/journeys link GL/EGL/wayland)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libdbus-1-dev pkg-config \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libwayland-dev \
+            libfontconfig1-dev
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          # Same pin as the core lane: the output-dir/report-name contract.
+          tool: cargo-mutants@27.1.0,nextest
+
+      - name: Run Mutation Testing (ui pure modules)
+        # Surviving mutants are an expected *report* outcome, not an infra
+        # failure: collect & upload them instead of failing the job.
+        # --test-tool nextest: the golden_visuals journey binary cannot
+        # run under plain `cargo test` (its tests disagree on
+        # DriverOptions in one process); nextest is the workspace's CI
+        # runner and runs the identical test set, one process per test.
+        # v-pinned: --file slash-globs match the whole workspace-relative
+        # path in cargo-mutants 27.1.0; re-verify --list-files on bump.
+        continue-on-error: true
+        run: |
+          cargo mutants \
+            -p taskboard-ui-slint \
+            --file 'crates/taskboard-ui-slint/src/resolver.rs' \
+            --file 'crates/taskboard-ui-slint/src/view_state.rs' \
+            --file 'crates/taskboard-ui-slint/src/presentation.rs' \
+            --in-place --timeout-multiplier 2.0 --test-tool nextest
+
+      - name: Collect Surviving Mutants
+        if: always()
+        run: |
+          if [ -d mutants.out ]; then
+            cat mutants.out/*.log || true
+            if [ -s mutants.out/missed.txt ]; then
+              echo "Surviving mutants found — see artifacts."
+            fi
+          fi
+
+      - name: Upload Mutation Report (ui pure modules)
+        # fail on empty: a silent no-artifact run must never read green.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-testing-report-ui-pure-${{ github.run_id }}
+          path: mutants.out/
+          if-no-files-found: error
+          retention-days: 30
