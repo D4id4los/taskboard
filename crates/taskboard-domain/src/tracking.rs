@@ -107,6 +107,64 @@ impl ClosedSpan {
 #[error("time span invalid")]
 pub struct SpanRejected;
 
+impl TimeEntry {
+    /// `end.is_none()` — the entry is the running timer.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.end.is_none()
+    }
+
+    /// Duration as of `now`: `end.unwrap_or(now) − start`, clamped at
+    /// zero (a skew-produced inverted span contributes nothing).
+    #[must_use]
+    pub fn duration(&self, now: DateTime<Utc>) -> chrono::TimeDelta {
+        let end = self.end.unwrap_or(now);
+        (end - self.start).max(chrono::TimeDelta::zero())
+    }
+}
+
+impl TrackingState {
+    /// The derived open set — the running timer has no stored home.
+    pub fn open_entries(&self) -> impl Iterator<Item = &TimeEntry> {
+        self.entries.values().filter(|entry| entry.is_open())
+    }
+
+    /// The reader's single-open pick (D-T8): the most-recently-started
+    /// open entry, ties broken by the greater entry id.
+    #[must_use]
+    pub fn newest_open(&self) -> Option<&TimeEntry> {
+        self.open_entries()
+            .max_by_key(|entry| (entry.start, entry.id))
+    }
+}
+
+/// Total tracked time inside `window` as of `now`. Each entry's span
+/// (`[start, end)`, or `[start, now)` while open) clips to the window;
+/// overlaps with the window are summed — the entry is conceptually
+/// split at each boundary and only the in-window part counts; rows are
+/// never physically split (the days.rs no-derived-bit rule). `now`
+/// clamps open accrual at `min(window.end, now)`.
+#[must_use]
+pub fn tracked_in_window<'a>(
+    entries: impl IntoIterator<Item = &'a TimeEntry>,
+    window: (DateTime<Utc>, DateTime<Utc>),
+    now: DateTime<Utc>,
+) -> chrono::TimeDelta {
+    let (window_start, window_end) = window;
+    entries
+        .into_iter()
+        .map(|entry| {
+            // `unwrap_or(now)` clamps open accrual at the evaluation
+            // instant (never into the window's future); `min(window_end)`
+            // clips at the boundary; the final clamp zeroes both
+            // inverted raw spans and disjoint entries.
+            let span_end = entry.end.unwrap_or(now).min(window_end);
+            let span_start = entry.start.max(window_start);
+            (span_end - span_start).max(chrono::TimeDelta::zero())
+        })
+        .fold(chrono::TimeDelta::zero(), |acc, span| acc + span)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +217,126 @@ mod tests {
         let span = ClosedSpan::try_new(ts(100), ts(200)).unwrap();
         assert_eq!(span.start(), ts(100));
         assert_eq!(span.end(), ts(200));
+    }
+
+    // ---- Pure projections (DR-5/1 M4) ------------------------------------
+
+    use proptest::prelude::*;
+
+    use crate::test_support::{proptest_config, time_entry_strategy, timestamp_strategy};
+
+    #[test]
+    fn newest_open_picks_the_most_recently_started_open_entry_with_the_id_tie_break() {
+        let mut state = TrackingState::default();
+        assert_eq!(state.newest_open(), None, "the empty map has no pick");
+        let early = entry(1, 1_000, None);
+        let late = entry(2, 5_000, None);
+        state.entries.insert(early.id, early);
+        state.entries.insert(late.id, late.clone());
+        let late_id = late.id;
+        // A closed entry never enters the pick, however recent.
+        let closed = entry(3, 9_000, Some(9_100));
+        state.entries.insert(closed.id, closed);
+        assert_eq!(state.newest_open().map(|open| open.id), Some(late_id));
+        // Equal starts: the greater entry id wins.
+        let tie_high = entry(4, 5_000, None);
+        state.entries.insert(tie_high.id, tie_high.clone());
+        let tie_high_id = tie_high.id;
+        assert_eq!(state.newest_open().map(|open| open.id), Some(tie_high_id));
+        assert_eq!(state.open_entries().count(), 3);
+    }
+
+    #[test]
+    fn duration_clamps_at_zero_and_accrues_while_open() {
+        let open = entry(1, 1_000, None);
+        assert_eq!(
+            open.duration(ts(1_500)),
+            chrono::TimeDelta::try_seconds(500).unwrap()
+        );
+        let closed = entry(2, 1_000, Some(1_200));
+        assert_eq!(
+            closed.duration(ts(9_999)),
+            chrono::TimeDelta::try_seconds(200).unwrap()
+        );
+        // A skew-produced inverted raw span contributes nothing.
+        let mut inverted = entry(3, 1_000, Some(900));
+        inverted.end = Some(ts(900));
+        assert_eq!(inverted.duration(ts(2_000)), chrono::TimeDelta::zero());
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        #[test]
+        fn tracked_in_window_matches_the_boundary_split_oracle_prop(
+            entries in prop::collection::vec(time_entry_strategy(), 0..4),
+            window_start in timestamp_strategy(),
+            window_secs in 1_i64..=86_400,
+            now in timestamp_strategy(),
+        ) {
+            let window_end = window_start
+                + chrono::TimeDelta::try_seconds(window_secs).unwrap();
+            // The oracle splits each entry at both boundaries and sums
+            // the inside segments (the conceptual split; rows are never
+            // physically split).
+            let oracle = entries.iter().map(|entry| {
+                let span_end = entry.end.unwrap_or(now);
+                let segments = [
+                    (entry.start, span_end.min(window_start)),
+                    (entry.start.max(window_start), span_end.min(window_end)),
+                    (entry.start.max(window_end), span_end),
+                ];
+                segments
+                    .into_iter()
+                    .map(|(a, b)| (b.min(window_end) - a.max(window_start)).max(chrono::TimeDelta::zero()))
+                    .fold(chrono::TimeDelta::zero(), |acc, span| acc + span)
+            }).fold(chrono::TimeDelta::zero(), |acc, span| acc + span);
+            let got = super::tracked_in_window(&entries, (window_start, window_end), now);
+            prop_assert_eq!(got, oracle);
+            prop_assert!(got >= chrono::TimeDelta::zero(), "never negative");
+        }
+
+        #[test]
+        fn a_window_fully_inside_a_closed_span_yields_exactly_the_window_length(
+            start in timestamp_strategy(),
+            window_secs in 1_i64..=3_600,
+            span_secs in 3_601_i64..=86_400,
+        ) {
+            let window_end = start + chrono::TimeDelta::try_seconds(window_secs).unwrap();
+            let span_end = start + chrono::TimeDelta::try_seconds(span_secs).unwrap();
+            let spanned = entry(1, 0, None);
+            let spanned = TimeEntry { start, end: Some(span_end), ..spanned };
+            let got = super::tracked_in_window(
+                [&spanned],
+                (start, window_end),
+                span_end,
+            );
+            prop_assert_eq!(got, chrono::TimeDelta::try_seconds(window_secs).unwrap());
+        }
+    }
+
+    #[test]
+    fn open_accrual_stops_at_now_and_inverted_spans_contribute_zero() {
+        // Open entry started before the window: accrual stops at `now`
+        // inside the window.
+        let open = entry(1, 1_000, None);
+        let got = super::tracked_in_window([&open], (ts(2_000), ts(9_000)), ts(3_000));
+        assert_eq!(got, chrono::TimeDelta::try_seconds(1_000).unwrap());
+        // `now` beyond the window clamps at the window's end.
+        let got = super::tracked_in_window([&open], (ts(2_000), ts(9_000)), ts(99_999));
+        assert_eq!(got, chrono::TimeDelta::try_seconds(7_000).unwrap());
+        // An inverted raw span contributes zero, never a negative total.
+        let mut inverted = entry(2, 5_000, None);
+        inverted.start = ts(6_000);
+        let got = super::tracked_in_window([&inverted], (ts(2_000), ts(9_000)), ts(5_500));
+        assert_eq!(got, chrono::TimeDelta::zero());
+    }
+
+    #[test]
+    fn tracking_rows_serde_roundtrip_keeps_the_whole_entry() {
+        let row = entry(1, 1_000, None);
+        let json = serde_json::to_string(&row).unwrap();
+        let back: TimeEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, row);
     }
 }

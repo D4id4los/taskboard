@@ -36,6 +36,8 @@ pub use reminders::{
 };
 pub use remote::{push_outcome_strategy, remote_task_strategy, snapshot_strategy};
 pub use state::{app_state_strategy, persisted_state_strategy};
+pub mod tracking_strategies;
+pub use tracking_strategies::{time_entry_strategy, tracking_state_strategy};
 
 use chrono::{DateTime, TimeZone, Utc};
 use proptest::prelude::*;
@@ -199,6 +201,7 @@ id_strategy!(board_id_strategy, BoardId);
 id_strategy!(stack_id_strategy, StackId);
 id_strategy!(task_id_strategy, TaskId);
 id_strategy!(label_id_strategy, LabelId);
+id_strategy!(time_entry_id_strategy, TimeEntryId);
 
 /// A positive remote board id (0 is the epoch-0 sentinel of old servers).
 pub fn remote_board_id_strategy() -> impl Strategy<Value = crate::ids::RemoteBoardId> {
