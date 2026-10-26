@@ -355,6 +355,26 @@ fn close_all_open(app: &AppState, now: DateTime<Utc>) -> (Vec<TimeEntry>, Vec<Ta
     (rows, touched.into_iter().collect())
 }
 
+/// `close_all_open` narrowed to one task's entries (the
+/// done/deleted-close shape), entry-id ascending.
+fn task_tracking_closes(
+    app: &AppState,
+    task: TaskId,
+    now: DateTime<Utc>,
+) -> Vec<PersistenceAction> {
+    app.tracking
+        .entries
+        .values()
+        .filter(|entry| entry.task == task && entry.end.is_none())
+        .map(|entry| {
+            let mut stamped = entry.clone();
+            stamped.end = Some(now);
+            stamped.updated_at = now;
+            PersistenceAction::UpsertTimeEntry(stamped)
+        })
+        .collect()
+}
+
 /// The `UpdateAppData` ops every touched task's sidecar flush trigger
 /// rides (content-free; enqueued unconditionally like every accepted
 /// tracking write — the `DismissReminder` precedent).
@@ -637,6 +657,19 @@ pub fn plan_command(
             // forms — the same `UpdateAppData` op `DismissReminder`
             // enqueues (the flush gate plans a flush from that op alone).
             if *done {
+                // A completed task's open entries close at the done
+                // stamp (D-T6) — closes precede dismissals in the batch,
+                // matching the StartTracking order. Each block enqueues
+                // its own conditional op; two `UpdateAppData` ops when
+                // both fire is correct under the catalogue rule
+                // (coalescing is push-side). Reopening closes nothing:
+                // a stamped end is as permanent as a dismissal.
+                let closes = task_tracking_closes(app, *id, now);
+                if !closes.is_empty() {
+                    plan.actions.extend(closes);
+                    plan.actions
+                        .push(enqueue(LocalOp::UpdateAppData(*id), ids, now));
+                }
                 let dismissals: Vec<PersistenceAction> = active_notifications(
                     &app.tasks,
                     &app.reminders,
@@ -695,6 +728,16 @@ pub fn plan_command(
             let mut actions = vec![PersistenceAction::UpsertTask(updated)];
             // D-c: the task's reminder rules cannot outlive it.
             actions.extend(task_rule_deletes(app, *id));
+            // D-T6: the task's open entries close at the delete stamp;
+            // the rows themselves survive (history outlives the task).
+            // The op enqueues regardless of the binding — a soft-deleted
+            // task keeps its local row, so the flush trigger stays
+            // resolvable.
+            let closes = task_tracking_closes(app, *id, now);
+            if !closes.is_empty() {
+                actions.extend(closes);
+                actions.push(enqueue(LocalOp::UpdateAppData(*id), ids, now));
+            }
             if task.remote.is_some() {
                 actions.push(enqueue(LocalOp::DeleteTask(*id), ids, now));
             } else {
@@ -6074,6 +6117,153 @@ mod tests {
             entry_upserts(&plan).len(),
             3,
             "two closes plus one fresh row"
+        );
+    }
+
+    #[test]
+    fn start_tracking_emits_dismissals_exactly_for_active_occurrences() {
+        // The SetTaskDone mirror (D-T5): the active occurrence is
+        // dismissed, the other task's and the already-dismissed one are
+        // not.
+        let (app, outbox, rule_id) = due_task_with_fired_rule();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking { task: task_id() },
+        )
+        .unwrap();
+        let CommandOutcome::TrackingStarted { .. } = plan.outcome else {
+            panic!("wrong receipt");
+        };
+        let dismissals: Vec<_> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::RecordReminderDismissal(d) => Some(*d),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            dismissals,
+            vec![crate::reminders::ReminderDismissal {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence: ts(T0 - 3_600),
+                dismissed_at: ts(T0),
+            }],
+            "exactly the currently-active occurrences are dismissed"
+        );
+
+        // The no-occurrences case emits no dismissal rows but still
+        // flushes the target (the minted row must reach the sidecar).
+        let (app, outbox) = base();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking { task: task_id() },
+        )
+        .unwrap();
+        assert!(
+            plan.actions
+                .iter()
+                .all(|action| !matches!(action, PersistenceAction::RecordReminderDismissal(_))),
+            "no active occurrences, no dismissal rows"
+        );
+        assert_eq!(
+            flush_targets(&plan),
+            vec![task_id()],
+            "the start still flushes"
+        );
+    }
+
+    #[test]
+    fn set_task_done_closes_open_entries_at_the_done_stamp() {
+        let (app, outbox) = base();
+        let mine = tracked_entry(1, task_id(), T0 - 900, None);
+        let foreign = tracked_entry(2, task_b(), T0 - 300, None);
+        let app = with_entry(with_entry(app, foreign), mine);
+
+        // Reopening a done task closes nothing (a stamped end is as
+        // permanent as a dismissal).
+        let (mut done_app, done_outbox) = base();
+        {
+            let task = done_app.tasks.get_mut(&task_id()).unwrap();
+            task.done = Some(ts(T0 - 60));
+        }
+        let done_entry = tracked_entry(3, task_id(), T0 - 900, None);
+        let done_app = with_entry(done_app, done_entry);
+        let reopen = run(
+            &done_app,
+            &done_outbox,
+            &StateCommand::SetTaskDone {
+                id: task_id(),
+                done: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(reopen.outcome, CommandOutcome::Applied);
+        assert!(
+            reopen
+                .actions
+                .iter()
+                .all(|action| !matches!(action, PersistenceAction::UpsertTimeEntry(_))),
+            "reopen closes nothing"
+        );
+
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::SetTaskDone {
+                id: task_id(),
+                done: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let rows = entry_upserts(&plan);
+        assert_eq!(rows.len(), 1, "only the done task's entry closes");
+        assert_eq!(rows[0].id, entry_id(1));
+        assert_eq!(rows[0].end, Some(now()), "stamped at the done stamp");
+        assert_eq!(rows[0].updated_at, now());
+        // Closes precede dismissals in the batch (the stage gate's
+        // order) — here the fixture has no active notifications, so the
+        // close block's own flush op is the last action.
+        assert_eq!(flush_targets(&plan).last(), Some(&task_id()));
+        assert_eq!(rows[0].task, task_id());
+    }
+
+    #[test]
+    fn delete_task_closes_open_entries_but_keeps_the_rows() {
+        let (mut app, outbox) = base();
+        let mine = tracked_entry(1, task_id(), T0 - 900, None);
+        let foreign = tracked_entry(2, task_b(), T0 - 300, None);
+        app = with_entry(with_entry(app, foreign.clone()), mine.clone());
+        let plan = run(&app, &outbox, &StateCommand::DeleteTask { id: task_id() }).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let rows = entry_upserts(&plan);
+        assert_eq!(rows.len(), 1, "only the deleted task's entry closes");
+        assert_eq!(rows[0].id, mine.id);
+        assert_eq!(rows[0].end, Some(now()));
+        // No DeleteTimeEntry action anywhere: history outlives the task.
+        assert!(
+            plan.actions
+                .iter()
+                .all(|action| !matches!(action, PersistenceAction::DeleteTimeEntry(_))),
+            "the rows survive the tombstone"
+        );
+        // The foreign open entry is untouched and its task unflushed.
+        assert_eq!(flush_targets(&plan), vec![task_id()]);
+        // Post-apply the foreign entry is still open (seeded, so the
+        // batch cannot smuggle it in).
+        let mut disk = crate::persistence::PersistedState::default();
+        disk.tracking.entries.insert(foreign.id, foreign.clone());
+        crate::persistence::apply_actions(&mut disk, &plan.actions);
+        assert_eq!(
+            disk.tracking
+                .entries
+                .get(&foreign.id)
+                .map(|entry| entry.end),
+            Some(None),
+            "the foreign entry stays open"
         );
     }
 
