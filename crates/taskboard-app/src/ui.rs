@@ -217,6 +217,9 @@ pub fn resolve_ui_settings(
         },
         keymap: built.keymap,
         kiosk: false, // the desktop hand-over; the kiosk appliance (K3) sets this
+        // The desktop hand-over never rotates (K13): only the kiosk
+        // appliance maps the validated `[kiosk.rotation]` table.
+        kiosk_rotation: None,
         // The device-local widths (round-1 D16): copied verbatim —
         // uuid-keyed both sides, the mount converts to domain newtypes.
         stack_widths: ui.stack_widths.clone(),

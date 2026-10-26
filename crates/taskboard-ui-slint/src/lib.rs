@@ -103,6 +103,11 @@ pub struct UiSettings {
     /// resolved app-side at hand-over, held, never re-read (the
     /// `day_start` consumers contract).
     pub reminder_defaults: taskboard_domain::ReminderDefaults,
+    /// The kiosk display-mode rotation (K13, issue #363): minted
+    /// app-side from the validated `[kiosk.rotation]` table — the
+    /// hand-over carries typed values only. `None` is no rotation:
+    /// the desktop path is structurally inert (no state, no timer).
+    pub kiosk_rotation: Option<view_state::KioskRotation>,
 }
 
 impl Default for UiSettings {
@@ -112,6 +117,7 @@ impl Default for UiSettings {
             keymap: keymap::Keymap::from_preset(keymap::Preset::Standard),
             startup: adapter::StartupWarnings::default(),
             kiosk: false,
+            kiosk_rotation: None,
             stack_widths: BTreeMap::new(),
             connectors: Vec::new(),
             boards: Vec::new(),
@@ -179,6 +185,11 @@ pub struct UiHandle {
     /// owns the timer's lifetime alongside the window.
     #[allow(dead_code)]
     status_timer: std::rc::Rc<slint::Timer>,
+    /// The kiosk rotation flip's dwell timer (K13). Armed by
+    /// `install` only when the hand-over carries a rotation; this
+    /// field owns the timer's lifetime alongside the window.
+    #[allow(dead_code)]
+    rotation_timer: std::rc::Rc<slint::Timer>,
 }
 
 /// Creates the window and applies the theme state (theme init is a
@@ -218,6 +229,10 @@ pub fn mount(
     // beside the tooltip delay (the same lifetime pattern), handed to
     // the adapter — the choke point arms it, the mock clock fires it.
     let status_timer = std::rc::Rc::new(slint::Timer::default());
+    // The kiosk rotation's dwell timer (K13): the same lifetime
+    // pattern — created unconditionally, armed by `install` only when
+    // the hand-over carries a rotation.
+    let rotation_timer = std::rc::Rc::new(slint::Timer::default());
     let adapter = adapter::install(
         &window,
         settings.keymap,
@@ -229,10 +244,12 @@ pub fn mount(
         settings.connectors,
         settings.day_start,
         settings.kiosk,
+        settings.kiosk_rotation,
         settings.reminder_defaults,
         settings.boards,
         Arc::clone(&state),
         Rc::clone(&status_timer),
+        Rc::clone(&rotation_timer),
     );
     let tooltip_timer = install_tooltip_delay(&window);
     let handle = UiHandle {
@@ -242,6 +259,7 @@ pub fn mount(
         timer: slint::Timer::default(),
         tooltip_timer,
         status_timer,
+        rotation_timer,
     };
     start_repaint_driver(&handle, signals, system);
     // The first paint is a refresh, not a timer wait (D1's
@@ -663,6 +681,32 @@ mod mount_tests {
             )
             .expect("mount succeeds on the null platform");
             assert!(!handle.window.window().is_visible());
+        });
+    }
+
+    /// K13: the default hand-over carries no rotation and the mount
+    /// shape is unchanged — the desktop is structurally inert (no
+    /// rotation state, no armed timer; the timer's firing itself is
+    /// exercised end-to-end by the journeys, whose mock clock is the
+    /// lowest layer that owns slint-timer behaviour).
+    #[test]
+    fn mount_without_rotation_arms_nothing() {
+        assert!(
+            UiSettings::default().kiosk_rotation.is_none(),
+            "the default hand-over is no rotation"
+        );
+        on_slint_thread(|| {
+            let (state, signals, system, commands, requests_tx, _requests_rx) = handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+            )
+            .expect("mount succeeds on the null platform");
+            assert!(!handle.window.window().is_fullscreen());
         });
     }
 
