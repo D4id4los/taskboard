@@ -147,6 +147,19 @@ pub(crate) struct Adapter {
     /// The fire closure the choke point hands to `start` on every
     /// re-arm (built once in `install`, over the weak handles).
     status_fire: Rc<dyn Fn()>,
+    /// The kiosk display-mode rotation (K13, issue #363): the pure
+    /// state machine plus the hand-over's dwell. `None` on desktop —
+    /// the byte-identical guarantee is a type, not a gate.
+    rotation: Option<crate::view_state::KioskRotation>,
+    /// The rotation flip's single-shot dwell timer (K13). Armed by
+    /// `install` only when `rotation` is present, re-armed by the
+    /// fire closure with the full dwell (the timer IS the dwell
+    /// state). Lifetime held here alongside the window.
+    #[allow(dead_code)]
+    rotation_timer: Rc<slint::Timer>,
+    /// The fire closure `rearm_rotation` hands to `start` on every
+    /// re-arm (built once in `install`, over the weak handles).
+    rotation_fire: Rc<dyn Fn()>,
     /// The exit-effect counter (the §6 component-test seam: journeys
     /// assert the quit request without killing the platform).
     pub(crate) quit_requests: usize,
@@ -1504,6 +1517,38 @@ impl Adapter {
         self.push_settings(window);
     }
 
+    /// The rotation flip (K13): tick the state machine, reset the
+    /// `FocusScrollHint` global (the stale-hint guard — a
+    /// board-column hint surviving into a Today flip can never seek;
+    /// the nonce bump is a guarded no-op seek, `row < 0` returns),
+    /// apply the flip's outcomes (never a Command — the state
+    /// machine's unit sweep pins that), and return the full dwell for
+    /// the re-arm.
+    fn rotation_tick(&mut self, window: &AppWindow) -> std::time::Duration {
+        let Some(rotation) = self.rotation.as_mut() else {
+            return std::time::Duration::ZERO;
+        };
+        let mode = rotation.tick();
+        let dwell = rotation.dwell();
+        let state = self.state.load();
+        let outcomes = self.view_state.enter_kiosk_mode(&state, mode);
+        let scroll = window.global::<crate::FocusScrollHint>();
+        scroll.set_target_a(-1);
+        scroll.set_target_b(-1);
+        scroll.set_nonce(scroll.get_nonce() + 1);
+        self.apply_outcomes(window, &outcomes);
+        dwell
+    }
+
+    /// The dwell re-arm: every flip re-arms the FULL dwell — no
+    /// carry-over, no interaction pause (D-V3: the display is
+    /// passive; rotation wins over operator navigation).
+    fn rearm_rotation(&mut self, dwell: std::time::Duration) {
+        let fire = Rc::clone(&self.rotation_fire);
+        self.rotation_timer
+            .start(slint::TimerMode::SingleShot, dwell, move || fire());
+    }
+
     /// The auto-clear fire (r2 D28): a stale fire during a new Busy
     /// is a no-op; otherwise the status returns to hidden (and the
     /// next refresh cannot resurrect it — the VM clears, not the
@@ -2030,10 +2075,12 @@ pub(crate) fn install(
     connectors: Vec<ConnectorInfo>,
     day_start: (chrono::NaiveTime, chrono::FixedOffset),
     kiosk: bool,
+    rotation: Option<crate::view_state::KioskRotation>,
     reminder_defaults: taskboard_domain::ReminderDefaults,
     boards: Vec<requests::BoardInfo>,
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
+    rotation_timer: Rc<slint::Timer>,
 ) -> Rc<RefCell<Adapter>> {
     // The load path (round-1 D16): the uuid-keyed settings map
     // converts once here and seeds the fresh ViewState before the
@@ -2052,6 +2099,18 @@ pub(crate) fn install(
             )
         })
         .collect::<BTreeMap<BoardId, BTreeMap<StackId, u32>>>();
+    // The rotation mount seed (K13): with a rotation the appliance
+    // opens on the rotation's first declared mode; without it the
+    // kiosk/Today split stands (the desktop-default split, chunk 10
+    // D2 — the kiosk pin lands on Board).
+    let start_view = rotation.as_ref().map_or(
+        if kiosk {
+            crate::view_state::ViewId::Board
+        } else {
+            crate::view_state::ViewId::Today
+        },
+        |rotation| rotation.active().view(),
+    );
     let adapter = Rc::new(RefCell::new(Adapter {
         keymap,
         day_start,
@@ -2059,16 +2118,8 @@ pub(crate) fn install(
         reminder_defaults,
         shell: KeymapShell::default(),
         resolver: KeymapResolver::new(),
-        // The desktop-default split (chunk 10 D2): the kiosk bit —
-        // already "derived from the run mode" — picks the start view;
-        // the daemon has no UI, the kiosk's surface is the kiosk
-        // wave's.
         view_state: {
-            let mut vs = ViewState::new_starting(if kiosk {
-                crate::view_state::ViewId::Board
-            } else {
-                crate::view_state::ViewId::Today
-            });
+            let mut vs = ViewState::new_starting(start_view);
             vs.seed_stack_widths(seeded);
             vs
         },
@@ -2103,6 +2154,9 @@ pub(crate) fn install(
         },
         status_timer,
         status_fire: Rc::new(|| {}), // replaced below, before any fire can happen
+        rotation,
+        rotation_timer,
+        rotation_fire: Rc::new(|| {}), // replaced below, before any fire can happen
         quit_requests: 0,
     }));
     // The status auto-clear's fire closure (r2 D28): weak handles
@@ -2116,6 +2170,37 @@ pub(crate) fn install(
                 adapter.borrow_mut().settings_status_expired(&window);
             }
         });
+    }
+    // The rotation dwell timer (K13): the fire closure upgrades the
+    // window before borrowing the adapter (the repaint driver's
+    // borrow shape — no RefCell double-borrow), flips, and re-arms
+    // with the returned full dwell. Weak handles only — no Rc cycle.
+    // Without a rotation nothing is armed (the desktop is structurally
+    // inert; the mock clock fires the timer in the journeys).
+    if adapter.borrow().rotation.is_some() {
+        let adapter_weak = Rc::downgrade(&adapter);
+        let window_weak = window.as_weak();
+        adapter.borrow_mut().rotation_fire = Rc::new(move || {
+            let Some(window) = window_weak.upgrade() else {
+                return;
+            };
+            let Some(adapter) = adapter_weak.upgrade() else {
+                return;
+            };
+            let dwell = adapter.borrow_mut().rotation_tick(&window);
+            adapter.borrow_mut().rearm_rotation(dwell);
+        });
+        let dwell = adapter
+            .borrow()
+            .rotation
+            .as_ref()
+            .map(crate::view_state::KioskRotation::dwell)
+            .unwrap_or_default();
+        let fire = Rc::clone(&adapter.borrow().rotation_fire);
+        adapter
+            .borrow()
+            .rotation_timer
+            .start(slint::TimerMode::SingleShot, dwell, move || fire());
     }
     // Startup warnings are pure input (Q15): pushed once at mount.
     window

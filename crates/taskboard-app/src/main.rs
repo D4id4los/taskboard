@@ -446,6 +446,35 @@ async fn drain_and_shutdown(
 /// exits — signal, `daemon stop`, window close — all converging on the
 /// shared drain. Without one: fall back loudly to the headless daemon
 /// tail, so the same binary serves both the seat and the ssh session.
+/// The `[kiosk.rotation]` hand-over (K13): the validated table maps
+/// into the typed state machine. `expect` is safe by construction —
+/// `AppConfig::load` ran `validate()`, which refuses fewer than two
+/// distinct modes and a sub-floor dwell, so the minting constructor
+/// cannot fail here; a future caller bypassing validation invalidates
+/// this constraint.
+fn kiosk_rotation_handover(
+    config: &AppConfig,
+) -> Option<taskboard_ui_slint::view_state::KioskRotation> {
+    config.kiosk.rotation.as_ref().map(|rotation| {
+        taskboard_ui_slint::view_state::KioskRotation::new(
+            rotation
+                .modes
+                .iter()
+                .map(|mode| match mode {
+                    taskboard_app::config::KioskRotationMode::Board => {
+                        taskboard_ui_slint::view_state::KioskMode::Board
+                    }
+                    taskboard_app::config::KioskRotationMode::Today => {
+                        taskboard_ui_slint::view_state::KioskMode::Today
+                    }
+                })
+                .collect(),
+            Duration::from_secs(rotation.dwell_secs),
+        )
+        .expect("kiosk rotation validated at boot")
+    })
+}
+
 async fn run_kiosk(
     config: AppConfig,
     config_path: Option<std::path::PathBuf>,
@@ -499,6 +528,7 @@ async fn run_kiosk(
                 taskboard_app::ui::resolve_day_start(&app.config),
             );
             ui_settings.kiosk = true;
+            ui_settings.kiosk_rotation = kiosk_rotation_handover(&app.config);
             ui_settings.reminder_defaults = app.config.reminder_engine_config().defaults;
             ui_settings.connectors = taskboard_app::ui::resolve_connector_infos(&app.config)?;
             ui_settings.boards = taskboard_app::ui::resolve_board_infos(&app.engine);
