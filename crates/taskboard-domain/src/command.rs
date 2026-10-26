@@ -41,6 +41,7 @@ use crate::reminders::{
     ReminderDefaults, ReminderDismissal, ReminderRef, ReminderSnooze, active_notifications,
 };
 use crate::state::AppState;
+use crate::tracking::{ClosedSpan, TimeEntry};
 
 /// A planned command: the persistence batch and the user-facing receipt.
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +114,12 @@ pub enum CommandError {
     /// the occurrence forward is not a snooze).
     #[error("snooze postpone must be positive")]
     InvalidSnoozePostpone,
+    /// No time entry with this id exists.
+    #[error("unknown time entry")]
+    UnknownTimeEntry(crate::ids::TimeEntryId),
+    /// A user-authored span must satisfy `end > start`.
+    #[error("time span must be positive")]
+    InvalidSpan,
 }
 
 /// Typed receipt of an accepted command.
@@ -154,6 +161,34 @@ pub enum CommandOutcome {
     AdhocAlarmCancelled {
         /// The cancelled alarm.
         alarm: crate::ids::AdhocAlarmId,
+    },
+    /// The command opened the entry and closed the named ones (entry-id
+    /// ascending).
+    TrackingStarted {
+        /// The freshly minted open entry.
+        entry: crate::tracking::TimeEntry,
+        /// The open entries the start closed, entry-id ascending.
+        closed: Vec<crate::ids::TimeEntryId>,
+    },
+    /// The command closed these entries, post-stamp (entry-id ascending).
+    TrackingStopped {
+        /// The stamped rows.
+        entries: Vec<crate::tracking::TimeEntry>,
+    },
+    /// The command logged the entry.
+    TimeLogged {
+        /// The freshly minted closed entry.
+        entry: crate::tracking::TimeEntry,
+    },
+    /// The command adjusted the entry (post-adjust row).
+    EntryAdjusted {
+        /// The adjusted entry.
+        entry: crate::tracking::TimeEntry,
+    },
+    /// The command deleted the named entry.
+    EntryDeleted {
+        /// The deleted entry.
+        id: crate::ids::TimeEntryId,
     },
     /// The command muted or unmuted a task's reminder firings.
     ReminderMuted {
@@ -294,6 +329,44 @@ fn task_rule_deletes(app: &AppState, task: TaskId) -> impl Iterator<Item = Persi
         .values()
         .filter(move |rule| rule.task == task)
         .map(|rule| PersistenceAction::DeleteReminderRule(rule.id))
+}
+
+/// Closes every open entry at `now` (close stamps are exempt from the
+/// span predicate — R-5 of the tracking plan: a skewed close must not
+/// reject the whole command; projections clamp degenerate spans to
+/// zero). Returns the stamped rows entry-id ascending and the distinct
+/// touched task ids ascending.
+fn close_all_open(app: &AppState, now: DateTime<Utc>) -> (Vec<TimeEntry>, Vec<TaskId>) {
+    let mut rows = Vec::new();
+    let mut touched = std::collections::BTreeSet::new();
+    for entry in app
+        .tracking
+        .entries
+        .values()
+        .filter(|entry| entry.end.is_none())
+    {
+        let mut stamped = entry.clone();
+        stamped.end = Some(now);
+        stamped.updated_at = now;
+        touched.insert(stamped.task);
+        rows.push(stamped);
+    }
+    // Distinct tasks ascending (the ops' emission order).
+    (rows, touched.into_iter().collect())
+}
+
+/// The `UpdateAppData` ops every touched task's sidecar flush trigger
+/// rides (content-free; enqueued unconditionally like every accepted
+/// tracking write — the `DismissReminder` precedent).
+fn flush_ops(
+    tasks: &[TaskId],
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> Vec<PersistenceAction> {
+    tasks
+        .iter()
+        .map(|task| enqueue(LocalOp::UpdateAppData(*task), ids, now))
+        .collect()
 }
 
 /// Plans one local command against the current view.
@@ -1481,6 +1554,176 @@ pub fn plan_command(
             Ok(CommandPlan {
                 actions: vec![PersistenceAction::DeleteAdhocAlarm(*alarm)],
                 outcome: CommandOutcome::AdhocAlarmCancelled { alarm: *alarm },
+            })
+        }
+        StateCommand::StartTracking { task } => {
+            // No done-gate: a completed task is trackable (R-8); the
+            // guard resolves liveness only.
+            let live = live_task(app, *task)?;
+            // Idempotent repeat (R-6): exactly one open entry and it is
+            // this task's. Any other open shape (a foreign open entry, a
+            // transient double-open) closes all and reopens.
+            let open: Vec<&TimeEntry> = app
+                .tracking
+                .entries
+                .values()
+                .filter(|entry| entry.end.is_none())
+                .collect();
+            if open.len() == 1 && open[0].task == *task {
+                return Ok(no_op());
+            }
+            // Resolve → close-all → open → dismiss → flush ops (the
+            // order the stage gate enforces).
+            let (closed_rows, touched_tasks) = close_all_open(app, now);
+            let closed_ids: Vec<crate::ids::TimeEntryId> =
+                closed_rows.iter().map(|row| row.id).collect();
+            let entry = TimeEntry {
+                id: ids.new_time_entry_id(),
+                task: *task,
+                task_title: live.title.clone(),
+                start: now,
+                end: None,
+                created_at: now,
+                updated_at: now,
+            };
+            let mut actions: Vec<PersistenceAction> = closed_rows
+                .iter()
+                .map(|row| PersistenceAction::UpsertTimeEntry(row.clone()))
+                .collect();
+            actions.push(PersistenceAction::UpsertTimeEntry(entry.clone()));
+            // The exact SetTaskDone dismissal machinery (D-T5): the
+            // task's currently-active occurrences become dismissal rows
+            // in the same batch; the actor's withdraw direction picks
+            // them up for the OS toasts.
+            actions.extend(
+                active_notifications(&app.tasks, &app.reminders, defaults, now)
+                    .into_iter()
+                    .filter(|note| {
+                        matches!(note.anchor, crate::reminders::ReminderAnchor::Task(t) if t == *task)
+                    })
+                    .map(|note| {
+                        PersistenceAction::RecordReminderDismissal(ReminderDismissal {
+                            reminder: note.reminder,
+                            occurrence: note.occurrence,
+                            dismissed_at: now,
+                        })
+                    }),
+            );
+            // The target's op last and always: a start always mints a
+            // row the sidecar must flush, even when it closed nothing.
+            let mut ops_tasks = touched_tasks;
+            ops_tasks.retain(|t| *t != *task);
+            ops_tasks.push(*task);
+            actions.extend(flush_ops(&ops_tasks, ids, now));
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::TrackingStarted {
+                    entry,
+                    closed: closed_ids,
+                },
+            })
+        }
+        StateCommand::StopTracking => {
+            if app
+                .tracking
+                .entries
+                .values()
+                .all(|entry| entry.end.is_some())
+            {
+                return Ok(no_op());
+            }
+            let (closes, touched_tasks) = close_all_open(app, now);
+            let entries: Vec<TimeEntry> = closes
+                .iter()
+                .map(|action| match action {
+                    PersistenceAction::UpsertTimeEntry(entry) => entry.clone(),
+                    _ => unreachable!("close_all_open only mints entry upserts"),
+                })
+                .collect();
+            let mut actions = closes;
+            actions.extend(flush_ops(&touched_tasks, ids, now));
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::TrackingStopped { entries },
+            })
+        }
+        StateCommand::LogTime { task, start, end } => {
+            let live = live_task(app, *task)?;
+            // User-authored span: the strict predicate applies (R-5's
+            // exemption covers close stamps only).
+            let span = ClosedSpan::try_new(*start, *end).map_err(|_| CommandError::InvalidSpan)?;
+            let entry = TimeEntry {
+                id: ids.new_time_entry_id(),
+                task: *task,
+                task_title: live.title.clone(),
+                start: span.start(),
+                end: Some(span.end()),
+                // The mutation clocks are the planner's `now`, never the
+                // historical span — retroactive rows stay newest-write
+                // under LWW (R-14).
+                created_at: now,
+                updated_at: now,
+            };
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertTimeEntry(entry.clone()),
+                    enqueue(LocalOp::UpdateAppData(*task), ids, now),
+                ],
+                outcome: CommandOutcome::TimeLogged { entry },
+            })
+        }
+        StateCommand::AdjustTimeEntry { id, start, end } => {
+            // Entry-only resolution (R-10): the task may be
+            // soft-deleted; history stays editable.
+            let stored = app
+                .tracking
+                .entries
+                .get(id)
+                .ok_or(CommandError::UnknownTimeEntry(*id))?;
+            // Change-mask-never-value: both `None` is the empty edit; a
+            // mask naming only unchanged values cannot churn
+            // `updated_at` onto the sync wire (the MoveTask
+            // identical-position precedent).
+            let new_start = start.unwrap_or(stored.start);
+            let new_end = end.or(stored.end);
+            if new_start == stored.start && new_end == stored.end {
+                return Ok(no_op());
+            }
+            // The strict predicate applies to the resulting *known*
+            // span; an open entry adjusted start-only has no end to
+            // validate and stays open. `new_end` is `None` only when
+            // the entry itself is open and the mask left it open —
+            // a history edit can structurally never reopen (ADR 0017):
+            // there is no payload that clears a stamped end.
+            if let Some(new_end) = new_end {
+                ClosedSpan::try_new(new_start, new_end).map_err(|_| CommandError::InvalidSpan)?;
+            }
+            let mut adjusted = stored.clone();
+            adjusted.start = new_start;
+            adjusted.end = new_end;
+            adjusted.updated_at = now;
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertTimeEntry(adjusted.clone()),
+                    enqueue(LocalOp::UpdateAppData(adjusted.task), ids, now),
+                ],
+                outcome: CommandOutcome::EntryAdjusted { entry: adjusted },
+            })
+        }
+        StateCommand::DeleteTimeEntry { id } => {
+            // Absent is the accepted no-op (R-7): a synced tombstone may
+            // have folded the row away already, making the local repeat
+            // redundant rather than wrong.
+            let Some(stored) = app.tracking.entries.get(id) else {
+                return Ok(no_op());
+            };
+            let task = stored.task;
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::DeleteTimeEntry(*id),
+                    enqueue(LocalOp::UpdateAppData(task), ids, now),
+                ],
+                outcome: CommandOutcome::EntryDeleted { id: *id },
             })
         }
         StateCommand::RequestSync => Ok(CommandPlan {
@@ -5661,6 +5904,502 @@ mod tests {
             CommandOutcome::NoOp,
             "alarms never count as board content"
         );
+        assert_eq!(plan.actions, Vec::new());
+    }
+    // ---- Tracking verbs (DR-5/1) ----------------------------------------
+
+    use crate::tracking::TrackingState;
+
+    /// Fixture time-entry id: high raw values never collide with the
+    /// fresh ids `run()`'s `CountingIds` mints (uuid 1, 2, ...).
+    fn entry_id(raw: u64) -> crate::ids::TimeEntryId {
+        crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(u128::from(7_000 + raw)))
+    }
+
+    fn tracked_entry(raw: u64, task_id: TaskId, start: i64, end: Option<i64>) -> TimeEntry {
+        TimeEntry {
+            id: entry_id(raw),
+            task: task_id,
+            task_title: "frozen title".into(),
+            start: ts(start),
+            end: end.map(ts),
+            created_at: ts(T0 - 120),
+            updated_at: ts(T0 - 120),
+        }
+    }
+
+    /// Seeds one entry into the fixture state's tracking map.
+    fn with_entry(mut app: AppState, entry: TimeEntry) -> AppState {
+        app.tracking.entries.insert(entry.id, entry);
+        app
+    }
+
+    fn task_b() -> TaskId {
+        TaskId::from(uuid::Uuid::from_u128(2))
+    }
+
+    /// The fixture's second live task (on the fixture stack, bound).
+    fn base_with_task_b() -> (AppState, Vec<PendingOp>) {
+        let (mut app, outbox) = base();
+        let second = task(2, stack_id(), true);
+        app.tasks.insert(second.id, second);
+        (app, outbox)
+    }
+
+    fn entry_upserts(plan: &CommandPlan) -> Vec<TimeEntry> {
+        plan.actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::UpsertTimeEntry(entry) => Some(entry.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn flush_targets(plan: &CommandPlan) -> Vec<TaskId> {
+        plan.actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::EnqueueOp(op) => match op.op {
+                    LocalOp::UpdateAppData(task) => Some(task),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn start_tracking_opens_with_title_snapshot_and_flush_op() {
+        let (app, outbox) = base_with_task_b();
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking { task: task_id() },
+        )
+        .unwrap();
+        let CommandOutcome::TrackingStarted { entry, closed } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert!(closed.is_empty(), "nothing was open");
+        assert_eq!(entry.task, task_id());
+        assert_eq!(
+            entry.task_title, "task 1",
+            "the title snapshot is taken at start"
+        );
+        assert_eq!(entry.start, now());
+        assert_eq!(entry.end, None);
+        assert_eq!(entry.created_at, now());
+        assert_eq!(entry.updated_at, now());
+        // Batch shape: the entry upsert, then exactly one flush op.
+        assert_eq!(entry_upserts(&plan).len(), 1);
+        assert_eq!(flush_targets(&plan), vec![task_id()]);
+    }
+
+    #[test]
+    fn start_tracking_closes_the_foreign_open_entry_first() {
+        let (app, outbox) = base_with_task_b();
+        let foreign = tracked_entry(1, task_b(), T0 - 600, None);
+        let app = with_entry(app, foreign.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking { task: task_id() },
+        )
+        .unwrap();
+        let CommandOutcome::TrackingStarted { entry: _, closed } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(closed, &vec![foreign.id], "the foreign open entry closed");
+        // Batch order (R-13): close row, then the fresh open row, then ops.
+        let rows = entry_upserts(&plan);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, foreign.id);
+        assert_eq!(rows[0].end, Some(now()), "stamped at the planner now");
+        assert_eq!(rows[0].updated_at, now());
+        assert_eq!(rows[1].end, None, "the fresh entry is open");
+        assert_eq!(rows[1].task, task_id());
+        // Post-apply the open set is exactly the new entry.
+        let mut disk = crate::persistence::PersistedState {
+            tracking: TrackingState::default(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut disk, &plan.actions);
+        let open: Vec<_> = disk
+            .tracking
+            .entries
+            .values()
+            .filter(|entry| entry.end.is_none())
+            .collect();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].task, task_id());
+    }
+
+    #[test]
+    fn start_tracking_on_the_only_open_entry_is_a_no_op() {
+        let (app, outbox) = base();
+        let open = tracked_entry(1, task_id(), T0 - 60, None);
+        let app = with_entry(app, open);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking { task: task_id() },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, Vec::new());
+    }
+
+    #[test]
+    fn start_tracking_over_a_double_open_closes_and_reopens() {
+        let (app, outbox) = base_with_task_b();
+        let first = tracked_entry(1, task_id(), T0 - 900, None);
+        let second = tracked_entry(2, task_id(), T0 - 300, None);
+        let app = with_entry(with_entry(app, first.clone()), second.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking { task: task_id() },
+        )
+        .unwrap();
+        let CommandOutcome::TrackingStarted { closed, .. } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(
+            closed,
+            &vec![first.id, second.id],
+            "both stamped, entry-id asc"
+        );
+        assert_eq!(
+            entry_upserts(&plan).len(),
+            3,
+            "two closes plus one fresh row"
+        );
+    }
+
+    #[test]
+    fn start_tracking_rejects_unknown_and_deleted_tasks() {
+        let (mut app, outbox) = base();
+        let stranger = TaskId::from(uuid::Uuid::from_u128(4_242));
+        assert!(matches!(
+            run(&app, &outbox, &StateCommand::StartTracking { task: stranger }),
+            Err(CommandError::UnknownTask(id)) if id == stranger
+        ));
+        let mut deleted = task(9, stack_id(), true);
+        deleted.deleted = true;
+        let dead_id = deleted.id;
+        app.tasks.insert(dead_id, deleted);
+        assert!(matches!(
+            run(&app, &outbox, &StateCommand::StartTracking { task: dead_id }),
+            Err(CommandError::TaskDeleted(id)) if id == dead_id
+        ));
+    }
+
+    #[test]
+    fn stop_tracking_closes_all_and_reports_stamped_rows() {
+        let (app, outbox) = base_with_task_b();
+        let mine = tracked_entry(2, task_id(), T0 - 900, None);
+        let foreign = tracked_entry(1, task_b(), T0 - 300, None);
+        let app = with_entry(with_entry(app, foreign.clone()), mine.clone());
+        let plan = run(&app, &outbox, &StateCommand::StopTracking).unwrap();
+        let CommandOutcome::TrackingStopped { entries } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(
+            entries.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            vec![foreign.id, mine.id],
+            "post-stamp rows, entry-id ascending"
+        );
+        assert!(entries.iter().all(|entry| entry.end == Some(now())));
+        // One flush op per distinct touched task, ascending.
+        assert_eq!(flush_targets(&plan), vec![task_id(), task_b()]);
+    }
+
+    #[test]
+    fn stop_tracking_with_nothing_open_is_a_no_op() {
+        let (app, outbox) = base();
+        let plan = run(&app, &outbox, &StateCommand::StopTracking).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, Vec::new());
+    }
+
+    #[test]
+    fn log_time_mints_closed_entry_without_touching_the_open_set() {
+        let (app, outbox) = base();
+        let open = tracked_entry(1, task_id(), T0 - 60, None);
+        let app = with_entry(app, open.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::LogTime {
+                task: task_id(),
+                start: ts(T0 - 86_400),
+                end: ts(T0 - 79_200),
+            },
+        )
+        .unwrap();
+        let CommandOutcome::TimeLogged { entry } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(entry.task, task_id());
+        assert_eq!(entry.start, ts(T0 - 86_400));
+        assert_eq!(entry.end, Some(ts(T0 - 79_200)));
+        // The mutation clocks are the planner's now, never span data (R-14).
+        assert_eq!(entry.created_at, now());
+        assert_eq!(entry.updated_at, now());
+        assert_eq!(entry.task_title, "task 1");
+        // The open set is untouched: only the logged row is upserted.
+        let rows = entry_upserts(&plan);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, entry.id);
+        assert_eq!(flush_targets(&plan), vec![task_id()]);
+
+        // Overlap with the open entry is legal (R-9).
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::LogTime {
+                task: task_id(),
+                start: ts(T0 - 30),
+                end: ts(T0 - 10),
+            },
+        )
+        .unwrap();
+        assert!(matches!(plan.outcome, CommandOutcome::TimeLogged { .. }));
+    }
+
+    #[test]
+    fn log_time_rejects_inverted_and_empty_spans() {
+        let (app, outbox) = base();
+        for (start, end) in [(T0 - 60, T0 - 3_600), (T0 - 60, T0 - 60)] {
+            assert!(matches!(
+                run(
+                    &app,
+                    &outbox,
+                    &StateCommand::LogTime {
+                        task: task_id(),
+                        start: ts(start),
+                        end: ts(end),
+                    },
+                ),
+                Err(CommandError::InvalidSpan)
+            ));
+        }
+    }
+
+    #[test]
+    fn adjust_sets_fields_stamps_and_can_close_an_open_entry() {
+        let (app, outbox) = base();
+
+        // Start-only on an open entry: stays open.
+        let open = tracked_entry(1, task_id(), T0 - 600, None);
+        let plan = run(
+            &with_entry(app.clone(), open.clone()),
+            &outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: open.id,
+                start: Some(ts(T0 - 900)),
+                end: None,
+            },
+        )
+        .unwrap();
+        let CommandOutcome::EntryAdjusted { entry } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(entry.start, ts(T0 - 900));
+        assert_eq!(entry.end, None, "start-only keeps the entry open");
+        assert_eq!(entry.updated_at, now());
+
+        // End-set on an open entry: closes it at the given instant (the
+        // forgotten-timer remedy).
+        let plan = run(
+            &with_entry(app.clone(), open.clone()),
+            &outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: open.id,
+                start: None,
+                end: Some(ts(T0 - 100)),
+            },
+        )
+        .unwrap();
+        let CommandOutcome::EntryAdjusted { entry } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(entry.end, Some(ts(T0 - 100)));
+        assert_eq!(entry.updated_at, now());
+
+        // Both-set on a closed entry: moves the span.
+        let closed = tracked_entry(2, task_id(), T0 - 800, Some(T0 - 700));
+        let plan = run(
+            &with_entry(app, closed.clone()),
+            &outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: closed.id,
+                start: Some(ts(T0 - 750)),
+                end: Some(ts(T0 - 650)),
+            },
+        )
+        .unwrap();
+        let CommandOutcome::EntryAdjusted { entry } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(entry.start, ts(T0 - 750));
+        assert_eq!(entry.end, Some(ts(T0 - 650)));
+    }
+
+    #[test]
+    fn adjust_structurally_cannot_reopen() {
+        let (app, outbox) = base();
+        let closed = tracked_entry(1, task_id(), T0 - 800, Some(T0 - 700));
+        // The mask `start: Some(x), end: None` names an unchanged end —
+        // there is no payload that clears a stamped end.
+        let plan = run(
+            &with_entry(app, closed.clone()),
+            &outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: closed.id,
+                start: Some(ts(T0 - 850)),
+                end: None,
+            },
+        )
+        .unwrap();
+        let CommandOutcome::EntryAdjusted { entry } = &plan.outcome else {
+            panic!("wrong receipt");
+        };
+        assert_eq!(entry.end, Some(ts(T0 - 700)), "the stamped end survives");
+    }
+
+    #[test]
+    fn adjust_no_op_shapes_leave_updated_at_alone() {
+        let (app, outbox) = base();
+        let closed = tracked_entry(1, task_id(), T0 - 800, Some(T0 - 700));
+
+        // Both masks None.
+        let plan = run(
+            &with_entry(app.clone(), closed.clone()),
+            &outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: closed.id,
+                start: None,
+                end: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, Vec::new());
+
+        // A values-equal mask changes nothing.
+        let plan = run(
+            &with_entry(app, closed.clone()),
+            &outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: closed.id,
+                start: Some(closed.start),
+                end: Some(closed.end.unwrap()),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(
+            plan.actions,
+            Vec::new(),
+            "nothing churns onto the sync wire"
+        );
+    }
+
+    #[test]
+    fn adjust_rejects_inverted_resulting_spans_and_unknown_entries() {
+        let (app, outbox) = base();
+        // Closed entry ending at T0 - 700; a new start after the kept end.
+        let closed = tracked_entry(1, task_id(), T0 - 800, Some(T0 - 700));
+        assert!(matches!(
+            run(
+                &with_entry(app.clone(), closed),
+                &outbox,
+                &StateCommand::AdjustTimeEntry {
+                    id: entry_id(1),
+                    start: Some(ts(T0 - 600)),
+                    end: None,
+                },
+            ),
+            Err(CommandError::InvalidSpan)
+        ));
+        let stranger = entry_id(9_999);
+        assert!(matches!(
+            run(
+                &app,
+                &outbox,
+                &StateCommand::AdjustTimeEntry {
+                    id: stranger,
+                    start: Some(ts(T0)),
+                    end: None,
+                },
+            ),
+            Err(CommandError::UnknownTimeEntry(id)) if id == stranger
+        ));
+    }
+
+    #[test]
+    fn entries_of_deleted_tasks_stay_adjustable_and_deletable() {
+        let (mut app, outbox) = base();
+        let mut dead = task(9, stack_id(), true);
+        dead.deleted = true;
+        let dead_id = dead.id;
+        app.tasks.insert(dead_id, dead);
+        let entry = tracked_entry(1, dead_id, T0 - 800, None);
+        let app = with_entry(app, entry.clone());
+
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AdjustTimeEntry {
+                id: entry.id,
+                start: None,
+                end: Some(ts(T0 - 100)),
+            },
+        )
+        .unwrap();
+        assert!(matches!(plan.outcome, CommandOutcome::EntryAdjusted { .. }));
+
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DeleteTimeEntry { id: entry.id },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::EntryDeleted { id: entry.id });
+        assert_eq!(
+            plan.actions[0],
+            PersistenceAction::DeleteTimeEntry(entry.id),
+            "the row removal is planned"
+        );
+        assert_eq!(flush_targets(&plan), vec![dead_id], "the flush op rides");
+    }
+
+    #[test]
+    fn delete_time_entry_removes_rows_and_absent_id_is_a_no_op() {
+        let (app, outbox) = base();
+        let entry = tracked_entry(1, task_id(), T0 - 800, Some(T0 - 700));
+        let app = with_entry(app, entry.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DeleteTimeEntry { id: entry.id },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::EntryDeleted { id: entry.id });
+
+        // The repeat (row already folded away by a synced tombstone):
+        // the accepted no-op (R-7).
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::DeleteTimeEntry {
+                id: entry_id(9_424),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
         assert_eq!(plan.actions, Vec::new());
     }
 }
