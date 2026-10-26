@@ -6744,6 +6744,7 @@ dependencies = [
  "chrono",
  "insta",
  "proptest",
+ "serde",
  "taskboard-domain",
  "taskboard-storage-sqlite",
  "tempfile",

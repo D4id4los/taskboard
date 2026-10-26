@@ -10,10 +10,11 @@
 // in every native/CI gate. The engine logic beneath it IS Miri-covered
 // (A-series + the domain pure suites).
 //! Insta snapshot suite (S-series): the scenarios that define the
-//! engine's behavioral contract. Each snapshot captures BOTH the
-//! published `AppState` and the fake repository's `PersistedState` —
-//! memory and disk must always tell the same story. Insta diffs read as
-//! contract changes (roadmap Phase 3 exit criterion).
+//! engine's behavioral contract. Each scenario captures the persisted
+//! `PersistedState` as the whole-state disk contract, and checks the
+//! published `AppState` against it structurally (memory ≡ disk) plus a
+//! small memory-only tail snapshot (`{sync, last_updated}`). Insta
+//! diffs read as contract changes (roadmap Phase 3 exit criterion).
 
 use std::sync::Arc;
 
@@ -107,13 +108,138 @@ impl Scenario {
         self.handle.execute(command).await
     }
 
-    /// Captures the two contract views under scenario-unique names.
+    /// The persisted whole-state contract dump stays the disk-shape
+    /// defense (unexpected fields, renames, serde drift all surface
+    /// here); the published half narrows to a *checked* memory ≡ disk
+    /// equality plus the memory-only tail. New `AppState` fields must
+    /// join the equality or the [`PublishedTail`] explicitly — nothing
+    /// else covers a published-only field anymore.
     fn snap(&self, scenario: &str) {
         let app = self.handle.shared_state().load_full();
-        assert_yaml_snapshot!(format!("{scenario}_published_app_state"), &*app);
         let persisted = self.repo.snapshot();
+        assert_eq!(app.boards, persisted.boards, "memory ≡ disk: boards");
+        assert_eq!(app.stacks, persisted.stacks, "memory ≡ disk: stacks");
+        assert_eq!(app.tasks, persisted.tasks, "memory ≡ disk: tasks");
+        assert_eq!(app.labels, persisted.labels, "memory ≡ disk: labels");
+        assert_eq!(
+            app.reminders, persisted.reminders,
+            "memory ≡ disk: reminders"
+        );
+        assert_sync_stored(&app.sync, &persisted.sync);
         assert_yaml_snapshot!(format!("{scenario}_persisted_state"), &persisted);
+        let tail = PublishedTail {
+            sync: &app.sync,
+            last_updated: app.last_updated,
+        };
+        assert_yaml_snapshot!(format!("{scenario}_published_tail"), &tail);
     }
+}
+
+/// The published half's snapshot body: the memory-only overlay
+/// (`SyncStates`, with its per-row `counters`/`sidecar`/`features`) and
+/// the live engine stamp. Field order matches the old published dump's
+/// suffix so migrated files read as a verbatim tail.
+#[derive(serde::Serialize)]
+struct PublishedTail<'a> {
+    sync: &'a taskboard_domain::SyncStates,
+    last_updated: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// The stored projection of `app.sync` ≡ `persisted.sync`: equal key
+/// sets and, per board, equal `phase`, `last_success`, `pending_ops`.
+/// `SyncStatus.counters`/`sidecar`/`features` are deliberately excluded:
+/// they are documented memory-only overlays (`taskboard-domain/src/
+/// state.rs` — "Never persisted", `set_stored` never touches them), so
+/// the stored side always carries their serde defaults. Excluding them
+/// here is the documented projection, not a weakening — a divergence in
+/// any stored field still fires.
+fn assert_sync_stored(
+    app: &taskboard_domain::SyncStates,
+    persisted: &taskboard_domain::SyncStates,
+) {
+    assert_eq!(
+        app.iter().count(),
+        persisted.iter().count(),
+        "memory ≡ disk: sync key sets differ in size"
+    );
+    for (board, published_row) in app.iter() {
+        let stored_row = persisted
+            .get(*board)
+            .unwrap_or_else(|| panic!("memory ≡ disk: sync row missing on disk for {board:?}"));
+        assert_eq!(
+            published_row.phase, stored_row.phase,
+            "memory ≡ disk: sync phase differs for {board:?}"
+        );
+        assert_eq!(
+            published_row.last_success, stored_row.last_success,
+            "memory ≡ disk: sync last_success differs for {board:?}"
+        );
+        assert_eq!(
+            published_row.pending_ops, stored_row.pending_ops,
+            "memory ≡ disk: sync pending_ops differs for {board:?}"
+        );
+    }
+}
+
+/// Load-bearing pin: a divergence in any stored sync field must fire
+/// [`assert_sync_stored`] (one case per stored field).
+#[test]
+#[should_panic(expected = "memory ≡ disk: sync")]
+fn assert_sync_stored_pins_a_stored_phase_divergence() {
+    let board = common::board("kiosk").id;
+    let mut disk = taskboard_domain::SyncStates::new();
+    disk.set_stored(board, taskboard_domain::SyncPhase::Idle, None);
+    let mut memory = disk.clone();
+    memory.set_stored(board, taskboard_domain::SyncPhase::Offline, None);
+    assert_sync_stored(&memory, &disk);
+}
+
+#[test]
+#[should_panic(expected = "memory ≡ disk: sync")]
+fn assert_sync_stored_pins_a_stored_last_success_divergence() {
+    let board = common::board("kiosk").id;
+    let mut disk = taskboard_domain::SyncStates::new();
+    disk.set_stored(board, taskboard_domain::SyncPhase::Idle, None);
+    let mut memory = disk.clone();
+    memory.set_stored(board, taskboard_domain::SyncPhase::Idle, Some(ts(T0)));
+    assert_sync_stored(&memory, &disk);
+}
+
+#[test]
+#[should_panic(expected = "memory ≡ disk: sync")]
+fn assert_sync_stored_pins_a_stored_pending_ops_divergence() {
+    let board = common::board("kiosk").id;
+    let mut disk = taskboard_domain::SyncStates::new();
+    disk.set_stored(board, taskboard_domain::SyncPhase::Idle, None);
+    let mut memory = disk.clone();
+    // `pending_ops` is not settable via `set_stored`; the memory-side
+    // overlay path (`get_mut`) is how the engine's derived depth lands.
+    if let Some(row) = memory.get_mut(board) {
+        row.pending_ops = 3;
+    }
+    assert_sync_stored(&memory, &disk);
+}
+
+/// A divergence confined to the memory-only overlays (`counters`,
+/// `sidecar`, `features`) must NOT fire — that is the documented
+/// projection, not a weakening.
+#[test]
+fn assert_sync_stored_ignores_memory_only_overlays() {
+    use taskboard_domain::{DeckFeatures, SidecarHealth, SyncCounters};
+
+    let board = common::board("kiosk").id;
+    let mut disk = taskboard_domain::SyncStates::new();
+    disk.set_stored(board, taskboard_domain::SyncPhase::Idle, None);
+    let mut memory = disk.clone();
+    if let Some(row) = memory.get_mut(board) {
+        row.counters = SyncCounters {
+            cycles: 7,
+            ..SyncCounters::default()
+        };
+        row.sidecar = SidecarHealth::Healthy;
+        row.features = DeckFeatures::CONSERVATIVE;
+    }
+    assert_sync_stored(&memory, &disk);
 }
 
 /// S1 — fresh-boot authoring: stack → task → edit → done → label →
