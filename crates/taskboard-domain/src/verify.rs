@@ -126,56 +126,30 @@ struct SymCounters {
 /// identical verdict at `#[kani::unwind(4)]` and
 /// `#[kani::unwind(8)]` (proven, 690 checks, 5 unreachable — both
 /// bounds).
+/// Mints one fully symbolic row (`kani::any` mints per call site, so
+/// each of the harness's three calls yields independent symbols).
+fn mint_sym_row() -> SyncStatus {
+    mint_row(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        SymCounters {
+            cycles: kani::any(),
+            pushes: kani::any(),
+            pulls: kani::any(),
+            failures: kani::any(),
+            offline_episodes: kani::any(),
+            last_cycle: kani::any(),
+        },
+        kani::any(),
+    )
+}
+
 #[kani::proof]
 #[kani::unwind(4)]
 fn prop_aggregate_rows_dominance_max_saturating_proven() {
-    let rows: [SyncStatus; 3] = [
-        mint_row(
-            kani::any(),
-            kani::any(),
-            kani::any(),
-            kani::any(),
-            SymCounters {
-                cycles: kani::any(),
-                pushes: kani::any(),
-                pulls: kani::any(),
-                failures: kani::any(),
-                offline_episodes: kani::any(),
-                last_cycle: kani::any(),
-            },
-            kani::any(),
-        ),
-        mint_row(
-            kani::any(),
-            kani::any(),
-            kani::any(),
-            kani::any(),
-            SymCounters {
-                cycles: kani::any(),
-                pushes: kani::any(),
-                pulls: kani::any(),
-                failures: kani::any(),
-                offline_episodes: kani::any(),
-                last_cycle: kani::any(),
-            },
-            kani::any(),
-        ),
-        mint_row(
-            kani::any(),
-            kani::any(),
-            kani::any(),
-            kani::any(),
-            SymCounters {
-                cycles: kani::any(),
-                pushes: kani::any(),
-                pulls: kani::any(),
-                failures: kani::any(),
-                offline_episodes: kani::any(),
-                last_cycle: kani::any(),
-            },
-            kani::any(),
-        ),
-    ];
+    let rows: [SyncStatus; 3] = [mint_sym_row(), mint_sym_row(), mint_sym_row()];
 
     let aggregated = aggregate_rows(rows.iter());
 
@@ -257,31 +231,42 @@ fn prop_day_window_total_24h_contains_now_proven() {
 
 use crate::reminders::ReminderOffset;
 
-/// Harness-local specification mirror of `parse_text_form`'s
-/// digit-sum semantics (the production fn is the verification
-/// target; a drift between the two surfaces as a counterexample).
+/// Harness-local specification mirror of `parse_text_form`'s semantics
+/// — deliberately written as an *independent* single-pass state
+/// machine (running digit accumulator vs. the production digit-run +
+/// slice parse, so a transcription bug in either is exactly what the
+/// proof would surface as a counterexample). The u32 digit
+/// accumulator is exact on the harness's ≤4-byte surface; longer
+/// digit runs fall outside the proven claim.
 fn spec_parse_total(raw: &str) -> Option<i64> {
-    let bytes = raw.as_bytes();
+    if raw.is_empty() {
+        return None;
+    }
     let mut total: i64 = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        let digits_start = i;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        if i == digits_start {
-            return None; // a component without its number
-        }
-        let value = i64::try_from(raw[digits_start..i].parse::<u64>().ok()?).ok()?;
-        let unit_secs = match bytes.get(i)? {
-            b's' => 1,
-            b'm' => 60,
-            b'h' => 3_600,
-            b'd' => 86_400,
-            _ => return None,
+    let mut value: u32 = 0;
+    let mut in_digits = false;
+    for c in raw.chars() {
+        let unit_secs: i64 = match (c.to_digit(10), in_digits) {
+            (Some(digit), _) => {
+                value = value.checked_mul(10)?.checked_add(digit)?;
+                in_digits = true;
+                continue;
+            }
+            (None, true) => match c {
+                's' => 1,
+                'm' => 60,
+                'h' => 3_600,
+                'd' => 86_400,
+                _ => return None, // not a grammar unit (incl. non-ASCII)
+            },
+            (None, false) => return None, // a component without its number
         };
-        i += 1;
-        total = total.checked_add(value.checked_mul(unit_secs)?)?;
+        total = total.checked_add(i64::from(value).checked_mul(unit_secs)?)?;
+        value = 0;
+        in_digits = false;
+    }
+    if in_digits {
+        return None; // digits without a closing unit
     }
     Some(total)
 }
@@ -301,8 +286,9 @@ fn spec_parse_total(raw: &str) -> Option<i64> {
 /// about the actual `format!`-rendered bytes — the canonical
 /// round-trip stays with its proptest.
 ///
-/// Unwind 12: the loops' structural need is outer ≤ 2 + inner ≤ 4
-/// iterations; 12 ≥ 2× that need. The 2×-bound doubling re-run at 24
+/// Unwind 12: the parse path's single char loop runs ≤ 4 iterations;
+/// 12 ≥ 2× that need (the production parser's loops are equally
+/// bounded by the 4-byte input). The 2×-bound doubling re-run at 24
 /// exceeded the 6 GiB local cap and could not be completed (recorded
 /// in the pilot report; bump checklist: re-attempt on a bigger
 /// runner).
