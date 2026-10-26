@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc a77b59972860efa63bcd21632eacb2a1d9dab253672a928c2e79453ad7a3362b # shrinks to ax = 0.0, ay = 1523.0681, aw = 1.0, ah = 1.0, tw = 1.0, th = 1.0, ww = 100.0, wh = 100.0, status_h = 0.0
 cc d66099079e3ae75ff56293f71e8c7ff2035c84fd90850f387b645db8e5258605 # shrinks to ax = 1556.253, ay = 0.0, aw = 1.0, ah = 1.0, tw = 717.7878, th = 1.0, ww = 1808.4962, wh = 100.0, status_h = 0.0
+cc a92c91fd9af29dd7cb8e1c40c55df056c22243bf8afc43cc504020c7fd77a430 # shrinks to ax = 0.0, ay = 1535.2555, aw = 1.0, ah = 1.0, tw = 1.0, th = 1.0, ww = 100.0, wh = 1538.5416, status_h = 0.0

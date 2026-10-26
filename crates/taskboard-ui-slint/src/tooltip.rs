@@ -42,7 +42,11 @@ pub fn place(input: &TooltipInput) -> (f32, f32) {
     } = *input;
     let x = (ax + aw / 2.0 - tw / 2.0).clamp(margin, (ww - tw - margin).max(margin));
     let below = ay + ah + gap;
-    let floor = status_top.min(wh);
+    // The flip's floor is also bounded by the window's bottom margin:
+    // with no (or a shallow) status bar, `status_top` alone would let
+    // the flipped tip land inside the bottom margin strip — the
+    // proptest's counterexample region (tooltip.txt).
+    let floor = status_top.min(wh).min(wh - margin).max(margin);
     let crosses = below + th > floor;
     let above_y = ay - gap - th;
     let y = if crosses && above_y >= margin && above_y + th <= floor {
