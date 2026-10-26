@@ -22,6 +22,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
   reminder after a reload (#283 F11-03).
 
 ### Added
+- Kiosk ambient display rotation (#363, K13): the kiosk appliance's
+  window is now a passive ambient display — a display-mode state
+  machine over the one pinned board rotates the board's kanban
+  reading and the today view's upcoming reading on a UI-side dwell
+  timer, with zero input and zero engine commands. Configured under
+  `[kiosk.rotation]` (`modes` + `dwell_secs`, floor 10 s, typed
+  errors for every invalid value); an absent table keeps every
+  existing config byte-identical, and a pin-less multi-board kiosk
+  boot now refuses typed (`kiosk-pin-required`) instead of showing
+  an arbitrary board.
 - Virtualised task lists (#373): every surface that draws N tasks —
   the board columns (regular and compact legs), and the Today and
   stack-detail lists — now renders through an in-house `ListView`
