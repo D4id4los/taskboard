@@ -20,10 +20,15 @@ reminder system. It ships three process modes (=AppMode=,
 the interactive REPL, and remote clients over IPC), *Desktop* (the
 shipped Slint GUI, ADR 0015), and *Kiosk* — the appliance (ADR 0016): the daemon core plus the
 display-gated fullscreen window, with a loud headless fallback that
-keeps serving over IPC; the passive ambient view remains the kiosk
-wave's later ambition. The two-mode product vision behind the mode axis remains:
+keeps serving over IPC — and the window is now the passive ambient
+view: the =KioskMode= / =KioskRotation= display-mode state machine
+(=crates/taskboard-ui-slint/src/view_state.rs=) rotates the pinned
+board's kanban reading and the today view's upcoming reading on a
+UI-side dwell timer, with zero engine commands; the wave's on-device
+budget verdicts are recorded in the kiosk wave exit report
+(=.artifacts/reports/2026-10-27-kiosk-wave-exit-report.md=). The two-mode product vision behind the mode axis remains:
 
-1. *Passive Kiosk Mode (vision):* running on low-power hardware
+1. *Passive Kiosk Mode (shipped):* running on low-power hardware
    attached to an office display, providing continuous, resilient
    visual output with minimal user interaction.
 
@@ -141,7 +146,10 @@ the domain crate). Each frontend owns its own:
   it renders every live board at once, and selection-follows-focus
   retargets =ViewState.board= from the focused row; it is the desktop
   default start view (kiosk keeps Board via =UiSettings.kiosk=). The
-  caller-owned rule stands.
+  kiosk appliance pins the board through =[kiosk] fixed_board=
+  instead — resolved typed at boot (=resolve_fixed_board=); the
+  caller-owned rule stands, the pin is the deployment's caller
+  decision.
 
 ** The app-data sidecar
 
@@ -174,6 +182,76 @@ downstream. Device-local things never enter the document:
 local SQLite tables (0004/0008). Accepted limitation: a card moved
 between boards loses its app-side fields (the document is
 per-board; issue #350 tracks the repair).
+
+** The kiosk appliance and its surfaces
+
+The kiosk wave's one architectural story: one process = the daemon
+core *plus* a fullscreen presentation that degenerates to a passive
+ambient display — and every kiosk subsystem hangs off that shape
+without a new channel.
+
+- *The appliance shape* (ADR 0016): bare =kiosk= is TTY-independent
+  routing to one lifecycle = the =daemon_lifecycle= head (storage,
+  engine, system-event logger, per-database IPC server) + the ADR
+  0015 hand-over with =UiSettings.kiosk = true=. The display gate is
+  evaluated before any slint call (=kiosk_start= in
+  =crates/taskboard-app/src/ui.rs=: =KioskStart::{Appliance,
+  Headless}=): with no display the same invocation falls back loudly
+  to headless serving over IPC. Window-close, signals, and =daemon
+  stop= all converge on the shared serve-drain-shutdown tail
+  (=serve_and_shutdown= / =drain_and_shutdown= in =main.rs=). No
+  kiosk IPC verb exists — the appliance is entered at boot only
+  (ADR 0016's Option B fence, unfired).
+- *The deployment profile*: =[kiosk]= is a typed table under
+  =deny_unknown_fields= (=KioskSection= in =config.rs=).
+  =fixed_board= resolves through =AppConfig::resolve_fixed_board= —
+  absent pin + 1 live board = that board; absent pin + ≥ 2 live
+  boards = the typed =kiosk-pin-required= refusal (the K13 ruling
+  that replaced the pre-K13 "rotation scope" idea: a multi-board
+  ring is explicitly out of scope); an unknown/dead pin = the typed
+  =unknown-fixed-board= error. =[kiosk.rotation]= (=#363=) carries
+  =modes= (≥ 2 distinct =board|=today= entries) and =dwell_secs=
+  (floor =KIOSK_ROTATION_MIN_DWELL_SECS= = 10 s — refused, never
+  clamped); every invalid value is a typed config error, never a
+  silent default. Deployment rides =contrib/taskboard-kiosk.service=
+  (=Restart=always=, the config file's =mode = "kiosk"= as the only
+  mode authority, the seat's display env imported) and the bring-up
+  runbook (=docs/kiosk_bringup_runbook.org=).
+- *The ruled renderer posture* (ADR 0016's 2026-10-21 amendment):
+  the shipped winit + femtovg stack renders through Mesa software GL
+  on the target class; the permission-based fallback (the appliance
+  user deliberately out of =video= / =render=) is the sanctioned
+  contract — no =LIBGL_ALWAYS_SOFTWARE= pin, no build flip.
+- *The metrics surfaces*: per-board cumulative sync counters ride the
+  existing =SyncReport= ingestion onto =SyncStatus.counters= (the
+  =aggregate()= fold, domain =state.rs=), and the engine activity
+  counters live on the handle side (=EngineMetrics= in
+  =taskboard-state=, surfaced in =status='s =engine= object) — never
+  in =AppState=. Both are read lock-free by the CLI =status= and the
+  web dashboard. No new channel, no new wake source.
+- *The credential file store*: the third =CredentialStore=
+  implementation behind the unmoved port (=secrets.rs=), selected by
+  =[nextcloud] credential_store = "file"= — a generated =0600= key
+  file beside the database plus ChaCha20-Poly1305 AEAD envelopes
+  under =<db-dir>/credentials/=, typed failure fences for every
+  corruption shape, no silent fallback (the ADR 0008 amendment).
+- *The web dashboard*: an app-layer hyper 1.x server on the same
+  daemon lifecycle (=[web]=, =WebSection= in =config.rs= —
+  =enabled= / =bind= (loopback default =127.0.0.1:8787=) /
+  =refresh_secs= (self-DoS floor 5) / =token=). The capability-token
+  URL space (=/d/<token>/…=) gates a non-loopback bind — a LAN bind
+  with no resolvable token refuses at boot. One lock-free
+  =ArcSwap= load plus one metrics read per request; meta-refresh
+  polling; the second dumb presentation client over the same state
+  read (the framework-swap seam's second exercise — ADR 0015's rule
+  holds over HTTP).
+- *The ambient view*: =KioskMode::{Board, Today}= rotation driven by
+  =KioskRotation::tick= and the adapter-owned dwell timer in the UI
+  crate (=crates/taskboard-ui-slint/src/lib.rs=) — pure view state,
+  zero engine commands; no capture affordance is reachable in a
+  kiosk mode and the notification surface stays empty; the overdue
+  banner and the offline tone carry across flips; the desktop paths
+  are byte-identical when the rotation table is absent.
 
 * Inter-Component Communication Protocol
 
@@ -431,8 +509,18 @@ dependency hierarchies.
    chip, =IdTables.{today_tasks, palette}=, the field-decoration
    carriers (=TaskCardModel.decorations= + the presentation phrase
    helpers), and the sidecar badge (the selected board's document
-   health rendered as an update-this-app warning). No slint-side
-   semantics — presentation only.
+   health rendered as an update-this-app warning). The kiosk wave
+   widened =view_state= again with the ambient display-mode machine:
+   =KioskMode::{Board, Today}= and =KioskRotation= (the declared-order
+   cycle, =tick=, the typed mint errors =KioskRotationError::
+   {TooFewModes, DuplicateModes}= — the config validates the same rule
+   app-side), driven by the adapter-owned dwell timer in =lib.rs=
+   (the mount arms it, the repaint loop ticks it); the passive gates
+   keep no capture affordance reachable in a kiosk mode and render
+   the today mode as the banner-only upcoming surface; the kiosk
+   goldens (=tests/goldens/kiosk-*.png=) pin both modes' rendering.
+   No slint-side semantics — presentation only; rotation never
+   dispatches.
    the L1 widget / L2 composition / L3 view component layering
    under =ui/=, and =presentation= (pure display helpers reusing the
    domain's overdue/due-soon semantics) + =responsive= (unscaled
@@ -459,9 +547,17 @@ dependency hierarchies.
    =notifications::resolve_sink=) — and the =[preferences]= table
    (=?day_start_time=, device-local, never synced) are validated
    with typed rejections (=invalid-duration= /
-   =invalid-day-start-time=), ADR 0013), =secrets= (the =CredentialStore=
-   port with the keyring and env stores, config-selected, no silent
-   fallback; redacting =AppPassword=), =bootstrap=: one async fn
+   =invalid-day-start-time=), ADR 0013), the kiosk wave's =[kiosk]=
+   table (=fixed_board= + the optional =[kiosk.rotation]= — typed
+   errors for every invalid value, =resolve_fixed_board='s pin
+   matrix) and =[web]= table (=enabled= / =bind= / =refresh_secs= /
+   =token=, the dashboard's deployment profile) are validated the
+   same way, =secrets= (the =CredentialStore=
+   port with the keyring and env stores plus the kiosk wave's
+   encrypted-file store, config-selected, no silent
+   fallback; redacting =AppPassword=), =web= (the dashboard server:
+   routes / render / token — the hyper accept loop on the daemon
+   lifecycle), =bootstrap=: one async fn
    that wires the whole channel graph (the system broadcast, both sync
    pipes, and the notifier feed are constructed here; the engine,
    storage, UI-command, IPC, and REPL channels are constructed inside
@@ -508,7 +604,10 @@ dependency hierarchies.
    (add/list/cancel — =--in=/=--at=, device-local), =labels=
    (list/add/edit/delete), =sync=, =status= (the additive
    per-connector =connectors= array and flat per-board =boards= array
-   beside the unchanged aggregate =sync= field), =config print= — with the =--json=
+   beside the unchanged aggregate =sync= field; the kiosk wave added
+   the cumulative per-board sync counters and the handle-side
+   =engine= object (the commands / rejections / publish-signal
+   activity counters), =config print= — with the =--json=
    output contract (typed projections on stdout, kebab-case error
    envelopes on stderr). Task selectors cascade exact uuid → unique
    ≥8-char prefix → exact title; destructive verbs are
@@ -571,6 +670,9 @@ dependency hierarchies.
 | *Lock-Free State* | =arc-swap= | Atomic pointer updates for =ArcSwap<AppState>=, ensuring non-blocking reads on UI threads. |
 | *Local Persistence* | =sqlx= | Async SQLite database interaction featuring compile-time verified SQL queries. |
 | *Networking* | =reqwest= | Async HTTP client for the Nextcloud Deck OCS REST API (rustls TLS). |
+| *HTTP Server* | =hyper= + =hyper-util= | The web kiosk dashboard's HTTP server (taskboard-app): pinned 1.x / 0.1 in =[workspace.dependencies]=, default features off with the explicit =http1= / =server= / =service= / =tokio= features — the =client= feature stays on so the shared feature set matches reqwest's activation (the pin comment's rationale). |
+| *Crypto (AEAD)* | =chacha20poly1305= | The encrypted-file credential store's AEAD envelope (taskboard-app); pinned 0.11 in =[workspace.dependencies]=, default features off with =alloc= + =zeroize= — pure-Rust ChaCha20-Poly1305, constant-time on every CPU with zero hardware-feature dependence (the kiosk lane's i686 target has no AES-NI; the pin comment's rationale). |
+| *Randomness* | =getrandom= | Key generation for the file credential store (the direct pin behind the =chacha20poly1305= crate's disabled =getrandom= feature, per the pin comment). |
 | *Configuration* | =figment= | Hierarchical configuration management merging embedded defaults, TOML files, and environment variables. |
 | *Config Editing* | =toml_edit= | Comment/formatting-preserving read-modify-write of the config TOML (=taskboard login=). |
 | *CLI Prompts* | =rpassword= | Interactive password prompt (=taskboard connect=, the one-shot and the in-session ceremony's masked read on the editor thread, ADR 0014); stdin-based, tty echo suppression. |
