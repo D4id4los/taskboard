@@ -162,6 +162,7 @@ pub fn build_state(n: usize) -> AppState {
         tasks: tasks.into_iter().map(|t| (t.id, t)).collect(),
         labels: BTreeMap::new(),
         reminders: taskboard_domain::reminders::ReminderState::default(),
+        tracking: taskboard_domain::tracking::TrackingState::default(),
         sync: SyncStates::new(),
         last_updated: None,
     }

@@ -878,6 +878,7 @@ pub fn apply_sync_report(
             dismissals: folded_dismissals.unwrap_or_else(|| current.reminders.dismissals.clone()),
             ..current.reminders.clone()
         },
+        tracking: current.tracking.clone(),
         sync,
         // Sync ingestion is an engine mutation from a foreign source:
         // stamp it like a local command would be.
@@ -1080,6 +1081,9 @@ pub fn apply_push_report(
         // No reminder data enters the *native* push path; rules ride
         // the app-data document lane (a push-only cycle folds nothing).
         reminders: current.reminders.clone(),
+        // No tracking data enters the sync path: entries ride their own
+        // chunk's lane; history carries through untouched.
+        tracking: current.tracking.clone(),
         sync,
         last_updated: Some(now),
     };

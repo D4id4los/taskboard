@@ -219,6 +219,7 @@ proptest! {
             tasks: persisted.tasks.clone(),
             labels: persisted.labels.clone(),
             reminders: persisted.reminders.clone(),
+            tracking: persisted.tracking.clone(),
             sync: persisted.sync.clone(),
             last_updated: None,
         };
@@ -633,6 +634,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
                 tasks: disk_derived.tasks,
                 labels: disk_derived.labels,
                 reminders: disk_derived.reminders,
+                tracking: disk_derived.tracking,
                 sync: disk_derived.sync,
                 last_updated: mem_after.last_updated,
             };

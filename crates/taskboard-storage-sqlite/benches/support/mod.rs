@@ -322,6 +322,7 @@ pub fn build_fixture(n: usize) -> Fixture {
             rules: rules.iter().map(|r| (r.id, r.clone())).collect(),
             ..ReminderState::default()
         },
+        tracking: taskboard_domain::TrackingState::default(),
     };
 
     Fixture {

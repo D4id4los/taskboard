@@ -36,6 +36,9 @@ pub struct AppState {
     /// muted tasks); delivered-ness and snoozed-ness are plain
     /// set-membership checks.
     pub reminders: crate::reminders::ReminderState,
+    /// Settled time-tracking history and the open entries (ADR 0017):
+    /// the open entry is the running timer, elapsed is derived at read.
+    pub tracking: crate::tracking::TrackingState,
     /// Current sync status, keyed per board (the surfaces read the
     /// `aggregate()` fold).
     pub sync: SyncStates,

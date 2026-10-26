@@ -47,6 +47,7 @@ pub mod reconcile;
 pub mod reminders;
 pub mod remote;
 pub mod state;
+pub mod tracking;
 
 /// Kani bounded-model-checking harnesses (compiled only under Kani's
 /// own rustc driver — never by tests, clippy, or coverage).
@@ -82,7 +83,7 @@ pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
     AdhocAlarmId, BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId,
     RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef,
-    StackId, TaskId,
+    StackId, TaskId, TimeEntryId,
 };
 pub use merge::{
     RuleFoldChanges, adopt_board_if_newer, adopt_label_after_push, adopt_remote_board,
@@ -120,3 +121,4 @@ pub use state::{
     AppState, SidecarHealth, SyncCounters, SyncErrorKind, SyncPhase, SyncStates, SyncStatus,
     aggregate_rows, attributed_board, derive_sidecar_health, derive_sync_states,
 };
+pub use tracking::{ClosedSpan, SpanRejected, TimeEntry, TrackingState};

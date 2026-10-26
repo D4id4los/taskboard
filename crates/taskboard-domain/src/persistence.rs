@@ -99,6 +99,8 @@ pub struct PersistedState {
     /// muted tasks); delivered-ness and snoozed-ness are plain
     /// set-membership checks.
     pub reminders: ReminderState,
+    /// Settled time-tracking history and the open entries (ADR 0017).
+    pub tracking: crate::tracking::TrackingState,
 }
 
 impl From<PersistedState> for AppState {
@@ -109,6 +111,7 @@ impl From<PersistedState> for AppState {
             tasks: persisted.tasks,
             labels: persisted.labels,
             reminders: persisted.reminders,
+            tracking: persisted.tracking,
             sync: persisted.sync,
             last_updated: None,
         }
@@ -228,6 +231,11 @@ pub enum PersistenceAction {
     /// snooze links** (the `DeleteReminderRule` cascade shape):
     /// nothing can re-fire from a pruned map row.
     DeleteAdhocAlarm(crate::ids::AdhocAlarmId),
+    /// Insert or replace a time entry.
+    UpsertTimeEntry(crate::tracking::TimeEntry),
+    /// Remove a time entry (the storage/roaming chunk derives the wire
+    /// tombstone at flush).
+    DeleteTimeEntry(crate::ids::TimeEntryId),
     /// Clear the local content of one board: stacks, tasks, labels,
     /// outbox entries, sync validators, and reminder facts (rules,
     /// deliveries, snooze links, mutes) of its tasks. The board row
@@ -250,7 +258,9 @@ pub enum PersistenceAction {
 /// replace by id; a rule delete prunes the rule's deliveries, dismissals,
 /// and snooze links with it; a delivery or dismissal insert is set-union
 /// on the `(reminder, occurrence)` key (first write wins); a snooze link
-/// replaces any prior link for the same key; mute toggles membership. A final derivation re-computes
+/// replaces any prior link for the same key; mute toggles membership.
+/// Time-entry actions: upserts replace by id, deletes remove the row —
+/// history rows have no dependents to prune. A final derivation re-computes
 /// `sync.pending_ops` from the outbox depth, and fully-dismissed snooze
 /// links are compacted — both derivations run unconditionally after
 /// every batch (both this function and `load()` derive them). Alarm
@@ -330,6 +340,12 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             }
             PersistenceAction::DeleteAdhocAlarm(id) => {
                 crate::reminders::remove_alarm(&mut state.reminders, *id);
+            }
+            PersistenceAction::UpsertTimeEntry(entry) => {
+                state.tracking.entries.insert(entry.id, entry.clone());
+            }
+            PersistenceAction::DeleteTimeEntry(id) => {
+                state.tracking.entries.remove(id);
             }
             PersistenceAction::RecordReminderDelivery(delivery) => {
                 if !state
@@ -1046,6 +1062,59 @@ mod tests {
     }
 
     // ---- Reminder actions (chunk-1 semantics, defined once here) ------
+
+    fn time_entry(raw: u128, start: i64, end: Option<i64>) -> crate::tracking::TimeEntry {
+        crate::tracking::TimeEntry {
+            id: crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(raw)),
+            task: crate::ids::TaskId::from(uuid::Uuid::from_u128(900)),
+            task_title: "task 900".into(),
+            start: ts(start),
+            end: end.map(ts),
+            created_at: ts(100),
+            updated_at: ts(100),
+        }
+    }
+
+    #[test]
+    fn upsert_time_entry_replaces_by_id() {
+        let mut state = PersistedState::default();
+        let entry = time_entry(1, 1_000, None);
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::UpsertTimeEntry(entry.clone())],
+        );
+        let mut stamped = entry.clone();
+        stamped.end = Some(ts(2_000));
+        stamped.updated_at = ts(2_500);
+        apply_actions(&mut state, &[PersistenceAction::UpsertTimeEntry(stamped)]);
+        assert_eq!(state.tracking.entries.len(), 1, "replace, not append");
+        assert_eq!(
+            state.tracking.entries[&entry.id].end,
+            Some(ts(2_000)),
+            "the second write wins"
+        );
+    }
+
+    #[test]
+    fn delete_time_entry_removes_the_row() {
+        let mut state = PersistedState::default();
+        let entry = time_entry(1, 1_000, Some(2_000));
+        apply_actions(&mut state, &[PersistenceAction::UpsertTimeEntry(entry)]);
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::DeleteTimeEntry(
+                crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(1)),
+            )],
+        );
+        assert!(state.tracking.entries.is_empty(), "the row is gone");
+        // Removing an absent row is fine (the repeat is benign).
+        apply_actions(
+            &mut state,
+            &[PersistenceAction::DeleteTimeEntry(
+                crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(1)),
+            )],
+        );
+    }
 
     fn reminder_rule(raw: u128) -> crate::reminders::ReminderRule {
         crate::reminders::ReminderRule {

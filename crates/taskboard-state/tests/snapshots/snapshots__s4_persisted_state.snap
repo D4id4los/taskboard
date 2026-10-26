@@ -129,3 +129,5 @@ reminders:
   snoozes: {}
   muted: []
   alarms: {}
+tracking:
+  entries: {}
