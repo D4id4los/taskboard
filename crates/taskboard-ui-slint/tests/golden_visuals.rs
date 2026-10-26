@@ -228,3 +228,128 @@ fn capture_today(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) 
     golden_compare::matches(&golden, &snapshot)
         .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
 }
+
+// -- K13: the kiosk ambient rotation's two mode goldens ------------------
+
+use std::time::Duration;
+
+use taskboard_ui_slint::view_state::{KioskMode, KioskRotation};
+
+/// The kiosk rotation hand-over for the goldens: a 1 s dwell so the
+/// today capture needs one clock step past the flip.
+fn kiosk_rotation_settings() -> UiSettings {
+    UiSettings {
+        kiosk: true,
+        kiosk_rotation: Some(
+            KioskRotation::new(
+                vec![KioskMode::Board, KioskMode::Today],
+                Duration::from_secs(1),
+            )
+            .expect("two distinct modes mint"),
+        ),
+        ..UiSettings::default()
+    }
+}
+
+/// The one matrix cell each kiosk golden captures (the mid
+/// breakpoint, a scale from the existing matrix).
+const KIOSK_SCALE: f64 = 0.5;
+const KIOSK_WIDTH: u32 = 1000;
+
+fn kiosk_golden_path(mode: &str, scale: f64, width: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "{}/tests/goldens/kiosk-{mode}-{scale:.1}-{width}.png",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+fn capture_kiosk(driver: &mut SlintDriver, mode: &str, regen: bool) {
+    // The board mode captures the clean board fixture; the today mode
+    // captures the overdue-stamped fixture (the desktop today goldens'
+    // phrase-stable subject) — its pinned-board degeneration is the
+    // golden's point.
+    let state = if mode == "today" {
+        Arc::new(ArcSwap::from_pointee(fixture::today_overdue_state().1))
+    } else {
+        Arc::new(ArcSwap::from_pointee(fixture::golden_state().1))
+    };
+    let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+    let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+    let handle = taskboard_ui_slint::mount(
+        state,
+        dummy_signals(),
+        dummy_system(),
+        commands,
+        requests_tx,
+        kiosk_rotation_settings(),
+    )
+    .expect("mount succeeds on the testing backend");
+    driver.bind(&handle);
+    if mode == "today" {
+        // One dwell step: the timer's flip is the only way a mode
+        // changes — the capture documents the rotation's output, not
+        // a navigation action.
+        driver.advance_time(1_000);
+    }
+    driver.advance_time(0); // instantiate conditionals
+    driver.set_window_size(KIOSK_WIDTH, HEIGHT);
+
+    let snapshot = driver.snapshot();
+    assert_eq!(
+        (snapshot.width, snapshot.height),
+        (KIOSK_WIDTH, HEIGHT),
+        "renderer-presence contract at the kiosk goldens"
+    );
+
+    let path = kiosk_golden_path(mode, KIOSK_SCALE, KIOSK_WIDTH);
+    if regen {
+        let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(&path, bytes).expect("writes");
+        return;
+    }
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+    let golden: Rgba8Image =
+        golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+    golden_compare::matches(&golden, &snapshot)
+        .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+}
+
+/// The kiosk board-mode golden (K13): the appliance's modes[0] — the
+/// pinned board through the kiosk mount, one matrix cell.
+#[test]
+fn the_kiosk_board_golden_holds() {
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            capture_kiosk(driver, "board", regen);
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// The kiosk today-mode golden (K13): captured after one forced
+/// timer flip — the passive upcoming reading of the pinned board.
+#[test]
+fn the_kiosk_today_golden_holds() {
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            capture_kiosk(driver, "today", regen);
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
