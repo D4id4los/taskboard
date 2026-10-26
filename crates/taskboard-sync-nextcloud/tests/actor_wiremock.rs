@@ -3925,3 +3925,88 @@ async fn f18_anchor_creation_400_dead_letters() {
         "{pushes:?}"
     );
 }
+
+// ---- DR-4/S: the Clock-seam demo under skew (D-4b, #133) ---------------
+
+/// Mounts the listed-but-unreadable dead-board cycle: the boards listing
+/// answers 200 with board 42 flagged live, the board detail 404s (the
+/// dead-board synthesis fires), both stacks listings 404 (the carve-out
+/// empties them). The capabilities probe stays unstubbed ⇒ 404 ⇒
+/// CONSERVATIVE, as everywhere in the suite.
+async fn mount_dead_board(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/index.php/apps/deck/api/v1.0/boards"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(boards_json(false, &serde_json::json!([]))),
+        )
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}"
+        )))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(server)
+        .await;
+    for p in [
+        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks"),
+        format!("/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/archived"),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(server)
+            .await;
+    }
+}
+
+/// A18: every stamp the sync actor mints flows from the injected `Clock`
+/// seam *even when the seam is skewed* — F11-01's supersession of the
+/// audit appendix's "hermetic suites run on the real clock" constraint.
+/// The listed-but-unreadable dead board is the demonstrator: its synthesis
+/// stamps `deleted_at` with the seam's "now" and floors `last_modified`
+/// with a `max` against the listed stamp, so a skewed seam shows up as
+/// exact, impossible-for-a-wall-clock values in the report. Exact
+/// equalities on typed report fields only — no actor internals, no text,
+/// no wall clock anywhere.
+#[tokio::test(start_paused = true)]
+async fn a18_sync_actor_stamps_come_from_the_injected_clock_when_skewed() {
+    // Act 1 — the seam is 1000 s *ahead*: its stamps win the synthesis
+    // `max` and the values are ones no wall clock could have produced.
+    {
+        let server = start_server().await;
+        mount_dead_board(&server).await;
+        let mut cfg = cfg();
+        cfg.clock = Arc::new(FixedClock(ts(T + 1000)));
+        let mut actor = spawn_with_cfg(&server, repo_with(&[(2, STACK)], &[]), cfg);
+        let report = nudge_and_report(&mut actor).await;
+        let SyncReport::Completed {
+            snapshot, read_at, ..
+        } = report
+        else {
+            panic!("expected a Completed report: the dead-board snapshot is valid");
+        };
+        assert_eq!(read_at, ts(T + 1000));
+        assert_eq!(snapshot.board.deleted_at, Some(ts(T + 1000)));
+        assert_eq!(snapshot.board.last_modified, ts(T + 1000));
+    }
+
+    // Act 2 — the seam is 3600 s *behind*: the synthesis `max` floors
+    // `last_modified` at the listed stamp (a behind local stamp cannot
+    // lower it), while the seam-stamped fields carry the behind instant.
+    let server = start_server().await;
+    mount_dead_board(&server).await;
+    let mut cfg = cfg();
+    cfg.clock = Arc::new(FixedClock(ts(T - 3600)));
+    let mut actor = spawn_with_cfg(&server, repo_with(&[(2, STACK)], &[]), cfg);
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed {
+        snapshot, read_at, ..
+    } = report
+    else {
+        panic!("expected a Completed report: the dead-board snapshot is valid");
+    };
+    assert_eq!(read_at, ts(T - 3600));
+    assert_eq!(snapshot.board.deleted_at, Some(ts(T - 3600)));
+    assert_eq!(snapshot.board.last_modified, ts(T));
+}

@@ -2528,4 +2528,127 @@ mod tests {
         assert_eq!(folded, Vec::new());
         assert!(dismissals.is_empty());
     }
+
+    // ---- DR-4/S: the skew interleaving pins (D-4b, #133) ---------------
+
+    /// S1 — audit skew interleaving (i)-residual, the echo shadow. Real
+    /// time: the local title edit lands at 10:05:00, the push echo comes
+    /// back from a server whose clock is 30 s fast and stamps BASE+330
+    /// for a BASE+300 edit, a second local edit lands at 10:05:10, and a
+    /// web edit that *really happened at 10:05:05* — before that second
+    /// edit — is stamped BASE+335 by the fast server. Stamp order is the
+    /// only order the algebra sees, so the real-time-earlier web write
+    /// wins the second edit's field. Accepted-by-design loss class (audit
+    /// F11-02, P2): D-4c's Δ-band guard does *not* cover this interleaving
+    /// (it arbitrates only the resurrect comparisons), so this residue
+    /// survives even a triggered guard — permanent debt. Self-healing
+    /// bound: the next local title edit re-wins (audit §skew (b)).
+    /// `currently_pins_`: a changed policy must consciously rename, not
+    /// silently pass.
+    #[test]
+    fn remote_stamp_beats_newer_local_edit_currently_pins_skew_echo_shadow_residual() {
+        let ctx = RemoteIndex::default();
+
+        // First local edit at real 10:05:00.
+        let mut edited = bound_task(1);
+        edited.title = "edited once".into();
+        edited.clocks.title = ts(BASE + 300);
+
+        // The push echo: the 30 s-fast server stamps BASE + 330; echo
+        // adoption inflates the title clock past the real horizon — C4's
+        // `max`, the skew window's opening.
+        let echo = remote_task(1, 1, BASE + 330);
+        let after_echo = adopt_task_after_push(&edited, &echo, &ctx, true);
+        assert_eq!(after_echo.clocks.title, ts(BASE + 330));
+
+        // Second local edit at real 10:05:10: the engine stamps its
+        // honest `now` (BASE + 310), below the echo-inflated horizon —
+        // local commands stamp unconditionally, no max.
+        let mut edited_twice = after_echo;
+        edited_twice.title = "edited twice".into();
+        edited_twice.clocks.title = ts(BASE + 310);
+
+        // A web edit really made at 10:05:05 (before the second edit),
+        // stamped BASE + 335 by the 30 s-fast server. A distinct title so
+        // the winner's provenance is unambiguous.
+        let mut remote = remote_task(1, 1, BASE + 335);
+        remote.title = "edited on the web".into();
+
+        let merged = merge_task(&edited_twice, &remote, &ctx, true);
+        assert_eq!(merged.title, "edited on the web");
+        assert_eq!(merged.clocks.title, ts(BASE + 335));
+    }
+
+    /// S2 — audit skew interleaving (ii), the resurrect flip, both
+    /// directions. The R5 comparison (`ts_r > clocks.deleted`) is correct
+    /// given honest clocks — `newer_remote_edit_resurrects_local_tombstone`
+    /// / `older_remote_edit_keeps_tombstone` pin exactly that — so this
+    /// pin shows the same comparison under lying stamps; it doubles as
+    /// the acceptance oracle D-4c's Δ-band guard (act A's direction only)
+    /// would be measured against.
+    #[test]
+    fn resurrect_flip_under_skewed_stamps_currently_pins_skew_resurrect_flip() {
+        let ctx = RemoteIndex::default();
+
+        // Act A — server fast ⇒ wrongly resurrects. Real time: the card
+        // is deleted at 10:06:00 (honest engine stamp, C3) and a remote
+        // write really happened at 10:05:50 — *before* the delete; the
+        // 30 s-fast server stamps it BASE + 380 (10:06:20), past the
+        // tombstone. The resurrect then stamps the tombstone clock with
+        // the lying value, compounding the skew for the next comparison
+        // (pipeline-side, the pending DeleteTask re-push is dropped —
+        // out of scope here).
+        let mut deleted = bound_task(1);
+        deleted.deleted = true;
+        deleted.clocks.deleted = ts(BASE + 360);
+        let remote = remote_task(1, 1, BASE + 380);
+        let merged = merge_task(&deleted, &remote, &ctx, true);
+        assert!(!merged.deleted, "the server-fast stamp resurrects");
+        assert_eq!(merged.clocks.deleted, ts(BASE + 380));
+        assert_eq!(merged.remote, Some(card_ref(1, 1)));
+
+        // Act B — local fast ⇒ stale tombstone shields itself. The local
+        // clock is 60 s fast: the real 10:06:00 delete is stamped
+        // 10:07:00. A genuinely fresher remote edit at real 10:06:30
+        // carries the honest server stamp BASE + 390 — below the lying
+        // tombstone clock, so the delete stands even though the remote
+        // change is newer in real time. Bounded self-healing: the change
+        // is observed and can land once server stamps pass 10:07:00.
+        let mut deleted = bound_task(1);
+        deleted.deleted = true;
+        deleted.clocks.deleted = ts(BASE + 420);
+        let remote = remote_task(1, 1, BASE + 390);
+        let merged = merge_task(&deleted, &remote, &ctx, true);
+        assert!(merged.deleted, "the local-fast tombstone shields itself");
+        assert_eq!(merged.clocks.deleted, ts(BASE + 420));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 390)));
+    }
+
+    /// S3 — audit skew interleaving (iii), the seconds tie. Contract, not
+    /// debt: ADR 0004's explicit tie-break (strict `>` in `remote_wins`,
+    /// ties keep local) interacting with Deck's documented whole-second
+    /// wire resolution — the push truncates the engine's sub-second
+    /// `Utc::now()`. Real time: local edit at 10:05:30.400, remote write
+    /// genuinely later at 10:05:30.900, truncated to the same wire stamp
+    /// ⇒ tie ⇒ local stands. The direction is consistently local-favoring
+    /// (safe-leaning); changing it is a deliberate ADR amendment, not
+    /// tolerated debt.
+    #[test]
+    fn same_second_remote_write_loses_to_sub_second_local_edit() {
+        let ctx = RemoteIndex::default();
+
+        let mut local = bound_task(1);
+        local.title = "edited locally".into();
+        local.clocks.title = ts(BASE + 330) + chrono::TimeDelta::try_milliseconds(400).unwrap();
+
+        // The remote write at 10:05:30.900, wire-truncated to 10:05:30.
+        let remote = remote_task(1, 1, BASE + 330);
+
+        let merged = merge_task(&local, &remote, &ctx, true);
+        assert_eq!(merged.title, "edited locally");
+        assert_eq!(
+            merged.clocks.title,
+            ts(BASE + 330) + chrono::TimeDelta::try_milliseconds(400).unwrap()
+        );
+    }
 }
