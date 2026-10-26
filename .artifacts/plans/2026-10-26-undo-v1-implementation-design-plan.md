@@ -24,9 +24,13 @@
 - **Branch / worktree**: `docs/undo-implementation-design` in
   `../taskboard-WT-docs-undo-implementation-design` (off `origin/main`
   @ `b805117`).
-- **Status**: READY FOR REVIEW — the four session rulings are already
-  user-confirmed; §7's refinement decisions (R-U6…R-U12) carry one
-  recommendation each and travel with this doc for acceptance.
+- **Status**: **ACCEPTED** — the user accepted the plan as designed
+  (2026-10-26): all four session rulings were already user-confirmed at
+  round entry, and §7's refinement decisions (R-U6…R-U12) are confirmed
+  as recommended. Implementation is the two chunk issues the round
+  opened (#509, #510), dispatched by
+  `.artifacts/plans/2026-10-26-design-rounds-batch-implementation-dispatch-plan.md`
+  §8 (waves 9–11).
 
 ---
 
