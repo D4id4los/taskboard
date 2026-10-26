@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The session-layer connector ceremonies (ADR 0014, design §4.4/§4.6):
-//! a `connect` (or deprecated-alias `login`) line runs the chunk-2
-//! ceremony through the session's prompt reader, refreshes the session
-//! config, and attaches chunk-1's `App::attach_connector` to the
-//! running core; a `logout` line runs the mirror (local teardown →
-//! `detach_connector` → config refresh). These are *session-layer
-//! actions*, not `dispatch_line` arms: they mutate the session itself
-//! (`&mut ReplSession`) — the rule the ADR records is "verbs that
-//! mutate the session itself live in the session layer; the verb bodies
-//! stay frontend-agnostic functions."
+//! The connector ceremonies (ADR 0014, design §4.4/§4.6), across both
+//! frontends: on the session (REPL) frontend, a `connect` (or
+//! deprecated-alias `login`) line runs the chunk-2 ceremony through the
+//! session's prompt reader, refreshes the session config, and attaches
+//! chunk-1's `App::attach_connector` to the running core, and a
+//! `logout` line runs the mirror (local teardown → `detach_connector` →
+//! config refresh) — those two arms take `&mut ReplSession`. On the
+//! daemon (IPC) frontend, `attach_from_persisted` re-reads persisted
+//! state and attaches without a session. The choreographies and their
+//! helpers are frontend-agnostic functions — the rule the ADR records
+//! is "verbs that mutate the session itself live in the session layer;
+//! the verb bodies stay frontend-agnostic functions."
 //!
 //! Ordering is the design's: the ceremony completes before anything
 //! about the running core changes, every step is typed-failable, and a
@@ -201,8 +203,9 @@ fn default_connector_id(
         .map(|spec| spec.name.clone()))
 }
 
-/// The refreshed config's default connector spec (D5-14: the session's
-/// `build_client` and the daemon-side attach share it).
+/// The refreshed config's default connector spec (D5-14: the session
+/// ceremony's `connect_session` and the daemon ceremony's
+/// `attach_from_persisted` share it).
 pub(crate) fn default_spec(
     config: &AppConfig,
 ) -> Result<crate::connectors::ConnectorSpec, CommandError> {

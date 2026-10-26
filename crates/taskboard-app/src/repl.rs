@@ -43,9 +43,9 @@ use crate::cli::Command;
 use crate::commands::{CommandError, CommandIo, CoreSession, connect, dispatch_line};
 use crate::completion;
 use crate::config::{AppConfig, SyncBackend};
+use crate::connector_ceremonies::{connect_line, logout_line};
 use crate::repl_history;
 use crate::secrets::CredentialStore;
-use crate::session_ceremonies::{connect_line, logout_line};
 
 /// The session prompt (a minimal constant; UI text, never asserted).
 const PROMPT: &str = "taskboard> ";
