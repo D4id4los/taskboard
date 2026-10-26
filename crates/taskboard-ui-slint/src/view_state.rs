@@ -51,6 +51,109 @@ pub enum ViewId {
     Settings,
 }
 
+/// The kiosk ambient display's modes (issue #363): the two
+/// degenerations the rotation cycles. Declaration order carries the
+/// config mapping; the [`KioskMode::view`] mapping is total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KioskMode {
+    /// The pinned board's kanban reading.
+    Board,
+    /// The today view's upcoming-oriented reading.
+    Today,
+}
+
+impl KioskMode {
+    /// The view the mode renders — the existing compositions, never a
+    /// kiosk-specific one.
+    #[must_use]
+    pub const fn view(self) -> ViewId {
+        match self {
+            Self::Board => ViewId::Board,
+            Self::Today => ViewId::Today,
+        }
+    }
+}
+
+/// Why a [`KioskRotation`] refused to mint. The config validation owns
+/// the refusal at the deployment boundary; this constructor is the
+/// trust boundary's last gate (the house A1 pattern — fallible
+/// minting, no derive crates, no validate-and-forget).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum KioskRotationError {
+    /// Fewer than two distinct modes — a one-mode "rotation" is a
+    /// no-op wearing a config.
+    #[error("kiosk rotation needs at least two distinct modes")]
+    TooFewModes,
+    /// Duplicate entries — a duplicate splits the dwell cycle
+    /// pointlessly.
+    #[error("kiosk rotation modes must be distinct")]
+    DuplicateModes,
+}
+
+/// The kiosk display-mode state machine (KDF-11, D-V3): the enabled
+/// modes in their declared rotation order plus the dwell. Pure data —
+/// the adapter owns the timer; [`KioskRotation::tick`] is the only
+/// transition. No time lives here: the timer IS the dwell state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KioskRotation {
+    /// The rotation order; ≥ 2 distinct entries, validated at minting.
+    modes: Vec<KioskMode>,
+    /// Per-mode display time; ≥ the config floor, validated at the
+    /// config boundary before minting.
+    dwell: std::time::Duration,
+    /// Index into `modes` — the active display mode.
+    active: usize,
+}
+
+impl KioskRotation {
+    /// Mints the rotation over `modes` in declared order. `modes` must
+    /// hold ≥ 2 distinct entries; the config validation owns the
+    /// refusal upstream and this constructor mirrors it so no caller
+    /// can bypass validation silently.
+    ///
+    /// # Errors
+    ///
+    /// [`KioskRotationError::TooFewModes`] / [`KioskRotationError::DuplicateModes`]
+    /// per their docs.
+    pub fn new(
+        modes: Vec<KioskMode>,
+        dwell: std::time::Duration,
+    ) -> Result<Self, KioskRotationError> {
+        if modes.len() < 2 {
+            return Err(KioskRotationError::TooFewModes);
+        }
+        let mut seen = std::collections::HashSet::new();
+        if !modes.iter().all(|mode| seen.insert(mode)) {
+            return Err(KioskRotationError::DuplicateModes);
+        }
+        Ok(Self {
+            modes,
+            dwell,
+            active: 0,
+        })
+    }
+
+    /// The display mode currently on the wall.
+    #[must_use]
+    pub fn active(&self) -> KioskMode {
+        self.modes[self.active]
+    }
+
+    /// The per-mode display time (the full dwell — each flip re-arms
+    /// it; no carry-over, no interaction pause).
+    #[must_use]
+    pub fn dwell(&self) -> std::time::Duration {
+        self.dwell
+    }
+
+    /// The one transition: advance to the next mode in declared order
+    /// (wrapping) and return it.
+    pub fn tick(&mut self) -> KioskMode {
+        self.active = (self.active + 1) % self.modes.len();
+        self.active()
+    }
+}
+
 /// The active flow (D9): at most one — edit (create row or title) XOR
 /// move. `refresh` never touches text properties while a flow holds
 /// the buffers (D9 rule 4).
@@ -1069,6 +1172,29 @@ impl ViewState {
         self.flow = Flow::None;
         self.buffer.clear();
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+    }
+
+    /// The kiosk rotation flip (issue #363, decision D7): end any flow
+    /// without committing (the `discard_edit` exit — an operator's
+    /// half-open create row never commits on a tick), reset focus and
+    /// the compact stack selection to the mode's canonical head, and
+    /// switch the view. Pure view state; the only outcome is the
+    /// repaint (the discard's `SetMode(Normal)` folds in when a flow
+    /// was active). Scroll positions reset by construction — the
+    /// view switch remounts the incoming view's trees at the top.
+    pub fn enter_kiosk_mode(&mut self, state: &AppState, mode: KioskMode) -> Vec<FlowOutcome> {
+        let mut outcomes = if self.flow == Flow::None {
+            Vec::new()
+        } else {
+            self.discard_edit()
+        };
+        self.view = mode.view();
+        self.focused_task = None;
+        self.selected_stack = self.stack_ids(state).first().copied();
+        if !outcomes.contains(&FlowOutcome::RefreshNow) {
+            outcomes.push(FlowOutcome::RefreshNow);
+        }
+        outcomes
     }
 
     /// Quick capture's opener (chunk 10 D8): replaces any in-progress
@@ -3372,6 +3498,124 @@ mod tests {
         assert_eq!(vs.board(), Some(b0));
         assert_eq!(vs.focused_task(), None);
         let _ = s1;
+    }
+
+    // -- the kiosk rotation (K13, issue #363) ---------------------------------
+
+    #[test]
+    fn kiosk_rotation_mints_only_distinct_mode_pairs() {
+        let dwell = std::time::Duration::from_secs(30);
+        assert_eq!(
+            KioskRotation::new(vec![KioskMode::Board], dwell),
+            Err(KioskRotationError::TooFewModes),
+            "a one-mode rotation is a no-op wearing a config"
+        );
+        assert_eq!(
+            KioskRotation::new(vec![KioskMode::Board, KioskMode::Board], dwell),
+            Err(KioskRotationError::DuplicateModes),
+            "a duplicate splits the cycle pointlessly"
+        );
+        let rotation = KioskRotation::new(vec![KioskMode::Board, KioskMode::Today], dwell)
+            .expect("two distinct modes mint");
+        assert_eq!(rotation.dwell(), dwell);
+    }
+
+    #[test]
+    fn kiosk_rotation_ticks_in_declared_order_and_wraps() {
+        let mut rotation = KioskRotation::new(
+            vec![KioskMode::Today, KioskMode::Board],
+            std::time::Duration::from_secs(30),
+        )
+        .expect("two distinct modes mint");
+        assert_eq!(
+            rotation.active(),
+            KioskMode::Today,
+            "the declared order is the rotation order, not a hardcoded one"
+        );
+        assert_eq!(rotation.tick(), KioskMode::Board);
+        assert_eq!(rotation.active(), KioskMode::Board);
+        assert_eq!(rotation.tick(), KioskMode::Today, "the cycle wraps");
+    }
+
+    #[test]
+    fn enter_kiosk_mode_resets_to_the_mode_head() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.begin_create(s0);
+        assert_eq!(vs.buffer(), "", "the create flow starts on an empty buffer");
+        vs.set_buffer("half-typed".to_owned());
+
+        let outcomes = vs.enter_kiosk_mode(&state, KioskMode::Today);
+        assert_eq!(vs.view(), ViewId::Today);
+        assert_eq!(*vs.flow(), Flow::None, "the flow ends without committing");
+        assert_eq!(vs.buffer(), "", "the buffer is discarded, never committed");
+        assert_eq!(vs.focused_task(), None);
+        assert_eq!(
+            vs.selected_stack(),
+            Some(s0),
+            "the stack selection lands on the board's first live stack"
+        );
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow],
+            "the non-committing exit's outcomes fold into the flip"
+        );
+
+        // A flip with no flow active carries no SetMode (already Normal).
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let outcomes = vs.enter_kiosk_mode(&state, KioskMode::Board);
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.view(), ViewId::Board);
+    }
+
+    #[test]
+    fn rotation_transition_never_produces_an_engine_command() {
+        let (state, board, [s0, _], [a, ..]) = fixture();
+        let flows = [
+            Flow::None,
+            Flow::Create { stack: s0 },
+            Flow::CreateStack,
+            Flow::EditTitle { task: a },
+            Flow::EditDue { task: a },
+            Flow::Move {
+                task: a,
+                target: s0,
+            },
+            Flow::Palette { selected: 0 },
+            Flow::Capture,
+            Flow::CreateBoard,
+            Flow::RenameStack { stack: s0 },
+            Flow::RenameBoard { board },
+            Flow::MoveStack { stack: s0, slot: 0 },
+            Flow::DragMove {
+                task: a,
+                target: s0,
+            },
+        ];
+        for flow in flows {
+            for mode in [KioskMode::Board, KioskMode::Today] {
+                let mut vs = ViewState::new();
+                vs.reconcile(&state);
+                vs.flow = flow.clone();
+                vs.buffer = "in-flight".to_owned();
+                let outcomes = vs.enter_kiosk_mode(&state, mode);
+                assert!(
+                    !outcomes
+                        .iter()
+                        .any(|outcome| matches!(outcome, FlowOutcome::Command(_))),
+                    "rotation must never dispatch into the engine (flow {flow:?}, mode {mode:?})"
+                );
+                assert!(
+                    outcomes
+                        .iter()
+                        .any(|o| matches!(o, FlowOutcome::RefreshNow)),
+                    "the flip always repaints"
+                );
+            }
+        }
     }
 }
 
