@@ -67,10 +67,10 @@ struct Bench {
     state: Arc<ArcSwap<taskboard_domain::AppState>>,
 }
 
-thread_local! {
-    /// Flip-flop flag for the partial lane's rotating mutation.
-    static TOGGLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
+/// The fixed `done` stamp the partial lane flips un-done tasks to
+/// (arbitrary fixed instant; the fixture never produces it — its own
+/// stamps come from `ts(order + 2_000_000)`).
+const PARTIAL_STAMP_SECS: i64 = 1_704_067_200 + 9_000_000;
 
 /// Platform guard (plan D9): slint's platform is process-global and
 /// thread-affine; criterion (no rayon) runs everything on the main
@@ -217,6 +217,7 @@ fn draw_partial_lanes(c: &mut Criterion) {
         let rotate = std::cell::Cell::new(0_usize);
         let task_ids = bench.task_ids.clone();
         let report = std::cell::Cell::new(None::<(u32, u32)>);
+        let last = std::cell::Cell::new(None::<(u32, u32)>);
         group.bench_with_input(criterion::BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter_batched(
                 || {
@@ -224,23 +225,39 @@ fn draw_partial_lanes(c: &mut Criterion) {
                     rotate.set((i + 1) % task_ids.len().max(1));
                     let mut next = (**bench.state.load()).clone();
                     if let Some(task) = next.tasks.get_mut(&task_ids[i % task_ids.len()]) {
-                        TOGGLE.set(!TOGGLE.get());
-                        task.done = TOGGLE.get().then(|| {
-                            chrono::Utc
-                                .timestamp_opt(1_704_067_200 + 9_000_000, 0)
-                                .single()
-                                .expect("fixed stamp")
-                        });
+                        // Flip the task's *current* done value: the
+                        // mutation must change the row every iteration,
+                        // or the row-diff correctly dirties nothing and
+                        // the lane silently measures an unchanged
+                        // refresh (the 2026-10-26 re-measure finding).
+                        task.done = if task.done.is_none() {
+                            chrono::Utc.timestamp_opt(PARTIAL_STAMP_SECS, 0).single()
+                        } else {
+                            None
+                        };
                     }
                     bench.state.store(Arc::new(next));
                     bench.handle.refresh();
                 },
                 |()| {
                     let region = bench.adapter.render_into(&mut buffer, stride);
-                    report.set(Some((
+                    let (w, h) = (
                         region.bounding_box_size().width,
                         region.bounding_box_size().height,
-                    )));
+                    );
+                    // Keep the max-area region across iterations: the
+                    // lane's contract is "one changed row per render",
+                    // so the max is the honest worst case and immune
+                    // to last-iteration sampling. The last iteration is
+                    // reported alongside it: max ≫ last means the big
+                    // region came from warm-up (e.g. the first render
+                    // on a freshly switched ReusedBuffer), not from
+                    // the steady-state per-change repaint.
+                    let prev = report.get().unwrap_or((0, 0));
+                    if u64::from(w) * u64::from(h) >= u64::from(prev.0) * u64::from(prev.1) {
+                        report.set(Some((w, h)));
+                    }
+                    last.set(Some((w, h)));
                 },
                 BatchSize::PerIteration,
             );
@@ -254,6 +271,16 @@ fn draw_partial_lanes(c: &mut Criterion) {
         eprintln!(
             "[refresh_draw] draw-partial/{n}: region {w}×{h} ({area} px = {share}% of the \
              full frame; 100% = the whole-VecModel-replacement dirt, the D6 recorded finding)"
+        );
+        let (lw, lh) = last.get().expect("at least one measured render ran");
+        let larea = u64::from(lw) * u64::from(lh);
+        let lshare = larea
+            .checked_mul(100)
+            .and_then(|v| v.checked_div(full_area))
+            .unwrap_or(0);
+        eprintln!(
+            "[refresh_draw] draw-partial/{n}: last-iteration region {lw}×{lh} ({larea} px = \
+             {lshare}% of the full frame)"
         );
     }
     group.finish();
