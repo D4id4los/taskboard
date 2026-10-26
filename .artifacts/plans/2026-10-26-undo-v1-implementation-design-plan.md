@@ -30,7 +30,7 @@
   as recommended. Implementation is the two chunk issues the round
   opened (#509, #510), dispatched by
   `.artifacts/plans/2026-10-26-design-rounds-batch-implementation-dispatch-plan.md`
-  §8 (waves 9–11).
+  §12 (waves 9–11).
 
 ---
 
