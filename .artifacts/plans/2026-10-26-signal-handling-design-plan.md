@@ -35,14 +35,13 @@
 - **Branch / worktree**: `docs/signal-handling-design` in
   `../taskboard-WT-docs-signal-handling-design`, off `origin/main` @
   `cdc41c6`.
-- **Status**: DRAFT for user review. The 2026-10-26 ruling pass did
-  not reach the user, so every design fork below is resolved with a
-  **recommendation** (first option, reasons, rejected alternatives
-  recorded) and the four direction-level forks are flagged
-  **⟂ RULING WANTED** — flipping any of them at review is local
-  (each is one numbered decision with its consequences already
-  written out). The implementation issues opened alongside this plan
-  carry the same flag in their bodies.
+- **Status**: ACCEPTED (user ruling 2026-10-26): all four
+  direction-level forks — D-2, D-4, D-5, D-6 — are confirmed **as
+  recommended**. The decisions below are binding for the follow-up
+  implementation round (chunks R/I/D, issues #469/#470/#471); the
+  origin issues #174/#192/#196/#200/#162 close with their chunk's
+  PR. The earlier draft's per-fork "⟂ RULING WANTED" flags are
+  resolved; the rejected-alternative records stay for the archive.
 
 ---
 
@@ -152,9 +151,9 @@ installs must also *select* on the cancellation (or accept that ^C is
 consumed silently, which the design never leaves unhandled: the
 force rung is always armed behind the first signal).
 
-### D-2 — REPL: Ctrl-C during a running line/ceremony ⟂ RULING WANTED
+### D-2 — REPL: Ctrl-C during a running line/ceremony
 
-**Recommended: cancel first, force second.**
+**Accepted (2026-10-26 ruling; recommended: cancel first, force second.**
 
 The session loop wraps the `Execute` arm's await in a `select!`
 against the cancellation watch (the injected seam; production wires
@@ -239,9 +238,9 @@ already gives it the typed path under the handler):
   one-shot ceremonies — real machinery for a surface whose user
   pressed Ctrl-C precisely to leave.
 
-### D-4 — External termination restores the terminal first (issue #200) ⟂ RULING WANTED
+### D-4 — External termination restores the terminal first (issue #200)
 
-**Recommended: SIGTERM and SIGHUP get restore-then-graceful;
+**Accepted (2026-10-26 ruling; recommended: SIGTERM and SIGHUP get restore-then-graceful;
 SIGQUIT stays at default disposition; SIGKILL stays unrestoreable.**
 
 - The REPL's ladder watcher (D-1) also listens for SIGTERM/SIGHUP
@@ -272,9 +271,9 @@ the restored-pane guarantee but eats the core-dump diagnostic);
 so it is *safe*, but there is nothing to gain — the graceful path is
 bounded and already runs at every other exit).
 
-### D-5 — IPC: client cancellation, read deadlines, an out-of-band `daemon stop` (issue #196) ⟂ RULING WANTED
+### D-5 — IPC: client cancellation, read deadlines, an out-of-band `daemon stop` (issue #196)
 
-**Recommended: client-side deadlines + Ctrl-C tidy exit + a control
+**Accepted (2026-10-26 ruling; recommended: client-side deadlines + Ctrl-C tidy exit + a control
 lane for `Shutdown`; no `Cancel` verb.**
 
 1. **One-shot Ctrl-C (non-ceremony verbs)**: the transport arm and
@@ -324,9 +323,9 @@ see 4); **document-only** (leaves F12's `daemon stop` starvation and
 the deadline question open — the round exists precisely to decide
 them).
 
-### D-6 — Daemon ladder and the exit-code table (issue #162) ⟂ RULING WANTED
+### D-6 — Daemon ladder and the exit-code table (issue #162)
 
-**Recommended: three rungs, honest codes.**
+**Accepted (2026-10-26 ruling; recommended: three rungs, honest codes.**
 
 | Rung | Trigger | Behavior |
 |---|---|---|
@@ -433,11 +432,11 @@ for supervision to grade).
 |---|---|---|
 | D-0 | One policy sentence, one `signals.rs`, orphan completion named | recommended |
 | D-1 | Ladder helper + watcher; tokio-signal only; no new deps; no `unsafe` | recommended |
-| D-2 | REPL: cancel-first/force-second; typed `cancelled`; force lives in the watcher | recommended **⟂ ruling** (vs cancel-only; vs +double-^C quit) |
+| D-2 | REPL: cancel-first/force-second; typed `cancelled`; force lives in the watcher | **accepted** 2026-10-26 (was: recommended ⟂ ruling — vs cancel-only; vs +double-^C quit) |
 | D-3 | `Line`/`Confirm` prompts ride rustyline; masked stays rpassword; one-shot ceremonies keep death; prompts stderr→stdout recorded | recommended |
-| D-4 | SIGTERM/SIGHUP restore-then-graceful; SIGQUIT default; SIGKILL documented | recommended **⟂ ruling** (vs +SIGQUIT; vs restore-then-die) |
-| D-5 | IPC: client cancel+130, derived read deadline + `ipc-timeout`, `Shutdown` control lane, no `Cancel` verb | recommended **⟂ ruling** (vs full server cancel; vs document-only) |
-| D-6 | Daemon: 3-rung ladder; exit codes 0/1/130/143; GUI/kiosk share the helper | recommended **⟂ ruling** (vs 2 rungs+codes; vs document-only) |
+| D-4 | SIGTERM/SIGHUP restore-then-graceful; SIGQUIT default; SIGKILL documented | **accepted** 2026-10-26 (was: recommended ⟂ ruling — vs +SIGQUIT; vs restore-then-die) |
+| D-5 | IPC: client cancel+130, derived read deadline + `ipc-timeout`, `Shutdown` control lane, no `Cancel` verb | **accepted** 2026-10-26 (was: recommended ⟂ ruling — vs full server cancel; vs document-only) |
+| D-6 | Daemon: 3-rung ladder; exit codes 0/1/130/143; GUI/kiosk share the helper | **accepted** 2026-10-26 (was: recommended ⟂ ruling — vs 2 rungs+codes; vs document-only) |
 | D-7 | All app-crate, `cfg(unix)` discipline, handlers never on test paths | recommended |
 | D-8 | ADR 0011/0012/0014 dated amendments + runbook + CHANGELOG (ride their chunks) | recommended |
 | D-9 | Seams per §3 D-9; pty pin semantics change sanctioned here | recommended |
