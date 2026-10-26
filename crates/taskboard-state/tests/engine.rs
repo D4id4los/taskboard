@@ -2817,3 +2817,44 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
         "a re-folded row is not re-withdrawn"
     );
 }
+
+/// The generation signal is wall-step-immune: two `Completed` reports
+/// advance `counters.cycles` monotonically even when the injected clock
+/// steps *backward* between them — `last_success` honestly moves back
+/// with the clock (a display fact), while the cycle count is what
+/// freshness consumers may rely on.
+#[tokio::test]
+async fn counters_advance_across_a_backward_clock_step() {
+    let clock = FixedClock::new(T0);
+    let h = spawn(Spawner {
+        clock: clock.clone(),
+        ..Spawner::default()
+    })
+    .await;
+
+    h.report_tx
+        .send(completed_report())
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.sync.aggregate().counters.cycles == 1
+            && app.sync.aggregate().last_success == Some(ts(T0))
+            && app.sync.aggregate().phase == SyncPhase::Idle
+    })
+    .await;
+
+    // The backward step: a wall-stamp freshness comparison would read
+    // the next report's stamp as older and misreport the cycle.
+    clock.advance(-3_600);
+
+    h.report_tx
+        .send(completed_report())
+        .await
+        .expect("report channel open");
+    eventually(&h.handle, |app| {
+        app.sync.aggregate().counters.cycles == 2
+            && app.sync.aggregate().last_success == Some(ts(T0 - 3_600))
+            && app.sync.aggregate().phase == SyncPhase::Idle
+    })
+    .await;
+}
