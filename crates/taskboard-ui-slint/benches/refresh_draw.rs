@@ -22,11 +22,13 @@
 //! in a `today` and a `board` pin each, with a different flip shape
 //! per pin: a Today flip is an **overdue-list removal** (the reflow
 //! damage of a filtered list), a Board flip is an **in-place card
-//! change** on the eagerly-instantiated board. Both need to be
-//! performant; neither number subsumes the other. Board cells past
-//! the software renderer's i16 pixel ceiling (where the eager columns
-//! cannot render at all — see `BOARD_SAFE_ROWS_PER_COLUMN`) are
-//! skipped loudly, not measured and not hidden.
+//! change** on the virtualised board. Both need to be performant;
+//! neither number subsumes the other. Every cell measures at every N:
+//! the #373 virtualisation keeps the board's live raster geometry
+//! viewport-scale, so the software renderer's i16 pixel ceiling (the
+//! #462 crash of the eager board at ~550-650 rows/column) is
+//! unreachable by construction and the former skip
+//! (`BOARD_SAFE_ROWS_PER_COLUMN`) is gone.
 //!
 //! Lanes (plan D8, re-pinned):
 //!
@@ -77,29 +79,15 @@ use taskboard_domain::TaskId;
 use taskboard_ui_slint::requests;
 use taskboard_ui_slint::{UiHandle, UiSettings, mount};
 
-use support::{BENCH_HEIGHT, BENCH_WIDTH, N_SIZES, STACK_COUNT, build_state};
-
-/// The board pin's safe per-column row bound. slint 1.18.1's software
-/// renderer does its rasterization arithmetic in `i16` physical
-/// pixels (`i-slint-renderer-software/lib.rs`: `type PhysicalLength =
-/// euclid::Length<i16, PhysicalPx>`), so scene content beyond the
-/// ±32 767 px ceiling cannot render — the 2026-10-26 view-pinned
-/// run's `draw-full/board/10000` died in `BasicBorderRectangle::render`
-/// on a `Length<i16>` add-overflow (empirical bracket at 1366×768:
-/// 500 rows/column renders, 650 panics; ~550-650 rows is where the
-/// fixture's column crosses the ceiling). The fixture's worst-case
-/// card stride (two-chip card + spacing) is ~77 px, so the safe bound
-/// is 32 767 / 77 ≈ 425, rounded down. Cells past the bound are
-/// skipped loudly, never silently measured and never allowed to
-/// panic: the production consequence (the kiosk default view panics
-/// at that board scale) is the tracker's, not the bench's.
-const BOARD_SAFE_ROWS_PER_COLUMN: usize = 400;
+use support::{BENCH_HEIGHT, BENCH_WIDTH, N_SIZES, build_state};
 
 /// The view pins of the draw lanes (the lever is the mount's own
 /// kiosk bit — `adapter.rs` seeds Board on kiosk, Today otherwise).
 /// The Today pin carries the desktop default view; the Today pass's
 /// kiosk-side board filter (`adapter.rs` kiosk gate) is inert on this
-/// single-board fixture.
+/// single-board fixture. The eager board's i16 raster ceiling (the
+/// former `BOARD_SAFE_ROWS_PER_COLUMN` skip's subject, #462) is
+/// unreachable under virtualisation — see the file header.
 const VIEW_PINS: [(&str, bool); 2] = [("today", false), ("board", true)];
 
 /// The fixed `done` stamp the partial lane flips un-done tasks to
@@ -255,17 +243,6 @@ fn draw_full_lanes(c: &mut Criterion) {
     let mut group = c.benchmark_group("draw-full");
     for (view, kiosk) in VIEW_PINS {
         for n in N_SIZES {
-            if kiosk && n.div_ceil(STACK_COUNT) > BOARD_SAFE_ROWS_PER_COLUMN {
-                eprintln!(
-                    "[refresh_draw] draw-full/board/{n}: SKIPPED — the eager board's \
-                     columns exceed the software renderer's i16 pixel ceiling \
-                     ({BOARD_SAFE_ROWS_PER_COLUMN} rows/column safe bound; 500 \
-                     rows/column renders, 650 panics in \
-                     BasicBorderRectangle::render — recorded finding, not a \
-                     measurement)"
-                );
-                continue;
-            }
             group.throughput(element_throughput(n));
             configure_group(&mut group, n);
             let bench = mounted(n, kiosk);
@@ -308,15 +285,6 @@ fn draw_partial_lanes(c: &mut Criterion) {
     let mut group = c.benchmark_group("draw-partial");
     for (view, kiosk) in VIEW_PINS {
         for n in N_SIZES {
-            if kiosk && n.div_ceil(STACK_COUNT) > BOARD_SAFE_ROWS_PER_COLUMN {
-                eprintln!(
-                    "[refresh_draw] draw-partial/board/{n}: SKIPPED — the eager board's \
-                     columns exceed the software renderer's i16 pixel ceiling \
-                     ({BOARD_SAFE_ROWS_PER_COLUMN} rows/column safe bound; see \
-                     draw-full/board's skip note)"
-                );
-                continue;
-            }
             group.throughput(element_throughput(n));
             configure_group(&mut group, n);
             let bench = mounted(n, kiosk);
