@@ -1394,6 +1394,11 @@ mod connector_module_tests {
         config.storage.db_path = Some(dir.path().join("taskboard.db"));
         // Standalone: an empty registry to attach into.
         config.sync.backend = Some(SyncBackend::Standalone);
+        // #417: the attached client targets a dead identity host, so
+        // detach joins the actor only after its startup probe + first
+        // cycle's connect failure; make the join budget explicit
+        // instead of leaning on the 5 s default under load.
+        config.app.shutdown_timeout_secs = 60;
         config.validate().expect("config valid");
 
         let app = bootstrap_with_modules(
