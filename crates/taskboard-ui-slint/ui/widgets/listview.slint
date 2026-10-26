@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The in-house virtualised list (the #373 design round, route 2).
+// The element NAME and the five length properties are the slint
+// compiler's nominal ListView contract (object_tree.rs:2891-2905):
+// rename any of them and the `for` below silently renders eager —
+// tests/virtualisation.rs's engagement probe fails on purpose.
+component ListView inherits Flickable {
+    in-out property <length> visible-height: self.height;
+    in-out property <length> visible-width: self.width;
+    // The focus-into-view seam (design round §3a): the consumer
+    // binds request-row/-nonce/-total-rows; a nonce change seeks.
+    in property <int> request-row: -1;
+    in property <int> request-nonce: 0;
+    in property <int> total-rows: 0;
+    changed request-nonce => {
+        if (self.request-row >= 0) {
+            self.scroll-row-into-view(self.request-row);
+        }
+    }
+    // Top-anchors the row using the runtime's own cached average
+    // (content-height/total-rows) — the exact divisor the runtime's
+    // 1.5-screen random seek inverts (repeater.rs update_visible_
+    // instances), so the seek lands the row live at the window top.
+    // Guard: no-op while the first layout is pending (avg == 0) and
+    // when the estimated range already holds the row.
+    public function scroll-row-into-view(row: int) {
+        if (row < 0 || self.total-rows <= 0) {
+            return;
+        }
+        let avg-est = self.content-height / self.total-rows;
+        if (avg-est <= 0) {
+            return;
+        }
+        let top = row * avg-est;
+        if (top < -self.content-y
+                || top + avg-est > -self.content-y + self.visible-height) {
+            self.content-y = -top;
+        }
+    }
+}

@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The virtualisation probes' test-local host components (#373): the
+// engagement suite instantiates these instead of the AppWindow — the
+// ListView contract is per-`for`-parent and must be proven against
+// the real in-house ListView import before any leg depends on it.
+// Compiled by build.rs with element debug info (the testing
+// backend's ElementQuery requires it; the `slint!` macro cannot
+// enable it in slint 1.18.1).
+
+import { Theme } from "../ui/theme.slint";
+import { ListView } from "../ui/widgets/listview.slint";
+
+// The eager control: the plain `for` shape, no ListView — every
+// delegate exists. This pins the counting instrument and the eager
+// shape itself.
+export component EagerProbe inherits Window {
+    width: Theme.space-15;
+    height: Theme.space-8 * 5;
+    in property <[string]> items;
+    for row in root.items: item := Rectangle {
+        height: Theme.space-5;
+        accessible-role: text;
+        accessible-label: row;
+    }
+}
+
+// The engaged probe: the identical delegate inside the real
+// in-house ListView. The seek inputs ride properties so the test
+// can drive the nonce edge.
+export component ListViewProbe inherits Window {
+    width: Theme.space-15;
+    height: Theme.space-8 * 5;
+    in property <[string]> items;
+    in property <int> req-row: -1;
+    in property <int> req-nonce: 0;
+    in property <int> total: 0;
+    lv := ListView {
+        width: 100%;
+        height: 100%;
+        request-row: root.req-row;
+        request-nonce: root.req-nonce;
+        total-rows: root.total;
+        for row in root.items: item := Rectangle {
+            height: Theme.space-5;
+            accessible-role: text;
+            accessible-label: row;
+        }
+    }
+}
