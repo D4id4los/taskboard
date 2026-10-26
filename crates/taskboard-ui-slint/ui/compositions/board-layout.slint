@@ -19,6 +19,8 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { PlusGlyph } from "../widgets/plus-glyph.slint";
 import { BoardBar, BoardBarModel } from "board-bar.slint";
 import { DragState } from "../drag-state.slint";
+import { FocusScrollHint } from "../focus-scroll.slint";
+import { ListView } from "../widgets/listview.slint";
 
 // One kanban column (rule B: a display model, not a bag of strings).
 export struct StackColumnModel {
@@ -367,10 +369,12 @@ export component BoardLayout inherits Rectangle {
                         }
 
                         VerticalLayout {
-                            alignment: start;
                             // The task area absorbs the column's surplus height
                             // (r2 D3): with the header locked, every leftover
-                            // pixel flows here (F-A6's equal-split fix).
+                            // pixel flows here (F-A6's equal-split fix). The
+                            // task viewport (the ListView below) absorbs the
+                            // surplus — see the note on `lv` for the recorded
+                            // deviation from the stage-1 plan's D-4.
                             vertical-stretch: 1;
                             spacing: Theme.space-1;
                             // The tasks loop: each card is wrapped in a
@@ -383,34 +387,68 @@ export component BoardLayout inherits Rectangle {
                             // preferred: a DragArea reports no intrinsic
                             // size, and the `alignment: start` list never
                             // stretches.
-                            for task[task-index] in column.tasks: drag-zone := DragArea {
-                            width: 100%;
-                            height: drag-card.preferred-height;
-                            allow-move: !root.flow-open;
-                            data: DragState.payload;
-                            changed dragging => {
-                                if (self.dragging) {
-                                    root.board-card-drag-armed(column-index, task-index);
+                            // The column's task viewport (#373): the unchanged
+                            // delegate loop inside the in-house ListView —
+                            // viewport-scale instantiation at any N. The seams
+                            // keep the global model indices. The viewport
+                            // absorbs the task area's surplus: a recorded
+                            // deviation from the stage-1 plan's D-4, whose
+                            // `min-height: 0` content-sized premise does not
+                            // hold (slint's Flickable reports no
+                            // content-derived layout info — items.rs
+                            // layout_info is the default, preferred 0 — so a
+                            // start-aligned viewport would collapse to zero
+                            // height, and no stable sibling-height arithmetic
+                            // exists to cap a content-sized one). Consequence:
+                            // the ghost and the create field sit at the
+                            // column's bottom edge instead of hugging the last
+                            // card on fitting-content columns — a diagnosed
+                            // golden drift, see the regen commit.
+                            lv := ListView {
+                                min-height: 0;
+                                // The card drag-to-move owns the pointer
+                                // gesture inside the viewport (r2 chunk-8):
+                                // the Flickable's drag-pan would consume it.
+                                // Wheel and keyboard scrolling are untouched.
+                                mouse-drag-pan-enabled: false;
+                                request-row: FocusScrollHint.target-a == column-index
+                                    ? FocusScrollHint.target-b
+                                    : -1;
+                                request-nonce: FocusScrollHint.target-a == column-index
+                                    ? FocusScrollHint.nonce
+                                    : 0;
+                                total-rows: column.tasks.length;
+                                for task[task-index] in column.tasks: drag-zone := DragArea {
+                                    width: 100%;
+                                    height: drag-card.preferred-height;
+                                    allow-move: !root.flow-open;
+                                    data: DragState.payload;
+                                    changed dragging => {
+                                        if (self.dragging) {
+                                            root.board-card-drag-armed(column-index, task-index);
+                                        }
+                                    }
+                                    drag-finished(action) => {
+                                        root.board-card-drag-finished(column-index, task-index,
+                                            action != DragAction.none);
+                                    }
+                                    drag-card := TaskCard {
+                                        width: 100%;
+                                        height: 100%;
+                                        model: task;
+                                        hint-keys: root.task-card-hint;
+                                        activated => root.task-activated(column-index, task-index);
+                                        clicked => root.task-clicked(column-index, task-index);
+                                        context-requested(x, y) => root.task-context(column-index, task-index, x, y);
+                                    }
                                 }
                             }
-                            drag-finished(action) => {
-                                root.board-card-drag-finished(column-index, task-index,
-                                    action != DragAction.none);
-                            }
-                            drag-card := TaskCard {
-                                width: 100%;
-                                height: 100%;
-                                model: task;
-                                hint-keys: root.task-card-hint;
-                                activated => root.task-activated(column-index, task-index);
-                                clicked => root.task-clicked(column-index, task-index);
-                                context-requested(x, y) => root.task-context(column-index, task-index, x, y);
-                            }
-                        }
 
                             // The inline create row (D8): single-line field,
-                            // auto-focused, insert mode.
+                            // auto-focused, insert mode. Below the viewport,
+                            // never stretched into the surplus.
                             if (column.create-open): TextField {
+                                vertical-stretch: 0;
                                 placeholder: "New task title";
                                 label: "New task title";
                                 commit-affordance: true;
@@ -421,7 +459,10 @@ export component BoardLayout inherits Rectangle {
                             // The per-column Add Task ghost (r2 D8): the
                             // add-column's visual language at one control row;
                             // empty stacks show it instead of blank space.
+                            // Below the viewport (see the note on `lv`), never
+                            // stretched into the surplus.
                             add-task := Rectangle {
+                                vertical-stretch: 0;
                                 min-height: Theme.space-6 + 2 * Theme.space-1;
                                 max-height: Theme.space-6 + 2 * Theme.space-1;
                                 border-radius: Theme.radius-small;
@@ -597,10 +638,25 @@ export component BoardLayout inherits Rectangle {
                 accepted(text) => root.rename-committed(root.effective-selected(), text);
                 edited(text) => root.rename-edited(root.effective-selected(), text);
             }
-            VerticalLayout {
-                alignment: start;
-                spacing: Theme.space-1;
-                for task[task-index] in column.tasks: TaskCard {
+            // The selected stack's task viewport (#373's D-4b): the
+            // unchanged bare-card loop inside the in-house ListView,
+            // addressed through `effective-selected()` exactly as
+            // before; `compact-task` names the delegate for the
+            // engagement probe. The viewport absorbs the leg's
+            // surplus height (see the note on the regular leg's `lv`).
+            task-viewport := ListView {
+                min-height: 0;
+                // The card drag-to-move owns the pointer gesture inside
+                // the viewport (see the regular leg's `lv`).
+                mouse-drag-pan-enabled: false;
+                request-row: FocusScrollHint.target-a == column-index
+                    ? FocusScrollHint.target-b
+                    : -1;
+                request-nonce: FocusScrollHint.target-a == column-index
+                    ? FocusScrollHint.nonce
+                    : 0;
+                total-rows: column.tasks.length;
+                for task[task-index] in column.tasks: compact-task := TaskCard {
                     model: task;
                     compact: true;
                     hint-keys: root.task-card-hint;
@@ -608,6 +664,7 @@ export component BoardLayout inherits Rectangle {
                     clicked => root.task-clicked(root.effective-selected(), task-index);
                     context-requested(x, y) => root.task-context(root.effective-selected(), task-index, x, y);
                 }
+            }
 
                 if (column.create-open): TextField {
                     placeholder: "New task title";
@@ -641,7 +698,6 @@ export component BoardLayout inherits Rectangle {
                         glyph-color: add-task-hit-compact.has-hover ? Theme.text-primary : Theme.text-secondary;
                     }
                 }
-            }
         }
     }
 }

@@ -48,6 +48,13 @@ pub const PALETTE_ROW_CAP: usize = 8;
 
 /// The id tables of one refresh pass (D2): same thread, rebuilt
 /// together with the models, always consistent.
+///
+/// Invariant the virtualised surfaces lean on (#373, design round
+/// §3b): every row index a view reports or consumes — callbacks,
+/// drag seams, the focus scroll hint — is a **global model index**
+/// into these tables, never a viewport-relative offset. The
+/// `ListView` repeater changes which rows are instantiated, never what
+/// the indices mean.
 #[derive(Debug, Clone, Default)]
 pub struct IdTables {
     /// The live boards in canonical order (design §3.8): the board
@@ -108,6 +115,44 @@ impl IdTables {
     pub fn today_row(&self, section: usize, row: usize) -> Option<TaskId> {
         let offset: usize = self.today_section_rows.iter().take(section).sum();
         self.today_tasks.get(offset + row).copied()
+    }
+
+    /// The board column and row holding `task` — the focus scroll
+    /// hint's resolution base (#373 D-6). A forward-only scan (the
+    /// tables are rebuilt every pass; a reverse index would be a
+    /// shape change and a rebuild cost).
+    #[must_use]
+    pub fn board_position(&self, task: TaskId) -> Option<(usize, usize)> {
+        self.board_tasks
+            .iter()
+            .enumerate()
+            .find_map(|(column, tasks)| {
+                tasks
+                    .iter()
+                    .position(|t| *t == task)
+                    .map(|row| (column, row))
+            })
+    }
+
+    /// The today section and row holding `task` (via the section
+    /// prefix sums over `today_tasks`).
+    #[must_use]
+    pub fn today_position(&self, task: TaskId) -> Option<(usize, usize)> {
+        let flat = self.today_tasks.iter().position(|t| *t == task)?;
+        let mut consumed = 0;
+        for (section, rows) in self.today_section_rows.iter().enumerate() {
+            if flat < consumed + *rows {
+                return Some((section, flat - consumed));
+            }
+            consumed += *rows;
+        }
+        None
+    }
+
+    /// The stack-detail row holding `task`.
+    #[must_use]
+    pub fn stack_position(&self, task: TaskId) -> Option<usize> {
+        self.stack_tasks.iter().position(|t| *t == task)
     }
 }
 
@@ -1239,6 +1284,38 @@ mod tests {
     use std::collections::BTreeSet;
 
     use taskboard_domain::{Importance, TaskClocks, Urgency};
+
+    /// The #373 D-6 reverse helpers: forward scans resolve positions
+    /// that the forward lookups mint, per table.
+    #[test]
+    fn reverse_positions_resolve_the_forward_lookups() {
+        let a = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let b = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let c = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let stack0 = StackId::from_uuid(uuid::Uuid::now_v7());
+        let stack1 = StackId::from_uuid(uuid::Uuid::now_v7());
+        let tables = IdTables {
+            stack_ids: vec![stack0, stack1],
+            board_tasks: vec![vec![a, b], vec![]],
+            stack_tasks: vec![c],
+            today_tasks: vec![b, c],
+            today_section_rows: [1, 0, 1, 0],
+            ..IdTables::default()
+        };
+
+        assert_eq!(tables.board_position(b), Some((0, 1)));
+        assert_eq!(tables.board_position(c), None, "not on the board");
+        assert_eq!(tables.stack_position(c), Some(0));
+        assert_eq!(tables.stack_position(a), None);
+        assert_eq!(tables.today_position(b), Some((0, 0)));
+        assert_eq!(tables.today_position(c), Some((2, 0)));
+        assert_eq!(tables.today_position(a), None);
+        // Round-trip against the forward lookups.
+        let (section, row) = tables.today_position(c).expect("positioned");
+        assert_eq!(tables.today_row(section, row), Some(c));
+        let (column, row) = tables.board_position(b).expect("positioned");
+        assert_eq!(tables.board_task(column, row), Some((stack0, b)));
+    }
 
     /// T-5 — the model sentinel: a set column carries the scaled user
     /// width, an unset one the `−1.0` auto sentinel (the goldens'

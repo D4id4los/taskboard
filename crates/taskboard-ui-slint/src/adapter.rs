@@ -590,6 +590,11 @@ impl Adapter {
         let compact = Self::is_compact(window);
         let state = self.state.load();
         let flow = self.view_state.flow().clone();
+        let focus_walk = matches!(
+            effect,
+            UiEffect::FocusNext | UiEffect::FocusPrev | UiEffect::FocusFirst | UiEffect::FocusLast
+        );
+        let focus_before = self.view_state.focused_task();
         let leaving = matches!(
             effect,
             UiEffect::NextView
@@ -765,6 +770,9 @@ impl Adapter {
             (_, _) => Vec::new(),
         };
         self.apply_outcomes(window, &outcomes);
+        if focus_walk {
+            self.push_focus_scroll_hint(window, focus_before);
+        }
         if drag_teardown {
             // After the outcomes: the cancel/confirm has ended the
             // view-state flow; the synthetic exit now tears the
@@ -772,6 +780,49 @@ impl Adapter {
             // absorbed by the flow-guarded seam.
             Self::teardown_runtime_drag(window);
         }
+    }
+
+    /// The focus-into-view seam (#373 design round §3a, D-5): after a
+    /// keyboard focus move's outcomes — the refresh has rebuilt the
+    /// models and the id tables — resolve the newly focused task
+    /// through the tables (global model indices, never
+    /// viewport-relative) and edge-trigger the `FocusScrollHint`
+    /// global. The matching `ListView` instance consumes it and scrolls
+    /// the row into view; pointer selections are visible by
+    /// construction and hint nothing. A move that changed nothing
+    /// (the walk's ends) re-arms nothing.
+    fn push_focus_scroll_hint(&mut self, window: &AppWindow, before: Option<TaskId>) {
+        let focused = self.view_state.focused_task();
+        if focused.is_none() || focused == before {
+            return;
+        }
+        let focused = focused.expect("checked above");
+        // A slint int carries the index; the tables' lengths are far
+        // below i32 reach.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let to_hint_index = |value: usize| value as i32;
+        let hint = match self.view_state.view() {
+            crate::view_state::ViewId::Board => self
+                .tables
+                .board_position(focused)
+                .map(|(column, row)| (to_hint_index(column), to_hint_index(row))),
+            crate::view_state::ViewId::Today => self
+                .tables
+                .today_position(focused)
+                .map(|(section, row)| (to_hint_index(section), to_hint_index(row))),
+            crate::view_state::ViewId::StackDetail => self
+                .tables
+                .stack_position(focused)
+                .map(|row| (-1, to_hint_index(row))),
+            crate::view_state::ViewId::TaskDetail | crate::view_state::ViewId::Settings => None,
+        };
+        let Some((target_a, target_b)) = hint else {
+            return;
+        };
+        let scroll = window.global::<crate::FocusScrollHint>();
+        scroll.set_target_a(target_a);
+        scroll.set_target_b(target_b);
+        scroll.set_nonce(scroll.get_nonce() + 1);
     }
 
     /// The native drag's teardown seam (r2 chunk-8 D-G): a synthetic

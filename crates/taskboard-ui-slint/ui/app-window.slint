@@ -34,13 +34,14 @@ export { SettingsModel, ConnectionRow, SettingsRowStatus, SettingsOutcome }
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { TaskCard } from "widgets/task-card.slint";
 import { DragState } from "drag-state.slint";
+import { FocusScrollHint } from "focus-scroll.slint";
 import { TextField } from "widgets/text-field.slint";
 import { MenuPanelFacts } from "menu-facts.slint";
 import { SettingsScrollFacts } from "settings-facts.slint";
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, DragState, FocusScrollHint }
 export { BoardBarModel, BoardSegmentModel }
 
 export enum KeyFeedback {
