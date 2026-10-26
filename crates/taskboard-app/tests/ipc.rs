@@ -496,6 +496,11 @@ async fn served_nextcloud(
     Arc<common::FakeCredentialStore>,
 ) {
     let mut config = standalone_config(&dir.join(db_name));
+    // #408: the connector points at a dead identity host, so detach
+    // waits out the startup probe + first cycle's connect failure
+    // before `stop_actor` joins it; the 5 s default was an implicit
+    // load headroom, not a chosen budget. Inject explicitly.
+    config.app.shutdown_timeout_secs = 60;
     config.nextcloud.server_url = Some(server_url.to_owned());
     config.nextcloud.username = Some("alice".to_owned());
     config.nextcloud.credential_store = taskboard_app::config::CredentialStoreKind::Keyring;
