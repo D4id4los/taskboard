@@ -29,9 +29,10 @@
 - **Branch / worktree**: `docs/reminders-surface-pair-design` in
   `../taskboard-WT-docs-reminders-surface-pair-design` (off `origin/main`
   @ `6d5507e`).
-- **Status**: RECOMMENDATIONS + rulings recorded — awaiting the user's plan
-  review. Implementation is the four chunk issues the round opens (§7);
-  a follow-up dispatch round follows acceptance.
+- **Status**: **ACCEPTED** — the user reviewed and accepted the plan as
+  designed (2026-10-26, PR #478), confirming the four session rulings.
+  Implementation is the four chunk issues the round opened (§7:
+  #474, #475, #476, #477); a follow-up dispatch round chunks them.
 
 ---
 
