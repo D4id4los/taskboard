@@ -22,16 +22,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
   reminder after a reload (#283 F11-03).
 
 ### Added
-- Kiosk ambient display rotation (#363, K13): the kiosk appliance's
-  window is now a passive ambient display — a display-mode state
-  machine over the one pinned board rotates the board's kanban
-  reading and the today view's upcoming reading on a UI-side dwell
-  timer, with zero input and zero engine commands. Configured under
-  `[kiosk.rotation]` (`modes` + `dwell_secs`, floor 10 s, typed
-  errors for every invalid value); an absent table keeps every
-  existing config byte-identical, and a pin-less multi-board kiosk
-  boot now refuses typed (`kiosk-pin-required`) instead of showing
-  an arbitrary board.
 - Virtualised task lists (#373): every surface that draws N tasks —
   the board columns (regular and compact legs), and the Today and
   stack-detail lists — now renders through an in-house `ListView`
@@ -254,6 +244,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
   confirmation-free by design (D18's scope cut) — the engine's typed
   refusals are the guard.
 
+- Kiosk ambient display rotation (#363, kiosk wave): the kiosk appliance's
+  window is now a passive ambient display — a display-mode state
+  machine over the one pinned board rotates the board's kanban
+  reading and the today view's upcoming reading on a UI-side dwell
+  timer, with zero input and zero engine commands. Configured under
+  `[kiosk.rotation]` (`modes` + `dwell_secs`, floor 10 s, typed
+  errors for every invalid value); an absent table keeps every
+  existing config byte-identical, and a pin-less multi-board kiosk
+  boot now refuses typed (`kiosk-pin-required`) instead of showing
+  an arbitrary board.
 - The encrypted-file credential store: `[nextcloud] credential_store =
   "file"` selects a third `CredentialStore` implementation for kiosk
   machines without a Secret Service — a machine-generated 0600 key
@@ -261,12 +261,12 @@ The workspace carries a single global version (see `docs/architecture.org`);
   envelopes under `<db-dir>/credentials/`, with typed failure fences
   for every corruption shape (missing/insecure/corrupt key file,
   corrupt envelope, unknown version, auth failure) and no silent
-  fallback (kiosk wave K12, #126/#159; ADR 0008 amendment).
+  fallback (kiosk wave, #126/#159; ADR 0008 amendment).
 - The `[kiosk]` config section with `fixed_board`: an optional board
   UUID resolved typed against the live boards at kiosk boot — a pin
   naming no live board refuses the boot with the new
   `unknown-fixed-board` config error; the section's absence leaves
-  existing configs and behaviour unchanged (kiosk wave K9, the
+  existing configs and behaviour unchanged (kiosk wave, the
   fixed-board pin the multi-board design deferred).
 - `contrib/taskboard-kiosk.service`: a system-level unit for the
   kiosk appliance — the config file's `mode = "kiosk"` is the only
@@ -278,8 +278,20 @@ The workspace carries a single global version (see `docs/architecture.org`);
   on-device harness invocation, the four budget-verdict recording
   slots, and the D250's i686 cross-build lane (target, toolchain,
   build, transfer).
+- The web kiosk dashboard: an opt-in read-only HTTP surface on the
+  daemon lifecycle — writing the `[web]` table is the opt-in
+  (`enabled` defaults true inside a present table), bound to
+  loopback `127.0.0.1:8787` by default. The plain-HTML index shows
+  sync health (phase, last success, pending ops) plus the engine
+  counters, and each live board gets a read-only column reading at
+  `/d/<token>/board/<id>`; the page self-polls via meta-refresh at
+  `refresh_secs` (typed floor 5 s). Auth is the capability-token URL:
+  a non-loopback bind additionally requires a resolvable token (the
+  explicit `[web] token` override or the persisted
+  `<db-path>.web-token` file, created owner-only) — a LAN bind with
+  only a freshly minted token refuses at boot (#234, kiosk wave).
 - Per-board cumulative sync counters on the published sync status
-  (kiosk wave K8): cycles, pushes, pulls, failures, offline episodes,
+  (kiosk wave): cycles, pushes, pulls, failures, offline episodes,
   and the last cycle's wall duration — populated at the existing
   `SyncReport` ingestion points, carried by the `status` answer's
   aggregate, connector-health, and per-board folds
