@@ -6,34 +6,14 @@
 //! socket artifact's lifecycle, signals. Verb semantics stay in the
 //! handler suites and the IP-series.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 mod common;
 
-use common::{binary_command, tempdir, write_test_config};
+use common::{Child, binary_command, spawn_daemon, tempdir, wait_until, write_test_config};
 
 use interprocess::local_socket::traits::tokio::Stream as _;
-
-/// Polls `pred` with a real-time deadline (process synchronization —
-/// the hermetic suites' tokio-clock rules do not reach subprocesses).
-async fn wait_until(mut pred: impl FnMut() -> bool, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !pred() {
-        assert!(Instant::now() < deadline, "{what} did not happen in time");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Kills the child on drop so a failing assertion cannot leak a
-/// lock-holding daemon into the next test.
-struct Child(std::process::Child);
-
-impl Drop for Child {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
 
 fn read_to_string(bytes: Vec<u8>) -> String {
     String::from_utf8(bytes).expect("utf8")
@@ -79,21 +59,8 @@ impl Install {
         self.spawn_daemon_inner(Some(password))
     }
 
-    /// The password variable is always scrubbed from the child first:
-    /// presence/absence is each test's explicit choice, never the
-    /// invoking shell's (an inherited export would flip e9's
-    /// credential-miss arm into a spurious attach).
     fn spawn_daemon_inner(&self, password: Option<&str>) -> Child {
-        let mut command = binary_command();
-        command
-            .args(["--config", &self.config(), "daemon"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .env_remove("TASKBOARD_APP_PASSWORD");
-        if let Some(password) = password {
-            command.env("TASKBOARD_APP_PASSWORD", password);
-        }
-        Child(command.spawn().expect("spawn daemon"))
+        spawn_daemon(Path::new(&self.config()), password)
     }
 
     /// Runs a one-shot; returns (exit code, stdout, stderr).

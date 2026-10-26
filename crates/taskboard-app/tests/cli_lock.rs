@@ -12,30 +12,7 @@ use std::time::{Duration, Instant};
 
 mod common;
 
-use common::{binary_command, tempdir, write_test_config};
-
-/// Polls `pred` with a real-time deadline (process synchronization —
-/// the hermetic suites' tokio-clock rules do not reach subprocesses).
-/// The wait yields to the runtime (`tokio::time::sleep`), keeping the
-/// async test body free of blocking calls.
-async fn wait_until(pred: impl Fn() -> bool, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !pred() {
-        assert!(Instant::now() < deadline, "{what} did not happen in time");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Kills the child on drop so a failing assertion cannot leak a
-/// lock-holding daemon into the next test.
-struct Child(std::process::Child);
-
-impl Drop for Child {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
+use common::{binary_command, spawn_daemon, tempdir, wait_until, write_test_config};
 
 fn read_to_string(bytes: Vec<u8>) -> String {
     String::from_utf8(bytes).expect("utf8")
@@ -50,14 +27,7 @@ async fn k3_daemon_holds_the_lock_across_processes() {
     write_test_config(&config, Some("http://127.0.0.1:9"), Some("alice")).expect("write config");
     let lock_sidecar = dir.path().join("taskboard.lock");
 
-    let daemon = binary_command()
-        .args(["--config", config.to_str().unwrap(), "daemon"])
-        .env("TASKBOARD_APP_PASSWORD", "pw")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
-    let mut daemon = Child(daemon);
+    let mut daemon = spawn_daemon(&config, Some("pw"));
     wait_until(|| lock_sidecar.is_file(), "daemon acquired the lock").await;
 
     // Second core boot on the same database (a second `daemon`: run
