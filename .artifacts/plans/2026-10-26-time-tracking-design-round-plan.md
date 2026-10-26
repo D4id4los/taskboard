@@ -30,9 +30,11 @@
 - **Branch / worktree**: `docs/time-tracking-design-round` in
   `../taskboard-WT-docs-time-tracking-design` (off `origin/main` @
   `4686af8`).
-- **Status**: **PROPOSED** — awaiting user review. Acceptance opens the
-  implementation dispatch round over §7's chunk issues (the §14
-  DR-3 precedent: a follow-up dispatch plan chunks them).
+- **Status**: **ACCEPTED** — the user reviewed and approved the plan
+  as designed (2026-10-26), confirming the session rulings of §4.
+  Implementation is the four chunk issues the round opened (§7:
+  #486, #487, #488, #489); a follow-up dispatch round chunks them
+  (the §14 DR-3 precedent). Fences: #490–#496.
 
 ---
 
