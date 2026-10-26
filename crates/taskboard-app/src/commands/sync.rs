@@ -2,9 +2,10 @@
 //! `taskboard sync` (ADR 0009): trigger one full cycle, wait for it
 //! bounded, and report the status honestly. The boot cycle usually
 //! coalesces with the explicit nudge; the wait decides on *fresh*
-//! evidence only (a `last_success` advance, a fresh `Failed` phase) —
-//! a fresh failure identical to a stale persisted status publishes no
-//! state change and honestly resolves as [`SyncOutcome::TimedOut`].
+//! evidence only (an advanced generation counter, a fresh `Failed`
+//! phase) — a fresh failure identical to a stale persisted status
+//! publishes no state change and honestly resolves as
+//! [`SyncOutcome::TimedOut`].
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,8 +20,8 @@ use crate::secrets::CredentialStore;
 /// Outcome of awaiting one fresh sync cycle after the startup status.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncOutcome {
-    /// A cycle completed: `last_success` advanced past the startup
-    /// status.
+    /// A cycle completed: a sync report landed since the startup
+    /// snapshot (the generation counter advanced).
     Succeeded(SyncStatusView),
     /// A fresh `Failed` phase was observed (or the deadline hit while
     /// the phase was `Failed`); carries the failure classification for
@@ -137,14 +138,38 @@ pub(crate) async fn sync_on(
     Ok(wait_for_sync_result(app, &startup, timeout, scope).await)
 }
 
+/// The pure freshness classifier: has a cycle landed since the startup
+/// snapshot, and what is its verdict? Freshness is *structural* — the
+/// per-board `SyncCounters.cycles` generation counter, incremented once
+/// per ingested report — never a comparison of two wall stamps, so a
+/// backward host-clock step cannot suppress or fake it
+/// (`last_success` is a display fact, not a freshness signal).
+fn fresh_outcome(startup: &SyncStatus, status: &SyncStatus) -> Option<SyncOutcome> {
+    let fresh = status.counters.cycles > startup.counters.cycles;
+    if !fresh {
+        return None; // keep waiting — no report has landed yet
+    }
+    match status.phase {
+        SyncPhase::Failed { last_error } => {
+            Some(SyncOutcome::Failed(last_error, SyncStatusView::new(status)))
+        }
+        // Some watched board is still in flight — patience.
+        SyncPhase::Syncing => None,
+        // Idle (or Offline) after a landed report: the cycle is done.
+        _ => Some(SyncOutcome::Succeeded(SyncStatusView::new(status))),
+    }
+}
+
 /// Event-driven (with a polling fallback) predicate poll with a
 /// wall-clock deadline, shared by `sync` and — via
 /// `boards::wait_for_adoption`'s sibling loop — the binding ceremony.
 ///
 /// Decision table (against the startup status `S0`):
-/// - `Succeeded` when `last_success` advanced past `S0`;
-/// - `Failed` when a fresh `Failed` phase is observed (any status
-///   differing from `S0`, or after a state change was published);
+/// - `Succeeded` when a report landed since `S0` (the generation
+///   counter advanced) and no watched board is `Failed`/`Syncing`;
+/// - `Failed` when the fresh cycle's verdict is `Failed`, or when a
+///   fresh-failure signal arrives on a stale row (any status differing
+///   from `S0`, or after a state change was published);
 /// - `TimedOut` at the deadline (`Failed` if the phase is `Failed` at
 ///   that point — a fresh failure identical to a stale persisted `S0`
 ///   publishes nothing and is indistinguishable from "still running").
@@ -159,8 +184,8 @@ pub async fn wait_for_sync_result(
     let deadline_at = Instant::now() + deadline;
     loop {
         let status = watched_status(app, scope);
-        if status.last_success > startup.last_success {
-            return SyncOutcome::Succeeded(SyncStatusView::new(&status));
+        if let Some(outcome) = fresh_outcome(startup, &status) {
+            return outcome;
         }
         let fresh_failure =
             matches!(status.phase, SyncPhase::Failed { .. }) && (seen_change || status != *startup);
@@ -187,6 +212,95 @@ pub async fn wait_for_sync_result(
         {
             seen_change = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::{SyncOutcome, fresh_outcome};
+    use chrono::TimeZone;
+    use taskboard_domain::{SyncCounters, SyncErrorKind, SyncPhase, SyncStatus};
+
+    const T0: i64 = 36_000;
+
+    fn status(
+        cycles: u64,
+        phase: SyncPhase,
+        last_success: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> SyncStatus {
+        SyncStatus {
+            counters: SyncCounters {
+                cycles,
+                ..SyncCounters::default()
+            },
+            phase,
+            last_success,
+            ..SyncStatus::default()
+        }
+    }
+
+    fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    /// Fresh + Idle is a completed cycle.
+    #[test]
+    fn fresh_idle_is_succeeded() {
+        let startup = status(0, SyncPhase::Idle, None);
+        let now = status(1, SyncPhase::Idle, Some(ts(T0)));
+        assert!(matches!(
+            fresh_outcome(&startup, &now),
+            Some(SyncOutcome::Succeeded(_))
+        ));
+    }
+
+    /// Fresh + Failed carries the fresh verdict.
+    #[test]
+    fn fresh_failed_is_failed() {
+        let startup = status(0, SyncPhase::Idle, None);
+        let now = status(
+            1,
+            SyncPhase::Failed {
+                last_error: SyncErrorKind::Network,
+            },
+            None,
+        );
+        assert!(matches!(
+            fresh_outcome(&startup, &now),
+            Some(SyncOutcome::Failed(SyncErrorKind::Network, _))
+        ));
+    }
+
+    /// Fresh but still in flight: some watched board hasn't reported.
+    #[test]
+    fn fresh_syncing_keeps_waiting() {
+        let startup = status(0, SyncPhase::Idle, None);
+        let now = status(1, SyncPhase::Syncing, None);
+        assert_eq!(fresh_outcome(&startup, &now), None);
+    }
+
+    /// Equal cycles: nothing landed, whatever the wall stamps claim.
+    #[test]
+    fn stale_rows_keep_waiting_regardless_of_stamps() {
+        let startup = status(3, SyncPhase::Idle, Some(ts(T0)));
+        let advanced_stamp = status(3, SyncPhase::Idle, Some(ts(T0 + 60)));
+        assert_eq!(fresh_outcome(&startup, &advanced_stamp), None);
+    }
+
+    /// The false-`TimedOut` regression fixture: a fresh cycle whose
+    /// `last_success` moved *backward* (host clock stepped back). The
+    /// pre-fix predicate `status.last_success > startup.last_success`
+    /// is false here, so the old loop ran to the deadline and answered
+    /// `TimedOut` for a completed, successful cycle. The generation
+    /// counter sees the truth.
+    #[test]
+    fn a_backward_clock_step_does_not_hide_a_fresh_cycle() {
+        let startup = status(0, SyncPhase::Idle, Some(ts(T0 + 3_600)));
+        let now = status(1, SyncPhase::Idle, Some(ts(T0)));
+        assert!(matches!(
+            fresh_outcome(&startup, &now),
+            Some(SyncOutcome::Succeeded(_))
+        ));
     }
 }
 
