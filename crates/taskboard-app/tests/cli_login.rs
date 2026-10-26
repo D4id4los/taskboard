@@ -353,5 +353,13 @@ async fn l13_alias_happy_path_writes_stderr_connect_keeps_it_empty() {
     assert_eq!(alias_code, 0);
     assert_eq!(connect_code, 0);
     assert!(!alias_err.is_empty(), "the alias writes a notice on stderr");
-    assert!(connect_err.is_empty(), "connect keeps stderr clean");
+    // #384 capture policy: the asserted fact stays structural
+    // (is_empty); the message carries the captured bytes so a
+    // recurrence is self-diagnosing instead of losing the buffer
+    // content in a static panic string.
+    assert!(
+        connect_err.is_empty(),
+        "connect keeps stderr clean: {:?}",
+        String::from_utf8_lossy(&connect_err)
+    );
 }
