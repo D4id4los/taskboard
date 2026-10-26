@@ -263,9 +263,11 @@ pub enum AdhocWhen {
 /// A standalone alarm: fires once at its absolute `fire_at` instant
 /// (plus whatever snooze-chain movement follows), then dies by
 /// settlement — the post-batch prune removes it once its effective
-/// occurrence is delivered. Cancel is the off-switch; there is no mute
-/// (mute is task-shaped) and no done/archived state (map membership is
-/// liveness).
+/// occurrence is delivered **and** dismissed (the R3 settle: between
+/// fire and dismiss the row and its delivery are the live in-app
+/// surface, snoozable and command-resolvable). Cancel is the
+/// off-switch; there is no mute (mute is task-shaped) and no
+/// done/archived state (map membership is liveness).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdhocAlarm {
     /// Local identity.
@@ -538,21 +540,28 @@ pub fn notifications_for(
 }
 
 /// Prunes snooze links whose source AND target occurrences are both
-/// delivered: such a link can never influence evaluation again — both
-/// endpoints suppress on their own. The compaction primitive shared by
+/// dismissed (the R3 settle): such a link can never influence
+/// evaluation again — both endpoints are dead in both readers (no fire,
+/// `due_firings`; no row, `active_notifications`). The compaction
+/// primitive shared by
 /// [`apply_actions`](crate::persistence::apply_actions)' post-batch pass
 /// and the test-support state normalizer; one definition site.
 ///
-/// Target-only pruning would be observable: a snoozed-but-undelivered
+/// Delivered-ness is deliberately not a criterion: a merely-delivered
+/// occurrence is the live in-app surface under R3, not a dead one, and
+/// pruning its links would let the chain walk revert to an earlier node
+/// and resurrect a dismissed notification (the regression trace).
+/// Target-only pruning would be observable: a snoozed-but-unsettled
 /// source would re-arm the moment its target settles. Both-endpoints
-/// pruning is unconditionally unobservable (property-pinned).
+/// pruning is unconditionally unobservable (property-pinned, both
+/// readers).
 pub fn compact_snooze_chains(reminders: &mut ReminderState) {
     let keep: Vec<ReminderSnoozeKey> = reminders
         .snoozes
         .iter()
         .filter(|(key, target)| {
-            !(reminders.is_delivered(&key.reminder, &key.occurrence)
-                && reminders.is_delivered(&key.reminder, target))
+            !(reminders.is_dismissed(&key.reminder, &key.occurrence)
+                && reminders.is_dismissed(&key.reminder, target))
         })
         .map(|(key, _)| *key)
         .collect();
@@ -573,23 +582,29 @@ pub(crate) fn remove_alarm(reminders: &mut ReminderState, id: AdhocAlarmId) {
     reminders.snoozes.retain(|key, _| key.reminder != reminder);
 }
 
-/// Prunes alarms whose effective occurrence is delivered: such an alarm
-/// can never fire again (the occurrence key is immutable) and carries
-/// no truth worth keeping. The [`compact_snooze_chains`] sibling — the
-/// caller orders it AFTER compaction so a just-settled chain reverts to
-/// its base before the delivered-ness check reads it (the composition:
-/// target settles → both chain endpoints delivered → link compacts →
-/// effective reverts → base delivered → alarm prunes). Pruning an alarm
-/// removes its deliveries and snooze links with it. Unobservable in
-/// [`due_firings`] (property-pinned).
+/// Prunes alarms whose effective occurrence is delivered **and**
+/// dismissed: such an alarm is settled (the R3 two-fact split — the
+/// delivery receipt alone is the per-device toast guard, not the
+/// settle) and dead in both readers. Between fire and dismiss the row
+/// and its delivery live: `active_notifications`' alarm arm is
+/// reachable and `SnoozeReminder`/`CancelAdhocAlarm` on a fired alarm
+/// resolve. The [`compact_snooze_chains`] sibling — the caller orders
+/// it AFTER compaction so a just-settled chain reverts to its base
+/// before the check reads it (the composition: both endpoints dismissed
+/// → link compacts → effective reverts → base delivered ∧ dismissed →
+/// alarm prunes). Pruning an alarm removes its deliveries, dismissals,
+/// and snooze links with it. Unobservable in [`due_firings`] and
+/// [`active_notifications`] (property-pinned).
 pub fn prune_settled_alarms(reminders: &mut ReminderState) {
     let settled: Vec<AdhocAlarmId> = reminders
         .alarms
         .keys()
         .copied()
         .filter(|&id| {
-            alarm_occurrence(reminders, id)
-                .is_some_and(|eff| reminders.is_delivered(&ReminderRef::Adhoc(id), &eff))
+            alarm_occurrence(reminders, id).is_some_and(|eff| {
+                let reminder = ReminderRef::Adhoc(id);
+                reminders.is_delivered(&reminder, &eff) && reminders.is_dismissed(&reminder, &eff)
+            })
         })
         .collect();
     for id in settled {
