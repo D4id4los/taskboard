@@ -2944,4 +2944,405 @@ mod tests {
             ts(BASE + 330) + chrono::TimeDelta::try_milliseconds(400).unwrap()
         );
     }
+
+    // ---- the remote baseline: blind-spot pin and property catalogue ----
+
+    use crate::entities::RemoteTaskBaseline;
+
+    /// The one field the gate cannot see (D-1d): a remote write that
+    /// exactly restores the baseline value is indistinguishable from "no
+    /// change" and does not land while a local edit holds the field.
+    /// Deterministic and bounded — the next genuine remote change to the
+    /// field lands it — and accepted as residue in ADR 0004's amendment.
+    /// If the policy ever changes, this pin must be consciously renamed.
+    #[test]
+    fn remote_revert_to_the_baseline_value_stays_hidden_currently_pins_baseline_revert_blind_spot()
+    {
+        let mut local = bound_task(1);
+        local.title = "edited locally".into();
+        local.clocks.title = ts(BASE + 330); // 10:05:30
+        let previous = remote_task(1, 1, BASE + 180);
+        let local = with_baseline(local, &previous);
+
+        // The remote reverts to exactly the baseline's title, newest stamp.
+        let mut remote = remote_task(1, 1, BASE + 360);
+        remote.title = previous.title.clone();
+
+        let ctx = RemoteIndex::default();
+        let merged = merge_task(&local, &remote, &ctx, true);
+
+        assert_eq!(merged.title, "edited locally", "the revert does not land");
+        assert_eq!(merged.clocks.title, ts(BASE + 330));
+        // The observation still happened.
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 360)));
+        assert_eq!(merged.remote_baseline, Some(baseline_of(&remote)));
+    }
+
+    /// A `RemoteTask` standing in for the incoming snapshot: fields
+    /// derived from a baseline (the untouched subset copies it verbatim),
+    /// plus the bookkeeping the baseline does not carry.
+    #[allow(clippy::too_many_arguments)] // one argument per perturbed field
+    fn remote_from_baseline(
+        baseline: &RemoteTaskBaseline,
+        touched: &Touched,
+        title: String,
+        description: String,
+        duedate: Option<DateTime<Utc>>,
+        scheduled: Option<DateTime<Utc>>,
+        done: Option<DateTime<Utc>>,
+        order: i64,
+        label_num: u64,
+        archived: bool,
+        stack_num: u64,
+        stamp_secs: i64,
+        card: u64,
+    ) -> RemoteTask {
+        let (t, d, du, sc, dn, o, labels, arc, stack) = if touched.nothing {
+            (
+                baseline.title.clone(),
+                baseline.description.clone(),
+                baseline.duedate,
+                baseline.scheduled,
+                baseline.done,
+                baseline.order,
+                baseline.labels.clone(),
+                baseline.archived,
+                baseline.stack,
+            )
+        } else {
+            (
+                if touched.title {
+                    title
+                } else {
+                    baseline.title.clone()
+                },
+                if touched.description {
+                    description
+                } else {
+                    baseline.description.clone()
+                },
+                if touched.duedate {
+                    duedate
+                } else {
+                    baseline.duedate
+                },
+                if touched.scheduled {
+                    scheduled
+                } else {
+                    baseline.scheduled
+                },
+                if touched.done { done } else { baseline.done },
+                if touched.position {
+                    order
+                } else {
+                    baseline.order
+                },
+                if touched.labels {
+                    BTreeSet::from([crate::ids::RemoteLabelId(label_num)])
+                } else {
+                    baseline.labels.clone()
+                },
+                if touched.archived {
+                    archived
+                } else {
+                    baseline.archived
+                },
+                if touched.position {
+                    crate::ids::RemoteStackId(stack_num)
+                } else {
+                    baseline.stack
+                },
+            )
+        };
+        RemoteTask {
+            id: card_ref(1, card),
+            title: t,
+            description: d,
+            duedate: du,
+            scheduled: sc,
+            done: dn,
+            stack,
+            order: o,
+            labels,
+            archived: arc,
+            last_modified: ts(stamp_secs),
+        }
+    }
+
+    /// Which baseline-covered fields the generated remote perturbed.
+    /// The bool fields ARE the data — one flag per covered field.
+    #[allow(clippy::struct_excessive_bools)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    struct Touched {
+        nothing: bool,
+        title: bool,
+        description: bool,
+        duedate: bool,
+        scheduled: bool,
+        done: bool,
+        position: bool,
+        labels: bool,
+        archived: bool,
+    }
+
+    /// P-G1's assertion shape, shared with P-G3's perturbation variant:
+    /// outside `touched` the merge keeps local values AND local clocks;
+    /// inside, the remote value lands iff it wins the field's LWW
+    /// comparison (scheduled additionally behind its lane gate); the
+    /// observation facts advance unconditionally; no clock decreases.
+    #[allow(clippy::too_many_arguments)]
+    fn assert_baseline_gate(
+        local: &Task,
+        remote: &RemoteTask,
+        merged: &Task,
+        touched: Touched,
+        native_scheduled: bool,
+    ) {
+        let ts_r = remote.last_modified;
+        let wins = |clock: chrono::DateTime<Utc>| ts_r > clock;
+
+        let (title_wins, description_wins) = if touched.nothing {
+            (false, false)
+        } else {
+            (touched.title, touched.description)
+        };
+        // Outside the touched set (or untouched): local value + clock.
+        if !title_wins || !wins(local.clocks.title) {
+            assert_eq!(&merged.title, &local.title);
+            assert_eq!(merged.clocks.title, local.clocks.title);
+        } else {
+            assert_eq!(&merged.title, &remote.title);
+            assert_eq!(merged.clocks.title, ts_r);
+        }
+        if !description_wins || !wins(local.clocks.description) {
+            assert_eq!(&merged.description, &local.description);
+            assert_eq!(merged.clocks.description, local.clocks.description);
+        } else {
+            assert_eq!(&merged.description, &remote.description);
+            assert_eq!(merged.clocks.description, ts_r);
+        }
+        let duedate_touched = !touched.nothing && touched.duedate;
+        if !duedate_touched {
+            assert_eq!(merged.duedate, local.duedate);
+            assert_eq!(merged.clocks.duedate, local.clocks.duedate);
+        } else if wins(local.clocks.duedate) {
+            assert_eq!(merged.duedate, remote.duedate);
+            assert_eq!(merged.clocks.duedate, ts_r);
+        } else {
+            assert_eq!(merged.duedate, local.duedate);
+            assert_eq!(merged.clocks.duedate, local.clocks.duedate);
+        }
+        let scheduled_touched = !touched.nothing && touched.scheduled;
+        if !scheduled_touched || !native_scheduled || !wins(local.clocks.scheduled) {
+            assert_eq!(merged.scheduled, local.scheduled);
+            assert_eq!(merged.clocks.scheduled, local.clocks.scheduled);
+        } else {
+            assert_eq!(merged.scheduled, remote.scheduled);
+            assert_eq!(merged.clocks.scheduled, ts_r);
+        }
+        let done_touched = !touched.nothing && touched.done;
+        if !done_touched {
+            assert_eq!(merged.done, local.done);
+            assert_eq!(merged.clocks.done, local.clocks.done);
+        } else if wins(local.clocks.done) {
+            assert_eq!(merged.done, remote.done);
+            assert_eq!(merged.clocks.done, ts_r);
+        } else {
+            assert_eq!(merged.done, local.done);
+            assert_eq!(merged.clocks.done, local.clocks.done);
+        }
+        // The composite keeps local as a unit either way: untouched, or
+        // touched-but-suppressed because the property's ctx maps no stack
+        // (R8's unit semantics dominate in both branches).
+        assert_eq!(merged.stack, local.stack);
+        assert_eq!(merged.order, local.order);
+        assert_eq!(merged.clocks.position, local.clocks.position);
+        let labels_touched = !touched.nothing && touched.labels;
+        if !labels_touched {
+            assert_eq!(&merged.labels, &local.labels);
+            assert_eq!(merged.clocks.labels, local.clocks.labels);
+        } else if wins(local.clocks.labels) {
+            // Unmapped remote labels drop — an empty set here.
+            assert!(merged.labels.is_empty());
+            assert_eq!(merged.clocks.labels, ts_r);
+        } else {
+            assert_eq!(&merged.labels, &local.labels);
+            assert_eq!(merged.clocks.labels, local.clocks.labels);
+        }
+        let archived_touched = !touched.nothing && touched.archived;
+        if !archived_touched {
+            assert_eq!(merged.archived, local.archived);
+            assert_eq!(merged.clocks.archived, local.clocks.archived);
+        } else if wins(local.clocks.archived) {
+            assert_eq!(merged.archived, remote.archived);
+            assert_eq!(merged.clocks.archived, ts_r);
+        } else {
+            assert_eq!(merged.archived, local.archived);
+            assert_eq!(merged.clocks.archived, local.clocks.archived);
+        }
+
+        // The observation facts advance unconditionally.
+        assert_eq!(merged.remote_seen, Some(ts_r));
+        assert_eq!(merged.remote_baseline, Some(RemoteTaskBaseline::of(remote)));
+
+        // An unapplied observation advances nothing: no clock decreases.
+        assert!(merged.clocks.title >= local.clocks.title);
+        assert!(merged.clocks.description >= local.clocks.description);
+        assert!(merged.clocks.duedate >= local.clocks.duedate);
+        assert!(merged.clocks.scheduled >= local.clocks.scheduled);
+        assert!(merged.clocks.done >= local.clocks.done);
+        assert!(merged.clocks.position >= local.clocks.position);
+        assert!(merged.clocks.labels >= local.clocks.labels);
+        assert!(merged.clocks.archived >= local.clocks.archived);
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        /// P-G1 — the acceptance property: fields outside the diff's
+        /// touched set keep local values AND clocks; fields inside apply
+        /// exactly under the (conjunctive) gate.
+        #[test]
+        fn baseline_gate_is_per_field_anti_clobber(
+            local in crate::test_support::task_strategy(),
+            baseline in crate::test_support::remote_task_baseline_strategy(),
+            touched_title in proptest::bool::ANY,
+            touched_description in proptest::bool::ANY,
+            touched_duedate in proptest::bool::ANY,
+            touched_scheduled in proptest::bool::ANY,
+            touched_done in proptest::bool::ANY,
+            touched_position in proptest::bool::ANY,
+            touched_labels in proptest::bool::ANY,
+            touched_archived in proptest::bool::ANY,
+            title in "[a-z]{0,16}",
+            description in "[a-z]{0,16}",
+            duedate in proptest::option::of(0_i64..10_000),
+            scheduled in proptest::option::of(0_i64..10_000),
+            done in proptest::option::of(0_i64..10_000),
+            order in -1_000_i64..=1_000,
+            label_num in 1_u64..100,
+            archived in proptest::bool::ANY,
+            stack_num in 1_u64..100,
+            stamp_secs in 0_i64..10_000,
+            native_scheduled in proptest::bool::ANY,
+        ) {
+            let touched = Touched {
+                nothing: false,
+                title: touched_title,
+                description: touched_description,
+                duedate: touched_duedate,
+                scheduled: touched_scheduled,
+                done: touched_done,
+                position: touched_position,
+                labels: touched_labels,
+                archived: touched_archived,
+            };
+            let remote = remote_from_baseline(
+                &baseline, &touched, title, description,
+                duedate.map(ts), scheduled.map(ts), done.map(ts),
+                order, label_num, archived, stack_num, stamp_secs,
+                1,
+            );
+            let mut local = local;
+            local.remote_baseline = Some(baseline);
+
+            let ctx = RemoteIndex::default();
+            let merged = merge_task(&local, &remote, &ctx, native_scheduled);
+
+            assert_baseline_gate(&local, &remote, &merged, touched, native_scheduled);
+        }
+
+        /// P-G2 — the baseline path is idempotent: re-merging the merged
+        /// task with the same snapshot is a fixpoint.
+        #[test]
+        fn baseline_merge_is_idempotent(
+            local in crate::test_support::task_strategy(),
+            baseline in crate::test_support::remote_task_baseline_strategy(),
+            touched_title in proptest::bool::ANY,
+            touched_description in proptest::bool::ANY,
+            touched_duedate in proptest::bool::ANY,
+            touched_scheduled in proptest::bool::ANY,
+            touched_done in proptest::bool::ANY,
+            touched_position in proptest::bool::ANY,
+            touched_labels in proptest::bool::ANY,
+            touched_archived in proptest::bool::ANY,
+            title in "[a-z]{0,16}",
+            description in "[a-z]{0,16}",
+            duedate in proptest::option::of(0_i64..10_000),
+            scheduled in proptest::option::of(0_i64..10_000),
+            done in proptest::option::of(0_i64..10_000),
+            order in -1_000_i64..=1_000,
+            label_num in 1_u64..100,
+            archived in proptest::bool::ANY,
+            stack_num in 1_u64..100,
+            stamp_secs in 0_i64..10_000,
+            native_scheduled in proptest::bool::ANY,
+        ) {
+            let touched = Touched {
+                nothing: false,
+                title: touched_title,
+                description: touched_description,
+                duedate: touched_duedate,
+                scheduled: touched_scheduled,
+                done: touched_done,
+                position: touched_position,
+                labels: touched_labels,
+                archived: touched_archived,
+            };
+            let remote = remote_from_baseline(
+                &baseline, &touched, title, description,
+                duedate.map(ts), scheduled.map(ts), done.map(ts),
+                order, label_num, archived, stack_num, stamp_secs,
+                1,
+            );
+            let mut local = local;
+            local.remote_baseline = Some(baseline);
+
+            let ctx = RemoteIndex::default();
+            let once = merge_task(&local, &remote, &ctx, native_scheduled);
+            let twice = merge_task(&once, &remote, &ctx, native_scheduled);
+            prop_assert_eq!(twice, once);
+        }
+
+        /// P-G3 — the echo round trip (design §5's drift risk): a pull
+        /// carrying exactly the echoed values leaves no spurious diff,
+        /// and a later genuine diff reads against the echo reference.
+        #[test]
+        fn push_echo_pull_leaves_no_spurious_diff(
+            local in crate::test_support::task_strategy(),
+            echo in crate::test_support::remote_task_strategy(),
+            pull_secs in 0_i64..10_000,
+            perturb in proptest::bool::ANY,
+            perturbed_title in "[a-z]{0,16}",
+            native_scheduled in proptest::bool::ANY,
+        ) {
+            // The echo adoption needs a mapped stack; map the echo's.
+            let local_stack = crate::ids::StackId::from(uuid::Uuid::from_u128(900));
+            let mut ctx = RemoteIndex::default();
+            ctx.stack_by_ref
+                .insert(
+                    crate::ids::RemoteStackRef {
+                        board: echo.id.board,
+                        stack: echo.id.stack,
+                    },
+                    local_stack,
+                );
+
+            let adopted = adopt_task_after_push(&local, &echo, &ctx, native_scheduled);
+
+            // The next pull shows the same values with a newer stamp.
+            let mut remote2 = echo.clone();
+            remote2.last_modified = ts(pull_secs);
+            let touched = if perturb {
+                remote2.title = perturbed_title;
+                Touched { nothing: false, title: true, ..Touched::default() }
+            } else {
+                Touched { nothing: true, ..Touched::default() }
+            };
+
+            let merged = merge_task(&adopted, &remote2, &ctx, native_scheduled);
+
+            assert_baseline_gate(&adopted, &remote2, &merged, touched, native_scheduled);
+        }
+    }
 }
