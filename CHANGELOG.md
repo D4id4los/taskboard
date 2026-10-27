@@ -71,6 +71,23 @@ The workspace carries a single global version (see `docs/architecture.org`);
   reminder after a reload (#283 F11-03).
 
 ### Added
+- Board surface round (round-3 GUI review, findings F4/F5/F6/F12/
+  F10/F11/F41 and the slint-deprecation fold-in): the drag ghost is
+  now card-sized (it used to fill the whole window); the plus glyphs
+  halve to the IconButton visual; the Add Task ghosts carry tooltips
+  with the `task.create` binding hint; right-clicking a stack's bare
+  card surface selects it and opens the stack context menu (the
+  header's seam, one shared dispatch); every task card (board,
+  stack-detail, Today) grows a model-driven done checkbox that
+  dispatches the toggled `SetTaskDone` and can never desync from the
+  model; and a fresh empty board shows its board tab plus labelled
+  New-stack and "Create Default Kanban Setup" CTAs — the preset
+  creates Backlog / To Do / In Progress / Done in one click. The
+  slint build is warning-free: deprecated `viewport-y`/
+  `viewport-height` uses renamed to `content-y`/`content-height`
+  (the settings scroll facts global keeps its names), the in-house
+  `ListView` is explicitly exported, and the stack card's
+  documented-but-never-applied inner padding now actually applies.
 - Virtualised task lists (#373): every surface that draws N tasks —
   the board columns (regular and compact legs), and the Today and
   stack-detail lists — now renders through an in-house `ListView`
