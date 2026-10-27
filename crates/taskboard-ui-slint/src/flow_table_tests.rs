@@ -806,3 +806,86 @@ fn a_live_on_tables_drop_still_confirms_with_one_move() {
 
 #[allow(unused)]
 fn _view_state_witness(_: &ViewState) {}
+
+// -- the §8 buffer-lifetime invariants (W-SM-c) --------------------------
+
+mod buffer_invariants {
+    use super::*;
+
+    fn arm_due(rig: &Rig, adapter: &Rc<RefCell<crate::adapter::Adapter>>, fx: &Fixture) {
+        let mut a = adapter.borrow_mut();
+        a.test_reset();
+        a.view_state.reconcile(&rig.handle.test_state().load_full());
+        let [a_id, _b, _c] = fx.tasks;
+        *a.view_state.flow_mut() = Flow::EditDue { task: a_id };
+    }
+
+    #[test]
+    fn the_due_buffers_die_with_the_flow_on_every_end_path() {
+        on_slint_thread(|| {
+            let (state, fx) = fixture();
+            let rig = rig(state);
+            let adapter = rig.adapter();
+
+            // The leaving-settle end path.
+            arm_due(&rig, &adapter, &fx);
+            adapter
+                .borrow_mut()
+                .view_state
+                .set_buffer("ignored".to_owned());
+            {
+                let mut a = adapter.borrow_mut();
+                a.test_seed_due_buffers();
+                a.interpret_for_test(rig.handle.window(), UiEffect::NextView);
+            }
+            assert!(adapter.borrow().due_buffers_empty(), "leaving wipes");
+            assert_eq!(adapter.borrow().view_state.flow().clone(), Flow::None);
+
+            // A plain refresh with the flow gone (the reconcile-drop
+            // shape): the wipe must not resurrect anything.
+            arm_due(&rig, &adapter, &fx);
+            adapter.borrow_mut().view_state.discard_edit();
+            {
+                let mut a = adapter.borrow_mut();
+                a.test_seed_due_buffers();
+                a.refresh(rig.handle.window());
+            }
+            assert!(adapter.borrow().due_buffers_empty(), "refresh wipes");
+
+            // While the flow is armed, a refresh keeps the buffers.
+            arm_due(&rig, &adapter, &fx);
+            {
+                let mut a = adapter.borrow_mut();
+                a.test_seed_due_buffers();
+                a.refresh(rig.handle.window());
+            }
+            assert!(
+                !adapter.borrow().due_buffers_empty(),
+                "a live EditDue keeps its buffers across refreshes"
+            );
+        });
+    }
+
+    #[test]
+    fn the_gesture_buffers_die_on_a_settle_and_survive_a_refresh() {
+        on_slint_thread(|| {
+            let (state, fx) = fixture();
+            let rig = rig(state);
+            let adapter = rig.adapter();
+            let [s0, _s1] = fx.stacks;
+
+            // A live width gesture survives a refresh (the r2
+            // interleaved-refresh survival pin's buffer half).
+            adapter.borrow_mut().arm_width_drag(s0);
+            adapter.borrow_mut().refresh(rig.handle.window());
+            assert!(adapter.borrow().width_drag_armed());
+
+            // A settle (here: a leaving effect) drops it — the header
+            // it addresses is about to unmount.
+            adapter
+                .borrow_mut()
+                .interpret_for_test(rig.handle.window(), UiEffect::NextView);
+            assert!(!adapter.borrow().width_drag_armed());
+        });
+    }
+}

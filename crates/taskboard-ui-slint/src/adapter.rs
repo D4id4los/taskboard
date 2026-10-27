@@ -475,6 +475,24 @@ impl Adapter {
         self.sync_view_context();
         let state = self.state.load();
         self.view_state.reconcile(&state);
+        // §8 (W-SM-c): the due editor's buffers never outlive the
+        // flow — non-empty ⇔ `Flow::EditDue` armed. Every outcome
+        // path and settle flows through here, so this is the one
+        // wipe point (commit, discard, leaving-settle and
+        // reconcile-drop all end the flow before this read). Chunk
+        // 3's D11 buffer seeding builds on this wipe.
+        if !matches!(self.view_state.flow(), Flow::EditDue { .. }) {
+            self.due_buffer.clear();
+            self.due_echo.clear();
+            self.due_picker = None;
+        }
+        debug_assert!(
+            matches!(self.view_state.flow(), Flow::EditDue { .. })
+                || (self.due_buffer.is_empty()
+                    && self.due_echo.is_empty()
+                    && self.due_picker.is_none()),
+            "the due editor's buffers outlived the flow"
+        );
         let chain = self.shell.chain();
         let day = self.day_ctx();
         let due = crate::models::DueEditorPush {
@@ -575,6 +593,13 @@ impl Adapter {
     /// seams, the leaving effects — so they cannot diverge.
     /// Idempotent on `Flow::None`; returns whether a flow settled.
     fn settle_flow(&mut self, window: &AppWindow, state: &taskboard_domain::AppState) -> bool {
+        // §8: the settle step owns the gesture buffers — they are
+        // flow-independent by construction, and a leaving effect
+        // unmounts the surfaces that would consume them (the release
+        // can never arrive). Dropped before the None early-return: a
+        // settling pass with no flow armed still retires them.
+        self.width_drag = None;
+        self.scale_drag = None;
         let flow = self.view_state.flow().clone();
         if matches!(flow, Flow::None) {
             return false;
@@ -585,8 +610,6 @@ impl Adapter {
         if was_due {
             self.due_picker = None;
         }
-        self.width_drag = None;
-        self.scale_drag = None;
         self.apply_outcomes(window, &outcomes);
         if was_drag {
             Self::teardown_runtime_drag(window);
@@ -637,6 +660,19 @@ impl Adapter {
     #[allow(dead_code)]
     pub(crate) fn due_buffers_empty(&self) -> bool {
         self.due_buffer.is_empty() && self.due_echo.is_empty() && self.due_picker.is_none()
+    }
+
+    /// Seeds the due editor's buffers non-empty (the §8 invariant
+    /// journeys).
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn test_seed_due_buffers(&mut self) {
+        self.due_buffer = "tomorrow".to_owned();
+        self.due_echo = "stale echo".to_owned();
+        self.due_picker = Some(crate::due_edit::DuePickerState::open(
+            chrono::Utc::now().date_naive(),
+            None,
+        ));
     }
 
     #[cfg(test)]
