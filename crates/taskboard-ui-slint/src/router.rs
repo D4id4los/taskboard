@@ -6,7 +6,9 @@
 //! over the mpsc and applies [`UiEffect`]s to the shell state.
 
 use chrono::TimeDelta;
-use taskboard_domain::{BoardId, ReminderOffset, ReminderRuleId, StackId, StateCommand, TaskId};
+use taskboard_domain::{
+    AdhocAlarmId, BoardId, ReminderOffset, ReminderRuleId, StackId, StateCommand, TaskId,
+};
 
 use crate::actions::{ActionId, entry as registry_entry};
 use crate::presentation::ReminderTarget;
@@ -218,11 +220,20 @@ pub enum DispatchOutcome {
     NoTarget,
 }
 
+/// The timers form's parsed draft (DR-3/3, D-P10): the adapter owns
+/// it between the seam's parse and the routed dispatch (the
+/// `rule_add_offset` one-shot pattern).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimerDraft {
+    pub label: String,
+    pub when: taskboard_domain::AdhocWhen,
+}
+
 /// The focused-entity seam (D16): chunk 2's shell has no views, so
 /// real sessions carry `None`s (keyboard task verbs resolve to
 /// [`DispatchOutcome::NoTarget`]); chunk 3's focus architecture sets
 /// them for real.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DispatchCtx {
     pub focused_task: Option<TaskId>,
     pub focused_stack: Option<StackId>,
@@ -247,6 +258,14 @@ pub struct DispatchCtx {
     /// derived, never consumed; `task.due-today` re-commits to its end
     /// (`NoTarget` without focus or window).
     pub day_window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    /// The timers form's parsed draft (DR-3/3, D-P10): set by the
+    /// adapter when the form commits; `timer.create` routes from it
+    /// (`NoTarget` without one).
+    pub timer_draft: Option<TimerDraft>,
+    /// The timers row's alarm (DR-3/3, D-I8): set by the adapter when
+    /// a cancel affordance activates (section row or awaiting row);
+    /// `timer.cancel` routes from it (`NoTarget` without one).
+    pub timer_target: Option<AdhocAlarmId>,
     /// Whether the focused task is done (round 2, D19): the reopen
     /// verb's enablement gate — `task.reopen` routes only for a
     /// focused *completed* task (the `task.complete` machinery
@@ -331,6 +350,21 @@ impl ActionRouter {
                 Some(rule) => DispatchOutcome::Command(StateCommand::RemoveReminderRule { rule }),
                 None => DispatchOutcome::NoTarget,
             },
+            // The timers verbs (DR-3/3, D-I8): the one-shot target
+            // pattern — concrete drafts/targets only.
+            ActionId::TimerCreate => match &ctx.timer_draft {
+                Some(TimerDraft { label, when }) => {
+                    DispatchOutcome::Command(StateCommand::CreateAdhocAlarm {
+                        label: label.clone(),
+                        when: *when,
+                    })
+                }
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::TimerCancel => match ctx.timer_target {
+                Some(alarm) => DispatchOutcome::Command(StateCommand::CancelAdhocAlarm { alarm }),
+                None => DispatchOutcome::NoTarget,
+            },
             // The chunk-3 view intents (D6): the adapter resolves the
             // effects against the view-state model.
             ActionId::NavNextView => DispatchOutcome::UiEffect(UiEffect::NextView),
@@ -413,6 +447,8 @@ mod tests {
             board_target: None,
             rule_target: None,
             rule_add_offset: None,
+            timer_draft: None,
+            timer_target: None,
             day_window: None,
             focused_task_done: false,
         }
@@ -424,6 +460,39 @@ mod tests {
             reminder: taskboard_domain::ReminderRef::Default(TaskId::from_uuid(Uuid::now_v7())),
             occurrence: chrono::Utc::now(),
         }
+    }
+
+    /// DR-3/3 — the timer verbs route exact typed commands from their
+    /// one-shot targets, `NoTarget` without (the rule-verb pattern).
+    #[test]
+    fn timer_verbs_route_from_their_targets() {
+        let mut ctx = ctx(false);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TimerCreate, &ctx),
+            DispatchOutcome::NoTarget
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TimerCancel, &ctx),
+            DispatchOutcome::NoTarget
+        );
+        let when = taskboard_domain::AdhocWhen::In(chrono::TimeDelta::minutes(3));
+        ctx.timer_draft = Some(TimerDraft {
+            label: "tea".to_owned(),
+            when,
+        });
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TimerCreate, &ctx),
+            DispatchOutcome::Command(StateCommand::CreateAdhocAlarm {
+                label: "tea".to_owned(),
+                when,
+            })
+        );
+        let alarm = taskboard_domain::AdhocAlarmId::from_uuid(Uuid::now_v7());
+        ctx.timer_target = Some(alarm);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TimerCancel, &ctx),
+            DispatchOutcome::Command(StateCommand::CancelAdhocAlarm { alarm })
+        );
     }
 
     /// T22 — the enabled task verbs route to exact typed commands.
