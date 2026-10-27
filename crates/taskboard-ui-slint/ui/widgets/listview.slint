@@ -4,7 +4,7 @@
 // compiler's nominal ListView contract (object_tree.rs:2891-2905):
 // rename any of them and the `for` below silently renders eager —
 // tests/virtualisation.rs's engagement probe fails on purpose.
-component ListView inherits Flickable {
+export component ListView inherits Flickable {
     in-out property <length> visible-height: self.height;
     in-out property <length> visible-width: self.width;
     // The focus-into-view seam (design round §3a): the consumer
