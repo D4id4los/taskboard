@@ -54,6 +54,8 @@ export component BoardView inherits FocusScope {
     // The stack-header right-click (r2 D21), threaded window → view →
     // layout; the compact switcher reuses the same seam.
     callback header-context(int, float, float);
+    // The stack card's bare-surface right-click (r3 D4).
+    callback body-context(int, float, float);
     // The stack-rename field of one column (r2 D21).
     callback rename-committed(int, string);
     callback rename-edited(int, string);
@@ -120,6 +122,7 @@ export component BoardView inherits FocusScope {
                 header-activated(c) => root.header-activated(c);
                 switcher-activated(c) => root.switcher-activated(c);
                 header-context(c, x, y) => root.header-context(c, x, y);
+                body-context(c, x, y) => root.body-context(c, x, y);
                 rename-committed(c, t) => root.rename-committed(c, t);
                 rename-edited(c, t) => root.rename-edited(c, t);
                 create-committed(c, t) => root.create-committed(c, t);
