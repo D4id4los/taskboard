@@ -97,10 +97,13 @@ pub trait PromptReader: Send + Sync {
     ) -> impl std::future::Future<Output = Result<bool, std::io::Error>> + Send;
 }
 
-/// The production prompt reader. Prompts go to stderr, keeping stdout
-/// a clean output channel for payloads. The `*_sync` cores are the
-/// one terminal-impl body, shared with the REPL editor thread's
-/// prompt answering (two call shapes, one grammar).
+/// The production prompt reader for one-shot ceremonies: prompts go
+/// to stderr, keeping stdout a clean output channel for payloads.
+/// The REPL session's `Line`/`Confirm` prompts ride the line editor
+/// instead (design D-3 — the whole session shares one prompt
+/// grammar, and no signal handler exists on this one-shot surface,
+/// whose ^C keeps the default disposition); the masked read stays
+/// here as the editor thread's `Masked` core.
 #[derive(Debug, Default)]
 pub struct StdinPrompts;
 
@@ -197,8 +200,11 @@ impl PromptReader for StdinPrompts {
 
 /// Pure confirm grammar: trimmed, ASCII-case-insensitive `y`/`yes` is
 /// consent; everything else (empty line, `n`, garbage) declines. One
-/// shot — no re-prompt loop.
-fn parse_confirm(line: &str) -> bool {
+/// shot — no re-prompt loop. One grammar, one home: shared with the
+/// REPL editor thread's prompt reads (the session's ceremony prompts
+/// ride the line editor — design D-3), which parse their `Confirm`
+/// answers with exactly this rule.
+pub(crate) fn parse_confirm(line: &str) -> bool {
     matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 

@@ -1379,6 +1379,49 @@ fn cancelling_peer(
 /// envelope reports it, the session continues (the next line executes),
 /// exactly one disposition each way, and the epoch is acknowledged
 /// (the watcher's ladder de-arms).
+/// The prompt grammar at the ceremony level (D-3): an `Interrupted`
+/// answer riding the oneshot — what the editor thread now delivers for
+/// a raw-mode ^C at a prompt — fails the ceremony as the typed
+/// `CommandError::Prompt` (a cancelled prompt is not a declined one),
+/// pre-persist.
+#[tokio::test]
+async fn an_interrupted_prompt_fails_the_ceremony_typed() {
+    let dir = tempdir();
+    let db = dir.path().join("interrupted-prompt.db");
+    let (live, signals) = live_signals();
+    drop(live); // no signal is fired; the dead watches never act
+    let script = vec![
+        line("connect --server http://10.255.255.1 --user alice --switch-backend --json"),
+        LineEvent::Eof,
+    ];
+    let (code, _out, err, peer) = run_cancellable(&db, true, script, signals, |mut rx| {
+        tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while let Some(disposition) = rx.recv().await {
+                if let Disposition::Prompt { reply, .. } = disposition {
+                    seen.push("prompt");
+                    // The editor thread's raw-mode ^C answer.
+                    let _ = reply.send(Err(std::io::Error::from(std::io::ErrorKind::Interrupted)));
+                }
+            }
+            seen
+        })
+    })
+    .await;
+    let seen = peer.await.expect("peer joins");
+    assert_eq!(seen, vec!["prompt"]);
+    assert_eq!(code, 0, "a failed line never aborts the session");
+    // The typed `prompt` kind — a cancelled prompt is not a decline.
+    let envelopes = error_envelopes(&err);
+    assert_eq!(
+        envelopes.len(),
+        1,
+        "stderr: {}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(envelopes[0]["error"]["kind"], "prompt");
+}
+
 #[tokio::test]
 async fn a_cancel_fired_mid_dispatch_reports_cancelled_and_continues() {
     // The 401 server: the ceremony never reaches verify (it is
