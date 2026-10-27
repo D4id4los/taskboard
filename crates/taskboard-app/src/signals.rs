@@ -32,12 +32,13 @@
 //! observes its effect. The cancelled envelope's detail text names
 //! this; it is never hidden behind a pretend-rollback.
 
+use std::sync::Arc;
+
 /// A signal family member the watcher listened to. Unix-only kinds are
 /// constructed only under `cfg(unix)` (the watcher's cfg-gated
 /// streams); the type itself is total so the machine and its tests are
 /// platform-independent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // wired by the session watcher (lands later in this chunk)
 pub(crate) enum Signal {
     /// SIGINT / console Ctrl-C: the cancel family.
     Interrupt,
@@ -51,7 +52,6 @@ impl Signal {
     /// The conventional exit code of a default-disposition death by
     /// this signal: `128 + signum` (130/143/129).
     #[must_use]
-    #[allow(dead_code)] // wired by the session watcher
     pub(crate) fn exit_code(self) -> i32 {
         match self {
             Self::Interrupt => 130,
@@ -65,7 +65,6 @@ impl Signal {
 /// graceful work completed (cancellation acknowledged / the loop
 /// ended) — the de-arm event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // wired by the session watcher
 pub(crate) enum Event {
     Signal(Signal),
     Progress,
@@ -75,7 +74,6 @@ pub(crate) enum Event {
 /// rung's action, or force (restore + immediate exit at
 /// [`Signal::exit_code`] of [`Ladder::last_signal`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // wired by the session watcher
 pub(crate) enum Action {
     Initiate,
     Escalate,
@@ -83,7 +81,6 @@ pub(crate) enum Action {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)] // wired by the session watcher
 enum State {
     Fresh,
     Armed { rung: u8 },
@@ -94,14 +91,12 @@ enum State {
 /// forced, with [`Event::Progress`] de-arming to fresh. Pure; the
 /// watcher owns the side effects.
 #[derive(Debug)]
-#[allow(dead_code)] // wired by the session watcher
 pub(crate) struct Ladder {
     middle_rungs: u8,
     state: State,
     last: Option<Signal>,
 }
 
-#[allow(dead_code)] // wired by the session watcher
 impl Ladder {
     /// A ladder with `middle_rungs` escalate rungs between the first
     /// (`Initiate`) and the last (`Force`): the force rung fires on
@@ -151,6 +146,199 @@ impl Ladder {
     #[must_use]
     pub(crate) fn last_signal(&self) -> Option<Signal> {
         self.last
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The watcher — thin glue (design D-1/D-9): correctness above the side
+// effects is the pure machine's; the side effects themselves are pinned
+// end-to-end by the pty tier (restore-before-exit ordering, force
+// codes). Installed exactly once per process surface, on production
+// paths only (D-7): the hermetic suites consume injected watches and
+// race no real signal.
+// ---------------------------------------------------------------------------
+
+/// The terminal state as it was when the session started, shared
+/// between the tty guard's drop and the watcher's force/termination
+/// restores (idempotent: restoring the saved state twice is a no-op).
+/// The mutex is share-across-tasks machinery, not state-machinery
+/// contention — the payload is written once at session start.
+#[cfg(unix)]
+pub(crate) type SavedTty = Arc<std::sync::Mutex<Option<nix::sys::termios::Termios>>>;
+
+/// Non-unix line editing runs no termios line discipline: nothing to
+/// share.
+#[cfg(not(unix))]
+pub(crate) type SavedTty = Arc<()>;
+
+/// Restores the saved line discipline (`TCSADRAIN`). One restore body,
+/// two callers: the tty guard's `Drop` and the watcher. Idempotent;
+/// errors ignored (SIGHUP's restore fails harmlessly on the dead tty).
+#[cfg(unix)]
+pub(crate) fn restore_tty(saved: &SavedTty) {
+    if let Ok(saved) = saved.lock()
+        && let Some(saved) = saved.as_ref()
+    {
+        let _ = nix::sys::termios::tcsetattr(
+            std::io::stdin(),
+            nix::sys::termios::SetArg::TCSADRAIN,
+            saved,
+        );
+    }
+}
+
+/// Non-unix: nothing to restore.
+#[cfg(not(unix))]
+pub(crate) fn restore_tty(_saved: &SavedTty) {}
+
+/// Installs the interactive session's signal watcher (design D-1/D-7):
+/// the chunk's only signal installation, spawned by `run_session` on
+/// the production path. Returns the loop-side watch halves the session
+/// loop consumes. The watcher owns one [`Ladder::new(0)`] per signal
+/// family — the SIGINT family (cancel → force 130) and, on unix, the
+/// external-termination family (restore-then-graceful → force
+/// `128 + signum`) — and the two side effects that must never be
+/// duplicated: the tty restore (before anything else on the
+/// termination family and before every forced exit) and
+/// `std::process::exit` on the force rung.
+///
+/// A stream whose registration fails degrades to "never fires" (the
+/// `wait_for_signal` precedent); with no streams at all the watcher
+/// simply ends — the session keeps today's no-signal world.
+///
+/// Windows: no termination analog reaches a normal process (console
+/// close is death); the ctrl-C listener is the whole story, and the
+/// second ^C keeps the console's default disposition.
+#[allow(clippy::too_many_lines)] // one feeder block per cfg'd signal stream, kept flat
+pub(crate) fn install_session_watcher(saved: SavedTty) -> crate::repl::SessionSignals {
+    let (cancel_tx, cancel) = tokio::sync::watch::channel(0_u64);
+    let (ack, ack_rx) = tokio::sync::watch::channel(0_u64);
+    let (term_tx, terminate) = tokio::sync::watch::channel(());
+    let (pump_tx, mut pump_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+
+    // The SIGINT family feeder: tokio's unix Signal (cancel-safe
+    // recv in its own task); on Windows the one-shot ctrl_c bridge.
+    #[cfg(unix)]
+    if let Ok(mut interrupt) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+    {
+        let pump = pump_tx.clone();
+        tokio::spawn(async move {
+            while interrupt.recv().await.is_some() {
+                if pump.send(Event::Signal(Signal::Interrupt)).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let pump = pump_tx.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let _ = pump.send(Event::Signal(Signal::Interrupt));
+            }
+        });
+    }
+
+    // The external-termination family feeders (unix only; D-7's
+    // cfg discipline). A failed registration spawns no feeder: that
+    // signal keeps its default disposition.
+    #[cfg(unix)]
+    for (kind, signal) in [
+        (
+            tokio::signal::unix::SignalKind::terminate(),
+            Signal::Terminate,
+        ),
+        (tokio::signal::unix::SignalKind::hangup(), Signal::Hangup),
+    ] {
+        if let Ok(mut stream) = tokio::signal::unix::signal(kind) {
+            let pump = pump_tx.clone();
+            tokio::spawn(async move {
+                while stream.recv().await.is_some() {
+                    if pump.send(Event::Signal(signal)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    }
+
+    // The machine + side effects. `pump_rx` ends only when every
+    // feeder is gone (nothing is installed / all registrations
+    // failed): the watcher ends with it — never busy, never acting.
+    tokio::spawn(async move {
+        let mut interrupt_ladder = Ladder::new(0);
+        #[cfg(unix)]
+        let mut terminate_ladder = Ladder::new(0);
+        let mut epoch: u64 = 0;
+        let mut ack_rx = ack_rx;
+        loop {
+            let event = tokio::select! {
+                event = pump_rx.recv() => match event {
+                    Some(event) => event,
+                    None => return,
+                },
+                // The loop acknowledged a cancellation: de-arm the
+                // SIGINT ladder (no Progress exists for the
+                // termination family — its graceful end is exit 0).
+                changed = ack_rx.changed() => {
+                    if changed.is_err() {
+                        // The loop is gone (session ending); nothing
+                        // left to cancel or de-arm.
+                        return;
+                    }
+                    Event::Progress
+                }
+            };
+            let action = match event {
+                Event::Progress => interrupt_ladder.on(Event::Progress),
+                Event::Signal(Signal::Interrupt) => interrupt_ladder.on(event),
+                #[cfg(unix)]
+                Event::Signal(_) => terminate_ladder.on(event),
+                #[cfg(not(unix))]
+                Event::Signal(_) => continue,
+            };
+            match action {
+                Some(Action::Initiate) => {
+                    if matches!(event, Event::Signal(Signal::Interrupt)) {
+                        epoch += 1;
+                        let _ = cancel_tx.send(epoch);
+                    } else {
+                        // Terminate/Hangup: restore FIRST (D-4 — the
+                        // pane is sane from the first moment of
+                        // shutdown), then hand the loop its graceful
+                        // Ctrl-D-shaped end.
+                        restore_tty(&saved);
+                        let _ = term_tx.send(());
+                    }
+                }
+                Some(Action::Escalate) => unreachable!("the session ladders have no middle rungs"),
+                Some(Action::Force) => {
+                    // Restore the pane, then leave at 128+signum. The
+                    // crate forbids `unsafe`, so this is
+                    // `std::process::exit` (the daemon tail's
+                    // precedent): the explicit restore above already
+                    // ran, so flushing std streams is safe.
+                    #[cfg(unix)]
+                    let code = terminate_ladder
+                        .last_signal()
+                        .or_else(|| interrupt_ladder.last_signal())
+                        .map_or(130, Signal::exit_code);
+                    #[cfg(not(unix))]
+                    let code = 130;
+                    tracing::warn!(code, "the signal force rung fired");
+                    restore_tty(&saved);
+                    std::process::exit(code);
+                }
+                None => {}
+            }
+        }
+    });
+    crate::repl::SessionSignals {
+        cancel,
+        ack,
+        terminate,
     }
 }
 
