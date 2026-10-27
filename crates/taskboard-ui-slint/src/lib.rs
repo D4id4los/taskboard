@@ -51,6 +51,8 @@ use tokio::sync::{broadcast, mpsc};
 use taskboard_domain::{AppState, EngineSignal, StateCommand, SystemEvent};
 
 #[cfg(test)]
+mod flow_table_tests;
+#[cfg(test)]
 mod test_platform;
 #[cfg(test)]
 mod token_tests;
@@ -190,6 +192,22 @@ pub struct UiHandle {
     /// field owns the timer's lifetime alongside the window.
     #[allow(dead_code)]
     rotation_timer: std::rc::Rc<slint::Timer>,
+}
+
+// -- test seams (the lib flow/buffer harnesses; never shipped) ------
+
+#[cfg(test)]
+impl UiHandle {
+    /// The flow transition-table harness reaches the adapter to arm
+    /// flows and drive the interpretation table directly.
+    pub(crate) fn test_adapter(&self) -> Rc<RefCell<adapter::Adapter>> {
+        Rc::clone(&self.adapter)
+    }
+
+    /// The live state snapshot for the harness's re-arm passes.
+    pub(crate) fn test_state(&self) -> Arc<ArcSwap<AppState>> {
+        Arc::clone(&self.state)
+    }
 }
 
 /// Creates the window and applies the theme state (theme init is a
