@@ -1196,6 +1196,72 @@ fn the_context_menu_focuses_and_routes_the_card() {
     );
 }
 
+/// R3-F1-half (D6) — the task card's done checkbox: a click toggles
+/// the addressed card (`SetTaskDone` true, then false on the round
+/// trip), the keyboard's focused-task route produces the same command
+/// shape (click ≡ key), and the model round-trip flips
+/// `TaskCardModel.done` on the next push — no local checked state
+/// anywhere.
+#[test]
+fn the_card_checkbox_toggles_the_addressed_task() {
+    let (fixture, state) = fixture::golden_state();
+    // The first card of stack "a": the checkbox click addresses it
+    // (find_by_label takes the tree's first match).
+    let task0 = state
+        .tasks
+        .values()
+        .find(|task| task.stack == fixture.stack_a && task.order == 0)
+        .map(|task| task.id)
+        .expect("the fixture's first task");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+
+            // Click the first card's checkbox: the toggled-on command.
+            harness.driver.click_by_label("Mark task done");
+            harness.assert_commands(&[StateCommand::SetTaskDone {
+                id: task0,
+                done: true,
+            }]);
+            // The keyboard's focused-task route produces the same
+            // command shape (click ≡ key): task.complete on the
+            // focused card sends the same toggled-on SetTaskDone.
+            harness.handle.window().invoke_board_task_clicked(0, 0);
+            harness.press(ActionId::TaskComplete);
+            harness.assert_commands(&[StateCommand::SetTaskDone {
+                id: task0,
+                done: true,
+            }]);
+
+            // The engine applies both toggles (one flip): the model
+            // round-trip lands done on the next push, the box offers
+            // the undone verb, and the click toggles back off.
+            harness.engine.settle(&harness.handle);
+            let done_bit = harness
+                .handle
+                .window()
+                .get_board_model()
+                .stacks
+                .row_data(0)
+                .expect("column")
+                .tasks
+                .row_data(0)
+                .expect("card")
+                .done;
+            assert!(done_bit, "the refresh push flipped the model bit");
+            harness.driver.click_by_label("Mark task not done");
+            harness.assert_commands(&[StateCommand::SetTaskDone {
+                id: task0,
+                done: false,
+            }]);
+        },
+    );
+}
+
 /// R3-F6 (D4, probe P-B1) — right-clicking a stack's bare card
 /// surface (an empty stack's body, the space below the last card)
 /// opens the pointer-anchored stack context menu and selects the
@@ -1650,11 +1716,13 @@ fn mount_pushes_no_selection_and_a_header_click_moves_it() {
     );
 }
 
-/// R2 D5 (T-6) — the add-stack plus glyph is square: the renderer's
-/// bounding box of the painted glyph inside the trailing add-column
-/// strip measures the space-6 square (element ids cannot address the
-/// glyph directly — unnamed decoration items merge in the item tree —
-/// so this pin reads the pixels, golden-adjacent).
+/// R2 D5 (T-6), amended by r3 D2 — the add-stack plus glyph is square
+/// at the `IconButton` icon-box footprint (space-6 − 2·space-2, the
+/// halving the review asked for): the renderer's bounding box of the
+/// painted glyph inside the trailing add-column strip measures that
+/// square (element ids cannot address the glyph directly — unnamed
+/// decoration items merge in the item tree — so this pin reads the
+/// pixels, golden-adjacent).
 #[test]
 fn the_add_stack_glyph_is_square() {
     let (_fixture, state) = fixture::golden_state();
@@ -1709,9 +1777,9 @@ fn the_add_stack_glyph_is_square() {
             let width = x_max - x_min + 1;
             let height = y_max - y_min + 1;
             assert!(
-                (28.0..=36.0).contains(&f64::from(width))
-                    && (28.0..=36.0).contains(&f64::from(height)),
-                "the glyph bounding box is a space-6 square, got {width}x{height}"
+                (12.0..=20.0).contains(&f64::from(width))
+                    && (12.0..=20.0).contains(&f64::from(height)),
+                "the glyph bounding box is the icon-box square, got {width}x{height}"
             );
         },
     );

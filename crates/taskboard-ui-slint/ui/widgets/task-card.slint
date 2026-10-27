@@ -48,6 +48,9 @@ export component TaskCard inherits Rectangle {
     in property <bool> compact: false;
     callback activated();
     callback clicked();
+    // The done checkbox's toggle (r3 D6): state-less — the wiring
+    // chain supplies the address; the adapter flips the model's bit.
+    callback done-toggled();
     // The right-click context request (round-1 D13): pointer coords
     // in window coordinates (the card's absolute position + the local
     // mouse position).
@@ -108,68 +111,108 @@ export component TaskCard inherits Rectangle {
         : Theme.text-secondary
     }
 
-    VerticalLayout {
-        padding-left: Theme.space-2;
-        padding-right: Theme.space-2;
-        padding-top: Theme.space-1;
-        padding-bottom: Theme.space-1;
+    HorizontalLayout {
         spacing: Theme.space-1;
 
-        RoleText {
-            role: root.model.done ? Typography.caption : Typography.body;
-            text-color: root.model.done ? Theme.text-secondary : Theme.text-primary;
-            text: root.model.title;
-            overflow: elide;
-        }
-
-        // Secondary decoration: the due chip stays at every breakpoint
-        // (D8 — compact collapses only tertiary decorations).
-        if (root.model.due-kind != DueKind.none): HorizontalLayout {
-            RoleText {
-                role: Typography.mono;
-                text-color: root.due-color();
-                text: root.model.due-phrase;
+        // The done checkbox (r3 D6): a state-less box that renders
+        // `model.done` only — no local checked state exists anywhere,
+        // so it cannot desync from the model (the refresh push is the
+        // single writer). Untouched on the ghost: the runtime
+        // suppresses hover/press over the drag ghost.
+        done-box := Rectangle {
+            width: Theme.space-4;
+            height: Theme.space-4;
+            y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-small;
+            border-width: Theme.focus-ring-width;
+            border-color: root.model.done ? Semantic.success : Theme.text-secondary;
+            accessible-role: AccessibleRole.checkbox;
+            // The done/undone verb pair (a presentation literal; the
+            // role + label pair is what the a11y tree announces).
+            accessible-label: root.model.done ? "Mark task not done" : "Mark task done";
+            // The AT/keyboard activation lands on the same seam the
+            // TouchArea's click hits (the FocusScope-pattern address).
+            accessible-action-default => root.done-toggled();
+            done-hit := TouchArea {
+                clicked => root.done-toggled();
+            }
+            if (root.model.done): Path {
+                width: Theme.space-4 - 2 * Theme.space-1;
+                height: Theme.space-4 - 2 * Theme.space-1;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                commands: "M 2 6 L 5 9 L 10 3";
+                stroke: Semantic.success;
+                stroke-width: Theme.focus-ring-width;
+                fill: transparent;
+                viewbox-width: 12;
+                viewbox-height: 12;
             }
         }
 
-        // The scheduled-start and effort chips (secondary class, like
-        // the due chip): mono rows at every breakpoint, each present
-        // only when its field is set. Pure empty-string tests — no
-        // slint-side semantics.
-        if (root.model.scheduled-phrase != ""): HorizontalLayout {
-            RoleText {
-                role: Typography.mono;
-                text-color: Theme.text-secondary;
-                text: root.model.scheduled-phrase;
-            }
-        }
-        if (root.model.effort-phrase != ""): HorizontalLayout {
-            RoleText {
-                role: Typography.mono;
-                text-color: Theme.text-secondary;
-                text: root.model.effort-phrase;
-            }
-        }
-
-        // Tertiary decorations (rule-D slot): all v0.1.0 kinds are
-        // tertiary (D21) — compact collapses them; call sites pass []
-        // today.
-        if (!root.compact): HorizontalLayout {
+        VerticalLayout {
+            padding-left: Theme.space-2;
+            padding-right: Theme.space-2;
+            padding-top: Theme.space-1;
+            padding-bottom: Theme.space-1;
             spacing: Theme.space-1;
-            for decoration in root.model.decorations: Rectangle {
-                border-radius: Theme.radius-small;
-                background: decoration.tone == Tone.success ? Semantic.success.with-alpha(0.2)
-                    : decoration.tone == Tone.warning ? Semantic.warning.with-alpha(0.2)
-                    : decoration.tone == Tone.danger ? Semantic.danger.with-alpha(0.2)
-                    : decoration.tone == Tone.overdue ? Semantic.overdue.with-alpha(0.2)
-                    : Theme.surface-raised;
-                HorizontalLayout {
-                    padding-left: Theme.space-1;
-                    padding-right: Theme.space-1;
-                    RoleText {
-                        role: Typography.badge;
-                        text-color: Theme.text-secondary;
-                        text: decoration.label;
+
+            RoleText {
+                role: root.model.done ? Typography.caption : Typography.body;
+                text-color: root.model.done ? Theme.text-secondary : Theme.text-primary;
+                text: root.model.title;
+                overflow: elide;
+            }
+
+            // Secondary decoration: the due chip stays at every breakpoint
+            // (D8 — compact collapses only tertiary decorations).
+            if (root.model.due-kind != DueKind.none): HorizontalLayout {
+                RoleText {
+                    role: Typography.mono;
+                    text-color: root.due-color();
+                    text: root.model.due-phrase;
+                }
+            }
+
+            // The scheduled-start and effort chips (secondary class, like
+            // the due chip): mono rows at every breakpoint, each present
+            // only when its field is set. Pure empty-string tests — no
+            // slint-side semantics.
+            if (root.model.scheduled-phrase != ""): HorizontalLayout {
+                RoleText {
+                    role: Typography.mono;
+                    text-color: Theme.text-secondary;
+                    text: root.model.scheduled-phrase;
+                }
+            }
+            if (root.model.effort-phrase != ""): HorizontalLayout {
+                RoleText {
+                    role: Typography.mono;
+                    text-color: Theme.text-secondary;
+                    text: root.model.effort-phrase;
+                }
+            }
+
+            // Tertiary decorations (rule-D slot): all v0.1.0 kinds are
+            // tertiary (D21) — compact collapses them; call sites pass []
+            // today.
+            if (!root.compact): HorizontalLayout {
+                spacing: Theme.space-1;
+                for decoration in root.model.decorations: Rectangle {
+                    border-radius: Theme.radius-small;
+                    background: decoration.tone == Tone.success ? Semantic.success.with-alpha(0.2)
+                        : decoration.tone == Tone.warning ? Semantic.warning.with-alpha(0.2)
+                        : decoration.tone == Tone.danger ? Semantic.danger.with-alpha(0.2)
+                        : decoration.tone == Tone.overdue ? Semantic.overdue.with-alpha(0.2)
+                        : Theme.surface-raised;
+                    HorizontalLayout {
+                        padding-left: Theme.space-1;
+                        padding-right: Theme.space-1;
+                        RoleText {
+                            role: Typography.badge;
+                            text-color: Theme.text-secondary;
+                            text: decoration.label;
+                        }
                     }
                 }
             }

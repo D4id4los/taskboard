@@ -60,6 +60,9 @@ export component BoardLayout inherits Rectangle {
     // stack's whole body, a populated stack's space below the last
     // card — routed to the same stack context menu as the header.
     callback body-context(int, float, float);
+    // The done checkbox's toggle (r3 D6): (column, task) — the
+    // adapter resolves the id tables and flips the model bit.
+    callback task-done-toggled(int, int);
     // The stack-rename field of one column (r2 D21).
     callback rename-committed(int, string);
     callback rename-edited(int, string);
@@ -490,6 +493,7 @@ export component BoardLayout inherits Rectangle {
                                         activated => root.task-activated(column-index, task-index);
                                         clicked => root.task-clicked(column-index, task-index);
                                         context-requested(x, y) => root.task-context(column-index, task-index, x, y);
+                                        done-toggled => root.task-done-toggled(column-index, task-index);
                                     }
                                 }
                             }
@@ -732,6 +736,7 @@ export component BoardLayout inherits Rectangle {
                     activated => root.task-activated(root.effective-selected(), task-index);
                     clicked => root.task-clicked(root.effective-selected(), task-index);
                     context-requested(x, y) => root.task-context(root.effective-selected(), task-index, x, y);
+                    done-toggled => root.task-done-toggled(root.effective-selected(), task-index);
                 }
             }
 
