@@ -49,9 +49,15 @@ export component StatusBar inherits Rectangle {
     in property <[BannerRowModel]> banner;
     in property <int> banner-overflow;
     in property <FlowHintModel> flow-hint;
+    // The timers chip (DR-3/3, D-I6): visible while any live alarm
+    // exists (kiosk forces the flag false model-side), naming the
+    // nearest fire; clicking focuses the today view's timers section.
+    in property <bool> timers-chip-visible;
+    in property <string> timers-chip;
     callback snooze-clicked(int);
     callback mute-clicked(int);
     callback row-activated(int);
+    callback timers-chip-clicked();
 
     background: Theme.surface;
 
@@ -214,6 +220,24 @@ export component StatusBar inherits Rectangle {
                 Badge {
                     text: "\{root.startup-findings}";
                     tone: Tone.warning;
+                }
+            }
+
+            // The timers chip (DR-3/3, D-I6): the nearest fire ("Tea ·
+            // 2m"), a click target for the today view's timers section
+            // (which routes the existing ViewToday action). Desktop
+            // only — the flag is forced false model-side on kiosk.
+            if (root.timers-chip-visible): TouchArea {
+                clicked => {
+                    root.timers-chip-clicked();
+                }
+                min-width: timers-chip-badge.preferred-width + 2 * Theme.space-1;
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Nearest timer";
+                timers-chip-badge := Badge {
+                    x: Theme.space-1;
+                    text: root.timers-chip;
+                    tone: Tone.info;
                 }
             }
 

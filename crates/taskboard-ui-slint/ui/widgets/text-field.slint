@@ -65,9 +65,16 @@ export component TextField inherits Rectangle {
     // same seam); the secret field echoes nothing.
     accessible-value: root.secret ? "" : root.text;
 
+    // The mount-time focus grab (the create-flow fields all want
+    // it); the timers form (DR-3/3) opts out — a permanently
+    // instantiated field must never steal the window's initial focus
+    // from the today view's key chain.
+    in property <bool> autofocus: true;
     init => {
         input.text = root.initial-text;
-        input.focus();
+        if (root.autofocus) {
+            input.focus();
+        }
         if (root.selected-on-focus) {
             input.select-all();
         }

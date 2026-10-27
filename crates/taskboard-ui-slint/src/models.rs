@@ -29,7 +29,8 @@ use crate::{
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
     FlowHintModel, NotificationRowModel, PaletteRowModel, Responsive, RuleRowModel,
     StackColumnModel, StackDetailModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration,
-    TaskDetailModel, Theme, TodayModel, TodayRowModel, TodaySectionModel, Tone, View,
+    TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone,
+    View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -74,6 +75,10 @@ pub struct IdTables {
     /// included, index-aligned with the pushed surface model up to the
     /// cap; empty on kiosk (the banner-only gate, R3.5.3).
     pub notifications: Vec<presentation::NotificationRow>,
+    /// The timers section's live alarms (DR-3/3, D-I7): id-indexed
+    /// like the notifications table — the cancel seam's resolution
+    /// base; empty on kiosk.
+    pub timers: Vec<taskboard_domain::AdhocAlarmId>,
     /// The task-detail view's reminder rules in id order (chunk 6,
     /// D12): the rule-list row indices resolve against this pass.
     pub task_rules: Vec<ReminderRuleId>,
@@ -212,6 +217,9 @@ pub struct PushModels {
     banner: Option<Rc<VecModel<BannerRowModel>>>,
     /// The notification surface's persistent row handle (R3 chunk C).
     notifications: Option<Rc<VecModel<NotificationRowModel>>>,
+    /// The timers section's persistent row handle (DR-3/3): the same
+    /// diff pattern — stable identity across refreshes.
+    timers: Option<Rc<VecModel<TimerRowModel>>>,
     /// The palette's persistent row handle (chunk 9): diffed per
     /// keystroke — a fresh `VecModel` per push would regress the
     /// stable-identity invariant (r2 D9).
@@ -413,6 +421,50 @@ pub struct DueEditorPush<'a> {
     pub picker: Option<&'a crate::due_edit::DuePickerState>,
 }
 
+/// The timers section (DR-3/3, D-I6): the active (unfired) rows plus
+/// the compact awaiting pointer. The kiosk gate lives HERE (R3.5.3):
+/// the model is emptied, the awaiting count zeroed, `timers-visible`
+/// forced false — the banner stays the appliance's only reminder
+/// surface. Returns the diff's mutation count.
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
+fn push_timers(
+    window: &AppWindow,
+    state: &AppState,
+    reminder_defaults: &taskboard_domain::ReminderDefaults,
+    now: DateTime<Utc>,
+    kiosk: bool,
+    tables: &mut IdTables,
+    models: &mut PushModels,
+) -> usize {
+    let rows: Vec<presentation::TimerRow> = if kiosk {
+        Vec::new()
+    } else {
+        presentation::timer_rows(state, now)
+    };
+    tables.timers = rows.iter().map(|row| row.alarm).collect();
+    let awaiting = if kiosk {
+        0
+    } else {
+        presentation::awaiting_alarm_count(state, reminder_defaults, now)
+    };
+    let shown: Vec<TimerRowModel> = rows
+        .iter()
+        .map(|row| TimerRowModel {
+            label: SharedString::from(row.label.clone()),
+            countdown: SharedString::from(presentation::countdown_phrase(row.effective, now)),
+        })
+        .collect();
+    window.set_timers_visible(!kiosk);
+    window.set_timers_awaiting(i32::try_from(awaiting).unwrap_or(i32::MAX));
+    push_rows(
+        &mut models.timers,
+        |rc| {
+            window.set_timers_model(rc);
+        },
+        &shown,
+    )
+}
+
 /// The in-app notification surface (R3 chunk C, design D-10/D-6): the
 /// derived-at-read rows pushed onto the persistent surface model. The
 /// kiosk gate lives HERE (R3.5.3, banner-only appliance mode): the
@@ -548,8 +600,27 @@ pub fn push(
     mutations += push_today(window, state, vs, &sets, day, kiosk, &mut tables, models);
     mutations += push_stack_detail(window, state, vs, &sets, &mut tables, now, models);
     mutations += push_task_detail(window, state, vs, &sets, &mut tables, now, models, due);
-    mutations += push_status_bar(window, state, vs, keymap, chain, now, &mut tables, models);
+    mutations += push_status_bar(
+        window,
+        state,
+        vs,
+        keymap,
+        chain,
+        now,
+        kiosk,
+        &mut tables,
+        models,
+    );
     mutations += push_notifications(
+        window,
+        state,
+        reminder_defaults,
+        now,
+        kiosk,
+        &mut tables,
+        models,
+    );
+    mutations += push_timers(
         window,
         state,
         reminder_defaults,
@@ -1031,9 +1102,25 @@ fn push_status_bar(
     keymap: &Keymap,
     chain: &[ContextId],
     now: DateTime<Utc>,
+    kiosk: bool,
     tables: &mut IdTables,
     models: &mut PushModels,
 ) -> usize {
+    // The timers chip (DR-3/3, D-I6): nearest fire while any live
+    // alarm exists; kiosk forces it off (the desktop-only fence).
+    let chip = if kiosk {
+        None
+    } else {
+        presentation::timer_chip(state)
+    };
+    window.set_timers_chip_visible(chip.is_some());
+    window.set_timers_chip(SharedString::from(chip.map_or(String::new(), |c| {
+        format!(
+            "{} \u{b7} {}",
+            c.label,
+            presentation::countdown_phrase(c.effective, now)
+        )
+    })));
     // The badge reads the *selected* board's row (design §3.2); the
     // recency caption follows it — the badge's freshness, per board.
     let badge = presentation::sync_badge_for_board(&state.sync, vs.board());

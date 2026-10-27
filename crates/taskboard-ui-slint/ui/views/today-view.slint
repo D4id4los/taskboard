@@ -18,6 +18,7 @@ import { FocusScrollHint } from "../focus-scroll.slint";
 import { ListView } from "../widgets/listview.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
+import { TimersSection, TimerRowModel } from "../compositions/timers.slint";
 
 export struct TodayRowModel {
     card: TaskCardModel,
@@ -51,6 +52,16 @@ export component TodayView inherits FocusScope {
     // The done checkbox's toggle (r3 D6): (section, row) — the adapter
     // resolves the today table and flips the model bit.
     callback row-done-toggled(int, int);
+    // The timers section (DR-3/3, D-I6): top-of-page, above the empty
+    // state and the task sections (D-P18). Desktop-only is enforced
+    // model-side — `timers-visible` is false on kiosk and the section
+    // never renders (the push_notifications gate precedent).
+    in property <bool> timers-visible;
+    in property <[TimerRowModel]> timers;
+    in property <int> timers-awaiting;
+    callback timers-cancel-clicked(int);
+    // `false` keeps the form's text (an absorbed parse miss).
+    callback timers-create-accepted(string, string) -> bool;
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -81,6 +92,14 @@ export component TodayView inherits FocusScope {
                         page.content-y,
                         page.height - self.height,
                     ));
+                }
+                // The timers section (D-P18): first on the page — the
+                // status-bar chip's click target lands here visibly.
+                if (root.timers-visible): TimersSection {
+                    timers: root.timers;
+                    timers-awaiting: root.timers-awaiting;
+                    cancel-clicked(r) => root.timers-cancel-clicked(r);
+                    create-accepted(label, when) => root.timers-create-accepted(label, when);
                 }
                 if (root.today.empty): EmptyState {
                     text: "Nothing due today";
