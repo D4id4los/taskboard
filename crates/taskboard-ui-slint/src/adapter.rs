@@ -141,6 +141,12 @@ pub(crate) struct Adapter {
     /// The rule-list add entry's parsed offset (chunk 6, D13); consumed
     /// by the next `reminder.rule-add` dispatch, then cleared.
     rule_add_offset: Option<ReminderOffset>,
+    /// The timers form's parsed draft (DR-3/3, D-P10); consumed by the
+    /// next `timer.create` dispatch, then cleared (one-shot).
+    timer_draft: Option<crate::router::TimerDraft>,
+    /// The timers row's alarm (DR-3/3, D-I8); consumed by the next
+    /// `timer.cancel` dispatch, then cleared (one-shot).
+    timer_target: Option<taskboard_domain::AdhocAlarmId>,
     /// The due editor's live state (r2 D25/R-d): the typed buffer, its
     /// echo, and the picker cursor/month — adapter-owned so a refresh
     /// push can never reset them. A commit consumes all three; the
@@ -351,6 +357,8 @@ impl Adapter {
         self.rule_target = None;
         ctx.rule_add_offset = self.rule_add_offset;
         self.rule_add_offset = None;
+        ctx.timer_draft = self.timer_draft.take();
+        ctx.timer_target = self.timer_target.take();
         // The today window rides every dispatch (chunk 10 D4): state-
         // derived from the held pair, never consumed.
         ctx.day_window = Some(self.day_ctx().window);
@@ -2377,6 +2385,8 @@ pub(crate) fn install(
         board_target: None,
         rule_target: None,
         rule_add_offset: None,
+        timer_draft: None,
+        timer_target: None,
         tables: IdTables::default(),
         models: crate::models::PushModels::default(),
         width_drag: None,
@@ -2552,6 +2562,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_drag_seams(window, adapter);
     install_banner_seams(window, adapter);
     install_notification_seams(window, adapter);
+    install_timer_seams(window, adapter);
     install_settings_seams(window, adapter);
 }
 
@@ -3846,6 +3857,76 @@ fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {
     adapter.send(taskboard_domain::StateCommand::SetTaskDone {
         id: task,
         done: !done_now,
+    });
+}
+
+/// The timers surface's seams (DR-3/3, D-I8): the form's commit
+/// parses the grammar at the seam (the rule-add absorbed-miss
+/// convention) and routes; the section's cancel resolves the
+/// `IdTables.timers` index; the chip click focuses the today view
+/// (the existing `ViewToday` action — no new `UiEffect`).
+fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let create = Rc::clone(adapter);
+    let create_weak = window.as_weak();
+    window.on_timers_create_accepted(move |label, when_text| {
+        let Some(window) = create_weak.upgrade() else {
+            return false;
+        };
+        let mut a = create.borrow_mut();
+        // A whitespace-empty label dispatches nothing (D-P14): the raw
+        // label never gets rewritten, an empty one never reaches the
+        // engine.
+        if label.trim().is_empty() {
+            return false;
+        }
+        // A parse miss keeps the timing text (the rule-add seam's
+        // return convention; the UI owns no error chrome). The tz is
+        // the untested glue edge — the CLI's "only the edge reads
+        // Local" shape.
+        let Some(when) =
+            crate::presentation::parse_timer_when(&when_text, a.day_ctx().now, &chrono::Local)
+        else {
+            return false;
+        };
+        a.timer_draft = Some(crate::router::TimerDraft {
+            label: label.into(),
+            when,
+        });
+        a.route(&window, ActionId::TimerCreate);
+        true
+    });
+
+    let cancel = Rc::clone(adapter);
+    let cancel_weak = window.as_weak();
+    window.on_timers_cancel_clicked(move |index| {
+        let Some(window) = cancel_weak.upgrade() else {
+            return;
+        };
+        let mut a = cancel.borrow_mut();
+        // A stale index degrades to a no-op (the notification_row
+        // guard shape).
+        let Some(alarm) = a
+            .tables
+            .timers
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return;
+        };
+        a.timer_target = Some(alarm);
+        a.route(&window, ActionId::TimerCancel);
+    });
+
+    // The chip click focuses the today view: the section sits
+    // top-of-page (D-P18), so the existing FocusToday lands it
+    // visibly (D-P2).
+    let chip = Rc::clone(adapter);
+    let chip_weak = window.as_weak();
+    window.on_timers_chip_clicked(move || {
+        let Some(window) = chip_weak.upgrade() else {
+            return;
+        };
+        chip.borrow_mut().route(&window, ActionId::ViewToday);
     });
 }
 

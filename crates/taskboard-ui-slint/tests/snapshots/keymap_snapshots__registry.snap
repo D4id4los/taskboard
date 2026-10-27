@@ -457,6 +457,24 @@ expression: rows
   menu_rank: 140
   description: Removes the selected reminder rule from the subject task.
   menu_group: task
+- id: timer.create
+  label: Create timer
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 150
+  description: "Creates a standalone alarm from the timers form's label and timing."
+  menu_group: task
+- id: timer.cancel
+  label: Cancel timer
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 160
+  description: Cancels the selected standalone alarm before or after it fires.
+  menu_group: task
 - id: menu.next
   label: Next menu entry
   contexts:

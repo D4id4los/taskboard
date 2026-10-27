@@ -91,6 +91,8 @@ impl KeymapShell {
             board_target: None,
             rule_target: None,
             rule_add_offset: None,
+            timer_draft: None,
+            timer_target: None,
             day_window: None,
             focused_task_done: self.focused_task_done,
         }

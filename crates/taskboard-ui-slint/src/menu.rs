@@ -133,6 +133,11 @@ pub const TASK_CONTEXT: &[ActionId] = &[
     ActionId::ReminderMute,
     ActionId::ReminderRuleAdd,
     ActionId::ReminderRuleRemove,
+    // DR-3/3: the timers family — the Task group page's rows (the
+    // object menu mirrors the group page; an invocation without a
+    // timer target routes NoTarget).
+    ActionId::TimerCreate,
+    ActionId::TimerCancel,
 ];
 
 /// The stack-header context menu's action list (round-2 D21): the
@@ -294,6 +299,10 @@ mod tests {
             ActionId::ReminderMute,
             ActionId::ReminderRuleAdd,
             ActionId::ReminderRuleRemove,
+            // DR-3/3: the timers family joins the Task group at ranks
+            // 150/160 (the registry's reviewed rows).
+            ActionId::TimerCreate,
+            ActionId::TimerCancel,
         ];
         assert_eq!(
             ids(&rows),
