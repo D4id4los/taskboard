@@ -260,3 +260,83 @@ Session-level login/logout (REPL refuses =logout= mid-session already;
 the attach/detach session flow is WI-J's design round, which evaluates
 =App::detach_connector= for reuse), remote revocation at the Nextcloud
 server, and any GUI surface.
+
+* Amendment (2026-10-27): client read deadlines, the shutdown control lane, no =Cancel= verb
+
+Signal-handling design round DR-2 (D-5), plan
+=.artifacts/plans/2026-10-26-signal-handling-design-plan.md=. Three
+changes; the prior text above stays visible below (amend, not rewrite).
+
+** The bounded read-deadline stance (replaces the unbounded sentence)
+
+The =exec= / =status= / =shutdown= client methods previously carried
+*deliberately no read deadline* ("every verb self-bounds and a wedged
+daemon is a supervision problem"). The stance stays self-bounding —
+verbs keep their own honest budgets — but the *wedged daemon* case the
+old sentence deferred to supervision now fails typed at the client:
+every covered request wraps its whole exchange (write + read + decode,
+the detach/attach precedent) in a budget derived once per call site:
+
+| request                        | verb's own =--timeout-secs= | derived deadline        |
+|--------------------------------+-----------------------------+-------------------------|
+| =exec= of =sync=               | yes (default 60)            | =t= + 10 s margin       |
+| =exec= of =boards select=      | yes (default 60)            | =t= + 10 s margin       |
+| =exec= of =boards publish=     | yes (default 60)            | =t= + 10 s margin       |
+| =exec= of every other verb     | none                        | 30 s flat ceiling       |
+| =status=                       | —                           | 30 s                    |
+| =daemon stop= (=shutdown=)     | —                           | 30 s                    |
+| =detach= / =attach=            | (ceremony-adjacent)         | unchanged: their own 30 s budgets, expiry still degrades to the warning |
+
+The margin guarantees the deadline *never fires before the verb's own
+honest timeout*; the flat flag-less ceiling catches only the wedged
+daemon (a healthy daemon's ack is millisecond-scale, and a draining
+daemon's =shutdown= ack precedes the drain). A queued-behind-a-long-verb
+request can legitimately time out at the client while the daemon
+eventually answers into a dead socket — orphan completion (below), the
+serial queue is §2.8's accepted model.
+
+Override: =[ipc] client_read_timeout_secs= (figment env lane
+=TASKBOARD_IPC__CLIENT_READ_TIMEOUT_SECS=) replaces the derivation
+*wholesale* for every covered request; =0= disables the deadline
+entirely — the recorded supervision stance spelled as a value. A
+configured value *can* preempt an honest long verb; that is the
+operator's explicit choice, documented at the config field.
+
+Expiry is a new typed =CommandError::IpcTimeout= (kind ="ipc-timeout"=,
+exit 1), distinct from =ipc-transport=: a timeout is a *silent* daemon,
+not a broken exchange.
+
+** The =Shutdown= control lane (fixes the =daemon stop= starvation)
+
+A decoded, well-versioned =Shutdown= is answered *directly in the
+accept path* — stop fires before the ack is written (today's ordering,
+preserved verbatim) and nothing is enqueued — so a wedged in-flight
+verb can no longer starve =daemon stop=. The dispatcher becomes a pure
+serial queue: one-in-flight fairness for everything else is untouched.
+Wire-additive under the policy above: the same =Request::Shutdown=
+bytes travel and the identical =Shutdown= ack comes back — only *which
+task* answers and *when* changed; =PROTOCOL_VERSION= stays 1. Old
+daemon behavior is unchanged (the mixed window is the post-upgrade
+case only, one-binary shipping). The version gate keeps its position:
+a wrong-version =Shutdown= still gets =VersionMismatch= first.
+
+** No =Cancel= request exists, by decision
+
+Orphan completion makes server-side cancellation valueless for
+correctness — a durable command should complete, and a relayed =sync=
+finishing after its client left is harmless (the next command observes
+the same converged state). Preempting the serial dispatcher's in-flight
+future would restructure the engine-fairness model ("Serial execution;
+accept concurrently", above) for no gain. If a future verb grows
+genuinely expensive-and-pointless-when-unwatched work, that verb's
+design round re-opens this with the evidence.
+
+** One-shot SIGINT (the client half of the one signal policy)
+
+The one-shot CLI installs the interrupt-family watcher (a
+=Ladder::new(0)= with no ack half): SIGINT during a non-ceremony verb
+cancels typed — the =cancelled= envelope (orphan completion named in
+its detail), exit 130, the socket closed mid-exchange. =connect= and
+=login= are excluded (their prompts are sync reads inside =poll=; a
+handler would consume the ^C and leave the read silently running); the
+second ^C inside the exit window forces at 130.
