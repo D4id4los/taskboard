@@ -3164,6 +3164,21 @@ fn install_stack_create_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         settle_pointer_conflict(&mut a, &window);
         a.route(&window, ActionId::StackCreate);
     });
+    // The empty-board preset CTA (r3 D5): the direct command dispatch
+    // — no text flow, the flow machine untouched.
+    let preset = Rc::clone(adapter);
+    let preset_weak = window.as_weak();
+    window.on_board_default_preset_clicked(move || {
+        let Some(window) = preset_weak.upgrade() else {
+            return;
+        };
+        let mut a = preset.borrow_mut();
+        let state = a.state.load_full();
+        let outcomes = a
+            .view_state
+            .apply_board_preset(&state, &crate::board_presets::DEFAULT_KANBAN);
+        a.apply_outcomes(&window, &outcomes);
+    });
     let mirror = Rc::clone(adapter);
     window.on_board_stack_create_edited(move |text| {
         mirror.borrow_mut().view_state.set_buffer(text.to_string());

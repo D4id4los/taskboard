@@ -1310,6 +1310,63 @@ fn the_body_right_click_selects_and_opens_the_stack_menu() {
     );
 }
 
+/// R3-F10/11/41 (D5) — the empty-board page: the board bar renders on
+/// a zero-stack board (its tab is addressable — the strongest
+/// structural proof available; F11 pinned by addressing), the
+/// New-stack CTA opens the same flow state the keyboard's route arms,
+/// and the preset CTA drains the table's `CreateStack` commands in
+/// table order with explicit 0..n orders (titles are domain payloads
+/// — asserted as command payloads, not presentation text).
+#[test]
+fn the_empty_board_renders_bar_ctas_and_the_preset() {
+    let state = fixture::empty_board_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+
+            // The bar: the fresh board's one tab is addressable.
+            assert!(
+                harness.driver.find_by_label("board").is_some(),
+                "the empty board's tab is addressable"
+            );
+
+            // The New-stack CTA arms the same flow state the `S`
+            // binding does; Escape-like settle closes it.
+            harness.driver.click_by_label("New stack");
+            assert!(
+                harness.handle.window().get_board_model().stack_create_open,
+                "the CTA opens the stack-create flow"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.assert_commands(&[]);
+
+            // The preset CTA: the table's stacks, explicit orders.
+            harness.driver.click_by_label("Create Default Kanban Setup");
+            let drained = harness.engine.drain();
+            let mut created: Vec<(&str, i64)> = Vec::new();
+            for command in &drained {
+                if let StateCommand::CreateStack { title, order, .. } = command {
+                    created.push((title.as_str(), *order));
+                }
+            }
+            assert_eq!(
+                created,
+                vec![
+                    ("Backlog", 0),
+                    ("To Do", 1),
+                    ("In Progress", 2),
+                    ("Done", 3)
+                ],
+                "the preset's stacks, table order, explicit orders"
+            );
+        },
+    );
+}
+
 /// R3-F12 (D3) — an Add Task ghost hover arms the generalized
 /// tooltip: pending on enter, visible after the delay with a
 /// non-empty description (content never asserted), dismissed on

@@ -249,6 +249,7 @@ export component AppWindow inherits Window {
                 card-dropped(c) => root.board-card-dropped(c);
                 card-drag-finished(c, r, ok) => root.board-card-drag-finished(c, r, ok);
                 new-stack-activated() => root.board-new-stack-clicked();
+                board-default-preset-clicked() => root.board-default-preset-clicked();
                 stack-create-committed(t) => root.board-stack-create-committed(t);
                 stack-create-edited(t) => root.board-stack-create-edited(t);
             }
@@ -613,6 +614,9 @@ export component AppWindow inherits Window {
     // The stack-create flow (usability D7): the on-board button
     // routes the same registry action as the `S` binding (§7.1).
     pure callback board-new-stack-clicked();
+    // The empty-board preset CTA (r3 D5): direct command dispatch —
+    // the adapter applies the preset's CreateStack commands.
+    pure callback board-default-preset-clicked();
     pure callback board-stack-create-committed(string);
     pure callback board-stack-create-edited(string);
     pure callback stack-task-activated(int);

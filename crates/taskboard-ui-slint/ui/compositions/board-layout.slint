@@ -22,6 +22,41 @@ import { DragState } from "../drag-state.slint";
 import { FocusScrollHint } from "../focus-scroll.slint";
 import { ListView } from "../widgets/listview.slint";
 
+// One labelled call-to-action button (r3 D5): no generic Button
+// primitive exists in the widget set, and the empty-board page needs
+// two labelled CTAs. One control row tall, `radius-small`,
+// `surface-hover` on hover; the label is a RoleText body. Explicitly
+// `export`: a file-local component *used by* an exported component
+// triggers the implicit-export deprecation. A third use promotes it
+// to `ui/widgets/` (the rule-E note).
+export component CtaButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    height: Theme.space-6;
+    border-radius: Theme.radius-small;
+    background: cta-hit.has-hover ? Theme.surface-hover : Theme.surface-raised;
+    min-width: Theme.space-6 * 4;
+    // The a11y address: the label is both the paint and the tree's
+    // name (the click-by-label seam is the same default action).
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.label;
+    accessible-action-default => root.clicked();
+    cta-hit := TouchArea {
+        clicked => root.clicked();
+    }
+    HorizontalLayout {
+        padding-left: Theme.space-3;
+        padding-right: Theme.space-3;
+        alignment: center;
+        RoleText {
+            role: Typography.body;
+            text: root.label;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
 // One kanban column (rule B: a display model, not a bag of strings).
 export struct StackColumnModel {
     title: string,
@@ -114,6 +149,9 @@ export component BoardLayout inherits Rectangle {
     // the field's mirror/commit seams; open is board-level.
     in property <bool> stack-create-open;
     callback new-stack-activated();
+    // The empty-board preset CTA (r3 D5): create the default kanban
+    // stacks in one click — direct command dispatch, no text flow.
+    callback board-default-preset-clicked();
     callback stack-create-committed(string);
     callback stack-create-edited(string);
     // The focus-loss settle (round-3 L1): every text flow's field
@@ -153,26 +191,39 @@ export component BoardLayout inherits Rectangle {
         root.stacks[root.effective-selected()]
     }
 
-    // The empty board (usability D7): the same New-stack button the
-    // populated board bar carries — EmptyState stays a pure text
-    // primitive (Rule E), the composition owns the affordance.
+    // The empty board (r3 D5): the bar renders here too — it is
+    // board-keyed, so a fresh empty board still shows its one tab
+    // (F11's tabs-less view fixed at the root) — then the centered
+    // labelled CTAs and the stack-create field. Compact keeps the
+    // existing rule (the strip hides, the centered block renders).
     if (root.stacks.length == 0): VerticalLayout {
         alignment: center;
         spacing: Theme.space-3;
+        // Conditional elements get no default fill geometry (the
+        // populated leg's recorded deviation) — the bar spans.
+        BoardBar {
+            width: 100%;
+            bar: root.board-bar;
+            segment-hint: root.board-segment-hint;
+            segment-activated(index) => root.board-bar-activated(index);
+            segment-context(i, x, y) => root.segment-context(i, x, y);
+        }
         EmptyState {
             text: "No stacks yet";
             hint: "Create the first stack with the button below";
         }
-        IconButton {
-            icon: IconKind.plus;
+        CtaButton {
             label: "New stack";
             clicked => root.new-stack-activated();
         }
+        CtaButton {
+            label: "Create Default Kanban Setup";
+            clicked => root.board-default-preset-clicked();
+        }
         // The stack-create flow's field on the empty board (round-3
-        // R5/F10, the minimal fix — the full centered-CTA empty-board
-        // page stays chunk 2): `begin_create_stack` arms the flow
-        // regardless of stack count, so the affordance must render
-        // in every leg. Same bindings as the populated legs' fields.
+        // R5/F10): `begin_create_stack` arms the flow regardless of
+        // stack count, so the affordance renders in every leg. Same
+        // bindings as the populated legs' fields.
         if (root.stack-create-open): TextField {
             placeholder: "New stack name";
             label: "New stack name";

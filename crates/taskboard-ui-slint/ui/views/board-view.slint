@@ -68,6 +68,8 @@ export component BoardView inherits FocusScope {
     // The stack-create flow (usability D7): the on-board button and
     // the field's mirror/commit seams.
     callback new-stack-activated();
+    // The empty-board preset CTA (r3 D5).
+    callback board-default-preset-clicked();
     // The pointer drag-to-move seams (r2 chunk-8), threaded window →
     // view → layout; index-only, the D2 convention.
     callback card-drag-armed(int, int);
@@ -132,6 +134,7 @@ export component BoardView inherits FocusScope {
                 create-edited(c, t) => root.create-edited(c, t);
                 add-task-activated(c) => root.add-task-activated(c);
                 new-stack-activated() => root.new-stack-activated();
+                board-default-preset-clicked() => root.board-default-preset-clicked();
                 stack-create-committed(t) => root.stack-create-committed(t);
                 stack-create-edited(t) => root.stack-create-edited(t);
             }
