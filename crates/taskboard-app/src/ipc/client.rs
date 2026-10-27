@@ -4,14 +4,19 @@
 //! binary relays `out`/`err` verbatim and exits with the daemon's code,
 //! so the observable contract is byte-identical to the in-process path.
 //!
-//! Budget policy (ADR 0012 §4.8): local sockets answer or refuse
-//! instantly. Concrete refusals (absent socket, refused connection,
-//! permissions) return `None` immediately so the caller falls through
-//! to the in-process path without latency; only ambiguous failures
-//! retry within a 1 s connect budget. There is deliberately no read
-//! deadline: every verb self-bounds and a wedged daemon is a
-//! supervision problem (`status` / `daemon stop`), not a client-timeout
-//! problem.
+//! Budget policy (ADR 0012 §4.8, as amended 2026-10-27): local sockets
+//! answer or refuse instantly. Concrete refusals (absent socket,
+//! refused connection, permissions) return `None` immediately so the
+//! caller falls through to the in-process path without latency; only
+//! ambiguous failures retry within a 1 s connect budget. Every verb
+//! still self-bounds; the bounded stance adds a client read deadline
+//! that catches only the *wedged daemon* case the old no-deadline
+//! policy name-checked: `exec`/`status`/`shutdown` wrap their whole
+//! exchange in a budget derived from the verb's own `--timeout-secs`
+//! plus a fixed margin (or the flat flag-less ceiling), overridable
+//! wholesale (and disable-able with 0) by
+//! `[ipc] client_read_timeout_secs`. Expiry is typed
+//! [`CommandError::IpcTimeout`] — never transport garbage.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -44,9 +49,6 @@ const DETACH_BUDGET: Duration = Duration::from_secs(30);
 /// budget's reading).
 const ATTACH_BUDGET: Duration = Duration::from_secs(30);
 
-// Temporary: the read-budget wrap consumes these in the next commit
-// (the derivation lands test-first, TDD).
-#[cfg_attr(not(test), allow(dead_code))]
 /// The flag-less read budget (ADR 0012, amended): a verb with no
 /// `--timeout-secs` of its own gets this ceiling — it catches only the
 /// wedged-daemon case (a healthy daemon's ack is millisecond-scale).
@@ -63,12 +65,8 @@ pub(crate) const READ_BUDGET_MARGIN_SECS: u64 = 10;
 /// default ceiling flat. `Some(n)` configured replaces the derivation
 /// wholesale; `Some(0)` disables the deadline entirely (`None` here —
 /// the recorded supervision stance).
-#[cfg_attr(not(test), allow(dead_code))]
 #[must_use]
-pub(crate) fn client_read_budget(
-    verb_secs: Option<u64>,
-    configured: Option<u64>,
-) -> Option<Duration> {
+pub fn client_read_budget(verb_secs: Option<u64>, configured: Option<u64>) -> Option<Duration> {
     match configured {
         Some(0) => None,
         Some(secs) => Some(Duration::from_secs(secs)),
@@ -156,34 +154,54 @@ pub async fn try_connect(db_path: &Path) -> Option<Connection> {
 impl Connection {
     /// Sends one request and reads the answer, mapping every transport
     /// failure to [`CommandError::IpcTransport`] and a version mismatch
-    /// to [`CommandError::IpcVersion`].
+    /// to [`CommandError::IpcVersion`]. `read_budget` bounds the whole
+    /// exchange (write+read+decode — the detach/attach precedent); its
+    /// expiry is [`CommandError::IpcTimeout`], never transport garbage.
     ///
     /// # Errors
     ///
     /// [`CommandError::IpcTransport`] on framing/serialization/socket
-    /// failure; [`CommandError::IpcVersion`] when the server answers
-    /// `VersionMismatch` or an unparseable version.
-    async fn request(mut self, req: Request, response_cap: u32) -> Result<Response, CommandError> {
-        let bytes = serde_json::to_vec(&req).map_err(|_| CommandError::IpcTransport)?;
-        codec::write_frame(&mut self.stream, &bytes, codec::MAX_REQUEST_BYTES)
-            .await
-            .map_err(|_| CommandError::IpcTransport)?;
-        let answer = codec::read_frame(&mut self.stream, response_cap)
-            .await
-            .map_err(|_| CommandError::IpcTransport)?;
-        let response: Response =
-            serde_json::from_slice(&answer).map_err(|_| CommandError::IpcTransport)?;
-        validate_response(response)
+    /// failure; [`CommandError::IpcTimeout`] when the daemon does not
+    /// answer within the budget; [`CommandError::IpcVersion`] when the
+    /// server answers `VersionMismatch` or an unparseable version.
+    async fn request(
+        mut self,
+        req: Request,
+        response_cap: u32,
+        read_budget: Option<Duration>,
+    ) -> Result<Response, CommandError> {
+        let exchange = async {
+            let bytes = serde_json::to_vec(&req).map_err(|_| CommandError::IpcTransport)?;
+            codec::write_frame(&mut self.stream, &bytes, codec::MAX_REQUEST_BYTES)
+                .await
+                .map_err(|_| CommandError::IpcTransport)?;
+            let answer = codec::read_frame(&mut self.stream, response_cap)
+                .await
+                .map_err(|_| CommandError::IpcTransport)?;
+            let response: Response =
+                serde_json::from_slice(&answer).map_err(|_| CommandError::IpcTransport)?;
+            validate_response(response)
+        };
+        match read_budget {
+            Some(budget) => tokio::time::timeout(budget, exchange)
+                .await
+                .unwrap_or(Err(CommandError::IpcTimeout)),
+            None => exchange.await,
+        }
     }
 
     /// Runs one argv invocation on the daemon.
     ///
     /// # Errors
     ///
-    /// [`CommandError`] — transport and version classes; the *command's*
-    /// own failure is not an error here (it travels in
+    /// [`CommandError`] — transport, timeout and version classes; the
+    /// *command's* own failure is not an error here (it travels in
     /// [`ExecOutcome::code`] and [`ExecOutcome::err`]).
-    pub async fn exec(self, argv: &[String]) -> Result<ExecOutcome, CommandError> {
+    pub async fn exec(
+        self,
+        argv: &[String],
+        read_budget: Option<Duration>,
+    ) -> Result<ExecOutcome, CommandError> {
         match self
             .request(
                 Request::Exec {
@@ -191,6 +209,7 @@ impl Connection {
                     argv: argv.to_vec(),
                 },
                 codec::MAX_RESPONSE_BYTES,
+                read_budget,
             )
             .await?
         {
@@ -203,14 +222,15 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// [`CommandError`] — transport and version classes.
-    pub async fn status(self) -> Result<StatusView, CommandError> {
+    /// [`CommandError`] — transport, timeout and version classes.
+    pub async fn status(self, read_budget: Option<Duration>) -> Result<StatusView, CommandError> {
         match self
             .request(
                 Request::Status {
                     v: PROTOCOL_VERSION,
                 },
                 codec::MAX_RESPONSE_BYTES,
+                read_budget,
             )
             .await?
         {
@@ -224,14 +244,15 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// [`CommandError`] — transport and version classes.
-    pub async fn shutdown(self) -> Result<(), CommandError> {
+    /// [`CommandError`] — transport, timeout and version classes.
+    pub async fn shutdown(self, read_budget: Option<Duration>) -> Result<(), CommandError> {
         match self
             .request(
                 Request::Shutdown {
                     v: PROTOCOL_VERSION,
                 },
                 codec::MAX_RESPONSE_BYTES,
+                read_budget,
             )
             .await?
         {
@@ -263,7 +284,7 @@ impl Connection {
         };
         match tokio::time::timeout(
             DETACH_BUDGET,
-            self.request(request, codec::MAX_RESPONSE_BYTES),
+            self.request(request, codec::MAX_RESPONSE_BYTES, None),
         )
         .await
         {
@@ -301,7 +322,7 @@ impl Connection {
         };
         match tokio::time::timeout(
             ATTACH_BUDGET,
-            self.request(request, codec::MAX_RESPONSE_BYTES),
+            self.request(request, codec::MAX_RESPONSE_BYTES, None),
         )
         .await
         {
@@ -323,7 +344,8 @@ mod tests {
     use crate::cli::Command;
     use crate::commands::{CommandError, verb_timeout_secs};
     use crate::ipc::protocol::{PROTOCOL_VERSION, Response};
-    use crate::ipc::socket_sidecar;
+    use crate::ipc::{socket_name, socket_sidecar};
+    use interprocess::local_socket::traits::tokio::Listener as _;
 
     /// C1: the derivation lattice (ADR 0012, amended) — flag verbs
     /// derive `budget + margin`, flag-less verbs the default ceiling,
@@ -429,6 +451,98 @@ mod tests {
         assert_eq!(CommandError::IpcTimeout.error_kind(), "ipc-timeout");
         assert_eq!(CommandError::IpcTransport.error_kind(), "ipc-transport");
         assert_eq!(CommandError::IpcTimeout.error_detail(), None);
+    }
+
+    /// A listener that accepts and never answers — the scripted
+    /// stalling daemon for the expiry rows (bind on the db's socket
+    /// name, exactly like the real server would).
+    #[cfg(unix)]
+    fn stalling_daemon(db: &std::path::Path) -> interprocess::local_socket::tokio::Listener {
+        use interprocess::local_socket::ListenerOptions;
+        let name = socket_name(db).expect("socket name");
+        ListenerOptions::new()
+            .name(name)
+            .create_tokio()
+            .expect("bind")
+    }
+
+    #[cfg(unix)]
+    fn is_pending<F: std::future::Future>(fut: std::pin::Pin<&mut F>) -> bool {
+        use std::task::Poll;
+        matches!(
+            fut.poll(&mut std::task::Context::from_waker(std::task::Waker::noop())),
+            Poll::Pending
+        )
+    }
+
+    /// C3: the deadline expiry — a stalling daemon accepts the frame
+    /// and never answers; the budget fires typed (`IpcTimeout`), and
+    /// the outer wrapper (far above the budget under the paused clock)
+    /// never does. The deadline can never preempt an honest verb: the
+    /// margin property pins the derivation, this pins the wrap.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_stalling_daemon_times_out_typed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("stall.db");
+        let _staller = stalling_daemon(&db);
+        let conn = try_connect(&db).await.expect("connects to the staller");
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            conn.exec(
+                &["sync".to_owned()],
+                Some(std::time::Duration::from_secs(1)),
+            ),
+        )
+        .await
+        .expect("the budget fires long before the outer wrapper");
+        assert!(matches!(outcome, Err(CommandError::IpcTimeout)));
+    }
+
+    /// C4: the disabled deadline never fires — no override (`None`
+    /// budget) means no deadline exists; the future stays `Pending`
+    /// through an absurd clock advance (noop-waker polls, no wall
+    /// clock, no sleeps).
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_disabled_deadline_never_fires() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("stall-disabled.db");
+        let _staller = stalling_daemon(&db);
+        let conn = try_connect(&db).await.expect("connects to the staller");
+
+        let argv = vec!["sync".to_owned()];
+        let mut fut = std::pin::pin!(conn.exec(&argv, None));
+        // One poll drives the write; the read parks on the staller.
+        assert!(is_pending(fut.as_mut()));
+        tokio::time::advance(std::time::Duration::from_hours(720)).await;
+        assert!(is_pending(fut.as_mut()), "disabled: no deadline exists");
+    }
+
+    /// C5 (the wrap): a daemon that dies mid-exchange is still
+    /// *transport* garbage from the same `request` path — the timeout
+    /// kind is reserved for a silent-but-alive daemon.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_daemon_dropping_mid_exchange_is_transport_not_timeout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("drop.db");
+        let listener = stalling_daemon(&db);
+        let conn = try_connect(&db).await.expect("connects");
+        // Accept, then hang up without answering: the client's read
+        // ends in EOF — transport, never a timeout.
+        let accepted = listener.accept().await.expect("accept");
+        drop(accepted);
+        drop(listener);
+
+        let outcome = conn
+            .exec(
+                &["sync".to_owned()],
+                Some(std::time::Duration::from_secs(30)),
+            )
+            .await;
+        assert!(matches!(outcome, Err(CommandError::IpcTransport)));
     }
 
     /// The response-side version gate: mismatch variants are typed

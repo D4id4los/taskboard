@@ -25,6 +25,7 @@ use taskboard_app::bootstrap::{bootstrap, wait_for_signal};
 use taskboard_app::cli::{Cli, Command, DaemonCmd};
 use taskboard_app::commands::{
     BasicSession, CommandCtx, CommandError, IpcRoute, dispatch, report, route_for_ipc,
+    verb_timeout_secs,
 };
 use taskboard_app::config::AppConfig;
 use taskboard_app::ipc::client;
@@ -139,7 +140,11 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
                 if let Ok(config) = AppConfig::load(cli.config.clone())
                     && let Some(conn) = client::try_connect(config.db_path()).await
                 {
-                    match conn.exec(&raw_argv).await {
+                    let read_budget = client::client_read_budget(
+                        verb_timeout_secs(&command),
+                        config.ipc.client_read_timeout_secs,
+                    );
+                    match conn.exec(&raw_argv, read_budget).await {
                         Ok(outcome) => relay(&outcome),
                         // Mid-request death: the daemon holds the lock,
                         // so in-process fallback would only re-report
@@ -239,10 +244,15 @@ async fn status_command(config_path: Option<std::path::PathBuf>, json: bool) -> 
         Err(err) => return report(json, &CommandError::from(err)),
     };
     let view = match client::try_connect(config.db_path()).await {
-        Some(conn) => match conn.status().await {
-            Ok(view) => view,
-            Err(err) => return report(json, &err),
-        },
+        Some(conn) => {
+            // `status` carries no verb budget: the flag-less ceiling (or
+            // the operator's override) bounds only the wedged daemon.
+            let read_budget = client::client_read_budget(None, config.ipc.client_read_timeout_secs);
+            match conn.status(read_budget).await {
+                Ok(view) => view,
+                Err(err) => return report(json, &err),
+            }
+        }
         None => taskboard_app::commands::status::StatusView::no_daemon(config.db_path()),
     };
     // The one shared emission path (`dispatch`'s client-side arm uses
@@ -268,7 +278,11 @@ async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool
     let Some(conn) = client::try_connect(config.db_path()).await else {
         return report(json, &CommandError::NoDaemon);
     };
-    match conn.shutdown().await {
+    // `daemon stop` carries no verb budget: the flag-less ceiling (or
+    // the operator's override) bounds only the wedged daemon — a
+    // draining daemon's ack precedes its drain.
+    let read_budget = client::client_read_budget(None, config.ipc.client_read_timeout_secs);
+    match conn.shutdown(read_budget).await {
         Ok(()) => 0,
         Err(err) => report(json, &err),
     }
