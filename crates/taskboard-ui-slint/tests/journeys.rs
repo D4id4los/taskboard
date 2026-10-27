@@ -6111,7 +6111,18 @@ fn the_kiosk_rotation_flips_modes_on_the_dwell_timer() {
 fn the_kiosk_today_mode_renders_only_the_pinned_board() {
     // SAFETY: single-threaded journey startup (see the set site).
     unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
-    let (_fixture, state, _walked) = fixture::today_overdue_state();
+    let (_fixture, mut state, _walked) = fixture::today_overdue_state();
+    // Live and awaiting alarms in the data: the gates must hold
+    // against non-empty timer state, not just an empty one.
+    let fired_at = chrono::Utc::now() - TimeDelta::minutes(1);
+    let fired = fixture::add_alarm(&mut state, "kiosk-alarm", fired_at);
+    fixture::deliver_alarm(&mut state, fired, fired_at);
+    let _live = fixture::add_alarm(
+        &mut state,
+        "kiosk-timer",
+        chrono::Utc::now() + TimeDelta::hours(1),
+    );
+    let state = state;
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -6131,6 +6142,12 @@ fn the_kiosk_today_mode_renders_only_the_pinned_board() {
                 0,
                 "kiosk is banner-only: the surface model stays empty"
             );
+            // The timers gate (DR-3/3, D-I6): the section, its rows,
+            // and the status-bar chip are all forced off model-side.
+            assert!(!harness.handle.window().get_timers_visible());
+            assert_eq!(harness.handle.window().get_timers_model().row_count(), 0);
+            assert_eq!(harness.handle.window().get_timers_awaiting(), 0);
+            assert!(!harness.handle.window().get_timers_chip_visible());
 
             harness.driver.advance_time(30_000);
             assert_eq!(current_view(&harness), View::Today);
@@ -6150,6 +6167,9 @@ fn the_kiosk_today_mode_renders_only_the_pinned_board() {
                 harness.handle.window().get_notification_model().row_count(),
                 0
             );
+            assert!(!harness.handle.window().get_timers_visible());
+            assert_eq!(harness.handle.window().get_timers_model().row_count(), 0);
+            assert!(!harness.handle.window().get_timers_chip_visible());
 
             harness.driver.advance_time(30_000);
             assert_eq!(
@@ -6368,6 +6388,154 @@ fn a_dead_zone_click_settles_the_create_flow() {
             }
             harness.stroke(parse("Return").expect("Return"));
             harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// DR-3/3 J-T1 — the desktop create→row→cancel loop: the form's
+/// commit dispatches the exact `CreateAdhocAlarm`, the settle makes
+/// the row render in the section (the chip lights up with it), and
+/// the row's cancel affordance dispatches the exact
+/// `CancelAdhocAlarm`, emptying the section by derivation.
+#[test]
+fn the_timers_form_creates_then_cancels() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            assert_eq!(current_view(&harness), View::Today);
+            assert!(!harness.handle.window().get_timers_chip_visible());
+            // Fill the form: click-focus each field (the fields opt
+            // out of the mount-time focus grab), type, commit on the
+            // timing field's Return.
+            let click_field = |harness: &mut Harness, label: &str| {
+                let element = harness
+                    .driver
+                    .find_by_label(label)
+                    .unwrap_or_else(|| panic!("the field {label:?} is present"));
+                let (x, y) = support::driver::centre(&element);
+                harness.driver.click_at(x, y);
+            };
+            click_field(&mut harness, "Timer label");
+            harness.type_text("Tea");
+            click_field(&mut harness, "Timer timing (in 10m or at 09:30)");
+            harness.type_text("in 3m");
+            harness.stroke(parse("Return").expect("Return"));
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CreateAdhocAlarm { label, when }] => {
+                    assert_eq!(label.as_str(), "Tea");
+                    assert_eq!(
+                        *when,
+                        taskboard_domain::AdhocWhen::In(TimeDelta::minutes(3))
+                    );
+                }
+                other => panic!("the create reached the boundary, got {other:?}"),
+            }
+
+            harness.engine.settle(&harness.handle);
+            assert_eq!(harness.handle.window().get_timers_model().row_count(), 1);
+            assert!(harness.handle.window().get_timers_chip_visible());
+
+            // The row's cancel affordance.
+            harness.driver.click_by_label("Cancel timer");
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CancelAdhocAlarm { .. }] => {}
+                other => panic!("the cancel reached the boundary, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            assert_eq!(harness.handle.window().get_timers_model().row_count(), 0);
+            assert!(!harness.handle.window().get_timers_chip_visible());
+        },
+    );
+}
+
+/// DR-3/3 — the awaiting pointer: a delivered (fired ∧ ¬dismissed)
+/// alarm renders exactly one surface row (Cancel, no Mark Done) and
+/// counts in the section's pointer badge; the dismissal removes both
+/// by derivation.
+#[test]
+fn the_awaiting_alarm_renders_then_dismisses() {
+    let (_fixture, mut state) = fixture::golden_state();
+    let fired_at = chrono::Utc::now() - TimeDelta::minutes(1);
+    let alarm = fixture::add_alarm(&mut state, "tea", fired_at);
+    fixture::deliver_alarm(&mut state, alarm, fired_at);
+    let state = state;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(
+                harness.handle.window().get_notification_model().row_count(),
+                1
+            );
+            assert_eq!(harness.handle.window().get_timers_awaiting(), 1);
+            // Awaiting rows stay out of the active section (one
+            // source of truth — D-I7).
+            assert_eq!(harness.handle.window().get_timers_model().row_count(), 0);
+            // The alarm row grew the Cancel affordance (D-P11).
+            assert!(harness.driver.find_by_label("Cancel timer").is_some());
+
+            harness.driver.click_by_label("Dismiss notification");
+            match harness.engine.drain().as_slice() {
+                [
+                    StateCommand::DismissReminder {
+                        reminder,
+                        occurrence,
+                    },
+                ] => {
+                    assert_eq!(*reminder, taskboard_domain::ReminderRef::Adhoc(alarm));
+                    assert_eq!(*occurrence, fired_at);
+                }
+                other => panic!("the dismissal reached the boundary, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                harness.handle.window().get_notification_model().row_count(),
+                0
+            );
+            assert_eq!(harness.handle.window().get_timers_awaiting(), 0);
+            assert!(harness.driver.find_by_label("Cancel timer").is_none());
+        },
+    );
+}
+
+/// DR-3/3 — the row-template repair must not shrink the task side: a
+/// task-anchored awaiting row keeps all four task-shaped affordances
+/// (Done, Snooze, Mute — plus Dismiss) and grows no Cancel.
+#[test]
+fn a_task_notification_row_keeps_all_four_buttons() {
+    let (golden, mut state) = fixture::golden_state();
+    let due = chrono::Utc::now() - TimeDelta::minutes(5);
+    fixture::deliver_task_notification(&mut state, golden.task1, due);
+    let state = state;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            assert_eq!(
+                harness.handle.window().get_notification_model().row_count(),
+                1
+            );
+            let row = harness
+                .handle
+                .window()
+                .get_notification_model()
+                .row_data(0)
+                .expect("the surface's single row");
+            assert!(row.can_done);
+            assert!(row.can_mute);
+            assert!(!row.can_cancel);
+            assert!(harness.driver.find_by_label("Mark task done").is_some());
+            assert!(harness.driver.find_by_label("Mute reminders").is_some());
+            assert!(harness.driver.find_by_label("Cancel timer").is_none());
         },
     );
 }

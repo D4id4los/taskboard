@@ -3860,6 +3860,27 @@ fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {
     });
 }
 
+impl Adapter {
+    /// The timers form's insert engagement (DR-3/3): the permanently
+    /// mounted fields must never feed the Normal-mode chain (Space is
+    /// task.complete there) — the settings fields' engage precedent.
+    fn timers_form_engage(&mut self, window: &AppWindow) {
+        if self.shell.mode != Mode::Insert {
+            self.shell.apply(&UiEffect::SetMode(Mode::Insert), 0);
+            self.sync(window);
+        }
+    }
+
+    /// Leaves the engagement (a committed form): back to Normal so
+    /// the chain resolves again (the settings commit precedent).
+    fn timers_form_committed(&mut self, window: &AppWindow) {
+        if self.shell.mode == Mode::Insert {
+            self.shell.apply(&UiEffect::SetMode(Mode::Normal), 0);
+            self.sync(window);
+        }
+    }
+}
+
 /// The timers surface's seams (DR-3/3, D-I8): the form's commit
 /// parses the grammar at the seam (the rule-add absorbed-miss
 /// convention) and routes; the section's cancel resolves the
@@ -3893,7 +3914,17 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             when,
         });
         a.route(&window, ActionId::TimerCreate);
+        a.timers_form_committed(&window);
         true
+    });
+
+    let edited = Rc::clone(adapter);
+    let edited_weak = window.as_weak();
+    window.on_timers_form_edited(move || {
+        let Some(window) = edited_weak.upgrade() else {
+            return;
+        };
+        edited.borrow_mut().timers_form_engage(&window);
     });
 
     let cancel = Rc::clone(adapter);
