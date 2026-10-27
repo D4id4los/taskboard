@@ -400,6 +400,19 @@ pub fn notification_rows(
         .collect()
 }
 
+/// The active timer row's remaining-time phrase (D-I7): the
+/// `due_phrase` future direction over [`duration_bucket`] — `Now`
+/// clamps (the fired-undelivered transient is total, never a panic).
+#[must_use]
+pub fn countdown_phrase(effective: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    match duration_bucket(effective - now) {
+        DurationBucket::Now => "now".to_owned(),
+        DurationBucket::Minutes(n) => format!("in {n}m"),
+        DurationBucket::Hours(n) => format!("in {n}h"),
+        DurationBucket::Days(n) => format!("in {n}d"),
+    }
+}
+
 /// The notification row's context phrase (mono role): elapsed since the
 /// fired occurrence, bucketed by [`duration_bucket`] — the due phrase's
 /// tested contract, past-direction ("fired now" / "fired {q} ago").
@@ -411,6 +424,194 @@ pub fn notification_phrase(occurrence: DateTime<Utc>, now: DateTime<Utc>) -> Str
         DurationBucket::Minutes(n) => format!("fired {n}m ago"),
         DurationBucket::Hours(n) => format!("fired {n}h ago"),
         DurationBucket::Days(n) => format!("fired {n}d ago"),
+    }
+}
+
+/// One active timer row (D-I7): the alarm plus its walked effective
+/// occurrence, carried so the push pass derives the countdown phrase
+/// once per refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimerRow {
+    /// The alarm the cancel affordance dispatches against.
+    pub alarm: taskboard_domain::AdhocAlarmId,
+    /// The label snapshot, carried verbatim.
+    pub label: String,
+    /// The effective occurrence (snooze walk included).
+    pub effective: DateTime<Utc>,
+}
+
+/// The status-bar chip's parts (D-I6): visibility and nearest-fire
+/// selection are the pure decision; the push assembles the display
+/// text. `effective` may be past (an awaiting alarm is a live timer
+/// whose occurrence already fired — the chip still names it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimerChip {
+    pub alarm: taskboard_domain::AdhocAlarmId,
+    pub label: String,
+    pub effective: DateTime<Utc>,
+}
+
+/// The per-row button visibility table for the notification surface
+/// (D-P11): the anchor-aware repair as reviewed data, not markup
+/// drift. Dismiss/Snooze are universal; task anchors add Done + Mute
+/// (task-shaped); alarm anchors add Cancel (the timer's off-switch).
+/// (The five-bool shape is the deliberate table — clippy's
+/// state-machine suggestion would obscure the reviewed row.)
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AwaitingButtons {
+    pub dismiss: bool,
+    pub done: bool,
+    pub snooze: bool,
+    pub mute: bool,
+    pub cancel: bool,
+}
+
+/// The active timer rows for `now` (D-I7, D-P17): one row per live
+/// alarm still counting down — walked effective occurrence future —
+/// plus the tick-boundary transient (effective past but not yet
+/// delivered; its countdown clamps to `"now"`). Awaiting rows
+/// (delivered ∧ ¬dismissed at the effective) are the notification
+/// surface's, never duplicated here. Canonical `(effective, id)`
+/// order; the walk is the domain's `alarm_occurrence`, never
+/// re-derived.
+#[must_use]
+pub fn timer_rows(state: &AppState, now: DateTime<Utc>) -> Vec<TimerRow> {
+    let mut rows: Vec<TimerRow> = state
+        .reminders
+        .alarms
+        .values()
+        .filter_map(|alarm| {
+            let effective = taskboard_domain::alarm_occurrence(&state.reminders, alarm.id)?;
+            let counting = effective > now
+                || !state
+                    .reminders
+                    .is_delivered(&ReminderRef::Adhoc(alarm.id), &effective);
+            counting.then(|| TimerRow {
+                alarm: alarm.id,
+                label: alarm.label.clone(),
+                effective,
+            })
+        })
+        .collect();
+    rows.sort_by_key(|row| (row.effective, row.alarm));
+    rows
+}
+
+/// The awaiting (fired ∧ ¬dismissed) alarm-anchored row count (D-I7):
+/// the notification surface's own rows filtered to Adhoc refs — one
+/// derivation, no second list to drift.
+#[must_use]
+pub fn awaiting_alarm_count(
+    state: &AppState,
+    defaults: &taskboard_domain::ReminderDefaults,
+    now: DateTime<Utc>,
+) -> usize {
+    notification_rows(state, defaults, now)
+        .iter()
+        .filter(|row| matches!(row.reminder, ReminderRef::Adhoc(_)))
+        .count()
+}
+
+/// The status-bar chip's pure decision (D-P5): `None` (hidden) while
+/// no live alarm exists; else the nearest row by `(effective, id)`
+/// over ALL live alarms — awaiting included, the surface owns its row.
+#[must_use]
+pub fn timer_chip(state: &AppState) -> Option<TimerChip> {
+    let mut nearest: Option<(DateTime<Utc>, taskboard_domain::AdhocAlarmId)> = None;
+    for alarm in state.reminders.alarms.values() {
+        let Some(effective) = taskboard_domain::alarm_occurrence(&state.reminders, alarm.id) else {
+            continue;
+        };
+        let key = (effective, alarm.id);
+        if nearest.is_none_or(|best| key < best) {
+            nearest = Some(key);
+        }
+    }
+    nearest.map(|(effective, id)| {
+        let alarm = &state.reminders.alarms[&id];
+        TimerChip {
+            alarm: id,
+            label: alarm.label.clone(),
+            effective,
+        }
+    })
+}
+
+/// The timers form's timing grammar (D-P7/D-P8): the D-R9 CLI ruling
+/// mirrored as a pure, tz-injected parse. Prefix-dispatched on the
+/// first whitespace token: `"in <dur>"` rides the domain's
+/// [`taskboard_domain::ReminderOffset::parse_text_form`] (a `≤ 0`
+/// magnitude is `None` — the domain's `InvalidAdhocWhen` rejected at
+/// the seam); `"at <t>"` mirrors the CLI's `parse_at_flag` (RFC-3339
+/// any-offset; `YYYY-MM-DD` host-local midnight; `HH:MM[:SS]` today
+/// host-local, rolled to tomorrow when already past — `now` is data,
+/// `tz` the injected seam; a DST-unresolvable local time is `None`).
+/// Anything else — empty, missing prefix, unknown form — is `None`.
+#[must_use]
+pub fn parse_timer_when(
+    raw: &str,
+    now: DateTime<Utc>,
+    tz: &impl chrono::TimeZone,
+) -> Option<taskboard_domain::AdhocWhen> {
+    let (prefix, rest) = raw.split_once(char::is_whitespace)?;
+    match prefix {
+        "in" => {
+            let offset = taskboard_domain::ReminderOffset::parse_text_form(rest.trim())?;
+            let duration = -offset.as_duration();
+            (duration > TimeDelta::zero()).then_some(taskboard_domain::AdhocWhen::In(duration))
+        }
+        "at" => {
+            let rest = rest.trim();
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(rest) {
+                return Some(taskboard_domain::AdhocWhen::At(
+                    dt.with_timezone(&chrono::Utc),
+                ));
+            }
+            if let Ok(date) = chrono::NaiveDate::parse_from_str(rest, "%Y-%m-%d") {
+                let midnight = date.and_hms_opt(0, 0, 0)?;
+                return tz.from_local_datetime(&midnight).single().map(|local| {
+                    taskboard_domain::AdhocWhen::At(local.with_timezone(&chrono::Utc))
+                });
+            }
+            let time = chrono::NaiveTime::parse_from_str(rest, "%H:%M")
+                .or_else(|_| chrono::NaiveTime::parse_from_str(rest, "%H:%M:%S"))
+                .ok()?;
+            let today = now.with_timezone(tz).date_naive();
+            let resolve = |day: chrono::NaiveDate| {
+                tz.from_local_datetime(&day.and_time(time))
+                    .single()
+                    .map(|local| local.with_timezone(&chrono::Utc))
+            };
+            let mut instant = resolve(today)?;
+            if instant <= now {
+                instant = resolve(today.succ_opt()?)?;
+            }
+            Some(taskboard_domain::AdhocWhen::At(instant))
+        }
+        _ => None,
+    }
+}
+
+/// The anchor-aware per-row button table (D-P11): the notification
+/// surface's total visibility decision. See [`AwaitingButtons`].
+#[must_use]
+pub const fn awaiting_row_buttons(anchor: taskboard_domain::ReminderAnchor) -> AwaitingButtons {
+    match anchor {
+        taskboard_domain::ReminderAnchor::Task(_) => AwaitingButtons {
+            dismiss: true,
+            done: true,
+            snooze: true,
+            mute: true,
+            cancel: false,
+        },
+        taskboard_domain::ReminderAnchor::Alarm(_) => AwaitingButtons {
+            dismiss: true,
+            done: false,
+            snooze: true,
+            mute: false,
+            cancel: true,
+        },
     }
 }
 
@@ -511,6 +712,7 @@ pub fn live_board(state: &AppState) -> Option<&Board> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone as _;
     use proptest::prelude::*;
     use taskboard_domain::{
         BoardClocks, Effort, ReminderOffset, ReminderRule, SidecarHealth, StackId, TaskClocks,
@@ -999,6 +1201,392 @@ mod tests {
         assert_eq!(
             notification_rows(&state, &defaults(), now),
             [] as [NotificationRow; 0]
+        );
+    }
+
+    // -- The timers surface (DR-3/3, D-I6–D-I8) -------------------------
+
+    fn alarm(
+        id: taskboard_domain::AdhocAlarmId,
+        label: &str,
+        fire_at: DateTime<Utc>,
+    ) -> taskboard_domain::AdhocAlarm {
+        taskboard_domain::AdhocAlarm {
+            id,
+            label: label.to_owned(),
+            fire_at,
+            created_at: fire_at - TimeDelta::hours(1),
+        }
+    }
+
+    fn deliver_alarm(state: &mut AppState, id: taskboard_domain::AdhocAlarmId, at: DateTime<Utc>) {
+        state
+            .reminders
+            .deliveries
+            .insert(taskboard_domain::ReminderDelivery {
+                reminder: ReminderRef::Adhoc(id),
+                occurrence: at,
+                delivered_at: at,
+            });
+    }
+
+    #[test]
+    fn countdown_phrase_buckets_the_remaining_time_and_clamps() {
+        let now = Utc::now();
+        assert_eq!(countdown_phrase(now + TimeDelta::seconds(59), now), "now");
+        assert_eq!(countdown_phrase(now + TimeDelta::seconds(60), now), "in 1m");
+        assert_eq!(
+            countdown_phrase(now + TimeDelta::minutes(59), now),
+            "in 59m"
+        );
+        assert_eq!(countdown_phrase(now + TimeDelta::minutes(60), now), "in 1h");
+        assert_eq!(countdown_phrase(now + TimeDelta::hours(23), now), "in 23h");
+        assert_eq!(countdown_phrase(now + TimeDelta::hours(24), now), "in 1d");
+        // Past input (the fired-undelivered transient) clamps, total.
+        assert_eq!(countdown_phrase(now - TimeDelta::hours(3), now), "now");
+    }
+
+    #[test]
+    fn timer_rows_order_by_the_walked_occurrence_and_id() {
+        let now = Utc::now();
+        let early = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let late = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        // `early` fires sooner by base `fire_at` but a snooze chain
+        // walks it past `late`'s — the *walked* occurrence orders.
+        state
+            .reminders
+            .alarms
+            .insert(early, alarm(early, "early", now + TimeDelta::hours(1)));
+        state
+            .reminders
+            .alarms
+            .insert(late, alarm(late, "late", now + TimeDelta::hours(2)));
+        state.reminders.snoozes.insert(
+            taskboard_domain::ReminderSnoozeKey {
+                reminder: ReminderRef::Adhoc(early),
+                occurrence: now + TimeDelta::hours(1),
+            },
+            now + TimeDelta::hours(3),
+        );
+        let rows = timer_rows(&state, now);
+        assert_eq!(
+            rows.iter().map(|r| r.alarm).collect::<Vec<_>>(),
+            vec![late, early],
+            "the snoozed alarm's walked occurrence orders it last"
+        );
+
+        // A tie on the walked occurrence breaks by id.
+        let a = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let b = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        let mut state = AppState::default();
+        state
+            .reminders
+            .alarms
+            .insert(a, alarm(a, "a", now + TimeDelta::minutes(5)));
+        state
+            .reminders
+            .alarms
+            .insert(b, alarm(b, "b", now + TimeDelta::minutes(5)));
+        let rows = timer_rows(&state, now);
+        assert_eq!(
+            rows.iter().map(|r| r.alarm).collect::<Vec<_>>(),
+            vec![lo, hi]
+        );
+    }
+
+    #[test]
+    fn timer_rows_split_fired_from_awaiting_by_derivation() {
+        let now = Utc::now();
+        let id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        state
+            .reminders
+            .alarms
+            .insert(id, alarm(id, "tea", now - TimeDelta::minutes(1)));
+        // The fired-but-undelivered tick-boundary transient stays a row
+        // (totality, D-P17); the label is carried verbatim.
+        let rows = timer_rows(&state, now);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].alarm, id);
+        assert_eq!(rows[0].label, "tea");
+
+        // Delivered (awaiting): the row belongs to the notification
+        // surface, never duplicated in the timers section.
+        deliver_alarm(&mut state, id, now - TimeDelta::minutes(1));
+        assert_eq!(timer_rows(&state, now), [] as [TimerRow; 0]);
+    }
+
+    #[test]
+    fn awaiting_alarm_count_follows_the_fire_snooze_refire_script() {
+        let now = Utc::now();
+        let id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let base = now - TimeDelta::minutes(5);
+        let mut state = AppState::default();
+        state.reminders.alarms.insert(id, alarm(id, "tea", base));
+
+        // Not yet delivered: not awaiting.
+        assert_eq!(awaiting_alarm_count(&state, &defaults(), now), 0);
+
+        // Fired + delivered: one awaiting row.
+        deliver_alarm(&mut state, id, base);
+        assert_eq!(awaiting_alarm_count(&state, &defaults(), now), 1);
+
+        // Snoozed to a future target: the delivery keys the old
+        // occurrence, the effective walked — the row leaves by
+        // derivation.
+        state.reminders.snoozes.insert(
+            taskboard_domain::ReminderSnoozeKey {
+                reminder: ReminderRef::Adhoc(id),
+                occurrence: base,
+            },
+            now + TimeDelta::minutes(10),
+        );
+        assert_eq!(awaiting_alarm_count(&state, &defaults(), now), 0);
+
+        // Delivered at the new target: awaiting again at that target.
+        deliver_alarm(&mut state, id, now + TimeDelta::minutes(10));
+        let later = now + TimeDelta::minutes(11);
+        assert_eq!(awaiting_alarm_count(&state, &defaults(), later), 1);
+
+        // Dismissed at the effective: gone for good.
+        state
+            .reminders
+            .dismissals
+            .insert(taskboard_domain::ReminderDismissal {
+                reminder: ReminderRef::Adhoc(id),
+                occurrence: now + TimeDelta::minutes(10),
+                dismissed_at: later,
+            });
+        assert_eq!(awaiting_alarm_count(&state, &defaults(), later), 0);
+    }
+
+    #[test]
+    fn awaiting_alarm_counts_task_rows_never() {
+        let now = Utc::now();
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let ruled = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let rule_id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let mut t = task(ruled, stack, 0);
+        t.duedate = Some(now - TimeDelta::hours(1));
+        state.tasks.insert(ruled, t);
+        state.reminders.rules.insert(
+            rule_id,
+            taskboard_domain::ReminderRule {
+                id: rule_id,
+                task: ruled,
+                offset: ReminderOffset::at_due(),
+                created_at: now,
+                updated_at: now,
+            },
+        );
+        state
+            .reminders
+            .deliveries
+            .insert(taskboard_domain::ReminderDelivery {
+                reminder: ReminderRef::Rule(rule_id),
+                occurrence: now - TimeDelta::hours(1),
+                delivered_at: now,
+            });
+        assert_eq!(
+            notification_rows(&state, &defaults(), now).len(),
+            1,
+            "the task row renders on the surface"
+        );
+        assert_eq!(
+            awaiting_alarm_count(&state, &defaults(), now),
+            0,
+            "task-anchored rows never count as awaiting alarms"
+        );
+    }
+
+    #[test]
+    fn timer_chip_hides_while_empty_and_names_the_nearest() {
+        let now = Utc::now();
+        let state = AppState::default();
+        assert_eq!(timer_chip(&state), None, "no live alarm, no chip");
+
+        let near = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let far = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        state
+            .reminders
+            .alarms
+            .insert(far, alarm(far, "far", now + TimeDelta::hours(2)));
+        state
+            .reminders
+            .alarms
+            .insert(near, alarm(near, "near", now + TimeDelta::minutes(2)));
+        assert_eq!(
+            timer_chip(&state),
+            Some(TimerChip {
+                alarm: near,
+                label: "near".to_owned(),
+                effective: now + TimeDelta::minutes(2),
+            })
+        );
+
+        // An awaiting-only map still yields a chip (the chip says
+        // "now"; the surface owns the row).
+        state.reminders.alarms.clear();
+        let fired = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        state
+            .reminders
+            .alarms
+            .insert(fired, alarm(fired, "fired", now - TimeDelta::minutes(1)));
+        assert_eq!(
+            timer_chip(&state),
+            Some(TimerChip {
+                alarm: fired,
+                label: "fired".to_owned(),
+                effective: now - TimeDelta::minutes(1),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_timer_when_accepts_the_in_and_at_forms() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 27, 10, 0, 0).unwrap();
+        let tz = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+
+        assert_eq!(
+            parse_timer_when("in 3m", now, &tz),
+            Some(taskboard_domain::AdhocWhen::In(TimeDelta::minutes(3)))
+        );
+        assert_eq!(
+            parse_timer_when("in 1h30m", now, &tz),
+            Some(taskboard_domain::AdhocWhen::In(
+                TimeDelta::hours(1) + TimeDelta::minutes(30)
+            ))
+        );
+        // RFC-3339 any-offset parses to the exact instant.
+        assert_eq!(
+            parse_timer_when("at 2026-10-28T05:00:00Z", now, &tz),
+            Some(taskboard_domain::AdhocWhen::At(
+                Utc.with_ymd_and_hms(2026, 10, 28, 5, 0, 0).unwrap()
+            ))
+        );
+        // Bare date: host-local midnight (00:00+02:00 → 22:00Z the
+        // day before).
+        assert_eq!(
+            parse_timer_when("at 2026-10-28", now, &tz),
+            Some(taskboard_domain::AdhocWhen::At(
+                Utc.with_ymd_and_hms(2026, 10, 27, 22, 0, 0).unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_timer_when_rolls_a_past_bare_time_to_tomorrow() {
+        let evening = Utc.with_ymd_and_hms(2026, 10, 27, 20, 0, 0).unwrap();
+        let morning = Utc.with_ymd_and_hms(2026, 10, 27, 6, 0, 0).unwrap();
+        let tz = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+
+        // 09:30 local with now 22:00 local ⇒ tomorrow 09:30.
+        assert_eq!(
+            parse_timer_when("at 09:30", evening, &tz),
+            Some(taskboard_domain::AdhocWhen::At(
+                Utc.with_ymd_and_hms(2026, 10, 28, 7, 30, 0).unwrap()
+            ))
+        );
+        // now 08:00 local ⇒ today 09:30.
+        assert_eq!(
+            parse_timer_when("at 09:30", morning, &tz),
+            Some(taskboard_domain::AdhocWhen::At(
+                Utc.with_ymd_and_hms(2026, 10, 27, 7, 30, 0).unwrap()
+            ))
+        );
+        // The seconds form parses; a time exactly now rolls (≤ now).
+        assert_eq!(
+            parse_timer_when("at 22:00:00", evening, &tz),
+            Some(taskboard_domain::AdhocWhen::At(
+                Utc.with_ymd_and_hms(2026, 10, 28, 20, 0, 0).unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_timer_when_rejects_every_malformed_class() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 27, 10, 0, 0).unwrap();
+        let tz = chrono::FixedOffset::east_opt(0).unwrap();
+        for raw in [
+            "",
+            "in",
+            "in 0s",
+            "in -3m",
+            "in 3x",
+            "3m",
+            "at",
+            "at not-a-time",
+            "at 25:00",
+            "soon 3m",
+        ] {
+            assert_eq!(
+                parse_timer_when(raw, now, &tz),
+                None,
+                "{raw:?} must not parse"
+            );
+        }
+    }
+
+    proptest! {
+        /// The `in` form's positivity property (D-P8): whatever the
+        /// magnitude text, the parse is `None` or a strictly positive
+        /// `In` — the domain's `InvalidAdhocWhen` never crosses the
+        /// seam.
+        #[test]
+        fn the_in_form_never_mints_a_nonpositive_duration(
+            components in proptest::collection::vec(
+                (1u64..1_000, proptest::sample::select(vec!["s", "m", "h", "d"])),
+                1..4,
+            ),
+        ) {
+            let now = Utc.with_ymd_and_hms(2026, 10, 27, 10, 0, 0).unwrap();
+            let tz = chrono::FixedOffset::east_opt(0).unwrap();
+            let mut magnitude = String::new();
+            for (n, unit) in &components {
+                magnitude.push_str(&n.to_string());
+                magnitude.push_str(unit);
+            }
+            match parse_timer_when(&format!("in {magnitude}"), now, &tz) {
+                None => {}
+                Some(taskboard_domain::AdhocWhen::In(d)) => assert!(d > TimeDelta::zero()),
+                Some(other) => panic!("the in form minted {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn awaiting_row_buttons_follow_the_anchor_table() {
+        let task_anchor =
+            taskboard_domain::ReminderAnchor::Task(TaskId::from_uuid(uuid::Uuid::now_v7()));
+        let alarm_anchor = taskboard_domain::ReminderAnchor::Alarm(
+            taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7()),
+        );
+        // Task rows keep all four task-shaped affordances, no cancel.
+        assert_eq!(
+            awaiting_row_buttons(task_anchor),
+            AwaitingButtons {
+                dismiss: true,
+                done: true,
+                snooze: true,
+                mute: true,
+                cancel: false,
+            }
+        );
+        // Alarm rows: Dismiss / Snooze / Cancel — no Mark Done (no
+        // task), no Mute (mute is task-shaped).
+        assert_eq!(
+            awaiting_row_buttons(alarm_anchor),
+            AwaitingButtons {
+                dismiss: true,
+                done: false,
+                snooze: true,
+                mute: false,
+                cancel: true,
+            }
         );
     }
 
