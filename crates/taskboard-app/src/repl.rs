@@ -638,20 +638,92 @@ pub(crate) fn prefill_boards(
     command
 }
 
+/// The loop-side halves of the session's signal channels (design D-2/D-4,
+/// `crate::signals`): a monotonically increasing cancellation epoch
+/// (SIGINT), the acknowledgement channel back to the watcher (the
+/// ladder's `Progress`), and the external-termination event. The
+/// production session wires these to the watcher spawned in
+/// [`run_session`]; tests inject live halves or the inert set — no
+/// signal handler ever exists on a test path.
+pub struct SessionSignals {
+    /// SIGINT epochs (watcher → loop): one increment per unacknowledged
+    /// cancel.
+    pub cancel: tokio::sync::watch::Receiver<u64>,
+    /// Cancellation acknowledgements (loop → watcher): de-arms the
+    /// SIGINT ladder's force rung.
+    pub ack: tokio::sync::watch::Sender<u64>,
+    /// External termination (watcher → loop): ends the session exactly
+    /// like Ctrl-D. Never sent on non-unix (the watcher's termination
+    /// streams are cfg-gated).
+    pub terminate: tokio::sync::watch::Receiver<()>,
+}
+
+impl SessionSignals {
+    /// The no-signal set: watches whose senders are dropped, so no arm
+    /// can ever fire ([`changed_or_never`] degrades a dead peer to
+    /// `pending()` forever). Tests and any future frontend without a
+    /// watcher run in today's no-cancellation world.
+    #[must_use]
+    pub fn inert() -> Self {
+        let (_, cancel) = tokio::sync::watch::channel(0);
+        let (ack, _) = tokio::sync::watch::channel(0);
+        let (_, terminate) = tokio::sync::watch::channel(());
+        Self {
+            cancel,
+            ack,
+            terminate,
+        }
+    }
+}
+
+/// Consumes a watch change, or waits forever when the sender is gone.
+/// A dropped peer (a dead watcher) must never fire an arm — it would
+/// cancel or kill a session out of nowhere, and the `Err`-spinning
+/// alternative would busy-loop.
+async fn changed_or_never<T>(rx: &mut tokio::sync::watch::Receiver<T>) {
+    loop {
+        match rx.changed().await {
+            Ok(()) => return,
+            Err(_) => std::future::pending::<()>().await,
+        }
+    }
+}
+
 /// The session loop: consume line events, dispatch lines, honor exits,
 /// and shut the core down exactly once at the end. Every consumed event
 /// gets exactly one disposition — `Next` after a handled line or an
-/// `Interrupted`; `Eof` and `Exit` end the loop, and the dropped
-/// disposition sender is the editor thread's exit signal (D16: no final
-/// verdict needed).
+/// `Interrupted`; `Eof`, `Exit`, and a termination event end the loop,
+/// and the dropped disposition sender is the editor thread's exit
+/// signal (D16: no final verdict needed).
+///
+/// Cancellation (design D-2): a SIGINT epoch observed while a line is
+/// in flight drops the line's future and reports the typed
+/// `CommandError::Cancelled`; the epoch is acknowledged (the watcher's
+/// ladder de-arms) and editing resumes. An epoch that landed while
+/// nothing was in flight is drained — acknowledged without cancelling —
+/// at the next dispatch's start. An external termination ends the
+/// session exactly like Ctrl-D, mid-line included (the line future is
+/// dropped, no line-level output).
+#[allow(clippy::too_many_lines)] // the dispatch interception kept flat, one arm per verb
 pub async fn repl_loop(
     app: crate::App,
     mut session: ReplSession,
     editor_io: EditorIo,
+    mut signals: SessionSignals,
     io: &mut CommandIo<'_>,
 ) -> ReplExit {
     let EditorIo { mut lines, .. } = editor_io;
-    while let Some(event) = lines.recv().await {
+    let mut acked_epoch: u64 = 0;
+    loop {
+        let event = tokio::select! {
+            event = lines.recv() => match event {
+                Some(event) => event,
+                None => break,
+            },
+            // A termination event ends the session exactly like Ctrl-D
+            // (D-4): break to the same graceful shutdown tail.
+            () = changed_or_never(&mut signals.terminate) => break,
+        };
         let action = match event {
             LineEvent::Interrupted => {
                 session.prompts.resume().await;
@@ -683,6 +755,15 @@ pub async fn repl_loop(
                 let _ = writeln!(io.err, "{kind}");
             }
             LineAction::Execute(command, json) => {
+                // Stale-epoch drain: a signal that landed while nothing
+                // was in flight is acknowledged without cancelling the
+                // line about to run (the force rung stayed armed until
+                // here — that *is* the escape hatch).
+                let epoch = *signals.cancel.borrow_and_update();
+                if epoch > acked_epoch {
+                    acked_epoch = epoch;
+                    let _ = signals.ack.send(acked_epoch);
+                }
                 // The one-shot alias's deprecation notice, on stderr UX
                 // only — never asserted. Emitted before the line's
                 // writers borrow the streams.
@@ -702,56 +783,80 @@ pub async fn repl_loop(
                 // ceremony verbs are session-layer actions (ADR 0014):
                 // they mutate the session itself, so they are
                 // intercepted here, not routed through `dispatch_line`.
-                let outcome = match command {
-                    Command::Connect {
-                        server,
-                        user,
-                        switch_backend,
-                        force,
-                    } => {
-                        connect_line(
-                            &mut session,
-                            &app,
-                            connect::ConnectArgs {
-                                server,
-                                user,
-                                switch_backend,
-                                force,
-                                confirmable: true,
-                            },
-                            &mut line_io,
-                        )
-                        .await
-                    }
-                    Command::Login { server, user } => {
-                        connect_line(
-                            &mut session,
-                            &app,
-                            connect::ConnectArgs {
-                                server,
-                                user,
-                                switch_backend: false,
-                                force: false,
-                                confirmable: false,
-                            },
-                            &mut line_io,
-                        )
-                        .await
-                    }
-                    Command::Logout => logout_line(&mut session, &app, &mut line_io).await,
-                    // `boards use` is session-layer action like the
-                    // ceremonies: it mutates the session's selection
-                    // (D6-6), so the loop intercepts it before the
-                    // immutable-session dispatch.
-                    Command::Boards {
-                        cmd: crate::cli::BoardsCmd::Use { board },
-                    } => boards_use_line(&mut session, &app, board, &mut line_io),
-                    other => {
-                        let command = prefill_boards(other, session.current_board);
-                        dispatch_line(&session, &app, command, &mut line_io).await
+                // The whole interception is one future so a SIGINT can
+                // drop it mid-await (the cancel select below); a
+                // cancellation is reported like any failed line, and a
+                // termination drops the line silently.
+                let dispatch = async {
+                    match command {
+                        Command::Connect {
+                            server,
+                            user,
+                            switch_backend,
+                            force,
+                        } => {
+                            connect_line(
+                                &mut session,
+                                &app,
+                                connect::ConnectArgs {
+                                    server,
+                                    user,
+                                    switch_backend,
+                                    force,
+                                    confirmable: true,
+                                },
+                                &mut line_io,
+                            )
+                            .await
+                        }
+                        Command::Login { server, user } => {
+                            connect_line(
+                                &mut session,
+                                &app,
+                                connect::ConnectArgs {
+                                    server,
+                                    user,
+                                    switch_backend: false,
+                                    force: false,
+                                    confirmable: false,
+                                },
+                                &mut line_io,
+                            )
+                            .await
+                        }
+                        Command::Logout => logout_line(&mut session, &app, &mut line_io).await,
+                        // `boards use` is session-layer action like the
+                        // ceremonies: it mutates the session's selection
+                        // (D6-6), so the loop intercepts it before the
+                        // immutable-session dispatch.
+                        Command::Boards {
+                            cmd: crate::cli::BoardsCmd::Use { board },
+                        } => boards_use_line(&mut session, &app, board, &mut line_io),
+                        other => {
+                            let command = prefill_boards(other, session.current_board);
+                            dispatch_line(&session, &app, command, &mut line_io).await
+                        }
                     }
                 };
-                let _ = outcome;
+                tokio::select! {
+                    // Today's behavior verbatim: a completed line's
+                    // outcome is informational only.
+                    outcome = dispatch => {
+                        let _ = outcome;
+                    }
+                    // SIGINT mid-dispatch: drop the line, report the
+                    // typed cancellation (same envelope as every line
+                    // failure; the exit code is the session's), ack the
+                    // epoch, and fall through to the per-line resume.
+                    () = changed_or_never(&mut signals.cancel) => {
+                        let cancelled = CommandError::Cancelled;
+                        let _ = crate::commands::report_to(&mut line_io, &cancelled);
+                        let _ = signals.ack.send(acked_epoch);
+                    }
+                    // External termination mid-dispatch: drop the line
+                    // and end the session — no line-level output.
+                    () = changed_or_never(&mut signals.terminate) => break,
+                }
             }
         }
         // The line's one verdict: editing resumes. A ceremony that
@@ -786,7 +891,18 @@ pub async fn run_session_with_lines(
         config.nextcloud.credential_store,
         config.credential_base_dir(),
     );
-    run_session_with_parts(config, config_path, store, json_default, editor_io, io).await
+    // No signal watcher rides this factory: [`run_session`] (the only
+    // installation point) wires live halves when it delegates here.
+    run_session_with_parts(
+        config,
+        config_path,
+        store,
+        json_default,
+        SessionSignals::inert(),
+        editor_io,
+        io,
+    )
+    .await
 }
 
 /// The full seam of one session (ADR 0014's D5): config, config path,
@@ -800,6 +916,7 @@ pub async fn run_session_with_parts(
     config_path: Option<std::path::PathBuf>,
     store: Arc<dyn CredentialStore>,
     json_default: bool,
+    signals: SessionSignals,
     editor_io: impl FnOnce(Arc<arc_swap::ArcSwap<taskboard_domain::AppState>>, Vec<String>) -> EditorIo,
     io: &mut CommandIo<'_>,
 ) -> u8 {
@@ -851,7 +968,7 @@ pub async fn run_session_with_parts(
     } else {
         let _ = writeln!(io.out, "{banner}");
     }
-    let _exit = repl_loop(app, session, editor_io, io).await;
+    let _exit = repl_loop(app, session, editor_io, signals, io).await;
     0
 }
 

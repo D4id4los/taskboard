@@ -689,6 +689,7 @@ async fn r12_repl_loop_shuts_the_core_down_before_returning() {
             lines: rx,
             dispositions: verdicts,
         },
+        SessionSignals::inert(),
         &mut io,
     )
     .await;
@@ -1159,7 +1160,7 @@ use std::path::PathBuf;
 
 use base64::Engine as _;
 
-use taskboard_app::repl::{Disposition, PromptValue, run_session_with_parts};
+use taskboard_app::repl::{Disposition, PromptValue, SessionSignals, run_session_with_parts};
 
 /// The deadline bounding one ceremony journey (a scripted peer that
 /// never answers would otherwise wedge the test binary).
@@ -1208,6 +1209,7 @@ async fn run_with(
         config_path,
         store,
         json_default,
+        SessionSignals::inert(),
         |_, _| EditorIo {
             lines: rx,
             dispositions: vtx,
@@ -1235,6 +1237,397 @@ fn seeded_config_file(dir: &std::path::Path, db: &std::path::Path, body: &str) -
 
 fn minimal_toml(extra: impl std::fmt::Display) -> String {
     format!("[storage]\ndb_path = '%DB%'\n[app]\nshutdown_timeout_secs = 2\n{extra}")
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation & termination (the DR-2/R loop contract): the injected
+// seam fires the watches — no signal handler exists anywhere here.
+// ---------------------------------------------------------------------------
+
+/// The live watch halves a session journey's signals need; the test
+/// keeps these (the production watcher's counterparts) and hands the
+/// loop-side [`SessionSignals`] to the journey.
+struct LiveSignals {
+    cancel_tx: tokio::sync::watch::Sender<u64>,
+    ack_rx: tokio::sync::watch::Receiver<u64>,
+    term_tx: tokio::sync::watch::Sender<()>,
+}
+
+/// Builds one live (cancel/ack/term) signal set.
+fn live_signals() -> (LiveSignals, taskboard_app::repl::SessionSignals) {
+    let (cancel_tx, cancel) = tokio::sync::watch::channel(0);
+    let (ack, ack_rx) = tokio::sync::watch::channel(0);
+    let (term_tx, terminate) = tokio::sync::watch::channel(());
+    (
+        LiveSignals {
+            cancel_tx,
+            ack_rx,
+            term_tx,
+        },
+        taskboard_app::repl::SessionSignals {
+            cancel,
+            ack,
+            terminate,
+        },
+    )
+}
+
+/// Runs one session journey with live signal halves and a custom
+/// disposition peer (the answering side of the editor handshake);
+/// bounded by [`JOURNEY_DEADLINE`]. Returns (code, out, err).
+async fn run_cancellable(
+    db: &std::path::Path,
+    json_default: bool,
+    script: Vec<LineEvent>,
+    signals: taskboard_app::repl::SessionSignals,
+    peer: impl FnOnce(mpsc::Receiver<Disposition>) -> tokio::task::JoinHandle<Vec<&'static str>>,
+) -> (
+    u8,
+    Vec<u8>,
+    Vec<u8>,
+    tokio::task::JoinHandle<Vec<&'static str>>,
+) {
+    let (tx, rx) = mpsc::channel(script.len().max(1));
+    for event in script {
+        tx.send(event).await.expect("session channel alive");
+    }
+    drop(tx);
+    // Room for the `Next`s of a session whose answering peer parks
+    // mid-ceremony (the cancel tests): the loop must never block on
+    // handing back the editing turn.
+    let (vtx, vrx) = mpsc::channel(16);
+    let handle = peer(vrx);
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut io = CommandIo {
+        out: &mut out,
+        err: &mut err,
+        json: json_default,
+    };
+    let body = run_session_with_parts(
+        standalone_config(db),
+        None,
+        forbidden_store(),
+        json_default,
+        signals,
+        |_, _| EditorIo {
+            lines: rx,
+            dispositions: vtx,
+        },
+        &mut io,
+    );
+    let code = tokio::time::timeout(JOURNEY_DEADLINE, body)
+        .await
+        .expect("journey must not wedge");
+    (code, out, err, handle)
+}
+
+/// The error envelopes (`{"error":{…}}` lines) of a captured stderr.
+fn error_envelopes(err: &[u8]) -> Vec<serde_json::Value> {
+    json_lines(err)
+        .into_iter()
+        .filter(|value| value.get("error").is_some())
+        .collect()
+}
+
+/// A peer that answers nothing: it records every disposition, and on
+/// the first `Prompt` fires `cancel_tx.send(epoch)` and then parks
+/// holding the unanswered reply — the dispatch future stays in flight
+/// until the loop's cancel select drops it. The test releases the park
+/// by dropping the returned gate sender.
+fn cancelling_peer(
+    cancel_tx: tokio::sync::watch::Sender<u64>,
+) -> (
+    tokio::sync::oneshot::Sender<()>,
+    impl FnOnce(mpsc::Receiver<Disposition>) -> tokio::task::JoinHandle<Vec<&'static str>>,
+) {
+    let (gate_tx, mut gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let run = move |mut rx: mpsc::Receiver<Disposition>| {
+        tokio::spawn(async move {
+            let mut seen = Vec::new();
+            let mut held = None;
+            while let Some(disposition) = rx.recv().await {
+                match disposition {
+                    Disposition::Next => seen.push("next"),
+                    Disposition::Prompt {
+                        label: _,
+                        kind,
+                        reply,
+                    } => {
+                        seen.push(match kind {
+                            taskboard_app::repl::PromptKind::Masked => "masked-prompt",
+                            taskboard_app::repl::PromptKind::Line => "line-prompt",
+                            taskboard_app::repl::PromptKind::Confirm => "confirm-prompt",
+                        });
+                        if held.is_none() {
+                            cancel_tx.send(1).expect("cancel watch alive");
+                            held = Some(reply);
+                            let _ = (&mut gate_rx).await;
+                        } else {
+                            let _ = reply.send(Err(std::io::Error::other("script")));
+                        }
+                    }
+                }
+            }
+            seen
+        })
+    };
+    (gate_tx, run)
+}
+
+/// A cancel fired mid-dispatch cancels the line: the typed `cancelled`
+/// envelope reports it, the session continues (the next line executes),
+/// exactly one disposition each way, and the epoch is acknowledged
+/// (the watcher's ladder de-arms).
+#[tokio::test]
+async fn a_cancel_fired_mid_dispatch_reports_cancelled_and_continues() {
+    // The 401 server: the ceremony never reaches verify (it is
+    // cancelled at the masked prompt), and nothing can persist.
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(wiremock::ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let dir = tempdir();
+    let db = dir.path().join("cancel-mid.db");
+    let (live, signals) = live_signals();
+    let (gate, peer) = cancelling_peer(live.cancel_tx.clone());
+    let script = vec![
+        line(&format!(
+            "connect --server {} --user alice --switch-backend --json",
+            server.uri()
+        )),
+        line("boards create B --json"),
+        LineEvent::Eof,
+    ];
+    let (code, out, err, peer) = run_cancellable(&db, true, script, signals, peer).await;
+    drop(gate);
+    let seen = peer.await.expect("peer joins");
+
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    // The next line after the cancelled one executed.
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 1, "out: {}", String::from_utf8_lossy(&out));
+    assert_eq!(receipts[0]["title"], "B");
+    // Exactly one error envelope, of the typed `cancelled` kind.
+    let envelopes = error_envelopes(&err);
+    assert_eq!(
+        envelopes.len(),
+        1,
+        "stderr: {}",
+        String::from_utf8_lossy(&err)
+    );
+    assert_eq!(envelopes[0]["error"]["kind"], "cancelled");
+    // Exactly one disposition per event: the masked prompt observed;
+    // one `Next` for the cancelled line and one for the line after it.
+    assert_eq!(seen, vec!["masked-prompt", "next", "next"]);
+    // The epoch was acknowledged to the watcher.
+    assert_eq!(*live.ack_rx.borrow(), 1);
+}
+
+/// A cancel fired while the loop is parked at the prompt is drained at
+/// the next dispatch start: acknowledged without cancelling, and the
+/// next line simply runs.
+#[tokio::test]
+async fn a_cancel_fired_while_idle_does_not_kill_the_next_line() {
+    let dir = tempdir();
+    let db = dir.path().join("cancel-idle.db");
+    let (live, signals) = live_signals();
+    // Fire while nothing is in flight (the script is pre-sent but the
+    // loop has not started dispatching yet — and the cancel arm is
+    // deliberately not on the park select at all).
+    live.cancel_tx.send(1).expect("cancel watch alive");
+    let script = vec![line("boards create B --json"), LineEvent::Eof];
+    let (code, out, err, peer) = run_cancellable(&db, true, script, signals, |mut rx| {
+        tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while let Some(disposition) = rx.recv().await {
+                if let Disposition::Next = disposition {
+                    seen.push("next");
+                }
+            }
+            seen
+        })
+    })
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["title"], "B");
+    peer.await.expect("peer joins");
+    assert!(
+        error_envelopes(&err).is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&err)
+    );
+    // The idle epoch was drained and acknowledged.
+    assert_eq!(*live.ack_rx.borrow(), 1);
+}
+
+/// A termination event while the loop is parked ends the session
+/// exactly like Ctrl-D: `Graceful`, the core shut down (lock released).
+#[tokio::test]
+async fn a_terminate_event_ends_the_session_like_ctrl_d() {
+    let dir = tempdir();
+    let db = dir.path().join("term-idle.db");
+    let app = taskboard_app::bootstrap::bootstrap(
+        standalone_config(&db),
+        forbidden_store(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("boot");
+    let session = ReplSession::headless(app.config.clone(), forbidden_store(), false);
+    let (tx, rx) = mpsc::channel(1);
+    drop(tx);
+    let (verdicts, _) = mpsc::channel(1);
+    let (term_tx, terminate) = tokio::sync::watch::channel(());
+    let (_, cancel) = tokio::sync::watch::channel(0);
+    let (ack, _) = tokio::sync::watch::channel(0);
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut io = CommandIo {
+        out: &mut out,
+        err: &mut err,
+        json: false,
+    };
+    // The termination fires before the loop starts: the park select
+    // observes it from the first poll — no `Eof` was ever fed. (A watch
+    // retains an unseen send, so this is deterministic, not a race.)
+    term_tx.send(()).expect("terminate watch alive");
+    let exit = repl_loop(
+        app,
+        session,
+        EditorIo {
+            lines: rx,
+            dispositions: verdicts,
+        },
+        taskboard_app::repl::SessionSignals {
+            cancel,
+            ack,
+            terminate,
+        },
+        &mut io,
+    )
+    .await;
+    assert_eq!(exit, taskboard_app::repl::ReplExit::Graceful);
+    let _next = InstanceLock::acquire(&db).expect("lock released");
+}
+
+/// A termination event mid-dispatch drops the line without line-level
+/// output and ends the session: no `Next` ever follows the prompt.
+#[tokio::test]
+async fn a_terminate_mid_dispatch_drops_the_line_and_shuts_down() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(wiremock::ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let dir = tempdir();
+    let db = dir.path().join("term-mid.db");
+    let (live, signals) = live_signals();
+    let (prompt_seen_tx, prompt_seen) = tokio::sync::oneshot::channel::<()>();
+    let (gate, peer, ungate) = {
+        let term_tx = live.term_tx.clone();
+        let (gate_tx, mut gate_rx) = tokio::sync::oneshot::channel::<()>();
+        let run = move |mut rx: mpsc::Receiver<Disposition>| {
+            tokio::spawn(async move {
+                let mut seen = Vec::new();
+                let mut held = None;
+                let mut signal = Some(prompt_seen_tx);
+                while let Some(disposition) = rx.recv().await {
+                    match disposition {
+                        Disposition::Next => seen.push("next"),
+                        Disposition::Prompt {
+                            label: _,
+                            kind,
+                            reply,
+                        } => {
+                            seen.push(match kind {
+                                taskboard_app::repl::PromptKind::Masked => "masked-prompt",
+                                taskboard_app::repl::PromptKind::Line => "line-prompt",
+                                taskboard_app::repl::PromptKind::Confirm => "confirm-prompt",
+                            });
+                            if held.is_none() {
+                                if let Some(tx) = signal.take() {
+                                    let _ = tx.send(());
+                                }
+                                held = Some(reply);
+                                let _ = (&mut gate_rx).await;
+                            }
+                        }
+                    }
+                }
+                seen
+            })
+        };
+        let term_fire = tokio::spawn(async move {
+            let _ = prompt_seen.await;
+            term_tx.send(()).expect("terminate watch alive");
+        });
+        // The dispatch stays parked until the terminate select drops
+        // it; the test releases the peer after the session ended.
+        (term_fire, run, gate_tx)
+    };
+    let script = vec![line(&format!(
+        "connect --server {} --user alice --switch-backend --json",
+        server.uri()
+    ))];
+    let (code, out, err, peer) = run_cancellable(&db, true, script, signals, peer).await;
+    gate.await.expect("terminate fired");
+    drop(ungate);
+    let seen = peer.await.expect("peer joins");
+    assert_eq!(seen, vec!["masked-prompt"], "no `Next` after the drop");
+    assert_eq!(code, 0);
+    // No line-level output for the dropped line.
+    assert!(
+        error_envelopes(&err).is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&err)
+    );
+    assert!(
+        json_lines(&out).is_empty(),
+        "out: {}",
+        String::from_utf8_lossy(&out)
+    );
+}
+
+/// A dead watcher (both senders dropped) degrades to the
+/// no-cancellation world: nothing cancels, nothing terminates, normal
+/// lines execute.
+#[tokio::test]
+async fn a_dead_watcher_never_cancels_or_terminates() {
+    let dir = tempdir();
+    let db = dir.path().join("dead-watcher.db");
+    let (cancel_tx, cancel) = tokio::sync::watch::channel(0);
+    let (ack, ack_rx) = tokio::sync::watch::channel(0);
+    let (term_tx, terminate) = tokio::sync::watch::channel(());
+    let signals = taskboard_app::repl::SessionSignals {
+        cancel,
+        ack,
+        terminate,
+    };
+    drop(cancel_tx);
+    drop(term_tx);
+    drop(ack_rx);
+    let script = vec![line("boards create B --json"), LineEvent::Eof];
+    let (code, out, err, peer) = run_cancellable(&db, true, script, signals, |mut rx| {
+        tokio::spawn(async move {
+            let mut seen = Vec::new();
+            while let Some(disposition) = rx.recv().await {
+                if let Disposition::Next = disposition {
+                    seen.push("next");
+                }
+            }
+            seen
+        })
+    })
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipts = json_lines(&out);
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["title"], "B");
+    peer.await.expect("peer joins");
 }
 
 /// J1: a standalone session's `connect` line runs the ceremony through

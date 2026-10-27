@@ -360,6 +360,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::IpcVersion { .. } => "ipc-version",
             CommandError::UnknownConnector { .. } => "unknown-connector",
             CommandError::SessionOnly => "session-only",
+            CommandError::Cancelled => "cancelled",
         }
     }
 
