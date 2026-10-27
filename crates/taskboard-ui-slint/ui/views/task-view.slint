@@ -44,6 +44,9 @@ export component TaskView inherits FocusScope {
     in property <[string]> nav-back-hint;
     callback title-committed(string);
     callback title-edited(string);
+    // The closed title's click (round-3 W-SM-d, F26): routes the
+    // `task.title-edit` action — click ≡ key (§7.1).
+    callback title-edit-opened();
     callback back-clicked();
     // The rule-list composition's seams (chunk 6, D12): forwarded to
     // the window, resolved against the id tables there.
@@ -95,26 +98,44 @@ export component TaskView inherits FocusScope {
                     hint-keys: root.nav-back-hint;
                     clicked => root.back-clicked();
                 }
-                VerticalLayout {
-                    alignment: center;
-                    // The title: the edit flow's field when open, the
-                    // display title otherwise (cycle-entry shows the
-                    // detail, D14).
-                    if (root.task.edit-open): title-field := TextField {
-                        placeholder: "Task title";
-                        label: "Task title";
-                        commit-affordance: true;
-                        initial-text: root.task.initial-text;
-                        selected-on-focus: true;
-                        accepted(text) => root.title-committed(text);
-                        edited(text) => root.title-edited(text);
-                    }
-                    if (!root.task.edit-open): RoleText {
-                        role: Typography.title;
-                        text: root.task.title;
-                        overflow: elide;
-                        horizontal-stretch: 1;
-                    }
+            }
+            // The title row (round-3 W-SM-d, F26): the field leaves
+            // the back-button row's centered column and stretches to
+            // the detail body's full width — the display RoleText
+            // already elides full-width, and the field must match
+            // (the geometry pin: field width ≈ body width).
+            if (root.task.edit-open): title-field := TextField {
+                placeholder: "Task title";
+                label: "Task title";
+                commit-affordance: true;
+                initial-text: root.task.initial-text;
+                selected-on-focus: true;
+                accepted(text) => root.title-committed(text);
+                edited(text) => root.title-edited(text);
+            }
+            if (!root.task.edit-open): title-display := Rectangle {
+                border-radius: Theme.radius-small;
+                horizontal-stretch: 1;
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Edit title";
+                accessible-description: "Arms the title editor for the viewed task.";
+                accessible-action-default => { root.title-edit-opened(); }
+                // The hover surface first (z-under the text): the
+                // due-cell grammar's hover affordance.
+                if (title-touch.has-hover): Rectangle {
+                    background: Theme.surface-raised;
+                    border-radius: Theme.radius-small;
+                }
+                RoleText {
+                    role: Typography.title;
+                    text: root.task.title;
+                    overflow: elide;
+                    width: parent.width - 2 * Theme.space-2;
+                    x: Theme.space-2;
+                }
+                title-touch := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.title-edit-opened(); }
                 }
             }
 

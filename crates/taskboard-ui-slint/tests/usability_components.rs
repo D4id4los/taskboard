@@ -413,6 +413,10 @@ fn the_text_field_keeps_its_layout_cell_while_text_grows() {
                 handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
                 driver.press_stroke(parse("Down").expect("Down"));
                 driver.press_stroke(parse("Return").expect("Return"));
+                // Recorded decision (round-3 chunk 1, plan §6 — F26):
+                // task.edit opens the display; the editor arms via
+                // `task.title-edit` (F2 in the standard preset).
+                driver.press_stroke(parse("F2").expect("F2"));
                 driver.advance_time(0);
 
                 driver.press_stroke(parse("a").expect("a"));

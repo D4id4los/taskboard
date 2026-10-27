@@ -76,6 +76,9 @@ pub enum UiEffect {
     Activate,
     /// Ask for move mode (a second request cancels it).
     RequestMove,
+    /// Arm the viewed task's title editor (round-3 W-SM-d): the
+    /// registry action behind `F2`/`Return`/the closed title's click.
+    BeginTitleEdit,
     // --- chunk-7 board dimension (design §3.8): pure view state; the
     // adapter resolves them against the view-state model. Never a
     // `DispatchOutcome::Command`.
@@ -187,6 +190,7 @@ impl UiEffect {
             Self::OpenPalette => EffectClass::OpenPalette,
             Self::BeginCapture => EffectClass::BeginCapture,
             Self::Activate | Self::SetMode(_) => EffectClass::Edit,
+            Self::BeginTitleEdit => EffectClass::Title,
             Self::CancelMove => EffectClass::Cancel,
             Self::OpenMenu
             | Self::CloseMenu
@@ -337,6 +341,7 @@ impl ActionRouter {
             ActionId::TaskCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreate),
             ActionId::StackCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreateStack),
             ActionId::TaskEdit => DispatchOutcome::UiEffect(UiEffect::Activate),
+            ActionId::TaskTitleEdit => DispatchOutcome::UiEffect(UiEffect::BeginTitleEdit),
             ActionId::TaskMove => DispatchOutcome::UiEffect(UiEffect::RequestMove),
             // Round 2 (D16–D21): the round-up verbs — pure view
             // intents; reopen routes from the focused task's done stamp.
@@ -551,6 +556,7 @@ mod tests {
             (ActionId::TaskCreate, UiEffect::BeginCreate),
             (ActionId::StackCreate, UiEffect::BeginCreateStack),
             (ActionId::TaskEdit, UiEffect::Activate),
+            (ActionId::TaskTitleEdit, UiEffect::BeginTitleEdit),
             (ActionId::TaskMove, UiEffect::RequestMove),
             // Round 2 (D16–D21): the round-up verbs route to their
             // named effects.

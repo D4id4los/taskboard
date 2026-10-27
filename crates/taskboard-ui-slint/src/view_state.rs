@@ -910,12 +910,10 @@ impl ViewState {
     /// vi's insert intent inside `TaskDetail` (D5): begin editing the
     /// viewed task's title in place (the view does not switch).
     pub fn edit_subject(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        let Some(task) = self.subject_task.and_then(|id| state.tasks.get(&id)) else {
-            return Vec::new();
-        };
-        self.flow = Flow::EditTitle { task: task.id };
-        self.buffer.clone_from(&task.title);
-        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+        match self.subject_task {
+            Some(task) => self.begin_edit_title(state, task),
+            None => Vec::new(),
+        }
     }
 
     /// The due cell's click (r2 D25): begin the subject task's
@@ -936,17 +934,34 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
-    /// The `Activate` intent with no flow (D9): open the focused
-    /// task's detail as a title-edit flow (D14).
+    /// Arms the title editor for `task` (round-3 W-SM-d, F26): the
+    /// one title-edit entry point — the registry action's
+    /// `BeginTitleEdit`, the closed title's pointer seam, and vi's
+    /// `i`/`a` (via [`Self::edit_subject`]) all funnel here. The
+    /// buffer seeds from the task's current title (the display
+    /// mirror). Inert without a live task.
+    pub fn begin_edit_title(&mut self, state: &AppState, task: TaskId) -> Vec<FlowOutcome> {
+        let Some(task) = state.tasks.get(&task) else {
+            return Vec::new();
+        };
+        self.flow = Flow::EditTitle { task: task.id };
+        self.buffer.clone_from(&task.title);
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// The `Activate` intent with no flow (D9; round-3 W-SM-d): open
+    /// the focused task's detail — plain cycle-entry parity, NEVER an
+    /// edit flow. The title editor arms only through
+    /// [`Self::begin_edit_title`] (the F26 auto-arm is gone: after
+    /// one close, the title is re-armable via the bound action, the
+    /// pointer seam, or vi's `i`/`a`).
     pub fn activate_focused(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         let Some(task) = self.focused_task.and_then(|id| state.tasks.get(&id)) else {
             return Vec::new();
         };
         self.view = ViewId::TaskDetail;
         self.subject_task = Some(task.id);
-        self.flow = Flow::EditTitle { task: task.id };
-        self.buffer.clone_from(&task.title);
-        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+        vec![FlowOutcome::RefreshNow]
     }
 
     // -- create flow (D8) --------------------------------------------------
@@ -2827,7 +2842,13 @@ mod tests {
     // -- the title edit flow (D14) ------------------------------------------
 
     #[test]
-    fn activate_focused_opens_the_title_edit_with_the_mirror_seeded() {
+    fn activate_focused_opens_the_title_edit_with_the_mirror_seeded_currently_pins_the_auto_arm() {
+        // Recorded decision (round-3 chunk 1, plan §6 — the F26
+        // rework): activate_focused is the PLAIN detail open and
+        // never arms an edit flow; the title editor arms only via
+        // begin_edit_title. This test pins the old auto-arm and is
+        // debt by name — superseded by
+        // `detail_entry_shows_the_display_and_begin_edit_title_arms`.
         let (state, _, [s0, _], [a, ..]) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
@@ -2835,12 +2856,18 @@ mod tests {
         vs.activate_focused(&state);
         assert_eq!(vs.view(), ViewId::TaskDetail);
         assert_eq!(vs.subject_task(), Some(a));
+        assert_eq!(*vs.flow(), Flow::None, "entry never arms (plan §6)");
+        let outcomes = vs.begin_edit_title(&state, a);
         assert_eq!(*vs.flow(), Flow::EditTitle { task: a });
         assert_eq!(
             vs.buffer(),
             "task-0",
             "the mirror starts at the current title"
         );
+        assert!(matches!(
+            outcomes.first(),
+            Some(FlowOutcome::SetMode(Mode::Insert))
+        ));
         vs.set_buffer("renamed".to_owned());
         assert_eq!(
             vs.commit_edit(&state)[..1],
@@ -2861,7 +2888,10 @@ mod tests {
         vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.activate_focused(&state);
-        vs.discard_edit();
+        // Recorded decision (round-3 chunk 1, plan §6): entry does
+        // not arm, so there is nothing to discard — `i` arms the
+        // editor directly from display mode.
+        assert_eq!(*vs.flow(), Flow::None);
         // Still in TaskDetail (display mode): `i` edits the subject.
         let outcomes = vs.edit_subject(&state);
         assert_eq!(*vs.flow(), Flow::EditTitle { task: a });
@@ -3190,9 +3220,16 @@ mod tests {
         vs.begin_create(s0);
         assert!(matches!(vs.flow(), Flow::Create { .. }));
         vs.activate_focused(&state);
+        // Recorded decision (round-3 chunk 1, plan §6): activation
+        // never arms — it is the plain detail open. At this layer it
+        // settles nothing (the adapter's resolver settles the foreign
+        // flow before the re-dispatch); the editor arms via
+        // begin_edit_title.
+        assert!(matches!(vs.flow(), Flow::Create { .. }));
+        vs.begin_edit_title(&state, a);
         assert!(
             matches!(vs.flow(), Flow::EditTitle { .. }),
-            "activation replaces the flow"
+            "the title action arms the editor"
         );
     }
 

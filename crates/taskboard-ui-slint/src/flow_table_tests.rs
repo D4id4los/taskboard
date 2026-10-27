@@ -119,6 +119,7 @@ enum EK {
     FocusFirst,
     FocusLast,
     OpenSettings,
+    BeginTitleEdit,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -162,6 +163,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::FocusFirst => EK::FocusFirst,
         UiEffect::FocusLast => EK::FocusLast,
         UiEffect::OpenSettings => EK::OpenSettings,
+        UiEffect::BeginTitleEdit => EK::BeginTitleEdit,
     }
 }
 
@@ -321,14 +323,24 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         row(kind, E::BoardCreate, exp(Z, K(KTxt)));
         row(kind, E::StackMove, exp(Z, K(KMove)));
     }
+    // -- TITLE (BeginTitleEdit, audit §6 last column): settle-then-
+    //    run under a foreign flow; under None it arms the viewed
+    //    task's editor or is inert without a subject --
+    row(FK::None, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::Text, E::BeginTitleEdit, exp(NZ, K(KTxt)));
+    row(FK::Due, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::Move, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::Drag, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::Palette, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::Capture, E::BeginTitleEdit, exp(Z, K(KTxt)));
     // -- Flow::None: the begin/open arms (audit §6 row 1) --
     row(FK::None, E::BeginCreate, exp(Z, K(KTxt)));
     row(FK::None, E::BeginCreateStack, exp(Z, K(KTxt)));
     row(FK::None, E::RequestMove, exp(Z, K(KMove)));
-    // The auto-arm: today's Activate arms the title edit; the F26
-    // rework (plan §6) replaces this row with the plain
-    // open-detail outcome — recorded decision, rewritten then.
-    row(FK::None, E::Activate, exp(Z, K(KTxt)));
+    // The F26 rework (plan §6): Activate is the plain detail open —
+    // no edit flow (the auto-arm row this replaces was the recorded
+    // decision in the red commit).
+    row(FK::None, E::Activate, exp(Z, N));
     row(FK::None, E::OpenPalette, exp(Z, K(KPal)));
     row(FK::None, E::BeginCapture, exp(Z, K(KCap)));
     row(FK::None, E::SetModeInsert, exp(Z, K(KTxt)));
@@ -584,6 +596,8 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::BoardRename,
         UiEffect::FocusFirst,
         UiEffect::FocusLast,
+        UiEffect::OpenSettings,
+        UiEffect::BeginTitleEdit,
     ]
 }
 
@@ -658,6 +672,11 @@ fn every_flow_effect_pair_resolves_to_its_matrix_row() {
                     let [s0, _s1] = fx.stacks;
                     let [a_id, _b, _c] = fx.tasks;
                     a.view_state.activate_card(a_id, s0);
+                    // Enter the detail (the registry scopes the title
+                    // action to TaskDetail — the subject must be
+                    // viewed for the TITLE cells to mean anything).
+                    a.view_state
+                        .activate_focused(&rig.handle.test_state().load_full());
                     if matches!(kind_of(flow), FK::Text | FK::Capture) {
                         // The TEXT rows' commit side and capture's
                         // commit-and-continue thought.

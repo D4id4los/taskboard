@@ -146,6 +146,9 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
         &["Ctrl+Home"],
     ),
     (ActionId::NavLastItem, ContextId::TaskDetail, &["Ctrl+End"]),
+    // Round 3 (W-SM-d, F26): the title re-arm — F2, the CUA rename
+    // convention, matching this preset's own `StackRename = F2`.
+    (ActionId::TaskTitleEdit, ContextId::TaskDetail, &["F2"]),
     // Menu
     (ActionId::MenuNext, ContextId::Menu, &["Down"]),
     (ActionId::MenuPrevious, ContextId::Menu, &["Up"]),
@@ -220,6 +223,10 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Today, &["Return"]),
     (ActionId::TaskMove, ContextId::Today, &["Ctrl+c", "Ctrl+w"]),
     (ActionId::TaskDelete, ContextId::Today, &["Ctrl+d"]),
+    // Round 3 (W-SM-d, F26): the title re-arm — Return at detail is
+    // unambiguous once task-detail entry no longer auto-arms (emacs
+    // binds Return only at Board/Today for `task.edit`).
+    (ActionId::TaskTitleEdit, ContextId::TaskDetail, &["Return"]),
     // Round 2 (D16): the board-view C-g alternate for move-cancel.
     (ActionId::TaskMoveCancel, ContextId::Board, &["Ctrl+g"]),
     // Round 2 (D17): emacs' isearch/read-args chords — Ctrl+f/Ctrl+b

@@ -370,6 +370,11 @@ fn the_ten_step_keyboard_session() {
                 View::TaskDetail,
                 "task.edit opens the detail (focus ownership)"
             );
+            // Recorded decision (round-3 chunk 1, plan §6 — F26):
+            // task.edit never auto-arms the title; the editor arms
+            // via the bound `task.title-edit` action (F2 in the
+            // standard preset).
+            harness.press(ActionId::TaskTitleEdit);
             harness.type_text("y");
             harness.stroke(parse("Return").expect("Return"));
             harness.guard.end(Verb::Edit);
@@ -1108,6 +1113,10 @@ fn the_back_button_returns_to_the_board() {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::NavNextItem);
             harness.press(ActionId::TaskEdit);
+            // Recorded decision (round-3 chunk 1, plan §6 — F26):
+            // task.edit never auto-arms; the editor arms via the
+            // `task.title-edit` action.
+            harness.handle.dispatch_action(ActionId::TaskTitleEdit);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
             harness.driver.click_by_label("Back to board");
             assert_eq!(
@@ -1725,6 +1734,10 @@ fn consecutive_refreshes_keep_the_board_model_identity() {
             // handle and lands the new title through a row update.
             harness.press(ActionId::NavNextItem);
             harness.press(ActionId::TaskEdit);
+            // Recorded decision (round-3 chunk 1, plan §6 — F26):
+            // task.edit opens the detail display and never auto-arms;
+            // the title editor arms via the `task.title-edit` action.
+            harness.handle.dispatch_action(ActionId::TaskTitleEdit);
             harness.type_text("z");
             harness.stroke(parse("Return").expect("Return"));
             harness.engine.settle(&harness.handle);
@@ -4204,6 +4217,10 @@ fn the_commit_affordance_click_equals_return_on_the_title_field() {
             // seed selected.
             harness.press(ActionId::NavNextItem);
             harness.press(ActionId::TaskEdit);
+            // Recorded decision (round-3 chunk 1, plan §6 — F26):
+            // task.edit never auto-arms; the editor arms via the
+            // `task.title-edit` action.
+            harness.handle.dispatch_action(ActionId::TaskTitleEdit);
 
             // (a) The click path: type a fresh title, invoke Commit.
             harness.type_text("clicked");
@@ -4220,6 +4237,10 @@ fn the_commit_affordance_click_equals_return_on_the_title_field() {
             // re-opens from the board, focus still on the same task.
             harness.press(ActionId::NavFocusBoard);
             harness.press(ActionId::TaskEdit);
+            // Recorded decision (round-3 chunk 1, plan §6 — F26):
+            // task.edit never auto-arms; the editor arms via the
+            // `task.title-edit` action.
+            harness.handle.dispatch_action(ActionId::TaskTitleEdit);
             harness.type_text("clicked");
             harness.stroke(parse("Return").expect("Return"));
             harness.assert_commands(clicked.as_slice());
@@ -4241,6 +4262,10 @@ fn the_commit_affordance_is_inert_on_an_empty_buffer() {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::NavNextItem);
             harness.press(ActionId::TaskEdit);
+            // Recorded decision (round-3 chunk 1, plan §6 — F26):
+            // task.edit never auto-arms; the editor arms via the
+            // `task.title-edit` action.
+            harness.handle.dispatch_action(ActionId::TaskTitleEdit);
             harness.driver.advance_time(0);
             assert!(
                 harness.driver.find_by_label("Commit").is_some(),
@@ -5926,6 +5951,93 @@ fn the_empty_board_stack_create_flow_opens_a_visible_field() {
                 }
                 other => panic!("the create reached the boundary, got {other:?}"),
             }
+        },
+    );
+}
+
+/// Round-3 F26 — the title re-edit journey: detail entry never arms
+/// (plan §6), the closed title's click arms the seeded editor, the
+/// commit closes it, and clicking again re-arms — the exact repro
+/// that was stuck before. The empty commit closes without dispatch.
+#[test]
+fn the_title_edits_clicks_arms_and_re_arms() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let edit_open = |harness: &Harness| harness.handle.window().get_task_model().edit_open;
+
+            // Entry (the standard preset's Return on the focused
+            // card) shows the display: no field, no flow, Normal
+            // mode.
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+            assert!(!edit_open(&harness), "entry never arms (plan §6)");
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_vi_insert(),
+                "entry stays in normal mode"
+            );
+            harness.assert_commands(&[]);
+
+            // Click the closed title: the field arms, seeded from the
+            // display title (click ≡ key, §7.1).
+            harness.driver.click_by_label("Edit title");
+            harness.driver.advance_time(0);
+            assert!(edit_open(&harness), "the click arms the editor");
+            assert_eq!(
+                harness.handle.window().get_task_model().initial_text,
+                "task-0",
+                "the seed mirrors the current title"
+            );
+
+            // An empty commit closes without dispatching: backspace
+            // past the whole seed (the click path's selection state
+            // is not pinned), then Return on the empty buffer.
+            for _ in 0..7 {
+                harness.stroke(parse("Backspace").expect("Backspace"));
+            }
+            harness.stroke(parse("Return").expect("Return"));
+            assert!(!edit_open(&harness), "the empty commit closes");
+            harness.assert_commands(&[]);
+
+            // The exact F26 repro: clicking again re-arms.
+            harness.driver.click_by_label("Edit title");
+            harness.driver.advance_time(0);
+            assert!(edit_open(&harness), "the title is always re-armable");
+
+            // A typed commit dispatches and closes.
+            harness.type_text("renamed");
+            harness.stroke(parse("Return").expect("Return"));
+            assert!(!edit_open(&harness), "the commit closed the editor");
+            match harness.engine.drain().as_slice() {
+                [StateCommand::UpdateTask { changes, .. }] => {
+                    assert_eq!(changes.title.as_deref(), Some("renamed"));
+                }
+                other => panic!("the title commit reached the boundary, got {other:?}"),
+            }
+
+            // The geometry pin (plan §6): the field stretches to the
+            // detail body's full width — it is no longer nested in
+            // the back row's centered column.
+            harness.handle.dispatch_action(ActionId::TaskTitleEdit);
+            harness.driver.advance_time(0);
+            let field = harness
+                .driver
+                .find_by_label("Task title")
+                .expect("the field is mounted");
+            assert!(
+                field.size().width > 300.0,
+                "the field spans the body width, got {:?}",
+                field.size()
+            );
         },
     );
 }

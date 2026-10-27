@@ -171,6 +171,9 @@ expression: rows
             - Down
           action: nav.next-item
         - sequence:
+            - F2
+          action: task.title-edit
+        - sequence:
             - Ctrl+Home
           action: nav.first-item
         - sequence:
@@ -399,6 +402,9 @@ expression: rows
           action: nav.prev-item
     - context: task-detail
       bindings:
+        - sequence:
+            - Return
+          action: task.title-edit
         - sequence:
             - Alt+<
           action: nav.first-item
