@@ -1865,6 +1865,62 @@ mod view_component_tests {
         });
     }
 
+    /// R3-F1-half (D6) — the done checkbox's seam: (column, row)
+    /// resolves against the id tables and raw-sends the *toggled*
+    /// `SetTaskDone`, both directions; a stale index dispatches
+    /// nothing.
+    #[test]
+    fn the_done_checkbox_seam_sends_the_toggled_command() {
+        on_slint_thread(|| {
+            let mut state = fixture_state();
+            // The fixture's second-stack task (the reverse direction's
+            // subject), pre-marked done.
+            let t2 = {
+                let second = state
+                    .stacks
+                    .values()
+                    .find(|stack| stack.order == 1)
+                    .expect("fixture's second stack")
+                    .id;
+                state
+                    .tasks
+                    .values()
+                    .find(|task| task.stack == second)
+                    .map(|task| task.id)
+                    .expect("the second stack's task")
+            };
+            let mut done = state.tasks.get(&t2).expect("task").clone();
+            done.done = Some(chrono::Utc::now());
+            state.tasks.insert(t2, done);
+
+            let (handle, mut commands) = handover_with(state, UiSettings::default().keymap);
+
+            // Column 0 row 0 is a not-done fixture task → done: true.
+            handle.window.invoke_board_task_done_toggled(0, 0);
+            match commands.try_recv().expect("the toggle-on command arrived") {
+                StateCommand::SetTaskDone { id, done: value } => {
+                    assert!(value, "an undone card toggles on");
+                    assert_ne!(id, t2);
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+
+            // Column 1 row 0 is the done task → done: false.
+            handle.window.invoke_board_task_done_toggled(1, 0);
+            assert_eq!(
+                commands.try_recv().expect("the toggle-off command arrived"),
+                StateCommand::SetTaskDone {
+                    id: t2,
+                    done: false
+                }
+            );
+
+            // A stale index against the tables dispatches nothing.
+            handle.window.invoke_board_task_done_toggled(9, 9);
+            assert!(commands.try_recv().is_err(), "stale index absorbed");
+        });
+    }
+
     /// R3.5.3 — the kiosk gate: the same fired occurrence renders zero
     /// notification rows in appliance mode (the banner-only ruling).
     #[test]

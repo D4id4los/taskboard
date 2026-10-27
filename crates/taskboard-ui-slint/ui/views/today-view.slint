@@ -48,6 +48,9 @@ export component TodayView inherits FocusScope {
     callback row-activated(int, int);
     callback row-clicked(int, int);
     callback row-context(int, int, float, float);
+    // The done checkbox's toggle (r3 D6): (section, row) — the adapter
+    // resolves the today table and flips the model bit.
+    callback row-done-toggled(int, int);
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -170,6 +173,9 @@ export component TodayView inherits FocusScope {
                                 }
                                 context-requested(x, y) => {
                                     root.row-context(sindex, rindex, x, y);
+                                }
+                                done-toggled => {
+                                    root.row-done-toggled(sindex, rindex);
                                 }
                             }
                             // The context line (D-V3): the stack, or

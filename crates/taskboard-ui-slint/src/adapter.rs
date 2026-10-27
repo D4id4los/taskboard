@@ -2539,6 +2539,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_stack_create_seams(window, adapter);
     install_board_seams(window, adapter);
     install_stack_seams(window, adapter);
+    install_stack_done_seam(window, adapter);
     install_today_row_seams(window, adapter);
     install_task_seam(window, adapter);
     install_due_seam(window, adapter);
@@ -2930,6 +2931,18 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             a.route(&window, ActionId::TaskEdit);
         }
     });
+    // The done checkbox (r3 D6): the toggled command, the board
+    // cards' seam verbatim (a stale index absorbed).
+    let done = Rc::clone(adapter);
+    window.on_today_row_done_toggled(move |section, row| {
+        let a = done.borrow();
+        let (Ok(section), Ok(row)) = (usize::try_from(section), usize::try_from(row)) else {
+            return;
+        };
+        if let Some(task) = a.tables.today_row(section, row) {
+            send_toggled_done(&a, task);
+        }
+    });
     let context = Rc::clone(adapter);
     let weak = window.as_weak();
     window.on_today_row_context_requested(move |section, row, x, y| {
@@ -3165,6 +3178,21 @@ fn install_stack_create_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     });
 }
 
+/// The stack-detail done checkbox (r3 D6): the toggled command, the
+/// board cards' seam verbatim (a stale index absorbed).
+fn install_stack_done_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let done = Rc::clone(adapter);
+    window.on_stack_task_done_toggled(move |row| {
+        let a = done.borrow();
+        let Ok(row) = usize::try_from(row) else {
+            return;
+        };
+        if let Some(task) = a.tables.stack_task(row) {
+            send_toggled_done(&a, task);
+        }
+    });
+}
+
 /// A `Fn(&mut Adapter, &AppWindow, Args)` wrapper shape is over
 /// generics' worth of closure types; the per-seam helpers below stay
 /// explicit instead.
@@ -3223,6 +3251,30 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         select_column(&mut a, &window, column);
         settle_pointer_conflict(&mut a, &window);
         a.route(&window, ActionId::TaskCreate);
+    });
+
+    // The done checkbox (r3 D6): resolve (column, row) against the id
+    // tables (a stale index is absorbed, the drag-arm precedent) and
+    // raw-send the toggled `SetTaskDone` — the notification Done
+    // button's precedent (the registry's complete/reopen act on the
+    // focused task; the checkbox addresses an arbitrary card). No
+    // local checked state exists anywhere: the refresh push is the
+    // single writer of `TaskCardModel.done`.
+    let done = Rc::clone(adapter);
+    let done_weak = window.as_weak();
+    window.on_board_task_done_toggled(move |column, row| {
+        let Some(window) = done_weak.upgrade() else {
+            return;
+        };
+        let mut a = done.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
+        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+            return;
+        };
+        let Some((_, task)) = a.tables.board_task(column, row) else {
+            return;
+        };
+        send_toggled_done(&a, task);
     });
 
     // The create-row field: keystrokes mirror into the Rust buffer
@@ -3764,6 +3816,22 @@ fn notification_row(adapter: &Adapter, index: i32) -> Option<crate::presentation
         .notifications
         .get(usize::try_from(index).unwrap_or(usize::MAX))
         .cloned()
+}
+
+/// The done checkbox's dispatch (r3 D6): the toggled `SetTaskDone`
+/// for the addressed task — the raw-send the notification Done button
+/// set (the registry's complete/reopen act on the focused task).
+fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {
+    let done_now = adapter
+        .state
+        .load()
+        .tasks
+        .get(&task)
+        .is_some_and(|task| task.done.is_some());
+    adapter.send(taskboard_domain::StateCommand::SetTaskDone {
+        id: task,
+        done: !done_now,
+    });
 }
 
 /// The notification surface's seams (R3 chunk C, design D-10): each

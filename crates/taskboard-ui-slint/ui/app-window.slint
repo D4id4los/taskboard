@@ -236,6 +236,7 @@ export component AppWindow inherits Window {
                 switcher-activated(c) => root.board-switcher-activated(c);
                 header-context(c, x, y) => root.board-header-context-requested(c, x, y);
                 body-context(c, x, y) => root.board-body-context-requested(c, x, y);
+                task-done-toggled(c, r) => root.board-task-done-toggled(c, r);
                 rename-committed(c, t) => root.board-stack-rename-committed(c, t);
                 rename-edited(c, t) => root.board-stack-rename-edited(c, t);
                 text-flow-focus-lost() => root.text-flow-focus-lost();
@@ -257,12 +258,14 @@ export component AppWindow inherits Window {
                 row-activated(s, r) => root.today-row-activated(s, r);
                 row-clicked(s, r) => root.today-row-clicked(s, r);
                 row-context(s, r, x, y) => root.today-row-context-requested(s, r, x, y);
+                row-done-toggled(s, r) => root.today-row-done-toggled(s, r);
             }
             if (root.current-view == View.stack-detail): StackView {
                 stack: root.stack-model;
                 task-activated(i) => root.stack-task-activated(i);
                 task-clicked(i) => root.stack-task-clicked(i);
                 task-context(i, x, y) => root.stack-task-context-requested(i, x, y);
+                task-done-toggled(i) => root.stack-task-done-toggled(i);
                 create-committed(t) => root.stack-create-committed(t);
                 create-edited(t) => root.stack-create-edited(t);
                 text-flow-focus-lost() => root.text-flow-focus-lost();
@@ -566,6 +569,11 @@ export component AppWindow inherits Window {
     pure callback today-row-activated(int, int);
     pure callback today-row-clicked(int, int);
     pure callback today-row-context-requested(int, int, float, float);
+    // The done checkbox's toggles on the today rows and the
+    // stack-detail rows (r3 D6): the same raw-send as the board
+    // cards, resolved against the today/stack tables.
+    pure callback today-row-done-toggled(int, int);
+    pure callback stack-task-done-toggled(int);
     pure callback board-header-activated(int);
     pure callback board-switcher-activated(int);
     // The r2 D21 right-click seams: the stack header (and the
@@ -574,6 +582,12 @@ export component AppWindow inherits Window {
     // The stack card's bare-surface right-click (r3 D4): the header
     // seam's body twin — one shared adapter body.
     pure callback board-body-context-requested(int, float, float);
+    // The done checkbox's toggle (r3 D6): (column, task) — the
+    // adapter resolves the id tables and raw-sends the toggled
+    // SetTaskDone (the notification Done button's precedent: the
+    // registry's complete/reopen act on the focused task; the
+    // checkbox addresses an arbitrary card).
+    pure callback board-task-done-toggled(int, int);
     pure callback board-segment-context-requested(int, float, float);
     // The stack-rename field (r2 D21): per-column mirror/commit.
     pure callback board-stack-rename-committed(int, string);
