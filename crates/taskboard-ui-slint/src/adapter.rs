@@ -596,6 +596,54 @@ impl Adapter {
         }
     }
 
+    // -- test seams (the lib flow/buffer harnesses; never compiled
+    //    into a release binary) ------------------------------------
+
+    /// The pair-table harness drives the interpretation table
+    /// directly, one `(Flow, effect)` pass at a time.
+    #[cfg(test)]
+    pub(crate) fn interpret_for_test(&mut self, window: &AppWindow, effect: UiEffect) {
+        self.interpret(window, effect);
+    }
+
+    /// Resets every machine the table reads so pair passes are
+    /// order-independent (the flow table and the buffer journeys).
+    #[cfg(test)]
+    pub(crate) fn test_reset(&mut self) {
+        self.view_state = ViewState::new();
+        self.shell = KeymapShell::default();
+        self.menu_entries.clear();
+        self.root_entries.clear();
+        self.menu_anchor = MenuAnchor::default();
+        self.due_buffer.clear();
+        self.due_echo.clear();
+        self.due_picker = None;
+        self.width_drag = None;
+        self.scale_drag = None;
+    }
+
+    /// The due editor's adapter-owned buffers, for the §8 invariant
+    /// journeys: non-empty ⇔ `Flow::EditDue` armed. (The journeys
+    /// land with the buffer-invariants commit; the seam carries its
+    /// allow until then.)
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn due_buffers_empty(&self) -> bool {
+        self.due_buffer.is_empty() && self.due_echo.is_empty() && self.due_picker.is_none()
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn arm_width_drag(&mut self, stack: StackId) {
+        self.width_drag = Some((stack, 100.0));
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn width_drag_armed(&self) -> bool {
+        self.width_drag.is_some()
+    }
+
     /// The D9 interpretation table: one `match (flow, effect)` whose
     /// arms route to `view_state` methods named by what they do.
     #[allow(clippy::too_many_lines)] // one decision table, kept flat for review
