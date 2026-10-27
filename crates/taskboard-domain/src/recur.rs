@@ -715,6 +715,69 @@ pub fn schedule(rule: &RecurRule, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDa
     members
 }
 
+/// How an occurrence day of a series concluded, as of a reading time
+/// (origin §3.5; the "missed" view is derived, never stored).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OccurrenceOutcome {
+    /// Some completion attributes to the day; `at` is the earliest such
+    /// stamp.
+    Done {
+        /// The earliest attributing completion.
+        at: chrono::DateTime<chrono::Utc>,
+    },
+    /// The attribution window closed with nothing attributed.
+    Missed,
+    /// The attribution window is still open (unopened or in progress).
+    NotYetReachable,
+}
+
+/// Attributes completions to the occurrence `day` of `rule` and names
+/// its outcome as of `now` (D8's window attribution, no knob).
+///
+/// Window start `ws(d)` = [`crate::days::window_start`] of the local
+/// date. A completion stamp `t` attributes to the **latest member `m`
+/// with `ws(m) ≤ t`** — so a late completion counts for the *earlier*
+/// occurrence (completing Tuesday's rolled head on Wednesday counts
+/// for Tuesday). The outcome is:
+///
+/// - [`OccurrenceOutcome::Done`] iff some completion lies in
+///   `[ws(day), ws(next member))` (`at` = the earliest such stamp);
+/// - else [`OccurrenceOutcome::Missed`] iff `now ≥ ws(next member)`;
+/// - else [`OccurrenceOutcome::NotYetReachable`].
+///
+/// For the series' **final** member (a `Until` bound closes the member
+/// list after it) the window is open-ended, so the final member is
+/// never `Missed` — the open head simply sits on the board (D8: no
+/// invented deadline, no knob). `Count` bounds are history-evaluated at
+/// the engine and invisible here (D6).
+#[must_use]
+pub fn occurrence_outcome(
+    rule: &RecurRule,
+    day: NaiveDate,
+    now: chrono::DateTime<chrono::Utc>,
+    day_start_time: chrono::NaiveTime,
+    offset: chrono::FixedOffset,
+    completions: &[chrono::DateTime<chrono::Utc>],
+) -> OccurrenceOutcome {
+    let ws_day = crate::days::window_start(day, day_start_time, offset);
+    let next = next_after(&rule.pattern, rule.anchor, day);
+    let window_end = match rule.bound {
+        RecurBound::Until(until) if next > until => None,
+        _ => Some(crate::days::window_start(next, day_start_time, offset)),
+    };
+    if let Some(at) = completions
+        .iter()
+        .filter(|t| **t >= ws_day && window_end.is_none_or(|end| **t < end))
+        .min()
+    {
+        return OccurrenceOutcome::Done { at: *at };
+    }
+    match window_end {
+        Some(end) if now >= end => OccurrenceOutcome::Missed,
+        _ => OccurrenceOutcome::NotYetReachable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,7 +924,7 @@ mod arithmetic_tests {
         naive_date_strategy, proptest_config, recur_pattern_strategy, recur_rule_strategy,
         weekday_strategy,
     };
-    use chrono::Weekday;
+    use chrono::{TimeZone as _, Weekday};
     use proptest::prelude::*;
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
@@ -1065,6 +1128,224 @@ mod arithmetic_tests {
             vec![date(2026, 10, 4), date(2026, 10, 7), date(2026, 10, 10),]
         );
     }
+
+    // ---- attribution (§4.4): unit table ----
+
+    use crate::days::window_start;
+
+    fn rule_until(pattern: RecurPattern, until: NaiveDate) -> RecurRule {
+        RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+            anchor: date(2026, 10, 1),
+            pattern,
+            bound: RecurBound::Until(until),
+            continued_from: None,
+        }
+    }
+
+    fn utc(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn offset_hours(h: i32) -> chrono::FixedOffset {
+        chrono::FixedOffset::east_opt(h * 3600).unwrap()
+    }
+
+    #[test]
+    fn a_completion_inside_the_window_is_done_with_the_earliest_stamp() {
+        let rule = rule_until(
+            RecurPattern::Daily {
+                every: every_days(1),
+            },
+            date(2026, 12, 31),
+        );
+        let start = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let offset = offset_hours(0);
+        let day = date(2026, 10, 5);
+        let ws = window_start(day, start, offset).timestamp();
+        let next = window_start(date(2026, 10, 6), start, offset).timestamp();
+        let outcome = occurrence_outcome(
+            &rule,
+            day,
+            utc(next + 10),
+            start,
+            offset,
+            &[utc(ws + 100), utc(ws + 50), utc(ws + 70)],
+        );
+        assert_eq!(outcome, OccurrenceOutcome::Done { at: utc(ws + 50) });
+        // A stamp exactly at the window start attributes; exactly at the
+        // next window start does not (half-open windows).
+        let at_start = occurrence_outcome(&rule, day, utc(next), start, offset, &[utc(ws)]);
+        assert!(matches!(at_start, OccurrenceOutcome::Done { .. }));
+        let at_end = occurrence_outcome(&rule, day, utc(next), start, offset, &[utc(next)]);
+        assert_eq!(at_end, OccurrenceOutcome::Missed);
+    }
+
+    #[test]
+    fn a_mid_gap_completion_attributes_to_the_earlier_member() {
+        // Weekly on Fridays: a completion the following Wednesday sits
+        // in *Friday's* attribution window (the window runs to the next
+        // member's start), so the late completion counts for Friday.
+        let rule = rule_until(
+            RecurPattern::Weekly {
+                interval: EveryWeeks::new(1).unwrap(),
+                on: set(&[Weekday::Fri]),
+            },
+            date(2026, 12, 31),
+        );
+        let start = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let offset = offset_hours(0);
+        let friday = date(2026, 10, 2);
+        let next_friday = date(2026, 10, 9);
+        let stamp = window_start(date(2026, 10, 7), start, offset); // Wednesday
+        let friday_outcome = occurrence_outcome(&rule, friday, stamp, start, offset, &[stamp]);
+        assert!(matches!(friday_outcome, OccurrenceOutcome::Done { .. }));
+        let next_outcome = occurrence_outcome(&rule, next_friday, stamp, start, offset, &[stamp]);
+        assert_eq!(next_outcome, OccurrenceOutcome::NotYetReachable);
+    }
+
+    #[test]
+    fn night_owl_start_reattributes_early_morning_stamps() {
+        // With a 05:00 day start, a 03:00-local completion belongs to
+        // *yesterday's* window.
+        let rule = rule_until(
+            RecurPattern::Daily {
+                every: every_days(1),
+            },
+            date(2026, 12, 31),
+        );
+        let start = chrono::NaiveTime::from_hms_opt(5, 0, 0).unwrap();
+        let offset = offset_hours(2);
+        // 2026-10-06 03:00 local (+02:00) = 01:00 UTC on the 6th; the
+        // window that contains it opened 2026-10-05 05:00 local.
+        let yesterday = date(2026, 10, 5);
+        let today = date(2026, 10, 6);
+        // 2026-10-06 03:00 local (+02:00): two hours before the 05:00
+        // window start, so it belongs to *yesterday's* window.
+        let stamp = window_start(today, start, offset) - chrono::TimeDelta::try_hours(2).unwrap();
+        let y = occurrence_outcome(&rule, yesterday, stamp, start, offset, &[stamp]);
+        assert!(matches!(y, OccurrenceOutcome::Done { .. }));
+        let t = occurrence_outcome(&rule, today, stamp, start, offset, &[stamp]);
+        assert_eq!(t, OccurrenceOutcome::NotYetReachable);
+    }
+
+    #[test]
+    fn the_final_member_is_never_missed() {
+        let rule = rule_until(
+            RecurPattern::Daily {
+                every: every_days(1),
+            },
+            date(2026, 10, 3),
+        );
+        let start = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let offset = offset_hours(0);
+        // Long after everything, with no completion: the final head is
+        // open-ended (D8), never Missed.
+        let final_day = date(2026, 10, 3);
+        let late = utc(1_800_000_000);
+        assert_eq!(
+            occurrence_outcome(&rule, final_day, late, start, offset, &[]),
+            OccurrenceOutcome::NotYetReachable
+        );
+        // A non-final day *is* Missed once its window closes.
+        assert_eq!(
+            occurrence_outcome(&rule, date(2026, 10, 2), late, start, offset, &[]),
+            OccurrenceOutcome::Missed
+        );
+    }
+
+    // P5 — attribution: windows partition the timeline; every stamp
+    // attributes to exactly one member; Done stamps sit inside their
+    // member's window; the final member is never Missed.
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        #[test]
+        fn stamps_attribute_to_exactly_one_member(
+            rule in recur_rule_strategy(),
+            day_start_seconds in 0_u32..=86_399,
+            offset_seconds in -50_400_i32..=50_400,
+            now_offset in 0_i64..=400_000,
+            stamps in proptest::collection::vec(0_i64..=60, 0..8),
+        ) {
+            let start = chrono::NaiveTime::from_num_seconds_from_midnight_opt(day_start_seconds, 0)
+                .expect("valid time of day");
+            let offset = chrono::FixedOffset::east_opt(offset_seconds).expect("valid offset");
+            let boundless = RecurRule { bound: RecurBound::None, ..rule.clone() };
+            // 400 days: even a 5th-weekday monthly pattern has a member
+            // within the horizon (some month always has five).
+            let horizon = rule
+                .anchor
+                .checked_add_signed(chrono::TimeDelta::try_days(400).expect("day delta"))
+                .expect("in range");
+            let members = schedule(&boundless, rule.anchor, horizon);
+            prop_assert!(!members.is_empty(), "the horizon always contains the anchor's window");
+            let ws = |d: NaiveDate| crate::days::window_start(d, start, offset);
+            let ws_anchor = ws(rule.anchor);
+            let now = ws_anchor + chrono::TimeDelta::try_seconds(now_offset).expect("delta");
+            let completions: Vec<chrono::DateTime<chrono::Utc>> = stamps
+                .iter()
+                .map(|s| ws_anchor + chrono::TimeDelta::try_seconds(*s * 3600).expect("delta"))
+                .collect();
+            // Consecutive windows are consecutive: strictly increasing
+            // starts, each window ending exactly at the next start.
+            for pair in members.windows(2) {
+                let (a, b) = (ws(pair[0]), ws(pair[1]));
+                prop_assert!(a < b, "window starts strictly increase");
+                let outcome_a = occurrence_outcome(&rule, pair[0], now, start, offset, &completions);
+                if let OccurrenceOutcome::Done { at } = outcome_a {
+                    prop_assert!(at >= a && at < b, "Done stamps sit inside the window");
+                }
+            }
+            // Every generated stamp attributes to exactly one member:
+            // the member whose window contains it, cross-checked through
+            // occurrence_outcome.
+            for t in &completions {
+                // Stamps before the first member attribute to nothing
+                // (§4.4: stamps from before the series existed are not
+                // produced; the partition runs over real members).
+                if *t < ws(members[0]) {
+                    continue;
+                }
+                let mut attributed = 0;
+                for (index, m) in members.iter().enumerate() {
+                    let is_last = index + 1 == members.len();
+                    let end = if is_last {
+                        ws(*m) + chrono::TimeDelta::try_days(400).expect("day delta")
+                    } else {
+                        ws(members[index + 1])
+                    };
+                    if ws(*m) <= *t && *t < end {
+                        attributed += 1;
+                        let outcome =
+                            occurrence_outcome(&rule, *m, now, start, offset, &[*t]);
+                        prop_assert!(
+                            matches!(outcome, OccurrenceOutcome::Done { .. }),
+                            "the containing member's outcome is Done for its stamp"
+                        );
+                    } else {
+                        let outcome =
+                            occurrence_outcome(&rule, *m, now, start, offset, &[*t]);
+                        prop_assert!(
+                            !matches!(outcome, OccurrenceOutcome::Done { .. }),
+                            "a stamp outside the window never attributes"
+                        );
+                    }
+                }
+                prop_assert_eq!(attributed, 1, "windows partition the timeline");
+            }
+            // The final member's window never closes: never Missed (D8).
+            let last = *members.last().expect("non-empty");
+            if !completions.is_empty() {
+                let outcome = occurrence_outcome(&rule, last, now, start, offset, &completions);
+                prop_assert!(
+                    !matches!(outcome, OccurrenceOutcome::Missed),
+                    "the open final head is never Missed"
+                );
+            }
+        }
+    }
+
     // P1 — next_after is total, strictly after `from`, and a member.
     proptest! {
         #![proptest_config(proptest_config(256))]

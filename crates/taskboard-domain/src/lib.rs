@@ -74,7 +74,7 @@ pub use clock::{Clock, SystemClock};
 pub use command::{
     CommandError, CommandOutcome, CommandPlan, bind_wipe_count, bind_wipe_forecast, plan_command,
 };
-pub use days::day_window;
+pub use days::{day_window, window_start};
 pub use entities::{
     Board, BoardClocks, Color, Effort, Importance, Label, LabelClocks, Stack, StackClocks, Task,
     TaskClocks, Urgency,
@@ -107,6 +107,11 @@ pub use push::{
     CardShape, EntityTables, MaterializedOp, NewCardShape, PushGroup, PushTarget, plan_pushes,
 };
 pub use reconcile::{ReconcileCounts, normalized_title, plan_reconcile};
+pub use recur::{
+    DayOfMonth, EveryDays, EveryWeeks, InvalidRecur, MonthlyAnchor, NthWeek, OccurrenceCount,
+    OccurrenceOutcome, RecurBound, RecurPattern, RecurRule, WeekdaySet, next_after,
+    occurrence_outcome, occurs_on, roll_target, schedule,
+};
 pub use reminders::{
     AdhocAlarm, AdhocWhen, InvalidReminderOffset, Notification, NotifierMessage, ReminderAnchor,
     ReminderDefaults, ReminderDelivery, ReminderDismissal, ReminderFiring, ReminderOffset,
