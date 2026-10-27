@@ -283,6 +283,13 @@ pub enum CommandError {
     /// is the honest signal (ADR 0012).
     #[error("daemon ipc transport failed")]
     IpcTransport,
+    /// The daemon did not answer within the client's derived read
+    /// budget (ADR 0012, amended): verbs still self-bound, the deadline
+    /// exists for the wedged-daemon case. Distinct from
+    /// [`CommandError::IpcTransport`] — a timeout is a *silent* daemon,
+    /// not a broken exchange. Exit 1 via `report` like every failure.
+    #[error("daemon ipc read timed out")]
+    IpcTimeout,
     /// A destructive/repair ceremony (`boards delete`/`boards reset`)
     /// ran without `--confirm`; the payload states what would go so the
     /// refusal is actionable. Confirmation is CLI-layer policy only —
@@ -446,6 +453,7 @@ impl CommandError {
             Self::UnbindConfirmationRequired { .. } => "unbind-confirmation-required",
             Self::ReconcileConfirmationRequired { .. } => "reconcile-confirmation-required",
             Self::IpcTransport => "ipc-transport",
+            Self::IpcTimeout => "ipc-timeout",
             Self::IpcVersion { .. } => "ipc-version",
             Self::UnknownConnector { .. } => "unknown-connector",
             Self::SessionOnly => "session-only",
@@ -1883,6 +1891,23 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         // like the task verbs).
         | Command::Capture { .. }
         | Command::Sync { .. } => IpcRoute::IpcOrLocal,
+    }
+}
+
+/// The verb's own daemon-side wait budget in seconds, when it has one
+/// (`--timeout-secs`): the input the client read deadline is derived
+/// from (`client_read_budget` — the deadline is the verb's budget plus
+/// a fixed margin, so it can never preempt an honest long verb). The
+/// match is exhaustive: a future `--timeout-secs` flag must land here,
+/// or its verb silently derives the flag-less default ceiling.
+#[must_use]
+pub fn verb_timeout_secs(command: &Command) -> Option<u64> {
+    match command {
+        Command::Sync { timeout_secs, .. }
+        | Command::Boards {
+            cmd: BoardsCmd::Select { timeout_secs, .. } | BoardsCmd::Publish { timeout_secs, .. },
+        } => Some(*timeout_secs),
+        _ => None,
     }
 }
 

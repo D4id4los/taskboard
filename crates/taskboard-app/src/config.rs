@@ -92,6 +92,10 @@ pub struct AppConfig {
     /// its off default so pin-less configs serialize unchanged.
     #[serde(default, skip_serializing_if = "WebSection::is_default")]
     pub web: WebSection,
+    /// IPC client deadlines. Skipped when at its default so pin-less
+    /// configs serialize unchanged.
+    #[serde(default, skip_serializing_if = "IpcSection::is_default")]
+    pub ipc: IpcSection,
     /// Device-local user preferences. Never synced (no document key,
     /// no lane) until the D5 `settings` section exists; each device
     /// keeps its own. Overrides via
@@ -587,6 +591,39 @@ pub const DEFAULT_WEB_REFRESH_SECS: u64 = 30;
 /// `[web] refresh_secs` typed floor: a faster poll is a self-DoS, not a
 /// feature — refused, never clamped.
 pub const WEB_REFRESH_MIN_SECS: u64 = 5;
+
+/// `[ipc]`: the one-shot CLI client's daemon-facing deadlines (ADR 0012,
+/// amended 2026-10-27). The table's absence is today's derived budget —
+/// the struct's `Default` is the absent-table placeholder that keeps
+/// section-less configs byte-identical on serialization.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IpcSection {
+    /// Overrides the derived client read budget **wholesale**: every
+    /// covered request waits exactly this many seconds for the daemon's
+    /// answer, instead of the verb's `--timeout-secs` + margin (or the
+    /// 30 s flag-less ceiling). `0` disables the deadline entirely —
+    /// the recorded supervision stance spelled as a value.
+    ///
+    /// Deliberate leniency, documented at the type (A1 posture): a
+    /// configured value *can* preempt an honest long verb (a 5 s pin
+    /// turns a legitimate 60 s `sync` into `ipc-timeout` while the
+    /// daemon finishes the work). That is the operator's explicit
+    /// choice; the flag+margin derivation is the default precisely so
+    /// the honest world needs no override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_read_timeout_secs: Option<u64>,
+}
+
+impl IpcSection {
+    /// The absent-table test behind `skip_serializing_if`: the
+    /// placeholder serializes to nothing, so a config without `[ipc]`
+    /// renders unchanged.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self.client_read_timeout_secs.is_none()
+    }
+}
 
 /// The `[reminders] default_before` grammar (one definition site, shared
 /// with the CLI `--before` flag): a non-empty sequence of
@@ -2508,6 +2545,37 @@ mod tests {
         assert_eq!(config.web.bind, "192.168.1.10:9000");
         assert_eq!(config.web.refresh_secs, 60);
         assert_eq!(config.web.token.as_deref(), Some("sekrit"));
+    }
+
+    // ---- the [ipc] client-deadline section (ADR 0012, amended) -------
+
+    #[test]
+    fn ipc_section_absent_serializes_nothing_and_decodes_default() {
+        let config = decode("[app]\nmode = 'daemon'\n").expect("decodes");
+        assert_eq!(config.ipc.client_read_timeout_secs, None);
+        // The serialization fence: a section-less config renders without
+        // any `ipc` key (the `web` precedent).
+        let value = serde_json::to_value(IpcSection::default()).expect("serializes");
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[test]
+    fn ipc_section_decodes_snake_case_and_zero() {
+        let config = decode("[ipc]\nclient_read_timeout_secs = 45\n").expect("decodes");
+        assert_eq!(config.ipc.client_read_timeout_secs, Some(45));
+        // `0` is meaningful: the disable value.
+        let config = decode("[ipc]\nclient_read_timeout_secs = 0\n").expect("decodes");
+        assert_eq!(config.ipc.client_read_timeout_secs, Some(0));
+        let value = serde_json::to_value(IpcSection {
+            client_read_timeout_secs: Some(45),
+        })
+        .expect("ser");
+        assert_eq!(value, serde_json::json!({"client_read_timeout_secs": 45}));
+    }
+
+    #[test]
+    fn ipc_section_refuses_unknown_keys() {
+        assert!(decode("[ipc]\nread-timeout = 5\n").is_err());
     }
 
     #[test]

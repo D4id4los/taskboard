@@ -357,6 +357,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::UnbindConfirmationRequired { .. } => "unbind-confirmation-required",
             CommandError::ReconcileConfirmationRequired { .. } => "reconcile-confirmation-required",
             CommandError::IpcTransport => "ipc-transport",
+            CommandError::IpcTimeout => "ipc-timeout",
             CommandError::IpcVersion { .. } => "ipc-version",
             CommandError::UnknownConnector { .. } => "unknown-connector",
             CommandError::SessionOnly => "session-only",

@@ -44,6 +44,43 @@ const DETACH_BUDGET: Duration = Duration::from_secs(30);
 /// budget's reading).
 const ATTACH_BUDGET: Duration = Duration::from_secs(30);
 
+// Temporary: the read-budget wrap consumes these in the next commit
+// (the derivation lands test-first, TDD).
+#[cfg_attr(not(test), allow(dead_code))]
+/// The flag-less read budget (ADR 0012, amended): a verb with no
+/// `--timeout-secs` of its own gets this ceiling — it catches only the
+/// wedged-daemon case (a healthy daemon's ack is millisecond-scale).
+pub(crate) const DEFAULT_READ_BUDGET_SECS: u64 = 30;
+/// The fixed margin over a verb's own `--timeout-secs`: the derived
+/// deadline is `verb budget + margin`, so it can never fire before the
+/// verb's own honest timeout.
+pub(crate) const READ_BUDGET_MARGIN_SECS: u64 = 10;
+
+/// Derives the client read budget from the verb's own budget and the
+/// `[ipc] client_read_timeout_secs` override (ADR 0012, amended): a
+/// flagged verb derives its own budget plus the fixed margin (never
+/// preempts the verb's honest timeout); a flag-less verb gets the
+/// default ceiling flat. `Some(n)` configured replaces the derivation
+/// wholesale; `Some(0)` disables the deadline entirely (`None` here —
+/// the recorded supervision stance).
+#[cfg_attr(not(test), allow(dead_code))]
+#[must_use]
+pub(crate) fn client_read_budget(
+    verb_secs: Option<u64>,
+    configured: Option<u64>,
+) -> Option<Duration> {
+    match configured {
+        Some(0) => None,
+        Some(secs) => Some(Duration::from_secs(secs)),
+        None => Some(Duration::from_secs(match verb_secs {
+            // Saturating: a `--timeout-secs` near `u64::MAX` must stay a
+            // (preempt-never) budget, not a debug overflow panic.
+            Some(verb) => verb.saturating_add(READ_BUDGET_MARGIN_SECS),
+            None => DEFAULT_READ_BUDGET_SECS,
+        })),
+    }
+}
+
 /// The response-side version gate (pure; unit-pinned): a typed
 /// `VersionMismatch` or any wrong-version answer is the `ipc-version`
 /// failure; a well-versioned response passes through.
@@ -279,10 +316,120 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::validate_response;
-    use super::{CONNECT_BUDGET, try_connect};
-    use crate::commands::CommandError;
+    use super::{
+        CONNECT_BUDGET, DEFAULT_READ_BUDGET_SECS, READ_BUDGET_MARGIN_SECS, client_read_budget,
+        try_connect,
+    };
+    use crate::cli::Command;
+    use crate::commands::{CommandError, verb_timeout_secs};
     use crate::ipc::protocol::{PROTOCOL_VERSION, Response};
     use crate::ipc::socket_sidecar;
+
+    /// C1: the derivation lattice (ADR 0012, amended) — flag verbs
+    /// derive `budget + margin`, flag-less verbs the default ceiling,
+    /// a configured value replaces wholesale, and `0` disables.
+    #[test]
+    fn the_read_budget_derivation_lattice_holds() {
+        // A flag verb: its own budget plus the margin.
+        assert_eq!(
+            client_read_budget(Some(60), None),
+            Some(std::time::Duration::from_secs(70))
+        );
+        // A flag-less verb: the default ceiling, flat (no margin — the
+        // margin is only ever over a verb's own honest budget).
+        assert_eq!(
+            client_read_budget(None, None),
+            Some(std::time::Duration::from_secs(DEFAULT_READ_BUDGET_SECS))
+        );
+        // The override replaces the derivation wholesale, margin
+        // included.
+        assert_eq!(
+            client_read_budget(Some(60), Some(5)),
+            Some(std::time::Duration::from_secs(5))
+        );
+        assert_eq!(
+            client_read_budget(None, Some(120)),
+            Some(std::time::Duration::from_secs(120))
+        );
+        // Zero disables entirely.
+        assert_eq!(client_read_budget(Some(60), Some(0)), None);
+        assert_eq!(client_read_budget(None, Some(0)), None);
+    }
+
+    /// C1 (the margin property): for every verb budget the derived
+    /// deadline strictly exceeds it — the deadline can never preempt
+    /// an honest long verb.
+    #[test]
+    fn the_derived_deadline_never_fires_before_the_verbs_own_budget() {
+        for verb_secs in [1_u64, 60, 3600, u64::MAX - READ_BUDGET_MARGIN_SECS] {
+            let Some(budget) = client_read_budget(Some(verb_secs), None) else {
+                panic!("no override: the deadline is always derived");
+            };
+            assert!(budget > std::time::Duration::from_secs(verb_secs));
+        }
+    }
+
+    /// C2: the verb budget table — exactly the three `--timeout-secs`
+    /// flags (sync, boards select, boards publish) yield their value;
+    /// every other verb yields `None` (the exhaustive match forces a
+    /// future flag to land here).
+    #[test]
+    fn the_verb_budget_table_names_exactly_the_flagged_verbs() {
+        let parse = |argv: &str| -> Command {
+            let words: Vec<String> = argv.split_whitespace().map(str::to_owned).collect();
+            match crate::repl::resolve_words(&words, false) {
+                crate::repl::LineAction::Execute(command, _) => command,
+                other => panic!("{argv} parses to a command, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            verb_timeout_secs(&parse("sync")),
+            Some(60),
+            "the sync default"
+        );
+        assert_eq!(
+            verb_timeout_secs(&parse("boards select 42")),
+            Some(60),
+            "the boards-select default"
+        );
+        assert_eq!(
+            verb_timeout_secs(&parse("boards publish")),
+            Some(60),
+            "the boards-publish default"
+        );
+        // `daemon stop` never parses through the one-shot resolver
+        // (the REPL refusal) — constructed directly.
+        assert_eq!(
+            verb_timeout_secs(&crate::cli::Command::Daemon {
+                cmd: Some(crate::cli::DaemonCmd::Stop),
+            }),
+            None,
+        );
+        for flagless in [
+            "status",
+            "boards list",
+            "boards create Personal",
+            "tasks add --stack Todo x",
+            "timers list",
+            "find x",
+            "capture x",
+        ] {
+            assert_eq!(
+                verb_timeout_secs(&parse(flagless)),
+                None,
+                "{flagless} carries no verb budget"
+            );
+        }
+    }
+
+    /// C5 (the kind pin): the timeout is its own machine contract in
+    /// the `--json` envelope, distinct from transport garbage.
+    #[test]
+    fn ipc_timeout_is_a_kind_distinct_from_transport() {
+        assert_eq!(CommandError::IpcTimeout.error_kind(), "ipc-timeout");
+        assert_eq!(CommandError::IpcTransport.error_kind(), "ipc-transport");
+        assert_eq!(CommandError::IpcTimeout.error_detail(), None);
+    }
 
     /// The response-side version gate: mismatch variants are typed
     /// failures carrying the peer's version; well-versioned responses

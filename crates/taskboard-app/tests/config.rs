@@ -516,3 +516,30 @@ fn c16_existing_cwd_install_is_the_write_target() {
         PathBuf::from(taskboard_app::config::DEFAULT_CONFIG_PATH)
     );
 }
+
+/// The `[ipc]` section decodes `snake_case` and the env lane overrides it
+/// (`TASKBOARD_IPC__CLIENT_READ_TIMEOUT_SECS`, figment for free).
+#[test]
+fn the_ipc_section_decodes_and_the_env_lane_overrides() {
+    let _env = env_lock();
+    let dir = tempdir();
+    let file = dir.path().join("ipc.toml");
+    std::fs::write(&file, "[ipc]\nclient_read_timeout_secs = 7\n").expect("write toml");
+    let config = AppConfig::load(Some(file.clone())).expect("loads");
+    assert_eq!(config.ipc.client_read_timeout_secs, Some(7));
+
+    remove_env("TASKBOARD_IPC__CLIENT_READ_TIMEOUT_SECS");
+    set_env("TASKBOARD_IPC__CLIENT_READ_TIMEOUT_SECS", "3");
+    let config = AppConfig::load(Some(file.clone())).expect("loads");
+    remove_env("TASKBOARD_IPC__CLIENT_READ_TIMEOUT_SECS");
+    assert_eq!(
+        config.ipc.client_read_timeout_secs,
+        Some(3),
+        "env beats file"
+    );
+
+    // `0` decodes too — the disable value.
+    std::fs::write(&file, "[ipc]\nclient_read_timeout_secs = 0\n").expect("write toml");
+    let config = AppConfig::load(Some(file)).expect("loads");
+    assert_eq!(config.ipc.client_read_timeout_secs, Some(0));
+}
