@@ -630,6 +630,8 @@ async fn i2_remote_newer_edit_adopts() {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: taskboard_domain::TaskClocks {
@@ -643,6 +645,8 @@ async fn i2_remote_newer_edit_adopts() {
             effort: ts(T),
             importance: ts(T),
             urgency: ts(T),
+            recur: ts(T),
+
             archived: ts(T),
             deleted: ts(T),
         },
@@ -693,6 +697,8 @@ async fn i3_concurrent_edits_resolve_per_field() {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: taskboard_domain::TaskClocks {
@@ -706,6 +712,8 @@ async fn i3_concurrent_edits_resolve_per_field() {
             effort: ts(T),
             importance: ts(T),
             urgency: ts(T),
+            recur: ts(T),
+
             archived: ts(T),
             deleted: ts(T),
         },
@@ -809,6 +817,8 @@ async fn i4_move_label_and_delete_push_to_the_server() {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: taskboard_domain::TaskClocks {
@@ -822,6 +832,8 @@ async fn i4_move_label_and_delete_push_to_the_server() {
             effort: ts(T + 10),
             importance: ts(T + 10),
             urgency: ts(T + 10),
+            recur: ts(T + 10),
+
             archived: ts(T),
             deleted: ts(T),
         },

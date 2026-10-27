@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, stack, remote_board_id, remote_stack_id, remote_card_id,\n                      title, description,\n                      duedate as \"duedate: DateTime<Utc>\",\n                      scheduled as \"scheduled: DateTime<Utc>\",\n                      done as \"done: DateTime<Utc>\",\n                      sort_order,\n                      effort,\n                      importance, urgency,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,\n                      ck_position, ck_labels, ck_effort, ck_importance, ck_urgency,\n                      ck_archived, ck_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM tasks ORDER BY id",
+  "query": "SELECT id, stack, remote_board_id, remote_stack_id, remote_card_id,\n                      title, description,\n                      duedate as \"duedate: DateTime<Utc>\",\n                      scheduled as \"scheduled: DateTime<Utc>\",\n                      done as \"done: DateTime<Utc>\",\n                      sort_order,\n                      effort,\n                      importance, urgency, recur,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,\n                      ck_position, ck_labels, ck_effort, ck_importance, ck_urgency,\n                      ck_recur, ck_archived, ck_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM tasks ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -158,8 +158,19 @@
         }
       },
       {
-        "name": "archived: bool",
+        "name": "recur",
         "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "recur"
+          }
+        }
+      },
+      {
+        "name": "archived: bool",
+        "ordinal": 15,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -170,7 +181,7 @@
       },
       {
         "name": "deleted: bool",
-        "ordinal": 15,
+        "ordinal": 16,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -181,7 +192,7 @@
       },
       {
         "name": "ck_title",
-        "ordinal": 16,
+        "ordinal": 17,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -192,7 +203,7 @@
       },
       {
         "name": "ck_description",
-        "ordinal": 17,
+        "ordinal": 18,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -203,7 +214,7 @@
       },
       {
         "name": "ck_duedate",
-        "ordinal": 18,
+        "ordinal": 19,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -214,7 +225,7 @@
       },
       {
         "name": "ck_scheduled",
-        "ordinal": 19,
+        "ordinal": 20,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -225,7 +236,7 @@
       },
       {
         "name": "ck_done",
-        "ordinal": 20,
+        "ordinal": 21,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -236,7 +247,7 @@
       },
       {
         "name": "ck_position",
-        "ordinal": 21,
+        "ordinal": 22,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -247,7 +258,7 @@
       },
       {
         "name": "ck_labels",
-        "ordinal": 22,
+        "ordinal": 23,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -258,7 +269,7 @@
       },
       {
         "name": "ck_effort",
-        "ordinal": 23,
+        "ordinal": 24,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -269,7 +280,7 @@
       },
       {
         "name": "ck_importance",
-        "ordinal": 24,
+        "ordinal": 25,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -280,7 +291,7 @@
       },
       {
         "name": "ck_urgency",
-        "ordinal": 25,
+        "ordinal": 26,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -290,8 +301,19 @@
         }
       },
       {
+        "name": "ck_recur",
+        "ordinal": 27,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "ck_recur"
+          }
+        }
+      },
+      {
         "name": "ck_archived",
-        "ordinal": 26,
+        "ordinal": 28,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -302,7 +324,7 @@
       },
       {
         "name": "ck_deleted",
-        "ordinal": 27,
+        "ordinal": 29,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -313,7 +335,7 @@
       },
       {
         "name": "remote_seen: DateTime<Utc>",
-        "ordinal": 28,
+        "ordinal": 30,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -341,6 +363,8 @@
       true,
       true,
       true,
+      true,
+      false,
       false,
       false,
       false,
@@ -358,5 +382,5 @@
       true
     ]
   },
-  "hash": "46317d5787ef75f9003c3e2a282403c6463aedefdbeb5e1e351993e5a3f24830"
+  "hash": "6af75288bcabff54d0b7d5f89248bfa8c561a3916b68aed95d2d43decc7eb48a"
 }

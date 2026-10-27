@@ -132,6 +132,8 @@ fn seeded_task_state(duedate_secs: i64) -> (PersistedState, taskboard_domain::Ta
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: TaskClocks {
@@ -145,6 +147,8 @@ fn seeded_task_state(duedate_secs: i64) -> (PersistedState, taskboard_domain::Ta
             effort: ts(T0),
             importance: ts(T0),
             urgency: ts(T0),
+            recur: ts(T0),
+
             archived: ts(T0),
             deleted: ts(T0),
         },

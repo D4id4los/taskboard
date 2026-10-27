@@ -534,6 +534,8 @@ mod tests {
             effort: epoch(),
             importance: epoch(),
             urgency: epoch(),
+            recur: epoch(),
+
             archived: epoch(),
             deleted: epoch(),
         }
@@ -554,6 +556,8 @@ mod tests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: task_clocks(),
@@ -1424,6 +1428,8 @@ mod connector_status_tests {
                 effort: None,
                 importance: None,
                 urgency: None,
+                recur: None,
+
                 archived: false,
                 deleted,
                 clocks: taskboard_domain::TaskClocks {
@@ -1437,6 +1443,8 @@ mod connector_status_tests {
                     effort: taskboard_domain::BoardClocks::epoch(),
                     importance: taskboard_domain::BoardClocks::epoch(),
                     urgency: taskboard_domain::BoardClocks::epoch(),
+                    recur: taskboard_domain::BoardClocks::epoch(),
+
                     archived: taskboard_domain::BoardClocks::epoch(),
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },

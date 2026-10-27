@@ -45,6 +45,7 @@ tasks:
     effort: ~
     importance: ~
     urgency: ~
+    recur: ~
     archived: false
     deleted: false
     clocks:
@@ -58,6 +59,7 @@ tasks:
       effort: "1970-01-01T10:02:00Z"
       importance: "1970-01-01T10:02:00Z"
       urgency: "1970-01-01T10:02:00Z"
+      recur: "1970-01-01T10:02:00Z"
       archived: "1970-01-01T10:02:00Z"
       deleted: "1970-01-01T10:02:00Z"
     remote_seen: ~
@@ -75,6 +77,7 @@ tasks:
     effort: ~
     importance: ~
     urgency: ~
+    recur: ~
     archived: false
     deleted: false
     clocks:
@@ -88,6 +91,7 @@ tasks:
       effort: "1970-01-01T10:03:00Z"
       importance: "1970-01-01T10:03:00Z"
       urgency: "1970-01-01T10:03:00Z"
+      recur: "1970-01-01T10:03:00Z"
       archived: "1970-01-01T10:03:00Z"
       deleted: "1970-01-01T10:03:00Z"
     remote_seen: ~
@@ -105,6 +109,7 @@ tasks:
     effort: ~
     importance: ~
     urgency: ~
+    recur: ~
     archived: false
     deleted: false
     clocks:
@@ -118,6 +123,7 @@ tasks:
       effort: "1970-01-01T10:04:00Z"
       importance: "1970-01-01T10:04:00Z"
       urgency: "1970-01-01T10:04:00Z"
+      recur: "1970-01-01T10:04:00Z"
       archived: "1970-01-01T10:04:00Z"
       deleted: "1970-01-01T10:04:00Z"
     remote_seen: ~

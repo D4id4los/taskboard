@@ -396,6 +396,14 @@ pub struct TaskChanges {
         skip_serializing_if = "Option::is_none"
     )]
     pub urgency: Option<Option<crate::entities::Urgency>>,
+    /// New recurring-series rule; `Some(None)` detaches the series,
+    /// `None` = untouched.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub recur: Option<Option<crate::recur::RecurRule>>,
     /// New archived flag.
     pub archived: Option<bool>,
 }

@@ -1351,6 +1351,7 @@ fn task_changes(
             crate::cli::UrgencySpec::Set(level) => Some(level),
             crate::cli::UrgencySpec::Clear => None,
         }),
+        recur: None,
         archived: if archive {
             Some(true)
         } else {

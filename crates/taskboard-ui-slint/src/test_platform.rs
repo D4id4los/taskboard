@@ -278,6 +278,8 @@ mod tests {
                 effort: None,
                 importance: None,
                 urgency: None,
+                recur: None,
+
                 archived: false,
                 deleted: false,
                 clocks: taskboard_domain::TaskClocks {
@@ -291,6 +293,8 @@ mod tests {
                     effort: stamp(2),
                     importance: stamp(2),
                     urgency: stamp(2),
+                    recur: stamp(2),
+
                     archived: stamp(2),
                     deleted: stamp(2),
                 },

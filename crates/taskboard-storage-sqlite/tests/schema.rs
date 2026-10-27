@@ -144,11 +144,25 @@ async fn insert_without_the_family_columns_inherits_epoch_defaults() {
     assert_eq!(task.effort, None);
     assert_eq!(task.importance, None);
     assert_eq!(task.urgency, None);
+    assert_eq!(task.recur, None);
     assert_eq!(task.clocks.scheduled, BoardClocks::epoch());
     assert_eq!(task.clocks.effort, BoardClocks::epoch());
     assert_eq!(task.clocks.importance, BoardClocks::epoch());
     assert_eq!(task.clocks.urgency, BoardClocks::epoch());
+    assert_eq!(task.clocks.recur, BoardClocks::epoch());
     db.close().await;
+}
+
+fn sample_rule() -> taskboard_domain::recur::RecurRule {
+    taskboard_domain::recur::RecurRule {
+        series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(0x5e)),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        pattern: taskboard_domain::recur::RecurPattern::Daily {
+            every: taskboard_domain::recur::EveryDays::new(2).unwrap(),
+        },
+        bound: taskboard_domain::recur::RecurBound::None,
+        continued_from: None,
+    }
 }
 
 fn board() -> taskboard_domain::entities::Board {
@@ -204,6 +218,8 @@ fn minimal_task() -> Task {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: TaskClocks {
@@ -217,6 +233,8 @@ fn minimal_task() -> Task {
             effort: BoardClocks::epoch(),
             importance: BoardClocks::epoch(),
             urgency: BoardClocks::epoch(),
+            recur: BoardClocks::epoch(),
+
             archived: BoardClocks::epoch(),
             deleted: BoardClocks::epoch(),
         },
@@ -248,6 +266,27 @@ async fn unknown_level_text_in_the_db_is_a_typed_corruption() {
         .await
         .expect("raw connection");
     sqlx::query("UPDATE tasks SET importance = 'apocalyptic', urgency = NULL WHERE id = ?1")
+        .bind(uuid_of_first_task(&pool).await)
+        .execute(&pool)
+        .await
+        .expect("corrupting update");
+    pool.close().await;
+
+    let err = db.repo().load().await.expect_err("corrupt decode");
+    assert!(matches!(err, RepositoryError::Corrupted));
+    db.close().await;
+}
+
+#[tokio::test]
+async fn corrupt_recur_json_in_the_db_is_a_typed_corruption() {
+    let mut db = FileDb::new().await;
+    let mut task = minimal_task();
+    task.recur = Some(sample_rule());
+    seed(&mut db, task).await;
+    let pool = SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+        .await
+        .expect("raw connection");
+    sqlx::query("UPDATE tasks SET recur = '{\"every\": 0}' WHERE id = ?1")
         .bind(uuid_of_first_task(&pool).await)
         .execute(&pool)
         .await

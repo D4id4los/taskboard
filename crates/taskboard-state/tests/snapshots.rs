@@ -279,6 +279,8 @@ async fn s1_fresh_boot_authoring() {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: None,
         },
     })
@@ -1107,6 +1109,8 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: TaskClocks {
@@ -1120,6 +1124,8 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
             effort: ts(T0),
             importance: ts(T0),
             urgency: ts(T0),
+            recur: ts(T0),
+
             archived: ts(T0),
             deleted: ts(T0),
         },

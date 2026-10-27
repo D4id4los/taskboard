@@ -37,6 +37,8 @@ pub fn task_clocks_strategy() -> impl Strategy<Value = TaskClocks> {
             effort: ef,
             importance: im,
             urgency: ur,
+            recur: ur,
+
             archived: a,
             deleted: del,
         })
@@ -147,6 +149,7 @@ pub fn task_strategy() -> impl Strategy<Value = Task> {
                 effort,
                 importance,
                 urgency,
+                recur: None,
                 archived,
                 deleted,
                 clocks,

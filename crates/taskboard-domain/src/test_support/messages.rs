@@ -27,6 +27,7 @@ pub fn task_changes_strategy() -> impl Strategy<Value = crate::messages::TaskCha
                     effort,
                     importance,
                     urgency,
+                    recur: None,
                     archived,
                 }
             },

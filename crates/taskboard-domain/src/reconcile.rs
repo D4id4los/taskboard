@@ -410,6 +410,11 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
         } else {
             local.urgency
         },
+        recur: if bc.recur >= lc.recur {
+            bound.recur.clone()
+        } else {
+            local.recur.clone()
+        },
         archived: if bc.archived >= lc.archived {
             bound.archived
         } else {
@@ -427,6 +432,7 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
             effort: lc.effort.max(bc.effort),
             importance: lc.importance.max(bc.importance),
             urgency: lc.urgency.max(bc.urgency),
+            recur: lc.recur.max(bc.recur),
             archived: lc.archived.max(bc.archived),
             deleted: lc.deleted.max(bc.deleted),
         },
@@ -557,6 +563,8 @@ mod tests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -570,6 +578,8 @@ mod tests {
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),
+                recur: ts(100),
+
                 archived: ts(100),
                 deleted: ts(100),
             },
@@ -911,6 +921,8 @@ mod proptests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -924,6 +936,8 @@ mod proptests {
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),
+                recur: ts(100),
+
                 archived: ts(100),
                 deleted: ts(100),
             },
@@ -1277,6 +1291,8 @@ mod proptest_strategies {
                     effort: None,
                     importance: None,
                     urgency: None,
+                    recur: None,
+
                     archived: false,
                     deleted: false,
                     clocks,
@@ -1296,6 +1312,8 @@ mod proptest_strategies {
                             effort: lab,
                             importance: lab,
                             urgency: lab,
+                            recur: lab,
+
                             archived: arc,
                             deleted: del,
                         },
@@ -1314,6 +1332,8 @@ mod proptest_strategies {
                             effort: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
                             importance: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
                             urgency: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
+                            recur: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
+
                             archived: arc + chrono::TimeDelta::try_seconds(7).unwrap(),
                             deleted: del + chrono::TimeDelta::try_seconds(7).unwrap(),
                         },

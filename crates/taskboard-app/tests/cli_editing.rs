@@ -172,6 +172,8 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: None,
         },
     )
@@ -202,6 +204,8 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: None,
         },
     )
@@ -225,6 +229,8 @@ async fn e2_tasks_edit_sets_and_clears_fields() {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: None,
         },
     )
@@ -774,6 +780,8 @@ async fn e11_field_edits_round_trip_and_clear() {
             effort: Some(Some(Effort::new(5400))),
             importance: Some(Some(Importance::High)),
             urgency: Some(Some(Urgency::VeryLow)),
+            recur: None,
+
             ..TaskChanges::default()
         },
     )
@@ -799,6 +807,8 @@ async fn e11_field_edits_round_trip_and_clear() {
             effort: Some(None),
             importance: Some(None),
             urgency: Some(None),
+            recur: None,
+
             ..TaskChanges::default()
         },
     )

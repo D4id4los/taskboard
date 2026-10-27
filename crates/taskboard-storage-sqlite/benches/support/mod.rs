@@ -167,6 +167,8 @@ fn fixture_task(i: usize, stacks: &[Stack], labels: &[Label]) -> Task {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: task_clocks(i),
@@ -187,6 +189,8 @@ fn task_clocks(i: usize) -> TaskClocks {
         effort: ts(ix(i) + 1_600_000),
         importance: ts(ix(i) + 1_700_000),
         urgency: ts(ix(i) + 1_800_000),
+        recur: ts(ix(i) + 1_800_000),
+
         archived: t,
         deleted: t,
     }

@@ -3269,6 +3269,8 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
                     effort: None,
                     importance: None,
                     urgency: None,
+                    recur: None,
+
                     archived: false,
                     deleted: false,
                     clocks: taskboard_domain::TaskClocks {
@@ -3282,6 +3284,8 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
                         effort: taskboard_domain::BoardClocks::epoch(),
                         importance: taskboard_domain::BoardClocks::epoch(),
                         urgency: taskboard_domain::BoardClocks::epoch(),
+                        recur: taskboard_domain::BoardClocks::epoch(),
+
                         archived: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },
@@ -5460,6 +5464,8 @@ fn the_drag_surface_survives_interleaved_refreshes() {
                     effort: None,
                     importance: None,
                     urgency: None,
+                    recur: None,
+
                     archived: false,
                     deleted: false,
                     clocks: taskboard_domain::TaskClocks {
@@ -5473,6 +5479,8 @@ fn the_drag_surface_survives_interleaved_refreshes() {
                         effort: taskboard_domain::BoardClocks::epoch(),
                         importance: taskboard_domain::BoardClocks::epoch(),
                         urgency: taskboard_domain::BoardClocks::epoch(),
+                        recur: taskboard_domain::BoardClocks::epoch(),
+
                         archived: taskboard_domain::BoardClocks::epoch(),
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },

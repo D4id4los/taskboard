@@ -122,6 +122,8 @@ pub fn adopt_remote_task(remote: &RemoteTask, id: TaskId, ctx: &RemoteIndex) -> 
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: remote.archived,
         deleted: false,
         clocks: clocks_from(remote.last_modified),
@@ -141,6 +143,8 @@ fn clocks_from(ts: DateTime<Utc>) -> crate::entities::TaskClocks {
         effort: ts,
         importance: ts,
         urgency: ts,
+        recur: ts,
+
         archived: ts,
         deleted: ts,
     }
@@ -397,6 +401,10 @@ pub(crate) fn fold_task_app_data(
                 merged.urgency = *value;
                 merged.clocks.urgency = clock;
             }
+            crate::appdata::ModeledValue::Recur(value) => {
+                merged.recur.clone_from(value);
+                merged.clocks.recur = clock;
+            }
             crate::appdata::ModeledValue::Scheduled(value) => {
                 merged.scheduled = *value;
                 merged.clocks.scheduled = clock;
@@ -616,6 +624,8 @@ pub fn adopt_task_after_push(
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: echo.archived,
         deleted: false,
         clocks: crate::entities::TaskClocks {
@@ -629,6 +639,7 @@ pub fn adopt_task_after_push(
             effort: max_ts(local.clocks.effort, lm),
             importance: max_ts(local.clocks.importance, lm),
             urgency: max_ts(local.clocks.urgency, lm),
+            recur: max_ts(local.clocks.recur, lm),
             archived: max_ts(local.clocks.archived, lm),
             deleted: max_ts(local.clocks.deleted, lm),
         },

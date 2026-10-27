@@ -365,6 +365,8 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         effort: None,
                         importance: None,
                         urgency: None,
+                        recur: None,
+
                         archived: row.archived,
                         deleted: row.deleted,
                         clocks: row.clocks,

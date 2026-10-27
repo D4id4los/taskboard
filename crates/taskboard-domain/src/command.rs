@@ -442,6 +442,8 @@ pub fn plan_command(
                 effort: None,
                 importance: None,
                 urgency: None,
+                recur: None,
+
                 archived: false,
                 deleted: false,
                 clocks: all_task_clocks(now),
@@ -553,6 +555,8 @@ pub fn plan_command(
                 effort: None,
                 importance: None,
                 urgency: None,
+                recur: None,
+
                 archived: false,
                 deleted: false,
                 clocks: all_task_clocks(now),
@@ -604,6 +608,10 @@ pub fn plan_command(
                 updated.urgency = urgency;
                 updated.clocks.urgency = now;
             }
+            if let Some(recur) = &changes.recur {
+                updated.recur.clone_from(recur);
+                updated.clocks.recur = now;
+            }
             if let Some(archived) = changes.archived {
                 updated.archived = archived;
                 updated.clocks.archived = now;
@@ -623,6 +631,7 @@ pub fn plan_command(
             let app_edit = changes.effort.is_some()
                 || changes.importance.is_some()
                 || changes.urgency.is_some()
+                || changes.recur.is_some()
                 || (changes.scheduled.is_some() && !features.card_startdate);
             let mut actions = vec![PersistenceAction::UpsertTask(updated)];
             if native_native {
@@ -1925,6 +1934,8 @@ fn all_task_clocks(now: DateTime<Utc>) -> TaskClocks {
         effort: now,
         importance: now,
         urgency: now,
+        recur: now,
+
         labels: now,
         archived: now,
         deleted: now,
@@ -1995,6 +2006,8 @@ mod tests {
             effort: ts(secs),
             importance: ts(secs),
             urgency: ts(secs),
+            recur: ts(secs),
+
             archived: ts(secs),
             deleted: ts(secs),
         }
@@ -2019,6 +2032,8 @@ mod tests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: clocks(T0 - 3_600),
@@ -2599,6 +2614,8 @@ mod tests {
                     effort: Some(Some(crate::entities::Effort::new(1_500))),
                     importance: Some(Some(crate::entities::Importance::High)),
                     urgency: Some(Some(crate::entities::Urgency::VeryLow)),
+                    recur: None,
+
                     ..Default::default()
                 },
             },
@@ -2665,6 +2682,8 @@ mod tests {
                     effort: Some(Some(crate::entities::Effort::new(900))),
                     importance: Some(Some(crate::entities::Importance::Normal)),
                     urgency: Some(Some(crate::entities::Urgency::High)),
+                    recur: None,
+
                     ..Default::default()
                 },
             },

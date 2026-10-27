@@ -1749,6 +1749,8 @@ mod tests {
             effort: epoch(),
             importance: epoch(),
             urgency: epoch(),
+            recur: epoch(),
+
             archived: epoch(),
             deleted: epoch(),
         }
@@ -1769,6 +1771,8 @@ mod tests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: clocks(),
