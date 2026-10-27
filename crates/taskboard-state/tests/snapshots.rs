@@ -125,6 +125,7 @@ impl Scenario {
             app.reminders, persisted.reminders,
             "memory ≡ disk: reminders"
         );
+        assert_eq!(app.tracking, persisted.tracking, "memory ≡ disk: tracking");
         assert_sync_stored(&app.sync, &persisted.sync);
         assert_yaml_snapshot!(format!("{scenario}_persisted_state"), &persisted);
         let tail = PublishedTail {
@@ -1236,4 +1237,48 @@ async fn s33_capture_lands_canonical_first_among_backlogs() {
     })
     .await;
     s.snap("s33");
+}
+
+/// S36 — the tracking surface enters the disk contract (DR-5/1): a
+/// start mints the open row (s36a); a stop stamps it and a `LogTime`
+/// adds a closed retroactive row (s36b). The serialized entry shape is
+/// the contract chunk 2's codec must round-trip.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s36_tracking_rows_enter_the_disk_contract() {
+    let mut s = Scenario::start().await;
+    let CommandOutcome::CreatedStack(stack) = s
+        .run(StateCommand::CreateStack {
+            board: s.board_id(),
+            title: "todo".into(),
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::CreatedTask(task) = s
+        .run(StateCommand::CreateTask {
+            title: "tracked work".into(),
+            stack,
+            order: 1,
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::TrackingStarted { .. } = s.run(StateCommand::StartTracking { task }).await
+    else {
+        panic!("wrong receipt");
+    };
+    s.snap("s36a");
+
+    s.run(StateCommand::StopTracking).await;
+    s.run(StateCommand::LogTime {
+        task,
+        start: ts(T0 - 86_400),
+        end: ts(T0 - 79_200),
+    })
+    .await;
+    s.snap("s36b");
 }
