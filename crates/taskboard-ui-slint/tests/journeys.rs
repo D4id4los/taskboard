@@ -5414,6 +5414,53 @@ fn the_pointer_drag_drops_the_keyboard_move_command() {
     );
 }
 
+/// R3-F4 (D1) — the ghost is card-sized: arming a drag captures the
+/// source card's rendered size into `DragState` before the ghost's
+/// first frame, so the ghost `TaskCard` mounts at the card's geometry —
+/// never the window fill. Structural: the globals against the live
+/// card element; no pixel assertions.
+#[test]
+fn the_drag_ghost_carries_the_source_cards_size() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let card = harness
+                .driver
+                .find_by_label("task-0")
+                .expect("the first card is addressable");
+            let (cx, cy) = support::driver::centre(&card);
+            let card_size = card.size();
+            harness.driver.press_at(cx, cy);
+            let (hx, hy) = column_header(&harness, "b");
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.drag_move_to(hx, hy);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_board_drag_open(),
+                "the drag is on the model surface"
+            );
+            let drag = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::DragState>();
+            let (gw, gh) = (drag.get_ghost_width(), drag.get_ghost_height());
+            assert!(
+                gw > 0.0 && gh > 0.0,
+                "the captured size is set before the ghost's first frame, got {gw}x{gh}"
+            );
+            assert_eq!(gw, card_size.width, "the ghost width is the card's");
+            assert_eq!(gh, card_size.height, "the ghost height is the card's");
+            harness.driver.release_at(hx, hy);
+            harness.driver.advance_time(0);
+        },
+    );
+}
+
 /// The (d) acceptance: a background refresh mid-drag re-derives the
 /// ghost flag, the ghost snapshot, and the highlight from the flow —
 /// they survive — and the release still dispatches (T-7).
