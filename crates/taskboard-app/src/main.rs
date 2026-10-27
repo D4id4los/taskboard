@@ -121,6 +121,10 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         // Transport auto-routing (ADR 0012): silent in both human and
         // JSON modes — the observable contract (exit code, stdout
         // payload, stderr envelope) is byte-identical on both paths.
+        // The `IpcOnly` fns install their own watcher (they are never
+        // ceremonies); the other lanes install below, before the arm
+        // that first awaits on the user's behalf.
+        let mut cancel: Option<tokio::sync::watch::Receiver<u64>> = None;
         match route_for_ipc(&command) {
             IpcRoute::IpcOnly => {
                 let code = match command {
@@ -136,23 +140,31 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
             IpcRoute::IpcOrLocal => {
                 // A resolved config derives the socket; a rejected
                 // config reports typed through the in-process dispatch,
-                // exactly as before.
-                if let Ok(config) = AppConfig::load(cli.config.clone())
-                    && let Some(conn) = client::try_connect(config.db_path()).await
-                {
-                    let read_budget = client::client_read_budget(
-                        verb_timeout_secs(&command),
-                        config.ipc.client_read_timeout_secs,
-                    );
-                    match conn.exec(&raw_argv, read_budget).await {
-                        Ok(outcome) => relay(&outcome),
-                        // Mid-request death: the daemon holds the lock,
-                        // so in-process fallback would only re-report
-                        // `instance-locked`; the typed failure is the
-                        // honest signal.
-                        Err(err) => std::process::exit(i32::from(report(cli.json, &err))),
+                // exactly as before. The whole transport future
+                // (`try_connect`'s retry loop included) is selected
+                // against the cancel watch: on SIGINT the connection
+                // closes mid-exchange (orphan completion, D-0).
+                cancel = install_for(&command);
+                let json = cli.json;
+                let transport = async {
+                    if let Ok(config) = AppConfig::load(cli.config.clone())
+                        && let Some(conn) = client::try_connect(config.db_path()).await
+                    {
+                        let read_budget = client::client_read_budget(
+                            verb_timeout_secs(&command),
+                            config.ipc.client_read_timeout_secs,
+                        );
+                        match conn.exec(&raw_argv, read_budget).await {
+                            Ok(outcome) => relay(&outcome),
+                            // Mid-request death: the daemon holds the lock,
+                            // so in-process fallback would only re-report
+                            // `instance-locked`; the typed failure is the
+                            // honest signal.
+                            Err(err) => std::process::exit(i32::from(report(json, &err))),
+                        }
                     }
-                }
+                };
+                selected(json, cancel.as_mut(), transport).await;
             }
             IpcRoute::Local => {}
         }
@@ -160,15 +172,25 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         let mut out = std::io::stdout();
         let mut err = std::io::stderr();
         let ctx = CommandCtx {
-            config_path: AppConfig::config_path(cli.config),
+            // `take`: the one-shot tail always exits, but the compiler
+            // cannot see through `selected` — a moved-out `cli.config`
+            // would poison the (unreached) bare-invocation routing.
+            config_path: AppConfig::config_path(cli.config.take()),
             io: taskboard_app::commands::CommandIo {
                 out: &mut out,
                 err: &mut err,
                 json: cli.json,
             },
         };
-        let code = dispatch(command, ctx).await;
-        std::process::exit(i32::from(code));
+        // The in-process dispatch (fall-through and `Local` verbs share
+        // this site): the boot inside `dispatch` is covered too — ^C
+        // drops the boot future (bounded, idempotent file work).
+        let json = cli.json;
+        let mut cancel = cancel_or_install(&command, cancel);
+        if let Some(code) = Box::pin(selected(json, cancel.as_mut(), dispatch(command, ctx))).await
+        {
+            std::process::exit(i32::from(code));
+        }
     }
 
     // Bare `taskboard` routing (D4, amended per the ADR 0015 display
@@ -234,11 +256,61 @@ fn relay(outcome: &client::ExecOutcome) -> ! {
     std::process::exit(i32::from(outcome.code));
 }
 
+/// The D-3 ceremony exclusion, as an install decision: `connect` and
+/// `login` keep the default SIGINT disposition — their prompts are sync
+/// reads inside `poll` (F14), so a handler would consume the ^C and
+/// leave the read silently running. Every other one-shot verb gets the
+/// cancellation watcher.
+fn install_for(command: &Command) -> Option<tokio::sync::watch::Receiver<u64>> {
+    match command {
+        Command::Connect { .. } | Command::Login { .. } => None,
+        _ => Some(taskboard_app::signals::install_oneshot_watcher()),
+    }
+}
+
+/// The dispatch-tail half of the install decision: reuse the watcher
+/// the transport arm already installed, or install one now (`Local`
+/// verbs arrive here without one).
+fn cancel_or_install(
+    command: &Command,
+    cancel: Option<tokio::sync::watch::Receiver<u64>>,
+) -> Option<tokio::sync::watch::Receiver<u64>> {
+    cancel.or_else(|| install_for(command))
+}
+
+/// Runs `body` selected against the one-shot cancel watch: on SIGINT
+/// the typed `cancelled` envelope prints (orphan completion named, D-0)
+/// and the process exits 130 — the shell's ^C convention, uniform
+/// across the one-shot surface. A `None` watch (the ceremony
+/// exclusion, or an install that degraded to never-fires) runs the
+/// body bare.
+async fn selected<T>(
+    json: bool,
+    cancel: Option<&mut tokio::sync::watch::Receiver<u64>>,
+    body: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    if let Some(cancel) = cancel {
+        tokio::select! {
+            outcome = body => Some(outcome),
+            () = taskboard_app::signals::changed_or_never(cancel) => {
+                std::process::exit(i32::from(report(json, &CommandError::Cancelled)));
+            }
+        }
+    } else {
+        Some(body.await)
+    }
+}
+
 /// `taskboard status` (ADR 0012): the daemon's live view over IPC, or
 /// the client-side answer off the lock sidecar. Never boots a core,
 /// never triggers a cycle; exit 0 both ways (an observation, not a
 /// failure).
 async fn status_command(config_path: Option<std::path::PathBuf>, json: bool) -> u8 {
+    // IpcOnly verbs are never ceremonies: the watcher installs
+    // unconditionally. An interrupted observation is not a completed
+    // one — a cancelled `status` reports the typed `cancelled` envelope
+    // and exits 130 (Q10), not 0.
+    let mut cancel = taskboard_app::signals::install_oneshot_watcher();
     let config = match AppConfig::load(config_path) {
         Ok(config) => config,
         Err(err) => return report(json, &CommandError::from(err)),
@@ -248,9 +320,16 @@ async fn status_command(config_path: Option<std::path::PathBuf>, json: bool) -> 
             // `status` carries no verb budget: the flag-less ceiling (or
             // the operator's override) bounds only the wedged daemon.
             let read_budget = client::client_read_budget(None, config.ipc.client_read_timeout_secs);
-            match conn.status(read_budget).await {
-                Ok(view) => view,
-                Err(err) => return report(json, &err),
+            tokio::select! {
+                outcome = conn.status(read_budget) => match outcome {
+                    Ok(view) => view,
+                    Err(err) => return report(json, &err),
+                },
+                () = taskboard_app::signals::changed_or_never(&mut cancel) => {
+                    let cancelled = CommandError::Cancelled;
+                    let _ = report(json, &cancelled);
+                    return 130;
+                }
             }
         }
         None => taskboard_app::commands::status::StatusView::no_daemon(config.db_path()),
@@ -271,6 +350,10 @@ async fn status_command(config_path: Option<std::path::PathBuf>, json: bool) -> 
 /// `taskboard daemon stop`: the graceful remote shutdown. Without a
 /// daemon: typed `no-daemon`, exit 1.
 async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool) -> u8 {
+    // IpcOnly verbs are never ceremonies: the watcher installs
+    // unconditionally; a cancelled stop reports the typed `cancelled`
+    // envelope and exits 130 (Q10).
+    let mut cancel = taskboard_app::signals::install_oneshot_watcher();
     let config = match AppConfig::load(config_path) {
         Ok(config) => config,
         Err(err) => return report(json, &CommandError::from(err)),
@@ -282,9 +365,16 @@ async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool
     // the operator's override) bounds only the wedged daemon — a
     // draining daemon's ack precedes its drain.
     let read_budget = client::client_read_budget(None, config.ipc.client_read_timeout_secs);
-    match conn.shutdown(read_budget).await {
-        Ok(()) => 0,
-        Err(err) => report(json, &err),
+    tokio::select! {
+        outcome = conn.shutdown(read_budget) => match outcome {
+            Ok(()) => 0,
+            Err(err) => report(json, &err),
+        },
+        () = taskboard_app::signals::changed_or_never(&mut cancel) => {
+            let cancelled = CommandError::Cancelled;
+            let _ = report(json, &cancelled);
+            130
+        }
     }
 }
 
