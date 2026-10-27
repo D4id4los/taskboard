@@ -113,6 +113,79 @@ pub struct Fixture {
     pub task1: TaskId,
 }
 
+/// The timers-surface helpers (DR-3/3, D-P13): mint a live alarm into
+/// `state` and hand back its id — the journeys address rows through
+/// these, never hand-building the domain rows inline.
+#[must_use]
+pub fn add_alarm(
+    state: &mut AppState,
+    label: &str,
+    fire_at: chrono::DateTime<chrono::Utc>,
+) -> taskboard_domain::AdhocAlarmId {
+    let id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+    state.reminders.alarms.insert(
+        id,
+        taskboard_domain::AdhocAlarm {
+            id,
+            label: label.to_owned(),
+            fire_at,
+            created_at: fire_at - TimeDelta::minutes(1),
+        },
+    );
+    id
+}
+
+/// Records the delivery receipt for an alarm's occurrence (the fire
+/// fact that makes the row awaiting).
+pub fn deliver_alarm(
+    state: &mut AppState,
+    alarm: taskboard_domain::AdhocAlarmId,
+    occurrence: chrono::DateTime<chrono::Utc>,
+) {
+    state
+        .reminders
+        .deliveries
+        .insert(taskboard_domain::ReminderDelivery {
+            reminder: taskboard_domain::ReminderRef::Adhoc(alarm),
+            occurrence,
+            delivered_at: occurrence,
+        });
+}
+
+/// A delivered (fired ∧ ¬dismissed) task-anchored notification: an
+/// open task gains a due instant plus an explicit at-due rule whose
+/// delivery receipt exists — the notification surface's task row
+/// (the anchor side that keeps all four task-shaped buttons).
+pub fn deliver_task_notification(
+    state: &mut AppState,
+    task: taskboard_domain::TaskId,
+    due: chrono::DateTime<chrono::Utc>,
+) {
+    if let Some(t) = state.tasks.get_mut(&task) {
+        t.duedate = Some(due);
+    }
+    let rule_id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7());
+    let now = chrono::Utc::now();
+    state.reminders.rules.insert(
+        rule_id,
+        taskboard_domain::ReminderRule {
+            id: rule_id,
+            task,
+            offset: taskboard_domain::ReminderOffset::at_due(),
+            created_at: now,
+            updated_at: now,
+        },
+    );
+    state
+        .reminders
+        .deliveries
+        .insert(taskboard_domain::ReminderDelivery {
+            reminder: taskboard_domain::ReminderRef::Rule(rule_id),
+            occurrence: due,
+            delivered_at: due,
+        });
+}
+
 /// The journey fixture (§5.1): one board, two stacks ("a" with tasks
 /// 0 and 1, 1 overdue; "b" with task 2), sync `Offline` with two
 /// pending ops — the step-9 status read's subject.

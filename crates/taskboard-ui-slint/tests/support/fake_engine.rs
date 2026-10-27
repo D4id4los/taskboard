@@ -58,6 +58,7 @@ impl FakeEngine {
     /// Applies drained commands to the state snapshot for journey
     /// continuity (insert/create, mark done, move, delete, retitle),
     /// stores, and triggers the UI's deterministic refresh.
+    #[allow(clippy::too_many_lines)] // one wiring match, kept flat
     pub fn settle(&mut self, ui: &UiHandle) {
         self.drain();
         let unapplied = &self.received[self.applied..];
@@ -131,6 +132,41 @@ impl FakeEngine {
                     if let Some(task) = state.tasks.get_mut(&id) {
                         task.done = done.then(chrono::Utc::now);
                     }
+                }
+                // The timers verbs (DR-3/3, D-P13): the planner's
+                // `In` arm mirrors the engine's stamp (now + dur,
+                // `At` verbatim); cancel is terminal-by-deletion.
+                StateCommand::CreateAdhocAlarm { label, when } => {
+                    let id = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+                    let fire_at = match when {
+                        taskboard_domain::AdhocWhen::At(at) => at,
+                        taskboard_domain::AdhocWhen::In(dur) => chrono::Utc::now() + dur,
+                    };
+                    state.reminders.alarms.insert(
+                        id,
+                        taskboard_domain::AdhocAlarm {
+                            id,
+                            label,
+                            fire_at,
+                            created_at: chrono::Utc::now(),
+                        },
+                    );
+                }
+                StateCommand::CancelAdhocAlarm { alarm } => {
+                    state.reminders.alarms.remove(&alarm);
+                }
+                StateCommand::DismissReminder {
+                    reminder,
+                    occurrence,
+                } => {
+                    state
+                        .reminders
+                        .dismissals
+                        .insert(taskboard_domain::ReminderDismissal {
+                            reminder,
+                            occurrence,
+                            dismissed_at: chrono::Utc::now(),
+                        });
                 }
                 StateCommand::MoveTask { id, stack, order } => {
                     if let Some(task) = state.tasks.get_mut(&id) {

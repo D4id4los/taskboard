@@ -62,6 +62,7 @@ export component TodayView inherits FocusScope {
     callback timers-cancel-clicked(int);
     // `false` keeps the form's text (an absorbed parse miss).
     callback timers-create-accepted(string, string) -> bool;
+    callback timers-form-edited();
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -96,10 +97,12 @@ export component TodayView inherits FocusScope {
                 // The timers section (D-P18): first on the page — the
                 // status-bar chip's click target lands here visibly.
                 if (root.timers-visible): TimersSection {
+                    vertical-stretch: 0;
                     timers: root.timers;
                     timers-awaiting: root.timers-awaiting;
                     cancel-clicked(r) => root.timers-cancel-clicked(r);
                     create-accepted(label, when) => root.timers-create-accepted(label, when);
+                    form-edited() => root.timers-form-edited();
                 }
                 if (root.today.empty): EmptyState {
                     text: "Nothing due today";

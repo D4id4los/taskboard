@@ -31,12 +31,24 @@ export component TimersSection inherits Rectangle {
     // The form's commit seam (the rule-add convention): `false` keeps
     // the field text (an absorbed parse miss), `true` clears both.
     callback create-accepted(string, string) -> bool;
+    // Any keystroke in the form: engages insert mode at the adapter
+    // (the settings-field precedent) — a Normal-mode chain must never
+    // swallow a field's Space.
+    callback form-edited();
 
     background: transparent;
     accessible-role: AccessibleRole.region;
     accessible-label: "Timers";
 
-    VerticalLayout {
+    // Content-sized, pinned both ends: the today page's sections
+    // never stretch (D7's `vertical-stretch: 0` discipline), and a
+    // Rectangle default-max would otherwise absorb the page's
+    // leftover space into the form fields.
+    min-height: section-layout.preferred-height;
+    max-height: section-layout.preferred-height;
+
+    section-layout := VerticalLayout {
+        vertical-stretch: 0;
         spacing: Theme.space-1;
 
         // The header row (D-P3): always renders on the desktop today
@@ -91,12 +103,14 @@ export component TimersSection inherits Rectangle {
                 placeholder: "Timer label";
                 label: "Timer label";
                 autofocus: false;
+                edited => root.form-edited();
             }
             when-field := TextField {
                 horizontal-stretch: 1;
                 placeholder: "in 10m · at 09:30";
                 label: "Timer timing (in 10m or at 09:30)";
                 autofocus: false;
+                edited => root.form-edited();
                 accepted(text) => {
                     if (root.create-accepted(label-field.text, text)) {
                         label-field.text = "";

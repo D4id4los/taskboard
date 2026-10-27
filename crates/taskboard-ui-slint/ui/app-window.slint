@@ -274,6 +274,7 @@ export component AppWindow inherits Window {
                 timers-awaiting: root.timers-awaiting;
                 timers-cancel-clicked(r) => root.timers-cancel-clicked(r);
                 timers-create-accepted(label, when) => root.timers-create-accepted(label, when);
+                timers-form-edited() => root.timers-form-edited();
             }
             if (root.current-view == View.stack-detail): StackView {
                 stack: root.stack-model;
@@ -690,5 +691,6 @@ export component AppWindow inherits Window {
     // TimerCancel from the row table; the chip click focuses today.
     pure callback timers-cancel-clicked(int);
     pure callback timers-create-accepted(string, string) -> bool;
+    pure callback timers-form-edited();
     pure callback timers-chip-clicked();
 }
