@@ -365,6 +365,11 @@ pub enum CommandError {
     /// single invocation.
     #[error("boards use is an interactive-session verb — run it inside the taskboard session")]
     SessionOnly,
+    /// SIGINT cancelled the running line (ADR 0011's amendment): the
+    /// line's future was dropped, the session continues. A failed line
+    /// never aborts the session — a cancelled one is exactly that.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 impl From<crate::config::ConfigError> for CommandError {
@@ -444,6 +449,7 @@ impl CommandError {
             Self::IpcVersion { .. } => "ipc-version",
             Self::UnknownConnector { .. } => "unknown-connector",
             Self::SessionOnly => "session-only",
+            Self::Cancelled => "cancelled",
         }
     }
 
@@ -488,6 +494,13 @@ impl CommandError {
             Self::ConfirmationRequired { verb, .. } => Some(verb.clone()),
             Self::UnbindConfirmationRequired { board, .. }
             | Self::ReconcileConfirmationRequired { board, .. } => Some(board.clone()),
+            // UX text (never asserted): the orphan-completion rule —
+            // the cancel drops the line's wait, not an engine command
+            // already delivered.
+            Self::Cancelled => Some(
+                "the operation was interrupted; a command already handed to the engine may still have taken effect"
+                    .to_owned(),
+            ),
             _ => None,
         }
     }
