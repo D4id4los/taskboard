@@ -1028,32 +1028,38 @@ pub async fn run_session_with_parts(
 /// state makes the hand-back correct regardless of which thread wins
 /// the race. Non-terminal stdin is a no-op: `tcgetattr` fails there.
 ///
-/// A signal kill mid-`readline` still cannot restore (no destructors
-/// run) — accepted, tracked in the improvement backlog.
+/// A signal kill mid-`readline` cannot run destructors — but the
+/// session watcher (design D-4) restores this same saved state before
+/// every forced exit and before a graceful termination drain, so the
+/// pane is handed back sane on every path a signal can reach; the one
+/// unrestoreable case left is SIGKILL/SIGQUIT (kernel defaults,
+/// `stty sane` is the user recovery).
 #[cfg(unix)]
 struct TtyStateGuard {
-    saved: Option<nix::sys::termios::Termios>,
+    saved: crate::signals::SavedTty,
 }
 
 #[cfg(unix)]
 impl TtyStateGuard {
     fn take() -> Self {
         Self {
-            saved: nix::sys::termios::tcgetattr(std::io::stdin()).ok(),
+            saved: Arc::new(std::sync::Mutex::new(
+                nix::sys::termios::tcgetattr(std::io::stdin()).ok(),
+            )),
         }
+    }
+
+    /// The shareable handle the watcher restores from (idempotent:
+    /// restoring the saved state twice is a no-op).
+    fn shared(&self) -> crate::signals::SavedTty {
+        Arc::clone(&self.saved)
     }
 }
 
 #[cfg(unix)]
 impl Drop for TtyStateGuard {
     fn drop(&mut self) {
-        if let Some(saved) = &self.saved {
-            let _ = nix::sys::termios::tcsetattr(
-                std::io::stdin(),
-                nix::sys::termios::SetArg::TCSADRAIN,
-                saved,
-            );
-        }
+        crate::signals::restore_tty(&self.saved);
     }
 }
 
@@ -1067,10 +1073,17 @@ impl TtyStateGuard {
     fn take() -> Self {
         Self
     }
+
+    /// A shareable snapshot: nothing to save without a line discipline.
+    fn shared(&self) -> crate::signals::SavedTty {
+        Arc::new(())
+    }
 }
 
-/// The production session: real terminal (editor thread) and std
-/// streams.
+/// The production session: real terminal (editor thread), std
+/// streams, and the signal watcher (D-7: the chunk's only signal
+/// installation — never on a test path; hermetic suites inject the
+/// loop-side watches).
 pub async fn run_session(
     config: AppConfig,
     config_path: Option<std::path::PathBuf>,
@@ -1083,14 +1096,25 @@ pub async fn run_session(
         err: &mut err,
         json: json_default,
     };
+    let store: Arc<dyn CredentialStore> = crate::commands::production_store(
+        config.nextcloud.credential_store,
+        config.credential_base_dir(),
+    );
     // Held for the whole session, before the editor thread exists:
     // dropping at scope end (before main's `process::exit`) hands the
     // terminal back exactly as found.
-    let _tty = TtyStateGuard::take();
-    run_session_with_lines(
+    let tty = TtyStateGuard::take();
+    // The watcher shares the guard's saved state and restores it
+    // before every forced exit and before a graceful termination
+    // drain (D-4); the guard's own drop keeps the non-signal paths.
+    let saved: crate::signals::SavedTty = tty.shared();
+    let signals = crate::signals::install_session_watcher(saved);
+    run_session_with_parts(
         config,
         config_path,
+        store,
         json_default,
+        signals,
         spawn_line_reader,
         &mut io,
     )
