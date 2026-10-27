@@ -76,6 +76,9 @@ export component BoardLayout inherits Rectangle {
     in property <[string]> stack-header-hint;
     // The stack.create binding hint for the add-column tooltip (r2 D6).
     in property <[string]> stack-create-hint;
+    // The task.create binding hint for the add-task ghost tooltips
+    // (r3 D3).
+    in property <[string]> task-create-hint;
     // The drag seams (round-1 D17): press captures the pre-drag base
     // width, drag reports the absolute delta since press (idempotent
     // against dropped events), release persists. Button-agnostic — a
@@ -494,6 +497,21 @@ export component BoardLayout inherits Rectangle {
                                 background: add-task-hit.has-hover ? Theme.surface-hover : transparent;
                                 add-task-hit := TouchArea {
                                     clicked => root.add-task-activated(column-index);
+                                    // The ghost tooltip (r3 D3): the standard
+                                    // enter-arms/leave-dismiss wiring; the label
+                                    // is the accessible tree's own, the
+                                    // description is a presentation literal.
+                                    changed has-hover => {
+                                        if (self.has-hover) {
+                                            TooltipState.hover("Add task",
+                                                "Creates a task in this stack.",
+                                                root.task-create-hint,
+                                                self.absolute-position.x, self.absolute-position.y,
+                                                self.width, self.height);
+                                        } else {
+                                            TooltipState.unhover();
+                                        }
+                                    }
                                 }
                                 add-task-focus := FocusScope {
                                     width: 100%;
@@ -712,6 +730,19 @@ export component BoardLayout inherits Rectangle {
                     background: add-task-hit-compact.has-hover ? Theme.surface-hover : transparent;
                     add-task-hit-compact := TouchArea {
                         clicked => root.add-task-activated(root.effective-selected());
+                        // The ghost tooltip (r3 D3), compact leg — the
+                        // regular ghost's wiring verbatim.
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                TooltipState.hover("Add task",
+                                    "Creates a task in this stack.",
+                                    root.task-create-hint,
+                                    self.absolute-position.x, self.absolute-position.y,
+                                    self.width, self.height);
+                            } else {
+                                TooltipState.unhover();
+                            }
+                        }
                     }
                     add-task-focus-compact := FocusScope {
                         width: 100%;

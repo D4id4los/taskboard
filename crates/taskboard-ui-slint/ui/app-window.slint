@@ -116,6 +116,9 @@ export component AppWindow inherits Window {
     in-out property <[string]> stack-header-hint;
     // The stack.create binding hint for the add-column tooltip (r2 D6).
     in-out property <[string]> stack-create-hint;
+    // The task.create binding hint for the add-task ghost tooltips
+    // (r3 D3).
+    in-out property <[string]> task-create-hint;
     in-out property <View> current-view: View.board;
     // The settings seams (round-1 chunk 3, D6.6/D7/D9).
     callback settings-back-clicked();
@@ -220,6 +223,7 @@ export component AppWindow inherits Window {
                 task-card-hint: root.task-card-hint;
                 stack-header-hint: root.stack-header-hint;
                 stack-create-hint: root.stack-create-hint;
+                task-create-hint: root.task-create-hint;
                 stack-width-press(c, w) => root.board-stack-width-press(c, w);
                 stack-width-drag(c, d) => root.board-stack-width-drag(c, d);
                 stack-width-release(c) => root.board-stack-width-release(c);

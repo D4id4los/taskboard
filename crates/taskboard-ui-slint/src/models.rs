@@ -244,6 +244,7 @@ struct HintModels {
     task_card: Option<Rc<VecModel<SharedString>>>,
     stack_header: Option<Rc<VecModel<SharedString>>>,
     stack_create: Option<Rc<VecModel<SharedString>>>,
+    task_create: Option<Rc<VecModel<SharedString>>>,
 }
 
 /// Applies `desired` onto the persistent model through a positional
@@ -655,6 +656,15 @@ fn push_chrome(
             window.set_stack_create_hint(rc);
         },
         &rows(ActionId::StackCreate),
+    );
+    // The add-task ghosts' tooltip hint (r3 D3): the task.create
+    // binding — the same projection, one action later.
+    mutations += push_rows(
+        &mut models.hints.task_create,
+        |rc| {
+            window.set_task_create_hint(rc);
+        },
+        &rows(ActionId::TaskCreate),
     );
     mutations
 }

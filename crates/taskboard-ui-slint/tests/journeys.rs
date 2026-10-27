@@ -1196,6 +1196,48 @@ fn the_context_menu_focuses_and_routes_the_card() {
     );
 }
 
+/// R3-F12 (D3) — an Add Task ghost hover arms the generalized
+/// tooltip: pending on enter, visible after the delay with a
+/// non-empty description (content never asserted), dismissed on
+/// leave. The regular leg's ghost is probed; the compact ghost shares
+/// the wiring.
+#[test]
+fn an_add_task_ghost_hover_arms_the_tooltip() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let ghost = harness
+                .driver
+                .find_by_label("Add task")
+                .expect("the add-task ghost is addressable");
+            let pos = ghost.absolute_position();
+            let size = ghost.size();
+            harness
+                .driver
+                .hover_at(pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+            assert!(
+                tooltip_state(&harness).get_pending(),
+                "the hover armed the delay"
+            );
+            harness.driver.advance_time(600);
+            assert!(tooltip_state(&harness).get_visible(), "the delay fired");
+            assert_ne!(
+                tooltip_state(&harness).get_description(),
+                "",
+                "the description slot is populated"
+            );
+            harness.driver.hover_at(4.0, 4.0);
+            assert!(!tooltip_state(&harness).get_pending());
+            assert!(!tooltip_state(&harness).get_visible());
+        },
+    );
+}
+
 /// D22 — the compact add-stack affordance: at the compact width the
 /// relocated trailing button opens the same stack-create flow (the
 /// click equivalent of stack.create, §7.1).
