@@ -216,6 +216,29 @@ pub(crate) fn install_session_watcher(saved: SavedTty) -> crate::repl::SessionSi
     let (term_tx, terminate) = tokio::sync::watch::channel(());
     let (pump_tx, mut pump_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
+    // The external-termination family feeders (unix only; D-7's
+    // cfg discipline). A failed registration spawns no feeder: that
+    // signal keeps its default disposition.
+    #[cfg(unix)]
+    for (kind, signal) in [
+        (
+            tokio::signal::unix::SignalKind::terminate(),
+            Signal::Terminate,
+        ),
+        (tokio::signal::unix::SignalKind::hangup(), Signal::Hangup),
+    ] {
+        if let Ok(mut stream) = tokio::signal::unix::signal(kind) {
+            let pump = pump_tx.clone();
+            tokio::spawn(async move {
+                while stream.recv().await.is_some() {
+                    if pump.send(Event::Signal(signal)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    }
+
     // The SIGINT family feeder: tokio's unix Signal (cancel-safe
     // recv in its own task); on Windows the one-shot ctrl_c bridge.
     #[cfg(unix)]
@@ -239,29 +262,6 @@ pub(crate) fn install_session_watcher(saved: SavedTty) -> crate::repl::SessionSi
                 let _ = pump.send(Event::Signal(Signal::Interrupt));
             }
         });
-    }
-
-    // The external-termination family feeders (unix only; D-7's
-    // cfg discipline). A failed registration spawns no feeder: that
-    // signal keeps its default disposition.
-    #[cfg(unix)]
-    for (kind, signal) in [
-        (
-            tokio::signal::unix::SignalKind::terminate(),
-            Signal::Terminate,
-        ),
-        (tokio::signal::unix::SignalKind::hangup(), Signal::Hangup),
-    ] {
-        if let Ok(mut stream) = tokio::signal::unix::signal(kind) {
-            let pump = pump_tx.clone();
-            tokio::spawn(async move {
-                while stream.recv().await.is_some() {
-                    if pump.send(Event::Signal(signal)).is_err() {
-                        return;
-                    }
-                }
-            });
-        }
     }
 
     // The machine + side effects. `pump_rx` ends only when every
