@@ -607,3 +607,50 @@ async fn e9_connect_warns_when_the_daemon_cannot_load_the_secret() {
     assert_eq!(stop_code, Some(0));
     let _ = daemon;
 }
+
+/// E1: the deadline override end-to-end — a *stalling* daemon (an
+/// in-test listener that accepts and never answers) bound on the
+/// install's socket name, the real binary pinned to
+/// `[ipc] client_read_timeout_secs = 1`: the relayed `sync --json`
+/// exits 1 with the typed `ipc-timeout` envelope instead of hanging
+/// (ADR 0012, amended).
+#[cfg(unix)]
+#[tokio::test]
+async fn e10_a_wedged_daemon_times_out_typed_under_the_override() {
+    let install = Install::new("e10");
+    // The override rides the config the Install wrote.
+    let config_path = install.config();
+    let mut toml = std::fs::read_to_string(&config_path).expect("read config");
+    toml.push_str("[ipc]\nclient_read_timeout_secs = 1\n");
+    std::fs::write(&config_path, toml).expect("append the [ipc] override");
+
+    let db = install.dir.path().join("taskboard.db");
+    let name = taskboard_app::ipc::socket_name(&db).expect("socket name");
+    let _staller = interprocess::local_socket::ListenerOptions::new()
+        .name(name)
+        .create_tokio()
+        .expect("bind the stalling listener");
+    // The kernel's listen backlog completes the connect; nobody ever
+    // reads the client's frame — the wedged-daemon shape the deadline
+    // exists for.
+
+    let started = Instant::now();
+    let (code, out, err) = install.run(&["--json", "sync"]);
+    let elapsed = started.elapsed();
+    assert_eq!(code, Some(1), "{out} {err}");
+    assert!(
+        elapsed >= Duration::from_secs(1),
+        "the override budget was honored, took {elapsed:?}"
+    );
+    assert!(
+        elapsed < common::LIVE_DEADLINE.min(Duration::from_secs(30)),
+        "the deadline bounded the hang, took {elapsed:?}"
+    );
+    let last = err
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+    let envelope: serde_json::Value = serde_json::from_str(last).expect("error envelope");
+    assert_eq!(envelope["error"]["kind"], "ipc-timeout");
+}

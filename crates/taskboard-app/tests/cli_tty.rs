@@ -2214,3 +2214,141 @@ fn tty_one_shot_ceremony_keeps_the_default_sigint_death() {
     let written = std::fs::read_to_string(&config).expect("config untouched");
     assert!(!written.contains(&server.uri()));
 }
+
+/// Spawns a one-shot invocation under `script(1)` with the session
+/// fixture's pidfile/rc machinery (the pid names the one-shot process —
+/// the signal target; the rc file is the inner shell's structural exit
+/// record).
+fn spawn_oneshot_pty(config: &std::path::Path, args: &str) -> (PtySession, std::path::PathBuf) {
+    let dir = config
+        .parent()
+        .expect("config in its tempdir")
+        .to_path_buf();
+    let pid_path = dir.join("oneshot.pid");
+    let rc_path = dir.join("oneshot-rc.txt");
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let inner = format!(
+        "sh -c 'echo $$ > {}; exec {} --config {} {}'; echo $? > {}",
+        pid_path.display(),
+        binary,
+        config.display(),
+        args,
+        rc_path.display()
+    );
+    let mut command = std::process::Command::new("timeout");
+    command
+        .arg("60")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env("XDG_DATA_HOME", &dir)
+        .env("TERM", "xterm");
+    let mut child = command.spawn().expect("spawn script(1) pty wrapper");
+    let stdin = child.stdin.take().expect("stdin piped");
+    let out_pipe = child.stdout.take().expect("stdout piped");
+    (
+        PtySession {
+            child,
+            stdin,
+            out_pipe,
+            seen: Vec::new(),
+            pid_path,
+        },
+        rc_path,
+    )
+}
+
+/// P1 (D-5 item 1): ^C during a stalled one-shot relay cancels typed —
+/// the typed `cancelled` envelope on the wire, exit 130, and the
+/// stalling peer observed the socket drop (the tidy teardown; orphan
+/// completion is named, D-0). The watcher overrides an inherited
+/// `SIG_IGN` (the rust-harness world), so delivery is deterministic.
+#[test]
+fn tty_ctrl_c_during_a_stalled_one_shot_cancels_typed_and_exits_130() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    write_test_config(&config, None, None).expect("write config");
+    let db = dir.path().join("taskboard.db");
+
+    // The stalling daemon: binds the db's socket name, accepts, reads
+    // the client's frame, then never answers — and reports the client's
+    // drop (the teardown proof) over the channel.
+    let (framed_tx, framed_rx) = std_mpsc::channel();
+    let (dropped_tx, dropped_rx) = std_mpsc::channel();
+    let listener_thread = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("listener runtime")
+            .block_on(async move {
+                use interprocess::local_socket::traits::tokio::Listener as _;
+                use taskboard_app::ipc::codec;
+                let name = taskboard_app::ipc::socket_name(&db).expect("socket name");
+                let listener = interprocess::local_socket::ListenerOptions::new()
+                    .name(name)
+                    .create_tokio()
+                    .expect("bind the stalling listener");
+                let mut peer = listener.accept().await.expect("accept the relay");
+                // One frame (the request), then EOF when the cancelled
+                // client's connection closes.
+                let _frame = codec::read_frame(&mut peer, codec::MAX_REQUEST_BYTES)
+                    .await
+                    .expect("the relayed request frame");
+                let _ = framed_tx.send(());
+                // EOF/reset: the cancelled client's connection closed
+                // — the tidy teardown, observed.
+                if codec::read_frame(&mut peer, codec::MAX_REQUEST_BYTES)
+                    .await
+                    .is_err()
+                {
+                    let _ = dropped_tx.send(());
+                }
+                // The thread ends here: the listener drops, the test's
+                // `join` returns.
+            });
+    });
+
+    let (mut session, rc_path) = spawn_oneshot_pty(&config, "sync --json");
+    framed_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the relay stalled inside the transport read");
+    signal_session(&session, "-INT");
+
+    let stderr_thread = stderr_reader(&mut session.child);
+    // The `script`/`timeout` wrapper's own relay proved unreliable
+    // (the suite's note on `session_exit_status`): the inner shell's
+    // rc file is the structural record, the pty bytes the envelope's.
+    let (_status, seen, _stderr) = finish_session(session, stderr_thread);
+    assert_eq!(
+        session_exit_status(&rc_path),
+        130,
+        "the cancelled one-shot exits at the shell's ^C code: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    // The typed envelope rode the pty (stderr merges into it).
+    let cancelled = json_error_lines(&seen)
+        .iter()
+        .any(|envelope| envelope["error"]["kind"] == "cancelled");
+    assert!(
+        cancelled,
+        "typed cancellation: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    // The teardown proof: the stalling peer saw the socket drop.
+    dropped_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the stalling peer observed the client's socket drop");
+    listener_thread.join().ok();
+}

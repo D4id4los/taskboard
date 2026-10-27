@@ -293,7 +293,11 @@ async fn selected<T>(
         tokio::select! {
             outcome = body => Some(outcome),
             () = taskboard_app::signals::changed_or_never(cancel) => {
-                std::process::exit(i32::from(report(json, &CommandError::Cancelled)));
+                // The envelope's print path, the ^C exit code: report
+                // returns the failure code (1), the shell's convention
+                // for ^C death is 130 — exit there, not at report's.
+                let _ = report(json, &CommandError::Cancelled);
+                std::process::exit(130);
             }
         }
     } else {
