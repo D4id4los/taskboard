@@ -2842,13 +2842,11 @@ mod tests {
     // -- the title edit flow (D14) ------------------------------------------
 
     #[test]
-    fn activate_focused_opens_the_title_edit_with_the_mirror_seeded_currently_pins_the_auto_arm() {
+    fn detail_entry_never_arms_and_begin_edit_title_seeds_the_mirror() {
         // Recorded decision (round-3 chunk 1, plan §6 — the F26
         // rework): activate_focused is the PLAIN detail open and
         // never arms an edit flow; the title editor arms only via
-        // begin_edit_title. This test pins the old auto-arm and is
-        // debt by name — superseded by
-        // `detail_entry_shows_the_display_and_begin_edit_title_arms`.
+        // begin_edit_title.
         let (state, _, [s0, _], [a, ..]) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
