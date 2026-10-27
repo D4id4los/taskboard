@@ -24,7 +24,7 @@
 //! messages ([`messages`]), local command semantics ([`command`]),
 //! conflict-policy algebra ([`merge`]) and its fixed-order composition
 //! ([`pipeline`]), reminders ([`reminders`]), day boundaries
-//! ([`days`]).
+//! ([`days`]), recurring-series rules ([`recur`]).
 
 #![forbid(unsafe_code)]
 
@@ -44,6 +44,7 @@ pub mod persistence;
 pub mod pipeline;
 pub mod push;
 pub mod reconcile;
+pub mod recur;
 pub mod reminders;
 pub mod remote;
 pub mod state;
@@ -81,9 +82,9 @@ pub use entities::{
 pub use find::{MatchQuality, SearchHit, SearchTarget, find};
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
-    AdhocAlarmId, BoardId, ConnectorId, LabelId, ReminderRuleId, RemoteBoardBinding, RemoteBoardId,
-    RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef,
-    StackId, TaskId, TimeEntryId,
+    AdhocAlarmId, BoardId, ConnectorId, HabitId, LabelId, ReminderRuleId, RemoteBoardBinding,
+    RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId,
+    RemoteStackRef, SeriesId, StackId, TaskId, TimeEntryId,
 };
 pub use merge::{
     RuleFoldChanges, adopt_board_if_newer, adopt_label_after_push, adopt_remote_board,
