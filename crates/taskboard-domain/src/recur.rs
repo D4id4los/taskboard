@@ -21,7 +21,7 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{NaiveDate, Weekday};
+use chrono::{Datelike as _, NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{HabitId, SeriesId};
@@ -389,6 +389,332 @@ pub struct RecurRule {
     pub continued_from: Option<HabitId>,
 }
 
+/// The Monday-start week index of a date: CE day 1 is a Monday
+/// (`ce % 7 == 1`, Sundays `== 0`), so the grouping divisor needs the
+/// `-1` shift — a bare `div_euclid(7)` would group Sun..Fri. Week-index
+/// arithmetic — not day-mod — is what makes a weekly set with
+/// `on ≠ {weekday(anchor)}` correct.
+fn week_index(d: NaiveDate) -> i64 {
+    (i64::from(d.num_days_from_ce()) - 1).div_euclid(7)
+}
+
+/// The Monday that starts `d`'s week, by back-stepping the weekday
+/// offset (not a CE-day formula — the CE remainder convention is easy
+/// to get wrong and this cannot drift).
+fn week_monday(d: NaiveDate) -> NaiveDate {
+    d - chrono::TimeDelta::try_days(i64::from(d.weekday().num_days_from_monday()))
+        .expect("day delta")
+}
+
+/// The last day number (`1..=31`) of `(year, month)`.
+fn last_day_of(year: i32, month: u32) -> u32 {
+    let first_of_next = if month == 12 {
+        NaiveDate::from_ymd_opt(year + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(year, month + 1, 1)
+    };
+    first_of_next
+        .expect("a representable month's successor is representable")
+        .pred_opt()
+        .expect("a first-of-month has a predecessor")
+        .day()
+}
+
+/// `(year, month)` stepped by one month (never past December without
+/// carrying the year).
+fn next_month(year: i32, month: u32) -> (i32, u32) {
+    if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    }
+}
+
+/// The clamped monthly anchor day of `(year, month)`: `min(n, last day)`
+/// — the clamp *is* the membership predicate (Feb 31 → Feb 28/29).
+fn clamped_day(day: DayOfMonth, year: i32, month: u32) -> NaiveDate {
+    let d = u32::from(day.get()).min(last_day_of(year, month));
+    NaiveDate::from_ymd_opt(year, month, d).expect("clamped day is valid")
+}
+
+/// The k-th `weekday` of `(year, month)`; `None` when the month lacks
+/// one (no 5th Friday) — clamping is an `OnDay`-only ruling.
+fn nth_weekday(k: NthWeek, weekday: Weekday, year: i32, month: u32) -> Option<NaiveDate> {
+    let first = NaiveDate::from_ymd_opt(year, month, 1)?;
+    let offset = (weekday.num_days_from_monday() + 7 - first.weekday().num_days_from_monday()) % 7;
+    let day = 1 + offset + 7 * (u32::from(k.get()) - 1);
+    if day <= last_day_of(year, month) {
+        NaiveDate::from_ymd_opt(year, month, day)
+    } else {
+        None
+    }
+}
+
+/// The pattern's alignment predicate (the phase rule against the
+/// anchor), without the `d ≥ anchor` gate — [`occurs_on`] applies it.
+fn aligned(pattern: &RecurPattern, anchor: NaiveDate, d: NaiveDate) -> bool {
+    match pattern {
+        RecurPattern::Daily { every } => {
+            let step = i64::from(every.get());
+            (i64::from(d.num_days_from_ce()) - i64::from(anchor.num_days_from_ce()))
+                .rem_euclid(step)
+                == 0
+        }
+        RecurPattern::Weekly { interval, on } => {
+            on.contains(d.weekday())
+                && (week_index(d) - week_index(anchor)).rem_euclid(i64::from(interval.get())) == 0
+        }
+        RecurPattern::Monthly {
+            on: MonthlyAnchor::OnDay(day),
+        } => d == clamped_day(*day, d.year(), d.month()),
+        RecurPattern::Monthly {
+            on: MonthlyAnchor::NthWeekday(k, weekday),
+        } => d.weekday() == *weekday && nth_weekday(*k, *weekday, d.year(), d.month()) == Some(d),
+    }
+}
+
+/// The schedule-membership law with the anchor gate: `d` is a member iff
+/// `d ≥ anchor` (the anchor is the first scheduled local date) and the
+/// pattern aligns `d` against `anchor`. Total, pure, deterministic.
+#[must_use]
+pub fn occurs_on(pattern: &RecurPattern, anchor: NaiveDate, d: NaiveDate) -> bool {
+    d >= anchor && aligned(pattern, anchor, d)
+}
+
+/// The least member strictly after `from`. Precondition `anchor ≤ from`
+/// for meaningful use (production always satisfies it: the head sits
+/// at/after the anchor); total regardless — `from < anchor` returns the
+/// least member ≥ anchor, which is > `from`. Members are infinite for
+/// every pattern, so the construction terminates.
+/// # Panics
+///
+/// Only if a generated member falls outside `chrono::NaiveDate`'s
+/// representable range — a programming error (the strategies bound the
+/// inputs far inside it), never an input condition.
+#[must_use]
+pub fn next_after(pattern: &RecurPattern, anchor: NaiveDate, from: NaiveDate) -> NaiveDate {
+    let start = from.succ_opt().filter(|d| *d >= anchor).unwrap_or(anchor);
+    match pattern {
+        RecurPattern::Daily { every } => {
+            let step = i64::from(every.get());
+            let diff = i64::from(start.num_days_from_ce() - anchor.num_days_from_ce());
+            // Ceiling: the least aligned member ≥ `start` — floor would
+            // answer the anchor itself for a mid-interval `from` (≤ from,
+            // violating strictness) and loop any forward enumeration.
+            let k = (diff + step - 1) / step;
+            anchor
+                .checked_add_signed(chrono::TimeDelta::try_days(k * step).expect("day delta"))
+                .expect("an in-range anchor steps to an in-range member")
+        }
+        RecurPattern::Weekly { interval, on } => {
+            let step = i64::from(interval.get());
+            let base = week_index(anchor);
+            let wi_start = week_index(start);
+            let mut wi = wi_start;
+            loop {
+                if (wi - base).rem_euclid(step) == 0 {
+                    let monday = week_monday(start)
+                        + chrono::TimeDelta::try_days((wi - wi_start) * 7).expect("day delta");
+                    for index in on.iter() {
+                        let candidate = monday
+                            + chrono::TimeDelta::try_days(i64::from(index.num_days_from_monday()))
+                                .expect("day delta");
+                        if candidate >= start {
+                            return candidate;
+                        }
+                    }
+                }
+                wi += 1;
+            }
+        }
+        RecurPattern::Monthly {
+            on: MonthlyAnchor::OnDay(day),
+        } => {
+            let (mut y, mut m) = (start.year(), start.month());
+            loop {
+                let candidate = clamped_day(*day, y, m);
+                if candidate >= start {
+                    return candidate;
+                }
+                (y, m) = next_month(y, m);
+            }
+        }
+        RecurPattern::Monthly {
+            on: MonthlyAnchor::NthWeekday(k, weekday),
+        } => {
+            let (mut y, mut m) = (start.year(), start.month());
+            loop {
+                if let Some(candidate) = nth_weekday(*k, *weekday, y, m)
+                    && candidate >= start
+                {
+                    return candidate;
+                }
+                (y, m) = next_month(y, m);
+            }
+        }
+    }
+}
+
+/// The latest member on or before `today` (and ≥ `anchor`); `None` when
+/// no member satisfies both. The backward half of the arithmetic —
+/// [`roll_target`]'s catch-up case. Structured per pattern (no day-by-
+/// day scan), so an offline gap of years costs the same as a day.
+fn prev_on_or_before(
+    pattern: &RecurPattern,
+    anchor: NaiveDate,
+    today: NaiveDate,
+) -> Option<NaiveDate> {
+    if today < anchor {
+        return None;
+    }
+    match pattern {
+        RecurPattern::Daily { every } => {
+            let step = i64::from(every.get());
+            let diff = i64::from(today.num_days_from_ce() - anchor.num_days_from_ce());
+            Some(
+                anchor
+                    .checked_add_signed(
+                        chrono::TimeDelta::try_days(diff.div_euclid(step) * step)
+                            .expect("day delta"),
+                    )
+                    .expect("an in-range anchor steps to an in-range member"),
+            )
+        }
+        RecurPattern::Weekly { interval, on } => {
+            let step = i64::from(interval.get());
+            let base = week_index(anchor);
+            if week_index(today) < base {
+                return None;
+            }
+            let wi_today = week_index(today);
+            let mut wi = base + (wi_today - base).div_euclid(step) * step;
+            loop {
+                let monday = week_monday(today)
+                    + chrono::TimeDelta::try_days((wi - wi_today) * 7).expect("day delta");
+                let best = on
+                    .iter()
+                    .map(|index| {
+                        monday
+                            + chrono::TimeDelta::try_days(i64::from(index.num_days_from_monday()))
+                                .expect("day delta")
+                    })
+                    .filter(|d| *d <= today && *d >= anchor)
+                    .max();
+                if let Some(found) = best {
+                    return Some(found);
+                }
+                if wi == base {
+                    return None;
+                }
+                wi -= step;
+            }
+        }
+        RecurPattern::Monthly {
+            on: MonthlyAnchor::OnDay(day),
+        } => {
+            let (ay, am) = (anchor.year(), anchor.month());
+            let (mut y, mut m) = (today.year(), today.month());
+            loop {
+                if (y, m) < (ay, am) {
+                    return None;
+                }
+                let candidate = clamped_day(*day, y, m);
+                if candidate <= today && candidate >= anchor {
+                    return Some(candidate);
+                }
+                if (y, m) == (ay, am) {
+                    return None;
+                }
+                m = if m == 1 { 12 } else { m - 1 };
+                if m == 12 {
+                    y -= 1;
+                }
+            }
+        }
+        RecurPattern::Monthly {
+            on: MonthlyAnchor::NthWeekday(k, weekday),
+        } => {
+            let (ay, am) = (anchor.year(), anchor.month());
+            let (mut y, mut m) = (today.year(), today.month());
+            loop {
+                if (y, m) < (ay, am) {
+                    return None;
+                }
+                if let Some(candidate) = nth_weekday(*k, *weekday, y, m)
+                    && candidate <= today
+                    && candidate >= anchor
+                {
+                    return Some(candidate);
+                }
+                if (y, m) == (ay, am) {
+                    return None;
+                }
+                m = if m == 1 { 12 } else { m - 1 };
+                if m == 12 {
+                    y -= 1;
+                }
+            }
+        }
+    }
+}
+
+/// The roll-forward law (origin §3.4, D-C7): the target a stale head's
+/// scheduled date moves to. Two cases —
+///
+/// 1. **Catch-up**: some member lies in `(stale, today]` → the *latest*
+///    such member (`Daily { every: 1 }` ⇒ always `today`).
+/// 2. **Skip-ahead**: no member in that range (e.g. weekly, today is
+///    Wednesday) → the first member `> stale` (next Monday).
+///
+/// Pure in `(pattern, anchor, stale, today)`: identical inputs give
+/// identical targets on every device — the no-dedup-for-rolls property.
+/// Precondition `stale < today`; for `stale ≥ today` it degrades
+/// total-and-harmless to the skip-ahead case. Bound checks (`Until`
+/// suppression) are the caller's — this function is bound-free
+/// arithmetic.
+#[must_use]
+pub fn roll_target(
+    pattern: &RecurPattern,
+    anchor: NaiveDate,
+    stale: NaiveDate,
+    today: NaiveDate,
+) -> NaiveDate {
+    let first = next_after(pattern, anchor, stale);
+    match prev_on_or_before(pattern, anchor, today) {
+        Some(latest) if latest > stale => latest,
+        _ => first,
+    }
+}
+
+/// The series' schedule: its sorted members in `[from, to]` (empty when
+/// `from > to`). **Bound handling** (D6): `Until(u)` filters (`d ≤ u`
+/// only) — the schedule is the arithmetic truth of the series;
+/// `Count(n)` does *not* filter — the count is evaluated against
+/// completion history at the engine (no counter column exists, so the
+/// pure function cannot see it).
+#[must_use]
+pub fn schedule(rule: &RecurRule, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
+    let mut members = Vec::new();
+    if from > to {
+        return members;
+    }
+    let mut cursor = from.pred_opt();
+    while let Some(prev) = cursor {
+        let member = next_after(&rule.pattern, rule.anchor, prev);
+        if member > to {
+            break;
+        }
+        if let RecurBound::Until(until) = rule.bound
+            && member > until
+        {
+            break;
+        }
+        members.push(member);
+        cursor = Some(member);
+    }
+    members
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,5 +851,440 @@ mod tests {
         .unwrap();
         assert_eq!(json["continued_from"], serde_json::Value::Null);
         assert_eq!(json["anchor"], serde_json::json!("2026-01-01"));
+    }
+}
+
+#[cfg(test)]
+mod arithmetic_tests {
+    use super::*;
+    use crate::test_support::{
+        naive_date_strategy, proptest_config, recur_pattern_strategy, recur_rule_strategy,
+        weekday_strategy,
+    };
+    use chrono::Weekday;
+    use proptest::prelude::*;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn every_days(n: u16) -> EveryDays {
+        EveryDays::new(n).unwrap()
+    }
+
+    fn set(days: &[Weekday]) -> WeekdaySet {
+        WeekdaySet::new(days.iter().copied()).unwrap()
+    }
+
+    #[test]
+    fn monthly_clamping_table() {
+        let anchor = date(2026, 1, 1);
+        let on31 = RecurPattern::Monthly {
+            on: MonthlyAnchor::OnDay(DayOfMonth::new(31).unwrap()),
+        };
+        // Feb 2026 has 28 days: the clamp is the membership predicate.
+        assert!(occurs_on(&on31, anchor, date(2026, 2, 28)));
+        assert!(!occurs_on(&on31, anchor, date(2026, 2, 27)));
+        // Mar/Apr: 31 and 30.
+        assert!(occurs_on(&on31, anchor, date(2026, 3, 31)));
+        assert!(!occurs_on(&on31, anchor, date(2026, 3, 30)));
+        assert!(occurs_on(&on31, anchor, date(2026, 4, 30)));
+        // Leap February 2024: 29 days, both 29 and 31 clamp onto it.
+        let leap_anchor = date(2024, 1, 1);
+        let on29 = RecurPattern::Monthly {
+            on: MonthlyAnchor::OnDay(DayOfMonth::new(29).unwrap()),
+        };
+        assert!(occurs_on(&on29, leap_anchor, date(2024, 2, 29)));
+        assert!(occurs_on(&on31, leap_anchor, date(2024, 2, 29)));
+        assert!(!occurs_on(&on31, leap_anchor, date(2024, 2, 28)));
+    }
+
+    #[test]
+    fn roll_target_origin_examples() {
+        // Weekly, today is Wednesday → next Monday (skip-ahead case).
+        let weekly = RecurPattern::Weekly {
+            interval: EveryWeeks::new(1).unwrap(),
+            on: set(&[Weekday::Mon]),
+        };
+        let anchor = date(2026, 10, 5); // a Monday
+        assert_eq!(
+            roll_target(&weekly, anchor, date(2026, 10, 19), date(2026, 10, 21)),
+            date(2026, 10, 26)
+        );
+        // Daily { every: 1 } → always today (catch-up case).
+        let daily = RecurPattern::Daily {
+            every: every_days(1),
+        };
+        assert_eq!(
+            roll_target(&daily, anchor, date(2026, 10, 19), date(2026, 10, 21)),
+            date(2026, 10, 21)
+        );
+        // Catch-up picks the *latest* member in the window.
+        assert_eq!(
+            roll_target(&daily, anchor, date(2026, 10, 19), date(2026, 10, 25)),
+            date(2026, 10, 25)
+        );
+    }
+
+    #[test]
+    fn nth_weekday_short_month_contributes_no_member() {
+        // February 2026 (28 days, starts on a Sunday) has no 5th Friday.
+        let fifth_friday = RecurPattern::Monthly {
+            on: MonthlyAnchor::NthWeekday(NthWeek::new(5).unwrap(), Weekday::Fri),
+        };
+        let anchor = date(2026, 1, 1);
+        for day in [1, 6, 13, 20, 27, 28] {
+            assert!(!occurs_on(&fifth_friday, anchor, date(2026, 2, day)));
+        }
+        // The scan skips Feb (4 Fridays), Mar (4), Apr (4) and lands on
+        // May's 5th Friday (2026-05-29).
+        assert_eq!(
+            next_after(&fifth_friday, anchor, date(2026, 2, 1)),
+            date(2026, 5, 29)
+        );
+        // A month that *does* have a 5th Friday contains its member.
+        assert!(occurs_on(&fifth_friday, anchor, date(2026, 5, 29)));
+        assert!(!occurs_on(&fifth_friday, anchor, date(2026, 5, 22)));
+    }
+
+    #[test]
+    fn weekly_alignment_is_week_indexed_not_day_modded() {
+        // on = {Mon, Wed}, anchor Monday: the Wednesday members are the
+        // anchor weeks' Wednesdays — a day-distance mod against a Monday
+        // anchor would misalign them.
+        let weekly = RecurPattern::Weekly {
+            interval: EveryWeeks::new(2).unwrap(),
+            on: set(&[Weekday::Mon, Weekday::Wed]),
+        };
+        let anchor = date(2026, 10, 5); // Monday, week 0
+        assert!(occurs_on(&weekly, anchor, date(2026, 10, 7))); // Wed week 0
+        assert!(occurs_on(&weekly, anchor, date(2026, 10, 19))); // Mon week 2
+        assert!(occurs_on(&weekly, anchor, date(2026, 10, 21))); // Wed week 2
+        assert!(!occurs_on(&weekly, anchor, date(2026, 10, 12))); // Mon week 1
+        assert!(!occurs_on(&weekly, anchor, date(2026, 10, 14))); // Wed week 1
+        // The gate: pre-anchor aligned dates are not members.
+        assert!(!occurs_on(&weekly, anchor, date(2026, 9, 30)));
+        assert!(occurs_on(&weekly, anchor, anchor));
+    }
+
+    #[test]
+    fn daily_phase_is_anchor_aligned_not_spawn_drifted() {
+        let daily = RecurPattern::Daily {
+            every: every_days(3),
+        };
+        let anchor = date(2026, 10, 1);
+        assert!(occurs_on(&daily, anchor, date(2026, 10, 4)));
+        assert!(occurs_on(&daily, anchor, date(2026, 10, 7)));
+        assert!(!occurs_on(&daily, anchor, date(2026, 10, 5)));
+    }
+
+    #[test]
+    fn schedule_filters_until_but_not_count() {
+        let mut rule = RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+            anchor: date(2026, 10, 1),
+            pattern: RecurPattern::Daily {
+                every: every_days(2),
+            },
+            bound: RecurBound::Until(date(2026, 10, 9)),
+            continued_from: None,
+        };
+        let got = schedule(&rule, date(2026, 10, 1), date(2026, 10, 31));
+        assert_eq!(
+            got,
+            vec![
+                date(2026, 10, 1),
+                date(2026, 10, 3),
+                date(2026, 10, 5),
+                date(2026, 10, 7),
+                date(2026, 10, 9),
+            ]
+        );
+        // Count is history-evaluated at the engine: the arithmetic truth
+        // is unchanged (D6).
+        rule.bound = RecurBound::Count(OccurrenceCount::new(1).unwrap());
+        assert_eq!(
+            schedule(&rule, date(2026, 10, 1), date(2026, 10, 31)),
+            vec![
+                date(2026, 10, 1),
+                date(2026, 10, 3),
+                date(2026, 10, 5),
+                date(2026, 10, 7),
+                date(2026, 10, 9),
+                date(2026, 10, 11),
+                date(2026, 10, 13),
+                date(2026, 10, 15),
+                date(2026, 10, 17),
+                date(2026, 10, 19),
+                date(2026, 10, 21),
+                date(2026, 10, 23),
+                date(2026, 10, 25),
+                date(2026, 10, 27),
+                date(2026, 10, 29),
+                date(2026, 10, 31),
+            ]
+        );
+        // An empty range is empty.
+        assert_eq!(
+            schedule(&rule, date(2026, 11, 1), date(2026, 10, 1)),
+            [] as [NaiveDate; 0]
+        );
+    }
+
+    #[test]
+    fn daily_next_after_is_strictly_after_even_mid_interval() {
+        // The floor-division bug this pins: a `from` between members used
+        // to answer the anchor itself (≤ from), looping every forward
+        // enumeration (the schedule) forever.
+        let daily = RecurPattern::Daily {
+            every: every_days(3),
+        };
+        let anchor = date(2026, 10, 1);
+        assert_eq!(
+            next_after(&daily, anchor, date(2026, 10, 2)),
+            date(2026, 10, 4)
+        );
+        assert_eq!(
+            next_after(&daily, anchor, date(2026, 10, 4)),
+            date(2026, 10, 7)
+        );
+        assert_eq!(
+            next_after(&daily, anchor, date(2026, 10, 6)),
+            date(2026, 10, 7)
+        );
+        // The schedule stays finite over the mid-interval start.
+        let rule = RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+            anchor,
+            pattern: daily,
+            bound: RecurBound::None,
+            continued_from: None,
+        };
+        assert_eq!(
+            schedule(&rule, date(2026, 10, 2), date(2026, 10, 10)),
+            vec![date(2026, 10, 4), date(2026, 10, 7), date(2026, 10, 10),]
+        );
+    }
+    // P1 — next_after is total, strictly after `from`, and a member.
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        #[test]
+        fn next_after_is_strictly_after_and_a_member(
+            anchor in naive_date_strategy(),
+            from_offset in 0_i64..=40_000,
+            pattern in recur_pattern_strategy(),
+        ) {
+            let from = anchor
+                .checked_add_signed(chrono::TimeDelta::try_days(from_offset).expect("day delta"))
+                .expect("in range");
+            let next = next_after(&pattern, anchor, from);
+            prop_assert!(next > from);
+            prop_assert!(occurs_on(&pattern, anchor, next));
+        }
+
+        #[test]
+        fn total_when_from_precedes_the_anchor(
+            anchor in naive_date_strategy(),
+            back in 1_i64..=4_000,
+            pattern in recur_pattern_strategy(),
+        ) {
+            let from = anchor
+                .checked_sub_signed(chrono::TimeDelta::try_days(back).expect("day delta"));
+            if let Some(from) = from {
+                let next = next_after(&pattern, anchor, from);
+                prop_assert!(next >= anchor, "the least member ≥ anchor");
+                prop_assert!(occurs_on(&pattern, anchor, next));
+            }
+        }
+
+        // P2 — the chain and the schedule agree: seeding at the least
+        // member ≥ `from` (found by an independent membership scan) and
+        // stepping `next_after` enumerates exactly `schedule`, and
+        // `next_after(m)` from any member yields the next member.
+        #[test]
+        fn chain_enumeration_equals_schedule(
+            rule in recur_rule_strategy(),
+            from in naive_date_strategy(),
+            span in 1_i64..=400,
+        ) {
+            let to = from
+                .checked_add_signed(chrono::TimeDelta::try_days(span).expect("day delta"))
+                .expect("in range");
+            let expected = schedule(&rule, from, to);
+            // The membership predicate is pattern-level; the `Until`
+            // bound is the schedule's filter, so the chain enumerates
+            // against the effective horizon.
+            let horizon = match rule.bound {
+                RecurBound::Until(u) => to.min(u),
+                _ => to,
+            };
+            // Independent seeding via the membership predicate.
+            let mut cursor = from.max(rule.anchor);
+            while !occurs_on(&rule.pattern, rule.anchor, cursor) && cursor <= horizon {
+                cursor = cursor.succ_opt().expect("in range");
+            }
+            if cursor > horizon {
+                prop_assert!(expected.is_empty());
+                return Ok(());
+            }
+            let mut chained = vec![cursor];
+            loop {
+                let next = next_after(&rule.pattern, rule.anchor, *chained.last().expect("seeded"));
+                if next > horizon {
+                    break;
+                }
+                chained.push(next);
+                if chained.len() > 1_000 {
+                    break; // bounded by the span; guard against drift
+                }
+            }
+            prop_assert_eq!(chained, expected);
+        }
+
+        // P3 — clamping: Monthly OnDay yields exactly one member per
+        // whole month in range, equal to min(n, last day).
+        #[test]
+        fn monthly_on_day_is_exactly_one_member_per_month(
+            n in 1_u32..=31,
+            year in 2001_i32..=2099,
+            month in 1_u32..=12,
+            months in 1_u32..=6,
+        ) {
+            let anchor = date(year, month, 1);
+            let pattern = RecurPattern::Monthly {
+                on: MonthlyAnchor::OnDay(DayOfMonth::new(n).unwrap()),
+            };
+            let (mut y, mut m) = next_month(year, month);
+            for _ in 0..months {
+                let expected_day = n.min(last_day_of(y, m));
+                let got = schedule(
+                    &RecurRule {
+                        series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+                        anchor,
+                        pattern: pattern.clone(),
+                        bound: RecurBound::None,
+                        continued_from: None,
+                    },
+                    date(y, m, 1),
+                    date(y, m, last_day_of(y, m)),
+                );
+                let expected = vec![date(y, m, expected_day)];
+                prop_assert_eq!(got, expected);
+                (y, m) = next_month(y, m);
+            }
+        }
+
+        // P4 — the roll laws.
+        #[test]
+        fn roll_target_laws(
+            anchor in naive_date_strategy(),
+            stale_offset in 0_i64..=20_000,
+            gap in 1_i64..=2_000,
+            pattern in recur_pattern_strategy(),
+        ) {
+            let stale = anchor
+                .checked_add_signed(chrono::TimeDelta::try_days(stale_offset).expect("day delta"))
+                .expect("in range");
+            let today = stale
+                .checked_add_signed(chrono::TimeDelta::try_days(gap).expect("day delta"))
+                .expect("in range");
+            let target = roll_target(&pattern, anchor, stale, today);
+            prop_assert!(target > stale, "the head always moves forward");
+            if target <= today {
+                prop_assert!(occurs_on(&pattern, anchor, target), "catch-up lands on a member");
+                prop_assert!(
+                    next_after(&pattern, anchor, target) > today,
+                    "it is the latest member ≤ today"
+                );
+            } else {
+                prop_assert_eq!(target, next_after(&pattern, anchor, stale), "skip-ahead");
+                prop_assert!(
+                    next_after(&pattern, anchor, stale) > today,
+                    "no member existed in (stale, today]"
+                );
+            }
+            // Daily { every: 1 } always rolls onto today itself.
+            if let RecurPattern::Daily { every } = &pattern
+                && every.get() == 1
+            {
+                prop_assert_eq!(target, today);
+            }
+            // Determinism: identical inputs, identical target.
+            prop_assert_eq!(target, roll_target(&pattern, anchor, stale, today));
+        }
+
+        // P4 (convergence, recorded deviation): catch-up is *gap
+        // agnostic* — within one member-gap, the target is invariant to
+        // how stale the head is. (The plan's day-by-day simulation
+        // wording is a different, stateful process: intermediate ticks
+        // legitimately apply skip-ahead, so it does not equal the
+        // single-roll target — pinned here as the invariance law the
+        // origin's "offline gaps change nothing but today" names.)
+        #[test]
+        fn roll_catch_up_is_gap_agnostic(
+            anchor in naive_date_strategy(),
+            stale_offset in 0_i64..=20_000,
+            gap in 1_i64..=2_000,
+            skip in 0_i64..=6,
+            pattern in recur_pattern_strategy(),
+        ) {
+            let stale = anchor
+                .checked_add_signed(chrono::TimeDelta::try_days(stale_offset).expect("day delta"))
+                .expect("in range");
+            let today = stale
+                .checked_add_signed(chrono::TimeDelta::try_days(gap).expect("day delta"))
+                .expect("in range");
+            let first = next_after(&pattern, anchor, stale);
+            if first <= today {
+                // Catch-up window: shift `stale` forward but keep it
+                // strictly inside the same member-gap — the window
+                // (stale2, today] then contains the same members, so the
+                // target cannot move.
+                let stale2 = (stale + chrono::TimeDelta::try_days(skip).expect("day delta"))
+                    .min(first.pred_opt().expect("a successor has a predecessor"));
+                if stale2 < today {
+                    prop_assert_eq!(
+                        roll_target(&pattern, anchor, stale, today),
+                        roll_target(&pattern, anchor, stale2, today),
+                        "the target depends only on (pattern, anchor, today), not the gap"
+                    );
+                }
+            }
+        }
+
+        // Weekly patterns generate members on every listed weekday of
+        // every interval-th week; a cross-check over one aligned week's
+        // neighbors keeps the week-index arithmetic honest.
+        #[test]
+        fn weekly_members_respect_the_week_interval(
+            anchor in naive_date_strategy(),
+            interval in 1_u16..=8_u16,
+            weekday in weekday_strategy(),
+            weeks in 0_i64..=200,
+        ) {
+            let pattern = RecurPattern::Weekly {
+                interval: EveryWeeks::new(interval).unwrap(),
+                on: set(&[weekday]),
+            };
+            let monday = week_monday(anchor)
+                + chrono::TimeDelta::try_days(
+                    i64::from(interval) * weeks * 7,
+                )
+                .expect("day delta");
+            let candidate = monday
+                + chrono::TimeDelta::try_days(i64::from(weekday.num_days_from_monday()))
+                    .expect("day delta");
+            if candidate >= anchor {
+                prop_assert!(occurs_on(&pattern, anchor, candidate));
+                if interval > 1 {
+                    let neighbor = candidate + chrono::TimeDelta::try_days(7).expect("day delta");
+                    prop_assert!(
+                        !occurs_on(&pattern, anchor, neighbor),
+                        "adjacent weeks never align"
+                    );
+                }
+            }
+        }
     }
 }

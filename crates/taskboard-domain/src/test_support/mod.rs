@@ -20,6 +20,7 @@ pub use memory::InMemoryRepository;
 pub mod entities;
 pub mod memory;
 pub mod messages;
+pub mod recur;
 pub mod reminders;
 pub mod remote;
 pub mod state;
@@ -29,6 +30,10 @@ pub use entities::{
     task_clocks_strategy, task_strategy, urgency_strategy,
 };
 pub use messages::{label_changes_strategy, state_command_strategy, task_changes_strategy};
+pub use recur::{
+    naive_date_strategy, occurrence_count_strategy, recur_pattern_strategy, recur_rule_strategy,
+    weekday_set_strategy, weekday_strategy,
+};
 pub use reminders::{
     adhoc_alarm_id_strategy, adhoc_alarm_strategy, build_reminders, reminder_delivery_strategy,
     reminder_offset_strategy, reminder_ref_strategy, reminder_rows_strategy,

@@ -1,0 +1,19 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9e9afb2c0eb1f47f887658c893eb9b399a77b02decbcf4b2d794941035db2461 # shrinks to anchor = 2000-01-01, interval = 1, weekday = Mon, weeks = 0
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 152e52a6e86ed89be9c42f3a317481e36a341fa7ef2228fb7e4de90cae719944 # shrinks to anchor = 2000-01-01, from_offset = 9, pattern = Daily { every: EveryDays(6) }
+cc 7d63cdde5e5b624911beea87291aa509945db7bc575e4e39a1ad3330b417eac9 # shrinks to rule = RecurRule { series: SeriesId(00000000-0000-0000-0000-000000000000), anchor: 2000-01-01, pattern: Daily { every: EveryDays(1) }, bound: Until(2000-01-01), continued_from: None }, from = 2000-01-02, span = 1
+cc 62b49aa6085032e42d9d97d16fefb03af2ed76252f3ea7bd797603786dd1d257 # shrinks to anchor = 2000-01-01, stale_offset = 0, gap = 1, pattern = Daily { every: EveryDays(2) }
+cc 50ac1095c53444d1a916e36b1e75ba5236dda8c79764478a7c4316a053ec71fa # shrinks to anchor = 2080-11-22, back = 1, pattern = Weekly { interval: EveryWeeks(2), on: WeekdaySet({6}) }
+cc e4912b8b6c89d7aa910555a2ed202a7bb366dcc1463226a3394e7950c206ab7d # shrinks to anchor = 2036-07-31, stale_offset = 456, gap = 9, pattern = Weekly { interval: EveryWeeks(2), on: WeekdaySet({6}) }
+cc 825df15b265711b2446cb363800935cb651e4b6e4d69da2102741a8b94d81b33 # shrinks to anchor = 2010-11-30, from_offset = 23731, pattern = Weekly { interval: EveryWeeks(2), on: WeekdaySet({6}) }
