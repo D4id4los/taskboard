@@ -17,6 +17,12 @@ export global DragState {
     // source card had at drag start); pushed by the models pass while
     // the drag flow holds.
     in-out property <TaskCardModel> ghost-model;
+    // The dragged card's rendered size, captured at drag-arm on the
+    // slint side (r3 D1) — the same lifecycle moment as the arm
+    // callback, before the refresh push mounts the ghost. Runtime-
+    // written like `pointer-x/y`; the models pass never touches it.
+    in-out property <length> ghost-width: 0;
+    in-out property <length> ghost-height: 0;
     // The opaque drag payload (data-transfer values are opaque in
     // slint). Non-empty: the runtime refuses to start a drag without
     // one. Minted once at mount from Rust; the adapter addresses

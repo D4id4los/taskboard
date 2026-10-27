@@ -442,6 +442,13 @@ export component BoardLayout inherits Rectangle {
                                     data: DragState.payload;
                                     changed dragging => {
                                         if (self.dragging) {
+                                            // The ghost's size capture (r3 D1):
+                                            // the card is fully laid out at the
+                                            // arm, so its geometry rides along —
+                                            // no column/card geometry crosses to
+                                            // Rust (the r2 D-E invariant).
+                                            DragState.ghost-width = drag-card.width;
+                                            DragState.ghost-height = drag-card.height;
                                             root.board-card-drag-armed(column-index, task-index);
                                         }
                                     }

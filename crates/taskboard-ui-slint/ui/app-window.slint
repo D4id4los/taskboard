@@ -492,6 +492,10 @@ export component AppWindow inherits Window {
             height: 100%;
             TaskCard {
                 model: DragState.ghost-model;
+                // Card-sized (r3 D1): the size captured at drag-arm —
+                // the default fill would mount a window-sized ghost.
+                width: DragState.ghost-width;
+                height: DragState.ghost-height;
                 x: DragState.pointer-x - self.width / 2;
                 y: DragState.pointer-y - self.height / 2;
                 opacity: 0.5;
