@@ -180,6 +180,9 @@ impl KeymapShell {
             // `view_state`; the shell records nothing for them.
             | UiEffect::FocusToday
             | UiEffect::OpenInbox
+            // Round 3 (W-SM-d): the title arm lives in `view_state`;
+            // the shell records nothing for it.
+            | UiEffect::BeginTitleEdit
             | UiEffect::BeginCapture => {}
         }
         true

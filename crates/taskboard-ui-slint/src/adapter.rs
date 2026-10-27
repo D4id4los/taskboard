@@ -795,6 +795,13 @@ impl Adapter {
             ) => self.interpret_insert(&state),
             // -- no flow: the intents begin things --
             (Flow::None, UiEffect::OpenPalette) => self.view_state.open_palette(),
+            // The title action with no flow (round-3 W-SM-d): arms
+            // the viewed task's editor; inert without a viewed
+            // subject (the matrix's "no subject" cell).
+            (Flow::None, UiEffect::BeginTitleEdit) => match self.view_state.subject_task() {
+                Some(task) => self.view_state.begin_edit_title(&state, task),
+                None => Vec::new(),
+            },
             (
                 Flow::None,
                 effect @ (UiEffect::Activate
@@ -1271,6 +1278,7 @@ impl Adapter {
             | UiEffect::FocusBoard
             | UiEffect::BeginCreate
             | UiEffect::BeginCreateStack
+            | UiEffect::BeginTitleEdit
             | UiEffect::Activate
             | UiEffect::RequestMove
             | UiEffect::StackWider
@@ -3405,6 +3413,19 @@ fn activate_stack_row(adapter: &mut Adapter, window: &AppWindow, row: i32) {
 /// route — the banner-seam template.
 fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let mirror = Rc::clone(adapter);
+    // The closed title's click (round-3 W-SM-d, F26): routes the
+    // `task.title-edit` action — click ≡ key (§7.1); re-arming after
+    // one close is always possible.
+    let title_click = Rc::clone(adapter);
+    let title_click_weak = window.as_weak();
+    window.on_task_title_edit_activated(move || {
+        let Some(window) = title_click_weak.upgrade() else {
+            return;
+        };
+        title_click
+            .borrow_mut()
+            .route(&window, ActionId::TaskTitleEdit);
+    });
     window.on_task_title_edited(move |text| {
         mirror.borrow_mut().view_state.set_buffer(text.to_string());
     });

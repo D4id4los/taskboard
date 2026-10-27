@@ -30,13 +30,16 @@ impl Verb {
     /// The ceiling as a design contract copied from the design plan
     /// §9.2 ("complete ≤ 2, move ≤ 4, create ≤ 3, edit ≤ 3"), NOT
     /// re-derived here. A chord counts as its strokes (`Ctrl+x Ctrl+c`
-    /// = 2); held modifiers are not presses.
+    /// = 2); held modifiers are not presses. Recorded decision
+    /// (round-3 chunk 1, plan §6): `edit` rises 3 → 4 — the F26
+    /// rework removes the auto-arm, so the title edit costs one
+    /// explicit `task.title-edit` press.
     #[must_use]
     pub const fn ceiling(self) -> u32 {
         match self {
             Self::Complete => 2,
-            Self::Move => 4,
-            Self::Create | Self::Edit => 3,
+            Self::Move | Self::Edit => 4,
+            Self::Create => 3,
             Self::MenuInvoke => u32::MAX,
         }
     }
