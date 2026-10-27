@@ -4,10 +4,24 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Days, FixedOffset, NaiveDateTime, Offset, Utc};
+use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, Offset, Utc};
 
 use crate::entities::Task;
 use crate::ids::TaskId;
+
+/// The instant whose offset-local reading is `date` at
+/// `day_start_time` — the start instant of that local date's day
+/// window. Pure, total, deterministic; [`day_window`] is built on it.
+/// A night-owl `05:00` start makes this the reading that puts 03:00
+/// local into *yesterday's* window.
+#[must_use]
+pub fn window_start(
+    date: NaiveDate,
+    day_start_time: chrono::NaiveTime,
+    offset: FixedOffset,
+) -> DateTime<Utc> {
+    offset_local_to_utc(date.and_time(day_start_time), offset)
+}
 
 /// The 24h window `[start, start + 24h)` containing `now`, where
 /// `start` is the most recent instant whose wall-clock time-of-day in
@@ -44,14 +58,14 @@ pub fn day_window(
     offset: FixedOffset,
 ) -> (DateTime<Utc>, DateTime<Utc>) {
     let local_date = now.with_timezone(&offset).date_naive();
-    let candidate = offset_local_to_utc(local_date.and_time(day_start_time), offset);
+    let candidate = window_start(local_date, day_start_time, offset);
     let start_date = if candidate > now {
         local_date - Days::new(1)
     } else {
         local_date
     };
-    let start = offset_local_to_utc(start_date.and_time(day_start_time), offset);
-    let end = offset_local_to_utc((start_date + Days::new(1)).and_time(day_start_time), offset);
+    let start = window_start(start_date, day_start_time, offset);
+    let end = window_start(start_date + Days::new(1), day_start_time, offset);
     (start, end)
 }
 
@@ -156,6 +170,10 @@ mod tests {
     use chrono::{NaiveTime, TimeZone};
     use proptest::prelude::*;
 
+    fn date(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
     fn time(h: u32, m: u32) -> NaiveTime {
         NaiveTime::from_hms_opt(h, m, 0).unwrap()
     }
@@ -211,6 +229,30 @@ mod tests {
         let (start, end) = day_window(now, time(0, 0), offset_hours(0));
         assert_eq!(start, utc(1_781_481_600)); // 2026-06-15 00:00 UTC
         assert_eq!(end, utc(1_781_568_000)); // 2026-06-16 00:00 UTC
+    }
+
+    // `window_start` pins (the §4.5 vocabulary the attribution builds on).
+    #[test]
+    fn window_start_is_the_local_reading_instant() {
+        // Local 2026-06-15 00:00 at +02:00 = 2026-06-14 22:00 UTC.
+        let ws = window_start(date(2026, 6, 15), time(0, 0), offset_hours(2));
+        assert_eq!(ws, utc(1_781_474_400));
+        // A 05:00 start on the same date.
+        let owl = window_start(date(2026, 6, 15), time(5, 0), offset_hours(2));
+        assert_eq!(owl, utc(1_781_492_400));
+    }
+
+    #[test]
+    fn day_window_is_built_on_window_start() {
+        let now = utc(1_781_485_200);
+        let (start, _) = day_window(now, time(5, 0), offset_hours(2));
+        let local_date = now.with_timezone(&offset_hours(2)).date_naive();
+        let start_date = if start == window_start(local_date, time(5, 0), offset_hours(2)) {
+            local_date
+        } else {
+            local_date - Days::new(1)
+        };
+        assert_eq!(start, window_start(start_date, time(5, 0), offset_hours(2)));
     }
 
     fn day_start_time_strategy() -> impl Strategy<Value = NaiveTime> {
