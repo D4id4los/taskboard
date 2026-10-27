@@ -32,8 +32,9 @@ adopting a remote version stamps every field with the remote
 =lastModified=. Per field:
 
 #+begin_quote
-the remote value wins ⟺ =remote.last_modified > field_clock= (strictly);
-ties and older remotes keep local.
+the remote value wins ⟺ =remote.last_modified > field_clock= (strictly)
+*and the persisted remote baseline records the field as changed* (tasks;
+ties and older remotes keep local).
 #+end_quote
 
 The tie-break is deterministic (local bias): Deck's second-resolution
@@ -41,15 +42,20 @@ timestamps naturally lose to sub-second local edits made in the same
 second. This boundary is pinned by property tests (and kills the
 strict-vs-inclusive comparison mutants in =merge.rs=).
 
-Documented limitation — *granularity data loss*: because the remote side
-is entity-granular, a remote entity-touch newer than a local field edit
-reverts that field even when the remote change touched a different field
-(e.g. a remote description edit at 10:06 overwrites a local title edit
-from 10:05 with the server's unchanged title). This is inherent to Deck's
-timestamps; a Phase 4 docker-tier scenario pins the behavior so it stays
-intentional and observable. Alternatives (single entity-level mtime
-locally; OR-set labels) were rejected as materially worse or premature
-(see backlog).
+*Granularity data loss* — because the remote side is entity-granular, a
+remote entity-touch newer than a local field edit used to revert that
+field even when the remote change touched a different field (e.g. a
+remote description edit at 10:06 overwriting a local title edit from
+10:05 with the server's unchanged title). *For tasks this loss class is
+closed as of 2026-10-27* by the persisted remote baseline (see the
+amendment below). Two residues stay documented: the *revert blind spot*
+— a remote write that exactly restores the baseline value is
+indistinguishable from no change and will not land while a local edit
+holds the field; deterministic and bounded, since the next genuine
+remote change to the field lands it (pinned as debt by the
+=currently_pins_= test) — and the *boards/stacks/labels remainder*
+(the baseline scope was tasks-only; the mechanism generalizes
+mechanically, one baseline record per entity kind).
 
 ** Composite and set-valued fields
 
@@ -224,3 +230,25 @@ the trap is a property of the merge algebra, not of the actor wiring
 a docker journey exercises. This amendment corrects the citation
 only; the decision — granularity data loss documented and deliberate
 — stands unchanged.
+
+* Amendment 2026-10-27 — the remote baseline closes the task granularity trap (#128)
+
+Tasks persist a =remote_baseline= (migration 0011): the remote card's
+native-lane field values as last observed, in remote vocabulary with raw
+unresolved ids — resolution stays per-cycle through =RemoteIndex=. The
+per-field-LWW decision above is amended by the changed-field gate:
+=merge_task= applies a field only when the incoming snapshot *differs
+from that record* in addition to winning the field's clock comparison.
+The record refreshes at every adoption point (R1 adoption, the merge
+itself, the R9 push echo — whose server-normalized values become the
+next pull's diff reference) and clears with the binding on the tombstone
+paths. The granularity data loss class closes for tasks; the revert
+blind spot and the boards/stacks/labels remainder are the documented
+residues. A missing baseline (pre-migration rows, a local task before
+its first pull) falls back to the blanket rule for one cycle and
+establishes the record — behavior converged, not changed. The
+self-clobber guard's race is untouched: the baseline arbitrates
+remote-vs-local *value provenance*, not queued-op protection.
+Enforcement: the anti-clobber proptest (fields outside a diff's touched
+set keep local values and clocks) and the flipped granularity-trap pin
+in =crates/taskboard-domain/src/merge.rs=.
