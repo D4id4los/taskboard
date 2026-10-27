@@ -784,6 +784,10 @@ pub(crate) fn complete(
 /// mutation (the UI-layer read rule, AGENTS §1).
 pub(crate) struct ReplHelper {
     spec: CompletionSpec,
+    /// Suspended while the editor thread answers a ceremony prompt:
+    /// no Tab-completion inside a server-URL prompt (the prompt
+    /// answers never meet completion, by construction).
+    suspended: std::sync::atomic::AtomicBool,
     state: Arc<arc_swap::ArcSwap<AppState>>,
     /// The configured connector names, boot-fixed for the session (the
     /// connect ceremony rewrites the default entry's identity, never
@@ -800,9 +804,17 @@ impl ReplHelper {
     ) -> Self {
         Self {
             spec: CompletionSpec::from_cli(),
+            suspended: std::sync::atomic::AtomicBool::new(false),
             state,
             connector_names,
         }
+    }
+
+    /// Suspends/resumes completion (the ceremony prompt reads flip it
+    /// around their `readline` call on the same editor thread).
+    pub(crate) fn suspend(&self, on: bool) {
+        self.suspended
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -817,6 +829,11 @@ impl rustyline::completion::Completer for ReplHelper {
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
         // None / Kind::None / an empty match all map to *no candidates*,
         // never an error — a wrong-shaped line must not fail the Tab.
+        // A suspended helper (ceremony prompt on the editor thread)
+        // yields nothing at all.
+        if self.suspended.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok((pos, Vec::new()));
+        }
         let state = self.state.load_full();
         let out = complete(&self.spec, &state, &self.connector_names, line, pos)
             .unwrap_or((pos, Vec::new()));
@@ -1892,5 +1909,35 @@ mod tests {
         assert_eq!(start, "tasks list --stack=".len());
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].display, "Todo");
+    }
+
+    /// A suspended helper (ceremony prompt on the editor thread) completes
+    /// nothing; unsuspending restores the normal behavior in place — one
+    /// helper instance, no reconstruction site.
+    #[test]
+    fn a_suspended_helper_completes_nothing() {
+        use rustyline::completion::Completer as _;
+        use rustyline::history::DefaultHistory;
+
+        let (mut state, board_id) = fresh_state();
+        stack(&mut state, board_id, 0, "Todo", false);
+        let helper = super::ReplHelper::new(
+            std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(state)),
+            Vec::new(),
+        );
+        let history = DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+
+        helper.suspend(true);
+        let (_, out) = helper.complete("ta", 2, &ctx).expect("no error");
+        assert_eq!(out.len(), 0, "suspended: no candidates at all");
+        let (_, out) = helper
+            .complete("tasks list --stack=To", 21, &ctx)
+            .expect("no error");
+        assert_eq!(out.len(), 0, "suspended: no candidates at all");
+
+        helper.suspend(false);
+        let (_, out) = helper.complete("ta", 2, &ctx).expect("completes");
+        assert_eq!(out.len(), 1);
     }
 }

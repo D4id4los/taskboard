@@ -111,6 +111,38 @@ pub enum PromptValue {
     Flag(bool),
 }
 
+/// The prompt grammar (design D-3): one mapping from an editor
+/// `readline` result onto the typed answer a ceremony prompt expects.
+/// `Line` trims like `read_line_sync` always did; `Confirm` parses its
+/// y/N with the one [`crate::commands::connect::parse_confirm`] grammar;
+/// `Interrupted` (raw-mode ^C) is a cancelled prompt — the typed
+/// `Interrupted` kind the ceremony maps to `CommandError::Prompt` (a
+/// cancelled prompt is not a declined one); `Eof` fails the line
+/// honestly instead of silently answering an empty string; anything
+/// else is a generic read failure. All map to the typed `prompt`
+/// failure — never to a session exit.
+fn prompt_answer(
+    kind: PromptKind,
+    answer: Result<String, rustyline::error::ReadlineError>,
+) -> Result<PromptValue, std::io::Error> {
+    match answer {
+        Ok(line) => match kind {
+            PromptKind::Line | PromptKind::Masked => Ok(PromptValue::Text(line.trim().to_owned())),
+            PromptKind::Confirm => Ok(PromptValue::Flag(crate::commands::connect::parse_confirm(
+                &line,
+            ))),
+        },
+        Err(rustyline::error::ReadlineError::Interrupted) => {
+            Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+        }
+        Err(rustyline::error::ReadlineError::Eof) => {
+            Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
+        }
+        Err(rustyline::error::ReadlineError::Io(err)) => Err(err),
+        Err(err) => Err(std::io::Error::other(err.to_string())),
+    }
+}
+
 /// The session loop's per-line verdict to the editor thread. The
 /// handshake's load-bearing rule: after delivering a [`LineEvent`], the
 /// editor thread **always** waits for the next verdict before re-arming
@@ -238,16 +270,29 @@ pub fn spawn_line_reader(
                         None => return,
                         Some(Disposition::Next) => break,
                         Some(Disposition::Prompt { label, kind, reply }) => {
+                            // D-3's one prompt grammar: `Line`/`Confirm`
+                            // ride the editor's own readline — in raw
+                            // mode ^C is a byte rustyline answers with
+                            // `Interrupted` (a caught SIGINT cannot
+                            // abort a cooked read, so the old cooked
+                            // path had no ^C grammar at all) — and the
+                            // completion helper is suspended for the
+                            // read: no Tab-completion inside a prompt.
+                            // `Masked` stays `rpassword` on /dev/tty.
                             let answer = match kind {
-                                PromptKind::Line => connect::StdinPrompts::read_line_sync(&label)
-                                    .map(PromptValue::Text),
                                 PromptKind::Masked => {
                                     connect::StdinPrompts::read_secret_sync(&label)
                                         .map(PromptValue::Text)
                                 }
-                                PromptKind::Confirm => {
-                                    connect::StdinPrompts::read_confirm_sync(&label)
-                                        .map(PromptValue::Flag)
+                                PromptKind::Line | PromptKind::Confirm => {
+                                    if let Some(helper) = editor.helper_mut() {
+                                        helper.suspend(true);
+                                    }
+                                    let answer = editor.readline(&label);
+                                    if let Some(helper) = editor.helper_mut() {
+                                        helper.suspend(false);
+                                    }
+                                    prompt_answer(kind, answer)
                                 }
                             };
                             // A failed send means the loop is gone —
@@ -1050,6 +1095,70 @@ pub async fn run_session(
         &mut io,
     )
     .await
+}
+
+#[cfg(test)]
+mod prompt_answer_tests {
+    use super::{PromptKind, PromptValue, prompt_answer};
+
+    fn line(s: &str) -> Result<String, rustyline::error::ReadlineError> {
+        #[allow(clippy::unnecessary_wraps)] // the table's Ok rows read as the editor's Ok
+        fn ok(s: &str) -> Result<String, rustyline::error::ReadlineError> {
+            Ok(s.to_owned())
+        }
+        ok(s)
+    }
+
+    /// The mapping table (D-3): trim on `Line`, the one confirm
+    /// grammar on `Confirm`, `Interrupted`/`Eof`/`Io` map to their
+    /// typed io kinds (the ceremony's `CommandError::Prompt` sources).
+    #[test]
+    fn the_prompt_answer_table_maps_every_editor_outcome() {
+        // Trim like read_line_sync always applied.
+        assert_eq!(
+            prompt_answer(PromptKind::Line, line("  https://x  \n")).expect("line"),
+            PromptValue::Text("https://x".to_owned())
+        );
+        // Confirm rides the one parse_confirm grammar.
+        assert_eq!(
+            prompt_answer(PromptKind::Confirm, line("  YES \n")).expect("confirm"),
+            PromptValue::Flag(true)
+        );
+        assert_eq!(
+            prompt_answer(PromptKind::Confirm, line("no")).expect("confirm"),
+            PromptValue::Flag(false)
+        );
+        // ^C in raw mode: the cancelled-prompt kind.
+        assert!(
+            matches!(
+                prompt_answer(PromptKind::Line, Err(rustyline::error::ReadlineError::Interrupted)),
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted
+            ),
+            "a cancelled prompt is not a declined one"
+        );
+        // Ctrl-D at a prompt fails the line honestly.
+        assert!(
+            matches!(
+                prompt_answer(PromptKind::Confirm, Err(rustyline::error::ReadlineError::Eof)),
+                Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof
+            ),
+            "no silent empty-string answer"
+        );
+        // Other reads keep their io error.
+        let io_err = std::io::Error::other("tty went away");
+        assert!(
+            matches!(
+                prompt_answer(
+                    PromptKind::Line,
+                    Err(rustyline::error::ReadlineError::Io(
+                        io_err
+                    ))
+                ),
+                Err(err) if err.kind() == std::io::ErrorKind::Other
+            ),
+            "generic read failure"
+        );
+    }
 }
 
 #[cfg(test)]
