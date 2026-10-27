@@ -1085,12 +1085,6 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
-    /// `BeginCreateStack`: opens the stack create row in insert mode
-    /// (#304) — no target stack, so an empty board offers it too. The
-    /// board-existence refusal lives here (one home): the selection
-    /// normalizes first, and a board-less state is refused with an
-    /// inert `Vec::new()` — nothing offers a stack create with no
-    /// board to create it on.
     /// The empty-board preset dispatch (r3 D5): one explicit-order
     /// `CreateStack` per preset stack plus a trailing `RefreshNow`.
     /// Orders are explicit 0..n — all commands are built before the
@@ -1123,6 +1117,12 @@ impl ViewState {
             .collect()
     }
 
+    /// `BeginCreateStack`: opens the stack create row in insert mode
+    /// (#304) — no target stack, so an empty board offers it too. The
+    /// board-existence refusal lives here (one home): the selection
+    /// normalizes first, and a board-less state is refused with an
+    /// inert `Vec::new()` — nothing offers a stack create with no
+    /// board to create it on.
     pub fn begin_create_stack(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         self.normalize_board(state);
         if self.board.is_none() {
