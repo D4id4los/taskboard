@@ -14,9 +14,14 @@ export component PlusGlyph inherits Rectangle {
     // Explicit size (the square contract): in a plain (non-layout)
     // parent the default geometry fills the parent and max
     // constraints never clamp that fill (probed r2 D5) — so this is
-    // `width`/`height`, not a min/max lock.
-    width: Theme.space-6;
-    height: Theme.space-6;
+    // `width`/`height`, not a min/max lock. The size is the
+    // IconButton icon-box's derived footprint (space-6 minus the
+    // button's space-2 padding on both sides, r3 D2): the add-column
+    // glyph used to be twice the IconButton plus's linear size. One
+    // derived expression, not a new token — a token for one use is
+    // ladder churn the token policy reserves for chunk 7.
+    width: Theme.space-6 - 2 * Theme.space-2;
+    height: Theme.space-6 - 2 * Theme.space-2;
 
     Rectangle {
         y: (parent.height - self.height) / 2;
