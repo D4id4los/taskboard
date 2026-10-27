@@ -458,6 +458,59 @@ async fn upsert_overwrites_all_columns() {
     assert_eq!(loaded.stacks.get(&s.id), Some(&renamed));
 }
 
+/// The recur column round-trips a full rule (and a cleared one decodes
+/// back as `None`).
+#[tokio::test]
+async fn recur_rule_round_trips_through_sqlite() {
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    let b = board(11);
+    let s = stack(2, &b);
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b.clone()),
+        PersistenceAction::UpsertStack(s.clone()),
+    ])
+    .await
+    .expect("apply");
+
+    let mut recurring = task(3, &s, BTreeSet::new());
+    recurring.recur = Some(taskboard_domain::recur::RecurRule {
+        series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(0x5e)),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        pattern: taskboard_domain::recur::RecurPattern::Weekly {
+            interval: taskboard_domain::recur::EveryWeeks::new(2).unwrap(),
+            on: taskboard_domain::recur::WeekdaySet::new([
+                chrono::Weekday::Mon,
+                chrono::Weekday::Fri,
+            ])
+            .unwrap(),
+        },
+        bound: taskboard_domain::recur::RecurBound::Until(
+            chrono::NaiveDate::from_ymd_opt(2027, 6, 30).unwrap(),
+        ),
+        continued_from: Some(taskboard_domain::HabitId::from_uuid(uuid::Uuid::from_u128(
+            0xab,
+        ))),
+    });
+    recurring.clocks.recur = ts(900);
+    repo.apply(vec![PersistenceAction::UpsertTask(recurring.clone())])
+        .await
+        .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.tasks.get(&recurring.id), Some(&recurring));
+
+    // Clearing the rule: an ordinary write of the NULL column.
+    let mut cleared = recurring.clone();
+    cleared.recur = None;
+    cleared.clocks.recur = ts(901);
+    repo.apply(vec![PersistenceAction::UpsertTask(cleared.clone())])
+        .await
+        .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.tasks.get(&cleared.id), Some(&cleared));
+}
+
 /// P4 — applying the same batch twice is idempotent (no duplicate outbox
 /// rows; `op_id` upserts in place).
 #[tokio::test]

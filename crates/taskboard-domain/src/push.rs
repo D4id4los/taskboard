@@ -292,6 +292,7 @@ pub struct PushGroup {
 ///     effort: t(100),
 ///     importance: t(100),
 ///     urgency: t(100),
+///     recur: t(100),
 ///     archived: t(100),
 ///     deleted: t(100),
 /// };
@@ -309,6 +310,7 @@ pub struct PushGroup {
 ///     effort: None,
 ///     importance: None,
 ///     urgency: None,
+///     recur: None,
 ///     archived: false,
 ///     deleted: false,
 ///     clocks,
