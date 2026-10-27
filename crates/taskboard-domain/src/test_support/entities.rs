@@ -120,6 +120,7 @@ pub fn task_strategy() -> impl Strategy<Value = Task> {
             (any::<bool>(), any::<bool>()),
             task_clocks_strategy(),
             proptest::option::of(timestamp_strategy()),
+            proptest::option::of(remote_task_baseline_strategy()),
         ),
     )
         .prop_map(
@@ -134,6 +135,7 @@ pub fn task_strategy() -> impl Strategy<Value = Task> {
                     (archived, deleted),
                     clocks,
                     remote_seen,
+                    remote_baseline,
                 ),
             )| Task {
                 id,
@@ -154,6 +156,7 @@ pub fn task_strategy() -> impl Strategy<Value = Task> {
                 deleted,
                 clocks,
                 remote_seen,
+                remote_baseline,
             },
         )
 }
@@ -170,4 +173,41 @@ pub(crate) fn remote_card_ref_strategy() -> impl Strategy<Value = RemoteCardRef>
             stack: RemoteStackId(stack),
             card: RemoteCardId(card),
         })
+}
+
+/// A [`crate::entities::RemoteTaskBaseline`] over all fields: bounded
+/// timestamps, small label sets. Independent of the task's bindings —
+/// nothing in the domain cross-validates the record, and every consumer
+/// (serde, merge gate, codec) is total on all values.
+pub fn remote_task_baseline_strategy() -> impl Strategy<Value = crate::entities::RemoteTaskBaseline>
+{
+    (
+        string_strategy(),
+        string_strategy(),
+        proptest::option::of(timestamp_strategy()),
+        proptest::option::of(timestamp_strategy()),
+        proptest::option::of(timestamp_strategy()),
+        super::remote_number(),
+        -1_000_i64..=1_000,
+        prop::collection::btree_set(
+            super::remote_number().prop_map(crate::ids::RemoteLabelId),
+            0..3,
+        ),
+        any::<bool>(),
+    )
+        .prop_map(
+            |(title, description, duedate, scheduled, done, stack, order, labels, archived)| {
+                crate::entities::RemoteTaskBaseline {
+                    title,
+                    description,
+                    duedate,
+                    scheduled,
+                    done,
+                    stack: RemoteStackId(stack),
+                    order,
+                    labels,
+                    archived,
+                }
+            },
+        )
 }

@@ -146,6 +146,7 @@ fn task(id: u128, stack: &Stack, labels: BTreeSet<LabelId>) -> Task {
         deleted: false,
         clocks: task_clocks(5),
         remote_seen: Some(ts(102)),
+        remote_baseline: None,
     }
 }
 
@@ -855,4 +856,184 @@ async fn delete_sync_status_roundtrip() {
     repo.apply(vec![PersistenceAction::DeleteSyncStatus(first.id)])
         .await
         .expect("repeat delete is a no-op");
+}
+
+// S1 — the baseline codec round-trip: a fully-populated record survives
+// apply → load byte-identically; `None` round-trips as `None`.
+#[tokio::test]
+async fn remote_baseline_roundtrips_through_sqlite() {
+    let mut db = common::FileDb::new().await;
+    let b = board(71);
+    let s = stack(81, &b);
+    let labels = BTreeSet::from([LabelId::from(uuid::Uuid::from_u128(61))]);
+    let seed_label = label(61, &b);
+    let baseline = taskboard_domain::entities::RemoteTaskBaseline {
+        title: "remote title".into(),
+        description: "remote desc".into(),
+        duedate: Some(ts(300)),
+        scheduled: Some(ts(310)),
+        done: Some(ts(320)),
+        stack: RemoteStackId(7),
+        order: 4,
+        labels: BTreeSet::from([RemoteLabelId(9), RemoteLabelId(11)]),
+        archived: true,
+    };
+
+    let mut with_baseline = task(90, &s, labels.clone());
+    with_baseline.remote_baseline = Some(baseline.clone());
+    let none = task(91, &s, labels);
+    db.repo()
+        .apply(vec![
+            PersistenceAction::UpsertBoard(b),
+            PersistenceAction::UpsertStack(s),
+            PersistenceAction::UpsertLabel(seed_label),
+            PersistenceAction::UpsertTask(with_baseline),
+            PersistenceAction::UpsertTask(none),
+        ])
+        .await
+        .expect("apply");
+
+    let loaded = db.repo().load().await.expect("load");
+    assert_eq!(
+        loaded
+            .tasks
+            .get(&TaskId::from(uuid::Uuid::from_u128(90)))
+            .expect("loaded")
+            .remote_baseline
+            .as_ref()
+            .expect("populated record survives"),
+        &baseline
+    );
+    assert_eq!(
+        loaded
+            .tasks
+            .get(&TaskId::from(uuid::Uuid::from_u128(91)))
+            .expect("loaded")
+            .remote_baseline,
+        None
+    );
+    db.close().await;
+}
+
+// S2 — a stored baseline that fails to decode is typed corruption, never
+// a silent downgrade to the fallback (D-7: the fallback would blanket-
+// clobber on the next merge).
+#[tokio::test]
+async fn corrupt_baseline_json_is_typed_corruption() {
+    let mut db = common::FileDb::new().await;
+    let b = board(71);
+    let s = stack(81, &b);
+    let mut seeded = task(90, &s, BTreeSet::new());
+    seeded.remote_baseline = Some(taskboard_domain::entities::RemoteTaskBaseline {
+        title: "t".into(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack: RemoteStackId(7),
+        order: 1,
+        labels: BTreeSet::new(),
+        archived: false,
+    });
+    db.repo()
+        .apply(vec![
+            PersistenceAction::UpsertBoard(b),
+            PersistenceAction::UpsertStack(s),
+            PersistenceAction::UpsertTask(seeded),
+        ])
+        .await
+        .expect("seed");
+    db.close().await;
+
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+        .await
+        .expect("raw connection");
+    sqlx::query(r"UPDATE tasks SET remote_baseline = '{not json}' WHERE id = '00000000-0000-0000-0000-00000000005a'")
+        .execute(&pool)
+        .await
+        .expect("raw update");
+    pool.close().await;
+    db.reopen().await;
+
+    let err = db.repo().load().await.expect_err("load must fail");
+    assert_eq!(err, RepositoryError::Corrupted);
+    db.close().await;
+}
+
+// S3 — the upgrade pin: a raw pre-0011-shape row decodes to a `None`
+// baseline and merges under the fallback exactly like a hand-built
+// baseline-less task (same clobber as today on the first cycle).
+#[tokio::test]
+async fn pre_baseline_row_decodes_to_none_and_merges_under_the_fallback() {
+    let mut db = common::FileDb::new().await;
+    let b = board(71);
+    let s = stack(81, &b);
+    db.repo()
+        .apply(vec![
+            PersistenceAction::UpsertBoard(b),
+            PersistenceAction::UpsertStack(s),
+        ])
+        .await
+        .expect("parents");
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+        .await
+        .expect("raw connection");
+    // Raw pre-0011-shape INSERT (the schema.rs upgrade-test precedent):
+    // the ids are the seeded parents' text forms.
+    sqlx::query(
+        r"INSERT INTO tasks (id, stack, title, description, sort_order, archived, deleted,
+                             ck_title, ck_description, ck_duedate, ck_done, ck_position,
+                             ck_labels, ck_archived, ck_deleted)
+           VALUES ('00000000-0000-0000-0000-0000000000ba', '00000000-0000-0000-0000-000000000051',
+                   'pre-baseline', 'd', 1, 0, 0,
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00',
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00',
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00',
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw insert");
+    pool.close().await;
+    let loaded = db.repo().load().await.expect("load");
+    let upgraded = loaded
+        .tasks
+        .get(&TaskId::from(uuid::Uuid::from_u128(0xba)))
+        .expect("task loaded")
+        .clone();
+    assert_eq!(upgraded.remote_baseline, None);
+    db.close().await;
+
+    // The decoded task merges identically to a baseline-less one: the
+    // unchanged remote title clobbers on the first (fallback) cycle.
+    let mut local = upgraded.clone();
+    local.title = "edited locally".into();
+    local.clocks.title = ts(1_800_000_400);
+    let remote = taskboard_domain::RemoteTask {
+        id: taskboard_domain::RemoteCardRef {
+            board: RemoteBoardId(77),
+            stack: RemoteStackId(7),
+            card: RemoteCardId(8),
+        },
+        title: "pre-baseline".into(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack: RemoteStackId(7),
+        order: 1,
+        labels: BTreeSet::new(),
+        archived: false,
+        last_modified: ts(1_800_000_500),
+    };
+    let ctx = taskboard_domain::RemoteIndex::default();
+    let first = taskboard_domain::merge::merge_task(&local, &remote, &ctx, true);
+    assert_eq!(first.title, remote.title, "fallback clobbers, bit-for-bit");
+    assert_eq!(
+        first.remote_baseline,
+        Some(taskboard_domain::entities::RemoteTaskBaseline::of(&remote))
+    );
+    // ...and the second cycle is a fixpoint.
+    let second = taskboard_domain::merge::merge_task(&first, &remote, &ctx, true);
+    assert_eq!(second, first);
 }

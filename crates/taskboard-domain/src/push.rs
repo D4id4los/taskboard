@@ -315,6 +315,7 @@ pub struct PushGroup {
 ///     deleted: false,
 ///     clocks,
 ///     remote_seen: None,
+///     remote_baseline: None,
 /// };
 /// let mut tasks = BTreeMap::new();
 /// tasks.insert(task_id, task);
@@ -819,6 +820,7 @@ mod tests {
             deleted: false,
             clocks: clocks(100),
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 
@@ -1250,6 +1252,7 @@ mod tests {
             deleted: false,
             clocks: clocks(100),
             remote_seen: Some(ts(100)),
+            remote_baseline: None,
         }
     }
 

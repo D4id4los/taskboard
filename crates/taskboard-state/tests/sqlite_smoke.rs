@@ -191,6 +191,7 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
             deleted: common::ts(T0),
         },
         remote_seen: None,
+        remote_baseline: None,
     };
     let rule_id = taskboard_domain::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0x28));
     let rule = ReminderRule {

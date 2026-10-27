@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, stack, remote_board_id, remote_stack_id, remote_card_id,\n                      title, description,\n                      duedate as \"duedate: DateTime<Utc>\",\n                      scheduled as \"scheduled: DateTime<Utc>\",\n                      done as \"done: DateTime<Utc>\",\n                      sort_order,\n                      effort,\n                      importance, urgency, recur,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,\n                      ck_position, ck_labels, ck_effort, ck_importance, ck_urgency,\n                      ck_recur, ck_archived, ck_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\"\n               FROM tasks ORDER BY id",
+  "query": "SELECT id, stack, remote_board_id, remote_stack_id, remote_card_id,\n                      title, description,\n                      duedate as \"duedate: DateTime<Utc>\",\n                      scheduled as \"scheduled: DateTime<Utc>\",\n                      done as \"done: DateTime<Utc>\",\n                      sort_order,\n                      effort,\n                      importance, urgency, recur,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,\n                      ck_position, ck_labels, ck_effort, ck_importance, ck_urgency,\n                      ck_recur, ck_archived, ck_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\",\n                      remote_baseline\n               FROM tasks ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -343,6 +343,17 @@
             "name": "remote_seen"
           }
         }
+      },
+      {
+        "name": "remote_baseline",
+        "ordinal": 31,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "remote_baseline"
+          }
+        }
       }
     ],
     "parameters": {
@@ -379,8 +390,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "6af75288bcabff54d0b7d5f89248bfa8c561a3916b68aed95d2d43decc7eb48a"
+  "hash": "b908abbd5ed496d38082e0b8c71013a93d93780d83a766ddce962bbd4bb60f0c"
 }

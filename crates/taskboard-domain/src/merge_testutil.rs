@@ -93,6 +93,21 @@ pub(crate) fn clocks_at(t: i64) -> TaskClocks {
     }
 }
 
+/// The baseline a fresh observation of `remote` produces (test-side
+/// mirror of [`crate::entities::RemoteTaskBaseline::of`]).
+pub(crate) fn baseline_of(remote: &RemoteTask) -> crate::entities::RemoteTaskBaseline {
+    crate::entities::RemoteTaskBaseline::of(remote)
+}
+
+/// `bound_task` with the baseline established from `remote` — the
+/// "already observed this snapshot" fixture the changed-field tests build
+/// on. Clocks are untouched: establishing a baseline is an observation,
+/// not an adoption.
+pub(crate) fn with_baseline(mut task: Task, remote: &RemoteTask) -> Task {
+    task.remote_baseline = Some(baseline_of(remote));
+    task
+}
+
 pub(crate) fn bound_task(card: u64) -> Task {
     let id = TaskId::from(uuid::Uuid::from_u128(u128::from(card)));
     let stack_id = StackId::from(uuid::Uuid::from_u128(900));
@@ -116,6 +131,7 @@ pub(crate) fn bound_task(card: u64) -> Task {
         deleted: false,
         clocks: clocks_at(BASE),
         remote_seen: Some(ts(BASE)),
+        remote_baseline: None,
     }
 }
 

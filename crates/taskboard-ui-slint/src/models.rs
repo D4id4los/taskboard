@@ -1493,6 +1493,7 @@ mod tests {
                 deleted: epoch(),
             },
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 
@@ -1721,6 +1722,7 @@ mod tests {
                     deleted: BoardClocks::epoch(),
                 },
                 remote_seen: None,
+                remote_baseline: None,
             }
         }
 

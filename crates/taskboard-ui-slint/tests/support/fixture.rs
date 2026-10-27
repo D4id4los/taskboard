@@ -67,6 +67,7 @@ fn task(id: TaskId, stack: StackId, order: i64) -> Task {
         deleted: false,
         clocks: task_clocks(),
         remote_seen: None,
+        remote_baseline: None,
     }
 }
 

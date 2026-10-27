@@ -239,6 +239,7 @@ fn minimal_task() -> Task {
             deleted: BoardClocks::epoch(),
         },
         remote_seen: None,
+        remote_baseline: None,
     }
 }
 

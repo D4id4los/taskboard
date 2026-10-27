@@ -985,6 +985,7 @@ mod tests {
                     deleted: epoch(),
                 },
                 remote_seen: None,
+                remote_baseline: None,
             },
         );
         task_id

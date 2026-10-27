@@ -651,6 +651,7 @@ async fn i2_remote_newer_edit_adopts() {
             deleted: ts(T),
         },
         remote_seen: Some(ts(T + 10)),
+        remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
     let stack = boot(server, state).await;
@@ -718,6 +719,7 @@ async fn i3_concurrent_edits_resolve_per_field() {
             deleted: ts(T),
         },
         remote_seen: Some(ts(T + 10)),
+        remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
     let stack = boot(server, state).await;
@@ -838,6 +840,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
             deleted: ts(T),
         },
         remote_seen: Some(ts(T)),
+        remote_baseline: None,
     };
     state.stacks.insert(stack2.id, stack2);
     state.labels.insert(label.id, label);

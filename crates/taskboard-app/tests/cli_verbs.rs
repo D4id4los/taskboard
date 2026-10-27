@@ -1726,6 +1726,7 @@ mod ceremonies {
                 deleted: stamp,
             },
             remote_seen: None,
+            remote_baseline: None,
         };
         let repo = std::sync::Arc::new(
             taskboard_storage_sqlite::open(db, taskboard_domain::ConnectorId::from("nextcloud"))

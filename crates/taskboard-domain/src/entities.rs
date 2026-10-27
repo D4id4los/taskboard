@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use crate::ids::{
-    BoardId, LabelId, RemoteBoardBinding, RemoteCardRef, RemoteLabelRef, RemoteStackRef, StackId,
-    TaskId,
+    BoardId, LabelId, RemoteBoardBinding, RemoteCardRef, RemoteLabelId, RemoteLabelRef,
+    RemoteStackId, RemoteStackRef, StackId, TaskId,
 };
 use crate::recur::RecurRule;
 
@@ -328,6 +328,61 @@ pub struct LabelClocks {
     pub deleted: DateTime<Utc>,
 }
 
+/// The remote card's native-lane field values as last observed (ADR 0004's
+/// remote baseline, #128): the diff reference `merge_task` gates adoption
+/// against. Remote vocabulary, raw unresolved ids — resolution is
+/// per-cycle through the `RemoteIndex`; a stored local resolution would go
+/// stale when boards re-bind. Plain data, no invariants (deliberately not
+/// a trust-boundary newtype). Not covered: the sidecar lane
+/// (`effort`/`importance`/`urgency`/`recur` — their document fold never
+/// reads this record) and `deleted` (cards are presence-based, R3/R5).
+/// Decode-lenient: unknown future fields are ignored on read, so a newer
+/// writer's record never bricks an older reader's load.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteTaskBaseline {
+    /// Card title as last observed.
+    pub title: String,
+    /// Card description as last observed.
+    pub description: String,
+    /// Due date as last observed.
+    pub duedate: Option<DateTime<Utc>>,
+    /// Scheduled start as last observed (recorded even while
+    /// `!native_scheduled` — the record is what the server showed, not
+    /// what we kept; the lane gate is the merge's own predicate).
+    pub scheduled: Option<DateTime<Utc>>,
+    /// Completion timestamp as last observed.
+    pub done: Option<DateTime<Utc>>,
+    /// The composite position's remote half (R8: position is one field;
+    /// the diff compares both halves as a unit).
+    pub stack: RemoteStackId,
+    /// Sort order within the remote stack.
+    pub order: i64,
+    /// Attached remote labels (`BTreeSet` for a deterministic, byte-stable
+    /// JSON encoding).
+    pub labels: std::collections::BTreeSet<RemoteLabelId>,
+    /// Archived flag as last observed.
+    pub archived: bool,
+}
+
+impl RemoteTaskBaseline {
+    /// The one minting point: an observation copied verbatim from the
+    /// remote view. Pure data — no clocks, no ids, no IO.
+    #[must_use]
+    pub fn of(remote: &crate::remote::RemoteTask) -> Self {
+        Self {
+            title: remote.title.clone(),
+            description: remote.description.clone(),
+            duedate: remote.duedate,
+            scheduled: remote.scheduled,
+            done: remote.done,
+            stack: remote.stack,
+            order: remote.order,
+            labels: remote.labels.clone(),
+            archived: remote.archived,
+        }
+    }
+}
+
 /// Per-field write timestamps of a [`Board`] (per-field LWW, ADR 0004).
 ///
 /// Local verbs stamp only their touched field; remote adoption stamps
@@ -443,6 +498,12 @@ pub struct Task {
     /// Remote `lastModified` at last adoption; `None` = never synced.
     /// Fast-path guard for the pull rules (unchanged remote ⇒ keep local).
     pub remote_seen: Option<DateTime<Utc>>,
+    /// The remote card's field values as last observed (the changed-field
+    /// diff reference, ADR 0004 / #128); `None` = no observation yet
+    /// (local creates, pre-migration rows) ⇒ the merge falls back to the
+    /// blanket rule for that cycle. Refreshed at every remote adoption
+    /// point, cleared with the binding; local verbs never touch it.
+    pub remote_baseline: Option<RemoteTaskBaseline>,
 }
 
 impl Task {

@@ -448,6 +448,7 @@ pub fn plan_command(
                 deleted: false,
                 clocks: all_task_clocks(now),
                 remote_seen: None,
+                remote_baseline: None,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -561,6 +562,7 @@ pub fn plan_command(
                 deleted: false,
                 clocks: all_task_clocks(now),
                 remote_seen: None,
+                remote_baseline: None,
             }));
             if let Some(stack) = minted {
                 actions.push(enqueue(LocalOp::CreateStack(stack), ids, now));
@@ -1303,6 +1305,10 @@ pub fn plan_command(
             {
                 if task.remote.is_some_and(|r| r.board != *remote) {
                     task.remote = None;
+                    // The binding is gone, so the observed remote snapshot
+                    // goes with it — the baseline clears with the binding
+                    // (ADR 0004's remote baseline).
+                    task.remote_baseline = None;
                     wiped_refs += 1;
                     actions.push(PersistenceAction::UpsertTask(task));
                 }
@@ -2038,6 +2044,7 @@ mod tests {
             deleted: false,
             clocks: clocks(T0 - 3_600),
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 
@@ -4374,6 +4381,22 @@ mod tests {
         );
     }
 
+    /// A populated `RemoteTaskBaseline` for the bind-wipe fixtures: the
+    /// shape an R1 observation leaves on a bound task.
+    fn observed_baseline() -> crate::entities::RemoteTaskBaseline {
+        crate::entities::RemoteTaskBaseline {
+            title: "observed".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: crate::ids::RemoteStackId(5),
+            order: 1,
+            labels: std::collections::BTreeSet::new(),
+            archived: false,
+        }
+    }
+
     #[test]
     fn bind_wipe_clears_only_foreign_refs() {
         let mut app = unbound_board_state();
@@ -4388,6 +4411,8 @@ mod tests {
             stack: crate::ids::RemoteStackId(5),
             card: crate::ids::RemoteCardId(2),
         });
+        foreign.remote_seen = Some(chrono::DateTime::from_timestamp(1_000, 0).expect("ts"));
+        foreign.remote_baseline = Some(observed_baseline());
         let foreign_id = foreign.id;
         app.tasks.insert(foreign_id, foreign);
         let mut already = task(3, board_stack, true);
@@ -4396,6 +4421,7 @@ mod tests {
             stack: crate::ids::RemoteStackId(5),
             card: crate::ids::RemoteCardId(3),
         });
+        already.remote_baseline = Some(observed_baseline());
         let already_id = already.id;
         app.tasks.insert(already_id, already);
         let local_only = task(4, board_stack, false);
@@ -4433,6 +4459,16 @@ mod tests {
         assert!(
             cleared.contains(&(foreign_id, None)),
             "the foreign ref wipes"
+        );
+        // The wipe is a binding clear: the observed remote snapshot goes
+        // with it (ADR 0004's remote baseline).
+        assert!(
+            plan.actions.iter().any(|a| matches!(
+                a,
+                PersistenceAction::UpsertTask(t)
+                    if t.id == foreign_id && t.remote_baseline.is_none()
+            )),
+            "the wiped row's baseline clears with the binding"
         );
         assert!(
             !cleared.contains(&(already_id, None)),

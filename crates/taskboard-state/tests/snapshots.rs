@@ -1130,6 +1130,7 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
             deleted: ts(T0),
         },
         remote_seen: None,
+        remote_baseline: None,
     };
     let rule = ReminderRule {
         id: ids.new_reminder_rule_id(),

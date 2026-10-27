@@ -121,6 +121,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
                 deleted: ts(1),
             },
             remote_seen: None,
+            remote_baseline: None,
         })
     });
     let label = any::<u128>().prop_map(|raw| {
@@ -453,6 +454,7 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
             deleted: ts(1),
         },
         remote_seen: None,
+        remote_baseline: None,
     };
     let mut state = PersistedState::default();
     state.boards.insert(

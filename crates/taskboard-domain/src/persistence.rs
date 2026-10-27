@@ -582,6 +582,7 @@ mod tests {
                 deleted: ts(100),
             },
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 
@@ -887,6 +888,7 @@ mod tests {
                 deleted: ts(100),
             },
             remote_seen: None,
+            remote_baseline: None,
         };
         let label_row = |id, b| Label {
             id,

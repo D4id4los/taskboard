@@ -437,6 +437,9 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
             deleted: lc.deleted.max(bc.deleted),
         },
         remote_seen: bound.remote_seen,
+        // The survivor has observed no snapshot (`remote_seen` is a stamp,
+        // not values): the first post-bind pull falls back, then converges.
+        remote_baseline: None,
     }
 }
 
@@ -447,6 +450,9 @@ pub fn neutralized_task(local: &Task, bound: &Task) -> Task {
     absorbed.deleted = true;
     absorbed.remote = None;
     absorbed.remote_seen = None;
+    // The binding is cleared, so the observed remote snapshot goes with
+    // it: the record is a *remote* baseline and this row has no remote.
+    absorbed.remote_baseline = None;
     absorbed.clocks.deleted = absorbed.clocks.deleted.max(local.clocks.deleted);
     absorbed
 }
@@ -584,6 +590,7 @@ mod tests {
                 deleted: ts(100),
             },
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 
@@ -942,6 +949,7 @@ mod proptests {
                 deleted: ts(100),
             },
             remote_seen: None,
+            remote_baseline: None,
         })
     }
 
@@ -1297,6 +1305,7 @@ mod proptest_strategies {
                     deleted: false,
                     clocks,
                     remote_seen: None,
+                    remote_baseline: None,
                 };
                 (
                     mk(

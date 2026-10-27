@@ -1809,6 +1809,7 @@ mod tests {
             deleted: false,
             clocks: clocks(),
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 

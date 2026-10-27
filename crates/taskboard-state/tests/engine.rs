@@ -2693,6 +2693,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                 deleted: ts(T0),
             },
             remote_seen: None,
+            remote_baseline: None,
         },
     );
 

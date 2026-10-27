@@ -1526,6 +1526,7 @@ mod tests {
                 deleted: t(1_000),
             },
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 

@@ -518,6 +518,7 @@ fn fixture() -> (AppState, Fixture) {
             deleted: now,
         },
         remote_seen: None,
+        remote_baseline: None,
     };
     state.tasks.insert(a, task(a, s0, 0));
     state.tasks.insert(b, task(b, s0, 1));

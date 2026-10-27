@@ -480,6 +480,7 @@ mod tests {
             deleted: false,
             clocks: task_clocks(),
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 

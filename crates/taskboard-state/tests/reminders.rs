@@ -153,6 +153,7 @@ fn seeded_task_state(duedate_secs: i64) -> (PersistedState, taskboard_domain::Ta
             deleted: ts(T0),
         },
         remote_seen: None,
+        remote_baseline: None,
     };
     let task_id = task.id;
     let mut state = PersistedState::default();

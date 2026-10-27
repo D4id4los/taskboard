@@ -149,6 +149,7 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
             }
         },
         remote_seen: None,
+        remote_baseline: None,
     }
 }
 

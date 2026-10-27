@@ -224,6 +224,7 @@ mod tests {
             deleted,
             clocks: task_clocks(),
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 
