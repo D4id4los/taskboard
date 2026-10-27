@@ -16,6 +16,7 @@ import { CaptureOverlay } from "compositions/capture-overlay.slint";
 import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel } from "compositions/status-bar.slint";
 import { NotificationSurface, NotificationRowModel } from "compositions/notification-surface.slint";
+import { TimerRowModel } from "compositions/timers.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
@@ -144,6 +145,14 @@ export component AppWindow inherits Window {
     // the kiosk's model-side gate (R3.5.3) keeps these empty.
     in-out property <[NotificationRowModel]> notification-model;
     in-out property <int> notification-overflow;
+    // The timers surface (DR-3/3, D-I6): the today view's section +
+    // the status-bar chip. Desktop-only — the kiosk gate empties the
+    // model and forces the visibility flags false model-side.
+    in-out property <bool> timers-visible: false;
+    in-out property <[TimerRowModel]> timers-model;
+    in-out property <int> timers-awaiting: 0;
+    in-out property <bool> timers-chip-visible: false;
+    in-out property <string> timers-chip;
     // The jump-to search palette (#348): the model rows arrive ranked,
     // anchor-filtered, and capped from the Rust pass.
     in-out property <bool> palette-open: false;
@@ -260,6 +269,11 @@ export component AppWindow inherits Window {
                 row-clicked(s, r) => root.today-row-clicked(s, r);
                 row-context(s, r, x, y) => root.today-row-context-requested(s, r, x, y);
                 row-done-toggled(s, r) => root.today-row-done-toggled(s, r);
+                timers-visible: root.timers-visible;
+                timers: root.timers-model;
+                timers-awaiting: root.timers-awaiting;
+                timers-cancel-clicked(r) => root.timers-cancel-clicked(r);
+                timers-create-accepted(label, when) => root.timers-create-accepted(label, when);
             }
             if (root.current-view == View.stack-detail): StackView {
                 stack: root.stack-model;
@@ -348,9 +362,12 @@ export component AppWindow inherits Window {
                 banner: root.banner-model;
                 banner-overflow: root.banner-overflow;
                 flow-hint: root.flow-hint-model;
+                timers-chip-visible: root.timers-chip-visible;
+                timers-chip: root.timers-chip;
                 snooze-clicked(i) => root.banner-snooze-clicked(i);
                 mute-clicked(i) => root.banner-mute-clicked(i);
                 row-activated(i) => root.banner-row-activated(i);
+                timers-chip-clicked() => root.timers-chip-clicked();
             }
         }
 
@@ -666,4 +683,10 @@ export component AppWindow inherits Window {
     pure callback notification-done-clicked(int);
     pure callback notification-snooze-clicked(int);
     pure callback notification-mute-clicked(int);
+    // The timers surface (DR-3/3, D-I8): create dispatches
+    // TimerCreate from the parsed draft; cancel dispatches
+    // TimerCancel from the row table; the chip click focuses today.
+    pure callback timers-cancel-clicked(int);
+    pure callback timers-create-accepted(string, string) -> bool;
+    pure callback timers-chip-clicked();
 }

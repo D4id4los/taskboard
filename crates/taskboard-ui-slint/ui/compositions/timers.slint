@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The timers section (DR-3/3, D-I6): the today view's active (unfired)
+// alarms — one row per live countdown plus the inline creation form —
+// and the compact awaiting-count pointer to the notification surface
+// (the awaiting rows themselves live there; one source of truth).
+// Desktop-only: the mount gate sits model-side (`timers-visible` is
+// false on kiosk and the section never renders). Layout only; the
+// commands live in the adapter.
+
+import { Theme, Typography, RoleText, Tone } from "../theme.slint";
+import { Badge } from "../widgets/badge.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { ListRow } from "../widgets/list-row.slint";
+import { TextField } from "../widgets/text-field.slint";
+
+// One active timer row: the label snapshot plus the countdown phrase
+// (derived per refresh — no UI-held ticking state). The cancel target
+// is Rust-side (the IdTables index convention); the row carries only
+// its index.
+export struct TimerRowModel {
+    label: string,
+    countdown: string,
+}
+
+export component TimersSection inherits Rectangle {
+    in property <[TimerRowModel]> timers;
+    // The awaiting (fired ∧ ¬dismissed) alarms count — a non-
+    // interactive pointer badge to the notification surface (D-P15).
+    in property <int> timers-awaiting;
+    callback cancel-clicked(int);
+    // The form's commit seam (the rule-add convention): `false` keeps
+    // the field text (an absorbed parse miss), `true` clears both.
+    callback create-accepted(string, string) -> bool;
+
+    background: transparent;
+    accessible-role: AccessibleRole.region;
+    accessible-label: "Timers";
+
+    VerticalLayout {
+        spacing: Theme.space-1;
+
+        // The header row (D-P3): always renders on the desktop today
+        // view — the creation affordance needs a permanent home; only
+        // the rows collapse.
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            RoleText {
+                role: Typography.caption;
+                text: "Timers";
+                vertical-alignment: center;
+            }
+            RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: root.timers.length;
+                vertical-alignment: center;
+            }
+            if (root.timers-awaiting > 0): Badge {
+                text: "\{root.timers-awaiting} awaiting";
+                tone: Tone.info;
+            }
+        }
+
+        for row[row-index] in root.timers: HorizontalLayout {
+            spacing: Theme.space-2;
+
+            list := ListRow {
+                horizontal-stretch: 1;
+                text: row.label;
+                meta: row.countdown;
+                tone: Tone.info;
+            }
+            VerticalLayout {
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.info;
+                    label: "Cancel timer";
+                    clicked => root.cancel-clicked(row-index);
+                }
+            }
+        }
+
+        // The inline creation form (D-I7): label + the `in`/`at`
+        // timing grammar. Commit fires on the timing field's Return;
+        // an absorbed miss keeps the text (the rule-add seam's return
+        // convention).
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            label-field := TextField {
+                horizontal-stretch: 1;
+                placeholder: "Timer label";
+                label: "Timer label";
+                autofocus: false;
+            }
+            when-field := TextField {
+                horizontal-stretch: 1;
+                placeholder: "in 10m · at 09:30";
+                label: "Timer timing (in 10m or at 09:30)";
+                autofocus: false;
+                accepted(text) => {
+                    if (root.create-accepted(label-field.text, text)) {
+                        label-field.text = "";
+                        when-field.text = "";
+                    }
+                }
+            }
+        }
+    }
+}
