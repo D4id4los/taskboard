@@ -34,6 +34,9 @@ export component BoardView inherits FocusScope {
     in property <[string]> stack-header-hint;
     // The stack.create binding hint for the add-column tooltip (r2 D6).
     in property <[string]> stack-create-hint;
+    // The task.create binding hint for the add-task ghost tooltips
+    // (r3 D3).
+    in property <[string]> task-create-hint;
     // The drag seams (round-1 D17), threaded window → view → layout.
     callback stack-width-press(int, float);
     callback stack-width-drag(int, float);
@@ -105,6 +108,7 @@ export component BoardView inherits FocusScope {
                 task-card-hint: root.task-card-hint;
                 stack-header-hint: root.stack-header-hint;
                 stack-create-hint: root.stack-create-hint;
+                task-create-hint: root.task-create-hint;
                 stack-width-press(c, w) => root.stack-width-press(c, w);
                 stack-width-drag(c, d) => root.stack-width-drag(c, d);
                 stack-width-release(c) => root.stack-width-release(c);
