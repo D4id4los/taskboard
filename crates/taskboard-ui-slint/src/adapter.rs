@@ -2683,7 +2683,13 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let Flow::DragMove { .. } = a.view_state.flow() else {
             return;
         };
+        // Round 3 (R2, F8): a drop that cannot resolve its column —
+        // the stale-tables race — settles instead of returning: the
+        // move dispatches nothing (a missed drop must not guess a
+        // target) and no armed flow/ghost survives the gesture.
         let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+            let state = a.state.load_full();
+            a.settle_flow(&window, &state);
             return;
         };
         let state = a.state.load_full();
@@ -2692,10 +2698,12 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.apply_outcomes(&window, &outcomes);
     });
 
-    // The finished outcome: `false` (a cancelled drag — release
-    // outside any accepting column, the runtime's Exit rewrite)
-    // cancels the flow. `true` is a completed drop — the dropped seam
-    // already confirmed. `try_borrow_mut`: the adapter's synthetic
+    // The finished outcome (round 3, R2/F8): the flow settles
+    // whenever it is still armed — `false` (a cancelled drag —
+    // release outside any accepting column, the runtime's Exit
+    // rewrite) cancels, and a `true` whose confirm was swallowed by
+    // the stale-column race cancels too. `try_borrow_mut`: the
+    // adapter's synthetic
     // `PointerExited` teardown (Escape / a leaving effect / an
     // Activate confirm mid-drag) fires `drag-finished(none)`
     // synchronously *inside* an `interpret` borrow; that echo is
@@ -2703,22 +2711,29 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // flow guard would assert anyway.
     let finished = Rc::clone(adapter);
     let finished_weak = window.as_weak();
-    window.on_board_card_drag_finished(move |column, row, completed| {
+    window.on_board_card_drag_finished(move |column, row, _completed| {
         let Some(window) = finished_weak.upgrade() else {
             return;
         };
         let _ = (column, row);
-        if completed {
-            return;
-        }
         let Ok(mut a) = finished.try_borrow_mut() else {
             return;
         };
+        // Round 3 (R2, F8): the `completed` early-out is gone — the
+        // handler settles whenever the flow is still armed,
+        // `completed` or not. `completed == true` with the flow still
+        // armed means the drop seam's confirm was swallowed (exactly
+        // the stale-column race); `completed == false` is today's
+        // cancel. Either way the gesture is over and nothing stays
+        // armed. The `try_borrow_mut` absorption stays: the synthetic
+        // teardown echo fires inside an `interpret` borrow with the
+        // flow already gone — absorption is correct there and can
+        // never mask a legitimate settle.
         let Flow::DragMove { .. } = a.view_state.flow() else {
             return;
         };
-        let outcomes = a.view_state.cancel_move();
-        a.apply_outcomes(&window, &outcomes);
+        let state = a.state.load_full();
+        a.settle_flow(&window, &state);
     });
 }
 

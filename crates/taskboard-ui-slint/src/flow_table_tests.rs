@@ -718,3 +718,91 @@ fn the_matrix_covers_every_class_cell() {
         );
     }
 }
+
+// -- the R2 drop-miss journeys (F8) --------------------------------------
+
+use crate::view_state::ViewState;
+
+#[test]
+fn a_stale_column_drop_settles_the_drag_without_dispatching() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            a.test_reset();
+            a.view_state.reconcile(&rig.handle.test_state().load_full());
+            let [a_id, _b, _c] = fx.tasks;
+            *a.view_state.flow_mut() = Flow::DragMove {
+                task: a_id,
+                target: fx.stacks[1],
+            };
+        }
+        // The drop lands past the id tables (the stale-refresh race):
+        // the old early-out left the flow armed here.
+        rig.handle
+            .window()
+            .invoke_board_card_dropped(i32::try_from(usize::MAX).unwrap_or(i32::MAX));
+        let flow = adapter.borrow().view_state.flow().clone();
+        assert_eq!(flow, Flow::None, "the stale drop settles the drag");
+        assert_eq!(rig.drain(), 0, "a missed drop guesses no target");
+    });
+}
+
+#[test]
+fn a_swallowed_completed_confirm_still_settles_the_drag() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            a.test_reset();
+            a.view_state.reconcile(&rig.handle.test_state().load_full());
+            let [a_id, _b, _c] = fx.tasks;
+            *a.view_state.flow_mut() = Flow::DragMove {
+                task: a_id,
+                target: fx.stacks[1],
+            };
+        }
+        // `completed == true` with the flow still armed: the drop
+        // seam's confirm was swallowed — the finished seam cancels.
+        rig.handle
+            .window()
+            .invoke_board_card_drag_finished(0, 0, true);
+        let flow = adapter.borrow().view_state.flow().clone();
+        assert_eq!(flow, Flow::None, "the swallowed confirm cancels");
+        assert_eq!(rig.drain(), 0, "the swallowed confirm dispatches nothing");
+    });
+}
+
+#[test]
+fn a_live_on_tables_drop_still_confirms_with_one_move() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            a.test_reset();
+            a.view_state.reconcile(&rig.handle.test_state().load_full());
+            let [a_id, _b, _c] = fx.tasks;
+            *a.view_state.flow_mut() = Flow::DragMove {
+                task: a_id,
+                target: fx.stacks[1],
+            };
+        }
+        rig.handle.window().invoke_board_card_dropped(1);
+        let flow = adapter.borrow().view_state.flow().clone();
+        assert_eq!(flow, Flow::None, "the confirm ends the flow");
+        let drained: Vec<_> = std::iter::from_fn(|| rig.commands_rx.try_recv().ok()).collect();
+        assert!(
+            matches!(drained.as_slice(), [StateCommand::MoveTask { .. }]),
+            "the on-tables drop dispatches exactly the move, got {drained:?}"
+        );
+    });
+}
+
+#[allow(unused)]
+fn _view_state_witness(_: &ViewState) {}
