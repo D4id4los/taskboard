@@ -69,6 +69,17 @@ local_id!(
     /// client-side; device-local — never synced).
     AdhocAlarmId
 );
+local_id!(
+    /// Local identity of a recurring series (`UUIDv7`, minted
+    /// client-side; stable across the whole occurrence chain).
+    SeriesId
+);
+local_id!(
+    /// Local identity of a habit tracker (`UUIDv7`, generated
+    /// client-side; the entity lands with the habit chunk — the id
+    /// family exists for the `RecurRule.continued_from` seam).
+    HabitId
+);
 
 macro_rules! remote_id {
     ($(#[$doc:meta])* $name:ident) => {
@@ -269,6 +280,12 @@ mod tests {
             let entry = TimeEntryId::from_uuid(raw);
             prop_assert_eq!(entry.as_uuid(), raw);
             prop_assert_eq!(entry, TimeEntryId::from(raw));
+            let series = SeriesId::from_uuid(raw);
+            prop_assert_eq!(series.as_uuid(), raw);
+            prop_assert_eq!(series, SeriesId::from(raw));
+            let habit = HabitId::from_uuid(raw);
+            prop_assert_eq!(habit.as_uuid(), raw);
+            prop_assert_eq!(habit, HabitId::from(raw));
         }
 
         #[test]
