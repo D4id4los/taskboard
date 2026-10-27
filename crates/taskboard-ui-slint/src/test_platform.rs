@@ -299,6 +299,7 @@ mod tests {
                     deleted: stamp(2),
                 },
                 remote_seen: None,
+                remote_baseline: None,
             })
             .collect();
         taskboard_domain::AppState {

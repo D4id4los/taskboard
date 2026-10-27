@@ -173,6 +173,7 @@ fn fixture_task(i: usize, stacks: &[Stack], labels: &[Label]) -> Task {
         deleted: false,
         clocks: task_clocks(i),
         remote_seen: Some(ts(ix(i) + 500)),
+        remote_baseline: None,
     }
 }
 

@@ -88,6 +88,16 @@ pub fn recur_from_text(raw: &str) -> Option<taskboard_domain::recur::RecurRule> 
     serde_json::from_str(raw).ok()
 }
 
+/// The stored TEXT form of a task's remote baseline: the domain serde
+/// JSON of the record (the `Option` wrapper is not stored — NULL is the
+/// never-observed state at the column level, the fallback trigger).
+#[must_use]
+pub fn remote_baseline_to_text(
+    baseline: &taskboard_domain::entities::RemoteTaskBaseline,
+) -> String {
+    serde_json::to_string(baseline).unwrap_or_default()
+}
+
 /// A decode rejection; the repository maps this onto
 /// [`RepositoryError::Corrupted`](taskboard_domain::persistence::RepositoryError).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

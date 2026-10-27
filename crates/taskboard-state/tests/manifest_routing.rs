@@ -118,6 +118,7 @@ fn app_with(features: DeckFeatures) -> AppState {
             deleted: ts(0),
         },
         remote_seen: None,
+        remote_baseline: None,
     };
     app.tasks.insert(task.id, task);
     app.sync = SyncStates::with_row(

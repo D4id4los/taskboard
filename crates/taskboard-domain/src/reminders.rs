@@ -929,6 +929,7 @@ mod tests {
                 deleted: ts(100),
             },
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 

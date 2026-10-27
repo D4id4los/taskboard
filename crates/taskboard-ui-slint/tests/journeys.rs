@@ -3505,6 +3505,7 @@ fn the_drag_survives_interleaved_refreshes_and_engine_changes() {
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },
                     remote_seen: None,
+                    remote_baseline: None,
                 },
             );
             harness.engine.replace_state(changed, &harness.handle);
@@ -5747,6 +5748,7 @@ fn the_drag_surface_survives_interleaved_refreshes() {
                         deleted: taskboard_domain::BoardClocks::epoch(),
                     },
                     remote_seen: None,
+                    remote_baseline: None,
                 },
             );
             harness.engine.replace_state(changed, &harness.handle);

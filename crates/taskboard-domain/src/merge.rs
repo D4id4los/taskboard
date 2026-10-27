@@ -47,7 +47,7 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 
-use crate::entities::{Board, Label, Stack, Task};
+use crate::entities::{Board, Label, RemoteTaskBaseline, Stack, Task};
 use crate::ids::{LabelId, RemoteBoardId, RemoteLabelId, RemoteStackId, StackId, TaskId};
 use crate::remote::{
     RemoteBoard, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
@@ -70,6 +70,38 @@ pub(crate) fn utc_min() -> DateTime<Utc> {
 /// Remote value wins iff strictly newer; ties keep local.
 pub(crate) fn remote_wins(remote_ts: DateTime<Utc>, field_clock: DateTime<Utc>) -> bool {
     remote_ts > field_clock
+}
+
+/// One bool per baseline-covered field: the incoming remote snapshot
+/// differs from the last observation. `scheduled`'s consumer still applies
+/// its own `native_scheduled` lane gate (D-V2); the diff is lane-blind.
+/// The bool fields ARE the data — one predicate per mergeable field.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BaselineDiff {
+    title: bool,
+    description: bool,
+    duedate: bool,
+    scheduled: bool,
+    done: bool,
+    position: bool,
+    labels: bool,
+    archived: bool,
+}
+
+/// The changed-field diff against the persisted baseline (one traversal,
+/// one seam for the property catalogue). Pure: compares field values only.
+fn diff_baseline(baseline: &RemoteTaskBaseline, remote: &RemoteTask) -> BaselineDiff {
+    BaselineDiff {
+        title: remote.title != baseline.title,
+        description: remote.description != baseline.description,
+        duedate: remote.duedate != baseline.duedate,
+        scheduled: remote.scheduled != baseline.scheduled,
+        done: remote.done != baseline.done,
+        position: remote.stack != baseline.stack || remote.order != baseline.order,
+        labels: remote.labels != baseline.labels,
+        archived: remote.archived != baseline.archived,
+    }
 }
 
 fn max_ts(a: DateTime<Utc>, b: DateTime<Utc>) -> DateTime<Utc> {
@@ -128,6 +160,7 @@ pub fn adopt_remote_task(remote: &RemoteTask, id: TaskId, ctx: &RemoteIndex) -> 
         deleted: false,
         clocks: clocks_from(remote.last_modified),
         remote_seen: Some(remote.last_modified),
+        remote_baseline: Some(RemoteTaskBaseline::of(remote)),
     })
 }
 
@@ -178,6 +211,7 @@ fn map_remote_labels(
 /// The `deleted` field participates like any other: a local tombstone is
 /// resurrected iff the remote write is strictly newer than the tombstone
 /// (R5); otherwise the tombstone stands and its pending delete re-pushes.
+#[allow(clippy::too_many_lines)] // one verdict block per field; the length is the schema's
 #[must_use]
 pub fn merge_task(
     local: &Task,
@@ -196,17 +230,37 @@ pub fn merge_task(
     );
     let mut merged = local.clone();
 
-    let title_remote_wins = remote_wins(ts_r, local.clocks.title);
+    // The changed-field gate (ADR 0004's remote baseline, #128): a field
+    // applies only when it also *differs from the last observed remote
+    // snapshot*. A missing baseline (local create, pre-migration row)
+    // falls back to the blanket rule for this one cycle — and the cycle
+    // still establishes the record, so convergence is one pull.
+    let changed = match &local.remote_baseline {
+        Some(baseline) => diff_baseline(baseline, remote),
+        None => BaselineDiff {
+            title: true,
+            description: true,
+            duedate: true,
+            scheduled: true,
+            done: true,
+            position: true,
+            labels: true,
+            archived: true,
+        },
+    };
+
+    let title_remote_wins = remote_wins(ts_r, local.clocks.title) && changed.title;
     if title_remote_wins {
         merged.title.clone_from(&remote.title);
         merged.clocks.title = ts_r;
     }
-    let description_remote_wins = remote_wins(ts_r, local.clocks.description);
+    let description_remote_wins =
+        remote_wins(ts_r, local.clocks.description) && changed.description;
     if description_remote_wins {
         merged.description.clone_from(&remote.description);
         merged.clocks.description = ts_r;
     }
-    let duedate_remote_wins = remote_wins(ts_r, local.clocks.duedate);
+    let duedate_remote_wins = remote_wins(ts_r, local.clocks.duedate) && changed.duedate;
     if duedate_remote_wins {
         merged.duedate = remote.duedate;
         merged.clocks.duedate = ts_r;
@@ -215,18 +269,20 @@ pub fn merge_task(
     // writes, *nothing native* touches `scheduled` — the always-absent
     // remote value must never clobber local state via "remote wins,
     // value null". The field belongs exclusively to the sidecar fold.
-    let scheduled_remote_wins = native_scheduled && remote_wins(ts_r, local.clocks.scheduled);
+    // The diff is lane-blind; the lane gate stays conjunctive here.
+    let scheduled_remote_wins =
+        native_scheduled && remote_wins(ts_r, local.clocks.scheduled) && changed.scheduled;
     if scheduled_remote_wins {
         merged.scheduled = remote.scheduled;
         merged.clocks.scheduled = ts_r;
     }
-    let done_remote_wins = remote_wins(ts_r, local.clocks.done);
+    let done_remote_wins = remote_wins(ts_r, local.clocks.done) && changed.done;
     if done_remote_wins {
         merged.done = remote.done;
         merged.clocks.done = ts_r;
     }
-    // R8: position is one composite field.
-    let position_remote_wins = remote_wins(ts_r, local.clocks.position);
+    // R8: position is one composite field; the diff treats it as a unit.
+    let position_remote_wins = remote_wins(ts_r, local.clocks.position) && changed.position;
     let position_stack = if position_remote_wins {
         resolve_local_stack(ctx, remote.id.board, remote.stack)
     } else {
@@ -239,12 +295,12 @@ pub fn merge_task(
     }
     // R7: the label set is one field; unmapped remote labels are dropped
     // (the pipeline adopts label entities first).
-    let labels_remote_wins = remote_wins(ts_r, local.clocks.labels);
+    let labels_remote_wins = remote_wins(ts_r, local.clocks.labels) && changed.labels;
     if labels_remote_wins {
         merged.labels = map_remote_labels(ctx, remote.id.board, &remote.labels);
         merged.clocks.labels = ts_r;
     }
-    let archived_remote_wins = remote_wins(ts_r, local.clocks.archived);
+    let archived_remote_wins = remote_wins(ts_r, local.clocks.archived) && changed.archived;
     if archived_remote_wins {
         merged.archived = remote.archived;
         merged.clocks.archived = ts_r;
@@ -270,6 +326,14 @@ pub fn merge_task(
         labels_remote_wins,
         position_remote_wins,
         position_stack_resolved = position_stack.is_some(),
+        title_changed = changed.title,
+        description_changed = changed.description,
+        duedate_changed = changed.duedate,
+        scheduled_changed = changed.scheduled,
+        done_changed = changed.done,
+        labels_changed = changed.labels,
+        position_changed = changed.position,
+        archived_changed = changed.archived,
         "task field verdicts"
     );
     if local.deleted {
@@ -285,6 +349,9 @@ pub fn merge_task(
 
     merged.remote = Some(remote.id);
     merged.remote_seen = Some(ts_r);
+    // The merge observes the remote wholly even when it adopts partially —
+    // and also in fallback mode (a fallback cycle establishes the record).
+    merged.remote_baseline = Some(RemoteTaskBaseline::of(remote));
     merged
 }
 
@@ -562,6 +629,7 @@ pub fn tombstone_task(local: &Task, observed_at: DateTime<Utc>) -> Task {
     tombstoned.clocks.deleted = max_ts(local.clocks.deleted, observed_at);
     tombstoned.remote = None;
     tombstoned.remote_seen = None;
+    tombstoned.remote_baseline = None;
     tracing::debug!(
         rule = RULE_R3,
         task_id = ?local.id,
@@ -644,6 +712,9 @@ pub fn adopt_task_after_push(
             deleted: max_ts(local.clocks.deleted, lm),
         },
         remote_seen: Some(lm),
+        // The server-normalized echo values are the next pull's diff
+        // reference (the baseline-drift guard, design §5).
+        remote_baseline: Some(RemoteTaskBaseline::of(echo)),
     }
 }
 
@@ -657,6 +728,7 @@ pub fn finalize_pushed_task_delete(local: &Task) -> Task {
     finalized.deleted = true;
     finalized.remote = None;
     finalized.remote_seen = None;
+    finalized.remote_baseline = None;
     tracing::debug!(rule = RULE_R9, task_id = ?local.id, "pushed task delete finalized");
     finalized
 }
@@ -1325,19 +1397,229 @@ mod tests {
     }
 
     #[test]
-    fn granularity_trap_remote_entity_touch_overwrites_local_title() {
+    fn granularity_trap_closed_remote_touch_keeps_local_title() {
         let mut local = bound_task(1);
         local.title = "edited locally".into();
         local.clocks.title = ts(BASE + 330); // 10:05:30
-        let remote = remote_task(1, 1, BASE + 360); // 10:06:00, description edit
+        // The remote's previous observation establishes the baseline; the
+        // new write touches only the description.
+        let previous = remote_task(1, 1, BASE + 180);
+        let local = with_baseline(local, &previous);
+        let mut remote = remote_task(1, 1, BASE + 360); // 10:06:00
+        remote.description = "edited remotely".into();
 
         let ctx = RemoteIndex::default();
         let merged = merge_task(&local, &remote, &ctx, true);
 
-        // The unchanged remote title wins over the newer local edit —
-        // Deck's entity-level granularity. Pinned as intentional (ADR 0004).
-        assert_eq!(merged.title, remote.title);
-        assert_eq!(merged.description, remote.description);
+        // The description applies (changed + newer); the title the remote
+        // did not touch keeps the local value AND its local clock (#128).
+        assert_eq!(merged.title, "edited locally");
+        assert_eq!(merged.clocks.title, ts(BASE + 330));
+        assert_eq!(merged.description, "edited remotely");
+        assert_eq!(merged.clocks.description, ts(BASE + 360));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 360)));
+        assert_eq!(merged.remote_baseline, Some(baseline_of(&remote)));
+    }
+
+    #[test]
+    fn an_unchanged_remote_applies_nothing_but_still_observes() {
+        let mut local = bound_task(1);
+        local.title = "edited locally".into();
+        local.clocks.title = ts(BASE + 330);
+        local.order = 42;
+        local.archived = true;
+        // Baseline equals the incoming snapshot in every covered field.
+        let mut remote = remote_task(1, 1, BASE + 360);
+        remote.order = 42;
+        remote.archived = true;
+        let local = with_baseline(local, &remote);
+
+        let ctx = RemoteIndex::default();
+        let merged = merge_task(&local, &remote, &ctx, true);
+
+        // Observation without adoption: every value and every clock keep
+        // local; only the observation facts advance.
+        assert_eq!(merged.title, "edited locally");
+        assert_eq!(merged.clocks.title, ts(BASE + 330));
+        assert_eq!(merged.order, 42);
+        assert_eq!(merged.clocks.position, ts(BASE));
+        assert!(merged.archived);
+        assert_eq!(merged.clocks.archived, ts(BASE));
+        assert_eq!(merged.remote_seen, Some(ts(BASE + 360)));
+        assert_eq!(merged.remote_baseline, Some(baseline_of(&remote)));
+    }
+
+    #[test]
+    fn missing_baseline_falls_back_then_converges() {
+        let mut local = bound_task(1);
+        local.title = "edited locally".into();
+        local.clocks.title = ts(BASE + 330);
+        let remote = remote_task(1, 1, BASE + 360); // unchanged title, newer stamp
+
+        let ctx = RemoteIndex::default();
+        let first = merge_task(&local, &remote, &ctx, true);
+
+        // The fallback cycle is bit-for-bit today's blanket LWW...
+        assert_eq!(first.title, remote.title);
+        assert_eq!(first.clocks.title, ts(BASE + 360));
+        // ...and it establishes the record.
+        assert_eq!(first.remote_baseline, Some(baseline_of(&remote)));
+
+        // The second cycle with the same snapshot is a fixpoint.
+        let second = merge_task(&first, &remote, &ctx, true);
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn adopt_remote_task_establishes_the_baseline() {
+        let mut remote = remote_task(1, 1, BASE + 60);
+        remote.labels = BTreeSet::from([RemoteLabelId(7)]);
+        let id = TaskId::from(uuid::Uuid::from_u128(9));
+        let mut ctx = RemoteIndex::default();
+        ctx.stack_by_ref
+            .insert(stack_ref(1), StackId::from(uuid::Uuid::from_u128(900)));
+
+        let adopted = adopt_remote_task(&remote, id, &ctx).expect("stack resolves");
+
+        assert_eq!(adopted.remote_baseline, Some(baseline_of(&remote)));
+    }
+
+    #[test]
+    fn adopt_task_after_push_baseline_holds_the_normalized_echo() {
+        let ctx = RemoteIndex::default();
+        let local = bound_task(1);
+        let mut echo = remote_task(1, 1, BASE + 300);
+        echo.title = "  card 1  ".into(); // server-side normalization
+
+        let adopted = adopt_task_after_push(&local, &echo, &ctx, true);
+
+        // The echo's *normalized* values are the next pull's diff
+        // reference — the baseline-drift guard (design §5).
+        assert_eq!(adopted.remote_baseline, Some(baseline_of(&echo)));
+        assert_eq!(
+            adopted.remote_baseline.as_ref().map(|b| b.title.as_str()),
+            Some("  card 1  ")
+        );
+    }
+
+    #[test]
+    fn tombstone_task_clears_the_baseline() {
+        let mut remote = remote_task(1, 1, BASE + 60);
+        remote.title = "observed".into();
+        let local = with_baseline(bound_task(1), &remote);
+
+        let tombstoned = tombstone_task(&local, ts(BASE + 120));
+
+        assert_eq!(tombstoned.remote_baseline, None);
+        assert_eq!(tombstoned.remote, None);
+    }
+
+    #[test]
+    fn finalize_pushed_task_delete_clears_the_baseline() {
+        let local = with_baseline(bound_task(1), &remote_task(1, 1, BASE + 60));
+
+        let finalized = finalize_pushed_task_delete(&local);
+
+        assert_eq!(finalized.remote_baseline, None);
+        assert!(finalized.remote.is_none());
+    }
+
+    #[test]
+    fn a_baseline_never_shields_a_tombstone_from_resurrection() {
+        let mut local = bound_task(1);
+        local.deleted = true;
+        local.clocks.deleted = ts(BASE + 300);
+        let previous = remote_task(1, 1, BASE + 180);
+        let local = with_baseline(local, &previous);
+        let remote = remote_task(1, 1, BASE + 360);
+
+        let ctx = RemoteIndex::default();
+        let merged = merge_task(&local, &remote, &ctx, true);
+
+        assert!(!merged.deleted, "newer remote edit resurrects");
+        assert_eq!(merged.remote, Some(card_ref(1, 1)));
+        assert_eq!(merged.remote_baseline, Some(baseline_of(&remote)));
+    }
+
+    #[test]
+    fn position_diffs_as_one_composite_against_the_baseline() {
+        let mut ctx = RemoteIndex::default();
+        let local = with_baseline(bound_task(1), &remote_task(1, 1, BASE + 180));
+        ctx.stack_by_ref.insert(stack_ref(1), local.stack);
+
+        // The remote only retitled the card: the untouched position keeps
+        // local even though ts_r beats the position clock.
+        let mut title_touch = remote_task(1, 1, BASE + 360);
+        title_touch.title = "moved on".into();
+        let merged = merge_task(&local, &title_touch, &ctx, true);
+        assert_eq!(merged.title, "moved on");
+        assert_eq!(merged.order, local.order);
+        assert_eq!(merged.clocks.position, ts(BASE));
+
+        // The remote moved the card: the whole composite applies.
+        let mut moved = remote_task(1, 1, BASE + 360);
+        moved.order = 77;
+        let merged = merge_task(&local, &moved, &ctx, true);
+        assert_eq!(merged.order, 77);
+        assert_eq!(merged.clocks.position, ts(BASE + 360));
+    }
+
+    #[test]
+    fn labels_diff_as_one_whole_set_against_the_baseline() {
+        let mut previous = remote_task(1, 1, BASE + 180);
+        previous.labels = BTreeSet::from([RemoteLabelId(7)]);
+        let mut local = bound_task(1);
+        local.labels = BTreeSet::from([LabelId::from(uuid::Uuid::from_u128(600))]);
+        local.clocks.labels = ts(BASE + 200); // newer than the baseline stamp
+        let local = with_baseline(local, &previous);
+
+        let ctx = RemoteIndex::default();
+
+        // Same set as the baseline: the local set stands despite ts_r.
+        let merged = merge_task(&local, &previous, &ctx, true);
+        assert_eq!(
+            merged.labels,
+            BTreeSet::from([LabelId::from(uuid::Uuid::from_u128(600))])
+        );
+        assert_eq!(merged.clocks.labels, ts(BASE + 200));
+
+        // A different set applies as a whole.
+        let mut changed = remote_task(1, 1, BASE + 360);
+        changed.labels = BTreeSet::from([RemoteLabelId(8)]);
+        let merged = merge_task(&local, &changed, &ctx, true);
+        assert!(merged.labels.is_empty(), "unmapped remote labels drop");
+        assert_eq!(merged.clocks.labels, ts(BASE + 360));
+    }
+
+    #[test]
+    fn the_scheduled_lane_gate_stays_conjunctive_with_the_diff() {
+        let mut previous = remote_task(1, 1, BASE + 180);
+        previous.scheduled = Some(ts(BASE - 120));
+        let mut local = bound_task(1);
+        local.scheduled = Some(ts(BASE + 100)); // a native local edit
+        local.clocks.scheduled = ts(BASE + 300);
+        let local = with_baseline(local, &previous);
+
+        let ctx = RemoteIndex::default();
+        let mut remote = remote_task(1, 1, BASE + 360);
+        remote.scheduled = Some(ts(BASE - 120)); // equals the baseline: unchanged
+
+        // Lane open, field unchanged: nothing applies.
+        let merged = merge_task(&local, &remote, &ctx, true);
+        assert_eq!(merged.scheduled, Some(ts(BASE + 100)));
+        assert_eq!(merged.clocks.scheduled, ts(BASE + 300));
+
+        // Lane open, field changed, stamp newer: applies.
+        let mut changed = remote_task(1, 1, BASE + 360);
+        changed.scheduled = Some(ts(BASE + 90));
+        let merged = merge_task(&local, &changed, &ctx, true);
+        assert_eq!(merged.scheduled, Some(ts(BASE + 90)));
+        assert_eq!(merged.clocks.scheduled, ts(BASE + 360));
+
+        // Lane closed (D-V2): even a changed value never applies.
+        let merged = merge_task(&local, &changed, &ctx, false);
+        assert_eq!(merged.scheduled, Some(ts(BASE + 100)));
+        assert_eq!(merged.clocks.scheduled, ts(BASE + 300));
     }
 
     #[test]

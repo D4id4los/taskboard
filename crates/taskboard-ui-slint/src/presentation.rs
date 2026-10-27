@@ -764,6 +764,7 @@ mod tests {
             deleted: false,
             clocks: task_clocks(),
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 
@@ -2037,6 +2038,7 @@ mod connector_status_tests {
                     deleted: taskboard_domain::BoardClocks::epoch(),
                 },
                 remote_seen: None,
+                remote_baseline: None,
             };
             if done {
                 t.done = Some(taskboard_domain::BoardClocks::epoch());

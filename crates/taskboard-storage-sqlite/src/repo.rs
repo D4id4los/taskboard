@@ -106,6 +106,7 @@ struct TaskRow {
     ck_archived: String,
     ck_deleted: String,
     remote_seen: Option<DateTime<Utc>>,
+    remote_baseline: Option<String>,
 }
 
 /// Raw `labels` row.
@@ -226,6 +227,15 @@ mod decode {
 
     pub(crate) fn recur(raw: &str) -> Result<taskboard_domain::recur::RecurRule, RepositoryError> {
         codec::recur_from_text(raw).ok_or(RepositoryError::Corrupted)
+    }
+
+    pub(crate) fn remote_baseline(
+        raw: &str,
+    ) -> Result<taskboard_domain::entities::RemoteTaskBaseline, RepositoryError> {
+        // A baseline we cannot read must not silently downgrade to the
+        // fallback: the next merge would blanket-clobber — the exact bug
+        // the record exists to close (ADR 0004's D-7).
+        serde_json::from_str(raw).map_err(|_| RepositoryError::Corrupted)
     }
 }
 
@@ -401,6 +411,11 @@ fn decode_task(
                 .map_err(|_| RepositoryError::Corrupted)?,
         },
         remote_seen: row.remote_seen,
+        remote_baseline: row
+            .remote_baseline
+            .as_deref()
+            .map(decode::remote_baseline)
+            .transpose()?,
     })
 }
 
@@ -598,7 +613,8 @@ impl SqliteTaskRepository {
                       ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,
                       ck_position, ck_labels, ck_effort, ck_importance, ck_urgency,
                       ck_recur, ck_archived, ck_deleted,
-                      remote_seen as "remote_seen: DateTime<Utc>"
+                      remote_seen as "remote_seen: DateTime<Utc>",
+                      remote_baseline
                FROM tasks ORDER BY id"#
         )
         .fetch_all(&mut *tx)
@@ -1069,8 +1085,8 @@ async fn execute_batch(
             .map(|e| i64::try_from(e.seconds()).map_err(|_| RepositoryError::Corrupted))
             .transpose()?;
         sqlx::query!(
-            r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, scheduled, done, sort_order, effort, importance, urgency, recur, archived, deleted, ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, ck_effort, ck_importance, ck_urgency, ck_recur, ck_archived, ck_deleted, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, scheduled, done, sort_order, effort, importance, urgency, recur, archived, deleted, ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, ck_effort, ck_importance, ck_urgency, ck_recur, ck_archived, ck_deleted, remote_seen, remote_baseline)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        stack = excluded.stack,
                        remote_board_id = excluded.remote_board_id,
@@ -1101,7 +1117,8 @@ async fn execute_batch(
                        ck_recur = excluded.ck_recur,
                        ck_archived = excluded.ck_archived,
                        ck_deleted = excluded.ck_deleted,
-                       remote_seen = excluded.remote_seen"#,
+                       remote_seen = excluded.remote_seen,
+                       remote_baseline = excluded.remote_baseline"#,
             codec::uuid_to_text(task.id.as_uuid()),
             codec::uuid_to_text(task.stack.as_uuid()),
             rb,
@@ -1133,6 +1150,10 @@ async fn execute_batch(
             task.clocks.archived.to_rfc3339(),
             task.clocks.deleted.to_rfc3339(),
             task.remote_seen,
+            task
+                .remote_baseline
+                .as_ref()
+                .map(codec::remote_baseline_to_text),
         )
         .execute(&mut *tx)
         .await.map_err(|e| stmt_error(&e))?;

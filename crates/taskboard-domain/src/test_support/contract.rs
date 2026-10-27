@@ -90,6 +90,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         deleted: false,
         clocks: clock_at(0),
         remote_seen: None,
+        remote_baseline: None,
     };
     let op = PendingOp {
         op_id: OpId(uuid::Uuid::from_u128(3)),

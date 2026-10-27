@@ -171,6 +171,7 @@ fn draft(task_raw: u128, stack_local: u128, title: &str) -> (Task, PendingOp) {
         deleted: false,
         clocks: task_clocks(),
         remote_seen: None,
+        remote_baseline: None,
     };
     let op = PendingOp {
         op_id: OpId(uuid(task_raw + 1)),
@@ -1304,6 +1305,7 @@ async fn a18_remote_moved_card_survives_its_queued_edit() {
         deleted: false,
         clocks: task_clocks(),
         remote_seen: Some(ts(T)),
+        remote_baseline: None,
     };
     task.clocks.title = ts(T + 1);
     state.tasks.insert(task.id, task);
@@ -1463,6 +1465,7 @@ async fn a21_archive_mismatch_stamp_uses_the_injected_clock() {
         deleted: false,
         clocks: task_clocks(),
         remote_seen: Some(ts(T)),
+        remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
 
@@ -1612,6 +1615,7 @@ async fn a22_remote_moved_card_delete_lands_without_a_twin() {
         deleted: false,
         clocks: task_clocks(),
         remote_seen: Some(ts(T)),
+        remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
     state.outbox.push(PendingOp {
@@ -2097,6 +2101,7 @@ async fn a28_archived_twin_dedupes_and_the_flag_is_adopted_with_the_observed_sta
         deleted: false,
         clocks: task_clocks(),
         remote_seen: Some(ts(T)),
+        remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
 

@@ -887,6 +887,7 @@ mod sync_states_tests {
                 deleted: ts(100),
             },
             remote_seen: None,
+            remote_baseline: None,
         };
         let label = Label {
             id: LabelId::from(Uuid::from_u128(41)),

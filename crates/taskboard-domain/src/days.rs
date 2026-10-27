@@ -388,6 +388,7 @@ mod today_tests {
                 deleted: stamp(100),
             },
             remote_seen: None,
+            remote_baseline: None,
         }
     }
 

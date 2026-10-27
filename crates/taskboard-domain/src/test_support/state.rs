@@ -120,6 +120,8 @@ pub struct TaskRow {
     pub clocks: crate::entities::TaskClocks,
     /// Remote baseline.
     pub remote_seen: Option<DateTime<Utc>>,
+    /// The observed remote card snapshot, if any.
+    pub remote_baseline: Option<crate::entities::RemoteTaskBaseline>,
 }
 
 fn board_row() -> impl Strategy<Value = BoardRow> {
@@ -227,6 +229,9 @@ fn task_rows() -> impl Strategy<Value = Vec<TaskRow>> {
                 (any::<bool>(), any::<bool>()),
                 task_clocks_strategy(),
                 proptest::option::of(timestamp_strategy()),
+                proptest::option::of(
+                    crate::test_support::entities::remote_task_baseline_strategy(),
+                ),
             ),
         ),
         0..12,
@@ -236,7 +241,7 @@ fn task_rows() -> impl Strategy<Value = Vec<TaskRow>> {
             .map(
                 |(
                     (id, remote, title, description, duedate, scheduled, done, stack_idx),
-                    (order, label_idxs, (archived, deleted), clocks, remote_seen),
+                    (order, label_idxs, (archived, deleted), clocks, remote_seen, remote_baseline),
                 )| TaskRow {
                     id,
                     remote,
@@ -252,6 +257,7 @@ fn task_rows() -> impl Strategy<Value = Vec<TaskRow>> {
                     deleted,
                     clocks,
                     remote_seen,
+                    remote_baseline,
                 },
             )
             .collect()
@@ -371,6 +377,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         deleted: row.deleted,
                         clocks: row.clocks,
                         remote_seen: row.remote_seen,
+                        remote_baseline: row.remote_baseline,
                     },
                 );
             }
