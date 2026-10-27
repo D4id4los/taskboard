@@ -3998,6 +3998,27 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         a.reminder_target = Some(notification_target(&row));
         a.route(&window, ActionId::ReminderMute);
     });
+
+    // Cancel (DR-3/3, D-I7): the alarm row's off-switch — the routed
+    // TimerCancel verb over the one-shot target. A stray or task row
+    // degrades to a no-op (the done-seam's guard shape); the row
+    // disappears by derivation at the next refresh.
+    let cancel = Rc::clone(adapter);
+    let cancel_weak = window.as_weak();
+    window.on_notification_cancel_clicked(move |index| {
+        let Some(window) = cancel_weak.upgrade() else {
+            return;
+        };
+        let mut a = cancel.borrow_mut();
+        let Some(row) = notification_row(&a, index) else {
+            return;
+        };
+        let taskboard_domain::ReminderRef::Adhoc(alarm) = row.reminder else {
+            return;
+        };
+        a.timer_target = Some(alarm);
+        a.route(&window, ActionId::TimerCancel);
+    });
 }
 
 /// The one-shot reminder target a notification row feeds the routed

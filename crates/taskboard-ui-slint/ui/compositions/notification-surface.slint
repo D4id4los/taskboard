@@ -16,6 +16,12 @@ import { ListRow } from "../widgets/list-row.slint";
 export struct NotificationRowModel {
     title: string,
     fired-phrase: string,
+    // The anchor-aware affordance table (DR-3/3, D-P11): task rows
+    // keep Done + Mute; alarm rows swap them for Cancel. Dismiss and
+    // Snooze are unconditional (always rendered).
+    can-done: bool,
+    can-mute: bool,
+    can-cancel: bool,
 }
 
 export component NotificationSurface inherits Rectangle {
@@ -25,6 +31,7 @@ export component NotificationSurface inherits Rectangle {
     callback done-clicked(int);
     callback snooze-clicked(int);
     callback mute-clicked(int);
+    callback cancel-clicked(int);
 
     background: Theme.background;
     accessible-role: AccessibleRole.region;
@@ -54,7 +61,7 @@ export component NotificationSurface inherits Rectangle {
                     clicked => root.dismiss-clicked(row-index);
                 }
             }
-            VerticalLayout {
+            if (row.can-done): VerticalLayout {
                 IconButton {
                     icon: IconKind.check;
                     tone: Tone.info;
@@ -70,12 +77,20 @@ export component NotificationSurface inherits Rectangle {
                     clicked => root.snooze-clicked(row-index);
                 }
             }
-            VerticalLayout {
+            if (row.can-mute): VerticalLayout {
                 IconButton {
                     icon: IconKind.mute;
                     tone: Tone.info;
                     label: "Mute reminders";
                     clicked => root.mute-clicked(row-index);
+                }
+            }
+            if (row.can-cancel): VerticalLayout {
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.info;
+                    label: "Cancel timer";
+                    clicked => root.cancel-clicked(row-index);
                 }
             }
         }

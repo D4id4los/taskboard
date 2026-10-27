@@ -489,12 +489,31 @@ fn push_notifications(
     let shown: Vec<NotificationRowModel> = rows
         .iter()
         .take(NOTIFICATION_ROW_CAP)
-        .map(|row| NotificationRowModel {
-            title: SharedString::from(row.title.clone()),
-            fired_phrase: SharedString::from(presentation::notification_phrase(
-                row.occurrence,
-                now,
-            )),
+        .map(|row| {
+            // The anchor-aware table (DR-3/3, D-P11): the pure
+            // decision projected per row — task rows keep all four
+            // task-shaped affordances, alarm rows Dismiss/Snooze/
+            // Cancel.
+            let anchor = match row.reminder {
+                taskboard_domain::ReminderRef::Adhoc(alarm) => {
+                    taskboard_domain::ReminderAnchor::Alarm(alarm)
+                }
+                _ => taskboard_domain::ReminderAnchor::Task(
+                    row.task
+                        .expect("a non-adhoc notification row carries its task"),
+                ),
+            };
+            let buttons = presentation::awaiting_row_buttons(anchor);
+            NotificationRowModel {
+                title: SharedString::from(row.title.clone()),
+                fired_phrase: SharedString::from(presentation::notification_phrase(
+                    row.occurrence,
+                    now,
+                )),
+                can_done: buttons.done,
+                can_mute: buttons.mute,
+                can_cancel: buttons.cancel,
+            }
         })
         .collect();
     let mutations = push_rows(
