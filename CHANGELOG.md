@@ -8,6 +8,21 @@ The workspace carries a single global version (see `docs/architecture.org`);
 `scripts/bump_version.sh <major|minor|patch>` cuts release entries.
 
 ## [Unreleased]
+### Changed
+
+- Interactive-session signal policy (ADR 0011's 2026-10-27 amendment,
+  #174/#192/#200): ^C during a dispatching line cancels the line — a
+  typed `cancelled` failure in the usual envelope, the session
+  continues (a command already handed to the engine may still commit);
+  a second ^C before the cancellation is acknowledged restores the
+  terminal and exits 130. SIGTERM/SIGHUP restore the terminal first,
+  then end the session exactly like Ctrl-D (exit 0); a second one
+  during the drain exits 143/129. In-session ceremony prompts (server
+  URL, username, y/N) ride the line editor with the prompt line's ^C
+  grammar — labels now print on stdout — and their answers never enter
+  history or completion. One-shot `connect`/`login` keep the default
+  ^C disposition (death, pre-persist).
+
 ### Fixed
 
 - `taskboard sync --wait` no longer misreports a completed, successful

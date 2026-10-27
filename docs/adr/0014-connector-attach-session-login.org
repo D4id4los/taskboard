@@ -162,6 +162,22 @@ The environment-independent contract, pinned in both branches: a ^C
 mid-ceremony never persists anything and never wedges the session
 behind an unanswered read.
 
+** Amendment (2026-10-27): the masked read under the session's installed handler (DR-2/R)
+
+Under the interactive session the masked read's ^C is deterministic on
+the terminal tier too: with the session watcher's SIGINT handler
+installed, rpassword's re-raise is consumed and its =Err(Interrupted)=
+returns through the oneshot — the typed =prompt= cancellation, the
+session survives (the re-raise may instead arm the cancel epoch
+mid-dispatch; both outcomes are typed cancellations with identical
+persistence guarantees). The default-disposition branch above remains
+true verbatim for the *one-shot* ceremony surface (=connect=/=login=
+as subcommands install no handler — the sync read executes inside
+=poll=, un-cancellable by any select, and consuming ^C there would
+leave the read silently running). The session's =Line=/=Confirm=
+prompts additionally moved onto the line editor — one ^C grammar for
+every prompt kind (ADR 0011's 2026-10-27 amendment).
+
 * Consequences
 
 - taskboard-state gained one command arm + the fan-out seam;

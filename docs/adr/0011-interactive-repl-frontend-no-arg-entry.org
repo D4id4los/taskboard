@@ -164,6 +164,40 @@ instance lock. A failed line never aborts the session and never shapes
 its exit code. Graceful in-command line cancellation is backloged
 alongside WI-5's process-signal story (one design, once).
 
+** Amendment (2026-10-27): the session's signal policy and the prompt grammar (DR-2/R, design round 2026-10-26 §3 D-0–D-4)
+
+The v1 text above (kept verbatim) is superseded for the interactive
+session by the one signal policy of =crates/taskboard-app/src/signals.rs=:
+
+- *^C during a dispatching line cancels the line*: the loop drops the
+  line's future and reports the typed =cancelled= failure in the same
+  envelope as every line failure; the session continues. An engine
+  command already delivered still commits (*orphan completion*) —
+  named in the cancelled envelope's detail, never hidden. A SIGINT
+  that lands while nothing is in flight is drained (acknowledged,
+  nothing cancelled) at the next dispatch's start.
+- *The force rung*: a second SIGINT while the first is not yet
+  acknowledged makes the watcher restore the terminal and exit 130.
+  At the prompt an external SIGINT is a *line-clear* — rustyline owns
+  SIGINT while =readline= is active, the same F5 grammar as the ^C
+  byte; the ladder counts signals in flight. SIGTERM/SIGHUP restore
+  the terminal *first*, then end the session exactly like Ctrl-D
+  (exit 0); a second one during the drain forces at 128+signum
+  (143/129). SIGQUIT keeps its kernel default (core-dump diagnostic;
+  runbook recovery: =stty sane=); SIGKILL is unhandleable by
+  definition.
+- *Ceremony prompt grammar*: the session's =Line=/=Confirm= prompts
+  ride the editor's own rustyline =readline= (masked stays rpassword
+  on /dev/tty) — one ^C grammar for every prompt kind;
+  =ReadlineError::Interrupted= is a typed =prompt= cancellation (a
+  cancelled prompt is not a declined one), EOF fails the line
+  honestly. Prompt labels move stderr → stdout (where =taskboard> =
+  already writes; a --json session's stdout was not byte-pure between
+  payloads before). Prompt answers never enter history or completion
+  (oneshot transport; completion suspended for prompt reads).
+- One-shot ceremonies (=connect=/=login= as subcommands) install no
+  handler: their ^C keeps the default disposition, pre-persist.
+
 ** Dependencies
 
 =rustyline= 17 (line editing, history, raw-mode Ctrl-C/D; MIT; its
