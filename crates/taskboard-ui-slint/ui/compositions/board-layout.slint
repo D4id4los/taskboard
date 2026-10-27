@@ -155,6 +155,18 @@ export component BoardLayout inherits Rectangle {
             label: "New stack";
             clicked => root.new-stack-activated();
         }
+        // The stack-create flow's field on the empty board (round-3
+        // R5/F10, the minimal fix — the full centered-CTA empty-board
+        // page stays chunk 2): `begin_create_stack` arms the flow
+        // regardless of stack count, so the affordance must render
+        // in every leg. Same bindings as the populated legs' fields.
+        if (root.stack-create-open): TextField {
+            placeholder: "New stack name";
+            label: "New stack name";
+            commit-affordance: true;
+            accepted(text) => root.stack-create-committed(text);
+            edited(text) => root.stack-create-edited(text);
+        }
     }
 
     if (root.stacks.length > 0 && !root.compact-active): VerticalLayout {

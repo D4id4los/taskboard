@@ -5893,3 +5893,39 @@ fn the_desktop_mount_never_rotates() {
         },
     );
 }
+
+/// The empty-board create flow is visible (round-3 R5/F10, minimal
+/// fix): the empty-board leg renders the same create field the
+/// populated legs do, typing lands, and Return creates the stack.
+/// The full centered-CTA empty-board page stays chunk 2 (D5).
+#[test]
+fn the_empty_board_stack_create_flow_opens_a_visible_field() {
+    let state = fixture::empty_board_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let create_open =
+                |harness: &Harness| harness.handle.window().get_board_model().stack_create_open;
+
+            harness.press(ActionId::StackCreate);
+            assert!(create_open(&harness), "the flow arms on the empty board");
+            assert!(
+                harness.driver.find_by_label("New stack name").is_some(),
+                "the empty-board leg renders the create field (F10)"
+            );
+            harness.type_text("first");
+            harness.stroke(parse("Return").expect("Return"));
+            assert!(!create_open(&harness), "the commit closed the flow");
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CreateStack { title, order, .. }] => {
+                    assert_eq!(title.as_str(), "first");
+                    assert_eq!(*order, 0, "the first stack on the empty board");
+                }
+                other => panic!("the create reached the boundary, got {other:?}"),
+            }
+        },
+    );
+}
