@@ -292,3 +292,24 @@ pub fn triage_state() -> (TwoBoardFixture, AppState, TaskId) {
 fn title_board(state: &mut AppState, id: BoardId, title: &str) {
     title.clone_into(&mut state.boards.get_mut(&id).expect("board").title);
 }
+
+/// The empty board (round-3 R5/F10): one live board, zero stacks —
+/// the leg the create-stack field must render in.
+#[must_use]
+pub fn empty_board_state() -> AppState {
+    let (_fixture, mut state) = golden_state();
+    let stacks: Vec<StackId> = state.stacks.keys().copied().collect();
+    for stack in stacks {
+        state.stacks.remove(&stack);
+    }
+    state.tasks.clear();
+    taskboard_domain::derive_sync_states(
+        &state.boards,
+        &state.stacks,
+        &state.tasks,
+        &state.labels,
+        &[],
+        &mut state.sync,
+    );
+    state
+}
