@@ -25,6 +25,27 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- The GUI's flow state machine no longer traps the board (round-3
+  GUI review, findings F7/F8/F9/F10/F18): clicking out of an empty
+  create row settles it instead of leaving the app keyboard-stuck;
+  a drag dropped on a stale column or whose confirm was swallowed
+  cancels cleanly instead of leaving a ghost needing Escape; New
+  Task / New Stack and the hamburger act under any armed flow
+  (auto-settle-then-run) instead of flashing and doing nothing; the
+  empty board's New Stack opens a visible create field; and
+  switching to Settings (or pressing emacs `C-g`) while the due-date
+  editor is open closes the editor instead of silently doing
+  nothing. The interpretation table is total by construction — the
+  wildcard arm is gone, so no flow/effect pair can be silent again
+  (the pair-table test pins all `(Flow, effect)` outcomes).
+- Task-detail entry no longer auto-starts title editing (F26): the
+  detail opens read-only, the title is edited on demand — clickable
+  title, `F2` (standard) / `Return` (emacs) / vi `i` — and is always
+  re-armable; the editor stretches to the full body width instead of
+  the narrow header column. Text flows also commit (non-empty) or
+  discard (empty) when the field loses focus, and the drag-gesture
+  and due-editor buffers can no longer outlive their flows.
+
 - `taskboard sync --wait` no longer misreports a completed, successful
   cycle as `TimedOut` after the host clock steps backward (#283
   F11-04): cycle freshness is detected structurally — the sync

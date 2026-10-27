@@ -189,3 +189,42 @@ With R4 auto-settling, a flow can no longer outlive its affordance.
 | (h) title re-edit | `TaskTitleEdit` registry row, pointer seam, full-width field, journeys |
 | (i) empty-board visible flow | empty-board leg field |
 | (j) recorded decisions | §5 (menu layer), † (OpenInbox), MoveStack affordance; test rewrites carry in-code comments naming the plan sections |
+
+## 9. Tier-4 manual checklist (this machine; stage 2)
+
+The five user scenarios plus the click-out feel, as repro scripts —
+each automated by the journeys named in brackets; the manual pass
+confirms the same on a real display.
+
+1. **F7 click-out with an empty create row** [journey
+   `a_dead_zone_click_settles_the_create_flow`]:
+   open New Task (the column ghost or `task.create`) → type nothing →
+   click another card or dead space → the row closes, the board keys
+   work immediately, no second click needed. Post-fix: the flow
+   settles to `None`, Normal mode returns, zero commands dispatch.
+2. **F8 stale drop** [journeys `a_stale_column_drop_settles_the_drag_without_dispatching`,
+   `a_swallowed_completed_confirm_still_settles_the_drag`]:
+   drag a card across stacks; drop on a stale/edge column (e.g.
+   while a background sync refresh rebuilds the tables) → the move
+   either applies cleanly or cancels cleanly; never a stuck ghost;
+   Escape never needed.
+3. **F9 buttons under any flow** [pair-table BEGIN rows + the kept
+   journeys]: arm a create row (typed) → click New Stack / New Task /
+   the hamburger → each acts (the typed row commits first); nothing
+   "flashes and does nothing"; Escape never required.
+4. **F10 empty board** [journey
+   `the_empty_board_stack_create_flow_opens_a_visible_field`]:
+   fresh profile (no stacks) → New Stack opens a **visible** field
+   on the empty board; typing + Return creates the stack (order 0).
+5. **F18 due editor vs Settings** [pair-table DUE×NAV row +
+   interpret]: open the due editor → press the settings shortcut →
+   settings opens (the editor clean-closes, the value untouched);
+   returning to the task shows the old due. emacs `C-g` inside the
+   editor closes it cleanly.
+6. **Click-out feel** [the typed half of journey 1 + the F26 journey]:
+   with text typed, click-out commits (not silently discards); with
+   an empty row, click-out discards with no toast noise; no
+   double-create when click-out is followed by Return (the teardown
+   echo is absorbed). Title: detail entry shows the display; the
+   closed title arms on click; commit closes; clicking again re-arms
+   (the exact F26 repro, now green).
