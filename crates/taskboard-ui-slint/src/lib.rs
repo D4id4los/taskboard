@@ -1694,21 +1694,29 @@ mod view_component_tests {
                 "the exit effect fired over the edit flow"
             );
             // The D3 reconciliation (round 1): the mouse invoke closed
-            // the menu (F2's fix) while the underlying edit flow stayed
-            // intact — the menu lifecycle never disturbs the flow.
+            // the menu (F2's fix) — the menu stays live mid-edit.
+            //
+            // Recorded decision (round-3 chunk 1, plan §3.2 + the
+            // audit report §5): the matrix's OpenMenu cell settles a
+            // foreign flow before the modal opens — the old pin
+            // ("the edit flow survived open/invoke/close") held the
+            // armed-flow-over-modal behaviour the round removes; an
+            // armed flow under a dismissed menu kept masking the
+            // view keys (the F9 family). The menu liveness claim is
+            // unchanged; the flow's settle is the new contract.
             assert!(
                 !handle.window.global::<KeyboardState>().get_menu_open(),
                 "the mouse invoke closed the menu"
             );
             assert!(
-                handle
+                !handle
                     .window
                     .get_board_model()
                     .stacks
                     .row_data(0)
                     .expect("col")
                     .create_open,
-                "the edit flow survived open/invoke/close"
+                "the menu open settled the edit flow"
             );
         });
     }

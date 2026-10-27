@@ -1462,6 +1462,40 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
+    /// The per-kind settle rule (round-3 W-SM-b, plan §2): the one
+    /// pure taxonomy every settle trigger shares — L1 focus loss, L2
+    /// pointer seams, and the leaving effects — so the triggers
+    /// cannot diverge. Idempotent on `Flow::None` (the
+    /// double-settle guard). TEXT flows commit a trimmed non-empty
+    /// buffer and discard an empty one (F7 dies); the due editor
+    /// clean-closes (never commits on an unrelated settle — the r2
+    /// D25 rule; the only commit path stays the `commit_due`
+    /// funnel); move/drag flows cancel; the modals take their own
+    /// close paths.
+    pub fn settle_flow(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        match self.flow.clone() {
+            Flow::None => Vec::new(),
+            Flow::Create { .. }
+            | Flow::CreateStack
+            | Flow::CreateBoard
+            | Flow::EditTitle { .. }
+            | Flow::RenameStack { .. }
+            | Flow::RenameBoard { .. } => {
+                if self.buffer.trim().is_empty() {
+                    self.discard_edit()
+                } else {
+                    self.commit_edit(state)
+                }
+            }
+            Flow::EditDue { .. } => self.end_edit_due(),
+            Flow::Move { .. } | Flow::MoveStack { .. } | Flow::DragMove { .. } => {
+                self.cancel_move()
+            }
+            Flow::Palette { .. } => self.close_palette(),
+            Flow::Capture => self.close_capture(),
+        }
+    }
+
     // -- board/stack lifecycle (round 2, D18/D21) --------------------------
 
     /// `board.create`: always available (the zero-board first-run
