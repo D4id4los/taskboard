@@ -201,10 +201,10 @@ export component ActionMenu inherits Rectangle {
                 // viewport so this row is fully inside it.
                 changed watch => {
                     if (root.page-cursor == entry-index) {
-                        if (self.y < -flick.viewport-y) {
-                            flick.viewport-y = -self.y;
-                        } else if (self.y + self.height > -flick.viewport-y + flick.height) {
-                            flick.viewport-y = flick.height - self.y - self.height;
+                        if (self.y < -flick.content-y) {
+                            flick.content-y = -self.y;
+                        } else if (self.y + self.height > -flick.content-y + flick.height) {
+                            flick.content-y = flick.height - self.y - self.height;
                         }
                     }
                 }
@@ -234,7 +234,7 @@ export component ActionMenu inherits Rectangle {
     // The scroll indicator (usability D6): an affordance, only while
     // the content actually overflows — track on the panel's surface,
     // thumb in the border colour at the inner edge.
-    if (flick.viewport-height > flick.height): Rectangle {
+    if (flick.content-height > flick.height): Rectangle {
         x: root.width - Theme.space-3;
         y: Theme.space-2;
         width: Theme.space-1;
@@ -249,10 +249,10 @@ export component ActionMenu inherits Rectangle {
             // The token-derived epsilon guards the zero-overflow
             // division; the indicator only renders while overflowing.
             height: max(Theme.space-4, parent.height * parent.height
-                / max(Theme.focus-ring-width / 4, flick.viewport-height));
+                / max(Theme.focus-ring-width / 4, flick.content-height));
             y: (parent.height - self.height)
-                * (-flick.viewport-y
-                    / max(Theme.focus-ring-width / 4, flick.viewport-height - flick.height));
+                * (-flick.content-y
+                    / max(Theme.focus-ring-width / 4, flick.content-height - flick.height));
         }
     }
 }

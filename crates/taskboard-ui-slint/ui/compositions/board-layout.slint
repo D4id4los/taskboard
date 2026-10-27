@@ -323,15 +323,17 @@ export component BoardLayout inherits Rectangle {
                     // §2.1 records the deviation).
                     background: Theme.surface;
                     border-radius: Theme.radius-medium;
-                    // Inner padding (space-2) is deliberately smaller than
-                    // the outer strip (space-3) — content groups tighter
-                    // than the group. Nothing reaches the rounded corners,
-                    // so no clip is needed.
-                    padding: Theme.space-2;
                     // The D16 address stays on the body (the card is an
                     // unnamed paint wrapper; the accessible tree shape is
                     // unchanged for the driver and ATs).
+                    // The inner padding (space-2) lives on the layout —
+                    // plain Rectangle ignores `padding` (the r2 D35
+                    // comment documented an inset that silently never
+                    // applied; the sweep's one behavioural fix). Deliberately
+                    // smaller than the outer strip (space-3) — content
+                    // groups tighter than the group.
                     column-body := VerticalLayout {
+                        padding: Theme.space-2;
                         spacing: Theme.space-1;
                         // The D16 address: the column is a list labelled by
                         // its stack title.
