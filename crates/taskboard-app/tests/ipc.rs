@@ -10,13 +10,14 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 mod common;
 
 use common::tempdir;
 
 use interprocess::local_socket::traits::tokio::Stream as _;
-use taskboard_app::commands::BasicSession;
+use taskboard_app::commands::{BasicSession, CommandError};
 use taskboard_app::config::AppConfig;
 use taskboard_app::ipc::{client, codec, protocol, server};
 use taskboard_app::secrets::{AppPassword, CredentialStore, EnvCredentialStore};
@@ -997,6 +998,98 @@ async fn ip20_the_shutdown_tail_takes_exclusive_ownership_after_the_drain() {
                 actor_aborted: false
             })
         );
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------
+// The shutdown control lane (ADR 0012, amended): F12's fix
+// ---------------------------------------------------------------------
+
+/// A responder that notifies when the daemon's request arrives (the
+/// deterministic "the dispatcher is now held" gate) and then stalls.
+/// The notify is tokio-native: a blocking std channel would starve the
+/// current-thread test runtime (the waiter and the handler are tasks
+/// on the same executor).
+#[derive(Clone)]
+struct NotifyThenDelay {
+    notify: std::sync::Arc<tokio::sync::Notify>,
+    delay: Duration,
+}
+
+impl wiremock::Respond for NotifyThenDelay {
+    fn respond(&self, _request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        self.notify.notify_one();
+        wiremock::ResponseTemplate::new(200)
+            .set_body_string(common::boards_json())
+            .set_delay(self.delay)
+    }
+}
+
+/// J1 (the F12 journey): `daemon stop` answers while another verb is
+/// in flight. Client A's relayed `boards select` parks the serial
+/// dispatcher on a stalled remote listing; client B's `shutdown` is
+/// answered by the control lane anyway, the drain completes, and the
+/// sidecar is removed — A's wait ends in the drain abort, typed
+/// `IpcTransport`. The stop's latency no longer depends on A's.
+#[tokio::test]
+async fn j1_daemon_stop_answers_while_a_verb_is_in_flight() {
+    bounded(async {
+        let remote = wiremock::MockServer::start().await;
+        let inflight = std::sync::Arc::new(tokio::sync::Notify::new());
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(NotifyThenDelay {
+                notify: inflight.clone(),
+                delay: Duration::from_secs(30),
+            })
+            .mount(&remote)
+            .await;
+
+        let dir = tempdir();
+        let db = dir.path().join("j1.db");
+        // No binding seeded: a bound install would refuse the rebind
+        // before ever listing (the stall must be inside the handler).
+        // The select mints its local board on a board-less install.
+        let mut config = common::valid_config(&remote.uri());
+        config.storage.db_path = Some(db.clone());
+        let password = common::EnvOverride::set("TASKBOARD_APP_PASSWORD", "pw");
+        let (handle, db) = serve_with_config(dir.path(), "j1.db", config).await;
+        let sidecar = taskboard_app::ipc::socket_sidecar(&db);
+
+        // Client A holds the dispatcher (the stalled listing runs
+        // inside its handler).
+        let conn_a = client::try_connect(&db).await.expect("daemon answers");
+        let select = argv("boards select 3");
+        let a = tokio::spawn(async move { conn_a.exec(&select, None).await });
+        tokio::time::timeout(Duration::from_secs(30), inflight.notified())
+            .await
+            .expect("the in-flight verb reached the remote");
+
+        // Client B stops the daemon: the control lane answers outside
+        // the queue A is clogging.
+        let conn_b = client::try_connect(&db).await.expect("daemon answers");
+        let stop = tokio::time::timeout(Duration::from_secs(10), conn_b.shutdown(None))
+            .await
+            .expect("the stop answers promptly, not behind A");
+        stop.expect("shutdown ack");
+
+        handle.join(Duration::from_secs(1)).await;
+        assert!(
+            !sidecar.exists(),
+            "the drain completed and removed the socket artifact"
+        );
+
+        // A's wait ends in the drain abort: typed transport failure,
+        // never a hang.
+        let outcome = tokio::time::timeout(Duration::from_secs(10), a)
+            .await
+            .expect("A's task joins")
+            .expect("A's wait ends in the drain abort");
+        assert!(
+            matches!(outcome, Err(CommandError::IpcTransport)),
+            "the wedged verb's client sees the dropped socket, typed"
+        );
+        drop(password);
     })
     .await;
 }
