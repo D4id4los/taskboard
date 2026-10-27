@@ -316,6 +316,19 @@ cargo llvm-cov report --lcov --output-path lcov.info
 rm -rf target/llvm-cov-target   # local hygiene; the tree is spent
 ```
 
+On a machine where several agents may work in parallel worktrees, run
+that sequence through `scripts/run-quality-gates.sh` instead of pasting
+the commands: the script wraps exactly this block in an exclusive
+`flock` on a lock file in the main checkout's git dir (shared by every
+worktree via `--git-common-dir`), so only one full suite runs at a time
+and the others block, printing the current holder — three overlapping
+coverage suites OOM the box no matter how each agent caps its own `-j`.
+It also takes arbitrary commands (`scripts/run-quality-gates.sh cargo
+nextest run --workspace`) for one-off heavy runs, and `--status` shows
+who holds the lock. A holder that dies (OOM kill included) releases the
+lock automatically — there are no stale locks. CI never needs the
+wrapper (one suite per runner).
+
 The coverage gate is the CI-identical three-command sequence (not the
 monolithic `cargo llvm-cov --workspace`): the quarantine step drops torn
 profraws from legitimately SIGKILLed instrumented children before the
