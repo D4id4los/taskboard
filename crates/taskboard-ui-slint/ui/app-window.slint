@@ -354,6 +354,7 @@ export component AppWindow inherits Window {
                 done-clicked(i) => root.notification-done-clicked(i);
                 snooze-clicked(i) => root.notification-snooze-clicked(i);
                 mute-clicked(i) => root.notification-mute-clicked(i);
+                cancel-clicked(i) => root.notification-cancel-clicked(i);
             }
 
             status := StatusBar {
@@ -683,6 +684,7 @@ export component AppWindow inherits Window {
     pure callback notification-done-clicked(int);
     pure callback notification-snooze-clicked(int);
     pure callback notification-mute-clicked(int);
+    pure callback notification-cancel-clicked(int);
     // The timers surface (DR-3/3, D-I8): create dispatches
     // TimerCreate from the parsed draft; cancel dispatches
     // TimerCancel from the row table; the chip click focuses today.
