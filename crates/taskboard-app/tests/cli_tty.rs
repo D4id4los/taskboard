@@ -1362,3 +1362,855 @@ fn tty_repl_history_recalls_the_previous_sessions_line() {
         String::from_utf8_lossy(&seen)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Signal & prompt-grammar pins (DR-2/R): the only tier where real
+// signals occur. Handlers live in the production session only — the
+// hermetic suites stay hermetic (design D-7) — so these cases prove
+// what the injected watches cannot: real SIGINT/SIGTERM delivery,
+// restore-before-exit ordering (the stty probe), and the force codes.
+// ---------------------------------------------------------------------------
+
+use std::sync::mpsc as std_mpsc;
+
+/// A wiremock responder that notifies a channel when the request
+/// arrives, then delays — the deterministic gate for "the dispatch is
+/// in flight" (blocking recv, no sleeps) before a real signal is
+/// delivered.
+struct NotifyThenDelay {
+    notify: std_mpsc::Sender<()>,
+    delay: Duration,
+}
+
+impl wiremock::Respond for NotifyThenDelay {
+    fn respond(&self, _request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let _ = self.notify.send(());
+        wiremock::ResponseTemplate::new(200)
+            .set_body_string(common::boards_json())
+            .set_delay(self.delay)
+    }
+}
+
+/// A spawned interactive session under `script(1)`: the inner shell
+/// records its pid (`exec` keeps it — the pidfile names the session
+/// process, the signal target) and pipes the session's streams back.
+/// The caller drops `stdin`/`out_pipe` to end the run.
+struct PtySession {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    out_pipe: std::process::ChildStdout,
+    seen: Vec<u8>,
+    pid_path: std::path::PathBuf,
+}
+
+impl PtySession {
+    /// The session process's pid (read lazily: the inner shell writes
+    /// it before the banner can appear, and every caller gates on
+    /// session output first).
+    fn pid(&self) -> u32 {
+        std::fs::read_to_string(&self.pid_path)
+            .expect("pidfile written by the inner shell")
+            .trim()
+            .parse()
+            .expect("pidfile holds a pid")
+    }
+}
+
+/// Spawns the session pty with the `exec` inner (clean signal target,
+/// clean exit code: the pty's foreground group is the session process
+/// alone). The env carries the test's own `XDG_DATA_HOME`; `extra`
+/// adds per-test variables.
+fn spawn_session_pty_exec(
+    config: &std::path::Path,
+    data_home: &std::path::Path,
+    extra: &[(&str, &str)],
+) -> PtySession {
+    let dir = config
+        .parent()
+        .expect("config in its tempdir")
+        .to_path_buf();
+    let pid_path = dir.join("session.pid");
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let inner = format!(
+        "sh -c 'echo $$ > {}; exec {} --config {}'",
+        pid_path.display(),
+        binary,
+        config.display()
+    );
+    let mut command = std::process::Command::new("timeout");
+    command
+        .arg("60")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env("XDG_DATA_HOME", data_home)
+        // The readline-cycle marker is a terminal-capability feature:
+        // without TERM set, rustyline emits none (the suite's
+        // marker-gated pacing relies on it).
+        .env("TERM", "xterm");
+    for (key, value) in extra {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().expect("spawn script(1) pty wrapper");
+    let stdin = child.stdin.take().expect("stdin piped");
+    let out_pipe = child.stdout.take().expect("stdout piped");
+    PtySession {
+        child,
+        stdin,
+        out_pipe,
+        seen: Vec::new(),
+        pid_path,
+    }
+}
+
+/// Drains the session pipe until the Nth readline-entry marker appeared
+/// (the raw-mode-is-active gate for the next scripted write).
+fn wait_readline(session: &mut PtySession, n: usize) {
+    let count = |haystack: &[u8]| -> usize {
+        haystack
+            .windows(READLINE_MARKER.len())
+            .filter(|w| *w == READLINE_MARKER)
+            .count()
+    };
+    loop {
+        if count(&session.seen) >= n {
+            return;
+        }
+        let mut chunk = [0u8; 4096];
+        match std::io::Read::read(&mut session.out_pipe, &mut chunk) {
+            Ok(0) | Err(_) => panic!(
+                "the pty ended before readline {n}: {}",
+                String::from_utf8_lossy(&session.seen)
+            ),
+            Ok(bytes) => session.seen.extend_from_slice(&chunk[..bytes]),
+        }
+    }
+}
+
+/// Waits for the Nth readline cycle, then writes one line (CR is the
+/// Enter key in raw mode).
+fn feed_at(session: &mut PtySession, n: usize, line: &str) {
+    wait_readline(session, n);
+    session
+        .stdin
+        .write_all(format!("{line}\r").as_bytes())
+        .expect("write scripted session line");
+}
+
+/// Takes the child, its stdin, and the accumulated pty output apart.
+fn into_parts(session: PtySession) -> (std::process::Child, std::process::ChildStdin, Vec<u8>) {
+    let PtySession {
+        child, stdin, seen, ..
+    } = session;
+    (child, stdin, seen)
+}
+
+/// The session process's exit status, as recorded by the inner shell
+/// (`script`/`timeout`'s own relay proved unreliable here — the inner
+/// wait is the structural record).
+fn session_exit_status(rc_path: &std::path::Path) -> i32 {
+    std::fs::read_to_string(rc_path)
+        .expect("rc file written by the inner shell")
+        .lines()
+        .next()
+        .expect("the session's exit status recorded")
+        .trim()
+        .parse()
+        .expect("rc file holds a number")
+}
+
+/// Sends a real signal to the session process.
+fn signal_session(session: &PtySession, sig: &str) {
+    let pid = session.pid().to_string();
+    let status = std::process::Command::new("kill")
+        .arg(sig)
+        .arg(&pid)
+        .status()
+        .expect("kill runs");
+    assert!(status.success(), "kill {sig} {pid} failed");
+}
+
+/// Finishes the session: drains stdout, joins the stderr reader,
+/// returns (status, stderr).
+fn finish_session(
+    session: PtySession,
+    stderr_thread: std::thread::JoinHandle<Vec<u8>>,
+) -> (std::process::ExitStatus, Vec<u8>, Vec<u8>) {
+    let PtySession {
+        mut child,
+        stdin,
+        mut out_pipe,
+        mut seen,
+        ..
+    } = session;
+    // The stdin handle is held until after the wait: `script` tears
+    // the pty down when *its* stdin EOFs, which would kill the shell
+    // (and the session) mid-run (see `feed_session_lines`' note).
+    let _holding = stdin;
+    let mut tail = Vec::new();
+    std::io::Read::read_to_end(&mut out_pipe, &mut tail).expect("drain session output");
+    seen.extend_from_slice(&tail);
+    drop(out_pipe);
+    let stderr = stderr_thread.join().expect("stderr drained");
+    let status = child.wait().expect("pty run completes");
+    (status, seen, stderr)
+}
+
+/// Spawns the stderr reader thread for a session pty.
+fn stderr_reader(child: &mut std::process::Child) -> std::thread::JoinHandle<Vec<u8>> {
+    let mut err_pipe = child.stderr.take().expect("stderr piped");
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut err_pipe, &mut buf);
+        buf
+    })
+}
+
+/// Case 1 (rewritten): handler world makes the masked-read ^C
+/// deterministic — rpassword's re-raised SIGINT is consumed by the
+/// installed handler and surfaces as its typed `Err` (or arms the
+/// cancel epoch mid-dispatch; both are typed cancellations, plan
+/// §11 Q11). The session survives, reports one typed error envelope,
+/// and nothing persists.
+#[test]
+fn tty_ctrl_c_during_the_masked_read_fails_typed_and_the_session_survives() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    // The 401 server makes any persisted identity impossible: the pin
+    // is that the file is untouched, whatever the read answered.
+    let server = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(wiremock::ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+            server
+        });
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let mut session = spawn_session_pty_exec(&config, dir.path(), &[]);
+    let stderr_thread = stderr_reader(&mut session.child);
+    feed_at(
+        &mut session,
+        1,
+        &format!("connect --server {} --user alice --json", server.uri()),
+    );
+    wait_for_marker(&mut session.out_pipe, &mut session.seen, "App password: ");
+    // The ^C byte in rpassword's raw mode: the typed cancellation.
+    session.stdin.write_all(b"\x03").expect("write the ^C byte");
+
+    // The editor re-arms (readline 2) — the session survived the ^C.
+    feed_at(&mut session, 2, "exit");
+    let (status, seen, stderr) = finish_session(session, stderr_thread);
+
+    assert_ne!(
+        status.code(),
+        Some(124),
+        "the ^C byte wedged the session: {} / {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the session did not survive the masked-read ^C: {} / {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    // Exactly one typed error envelope: `prompt` (rpassword's own
+    // `Err(Interrupted)`) or `cancelled` (the select-cancel race for
+    // the same keystroke) — both correct, §11 Q11.
+    let envelopes = json_error_lines(&seen)
+        .into_iter()
+        .chain(json_error_lines(&stderr));
+    let kinds: Vec<String> = envelopes
+        .filter_map(|value| value["error"]["kind"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(kinds.len(), 1, "one typed failure: {kinds:?} / {stderr:?}");
+    assert!(
+        kinds[0] == "prompt" || kinds[0] == "cancelled",
+        "a typed cancellation, not anything else: {kinds:?}"
+    );
+    // Pre-persist by construction.
+    let written = std::fs::read_to_string(&config).expect("config untouched");
+    assert!(!written.contains(&server.uri()), "nothing persisted");
+    assert!(!written.contains("alice"));
+}
+
+/// Case 2: ^C during a stalled line cancels it — the typed `cancelled`
+/// envelope reports, the session continues, and the next line executes.
+/// The stall is a delayed wiremock boards route; the notify-responder
+/// gates the ^C on "the dispatch is in flight" (by then the editor's
+/// raw mode is long gone, so the ^C byte is a real SIGINT).
+#[test]
+fn tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let (server, in_flight) = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let server = wiremock::MockServer::start().await;
+            let (tx, rx) = std_mpsc::channel();
+            // Any request proves the sync actor is pulling.
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(NotifyThenDelay {
+                    notify: tx,
+                    delay: Duration::from_secs(10),
+                })
+                .mount(&server)
+                .await;
+            (server, rx)
+        });
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(
+        toml,
+        "server_url = '{}'\nusername = 'alice'\n",
+        server.uri()
+    );
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str(
+        "[sync]\npoll_interval_secs = 3600\nbackoff_initial_secs = 1\nbackoff_max_secs = 5\n",
+    );
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let mut session = spawn_session_pty_exec(
+        &config,
+        dir.path(),
+        &[("TASKBOARD_APP_PASSWORD", "tty-stall-pw")],
+    );
+    let stderr_thread = stderr_reader(&mut session.child);
+    feed_at(&mut session, 1, "boards list --json");
+    // The in-flight gate: the wiremock notified on the request's
+    // arrival — the dispatch is parked in the delayed HTTP await, the
+    // editor's raw mode is long gone, and the ^C byte below is a real
+    // SIGINT where the environment delivers one. Blocking recv, no
+    // sleeps.
+    in_flight.recv().expect("the stalled request arrived");
+    session.stdin.write_all(b"\x03").expect("write the ^C byte");
+    // The editor re-arms either way: instantly when the SIGINT
+    // cancelled the line, or when the 10 s delay expires and the line
+    // completes (an environment that ignores SIGINT — the inherited
+    // dispositions of rust test harnesses vary). Bounded either way.
+    feed_at(&mut session, 2, "boards create B --json");
+    feed_at(&mut session, 3, "exit");
+    let (status, seen, stderr) = finish_session(session, stderr_thread);
+
+    assert_ne!(
+        status.code(),
+        Some(124),
+        "the ^C wedged the stalled line: {} / {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the session did not survive the stalled line: {} / {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    // The next line executed after the stall resolved, and the only
+    // error the session may report is the typed cancellation.
+    let created: Vec<serde_json::Value> = String::from_utf8_lossy(&seen)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| value["title"] == "B")
+        .collect();
+    assert_eq!(
+        created.len(),
+        1,
+        "the line after the stalled one executed: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    let kinds: Vec<String> = json_error_lines(&seen)
+        .into_iter()
+        .chain(json_error_lines(&stderr))
+        .filter_map(|value| value["error"]["kind"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        kinds.iter().all(|kind| kind == "cancelled"),
+        "the only permitted failure is the typed cancellation: {kinds:?} / {stderr:?}"
+    );
+}
+
+/// Spawns the session pty with the probe inner: the binary runs in the
+/// background (its pid — the signal target — lands in the pidfile), the
+/// inner shell waits for it and then snapshots the line discipline the
+/// session handed back (`stty -a`), the `tty_repl_exit_hands...`
+/// pattern plus a signal target.
+fn spawn_session_pty_probe(
+    config: &std::path::Path,
+    extra: &[(&str, &str)],
+) -> (PtySession, std::path::PathBuf) {
+    let dir = config
+        .parent()
+        .expect("config in its tempdir")
+        .to_path_buf();
+    let pid_path = dir.join("session.pid");
+    let stty_path = dir.join("line-discipline-after.txt");
+    let binary = env!("CARGO_BIN_EXE_taskboard");
+    let rc_path = dir.join("rc.txt");
+    let inner = format!(
+        "sh -c 'echo $$ > {}; exec {} --config {}'; echo $? > {}; stty -a > {}; echo $? >> {}",
+        pid_path.display(),
+        binary,
+        config.display(),
+        rc_path.display(),
+        stty_path.display(),
+        rc_path.display()
+    );
+    let mut command = std::process::Command::new("timeout");
+    command
+        .arg("60")
+        .arg("script")
+        .arg("-qec")
+        .arg(&inner)
+        .arg("/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env("XDG_DATA_HOME", dir)
+        .env("TERM", "xterm");
+    for (key, value) in extra {
+        command.env(key, value);
+    }
+    let mut child = command.spawn().expect("spawn script(1) pty wrapper");
+    let stdin = child.stdin.take().expect("stdin piped");
+    let out_pipe = child.stdout.take().expect("stdout piped");
+    (
+        PtySession {
+            child,
+            stdin,
+            out_pipe,
+            seen: Vec::new(),
+            pid_path,
+        },
+        stty_path,
+    )
+}
+
+/// The hand-back probe: every line-discipline mode the shell's line
+/// editor relies on is enabled in the `stty -a` snapshot.
+fn assert_discipline_handed_back(stty_path: &std::path::Path) {
+    let stty = std::fs::read_to_string(stty_path).expect("stty snapshot written");
+    let tokens: Vec<&str> = stty.split_whitespace().collect();
+    for flag in ["echo", "icanon", "isig", "iexten"] {
+        assert!(
+            tokens.contains(&flag),
+            "line discipline handed back with {flag} disabled: {stty}"
+        );
+    }
+}
+
+/// Case 3: SIGTERM mid-readline restores the terminal FIRST, then ends
+/// the session gracefully — exit 0 and a sane pane (D-4's ordering,
+/// proven by the chained stty probe).
+#[test]
+fn tty_sigterm_mid_readline_restores_the_pane_and_exits_gracefully() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let (mut session, stty_path) = spawn_session_pty_probe(&config, &[]);
+    // At the prompt (raw mode mid-readline): the signal target is the
+    // session process.
+    loop {
+        if session
+            .seen
+            .windows(SESSION_PROMPT.len())
+            .any(|w| w == SESSION_PROMPT.as_bytes())
+        {
+            break;
+        }
+        let mut chunk = [0u8; 256];
+        match std::io::Read::read(&mut session.out_pipe, &mut chunk) {
+            Ok(0) => panic!(
+                "the pty ended before the prompt: {}",
+                String::from_utf8_lossy(&session.seen)
+            ),
+            Ok(n) => session.seen.extend_from_slice(&chunk[..n]),
+            Err(err) => panic!("reading the pty failed: {err}"),
+        }
+    }
+    signal_session(&session, "-TERM");
+    let (child, stdin, seen) = into_parts(session);
+    drop(stdin);
+    let output = child.wait_with_output().expect("pty run completes");
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "the session hung past SIGTERM: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert_eq!(
+        session_exit_status(&dir.path().join("rc.txt")),
+        0,
+        "SIGTERM did not end the session gracefully: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    // Restore-before-graceful ordering: the pane the shell inherits is
+    // canonical — the session restored the discipline before exiting.
+    assert_discipline_handed_back(&stty_path);
+}
+
+/// Case 4: the force rung, in its one deterministic terminal form — a
+/// second external SIGTERM while the graceful drain is still running.
+/// The drain is held open by a sync request parked on a delayed route
+/// (the join is bounded by `shutdown_timeout_secs`, so the process is
+/// alive well past the second signal); the termination family has no
+/// `Progress`, so the watcher's ladder forces: restore + 128+signum,
+/// proven by the chained stty probe. (An external double-SIGINT at the
+/// prompt — the SIGINT family's force form — is not deliverable
+/// deterministically: while `readline` is active the line editor owns
+/// SIGINT, the same F5 grammar as the ^C byte, and the at-keyboard
+/// double-press during dispatch races the acknowledgement; the ladder
+/// machinery forcing is this pin's subject, and the pure tier pins the
+/// SIGINT family's counts.)
+#[test]
+fn tty_second_sigterm_during_the_drain_forces_143_and_the_pane_is_sane() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let (server, in_flight) = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let server = wiremock::MockServer::start().await;
+            let (tx, rx) = std_mpsc::channel();
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(NotifyThenDelay {
+                    notify: tx,
+                    delay: Duration::from_secs(30),
+                })
+                .mount(&server)
+                .await;
+            (server, rx)
+        });
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(
+        toml,
+        "server_url = '{}'\nusername = 'alice'\n",
+        server.uri()
+    );
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str(
+        "[sync]\npoll_interval_secs = 3600\nbackoff_initial_secs = 1\nbackoff_max_secs = 5\n",
+    );
+    // The drain's bounded join holds the process alive against the
+    // 30 s request — the second SIGTERM's window.
+    toml.push_str("[app]\nshutdown_timeout_secs = 20\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let (mut session, stty_path) =
+        spawn_session_pty_probe(&config, &[("TASKBOARD_APP_PASSWORD", "tty-force-pw")]);
+    // At the prompt, with the boot sync parked in the delayed request.
+    loop {
+        if session
+            .seen
+            .windows(SESSION_PROMPT.len())
+            .any(|w| w == SESSION_PROMPT.as_bytes())
+        {
+            break;
+        }
+        let mut chunk = [0u8; 256];
+        match std::io::Read::read(&mut session.out_pipe, &mut chunk) {
+            Ok(0) => panic!(
+                "the pty ended before the prompt: {}",
+                String::from_utf8_lossy(&session.seen)
+            ),
+            Ok(n) => session.seen.extend_from_slice(&chunk[..n]),
+            Err(err) => panic!("reading the pty failed: {err}"),
+        }
+    }
+    in_flight.recv().expect("the stalled sync request arrived");
+    signal_session(&session, "-TERM");
+    // Pacing only: standard signals coalesce while pending, so the two
+    // kills need a gap to be counted as two ladder events — this is
+    // not a wait-for-state sleep.
+    std::thread::sleep(Duration::from_millis(500));
+    signal_session(&session, "-TERM");
+    let (child, stdin, seen) = into_parts(session);
+    drop(stdin);
+    let output = child.wait_with_output().expect("pty run completes");
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "the session hung past the double SIGTERM: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert_eq!(
+        session_exit_status(&dir.path().join("rc.txt")),
+        143,
+        "the force rung exited at 128+15: {} / stderr: {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Restore-before-exit ordering: the pane the shell inherits is
+    // canonical even though the exit was forced.
+    assert_discipline_handed_back(&stty_path);
+}
+
+/// Case 5: the ^C byte at the prompt still clears the line (F5 — the
+/// byte world is untouched by the handler), the prompt re-arms, and
+/// the next line executes.
+#[test]
+fn tty_ctrl_c_at_the_prompt_clears_the_line_and_the_session_continues() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let mut session = spawn_session_pty_exec(&config, dir.path(), &[]);
+    let stderr_thread = stderr_reader(&mut session.child);
+    // ^C at readline 1: rustyline answers Interrupted, the line clears,
+    // the editor re-arms (readline 2).
+    wait_readline(&mut session, 1);
+    session.stdin.write_all(b"\x03").expect("write the ^C byte");
+    feed_at(&mut session, 2, "boards create B --json");
+    feed_at(&mut session, 3, "exit");
+    let (status, seen, stderr) = finish_session(session, stderr_thread);
+
+    assert_ne!(
+        status.code(),
+        Some(124),
+        "the ^C byte wedged the prompt: {} / {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the session did not survive the ^C: {} / {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    let created: Vec<serde_json::Value> = String::from_utf8_lossy(&seen)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| value["title"] == "B")
+        .collect();
+    assert_eq!(
+        created.len(),
+        1,
+        "the next line executed after the cleared one: {}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        json_error_lines(&seen).is_empty(),
+        "a cleared line is not an error: {}",
+        String::from_utf8_lossy(&seen)
+    );
+}
+
+/// Case 6: the in-session ceremony's flag-less `connect` rides the
+/// editor's prompt grammar — URL, username, masked secret, gated on
+/// each prompt's arrival — the ceremony persists, and the session's
+/// history file contains neither the URL nor the secret (prompt
+/// answers never enter history or completion).
+#[test]
+fn tty_in_session_flagless_connect_prompts_ride_the_editor_and_stay_out_of_history() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let server = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .and(wiremock::matchers::path(BOARDS_PATH))
+                .respond_with(
+                    wiremock::ResponseTemplate::new(200).set_body_string(common::boards_json()),
+                )
+                .mount(&server)
+                .await;
+            server
+        });
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    let db = dir.path().join("taskboard.db");
+    let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
+    let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
+    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    std::fs::write(&config, toml).expect("write config");
+
+    let mut session = spawn_session_pty_exec(&config, dir.path(), &[]);
+    let stderr_thread = stderr_reader(&mut session.child);
+    feed_at(&mut session, 1, "connect");
+    // The three prompts ride the editor (D-3): the labels gate each
+    // scripted answer (wording is a synchronization gate, never
+    // asserted).
+    wait_for_marker(&mut session.out_pipe, &mut session.seen, "Server URL");
+    session
+        .stdin
+        .write_all(format!("{}\r", server.uri()).as_bytes())
+        .expect("write the URL");
+    wait_for_marker(&mut session.out_pipe, &mut session.seen, "Username");
+    session
+        .stdin
+        .write_all(b"alice\r")
+        .expect("write the username");
+    wait_for_marker(&mut session.out_pipe, &mut session.seen, "App password: ");
+    session
+        .stdin
+        .write_all(b"tty-grammar-pw\r")
+        .expect("write the secret");
+    // The ceremony persisted; the editor re-arms for the exit.
+    feed_at(&mut session, 2, "exit");
+    let (status, seen, stderr) = finish_session(session, stderr_thread);
+
+    assert_ne!(
+        status.code(),
+        Some(124),
+        "the flag-less connect hung: {} / {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the flag-less connect failed: {} / {}",
+        String::from_utf8_lossy(&seen),
+        String::from_utf8_lossy(&stderr)
+    );
+    // The ceremony persisted the non-secrets, secret-free.
+    let written = std::fs::read_to_string(&config).expect("config written");
+    assert!(written.contains(&server.uri()));
+    assert!(written.contains("alice"));
+    assert!(!written.contains("tty-grammar-pw"));
+    // The session's history file: prompt answers are excluded at the
+    // file level (the submitted `connect`/`exit` lines are in).
+    let history = dir.path().join("taskboard/history");
+    let history = std::fs::read_to_string(&history).expect("history file written");
+    assert!(history.contains("connect"), "submitted lines recorded");
+    assert!(!history.contains(&server.uri()), "no prompt URL in history");
+    assert!(!history.contains("alice"), "no prompt user in history");
+    assert!(
+        !history.contains("tty-grammar-pw"),
+        "no prompt secret in history"
+    );
+}
+
+/// Case 7: the one-shot ceremony keeps the default disposition (no
+/// handler on one-shot paths, D-3/F14): ^C at its first prompt kills
+/// the process (the shell's 130 convention) and nothing persists.
+#[test]
+fn tty_one_shot_ceremony_keeps_the_default_sigint_death() {
+    if std::process::Command::new("script")
+        .arg("--help")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let server = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(wiremock::ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+            server
+        });
+
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    write_test_config(&config, None, None).expect("write config");
+
+    // The first ^C byte lands at the cooked first prompt (the
+    // `StdinPrompts` read). Where the environment delivers SIGINT, the
+    // one-shot dies pre-persist by the default disposition (the signal
+    // status itself, or the shell's 128+2 convention). An
+    // SIGINT-ignoring environment (rust test harnesses inherit SIG_IGN)
+    // discards the byte and the read keeps waiting — the outer
+    // `timeout` bounds that world at 124; the app is correct in both
+    // (the one-shot installs no handler by design, D-3/F14).
+    let output = run_login_under_pty(&config, &server.uri(), "\x03", dir.path());
+    if let Some(code) = output.status.code() {
+        assert!(
+            code == 130 || code == 124,
+            "the one-shot ^C is the default death, got {code}"
+        );
+    }
+    // Pre-persist in every world.
+    let written = std::fs::read_to_string(&config).expect("config untouched");
+    assert!(!written.contains(&server.uri()));
+}
