@@ -166,42 +166,19 @@ fn key_of(effect: &UiEffect) -> EK {
 }
 
 fn class_of(effect: &UiEffect) -> EC {
-    match key_of(effect) {
-        EK::NextView
-        | EK::PrevView
-        | EK::FocusBoard
-        | EK::BoardNext
-        | EK::BoardPrevious
-        | EK::BoardSelect
-        | EK::FocusToday
-        | EK::OpenInbox
-        | EK::OpenSettings
-        | EK::FocusNext
-        | EK::FocusPrev
-        | EK::FocusFirst
-        | EK::FocusLast
-        | EK::StackNext
-        | EK::StackPrev
-        | EK::StackWider
-        | EK::StackNarrower => EC::Nav,
-        EK::StackDelete
-        | EK::StackRename
-        | EK::StackMove
-        | EK::BoardCreate
-        | EK::BoardDelete
-        | EK::BoardRename => EC::Lifecycle,
-        EK::BeginCreate | EK::BeginCreateStack | EK::RequestMove => EC::Begin,
-        EK::OpenPalette => EC::OpenPalette,
-        EK::BeginCapture => EC::BeginCapture,
-        EK::Activate | EK::SetModeNormal | EK::SetModeInsert => EC::Edit,
-        EK::CancelMove => EC::Cancel,
-        EK::OpenMenu
-        | EK::CloseMenu
-        | EK::MenuBack
-        | EK::MenuNext
-        | EK::MenuPrevious
-        | EK::InvokeSelected => EC::Menu,
-        EK::Exit => EC::System,
+    // Delegates to the production classifier (`UiEffect::class`) —
+    // the mirror cannot drift from the code the compiler totals.
+    match effect.class() {
+        crate::router::EffectClass::Nav => EC::Nav,
+        crate::router::EffectClass::Lifecycle => EC::Lifecycle,
+        crate::router::EffectClass::Begin => EC::Begin,
+        crate::router::EffectClass::OpenPalette => EC::OpenPalette,
+        crate::router::EffectClass::BeginCapture => EC::BeginCapture,
+        crate::router::EffectClass::Edit => EC::Edit,
+        crate::router::EffectClass::Cancel => EC::Cancel,
+        crate::router::EffectClass::Menu => EC::Menu,
+        crate::router::EffectClass::System => EC::System,
+        crate::router::EffectClass::Title => EC::Title,
     }
 }
 
@@ -327,6 +304,23 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     use EK as E;
     let mut t = Vec::new();
     let mut row = |kind: FK, key: EK, e: Exp| t.push((kind, key, e));
+    // -- LIFECYCLE under every foreign kind: the settle-then-run
+    //    re-run's outcome is effect-shaped (a rename arms a fresh
+    //    text flow, a delete dispatches with no flow) --
+    row(FK::Text, E::StackDelete, exp(NZ, N));
+    row(FK::Text, E::BoardDelete, exp(NZ, N));
+    row(FK::Text, E::StackRename, exp(NZ, K(KTxt)));
+    row(FK::Text, E::BoardRename, exp(NZ, K(KTxt)));
+    row(FK::Text, E::BoardCreate, exp(NZ, K(KTxt)));
+    row(FK::Text, E::StackMove, exp(NZ, K(KMove)));
+    for kind in [FK::Due, FK::Move, FK::Drag, FK::Palette, FK::Capture] {
+        row(kind, E::StackDelete, exp(NZ, N));
+        row(kind, E::BoardDelete, exp(NZ, N));
+        row(kind, E::StackRename, exp(Z, K(KTxt)));
+        row(kind, E::BoardRename, exp(Z, K(KTxt)));
+        row(kind, E::BoardCreate, exp(Z, K(KTxt)));
+        row(kind, E::StackMove, exp(Z, K(KMove)));
+    }
     // -- Flow::None: the begin/open arms (audit §6 row 1) --
     row(FK::None, E::BeginCreate, exp(Z, K(KTxt)));
     row(FK::None, E::BeginCreateStack, exp(Z, K(KTxt)));
@@ -537,7 +531,7 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
             task: a,
             target: s1,
         },
-        Flow::MoveStack { stack: s0, slot: 1 },
+        Flow::MoveStack { stack: s1, slot: 0 },
         Flow::DragMove {
             task: a,
             target: s1,
@@ -664,7 +658,9 @@ fn every_flow_effect_pair_resolves_to_its_matrix_row() {
                     let [s0, _s1] = fx.stacks;
                     let [a_id, _b, _c] = fx.tasks;
                     a.view_state.activate_card(a_id, s0);
-                    if kind_of(flow) == FK::Text {
+                    if matches!(kind_of(flow), FK::Text | FK::Capture) {
+                        // The TEXT rows' commit side and capture's
+                        // commit-and-continue thought.
                         a.view_state.set_buffer("typed".to_owned());
                     }
                     *a.view_state.flow_mut() = flow.clone();

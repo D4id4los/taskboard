@@ -124,6 +124,81 @@ pub enum UiEffect {
     OpenSettings,
 }
 
+/// The effect classes the flow-settle matrix ranges over (round-3
+/// W-SM-b; the audit report §6 is the normative table). Exhaustive
+/// over [`UiEffect`] — adding a variant without a class is a compile
+/// error, and `Adapter::resolve` matches every class without a
+/// wildcard, so no `(Flow, effect)` pair can be silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectClass {
+    /// View/read-side jumps and the focus walk.
+    Nav,
+    /// The board/stack lifecycle verbs.
+    Lifecycle,
+    /// The begin intents (`BeginCreate`, `BeginCreateStack`,
+    /// `RequestMove`).
+    Begin,
+    /// The palette overlay request.
+    OpenPalette,
+    /// The capture overlay request (the one replace-without-commit).
+    BeginCapture,
+    /// The edit-flow's own commit/discard verbs (`Activate`,
+    /// `SetMode`).
+    Edit,
+    /// The move-flow cancel verb.
+    Cancel,
+    /// The menu family (applied in `apply_effect`, before the table).
+    Menu,
+    /// The process-exit verb (applied in `apply_effect`).
+    System,
+    /// The title editor's arm verb (round-3 W-SM-d).
+    Title,
+}
+
+impl UiEffect {
+    /// The matrix class of this effect (audit §6).
+    #[must_use]
+    pub const fn class(&self) -> EffectClass {
+        match self {
+            Self::NextView
+            | Self::PrevView
+            | Self::FocusBoard
+            | Self::BoardNext
+            | Self::BoardPrevious
+            | Self::BoardSelect(_)
+            | Self::FocusToday
+            | Self::OpenInbox
+            | Self::OpenSettings
+            | Self::FocusNext
+            | Self::FocusPrev
+            | Self::FocusFirst
+            | Self::FocusLast
+            | Self::StackNext
+            | Self::StackPrev
+            | Self::StackWider
+            | Self::StackNarrower => EffectClass::Nav,
+            Self::StackDelete
+            | Self::StackRename
+            | Self::StackMove
+            | Self::BoardCreate
+            | Self::BoardDelete
+            | Self::BoardRename => EffectClass::Lifecycle,
+            Self::BeginCreate | Self::BeginCreateStack | Self::RequestMove => EffectClass::Begin,
+            Self::OpenPalette => EffectClass::OpenPalette,
+            Self::BeginCapture => EffectClass::BeginCapture,
+            Self::Activate | Self::SetMode(_) => EffectClass::Edit,
+            Self::CancelMove => EffectClass::Cancel,
+            Self::OpenMenu
+            | Self::CloseMenu
+            | Self::MenuBack
+            | Self::MenuNext
+            | Self::MenuPrevious
+            | Self::InvokeSelected => EffectClass::Menu,
+            Self::Exit => EffectClass::System,
+        }
+    }
+}
+
 /// What dispatching an action produced (D16).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DispatchOutcome {

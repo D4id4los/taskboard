@@ -36,7 +36,7 @@ use crate::requests::{
     SettingsError, UiRequest,
 };
 use crate::resolver::{KeymapResolver, Resolution};
-use crate::router::{ActionRouter, DispatchOutcome, Mode, UiEffect};
+use crate::router::{ActionRouter, DispatchOutcome, EffectClass, Mode, UiEffect};
 use crate::scale::UiScale;
 use crate::settings_form::{self, ConnectionDraft};
 use crate::shell::KeymapShell;
@@ -62,6 +62,31 @@ pub(crate) enum MenuAnchor {
     #[default]
     Hamburger,
     Pointer(f32, f32),
+}
+
+/// The flow kinds the settle matrix rows range over (round-3
+/// W-SM-b; audit report §6). The mirror of the per-kind settle rule:
+/// TEXT commits-or-discards, DUE clean-closes, MOVE/DRAG cancel,
+/// the modals close, NONE is inert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowKind {
+    None,
+    Text,
+    Due,
+    Move,
+    Drag,
+    Palette,
+    Capture,
+}
+
+/// What the resolver does with a foreign-flow pair (plan §3.1):
+/// settle-then-run, cancel-only, replace, or a typed inert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Resolve {
+    SettleThenRun,
+    CancelOnly,
+    Replace,
+    Inert,
 }
 
 /// The adapter state: the validated keymap (applied at UI start, one
@@ -539,61 +564,43 @@ impl Adapter {
         )
     }
 
-    /// The leaving rule (D9, factored out of the table): a view switch
-    /// by effect commits edit flows, cancels move flows, and dismisses
-    /// the tooltip (r2 D13 — the anchor view is about to unmount).
-    fn settle_flows_on_leaving(
-        &mut self,
-        window: &AppWindow,
-        flow: &Flow,
-        state: &taskboard_domain::AppState,
-    ) {
-        Self::dismiss_tooltip(window);
-        match flow {
-            Flow::Create { .. }
-            | Flow::CreateStack
-            | Flow::CreateBoard
-            | Flow::EditTitle { .. }
-            | Flow::RenameStack { .. }
-            | Flow::RenameBoard { .. } => {
-                let outcomes = self.view_state.commit_edit(state);
-                self.apply_outcomes(window, &outcomes);
-            }
-            Flow::Move { .. } | Flow::MoveStack { .. } => {
-                let outcomes = self.view_state.cancel_move();
-                self.apply_outcomes(window, &outcomes);
-            }
-            // The pointer drag (r2 chunk-8): the same no-dispatch
-            // cancel, plus the native drag's teardown — the runtime
-            // owns the in-flight gesture and `PointerExited` is the
-            // one public cancel ([`Self::teardown_runtime_drag`]).
-            Flow::DragMove { .. } => {
-                let outcomes = self.view_state.cancel_move();
-                self.apply_outcomes(window, &outcomes);
-                Self::teardown_runtime_drag(window);
-            }
-            // The due editor ends without committing on a view
-            // switch (r2 D25: the clean close, like a move flow) —
-            // the picker closes with it; a reopen starts collapsed.
-            Flow::EditDue { .. } => {
-                self.due_picker = None;
-                let outcomes = self.view_state.end_edit_due();
-                self.apply_outcomes(window, &outcomes);
-            }
-            // A view switch out of the palette closes it without
-            // effect (the modal discipline).
-            Flow::Palette { .. } => {
-                let outcomes = self.view_state.close_palette();
-                self.apply_outcomes(window, &outcomes);
-            }
-            // A view switch out of capture discards-and-closes (the
-            // fire-drill overlay never commits on a view change).
-            Flow::Capture => {
-                let outcomes = self.view_state.close_capture();
-                self.apply_outcomes(window, &outcomes);
-            }
-            Flow::None => {}
+    /// The per-kind settle, adapter side (round-3 W-SM-b, plan §2):
+    /// the pure [`ViewState::settle_flow`] rule applied, plus the
+    /// adapter-owned attachments — the due picker dies with the due
+    /// flow, the gesture buffers (`width_drag`/`scale_drag`, §8) die
+    /// with the surfaces they address, and a settled drag tears the
+    /// native runtime gesture down (`PointerExited` is the one
+    /// public cancel, [`Self::teardown_runtime_drag`]). One taxonomy
+    /// for all three trigger families — L1 focus loss, L2 pointer
+    /// seams, the leaving effects — so they cannot diverge.
+    /// Idempotent on `Flow::None`; returns whether a flow settled.
+    fn settle_flow(&mut self, window: &AppWindow, state: &taskboard_domain::AppState) -> bool {
+        let flow = self.view_state.flow().clone();
+        if matches!(flow, Flow::None) {
+            return false;
         }
+        let was_drag = matches!(flow, Flow::DragMove { .. });
+        let was_due = matches!(flow, Flow::EditDue { .. });
+        let outcomes = self.view_state.settle_flow(state);
+        if was_due {
+            self.due_picker = None;
+        }
+        self.width_drag = None;
+        self.scale_drag = None;
+        self.apply_outcomes(window, &outcomes);
+        if was_drag {
+            Self::teardown_runtime_drag(window);
+        }
+        true
+    }
+
+    /// The leaving rule (D9, factored out of the table): a view
+    /// switch by effect settles the flow through the same per-kind
+    /// rule every other trigger uses (round-3 R1–R3) and dismisses
+    /// the tooltip (r2 D13 — the anchor view is about to unmount).
+    fn settle_flows_on_leaving(&mut self, window: &AppWindow, state: &taskboard_domain::AppState) {
+        Self::dismiss_tooltip(window);
+        self.settle_flow(window, state);
     }
 
     // -- test seams (the lib flow/buffer harnesses; never compiled
@@ -650,7 +657,7 @@ impl Adapter {
     fn interpret(&mut self, window: &AppWindow, effect: UiEffect) {
         let compact = Self::is_compact(window);
         let state = self.state.load();
-        let flow = self.view_state.flow().clone();
+        let mut flow = self.view_state.flow().clone();
         let focus_walk = matches!(
             effect,
             UiEffect::FocusNext | UiEffect::FocusPrev | UiEffect::FocusFirst | UiEffect::FocusLast
@@ -670,22 +677,14 @@ impl Adapter {
         // a move flow ends without dispatch (D9's recorded rule).
         let mut drag_teardown = false;
         if leaving {
-            self.settle_flows_on_leaving(window, &flow, &state);
+            self.settle_flows_on_leaving(window, &state);
+            // The settle ended the flow; the table reads the
+            // post-settle machine (a stale read would resolve the
+            // re-run against a flow that is already gone).
+            flow = self.view_state.flow().clone();
         }
 
         let outcomes = match (&flow, effect) {
-            // The today/inbox view intents (chunk 10): pure view
-            // state; the read-side jump.
-            (_, UiEffect::FocusToday) => self.view_state.focus_today(),
-            (_, UiEffect::OpenInbox) => self.view_state.open_inbox(&state),
-            // -- quick capture (chunk 10 D8): the GLOBAL action, from
-            //    any flow — the XOR rule replaces without committing --
-            (_, UiEffect::BeginCapture) => self.view_state.begin_capture(),
-            // The capture commit/close (the palette's modal peers);
-            // NOT `interpret_edit` — capture's non-empty commit
-            // deliberately keeps the flow.
-            (Flow::Capture, UiEffect::Activate) => self.view_state.commit_capture(),
-            (Flow::Capture, UiEffect::SetMode(Mode::Normal)) => self.view_state.close_capture(),
             // -- the pointer drag (r2 chunk-8): every cancel-shaped
             //    effect ends it without dispatching (Escape / C-g via
             //    `CancelMove`, the toggle re-request, mode.normal);
@@ -720,7 +719,7 @@ impl Adapter {
                 | UiEffect::SetMode(Mode::Normal)),
             ) => self.interpret_move(flow, effect, &state),
             // -- the edit flows (D5/D9): SetMode(Normal) discards,
-            //    Activate commits, leaving commits first (above); the
+            //    Activate commits, leaving settles first (above); the
             //    round-2 lifecycle flows join them --
             (
                 Flow::Create { .. }
@@ -733,15 +732,31 @@ impl Adapter {
             ) => self.interpret_edit(effect, &state),
             // The due editor (r2 D25): Escape discards (the clean
             // close — no commit, buffer/echo kept); the commit itself
-            // rides `commit_due`, so nothing else acts. The picker
-            // closes with the flow; a reopen starts collapsed.
-            (Flow::EditDue { .. }, effect) => match effect {
-                UiEffect::SetMode(Mode::Normal) => {
-                    self.due_picker = None;
-                    self.view_state.discard_edit()
-                }
-                _ => Vec::new(),
-            },
+            // rides `commit_due`, so Activate is a named inert here
+            // (the field's `accepted` seam owns Return) — the r2
+            // swallow-all arm is gone (round-3 F18): every other
+            // effect settles the flow and re-runs via the resolver.
+            (Flow::EditDue { .. }, UiEffect::SetMode(Mode::Normal)) => {
+                self.due_picker = None;
+                self.view_state.discard_edit()
+            }
+            (Flow::EditDue { .. }, UiEffect::Activate | UiEffect::SetMode(Mode::Insert)) => {
+                Vec::new()
+            }
+            // -- quick capture (chunk 10 D8): the GLOBAL action, from
+            //    any flow — the XOR rule replaces without committing --
+            (_, UiEffect::BeginCapture) => self.view_state.begin_capture(),
+            // -- the capture commit/close (the palette's modal peer);
+            //    NOT `interpret_edit` — capture's non-empty commit
+            //    deliberately keeps the flow --
+            (Flow::Capture, UiEffect::Activate) => self.view_state.commit_capture(),
+            (Flow::Capture, UiEffect::SetMode(Mode::Normal)) => self.view_state.close_capture(),
+            // vi's `i`/`a` open the view's editing flow rather than
+            // flipping mode into the void (D5).
+            (
+                Flow::None | Flow::Move { .. } | Flow::MoveStack { .. },
+                UiEffect::SetMode(Mode::Insert),
+            ) => self.interpret_insert(&state),
             // -- no flow: the intents begin things --
             (Flow::None, UiEffect::OpenPalette) => self.view_state.open_palette(),
             (
@@ -751,29 +766,31 @@ impl Adapter {
                 | UiEffect::BeginCreate
                 | UiEffect::BeginCreateStack),
             ) => self.interpret_begin(effect, &state),
-            // vi's `i`/`a` open the view's editing flow rather than
-            // flipping mode into the void (D5).
-            (Flow::None | Flow::Move { .. }, UiEffect::SetMode(Mode::Insert)) => {
-                self.interpret_insert(&state)
-            }
-            // -- the defaults: focus walk and view navigation --
-            (_, UiEffect::FocusNext) => {
+            // -- no flow: the pure view-state defaults (the arms the
+            //    resolver's settle-then-run re-dispatch resolves
+            //    against; under a foreign flow the same effects
+            //    settle first, audit §6 rows S) --
+            (Flow::None, UiEffect::FocusToday) => self.view_state.focus_today(),
+            (Flow::None, UiEffect::OpenInbox) => self.view_state.open_inbox(&state),
+            (Flow::None, UiEffect::FocusNext) => {
                 let day = self.day_ctx();
                 self.view_state
                     .advance_focus(&state, compact, self.kiosk, &day)
             }
-            (_, UiEffect::FocusPrev) => {
+            (Flow::None, UiEffect::FocusPrev) => {
                 let day = self.day_ctx();
                 self.view_state
                     .retreat_focus(&state, compact, self.kiosk, &day)
             }
-            (_, UiEffect::NextView) => self.view_state.next_view(&state),
-            (_, UiEffect::PrevView) => self.view_state.prev_view(&state),
-            (_, UiEffect::FocusBoard) => self.view_state.focus_board(),
-            (_, UiEffect::BoardNext) => self.view_state.next_board(&state),
-            (_, UiEffect::BoardPrevious) => self.view_state.previous_board(&state),
-            (_, UiEffect::BoardSelect(board)) => self.view_state.select_board(&state, board),
-            (_, effect @ (UiEffect::StackWider | UiEffect::StackNarrower)) => {
+            (Flow::None, UiEffect::NextView) => self.view_state.next_view(&state),
+            (Flow::None, UiEffect::PrevView) => self.view_state.prev_view(&state),
+            (Flow::None, UiEffect::FocusBoard) => self.view_state.focus_board(),
+            (Flow::None, UiEffect::BoardNext) => self.view_state.next_board(&state),
+            (Flow::None, UiEffect::BoardPrevious) => self.view_state.previous_board(&state),
+            (Flow::None, UiEffect::BoardSelect(board)) => {
+                self.view_state.select_board(&state, board)
+            }
+            (Flow::None, effect @ (UiEffect::StackWider | UiEffect::StackNarrower)) => {
                 let direction = if effect == UiEffect::StackWider {
                     1
                 } else {
@@ -785,9 +802,9 @@ impl Adapter {
             }
             // Round 2 (D17/D20): the stack wrap-walk and the first/last
             // jumps — pure view state, the BoardNext precedent.
-            (_, UiEffect::StackNext) => self.view_state.step_stack(&state, 1),
-            (_, UiEffect::StackPrev) => self.view_state.step_stack(&state, -1),
-            (_, effect @ (UiEffect::FocusFirst | UiEffect::FocusLast)) => {
+            (Flow::None, UiEffect::StackNext) => self.view_state.step_stack(&state, 1),
+            (Flow::None, UiEffect::StackPrev) => self.view_state.step_stack(&state, -1),
+            (Flow::None, effect @ (UiEffect::FocusFirst | UiEffect::FocusLast)) => {
                 let edge = if effect == UiEffect::FocusFirst {
                     FocusEdge::First
                 } else {
@@ -803,7 +820,7 @@ impl Adapter {
             // target resolution is the view state's; the engine owns
             // every delete refusal.
             (
-                _,
+                Flow::None,
                 effect @ (UiEffect::StackDelete
                 | UiEffect::StackRename
                 | UiEffect::StackMove
@@ -814,7 +831,7 @@ impl Adapter {
             // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
             // menu row, `Ctrl+,`, and a second press all close an open
             // settings surface.
-            (_, UiEffect::OpenSettings) => {
+            (Flow::None, UiEffect::OpenSettings) => {
                 Self::dismiss_tooltip(window);
                 if self.view_state.view() == crate::view_state::ViewId::Settings {
                     self.view_state.close_settings()
@@ -824,11 +841,22 @@ impl Adapter {
             }
             // A mode flip with no view meaning stays plain shell
             // state (D10) — e.g. Escape out of an empty insert.
-            (_, UiEffect::SetMode(mode)) => {
+            (Flow::None, UiEffect::SetMode(mode)) => {
                 self.shell.apply(&UiEffect::SetMode(mode), 0);
                 Vec::new()
             }
-            (_, _) => Vec::new(),
+            // Round 3 (W-SM-b): the wildcard arm is gone. Every
+            // remaining pair — a foreign flow meeting an effect its
+            // kept arms don't own — goes through the named resolver:
+            // settle per the flow's kind rule, then re-run (R3/R4).
+            // No `(Flow, effect)` pair is silent any more; the
+            // compiler enforces the resolver's totality over
+            // `EffectClass` and the pair-table test pins every cell
+            // to the audit matrix.
+            (_, effect) => {
+                self.resolve_conflict(window, &flow, effect, &state);
+                Vec::new()
+            }
         };
         self.apply_outcomes(window, &outcomes);
         if focus_walk {
@@ -1001,6 +1029,121 @@ impl Adapter {
         }
     }
 
+    /// The `OpenMenu` settle hook (audit §5): the menu effects are
+    /// applied in `apply_effect`, before the table — so the matrix's
+    /// "`OpenMenu` settles a foreign flow" cell (the hamburger face
+    /// of F9) lives here, at the application layer. The menu-internal
+    /// effects run through unchanged (they only arrive while the
+    /// menu is open, and an open menu masks flows via the chain).
+    fn settle_foreign_flow_for_modal(&mut self, window: &AppWindow) {
+        let state = self.state.load();
+        self.settle_flow(window, &state);
+    }
+
+    /// The flow kind the matrix rows range over (audit §6).
+    fn flow_kind(flow: &Flow) -> FlowKind {
+        match flow {
+            Flow::None => FlowKind::None,
+            Flow::Create { .. }
+            | Flow::CreateStack
+            | Flow::CreateBoard
+            | Flow::EditTitle { .. }
+            | Flow::RenameStack { .. }
+            | Flow::RenameBoard { .. } => FlowKind::Text,
+            Flow::EditDue { .. } => FlowKind::Due,
+            Flow::Move { .. } | Flow::MoveStack { .. } => FlowKind::Move,
+            Flow::DragMove { .. } => FlowKind::Drag,
+            Flow::Palette { .. } => FlowKind::Palette,
+            Flow::Capture => FlowKind::Capture,
+        }
+    }
+
+    /// The R3/R4 conflict resolver (round-3 W-SM-b, plan §3): the
+    /// named classifier that replaced the wildcard arm. Its match is
+    /// exhaustive over [`EffectClass`] — the compiler enforces the
+    /// totality, and the pair-table test pins every `(Flow, effect)`
+    /// cell to the audit matrix.
+    fn resolve_conflict(
+        &mut self,
+        window: &AppWindow,
+        flow: &Flow,
+        effect: UiEffect,
+        state: &taskboard_domain::AppState,
+    ) {
+        if matches!(flow, Flow::None) {
+            // Unreachable by construction: every effect class has a
+            // Flow::None arm above, and the menu/system effects are
+            // applied in `apply_effect` before the table (audit §5).
+            return;
+        }
+        match Self::resolve(Self::flow_kind(flow), effect.class()) {
+            Resolve::Inert => {}
+            Resolve::CancelOnly => {
+                // Settle only — the effect is consumed by the settle
+                // (the K cells: the due editor's C-g clean close, the
+                // modals' cancel).
+                self.settle_flow(window, state);
+            }
+            Resolve::Replace => {
+                // The one X: the capture overlay's fire-drill replace
+                // without committing (chunk-10 D8).
+                debug_assert!(matches!(effect, UiEffect::BeginCapture));
+                let was_drag = matches!(flow, Flow::DragMove { .. });
+                let outcomes = self.view_state.begin_capture();
+                self.width_drag = None;
+                self.scale_drag = None;
+                self.apply_outcomes(window, &outcomes);
+                if was_drag {
+                    Self::teardown_runtime_drag(window);
+                }
+            }
+            Resolve::SettleThenRun => {
+                // Settle per the flow's kind rule, then re-run the
+                // effect once against the settled state — bounded
+                // one-level re-dispatch (the `InvokeSelected`
+                // precedent, `router.rs`), guarded on the settle
+                // having actually changed the flow.
+                if self.settle_flow(window, state) {
+                    self.interpret(window, effect);
+                }
+            }
+        }
+    }
+
+    /// The matrix (audit §6) as a pure function: no silent default —
+    /// each arm names the decision (the arms deliberately share
+    /// bodies where the matrix cells agree).
+    #[allow(clippy::match_same_arms)] // one arm per matrix decision
+    fn resolve(kind: FlowKind, class: EffectClass) -> Resolve {
+        use EffectClass as C;
+        use FlowKind as K;
+        use Resolve as R;
+        match (kind, class) {
+            // The one Replace: the capture overlay's fire-drill (D8).
+            (_, C::BeginCapture) => R::Replace,
+            // CAPTURE row: one overlay — a palette request is a
+            // named inert.
+            (K::Capture, C::OpenPalette) => R::Inert,
+            // CANCEL: clean close (K) everywhere a kept arm doesn't
+            // own it; under a text flow the row's own seams own the
+            // buffer, so C-g is a named inert there.
+            (K::Text, C::Cancel) => R::Inert,
+            (_, C::Cancel) => R::CancelOnly,
+            // BEGIN/TITLE: R4 — dead buttons cannot exist; the
+            // auto-settle-then-run is the visible feedback.
+            (_, C::Begin | C::Title) => R::SettleThenRun,
+            // NAV / LIFECYCLE / palette-open: R3 settle-then-run.
+            (_, C::Nav | C::Lifecycle | C::OpenPalette) => R::SettleThenRun,
+            // EDIT residue (the effects the kept arms don't own —
+            // SetMode(Insert) under a text/due flow): named inert.
+            (_, C::Edit) => R::Inert,
+            // MENU/SYSTEM: applied in `apply_effect` before the
+            // table (audit §5); unreachable here — typed inert,
+            // never silent.
+            (_, C::Menu | C::System) => R::Inert,
+        }
+    }
+
     fn apply_effect(&mut self, window: &AppWindow, effect: UiEffect) {
         match effect {
             UiEffect::Exit => {
@@ -1008,6 +1151,11 @@ impl Adapter {
                 let _ = crate::quit();
             }
             UiEffect::OpenMenu => {
+                // Round 3 (the matrix's OpenMenu cell, audit §5): a
+                // foreign flow settles first — the modal must not
+                // sit on an armed flow that keeps masking keys after
+                // dismiss (F9's hamburger face).
+                self.settle_foreign_flow_for_modal(window);
                 // The menu is the modal context now (r2 D13): no tip
                 // survives the open.
                 Self::dismiss_tooltip(window);
@@ -2661,6 +2809,7 @@ fn install_board_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
             return;
         };
         let mut a = adapter.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
         let Some((stack, task)) = a.tables.board_task(column, row) else {
             return;
         };
@@ -2682,6 +2831,7 @@ fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
             return;
         };
         let mut a = adapter.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
         let Some(task) = a.tables.stack_task(row) else {
             return;
         };
@@ -2706,6 +2856,7 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = click.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
         focus_today_row(&mut a, &window, section, row);
     });
     let activated = Rc::clone(adapter);
@@ -2715,6 +2866,7 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = activated.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
         if focus_today_row(&mut a, &window, section, row).is_some() {
             a.route(&window, ActionId::TaskEdit);
         }
@@ -2726,6 +2878,7 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = context.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
         if focus_today_row(&mut a, &window, section, row).is_some() {
             a.open_task_context_menu(&window, x, y);
         }
@@ -2794,6 +2947,7 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
             return;
         };
         let mut a = segment.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
         let Some(board) = a.tables.board_ids.get(index).copied() else {
             return;
         };
@@ -2898,6 +3052,7 @@ fn install_board_bar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = adapter.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
         let Some(board) = a.tables.board_ids.get(index).copied() else {
             return;
         };
@@ -2916,7 +3071,9 @@ fn install_stack_create_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let Some(window) = route_weak.upgrade() else {
             return;
         };
-        route.borrow_mut().route(&window, ActionId::StackCreate);
+        let mut a = route.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
+        a.route(&window, ActionId::StackCreate);
     });
     let mirror = Rc::clone(adapter);
     window.on_board_stack_create_edited(move |text| {
@@ -2988,6 +3145,7 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         };
         let mut a = ghost.borrow_mut();
         select_column(&mut a, &window, column);
+        settle_pointer_conflict(&mut a, &window);
         a.route(&window, ActionId::TaskCreate);
     });
 
@@ -3009,6 +3167,15 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
+/// The L2 pointer-seam settle (round-3 R1/R2, plan §3.3): every seam
+/// that bypasses `interpret` settles a live flow through the same
+/// per-kind rule before its own semantics; idempotent on
+/// `Flow::None` (the double-settle guard).
+fn settle_pointer_conflict(adapter: &mut Adapter, window: &AppWindow) {
+    let state = adapter.state.load_full();
+    adapter.settle_flow(window, &state);
+}
+
 /// A board card at (column, row): resolves the id tables (D2) and
 /// applies the click's selection state. Returns the addressed
 /// `(stack, task)`, or `None` for a stale index against an older
@@ -3019,6 +3186,7 @@ fn focus_board_card(
     column: i32,
     row: i32,
 ) -> Option<(StackId, TaskId)> {
+    settle_pointer_conflict(adapter, window);
     let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
         return None;
     };
@@ -3030,6 +3198,7 @@ fn focus_board_card(
 
 /// Header/switcher activation: select the column's stack (D8).
 fn select_column(adapter: &mut Adapter, window: &AppWindow, column: i32) {
+    settle_pointer_conflict(adapter, window);
     let Some(stack) = adapter
         .tables
         .stack_ids
@@ -3047,7 +3216,11 @@ fn select_column(adapter: &mut Adapter, window: &AppWindow, column: i32) {
 /// through the view state, apply the outcomes (a commit outside a
 /// flow is inert — `commit_edit` ends nothing).
 fn commit_text(adapter: &mut Adapter, window: &AppWindow, text: &str) {
+    // The buffer mirrors first, then the settle: if a live flow is
+    // the field's own, the settle commits exactly this text and the
+    // trailing commit is the idempotent no-op.
     adapter.view_state.set_buffer(text.to_owned());
+    settle_pointer_conflict(adapter, window);
     let state = adapter.state.load_full();
     let outcomes = adapter.view_state.commit_edit(&state);
     adapter.apply_outcomes(window, &outcomes);
@@ -3264,6 +3437,10 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         let mut a = open.borrow_mut();
+        // Round 3 (L2, plan §3.3): a live flow settles before the
+        // due editor replaces it — the open never silently swallows
+        // an armed flow.
+        settle_pointer_conflict(&mut a, &window);
         let state = a.state.load_full();
         let outcomes = a.view_state.begin_edit_due(&state);
         a.apply_outcomes(&window, &outcomes);
