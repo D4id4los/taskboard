@@ -1,0 +1,71 @@
+#+title: ADR 0017: Time Tracking — Settled Open Entries, Single-Global Intent, Board-Section Roaming
+- *Date:* 2026-10-26
+- *Status:* Accepted (core domain & engine land with chunk DR-5/1; storage & roaming DR-5/2, CLI & export DR-5/3, UI DR-5/4 follow)
+- *Depends on:* ADR 0006 (state-engine interpret loop), ADR 0009/0012 (daemon + IPC), ADR 0013 (the reminders sidecar precedent this design extends), ADR 0004 (sync conflict policy)
+
+* Context
+
+Issue #210 asks for time tracking. The 2026-10-14 sketch kept the
+running timer as app-runtime state: persisted only as an in-flight
+intent, with a clock-driven app task stamping the end. Since then the
+daemon + IPC architecture landed (ADR 0009/0012): a CLI =track start=
+relays to the daemon and exits, so the intent must survive process
+death as durable state regardless; and an open entry is itself a
+settled write in the sketch's own sense — a row that exists, whose
+end field is unterminated.
+
+* Decision
+
+1. *The open entry is the running timer.* A =TimeEntry= row with
+   =end: null= is engine state: persisted, and (chunk DR-5/2) roaming
+   via the synced-intent ruling. This deliberately deviates from the
+   2026-10-14 sketch for the reason above. The sketch's actual
+   invariant is preserved exactly: *nothing ticks* — elapsed is
+   always derived at read (=now − start=), and an end is stamped only
+   by a command (stop, start-close, done/deleted-close, adjust) at
+   the acting device's planner =now=, from any device.
+2. *Single-global intent, soft.* At most one open entry after any
+   local tracking write, globally: starting anywhere closes what any
+   device left running. Concurrent starts on two devices (before
+   either pull sees the other) union into two open entries — the
+   LWW merge cannot prevent it, and no reader breaks: the chip shows
+   the most-recently-started open entry, =track status= lists all,
+   and the next start or stop anywhere closes all. The invariant
+   converges to zero-or-one at the next write; the domain properties
+   pin exactly this. No device identity exists or is introduced
+   (attribution stays fenced, Wave 4).
+3. *History outlives tasks.* Entries live in a board-level
+   =time-entries= sidecar section keyed by entry UUID (chunk DR-5/2);
+   =prune_absent_cards= gains no arm for it, so deleting a task never
+   deletes its tracked history. =task_title= is an immutable snapshot
+   taken at start. Deliberate deletes roam via derived tombstones
+   (global); retention aging (180 days, wire-only, constant) does not
+   — asymmetric by design: the local DB never drops history.
+4. *History editing can close but never reopen.* =AdjustTimeEntry='s
+   payload is a change mask: setting an end is expressible, clearing
+   one is not — a history edit cannot resurrect a running timer. The
+   runaway auto-close cap was considered and declined (session
+   ruling, 2026-10-26): runaways are fixed by hand via
+   =track adjust=; revisit only with poisoned-statistics evidence.
+5. *Starting settles notifications.* =StartTracking= dismisses the
+   task's currently-active reminder occurrences with the exact
+   =SetTaskDone= machinery — the notification surface's Start Task
+   button needs no second command (the #210 cross-link).
+
+* Consequences
+
+- A skewed stop stamps a slightly wrong duration, never an invalid
+  one: close stamps are predicate-exempt and read-side projections
+  clamp degenerate spans to zero; strict =end > start= validation
+  applies to user-authored spans only (=log=/=adjust=).
+- The soft invariant's transient double-open is observable between
+  sync cycles; it is recorded honestly here rather than papered over
+  with device identity.
+- Task-tombstoning ceremonies close open entries only at
+  =SetTaskDone= and =DeleteTask= (v1): a stack/board delete can
+  orphan the running entry until the next tracking write closes it —
+  bounded by the soft invariant, readable via the frozen title;
+  generalizing the close to the cascades is shape-neutral follow-up.
+- Fences (backlog, vocabulary reserved): tracker task type, respite
+  marking, per-user attribution (Wave 4), break reminders, pomodoro,
+  today-view totals section, task-detail history list.
