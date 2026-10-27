@@ -125,6 +125,8 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: {
@@ -140,6 +142,8 @@ fn fixture_task(i: usize, stacks: &[Stack]) -> Task {
                 effort: t,
                 importance: t,
                 urgency: t,
+                recur: t,
+
                 archived: t,
                 deleted: t,
             }

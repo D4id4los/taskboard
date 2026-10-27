@@ -103,6 +103,7 @@ pub(crate) struct PendingTaskIntent {
     pub(crate) effort: bool,
     pub(crate) importance: bool,
     pub(crate) urgency: bool,
+    pub(crate) recur: bool,
     /// The D-S6 rules flag: the guard's one deliberate non-clock member
     /// (rules carry their own embedded write clocks, not `TaskClocks`).
     pub(crate) reminder_rules: bool,
@@ -130,6 +131,7 @@ fn pending_task_intents(
             p.effort = true;
             p.importance = true;
             p.urgency = true;
+            p.recur = true;
             p.scheduled = true;
             p.reminder_rules = true;
             continue;
@@ -226,6 +228,10 @@ fn keep_task_intent(merged: &mut Task, local: &Task, task_id: TaskId, p: Pending
         merged.stack = local.stack;
         merged.order = local.order;
         merged.clocks.position = local.clocks.position;
+    }
+    if p.recur {
+        merged.recur.clone_from(&local.recur);
+        merged.clocks.recur = local.clocks.recur;
     }
     if p.labels {
         merged.labels.clone_from(&local.labels);
@@ -1496,6 +1502,8 @@ mod tests {
             effort: e,
             importance: e,
             urgency: e,
+            recur: e,
+
             archived: e,
             deleted: e,
         };
@@ -1523,6 +1531,7 @@ mod tests {
             effort: true,
             importance: true,
             urgency: true,
+            recur: true,
             reminder_rules: true,
             deleted: true,
         };
@@ -1548,6 +1557,8 @@ mod tests {
             effort: Some(Some(crate::entities::Effort::new(1))),
             importance: Some(Some(crate::entities::Importance::Low)),
             urgency: Some(Some(crate::entities::Urgency::Low)),
+            recur: None,
+
             archived: Some(false),
         };
         let changes_keys_value = serde_json::to_value(changes).unwrap();

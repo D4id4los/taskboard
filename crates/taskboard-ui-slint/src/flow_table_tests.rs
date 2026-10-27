@@ -499,6 +499,7 @@ fn fixture() -> (AppState, Fixture) {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
         archived: false,
         deleted: false,
         clocks: TaskClocks {
@@ -512,6 +513,7 @@ fn fixture() -> (AppState, Fixture) {
             effort: now,
             importance: now,
             urgency: now,
+            recur: now,
             archived: now,
             deleted: now,
         },

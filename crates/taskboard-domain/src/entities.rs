@@ -16,6 +16,7 @@ use crate::ids::{
     BoardId, LabelId, RemoteBoardBinding, RemoteCardRef, RemoteLabelRef, RemoteStackRef, StackId,
     TaskId,
 };
+use crate::recur::RecurRule;
 
 /// Lenient color value: construction passes anything through and `Display`
 /// round-trips. Validation is the sync adapter's job (`DeckColor`); the
@@ -268,6 +269,7 @@ pub const TASK_FIELDS: &[(&str, &[&str], FieldFamily)] = &[
     ("effort", &["effort"], FieldFamily::AppData),
     ("importance", &["importance"], FieldFamily::AppData),
     ("urgency", &["urgency"], FieldFamily::AppData),
+    ("recur", &["recur"], FieldFamily::AppData),
 ];
 
 /// Per-field write timestamps of a [`Task`] (decision: per-field LWW).
@@ -296,6 +298,8 @@ pub struct TaskClocks {
     pub importance: DateTime<Utc>,
     /// Write time of `urgency`.
     pub urgency: DateTime<Utc>,
+    /// Write time of `recur`.
+    pub recur: DateTime<Utc>,
     /// Write time of `archived`.
     pub archived: DateTime<Utc>,
     /// Write time of the tombstone (`deleted`).
@@ -428,6 +432,8 @@ pub struct Task {
     pub importance: Option<Importance>,
     /// Urgency; `None` = unset.
     pub urgency: Option<Urgency>,
+    /// The recurring-series rule; `None` = a plain, non-recurring task.
+    pub recur: Option<RecurRule>,
     /// Archived flag.
     pub archived: bool,
     /// Tombstone flag; `clocks.deleted` is the tombstone's write time.

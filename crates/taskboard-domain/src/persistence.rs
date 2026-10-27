@@ -176,6 +176,7 @@ pub struct SyncValidators {
 /// One write the engine asks the repository to persist. Entity upserts and
 /// outbox/validator transitions are batched so they can land in one
 /// transaction.
+#[allow(clippy::large_enum_variant)] // Task just crossed the threshold (recur rule); boxing churns every match site for a local lint
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PersistenceAction {
     /// Insert or replace a board.
@@ -560,6 +561,8 @@ mod tests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: crate::entities::TaskClocks {
@@ -573,6 +576,8 @@ mod tests {
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),
+                recur: ts(100),
+
                 archived: ts(100),
                 deleted: ts(100),
             },
@@ -861,6 +866,8 @@ mod tests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: crate::entities::TaskClocks {
@@ -874,6 +881,8 @@ mod tests {
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),
+                recur: ts(100),
+
                 archived: ts(100),
                 deleted: ts(100),
             },

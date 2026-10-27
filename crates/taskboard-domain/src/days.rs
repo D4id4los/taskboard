@@ -367,6 +367,8 @@ mod today_tests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -380,6 +382,8 @@ mod today_tests {
                 effort: stamp(100),
                 importance: stamp(100),
                 urgency: stamp(100),
+                recur: stamp(100),
+
                 archived: stamp(100),
                 deleted: stamp(100),
             },

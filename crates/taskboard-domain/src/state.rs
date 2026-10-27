@@ -866,6 +866,8 @@ mod sync_states_tests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -879,6 +881,8 @@ mod sync_states_tests {
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),
+                recur: ts(100),
+
                 archived: ts(100),
                 deleted: ts(100),
             },

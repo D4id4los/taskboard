@@ -72,6 +72,22 @@ pub fn urgency_from_text(raw: &str) -> Option<taskboard_domain::entities::Urgenc
     }
 }
 
+/// The stored TEXT form of a recurring-series rule: the domain serde
+/// JSON of the rule (the `Option` wrapper is not stored — NULL is the
+/// unset state at the column level).
+#[must_use]
+pub fn recur_to_text(rule: &taskboard_domain::recur::RecurRule) -> String {
+    serde_json::to_string(rule).unwrap_or_default()
+}
+
+/// Parses the stored TEXT form back; `None` on any JSON that does not
+/// decode as a rule (strict decode by design — the mints reject, the
+/// repository reports `Corrupted`; a NULL column is handled at the
+/// caller as the unset state).
+pub fn recur_from_text(raw: &str) -> Option<taskboard_domain::recur::RecurRule> {
+    serde_json::from_str(raw).ok()
+}
+
 /// A decode rejection; the repository maps this onto
 /// [`RepositoryError::Corrupted`](taskboard_domain::persistence::RepositoryError).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -627,5 +643,37 @@ mod tests {
             label: RemoteLabelId(6),
         });
         assert_eq!((b, l), (3, 6));
+    }
+}
+
+#[cfg(test)]
+mod recur_codec_tests {
+    use super::*;
+
+    fn sample_rule() -> taskboard_domain::recur::RecurRule {
+        taskboard_domain::recur::RecurRule {
+            series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(0x5e)),
+            anchor: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            pattern: taskboard_domain::recur::RecurPattern::Daily {
+                every: taskboard_domain::recur::EveryDays::new(2).unwrap(),
+            },
+            bound: taskboard_domain::recur::RecurBound::None,
+            continued_from: None,
+        }
+    }
+
+    #[test]
+    fn recur_text_round_trips_a_rule() {
+        let text = recur_to_text(&sample_rule());
+        assert_eq!(recur_from_text(&text), Some(sample_rule()));
+    }
+
+    #[test]
+    fn recur_text_rejects_garbage_and_the_zero_interval() {
+        assert_eq!(recur_from_text("not json"), None);
+        // The strict mints: a stored every:0 cannot decode (typed
+        // Corrupted at the repository, never a silently-wrong rule).
+        assert_eq!(recur_from_text("{\"every\": 0}"), None);
+        assert_eq!(recur_from_text(""), None);
     }
 }

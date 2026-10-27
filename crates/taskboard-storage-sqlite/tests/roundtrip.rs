@@ -42,6 +42,8 @@ fn task_clocks(secs: i64) -> TaskClocks {
         effort: t,
         importance: t,
         urgency: t,
+        recur: t,
+
         archived: t,
         deleted: t,
     }
@@ -138,6 +140,8 @@ fn task(id: u128, stack: &Stack, labels: BTreeSet<LabelId>) -> Task {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: task_clocks(5),

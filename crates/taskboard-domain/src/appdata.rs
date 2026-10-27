@@ -24,6 +24,7 @@ use serde_json::Value;
 
 use crate::entities::{Effort, Importance, Urgency};
 use crate::ids::RemoteBoardId;
+use crate::recur::RecurRule;
 use crate::reminders::ReminderOffset;
 
 /// The document format version. Additive changes never bump it; a reader
@@ -39,7 +40,8 @@ pub const ANCHOR_CARD_TITLE: &str = "[taskboard] app-data";
 /// the subject of the manifest lockstep assertion: [`crate::entities::
 /// TASK_FIELDS`]' `AppData` rows plus `scheduled` (the Native row whose
 /// sync lane is dynamic per D-V2; the lane decision never lives here).
-pub const MODELED_TASK_FIELD_KEYS: &[&str] = &["effort", "importance", "urgency", "scheduled"];
+pub const MODELED_TASK_FIELD_KEYS: &[&str] =
+    &["effort", "importance", "urgency", "recur", "scheduled"];
 
 /// A per-board sidecar document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,6 +201,7 @@ pub enum ModeledValue {
     Effort(Option<Effort>),
     Importance(Option<Importance>),
     Urgency(Option<Urgency>),
+    Recur(Option<RecurRule>),
     Scheduled(Option<DateTime<Utc>>),
 }
 
@@ -209,6 +212,7 @@ pub fn modeled_key(value: &ModeledValue) -> &'static str {
         ModeledValue::Effort(_) => "effort",
         ModeledValue::Importance(_) => "importance",
         ModeledValue::Urgency(_) => "urgency",
+        ModeledValue::Recur(_) => "recur",
         ModeledValue::Scheduled(_) => "scheduled",
     }
 }
@@ -237,6 +241,9 @@ fn encode_modeled(value: &ModeledValue) -> Value {
         ModeledValue::Urgency(level) => level.map_or(Value::Null, |l| {
             serde_json::to_value(l).unwrap_or(Value::Null)
         }),
+        ModeledValue::Recur(rule) => rule.as_ref().map_or(Value::Null, |r| {
+            serde_json::to_value(r).unwrap_or(Value::Null)
+        }),
         ModeledValue::Scheduled(dt) => dt.map_or(Value::Null, |d| {
             serde_json::to_value(d).unwrap_or(Value::Null)
         }),
@@ -263,6 +270,11 @@ fn decode_modeled(key: &str, v: &Value) -> Option<ModeledValue> {
                 .then(|| serde_json::from_value(v.clone()).ok())
                 .flatten(),
         ),
+        "recur" => ModeledValue::Recur(
+            (v != &Value::Null)
+                .then(|| serde_json::from_value(v.clone()).ok())
+                .flatten(),
+        ),
         "scheduled" => ModeledValue::Scheduled(
             (v != &Value::Null)
                 .then(|| serde_json::from_value(v.clone()).ok())
@@ -275,6 +287,7 @@ fn decode_modeled(key: &str, v: &Value) -> Option<ModeledValue> {
         ModeledValue::Effort(e) => e.is_some(),
         ModeledValue::Importance(e) => e.is_some(),
         ModeledValue::Urgency(e) => e.is_some(),
+        ModeledValue::Recur(e) => e.is_some(),
         ModeledValue::Scheduled(e) => e.is_some(),
     };
     if v != &Value::Null && !decoded_shape {
@@ -1068,6 +1081,59 @@ mod tests {
     }
 
     #[test]
+    fn the_recur_key_decodes_into_its_typed_arm_and_clears_via_null() {
+        let rule_json = serde_json::json!({
+            "series": "018f0000-0000-7000-8000-000000000001",
+            "anchor": "2026-01-01",
+            "pattern": { "Daily": { "every": 2 } },
+            "bound": "None",
+            "continued_from": null
+        });
+        let json = serde_json::json!({
+            "fields": {
+                "recur": { "v": rule_json, "clock": "2026-01-01T00:00:00Z" }
+            }
+        });
+        let back: TaskEntry = serde_json::from_value(json).unwrap();
+        assert_eq!(back.unmodeled.len(), 0);
+        assert_eq!(
+            back.fields["recur"].value,
+            ModeledValue::Recur(Some(serde_json::from_value(rule_json).unwrap()))
+        );
+        // Cleared: `v: null` is an ordinary write of the None arm.
+        let cleared: TaskEntry = serde_json::from_value(serde_json::json!({
+            "fields": { "recur": { "v": null, "clock": "2026-01-01T00:00:00Z" } }
+        }))
+        .unwrap();
+        assert_eq!(cleared.fields["recur"].value, ModeledValue::Recur(None));
+    }
+
+    #[test]
+    fn an_undecodable_recur_value_demotes_to_verbatim() {
+        // A peer wrote an `every: 0` rule (the mints reject it at the
+        // decode boundary): the key demotes verbatim, siblings decode —
+        // the document never fails (§6.1).
+        let bad = serde_json::json!({ "v": {"series": "x", "pattern": {"Daily": {"every": 0}}}, "clock": "2026-01-01T00:00:00Z" });
+        let doc: AppDataDocument = serde_json::from_value(serde_json::json!({
+            "format": 1, "board": 2,
+            "sections": { "tasks": { "55": { "fields": {
+                "recur": bad,
+                "urgency": { "v": "high", "clock": "2026-01-01T00:00:01Z" }
+            } } } }
+        }))
+        .unwrap();
+        let task = &doc.sections.tasks.as_ref().unwrap()["55"];
+        assert_eq!(
+            task.fields["urgency"].value,
+            ModeledValue::Urgency(Some(Urgency::High))
+        );
+        assert_eq!(
+            task.unmodeled.get("fields").unwrap()["recur"],
+            serde_json::json!({ "v": {"series": "x", "pattern": {"Daily": {"every": 0}}}, "clock": "2026-01-01T00:00:00Z" })
+        );
+    }
+
+    #[test]
     fn reserved_names_and_unknown_content_stay_verbatim() {
         // The reserved field key and section names never collide with a
         // modeled meaning; everything unknown survives decode→encode
@@ -1395,7 +1461,7 @@ mod tests {
         let mut sorted_modeled = MODELED_TASK_FIELD_KEYS.to_vec();
         sorted_modeled.sort_unstable();
         assert_eq!(sorted_modeled, sorted_expected);
-        assert_eq!(MODELED_TASK_FIELD_KEYS.len(), 4);
+        assert_eq!(MODELED_TASK_FIELD_KEYS.len(), 5);
 
         // `scheduled` is a manifest Native row (the dynamic lane) and
         // never an AppData row.
@@ -1439,6 +1505,8 @@ mod tests {
             effort: Some(Effort::new(900)),
             importance: Some(Importance::High),
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -1452,6 +1520,8 @@ mod tests {
                 effort: t(1_200),
                 importance: t(1_300),
                 urgency: t(1_400),
+                recur: t(1_400),
+
                 archived: t(1_000),
                 deleted: t(1_000),
             },

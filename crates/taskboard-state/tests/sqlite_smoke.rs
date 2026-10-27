@@ -170,6 +170,8 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: TaskClocks {
@@ -183,6 +185,8 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
             effort: common::ts(T0),
             importance: common::ts(T0),
             urgency: common::ts(T0),
+            recur: common::ts(T0),
+
             archived: common::ts(T0),
             deleted: common::ts(T0),
         },

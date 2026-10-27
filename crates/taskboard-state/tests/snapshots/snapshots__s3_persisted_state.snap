@@ -52,6 +52,7 @@ tasks:
     effort: ~
     importance: ~
     urgency: ~
+    recur: ~
     archived: false
     deleted: false
     clocks:
@@ -65,6 +66,7 @@ tasks:
       effort: "1970-01-01T10:00:00Z"
       importance: "1970-01-01T10:00:00Z"
       urgency: "1970-01-01T10:00:00Z"
+      recur: "1970-01-01T10:00:00Z"
       archived: "1970-01-01T10:00:00Z"
       deleted: "1970-01-01T10:00:00Z"
     remote_seen: "1970-01-01T10:00:00Z"

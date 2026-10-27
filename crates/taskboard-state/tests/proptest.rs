@@ -100,6 +100,8 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -113,6 +115,8 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
                 effort: ts(1),
                 importance: ts(1),
                 urgency: ts(1),
+                recur: ts(1),
+
                 archived: ts(1),
                 deleted: ts(1),
             },
@@ -428,6 +432,8 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: TaskClocks {
@@ -441,6 +447,8 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
             effort: ts(1),
             importance: ts(1),
             urgency: ts(1),
+            recur: ts(1),
+
             archived: ts(1),
             deleted: ts(1),
         },

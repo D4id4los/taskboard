@@ -89,6 +89,7 @@ struct TaskRow {
     effort: Option<i64>,
     importance: Option<String>,
     urgency: Option<String>,
+    recur: Option<String>,
     archived: bool,
     deleted: bool,
     ck_title: String,
@@ -101,6 +102,7 @@ struct TaskRow {
     ck_effort: String,
     ck_importance: String,
     ck_urgency: String,
+    ck_recur: String,
     ck_archived: String,
     ck_deleted: String,
     remote_seen: Option<DateTime<Utc>>,
@@ -221,6 +223,10 @@ mod decode {
     ) -> Result<taskboard_domain::entities::Urgency, RepositoryError> {
         codec::urgency_from_text(raw).ok_or(RepositoryError::Corrupted)
     }
+
+    pub(crate) fn recur(raw: &str) -> Result<taskboard_domain::recur::RecurRule, RepositoryError> {
+        codec::recur_from_text(raw).ok_or(RepositoryError::Corrupted)
+    }
 }
 
 /// Maps a failed statement onto the port's failure classes, logging the
@@ -336,6 +342,8 @@ fn decode_task(
             .map(decode::importance)
             .transpose()?,
         urgency: row.urgency.as_deref().map(decode::urgency).transpose()?,
+        recur: row.recur.as_deref().map(decode::recur).transpose()?,
+
         archived: row.archived,
         deleted: row.deleted,
         clocks: TaskClocks {
@@ -377,6 +385,10 @@ fn decode_task(
                 .map_err(|_| RepositoryError::Corrupted)?,
             urgency: row
                 .ck_urgency
+                .parse()
+                .map_err(|_| RepositoryError::Corrupted)?,
+            recur: row
+                .ck_recur
                 .parse()
                 .map_err(|_| RepositoryError::Corrupted)?,
             archived: row
@@ -581,11 +593,11 @@ impl SqliteTaskRepository {
                       done as "done: DateTime<Utc>",
                       sort_order,
                       effort,
-                      importance, urgency,
+                      importance, urgency, recur,
                       archived as "archived: bool", deleted as "deleted: bool",
                       ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,
                       ck_position, ck_labels, ck_effort, ck_importance, ck_urgency,
-                      ck_archived, ck_deleted,
+                      ck_recur, ck_archived, ck_deleted,
                       remote_seen as "remote_seen: DateTime<Utc>"
                FROM tasks ORDER BY id"#
         )
@@ -1057,8 +1069,8 @@ async fn execute_batch(
             .map(|e| i64::try_from(e.seconds()).map_err(|_| RepositoryError::Corrupted))
             .transpose()?;
         sqlx::query!(
-            r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, scheduled, done, sort_order, effort, importance, urgency, archived, deleted, ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, ck_effort, ck_importance, ck_urgency, ck_archived, ck_deleted, remote_seen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, scheduled, done, sort_order, effort, importance, urgency, recur, archived, deleted, ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, ck_effort, ck_importance, ck_urgency, ck_recur, ck_archived, ck_deleted, remote_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        stack = excluded.stack,
                        remote_board_id = excluded.remote_board_id,
@@ -1073,6 +1085,7 @@ async fn execute_batch(
                        effort = excluded.effort,
                        importance = excluded.importance,
                        urgency = excluded.urgency,
+                       recur = excluded.recur,
                        archived = excluded.archived,
                        deleted = excluded.deleted,
                        ck_title = excluded.ck_title,
@@ -1085,6 +1098,7 @@ async fn execute_batch(
                        ck_effort = excluded.ck_effort,
                        ck_importance = excluded.ck_importance,
                        ck_urgency = excluded.ck_urgency,
+                       ck_recur = excluded.ck_recur,
                        ck_archived = excluded.ck_archived,
                        ck_deleted = excluded.ck_deleted,
                        remote_seen = excluded.remote_seen"#,
@@ -1102,6 +1116,7 @@ async fn execute_batch(
             effort,
             task.importance.map(codec::importance_to_text),
             task.urgency.map(codec::urgency_to_text),
+            task.recur.as_ref().map(codec::recur_to_text),
             task.archived,
             task.deleted,
             task.clocks.title.to_rfc3339(),
@@ -1114,6 +1129,7 @@ async fn execute_batch(
             task.clocks.effort.to_rfc3339(),
             task.clocks.importance.to_rfc3339(),
             task.clocks.urgency.to_rfc3339(),
+            task.clocks.recur.to_rfc3339(),
             task.clocks.archived.to_rfc3339(),
             task.clocks.deleted.to_rfc3339(),
             task.remote_seen,

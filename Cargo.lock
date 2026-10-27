@@ -6761,6 +6761,7 @@ dependencies = [
  "chrono",
  "criterion",
  "proptest",
+ "serde_json",
  "sqlx",
  "taskboard-domain",
  "tempfile",

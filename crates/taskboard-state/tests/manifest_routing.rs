@@ -97,6 +97,8 @@ fn app_with(features: DeckFeatures) -> AppState {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: taskboard_domain::TaskClocks {
@@ -110,6 +112,8 @@ fn app_with(features: DeckFeatures) -> AppState {
             effort: ts(0),
             importance: ts(0),
             urgency: ts(0),
+            recur: ts(0),
+
             archived: ts(0),
             deleted: ts(0),
         },
@@ -141,6 +145,18 @@ fn changes_for(field: &str) -> Option<TaskChanges> {
             changes.importance = Some(Some(taskboard_domain::entities::Importance::High));
         }
         "urgency" => changes.urgency = Some(Some(taskboard_domain::entities::Urgency::Low)),
+        "recur" => {
+            let rule = taskboard_domain::recur::RecurRule {
+                series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(7)),
+                anchor: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+                pattern: taskboard_domain::recur::RecurPattern::Daily {
+                    every: taskboard_domain::recur::EveryDays::new(2).unwrap(),
+                },
+                bound: taskboard_domain::recur::RecurBound::None,
+                continued_from: None,
+            };
+            changes.recur = Some(Some(rule));
+        }
         // `done` rides SetTaskDone, `position` MoveTask, `labels` the
         // assign/unassign verbs, `deleted` DeleteTask (the native
         // routables chunk 1's engine tests already pin).
@@ -303,6 +319,8 @@ fn every_taskchanges_slot_is_manifest_covered() {
         effort: Some(None),
         importance: Some(None),
         urgency: Some(None),
+        recur: None,
+
         archived: Some(true),
     };
     let slots: Vec<&str> = vec![

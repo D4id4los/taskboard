@@ -1705,6 +1705,8 @@ mod ceremonies {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: TaskClocks {
@@ -1718,6 +1720,8 @@ mod ceremonies {
                 effort: stamp,
                 importance: stamp,
                 urgency: stamp,
+                recur: stamp,
+
                 archived: stamp,
                 deleted: stamp,
             },

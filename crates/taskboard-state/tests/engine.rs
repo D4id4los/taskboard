@@ -2672,6 +2672,8 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted: false,
             clocks: taskboard_domain::TaskClocks {
@@ -2685,6 +2687,8 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                 effort: ts(T0),
                 importance: ts(T0),
                 urgency: ts(T0),
+                recur: ts(T0),
+
                 archived: ts(T0),
                 deleted: ts(T0),
             },

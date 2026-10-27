@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, scheduled, done, sort_order, effort, importance, urgency, recur, archived, deleted, ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, ck_effort, ck_importance, ck_urgency, ck_recur, ck_archived, ck_deleted, remote_seen)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(id) DO UPDATE SET\n                       stack = excluded.stack,\n                       remote_board_id = excluded.remote_board_id,\n                       remote_stack_id = excluded.remote_stack_id,\n                       remote_card_id = excluded.remote_card_id,\n                       title = excluded.title,\n                       description = excluded.description,\n                       duedate = excluded.duedate,\n                       scheduled = excluded.scheduled,\n                       done = excluded.done,\n                       sort_order = excluded.sort_order,\n                       effort = excluded.effort,\n                       importance = excluded.importance,\n                       urgency = excluded.urgency,\n                       recur = excluded.recur,\n                       archived = excluded.archived,\n                       deleted = excluded.deleted,\n                       ck_title = excluded.ck_title,\n                       ck_description = excluded.ck_description,\n                       ck_duedate = excluded.ck_duedate,\n                       ck_scheduled = excluded.ck_scheduled,\n                       ck_done = excluded.ck_done,\n                       ck_position = excluded.ck_position,\n                       ck_labels = excluded.ck_labels,\n                       ck_effort = excluded.ck_effort,\n                       ck_importance = excluded.ck_importance,\n                       ck_urgency = excluded.ck_urgency,\n                       ck_recur = excluded.ck_recur,\n                       ck_archived = excluded.ck_archived,\n                       ck_deleted = excluded.ck_deleted,\n                       remote_seen = excluded.remote_seen",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 31
+    },
+    "nullable": []
+  },
+  "hash": "39ae5ed7a8c20557225e5d283b0536acee36bd4836cd2e6a9bd5eb7093f94a5b"
+}

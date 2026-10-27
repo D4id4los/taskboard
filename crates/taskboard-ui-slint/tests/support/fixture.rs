@@ -31,6 +31,8 @@ fn task_clocks() -> TaskClocks {
         effort: epoch(),
         importance: epoch(),
         urgency: epoch(),
+        recur: epoch(),
+
         archived: epoch(),
         deleted: epoch(),
     }
@@ -59,6 +61,8 @@ fn task(id: TaskId, stack: StackId, order: i64) -> Task {
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: task_clocks(),

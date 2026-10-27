@@ -84,6 +84,8 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
         effort: None,
         importance: None,
         urgency: None,
+        recur: None,
+
         archived: false,
         deleted: false,
         clocks: clock_at(0),
@@ -492,6 +494,8 @@ fn clock_at(secs: i64) -> TaskClocks {
         effort: t,
         importance: t,
         urgency: t,
+        recur: t,
+
         archived: t,
         deleted: t,
     }

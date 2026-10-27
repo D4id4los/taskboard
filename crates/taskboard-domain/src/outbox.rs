@@ -165,6 +165,8 @@ mod tests {
             effort: t,
             importance: t,
             urgency: t,
+            recur: t,
+
             archived: t,
             deleted: t,
         }
@@ -216,6 +218,8 @@ mod tests {
             effort: None,
             importance: None,
             urgency: None,
+            recur: None,
+
             archived: false,
             deleted,
             clocks: task_clocks(),

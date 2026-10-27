@@ -90,6 +90,8 @@ impl FakeEngine {
                             effort: None,
                             importance: None,
                             urgency: None,
+                            recur: None,
+
                             archived: false,
                             deleted: false,
                             clocks: taskboard_domain::TaskClocks {
@@ -103,6 +105,8 @@ impl FakeEngine {
                                 effort: taskboard_domain::BoardClocks::epoch(),
                                 importance: taskboard_domain::BoardClocks::epoch(),
                                 urgency: taskboard_domain::BoardClocks::epoch(),
+                                recur: taskboard_domain::BoardClocks::epoch(),
+
                                 archived: taskboard_domain::BoardClocks::epoch(),
                                 deleted: taskboard_domain::BoardClocks::epoch(),
                             },
