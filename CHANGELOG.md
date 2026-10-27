@@ -10,6 +10,19 @@ The workspace carries a single global version (see `docs/architecture.org`);
 ## [Unreleased]
 ### Changed
 
+- One-shot daemon commands join the one signal policy (ADR 0012's
+  2026-10-27 amendment, #196): ^C during a non-ceremony one-shot
+  command cancels it typed — the `cancelled` envelope, exit 130, the
+  daemon socket closed tidily (a command already delivered may still
+  complete; the envelope names it). Every daemon request now carries a
+  client read deadline — the verb's own `--timeout-secs` plus a 10 s
+  margin, else a 30 s ceiling — overridable wholesale (and disable-able
+  with `0`) by the new `[ipc] client_read_timeout_secs`; a wedged
+  daemon fails typed as `ipc-timeout` (exit 1) instead of hanging. The
+  server answers `daemon stop` in the accept path, outside the serial
+  dispatcher queue, so a wedged in-flight verb can no longer starve it
+  (same wire bytes, no protocol bump).
+
 - Interactive-session signal policy (ADR 0011's 2026-10-27 amendment,
   #174/#192/#200): ^C during a dispatching line cancels the line — a
   typed `cancelled` failure in the usual envelope, the session
