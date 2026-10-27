@@ -1091,6 +1091,38 @@ impl ViewState {
     /// normalizes first, and a board-less state is refused with an
     /// inert `Vec::new()` — nothing offers a stack create with no
     /// board to create it on.
+    /// The empty-board preset dispatch (r3 D5): one explicit-order
+    /// `CreateStack` per preset stack plus a trailing `RefreshNow`.
+    /// Orders are explicit 0..n — all commands are built before the
+    /// engine applies any of them, so the canonical append arithmetic
+    /// would hand them all the same order. The board-existence refusal
+    /// mirrors `begin_create_stack` (the selection normalizes first; a
+    /// board-less state yields an inert empty vec). Direct command
+    /// dispatch: no text flow, no new flow-machine surface.
+    pub fn apply_board_preset(
+        &mut self,
+        state: &AppState,
+        preset: &crate::board_presets::BoardPreset,
+    ) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let Some(board) = self.board else {
+            return Vec::new();
+        };
+        preset
+            .stacks
+            .iter()
+            .enumerate()
+            .map(|(order, title)| {
+                FlowOutcome::Command(StateCommand::CreateStack {
+                    board,
+                    title: (*title).to_owned(),
+                    order: i64::try_from(order).unwrap_or(i64::MAX),
+                })
+            })
+            .chain(std::iter::once(FlowOutcome::RefreshNow))
+            .collect()
+    }
+
     pub fn begin_create_stack(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         self.normalize_board(state);
         if self.board.is_none() {
@@ -2552,6 +2584,95 @@ mod tests {
                 .iter()
                 .any(|o| matches!(o, FlowOutcome::Command(_))),
             "no board commits no command"
+        );
+    }
+
+    #[test]
+    fn the_default_kanban_preset_dispatches_explicit_ordered_creates() {
+        let (state, board_id, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let outcomes = vs.apply_board_preset(&state, &crate::board_presets::DEFAULT_KANBAN);
+        let commands: Vec<_> = outcomes
+            .iter()
+            .filter_map(|o| match o {
+                FlowOutcome::Command(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            commands.len(),
+            crate::board_presets::DEFAULT_KANBAN.stacks.len()
+        );
+        for (order, (command, title)) in commands
+            .iter()
+            .zip(crate::board_presets::DEFAULT_KANBAN.stacks)
+            .enumerate()
+        {
+            match command {
+                StateCommand::CreateStack {
+                    board,
+                    title: t,
+                    order: o,
+                } => {
+                    assert_eq!(*board, board_id, "the selected board");
+                    assert_eq!(t, *title, "table order titles");
+                    assert_eq!(*o, i64::try_from(order).unwrap(), "explicit 0..n orders");
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+        }
+        assert!(
+            outcomes
+                .iter()
+                .any(|o| matches!(o, FlowOutcome::RefreshNow)),
+            "one trailing refresh"
+        );
+        // No text flow opened: preset creation is direct dispatch.
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn a_synthetic_preset_proves_the_table_is_the_extensibility_point() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let duo = crate::board_presets::BoardPreset {
+            name: "test-duo",
+            stacks: &["A", "B"],
+        };
+        let outcomes = vs.apply_board_preset(&state, &duo);
+        let commands: Vec<_> = outcomes
+            .iter()
+            .filter_map(|o| match o {
+                FlowOutcome::Command(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(commands.len(), 2);
+        for (order, command) in commands.iter().enumerate() {
+            match command {
+                StateCommand::CreateStack {
+                    title, order: o, ..
+                } => {
+                    assert_eq!(title, duo.stacks[order]);
+                    assert_eq!(*o, i64::try_from(order).unwrap());
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_preset_dispatch_refuses_without_a_board() {
+        let (mut state, _, _, _) = fixture();
+        state.boards.clear();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        assert_eq!(
+            vs.apply_board_preset(&state, &crate::board_presets::DEFAULT_KANBAN),
+            Vec::new(),
+            "the refusal is inert"
         );
     }
 

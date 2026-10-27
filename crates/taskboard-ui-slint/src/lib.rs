@@ -21,6 +21,7 @@ pub use scale::{UiScale, UiScaleError};
 
 pub mod actions;
 pub mod adapter;
+pub mod board_presets;
 pub mod due_edit;
 pub mod fonts;
 pub mod keymap;
