@@ -56,6 +56,10 @@ export component BoardLayout inherits Rectangle {
     // open the stack context menu at the pointer — the card pattern
     // (right-click selects like left-click).
     callback header-context(int, float, float);
+    // The stack card's bare-surface right-click (r3 D4): the empty
+    // stack's whole body, a populated stack's space below the last
+    // card — routed to the same stack context menu as the header.
+    callback body-context(int, float, float);
     // The stack-rename field of one column (r2 D21).
     callback rename-committed(int, string);
     callback rename-edited(int, string);
@@ -236,6 +240,25 @@ export component BoardLayout inherits Rectangle {
                 card := Rectangle {
                     width: 100%;
                     height: 100%;
+                    // The bare-surface context seam (r3 D4): declared
+                    // FIRST = lowest z, so the header, the viewport's
+                    // cards, the fields and the ghost are hit-tested
+                    // before it — only the bare surface (an empty
+                    // stack's body, the space below the last card)
+                    // falls through. Right-down only; left-clicks on
+                    // bare surface stay no-ops (today's behaviour).
+                    body-hit := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down
+                                    && event.button == PointerEventButton.right) {
+                                root.body-context(column-index,
+                                    self.absolute-position.x / 1px + self.mouse-x / 1px,
+                                    self.absolute-position.y / 1px + self.mouse-y / 1px);
+                            }
+                        }
+                    }
                     // The stack card (r2 D35): each column wraps in a
                     // `surface` container — the existing ladder re-anchored
                     // (background < surface card < surface-raised task

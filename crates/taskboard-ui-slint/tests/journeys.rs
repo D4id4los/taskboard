@@ -1196,6 +1196,54 @@ fn the_context_menu_focuses_and_routes_the_card() {
     );
 }
 
+/// R3-F6 (D4, probe P-B1) — right-clicking a stack's bare card
+/// surface (an empty stack's body, the space below the last card)
+/// opens the pointer-anchored stack context menu and selects the
+/// clicked stack — the header seam's body twin. The probe drives a
+/// real right-button press (below the last card of a task-less
+/// stack), not the seam invocation.
+#[test]
+fn the_body_right_click_selects_and_opens_the_stack_menu() {
+    let (fixture, mut state) = fixture::golden_state();
+    // Stack "b" loses its task: its whole card body is bare surface.
+    let stack_b = fixture.stack_b;
+    state.tasks.retain(|_, task| task.stack != stack_b);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let header = harness
+                .driver
+                .find_all_by_label("b")
+                .into_iter()
+                .find(support::driver::Element::is_accessible_button)
+                .expect("the stack-b header button is present");
+            let pos = header.absolute_position();
+            let size = header.size();
+            // Below the header: the empty stack's bare body.
+            #[allow(clippy::cast_precision_loss)]
+            let bare_y = pos.y + size.height * 3.0;
+            harness
+                .driver
+                .right_press_at(pos.x + size.width / 2.0, bare_y);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+            assert!(
+                keyboard(&harness).get_menu_pointer_anchored(),
+                "the menu anchors at the pointer"
+            );
+            assert_eq!(
+                harness.handle.window().get_board_model().selected_stack,
+                1,
+                "the right-click selected the clicked stack"
+            );
+        },
+    );
+}
+
 /// R3-F12 (D3) — an Add Task ghost hover arms the generalized
 /// tooltip: pending on enter, visible after the delay with a
 /// non-empty description (content never asserted), dismissed on

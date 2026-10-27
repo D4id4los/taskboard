@@ -77,6 +77,9 @@ pub trait JourneyDriver {
     fn press_at(&mut self, x: f32, y: f32);
     fn drag_move_to(&mut self, x: f32, y: f32);
     fn release_at(&mut self, x: f32, y: f32);
+    /// A right-button press (r3 D4): the body-context seam's probe —
+    /// the pointer-event down fires with the right button.
+    fn right_press_at(&mut self, x: f32, y: f32);
     /// Sets the window size in logical px (scale factor 1 → also
     /// physical); drives the `Responsive` breakpoints.
     fn set_window_size(&mut self, width: u32, height: u32);
@@ -246,6 +249,13 @@ impl JourneyDriver for SlintDriver {
         self.dispatch_pointer(slint::platform::WindowEvent::PointerReleased {
             position: slint::LogicalPosition::new(x, y),
             button: i_slint_core::items::PointerEventButton::Left,
+        });
+    }
+
+    fn right_press_at(&mut self, x: f32, y: f32) {
+        self.dispatch_pointer(slint::platform::WindowEvent::PointerPressed {
+            position: slint::LogicalPosition::new(x, y),
+            button: i_slint_core::items::PointerEventButton::Right,
         });
     }
 

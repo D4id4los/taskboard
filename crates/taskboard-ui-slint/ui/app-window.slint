@@ -235,6 +235,7 @@ export component AppWindow inherits Window {
                 header-activated(c) => root.board-header-activated(c);
                 switcher-activated(c) => root.board-switcher-activated(c);
                 header-context(c, x, y) => root.board-header-context-requested(c, x, y);
+                body-context(c, x, y) => root.board-body-context-requested(c, x, y);
                 rename-committed(c, t) => root.board-stack-rename-committed(c, t);
                 rename-edited(c, t) => root.board-stack-rename-edited(c, t);
                 text-flow-focus-lost() => root.text-flow-focus-lost();
@@ -570,6 +571,9 @@ export component AppWindow inherits Window {
     // The r2 D21 right-click seams: the stack header (and the
     // compact switcher's segments) and the board-bar segment.
     pure callback board-header-context-requested(int, float, float);
+    // The stack card's bare-surface right-click (r3 D4): the header
+    // seam's body twin — one shared adapter body.
+    pure callback board-body-context-requested(int, float, float);
     pure callback board-segment-context-requested(int, float, float);
     // The stack-rename field (r2 D21): per-column mirror/commit.
     pure callback board-stack-rename-committed(int, string);

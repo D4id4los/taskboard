@@ -2975,6 +2975,22 @@ fn focus_today_row(
 /// to that board — "the menu addresses what you clicked" (the
 /// recorded semantics). Stale indices are absorbed silently.
 fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // The stack context arm, shared by the header and the body seams
+    // (r3 D4) so they cannot drift: resolve the column's stack, apply
+    // the selection outcomes, open the stack menu at the pointer.
+    // Stale indices are absorbed silently (the tables guard).
+    fn open_stack_context(a: &mut Adapter, window: &AppWindow, column: i32, x: f32, y: f32) {
+        let Ok(column) = usize::try_from(column) else {
+            return;
+        };
+        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+            return;
+        };
+        let state = a.state.load_full();
+        let outcomes = a.view_state.select_stack(&state, stack);
+        a.apply_outcomes(window, &outcomes);
+        a.open_context_menu(window, x, y, menu::STACK_CONTEXT);
+    }
     // The stack header (the regular header and the compact switcher's
     // segments share the callback).
     let header = Rc::clone(adapter);
@@ -2983,17 +2999,18 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
         let Some(window) = header_weak.upgrade() else {
             return;
         };
-        let Ok(column) = usize::try_from(column) else {
-            return;
-        };
         let mut a = header.borrow_mut();
-        let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+        open_stack_context(&mut a, &window, column, x, y);
+    });
+    // The stack card's bare surface (r3 D4): the identical arm.
+    let body = Rc::clone(adapter);
+    let body_weak = window.as_weak();
+    window.on_board_body_context_requested(move |column, x, y| {
+        let Some(window) = body_weak.upgrade() else {
             return;
         };
-        let state = a.state.load_full();
-        let outcomes = a.view_state.select_stack(&state, stack);
-        a.apply_outcomes(&window, &outcomes);
-        a.open_context_menu(&window, x, y, menu::STACK_CONTEXT);
+        let mut a = body.borrow_mut();
+        open_stack_context(&mut a, &window, column, x, y);
     });
     // The board-bar segment.
     let segment = Rc::clone(adapter);
