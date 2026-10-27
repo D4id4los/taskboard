@@ -1346,6 +1346,49 @@ mod arithmetic_tests {
         }
     }
 
+    // ---- RT — the serde round-trip properties (origin §3.9 item 8,
+    // chunk-1 half) ----
+
+    /// A depth-limited arbitrary JSON value.
+    fn json_strategy() -> impl Strategy<Value = serde_json::Value> {
+        let leaf = prop_oneof![
+            Just(serde_json::Value::Null),
+            any::<bool>().prop_map(serde_json::Value::Bool),
+            (-1_000_000_000_i64..=1_000_000_000).prop_map(serde_json::Value::from),
+            "[a-zA-Z0-9_ ./-]{0,16}".prop_map(serde_json::Value::String),
+        ];
+        leaf.prop_recursive(3, 24, 6, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..4).prop_map(serde_json::Value::Array),
+                proptest::collection::hash_map("[a-z]{1,6}", inner, 0..4)
+                    .prop_map(|m| serde_json::Value::Object(m.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        #[test]
+        fn rules_round_trip_through_serde_losslessly(rule in recur_rule_strategy()) {
+            let json = serde_json::to_value(&rule).unwrap();
+            let back: RecurRule = serde_json::from_value(json).unwrap();
+            prop_assert_eq!(back, rule);
+        }
+
+        // Strict-decode totality: arbitrary JSON is `Ok(valid) ∨ Err`,
+        // never a panic and never a silently-wrong rule; every `Ok`
+        // re-encodes to a value that decodes equal (§6.3).
+        #[test]
+        fn arbitrary_json_decodes_ok_or_err_and_ok_reencodes_equal(j in json_strategy()) {
+            if let Ok(rule) = serde_json::from_value::<RecurRule>(j.clone()) {
+                let re = serde_json::to_value(&rule).unwrap();
+                let back: RecurRule = serde_json::from_value(re).unwrap();
+                prop_assert_eq!(back, rule);
+            }
+        }
+    }
+
     // P1 — next_after is total, strictly after `from`, and a member.
     proptest! {
         #![proptest_config(proptest_config(256))]
