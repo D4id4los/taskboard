@@ -77,7 +77,7 @@ fn argv(words: &str) -> Vec<String> {
 /// One exec over a fresh connection (a connection serves one request).
 async fn exec_once(db: &Path, words: &[String]) -> client::ExecOutcome {
     let conn = client::try_connect(db).await.expect("daemon answers");
-    conn.exec(words).await.expect("exec")
+    conn.exec(words, None).await.expect("exec")
 }
 
 /// Every journey runs under a hard deadline: a hung server fails the
@@ -270,7 +270,7 @@ async fn ip6_status_answers_live_without_triggering_a_cycle() {
 
         for _ in 0..3 {
             let conn = client::try_connect(&db).await.expect("daemon answers");
-            let view = conn.status().await.expect("status");
+            let view = conn.status(None).await.expect("status");
             assert!(view.daemon);
             assert_eq!(view.backend.as_deref(), Some("standalone"));
             let sync = view.sync.as_ref().expect("sync view");
@@ -295,7 +295,7 @@ async fn ip7_shutdown_acks_drains_and_removes_the_socket() {
         let sidecar = taskboard_app::ipc::socket_sidecar(&db);
 
         let conn = client::try_connect(&db).await.expect("daemon answers");
-        conn.shutdown().await.expect("shutdown ack");
+        conn.shutdown(None).await.expect("shutdown ack");
 
         tokio::time::timeout(common::LIVE_DEADLINE, handle.stopped())
             .await
@@ -325,7 +325,7 @@ async fn ip8_concurrent_connections_serialize_and_both_answer() {
         let c2 = client::try_connect(&db).await.expect("daemon answers");
         let one = argv("tasks add --stack Todo from-one");
         let two = argv("tasks add --stack Todo from-two");
-        let (r1, r2) = tokio::join!(c1.exec(&one), c2.exec(&two));
+        let (r1, r2) = tokio::join!(c1.exec(&one, None), c2.exec(&two, None));
         assert_eq!(r1.expect("exec one").code, 0);
         assert_eq!(r2.expect("exec two").code, 0);
 
@@ -412,7 +412,7 @@ async fn ip11_connector_daemon_serves_even_when_sync_fails() {
             let current = client::try_connect(&db)
                 .await
                 .expect("daemon answers")
-                .status()
+                .status(None)
                 .await
                 .expect("status");
             let failed = current
@@ -549,7 +549,7 @@ async fn ip13_detach_drops_the_connector_and_the_daemon_still_serves() {
         let view = client::try_connect(&db)
             .await
             .expect("daemon answers")
-            .status()
+            .status(None)
             .await
             .expect("status");
         assert_eq!(view.connector_attached, Some(true));
@@ -562,7 +562,7 @@ async fn ip13_detach_drops_the_connector_and_the_daemon_still_serves() {
         let view = client::try_connect(&db)
             .await
             .expect("daemon answers")
-            .status()
+            .status(None)
             .await
             .expect("status");
         assert_eq!(view.backend.as_deref(), Some("nextcloud"));
@@ -611,7 +611,7 @@ async fn ip14_a_foreign_identity_never_detaches() {
         let view = client::try_connect(&db)
             .await
             .expect("daemon answers")
-            .status()
+            .status(None)
             .await
             .expect("status");
         assert_eq!(view.connector_attached, Some(true));
@@ -720,7 +720,7 @@ async fn status_once(db: &Path) -> taskboard_app::commands::status::StatusView {
     client::try_connect(db)
         .await
         .expect("daemon answers")
-        .status()
+        .status(None)
         .await
         .expect("status")
 }
