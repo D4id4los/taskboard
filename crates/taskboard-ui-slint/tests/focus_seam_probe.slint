@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The focus-seam probe (round-3 L1, plan §9.2.7): the real TextField
+// against sibling focus containers — the component pin's host, the
+// virtualisation probe's include shape.
+
+import { Theme } from "../ui/theme.slint";
+import { TextField } from "../ui/widgets/text-field.slint";
+
+export global SeamProbe {
+    in-out property <int> lost: 0;
+}
+
+export component SeamProbeWindow inherits Window {
+    width: Theme.space-15 * 2;
+    height: Theme.space-15;
+    probe := TextField {
+        x: 0;
+        y: 0;
+        width: Theme.space-15;
+        height: Theme.space-15;
+        label: "probe";
+        focus-lost() => { SeamProbe.lost += 1; }
+    }
+    sibling := FocusScope {
+        x: Theme.space-15;
+        y: 0;
+        width: Theme.space-6;
+        height: Theme.space-15;
+    }
+    dead := Rectangle {
+        x: Theme.space-15 + Theme.space-6;
+        y: 0;
+        width: Theme.space-6;
+        height: Theme.space-15;
+        dead-touch := TouchArea { clicked => {} }
+    }
+}

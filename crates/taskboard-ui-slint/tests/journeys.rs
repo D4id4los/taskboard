@@ -6041,3 +6041,63 @@ fn the_title_edits_clicks_arms_and_re_arms() {
         },
     );
 }
+
+/// Round-3 R1/F7 — the click-out journeys: an empty create flow
+/// settles (discards) on a dead-zone click; a typed one commits
+/// exactly once, and Return afterwards dispatches nothing (the
+/// double-commit guard).
+#[test]
+fn a_dead_zone_click_settles_the_create_flow() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            let create_open = |harness: &Harness| {
+                harness
+                    .handle
+                    .window()
+                    .get_board_model()
+                    .stacks
+                    .row_data(0)
+                    .expect("column")
+                    .create_open
+            };
+
+            // Empty buffer: the click-out discards, the mode returns,
+            // and New Task works again without a second click.
+            harness.press(ActionId::TaskCreate);
+            assert!(create_open(&harness));
+            harness.driver.advance_time(0);
+            harness.driver.click_at(10.0, 450.0);
+            harness.driver.advance_time(0);
+            assert!(!create_open(&harness), "the empty click-out discards");
+            assert!(!keyboard(&harness).get_vi_insert(), "normal mode returns");
+            harness.assert_commands(&[]);
+            harness.press(ActionId::TaskCreate);
+            assert!(create_open(&harness), "New Task works again");
+            harness.driver.click_at(10.0, 450.0);
+            harness.assert_commands(&[]);
+
+            // Typed buffer: the click-out commits exactly once, and a
+            // Return afterwards dispatches nothing (the teardown
+            // focus-lost echo is absorbed).
+            harness.press(ActionId::TaskCreate);
+            harness.type_text("clicked out");
+            harness.driver.click_at(10.0, 450.0);
+            harness.driver.advance_time(0);
+            assert!(!create_open(&harness), "the typed click-out commits");
+            match harness.engine.drain().as_slice() {
+                [StateCommand::CreateTask { title, .. }] => {
+                    assert_eq!(title.as_str(), "clicked out");
+                }
+                other => panic!("one create reached the boundary, got {other:?}"),
+            }
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[]);
+        },
+    );
+}

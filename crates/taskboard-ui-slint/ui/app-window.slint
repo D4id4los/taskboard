@@ -233,6 +233,7 @@ export component AppWindow inherits Window {
                 header-context(c, x, y) => root.board-header-context-requested(c, x, y);
                 rename-committed(c, t) => root.board-stack-rename-committed(c, t);
                 rename-edited(c, t) => root.board-stack-rename-edited(c, t);
+                text-flow-focus-lost() => root.text-flow-focus-lost();
                 create-committed(c, t) => root.board-create-committed(c, t);
                 create-edited(c, t) => root.board-create-edited(c, t);
                 add-task-activated(c) => root.board-add-task-activated(c);
@@ -259,6 +260,7 @@ export component AppWindow inherits Window {
                 task-context(i, x, y) => root.stack-task-context-requested(i, x, y);
                 create-committed(t) => root.stack-create-committed(t);
                 create-edited(t) => root.stack-create-edited(t);
+                text-flow-focus-lost() => root.text-flow-focus-lost();
             }
             if (root.current-view == View.settings): SettingsView {
                 back-clicked() => root.settings-back-clicked();
@@ -282,6 +284,7 @@ export component AppWindow inherits Window {
                 title-committed(t) => root.task-title-committed(t);
                 title-edited(t) => root.task-title-edited(t);
                 title-edit-opened() => root.task-title-edit-activated();
+                text-flow-focus-lost() => root.text-flow-focus-lost();
                 back-clicked() => root.task-back-clicked();
                 rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
@@ -304,6 +307,7 @@ export component AppWindow inherits Window {
                 commit-affordance: true;
                 accepted(text) => root.board-create-field-committed(text);
                 edited(text) => root.board-create-field-edited(text);
+                focus-lost() => root.text-flow-focus-lost();
             }
             if (root.board-rename-open): TextField {
                 placeholder: "Board name";
@@ -312,6 +316,7 @@ export component AppWindow inherits Window {
                 selected-on-focus: true;
                 accepted(text) => root.board-rename-field-committed(text);
                 edited(text) => root.board-rename-field-edited(text);
+                focus-lost() => root.text-flow-focus-lost();
             }
 
             // The notification surface sits above the status bar, on
@@ -461,6 +466,7 @@ export component AppWindow inherits Window {
             initial-text: root.capture-initial-text;
             capture-edited(text) => root.capture-text-edited(text);
             capture-accepted() => root.capture-accepted();
+            text-flow-focus-lost() => root.text-flow-focus-lost();
         }
         if (root.palette-open): SearchPalette {
             width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
@@ -473,6 +479,7 @@ export component AppWindow inherits Window {
             overflow: root.palette-overflow;
             query-edited(text) => root.palette-query-edited(text);
             row-activated(index) => root.palette-row-activated(index);
+            text-flow-focus-lost() => root.text-flow-focus-lost();
         }
         // The pointer drag's ghost (r2 chunk-8, D-D): the dragged
         // card's snapshot at half opacity, centred under the cursor
@@ -589,6 +596,10 @@ export component AppWindow inherits Window {
     // The closed title's click (round-3 W-SM-d): routes the
     // `task.title-edit` action — click ≡ key (§7.1).
     pure callback task-title-edit-activated();
+    // The focus-loss settle (round-3 L1, plan §7): every text flow's
+    // field forwards here — the adapter settles per the flow-kind
+    // rule (commit non-empty / discard empty / close the modal).
+    pure callback text-flow-focus-lost();
     pure callback task-title-committed(string);
     pure callback task-title-edited(string);
     // The back button (round-1 D12): routes nav.focus-board — no new
