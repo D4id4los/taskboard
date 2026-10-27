@@ -3416,6 +3416,25 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The closed title's click (round-3 W-SM-d, F26): routes the
     // `task.title-edit` action — click ≡ key (§7.1); re-arming after
     // one close is always possible.
+    // The focus-loss settle (round-3 L1, plan §7): every text flow's
+    // field forwards here. The `try_borrow_mut` absorb discipline
+    // (the drag_finished echo precedent): a settle's unmount fires
+    // the teardown `focus-lost` synchronously inside
+    // `apply_outcomes`' borrow — that echo must be absorbed, and it
+    // can never mask a legitimate settle (a genuine focus move
+    // happens outside any borrow, where the borrow succeeds).
+    let focus_lost = Rc::clone(adapter);
+    let focus_lost_weak = window.as_weak();
+    window.on_text_flow_focus_lost(move || {
+        let Some(window) = focus_lost_weak.upgrade() else {
+            return;
+        };
+        let Ok(mut a) = focus_lost.try_borrow_mut() else {
+            return;
+        };
+        let state = a.state.load_full();
+        a.settle_flow(&window, &state);
+    });
     let title_click = Rc::clone(adapter);
     let title_click_weak = window.as_weak();
     window.on_task_title_edit_activated(move || {

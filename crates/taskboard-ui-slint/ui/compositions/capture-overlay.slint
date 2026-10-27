@@ -14,6 +14,8 @@ export component CaptureOverlay inherits Rectangle {
     in property <string> initial-text;
     callback capture-edited(string);
     callback capture-accepted();
+    // The focus-loss settle (round-3 L1).
+    callback text-flow-focus-lost();
 
     background: Theme.surface-raised;
     border-radius: Theme.radius-medium;
@@ -31,6 +33,7 @@ export component CaptureOverlay inherits Rectangle {
             text: root.initial-text;
             edited(text) => root.capture-edited(text);
             accepted() => root.capture-accepted();
+            focus-lost() => root.text-flow-focus-lost();
         }
 
         RoleText {

@@ -34,6 +34,20 @@ export component TextField inherits Rectangle {
     in property <bool> commit-affordance: false;
     callback edited(string);
     callback accepted(string);
+    // The focus-loss seam (round-3 L1, plan §7 — the probe-recorded
+    // mechanism A idiom, the compiler-widgets lineedit-base shape): a
+    // component-level property derived from the inner TextInput's
+    // has-focus, `changed` firing exactly once per focus loss — on
+    // pointer-click-away and on programmatic steals. A TouchArea
+    // click never moves focus (the recorded negative), so the L2
+    // seam-settle carries those paths.
+    callback focus-lost();
+    property <bool> input-has-focus: input.has-focus;
+    changed input-has-focus => {
+        if (!input-has-focus) {
+            root.focus-lost();
+        }
+    }
 
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;

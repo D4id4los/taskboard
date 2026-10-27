@@ -33,4 +33,15 @@ fn main() {
     )
     .expect("virtualisation probe compilation failed");
     println!("cargo:rerun-if-changed={}", probe_source.display());
+
+    // The focus-seam probe (round-3 L1): the real TextField's seam
+    // against sibling focus containers, same include shape.
+    let seam_source = manifest.join("tests/focus_seam_probe.slint");
+    slint_build::compile_with_output_path(
+        &seam_source,
+        out.join("focus_seam_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("focus seam probe compilation failed");
+    println!("cargo:rerun-if-changed={}", seam_source.display());
 }

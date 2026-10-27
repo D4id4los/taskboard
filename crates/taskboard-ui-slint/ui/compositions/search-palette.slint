@@ -25,6 +25,8 @@ export component SearchPalette inherits Rectangle {
     // Hits beyond the visible cap (the caption's count; hidden at 0).
     in property <int> overflow;
     callback query-edited(string);
+    // The focus-loss settle (round-3 L1).
+    callback text-flow-focus-lost();
     callback row-activated(int);
 
     background: Theme.surface-raised;
@@ -41,6 +43,7 @@ export component SearchPalette inherits Rectangle {
             placeholder: "Search…";
             label: "Search";
             edited(text) => root.query-edited(text);
+            focus-lost() => root.text-flow-focus-lost();
         }
 
         for row[index] in root.rows: ListRow {

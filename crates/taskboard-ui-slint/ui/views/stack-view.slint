@@ -23,6 +23,8 @@ export component StackView inherits FocusScope {
     callback task-context(int, float, float);
     callback create-committed(string);
     callback create-edited(string);
+    // The focus-loss settle (round-3 L1).
+    callback text-flow-focus-lost();
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -91,6 +93,7 @@ export component StackView inherits FocusScope {
                 commit-affordance: true;
                 accepted(text) => root.create-committed(text);
                 edited(text) => root.create-edited(text);
+                focus-lost() => root.text-flow-focus-lost();
             }
         }
     }

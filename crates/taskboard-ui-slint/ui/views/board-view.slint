@@ -43,6 +43,8 @@ export component BoardView inherits FocusScope {
     callback segment-context(int, float, float);
     callback task-activated(int, int);
     callback task-clicked(int, int);
+    // The focus-loss settle (round-3 L1), threaded to the layout.
+    callback text-flow-focus-lost();
     callback task-context(int, int, float, float);
     callback header-activated(int);
     callback switcher-activated(int);
@@ -88,6 +90,7 @@ export component BoardView inherits FocusScope {
             spacing: Theme.space-2;
 
             BoardLayout {
+                text-flow-focus-lost() => root.text-flow-focus-lost();
                 stacks: root.board.stacks;
                 selected-stack: root.board.selected-stack;
                 flow-open: root.flow-open;

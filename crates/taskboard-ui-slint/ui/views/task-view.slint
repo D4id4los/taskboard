@@ -44,6 +44,9 @@ export component TaskView inherits FocusScope {
     in property <[string]> nav-back-hint;
     callback title-committed(string);
     callback title-edited(string);
+    // The focus-loss settle (round-3 L1): the title flow's field
+    // commits non-empty / discards empty on a focus steal.
+    callback text-flow-focus-lost();
     // The closed title's click (round-3 W-SM-d, F26): routes the
     // `task.title-edit` action — click ≡ key (§7.1).
     callback title-edit-opened();
@@ -112,6 +115,7 @@ export component TaskView inherits FocusScope {
                 selected-on-focus: true;
                 accepted(text) => root.title-committed(text);
                 edited(text) => root.title-edited(text);
+                focus-lost() => root.text-flow-focus-lost();
             }
             if (!root.task.edit-open): title-display := Rectangle {
                 border-radius: Theme.radius-small;
