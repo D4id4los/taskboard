@@ -170,17 +170,15 @@ pub async fn spawn_server(
     let (stop, stop_rx) = watch::channel(false);
 
     // The dispatcher is the only `&App` holder: one in-flight request,
-    // engine-fairness by construction (ADR 0012 §2.8).
+    // engine-fairness by construction (ADR 0012 §2.8). A `Shutdown`
+    // never reaches it — the accept path's control lane (the ADR 0012
+    // amendment) answers it earlier, so a wedged in-flight verb cannot
+    // starve `daemon stop` (F12): the queue stays one-in-flight fair
+    // for everything else.
     let dispatcher_app = app;
-    let stop_for_dispatcher = stop.clone();
     let dispatcher = tokio::spawn(async move {
         while let Some(inbound) = in_rx.recv().await {
             let response = handle(dispatcher_app.as_ref(), session.as_ref(), inbound.req).await;
-            if let Response::Shutdown { .. } = response {
-                // The ack is written by the connection task; begin the
-                // drain now.
-                let _ = stop_for_dispatcher.send(true);
-            }
             let _ = inbound.reply.send(response);
         }
     });
@@ -294,7 +292,7 @@ async fn accept_loop(
         match accepted {
             Some(stream) => {
                 let tx = in_tx.clone();
-                connections.spawn(serve_connection(stream, tx));
+                connections.spawn(serve_connection(stream, tx, stop.clone()));
             }
             None => break,
         }
@@ -315,11 +313,20 @@ async fn wait_stopped(stop_rx: &mut watch::Receiver<bool>) {
     }
 }
 
-/// One connection: read the request frame, hand it to the dispatcher,
-/// write the response frame, close. A mismatched protocol version is
-/// answered here (no engine involvement) with the typed
-/// `VersionMismatch` response.
-async fn serve_connection(mut stream: Stream, in_tx: mpsc::Sender<InboundRequest>) {
+/// One connection: read the request frame, answer or hand it to the
+/// dispatcher, write the response frame, close. A mismatched protocol
+/// version is answered here (no engine involvement) with the typed
+/// `VersionMismatch` response — and, after that gate, a `Shutdown` is
+/// answered here too (the control lane, ADR 0012 amended): stop fires
+/// before the ack is written (today's dispatcher ordering, preserved
+/// verbatim), and nothing is enqueued — a wedged in-flight verb cannot
+/// starve `daemon stop` (F12). The same bytes travel; only which task
+/// answers and when changed — wire-additive, no version bump.
+async fn serve_connection(
+    mut stream: Stream,
+    in_tx: mpsc::Sender<InboundRequest>,
+    stop: watch::Sender<bool>,
+) {
     let bytes = match codec::read_frame(&mut stream, codec::MAX_REQUEST_BYTES).await {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -340,6 +347,17 @@ async fn serve_connection(mut stream: Stream, in_tx: mpsc::Sender<InboundRequest
         };
         let answer = serde_json::to_vec(&mismatch).expect("response serialization is total");
         let _ = codec::write_frame(&mut stream, &answer, codec::MAX_RESPONSE_BYTES).await;
+        return;
+    }
+    if matches!(req, Request::Shutdown { .. }) {
+        // The control lane: answered here, never enqueued. Stop fires
+        // before the ack — the drain begins while the ack travels.
+        let _ = stop.send(true);
+        let ack = serde_json::to_vec(&Response::Shutdown {
+            v: PROTOCOL_VERSION,
+        })
+        .expect("response serialization is total");
+        let _ = codec::write_frame(&mut stream, &ack, codec::MAX_RESPONSE_BYTES).await;
         return;
     }
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -391,6 +409,13 @@ async fn handle(app: &App, session: &BasicSession, req: Request) -> Response {
             status: crate::commands::status::StatusView::server(app),
         },
         Request::Shutdown { .. } => {
+            // Unreachable from the wire since the control lane (the
+            // ADR 0012 amendment) — the canary warn is what a future
+            // regression (someone re-enqueueing) trips first. The arm
+            // stays for match totality and answers honestly: even in
+            // the regression the client never hangs (it just misses
+            // the fix).
+            tracing::warn!("shutdown request reached the dispatcher; the accept path owns it");
             tracing::info!("graceful shutdown requested over ipc");
             Response::Shutdown {
                 v: PROTOCOL_VERSION,
@@ -700,5 +725,120 @@ mod drain_tests {
         )
         .await
         .expect("join completes although the dispatcher never does");
+    }
+}
+
+#[cfg(test)]
+mod control_lane_tests {
+    use super::{InboundRequest, serve_connection};
+    use crate::ipc::codec::{self, MAX_REQUEST_BYTES};
+    use crate::ipc::protocol::{PROTOCOL_VERSION, Request, Response};
+    use crate::ipc::socket_name;
+    use interprocess::local_socket::tokio::Stream;
+    use interprocess::local_socket::traits::tokio::Listener as _;
+    use interprocess::local_socket::{ListenerOptions, traits::tokio::Stream as _};
+    use tokio::sync::{mpsc, watch};
+
+    /// A listener bound on the db's socket name and one accepted
+    /// (client, server) stream pair over it.
+    async fn stream_pair(db: &std::path::Path) -> (Stream, Stream) {
+        let name = socket_name(db).expect("socket name");
+        let listener = ListenerOptions::new()
+            .name(name)
+            .create_tokio()
+            .expect("bind");
+        let client = Stream::connect(socket_name(db).expect("socket name"))
+            .await
+            .expect("connect");
+        let server = listener.accept().await.expect("accept");
+        (client, server)
+    }
+
+    /// Writes one request frame and reads the answer frame.
+    async fn exchange(client: &mut Stream, req: &Request) -> Result<Vec<u8>, codec::Error> {
+        let bytes = serde_json::to_vec(req).expect("serializes");
+        codec::write_frame(client, &bytes, MAX_REQUEST_BYTES).await?;
+        codec::read_frame(client, codec::MAX_RESPONSE_BYTES).await
+    }
+
+    /// S1: the control lane answers `Shutdown` outside the serial
+    /// dispatcher — the queue is held un-polled (the parked
+    /// dispatcher; a wedged in-flight verb is exactly this state), yet
+    /// the ack comes back and the stop watch fires. A second,
+    /// non-Shutdown request stays queued: the lane bought `daemon
+    /// stop` its answer without widening the queue's fairness (F12).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_control_lane_answers_over_a_parked_queue() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("lane.db");
+        let (in_tx, mut in_rx) = mpsc::channel::<InboundRequest>(64);
+        let (stop, stop_rx) = watch::channel(false);
+
+        // The parked dispatcher: the queue's receiver is never polled.
+        let (mut client_a, server_a) = stream_pair(&db).await;
+        tokio::spawn(serve_connection(server_a, in_tx.clone(), stop.clone()));
+
+        let req = Request::Shutdown {
+            v: PROTOCOL_VERSION,
+        };
+        let answer = exchange(&mut client_a, &req).await.expect("exchange");
+        let response: Response = serde_json::from_slice(&answer).expect("decodes");
+        assert!(matches!(response, Response::Shutdown { .. }), "the ack");
+        assert!(
+            in_rx.try_recv().is_err(),
+            "nothing was enqueued: the lane answers outside the queue"
+        );
+        let mut stop_rx = stop_rx;
+        stop_rx
+            .changed()
+            .await
+            .expect("the stop watch fired from the accept path");
+        assert!(*stop_rx.borrow(), "stop is set");
+
+        // The fairness note: a non-Shutdown request still goes through
+        // the queue — here it is written against the *parked* queue and
+        // stays unanswered (structurally: the entry is in the channel).
+        let (mut client_b, server_b) = stream_pair(&db).await;
+        tokio::spawn(serve_connection(server_b, in_tx, stop));
+        let exec = Request::Exec {
+            v: PROTOCOL_VERSION,
+            argv: vec!["status".to_owned()],
+        };
+        let bytes = serde_json::to_vec(&exec).expect("serializes");
+        codec::write_frame(&mut client_b, &bytes, MAX_REQUEST_BYTES)
+            .await
+            .expect("frame written");
+        let inbound = in_rx.recv().await.expect("enqueued");
+        assert!(
+            !matches!(inbound.req, Request::Shutdown { .. }),
+            "non-Shutdown requests ride the serial queue as before"
+        );
+        drop(inbound.reply);
+    }
+
+    /// S2: the version gate's position is unchanged — a wrong-version
+    /// `Shutdown` gets `VersionMismatch` from the connection task and
+    /// the stop watch does *not* fire.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_wrong_version_shutdown_never_fires_the_stop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("lane-version.db");
+        let (in_tx, mut in_rx) = mpsc::channel::<InboundRequest>(64);
+        let (stop, mut stop_rx) = watch::channel(false);
+
+        let (mut client, server) = stream_pair(&db).await;
+        tokio::spawn(serve_connection(server, in_tx, stop));
+
+        let req = Request::Shutdown { v: 99 };
+        let answer = exchange(&mut client, &req).await.expect("exchange");
+        let response: Response = serde_json::from_slice(&answer).expect("decodes");
+        assert!(matches!(
+            response,
+            Response::VersionMismatch { server_v } if server_v == PROTOCOL_VERSION
+        ));
+        assert!(in_rx.try_recv().is_err(), "nothing was enqueued");
+        assert!(!*stop_rx.borrow_and_update(), "stop not fired");
     }
 }
