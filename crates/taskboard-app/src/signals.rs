@@ -191,6 +191,105 @@ pub(crate) fn restore_tty(saved: &SavedTty) {
 #[cfg(not(unix))]
 pub(crate) fn restore_tty(_saved: &SavedTty) {}
 
+/// Consumes a watch change, or waits forever when the sender is gone.
+/// A dropped peer (a dead watcher) must never fire an arm — it would
+/// cancel or kill a session out of nowhere, and the `Err`-spinning
+/// alternative would busy-loop. One home for the dead-peer policy:
+/// both consumers (the REPL loop and the one-shot arms) import it from
+/// here.
+pub async fn changed_or_never<T>(rx: &mut tokio::sync::watch::Receiver<T>) {
+    loop {
+        match rx.changed().await {
+            Ok(()) => return,
+            Err(_) => std::future::pending::<()>().await,
+        }
+    }
+}
+
+/// Installs the one-shot CLI surface's SIGINT watcher (design D-5
+/// item 1): the interrupt family only — unix `SIGINT`, Windows
+/// console Ctrl-C. The termination family is *not* installed here: the
+/// one-shot never touches the tty (non-ceremony verbs run no raw
+/// mode), so SIGTERM/SIGHUP keep their default disposition on this
+/// surface. Drives one [`Ladder::new(0)`] with **no ack half** — the
+/// one-shot's cancellation ends the process, so nothing ever
+/// de-arms the ladder and the second SIGINT inside the exit window
+/// forces at [`Signal::Interrupt`]'s exit code (130) without the
+/// envelope print (D-1's "the force rung is always armed behind the
+/// first signal", zero extra machinery).
+///
+/// Returns the cancel watch (SIGINT epochs: one increment per
+/// unacknowledged cancel). The watcher-side side effects: send the
+/// epoch on `Initiate`, `std::process::exit` on `Force` (no tty
+/// restore — nothing was ever saved). A failed registration degrades
+/// to never-fires (the `wait_for_signal` precedent; the dead-peer
+/// half is [`changed_or_never`]).
+///
+/// Orphan completion (D-0, documented not hidden): cancelling a
+/// relayed request drops the *wait*; a command already delivered to
+/// the daemon still completes — the cancelled envelope's detail text
+/// names this.
+///
+/// Handlers are never on test paths (D-7): production one-shot paths
+/// only; hermetic tests inject watches and race no real signal.
+#[allow(clippy::too_many_lines)] // one feeder block per cfg'd stream, kept flat
+#[must_use]
+pub fn install_oneshot_watcher() -> tokio::sync::watch::Receiver<u64> {
+    let (cancel_tx, cancel) = tokio::sync::watch::channel(0_u64);
+
+    // The SIGINT family feeder (the session watcher's SIGINT half, the
+    // termination streams deliberately absent — see the doc). A failed
+    // registration spawns no feeder: the returned watch's sender drops
+    // when this fn returns, and `changed_or_never` turns that into an
+    // arm that can never fire.
+    #[cfg(unix)]
+    if let Ok(mut interrupt) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+    {
+        tokio::spawn(async move {
+            let mut ladder = Ladder::new(0);
+            let mut epoch: u64 = 0;
+            while interrupt.recv().await.is_some() {
+                match ladder.on(Event::Signal(Signal::Interrupt)) {
+                    Some(Action::Initiate) => {
+                        epoch += 1;
+                        let _ = cancel_tx.send(epoch);
+                    }
+                    Some(Action::Force) => {
+                        // No tty restore: the one-shot never saved one.
+                        // Flushing std streams is safe (no raw mode).
+                        tracing::warn!(
+                            code = Signal::Interrupt.exit_code(),
+                            "the one-shot signal force rung fired"
+                        );
+                        std::process::exit(Signal::Interrupt.exit_code());
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    tokio::spawn(async move {
+        let mut ladder = Ladder::new(0);
+        let mut epoch: u64 = 0;
+        if tokio::signal::ctrl_c().await.is_ok() {
+            match ladder.on(Event::Signal(Signal::Interrupt)) {
+                Some(Action::Initiate) => {
+                    epoch += 1;
+                    let _ = cancel_tx.send(epoch);
+                }
+                _ => {}
+            }
+        }
+        // Windows' one-shot ctrl_c bridge delivers one notification;
+        // the ladder never de-arms, and the console's own second-^C
+        // disposition is the force rung's world.
+    });
+
+    cancel
+}
+
 /// Installs the interactive session's signal watcher (design D-1/D-7):
 /// the chunk's only signal installation, spawned by `run_session` on
 /// the production path. Returns the loop-side watch halves the session

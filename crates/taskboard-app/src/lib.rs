@@ -44,7 +44,7 @@ pub mod notifications;
 pub mod repl;
 mod repl_history;
 pub mod secrets;
-mod signals;
+pub mod signals;
 pub mod ui;
 pub mod ui_requests;
 pub mod web;

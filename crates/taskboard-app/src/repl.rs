@@ -705,7 +705,7 @@ pub struct SessionSignals {
 
 impl SessionSignals {
     /// The no-signal set: watches whose senders are dropped, so no arm
-    /// can ever fire ([`changed_or_never`] degrades a dead peer to
+    /// can ever fire (`crate::signals::changed_or_never` degrades a dead peer to
     /// `pending()` forever). Tests and any future frontend without a
     /// watcher run in today's no-cancellation world.
     #[must_use]
@@ -717,19 +717,6 @@ impl SessionSignals {
             cancel,
             ack,
             terminate,
-        }
-    }
-}
-
-/// Consumes a watch change, or waits forever when the sender is gone.
-/// A dropped peer (a dead watcher) must never fire an arm — it would
-/// cancel or kill a session out of nowhere, and the `Err`-spinning
-/// alternative would busy-loop.
-async fn changed_or_never<T>(rx: &mut tokio::sync::watch::Receiver<T>) {
-    loop {
-        match rx.changed().await {
-            Ok(()) => return,
-            Err(_) => std::future::pending::<()>().await,
         }
     }
 }
@@ -767,7 +754,7 @@ pub async fn repl_loop(
             },
             // A termination event ends the session exactly like Ctrl-D
             // (D-4): break to the same graceful shutdown tail.
-            () = changed_or_never(&mut signals.terminate) => break,
+            () = crate::signals::changed_or_never(&mut signals.terminate) => break,
         };
         let action = match event {
             LineEvent::Interrupted => {
@@ -893,14 +880,14 @@ pub async fn repl_loop(
                     // typed cancellation (same envelope as every line
                     // failure; the exit code is the session's), ack the
                     // epoch, and fall through to the per-line resume.
-                    () = changed_or_never(&mut signals.cancel) => {
+                    () = crate::signals::changed_or_never(&mut signals.cancel) => {
                         let cancelled = CommandError::Cancelled;
                         let _ = crate::commands::report_to(&mut line_io, &cancelled);
                         let _ = signals.ack.send(acked_epoch);
                     }
                     // External termination mid-dispatch: drop the line
                     // and end the session — no line-level output.
-                    () = changed_or_never(&mut signals.terminate) => break,
+                    () = crate::signals::changed_or_never(&mut signals.terminate) => break,
                 }
             }
         }
