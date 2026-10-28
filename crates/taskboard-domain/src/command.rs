@@ -3806,6 +3806,36 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_label_force_removes_its_live_memberships() {
+        let (mut app, outbox) = base();
+        let doomed = label(504, true);
+        let doomed_id = doomed.id;
+        app.labels.insert(doomed_id, doomed);
+        let mut carrying = app.tasks[&task_id()].clone();
+        carrying.label_memberships.insert(
+            doomed_id,
+            crate::entities::MembershipState::Added { at: ts(T0 - 60) },
+        );
+        app.tasks.insert(carrying.id, carrying);
+
+        let plan = run(&app, &outbox, &StateCommand::DeleteLabel { id: doomed_id }).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert!(
+            plan.actions.iter().any(|a| matches!(
+                a,
+                PersistenceAction::UpsertTask(t)
+                    if t.id == task_id() && !t.live_labels().contains(&doomed_id)
+            )),
+            "the dead label's live membership is force-removed in the same batch"
+        );
+        assert!(plan.actions.iter().any(|a| matches!(
+            a,
+            PersistenceAction::UpsertLabel(l)
+                if l.id == doomed_id && l.deleted
+        )));
+    }
+
+    #[test]
     fn assigning_over_a_removed_membership_re_adds_with_the_new_stamp() {
         let (mut app, outbox) = base();
         // The task holds a remembered removal of label_id() from an
