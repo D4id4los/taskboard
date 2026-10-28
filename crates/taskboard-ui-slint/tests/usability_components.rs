@@ -296,6 +296,66 @@ fn the_tooltip_hand_off_places_inside_the_window_and_carries_parts() {
     );
 }
 
+/// The tooltip frames its width from the description too (r3 D17,
+/// dispatch §5 b): a caption-only tip hugs the caption; handing the
+/// same trigger a long help sentence drives the panel to the width
+/// cap (60 % of the 400 px window, here under the 420·scale absolute)
+/// where the description wraps.
+#[test]
+fn the_tooltip_width_frames_from_the_description() {
+    use slint::{ComponentHandle as _, ModelRc};
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let handle = mount_populated(driver, 1.0, 400, 300);
+            let tooltip = handle.window().global::<taskboard_ui_slint::TooltipState>();
+
+            // Caption-only: the content-hugging baseline.
+            tooltip.invoke_hover(
+                "short".into(),
+                "".into(),
+                ModelRc::default(),
+                200.0,
+                20.0,
+                32.0,
+                32.0,
+            );
+            driver.advance_time(600);
+            driver.advance_time(0);
+            assert!(tooltip.get_visible());
+            let caption_only = tooltip.get_tip_width();
+            tooltip.invoke_unhover();
+
+            // A long description: the panel widens to the cap.
+            let long_help = "a help sentence long enough that no sane panel would                              render it unwrapped inside a 400 px window, so the frame                              must stop at the cap and let the text wrap instead";
+            tooltip.invoke_hover(
+                "short".into(),
+                long_help.into(),
+                ModelRc::default(),
+                200.0,
+                20.0,
+                32.0,
+                32.0,
+            );
+            driver.advance_time(600);
+            driver.advance_time(0);
+            assert!(tooltip.get_visible());
+            let framed = tooltip.get_tip_width();
+            assert!(
+                framed > caption_only,
+                "the description term widens the frame: {framed} vs {caption_only}"
+            );
+            assert!(
+                framed <= 400.0 * 0.6 + 0.01,
+                "the frame respects the 60 % window cap: {framed}"
+            );
+            tooltip.invoke_unhover();
+        },
+    );
+}
+
 /// Round-1 D7/D8 — the row tooltip: hovering somewhere over the open
 /// menu's rows arms the generalized trigger whose description is
 /// non-empty and whose keys are the row's binding hint (structural;
