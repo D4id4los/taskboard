@@ -145,7 +145,7 @@ fn fixture_card_field_arms_match_modulo_rules() {
 
         for task in &f.tasks {
             assert!(
-                task.labels.len() == 1 || task.labels.len() == 2,
+                task.live_labels().len() == 1 || task.live_labels().len() == 2,
                 "domain label-set size must be 1 or 2"
             );
         }
@@ -189,7 +189,7 @@ fn shape_builders_mirror_their_tasks() {
         assert_eq!(new.duedate, task.duedate);
         assert_eq!(new.done, task.done);
         assert_eq!(new.archived, task.archived);
-        assert_eq!(new.labels, task.labels);
+        assert_eq!(new.labels, task.live_labels());
 
         let update = card_shape(task);
         assert_eq!(update.title, task.title);
@@ -198,6 +198,6 @@ fn shape_builders_mirror_their_tasks() {
         assert_eq!(update.done, task.done);
         assert_eq!(update.order, task.order);
         assert_eq!(update.archived, task.archived);
-        assert_eq!(update.labels, task.labels);
+        assert_eq!(update.labels, task.live_labels());
     }
 }

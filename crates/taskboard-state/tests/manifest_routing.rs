@@ -9,7 +9,7 @@
 //! execute path delegates to): the engine adds transport and bookkeeping,
 //! never routing (chunk 1's engine tests pin that split).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{TimeZone, Utc};
 use taskboard_domain::entities::{FieldFamily, TASK_FIELDS};
@@ -93,7 +93,7 @@ fn app_with(features: DeckFeatures) -> AppState {
         done: None,
         stack: stack_id(),
         order: 0,
-        labels: BTreeSet::new(),
+        label_memberships: BTreeMap::new(),
         effort: None,
         importance: None,
         urgency: None,
@@ -108,7 +108,6 @@ fn app_with(features: DeckFeatures) -> AppState {
             scheduled: ts(0),
             done: ts(0),
             position: ts(0),
-            labels: ts(0),
             effort: ts(0),
             importance: ts(0),
             urgency: ts(0),

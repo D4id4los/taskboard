@@ -24,16 +24,14 @@ pub fn task_clocks_strategy() -> impl Strategy<Value = TaskClocks> {
         timestamp_strategy(),
         timestamp_strategy(),
         timestamp_strategy(),
-        timestamp_strategy(),
     )
-        .prop_map(|(t, d, du, sc, do_, p, l, ef, im, ur, a, del)| TaskClocks {
+        .prop_map(|(t, d, du, sc, do_, p, ef, im, ur, a, del)| TaskClocks {
             title: t,
             description: d,
             duedate: du,
             scheduled: sc,
             done: do_,
             position: p,
-            labels: l,
             effort: ef,
             importance: im,
             urgency: ur,
@@ -42,6 +40,29 @@ pub fn task_clocks_strategy() -> impl Strategy<Value = TaskClocks> {
             archived: a,
             deleted: del,
         })
+}
+
+/// A per-membership OR-set state: either variant, over bounded stamps.
+/// `Removed`-heavy by symmetry — the no-flap and entity-death properties
+/// need tombstone-rich tasks.
+pub fn membership_state_strategy() -> impl Strategy<Value = crate::entities::MembershipState> {
+    (prop::sample::select(vec![0usize, 1]), timestamp_strategy()).prop_map(|(variant, at)| {
+        match variant {
+            0 => crate::entities::MembershipState::Added { at },
+            _ => crate::entities::MembershipState::Removed { at },
+        }
+    })
+}
+
+/// A small membership map over independent label ids.
+pub fn membership_map_strategy() -> impl Strategy<
+    Value = std::collections::BTreeMap<crate::ids::LabelId, crate::entities::MembershipState>,
+> {
+    prop::collection::btree_map(
+        super::label_id_strategy(),
+        membership_state_strategy(),
+        0..3,
+    )
 }
 
 /// Bounded effort seconds (`0..=10^9`): values stay inside the storage
@@ -113,7 +134,7 @@ pub fn task_strategy() -> impl Strategy<Value = Task> {
         ),
         (
             -1_000_i64..=1_000,
-            prop::collection::btree_set(super::label_id_strategy(), 0..3),
+            membership_map_strategy(),
             proptest::option::of(effort_strategy()),
             proptest::option::of(importance_strategy()),
             proptest::option::of(urgency_strategy()),
@@ -128,7 +149,7 @@ pub fn task_strategy() -> impl Strategy<Value = Task> {
                 (id, remote, title, description, duedate, done, scheduled, stack),
                 (
                     order,
-                    labels,
+                    label_memberships,
                     effort,
                     importance,
                     urgency,
@@ -147,7 +168,7 @@ pub fn task_strategy() -> impl Strategy<Value = Task> {
                 done,
                 stack,
                 order,
-                labels,
+                label_memberships,
                 effort,
                 importance,
                 urgency,

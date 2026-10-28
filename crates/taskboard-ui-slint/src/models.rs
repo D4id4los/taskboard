@@ -1447,7 +1447,6 @@ pub fn current_breakpoint(window: &AppWindow) -> Breakpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
     use taskboard_domain::{Importance, TaskClocks, Urgency};
 
@@ -1518,7 +1517,7 @@ mod tests {
             done: None,
             stack: StackId::from_uuid(uuid::Uuid::now_v7()),
             order: 0,
-            labels: BTreeSet::default(),
+            label_memberships: BTreeMap::new(),
             effort: None,
             importance: None,
             urgency: None,
@@ -1533,7 +1532,6 @@ mod tests {
                 scheduled: epoch(),
                 done: epoch(),
                 position: epoch(),
-                labels: epoch(),
                 effort: epoch(),
                 importance: epoch(),
                 urgency: epoch(),
@@ -1747,7 +1745,7 @@ mod tests {
                 done: None,
                 stack,
                 order: 0,
-                labels: std::collections::BTreeSet::default(),
+                label_memberships: BTreeMap::new(),
                 effort: None,
                 importance: None,
                 urgency: None,
@@ -1762,7 +1760,6 @@ mod tests {
                     scheduled: BoardClocks::epoch(),
                     done: BoardClocks::epoch(),
                     position: BoardClocks::epoch(),
-                    labels: BoardClocks::epoch(),
                     effort: BoardClocks::epoch(),
                     importance: BoardClocks::epoch(),
                     urgency: BoardClocks::epoch(),

@@ -73,7 +73,7 @@ pub(crate) fn list_on(
                 assigned_tasks: state
                     .tasks
                     .values()
-                    .filter(|t| t.is_live() && t.labels.contains(&l.id))
+                    .filter(|t| t.is_live() && t.live_labels().contains(&l.id))
                     .count(),
             })
             .collect();

@@ -38,7 +38,6 @@ fn task_clocks(secs: i64) -> TaskClocks {
         scheduled: t,
         done: t,
         position: t,
-        labels: t,
         effort: t,
         importance: t,
         urgency: t,
@@ -121,7 +120,11 @@ fn label(id: u128, board: &Board) -> Label {
     }
 }
 
-fn task(id: u128, stack: &Stack, labels: BTreeSet<LabelId>) -> Task {
+fn task(
+    id: u128,
+    stack: &Stack,
+    labels: BTreeMap<LabelId, taskboard_domain::entities::MembershipState>,
+) -> Task {
     Task {
         id: TaskId::from(uuid::Uuid::from_u128(id)),
         remote: Some(RemoteCardRef {
@@ -136,7 +139,7 @@ fn task(id: u128, stack: &Stack, labels: BTreeSet<LabelId>) -> Task {
         done: None,
         stack: stack.id,
         order: 1,
-        labels,
+        label_memberships: labels,
         effort: None,
         importance: None,
         urgency: None,
@@ -202,7 +205,7 @@ async fn outbox_preserves_enqueue_order_across_removals() {
     let task_id = TaskId::from(uuid::Uuid::from_u128(1));
     let seed_board = board(91);
     let seed_stack = stack(90, &seed_board);
-    let seed_task = task(1, &seed_stack, BTreeSet::default());
+    let seed_task = task(1, &seed_stack, BTreeMap::default());
     repo.apply(vec![
         PersistenceAction::UpsertBoard(seed_board),
         PersistenceAction::UpsertStack(seed_stack),
@@ -252,7 +255,7 @@ async fn reminder_rule_round_trips_the_write_clock_and_epoch_decodes() {
     let repo = db.repo();
     let b = board(11);
     let s = stack(2, &b);
-    let t = task(1, &s, BTreeSet::default());
+    let t = task(1, &s, BTreeMap::default());
     let rule_id = ReminderRuleId::from(uuid::Uuid::from_u128(20));
     let rule = ReminderRule {
         id: rule_id,
@@ -332,7 +335,7 @@ async fn rule_offset_roundtrips_identically_through_sqlite() {
         let repo = db.repo();
         let b = board(11);
         let s = stack(2, &b);
-        let t = task(1, &s, BTreeSet::default());
+        let t = task(1, &s, BTreeMap::default());
         let rule_id = ReminderRuleId::from(uuid::Uuid::from_u128(20 + i as u128));
         let rule = ReminderRule {
             id: rule_id,
@@ -373,7 +376,7 @@ async fn adhoc_alarms_and_their_facts_survive_a_board_clear() {
     let repo = db.repo();
     let b = board(11);
     let s = stack(2, &b);
-    let t = task(1, &s, BTreeSet::default());
+    let t = task(1, &s, BTreeMap::default());
     let alarm_id = AdhocAlarmId::from(uuid::Uuid::from_u128(30));
     let reminder = ReminderRef::Adhoc(alarm_id);
     repo.apply(vec![
@@ -475,7 +478,7 @@ async fn recur_rule_round_trips_through_sqlite() {
     .await
     .expect("apply");
 
-    let mut recurring = task(3, &s, BTreeSet::new());
+    let mut recurring = task(3, &s, BTreeMap::new());
     recurring.recur = Some(taskboard_domain::recur::RecurRule {
         series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(0x5e)),
         anchor: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
@@ -548,7 +551,14 @@ async fn task_upsert_keeps_label_set() {
     let b = board(11);
     let s = stack(2, &b);
     let l = label(12, &b);
-    let t = task(1, &s, BTreeSet::from([l.id]));
+    let t = task(
+        1,
+        &s,
+        BTreeMap::from([(
+            l.id,
+            taskboard_domain::entities::MembershipState::Added { at: ts(102) },
+        )]),
+    );
     let batch = vec![
         PersistenceAction::UpsertBoard(b.clone()),
         PersistenceAction::UpsertStack(s.clone()),
@@ -567,7 +577,7 @@ async fn task_upsert_keeps_label_set() {
     let stored = loaded.tasks.get(&t.id).expect("task still present");
     assert_eq!(stored.title, "changed");
     assert_eq!(
-        stored.labels,
+        stored.live_labels(),
         BTreeSet::from([l.id]),
         "label set must survive the upsert"
     );
@@ -598,7 +608,7 @@ async fn failed_batch_rolls_back_atomically() {
         .await
         .expect("trigger");
 
-    let t = task(1, &s, BTreeSet::new());
+    let t = task(1, &s, BTreeMap::new());
     let result = db
         .repo()
         .apply(vec![
@@ -865,7 +875,10 @@ async fn remote_baseline_roundtrips_through_sqlite() {
     let mut db = common::FileDb::new().await;
     let b = board(71);
     let s = stack(81, &b);
-    let labels = BTreeSet::from([LabelId::from(uuid::Uuid::from_u128(61))]);
+    let labels = BTreeMap::from([(
+        LabelId::from(uuid::Uuid::from_u128(61)),
+        taskboard_domain::entities::MembershipState::Added { at: ts(102) },
+    )]);
     let seed_label = label(61, &b);
     let baseline = taskboard_domain::entities::RemoteTaskBaseline {
         title: "remote title".into(),
@@ -923,7 +936,7 @@ async fn corrupt_baseline_json_is_typed_corruption() {
     let mut db = common::FileDb::new().await;
     let b = board(71);
     let s = stack(81, &b);
-    let mut seeded = task(90, &s, BTreeSet::new());
+    let mut seeded = task(90, &s, BTreeMap::new());
     seeded.remote_baseline = Some(taskboard_domain::entities::RemoteTaskBaseline {
         title: "t".into(),
         description: String::new(),

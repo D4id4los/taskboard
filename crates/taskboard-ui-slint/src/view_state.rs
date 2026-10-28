@@ -1839,7 +1839,7 @@ impl ViewState {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use std::collections::BTreeSet;
+
     use taskboard_domain::{Board, BoardClocks, BoardId, Stack, StackClocks, Task, TaskClocks};
 
     fn epoch() -> chrono::DateTime<Utc> {
@@ -1854,7 +1854,6 @@ mod tests {
             scheduled: epoch(),
             done: epoch(),
             position: epoch(),
-            labels: epoch(),
             effort: epoch(),
             importance: epoch(),
             urgency: epoch(),
@@ -1869,6 +1868,7 @@ mod tests {
         Task {
             id,
             remote: None,
+            label_memberships: BTreeMap::new(),
             title: format!("task-{order}"),
             description: String::new(),
             duedate: None,
@@ -1876,7 +1876,6 @@ mod tests {
             done: None,
             stack,
             order,
-            labels: BTreeSet::new(),
             effort: None,
             importance: None,
             urgency: None,

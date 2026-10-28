@@ -1098,6 +1098,7 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
     let task = Task {
         id: ids.new_task_id(),
         remote: None,
+        label_memberships: std::collections::BTreeMap::new(),
         title: "fired task".into(),
         description: String::new(),
         duedate: Some(ts(T0 + 3_600)),
@@ -1105,7 +1106,6 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
         done: None,
         stack: stack.id,
         order: 1,
-        labels: std::collections::BTreeSet::default(),
         effort: None,
         importance: None,
         urgency: None,
@@ -1120,7 +1120,6 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
             scheduled: ts(T0),
             done: ts(T0),
             position: ts(T0),
-            labels: ts(T0),
             effort: ts(T0),
             importance: ts(T0),
             urgency: ts(T0),

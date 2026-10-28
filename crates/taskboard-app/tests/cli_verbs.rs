@@ -1661,7 +1661,7 @@ mod ceremonies {
     /// board's remote — the stale-ref shape a different-remote rebind
     /// wipes (commands cannot set refs; the storage API can).
     async fn seed_ref_descendants(db: &std::path::Path, remote: u64, board: u128) {
-        use std::collections::BTreeSet;
+        use std::collections::BTreeMap;
         use taskboard_domain::{
             PersistenceAction, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteStackId,
             RemoteStackRef, Stack, StackClocks, StackId, Task, TaskClocks, TaskId,
@@ -1701,7 +1701,7 @@ mod ceremonies {
             done: None,
             stack: stack_id,
             order: 0,
-            labels: BTreeSet::new(),
+            label_memberships: BTreeMap::new(),
             effort: None,
             importance: None,
             urgency: None,
@@ -1716,7 +1716,6 @@ mod ceremonies {
                 scheduled: stamp,
                 done: stamp,
                 position: stamp,
-                labels: stamp,
                 effort: stamp,
                 importance: stamp,
                 urgency: stamp,

@@ -4,7 +4,7 @@
 //! helpers, and builders for bound entities, remote views, and snapshots
 //! with referentially consistent refs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, TimeZone, Utc};
 
@@ -82,7 +82,6 @@ pub(crate) fn clocks_at(t: i64) -> TaskClocks {
         scheduled: ts(t),
         done: ts(t),
         position: ts(t),
-        labels: ts(t),
         effort: ts(t),
         importance: ts(t),
         urgency: ts(t),
@@ -121,7 +120,7 @@ pub(crate) fn bound_task(card: u64) -> Task {
         done: None,
         stack: stack_id,
         order: card.cast_signed(),
-        labels: BTreeSet::new(),
+        label_memberships: BTreeMap::new(),
         effort: None,
         importance: None,
         urgency: None,

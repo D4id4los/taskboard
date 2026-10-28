@@ -205,7 +205,7 @@ impl NewCardShape {
             scheduled: task.scheduled,
             done: task.done,
             archived: task.archived,
-            labels: task.labels.clone(),
+            labels: task.live_labels(),
         }
     }
 }
@@ -220,7 +220,7 @@ impl CardShape {
             done: task.done,
             order: task.order,
             archived: task.archived,
-            labels: task.labels.clone(),
+            labels: task.live_labels(),
         }
     }
 }
@@ -738,7 +738,6 @@ mod tests {
     use crate::ids::{LabelId, StackId, TaskId};
     use chrono::TimeZone;
     use proptest::prelude::*;
-    use std::collections::BTreeSet;
     use uuid::Uuid;
 
     fn ts(secs: i64) -> DateTime<Utc> {
@@ -770,7 +769,6 @@ mod tests {
             scheduled: t,
             done: t,
             position: t,
-            labels: t,
             effort: t,
             importance: t,
             urgency: t,
@@ -810,7 +808,7 @@ mod tests {
             scheduled: None,
             stack,
             order: 0,
-            labels: BTreeSet::new(),
+            label_memberships: BTreeMap::new(),
             effort: None,
             importance: None,
             urgency: None,
@@ -1100,7 +1098,10 @@ mod tests {
         let mut stacks = BTreeMap::new();
         stacks.insert(stack.id, stack.clone());
         let mut task = task_row(10, stack.id);
-        task.labels.insert(label_id(20));
+        task.label_memberships.insert(
+            label_id(20),
+            crate::entities::MembershipState::Added { at: ts(0) },
+        );
         let mut tasks = BTreeMap::new();
         tasks.insert(task.id, task.clone());
         let labels = BTreeMap::new();
@@ -1112,7 +1113,7 @@ mod tests {
         let MaterializedOp::UpdateTask { card, .. } = &groups[0].materialized else {
             panic!("expected an update materialization");
         };
-        assert_eq!(card.labels, task.labels);
+        assert_eq!(card.labels, task.live_labels());
     }
 
     #[test]
@@ -1242,7 +1243,7 @@ mod tests {
             done: None,
             stack,
             order: 0,
-            labels: BTreeSet::new(),
+            label_memberships: BTreeMap::new(),
             effort: None,
             importance: None,
             urgency: None,

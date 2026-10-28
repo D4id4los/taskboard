@@ -168,16 +168,22 @@ pub fn plan_reconcile(
         matched_labels.insert(local_id);
         let survivor = merge_label_pair(&labels[&local_id], &labels[&bound_id]);
         let absorbed = neutralized_label(&labels[&local_id], &labels[&bound_id]);
-        // Edge rewrites: every task referencing the absorbed label id
-        // now references the survivor; the rewritten rows emit (a
-        // rewritten set may be the only change a task carries).
+        // Edge rewrites: every task holding a membership under the
+        // absorbed label id re-keys it to the survivor (tombstones re-key
+        // with their stamps); a task already holding a survivor-id entry
+        // merges the two observations through the outcome table. The
+        // rewritten rows emit (a rewritten map may be the only change a
+        // task carries).
         let rewritten: Vec<Task> = tasks
             .values_mut()
             .filter_map(|task| {
-                task.labels.remove(&bound_id).then(|| {
-                    task.labels.insert(local_id);
-                    task.clone()
-                })
+                let entry = task.label_memberships.remove(&bound_id)?;
+                let merged = crate::merge::merge_membership_opt(
+                    task.label_memberships.get(&local_id).copied(),
+                    entry,
+                );
+                task.label_memberships.insert(local_id, merged);
+                Some(task.clone())
             })
             .collect();
         for task in rewritten {
@@ -354,7 +360,6 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
     let lc = &local.clocks;
     let bc = &bound.clocks;
     let position_local_wins = lc.position > bc.position;
-    let labels_local_wins = lc.labels > bc.labels;
     Task {
         id: local.id,
         remote: bound.remote,
@@ -390,10 +395,16 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
         } else {
             bound.order
         },
-        labels: if labels_local_wins {
-            local.labels.clone()
-        } else {
-            bound.labels.clone()
+        // Per-membership OR-set merge (#129): the two rows' maps fold
+        // key-by-key through the outcome table (same-verb rows keep the
+        // max clock; contested add-vs-remove resolves by the table).
+        label_memberships: {
+            let mut memberships = bound.label_memberships.clone();
+            for (id, state) in &local.label_memberships {
+                let entry = memberships.remove(id);
+                memberships.insert(*id, crate::merge::merge_membership_opt(entry, *state));
+            }
+            memberships
         },
         effort: if bc.effort >= lc.effort {
             bound.effort
@@ -428,7 +439,6 @@ pub fn merge_task_pair(local: &Task, bound: &Task) -> Task {
             scheduled: lc.scheduled.max(bc.scheduled),
             done: lc.done.max(bc.done),
             position: lc.position.max(bc.position),
-            labels: lc.labels.max(bc.labels),
             effort: lc.effort.max(bc.effort),
             importance: lc.importance.max(bc.importance),
             urgency: lc.urgency.max(bc.urgency),
@@ -565,7 +575,7 @@ mod tests {
             scheduled: None,
             stack: stack_id,
             order: 1,
-            labels: BTreeSet::default(),
+            label_memberships: BTreeMap::default(),
             effort: None,
             importance: None,
             urgency: None,
@@ -580,7 +590,6 @@ mod tests {
                 scheduled: ts(100),
                 done: ts(100),
                 position: ts(100),
-                labels: ts(100),
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),
@@ -675,14 +684,17 @@ mod tests {
         let s = stack(5, "s", true);
         app.stacks.insert(s.id, s.clone());
         let mut carrier = task(10, s.id, "card", true);
-        carrier.labels.insert(bound.id);
+        carrier.label_memberships.insert(
+            bound.id,
+            crate::entities::MembershipState::Added { at: ts(100) },
+        );
         let carrier_id = carrier.id;
         app.tasks.insert(carrier.id, carrier);
         let (actions, counts) = plan_reconcile(&app, &[], board());
         assert_eq!(counts.labels, 1);
         assert!(
             actions.iter().any(|a| matches!(a, PersistenceAction::UpsertTask(t)
-                if t.id == carrier_id && t.labels.contains(&local.id) && !t.labels.contains(&bound.id))),
+                if t.id == carrier_id && t.live_labels().contains(&local.id) && !t.live_labels().contains(&bound.id))),
             "the task's label edge re-points to the survivor"
         );
     }
@@ -924,7 +936,7 @@ mod proptests {
             scheduled: None,
             stack,
             order: 1,
-            labels: std::collections::BTreeSet::default(),
+            label_memberships: std::collections::BTreeMap::default(),
             effort: None,
             importance: None,
             urgency: None,
@@ -939,7 +951,6 @@ mod proptests {
                 scheduled: ts(100),
                 done: ts(100),
                 position: ts(100),
-                labels: ts(100),
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),
@@ -1099,7 +1110,6 @@ mod proptests {
             prop_assert_eq!(merged.clocks.duedate, local.clocks.duedate.max(bound.clocks.duedate));
             prop_assert_eq!(merged.clocks.done, local.clocks.done.max(bound.clocks.done));
             prop_assert_eq!(merged.clocks.position, local.clocks.position.max(bound.clocks.position));
-            prop_assert_eq!(merged.clocks.labels, local.clocks.labels.max(bound.clocks.labels));
             prop_assert_eq!(merged.clocks.archived, local.clocks.archived.max(bound.clocks.archived));
             prop_assert_eq!(merged.clocks.deleted, local.clocks.deleted.max(bound.clocks.deleted));
         }
@@ -1295,7 +1305,7 @@ mod proptest_strategies {
                     scheduled: None,
                     stack: StackId::from(uuid::Uuid::from_u128(9)),
                     order: 1,
-                    labels: std::collections::BTreeSet::default(),
+                    label_memberships: std::collections::BTreeMap::default(),
                     effort: None,
                     importance: None,
                     urgency: None,
@@ -1317,7 +1327,6 @@ mod proptest_strategies {
                             scheduled: due,
                             done,
                             position: pos,
-                            labels: lab,
                             effort: lab,
                             importance: lab,
                             urgency: lab,
@@ -1337,7 +1346,6 @@ mod proptest_strategies {
                             scheduled: due + chrono::TimeDelta::try_seconds(7).unwrap(),
                             done: done + chrono::TimeDelta::try_seconds(7).unwrap(),
                             position: pos + chrono::TimeDelta::try_seconds(7).unwrap(),
-                            labels: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
                             effort: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
                             importance: lab + chrono::TimeDelta::try_seconds(7).unwrap(),
                             urgency: lab + chrono::TimeDelta::try_seconds(7).unwrap(),

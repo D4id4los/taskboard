@@ -26,7 +26,7 @@
 //! - op coalescing is Phase 4 push-side logic and deliberately absent
 //!   here: every accepted intent enqueues its own op.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 
@@ -438,7 +438,7 @@ pub fn plan_command(
                 done: None,
                 stack: target.id,
                 order: *order,
-                labels: BTreeSet::default(),
+                label_memberships: BTreeMap::default(),
                 effort: None,
                 importance: None,
                 urgency: None,
@@ -552,7 +552,7 @@ pub fn plan_command(
                 done: None,
                 stack: target_stack,
                 order,
-                labels: BTreeSet::default(),
+                label_memberships: BTreeMap::default(),
                 effort: None,
                 importance: None,
                 urgency: None,
@@ -930,8 +930,13 @@ pub fn plan_command(
             }
             let mut updated = label.clone();
             updated.deleted = true;
-            // Task label sets stay untouched: the tombstone hides the
-            // label; R7 reconciles remotely.
+            // Entity-death dominance (ADR 0004's labels amendment, D-2e
+            // applied to the local door): a dead label's live memberships
+            // are force-removed — a surviving `Added` membership would
+            // push a dead id in the card PUT (it would 404) and render a
+            // ghost. Removals are stamped, never deleted. Queued
+            // assignments for an unbound label already fail below; a
+            // bound label keeps its queued `DeleteLabel` push.
             updated.clocks.deleted = now;
             let mut actions = vec![PersistenceAction::UpsertLabel(updated)];
             if label.remote.is_some() {
@@ -943,6 +948,27 @@ pub fn plan_command(
                         .map(PersistenceAction::FailOp),
                 );
             }
+            let removal = crate::entities::MembershipState::Removed { at: now };
+            for task_id in app
+                .tasks
+                .iter()
+                .filter(|(_, t)| {
+                    t.is_live()
+                        && matches!(
+                            t.label_memberships.get(id),
+                            Some(crate::entities::MembershipState::Added { .. })
+                        )
+                })
+                .map(|(task_id, _)| *task_id)
+                .collect::<Vec<_>>()
+            {
+                let mut updated_task = app.tasks[&task_id].clone();
+                let entry = updated_task.label_memberships.remove(id);
+                updated_task
+                    .label_memberships
+                    .insert(*id, crate::merge::merge_membership_opt(entry, removal));
+                actions.push(PersistenceAction::UpsertTask(updated_task));
+            }
             Ok(CommandPlan {
                 actions,
                 outcome: CommandOutcome::Applied,
@@ -951,13 +977,19 @@ pub fn plan_command(
         StateCommand::AssignLabel { task, label } => {
             let source = live_task(app, *task)?;
             live_label(app, *label)?;
-            if source.labels.contains(label) {
+            // Membership-guarded (the OR-set verb, #129): an already-live
+            // membership is a no-op; an absent one — or a remembered
+            // tombstone — re-adds, the new stamp overwriting the removal.
+            if matches!(
+                source.label_memberships.get(label),
+                Some(crate::entities::MembershipState::Added { .. })
+            ) {
                 return Ok(no_op());
             }
             let mut updated = source.clone();
-            updated.labels.insert(*label);
-            // Whole-set field: one clock covers the entire label set.
-            updated.clocks.labels = now;
+            updated
+                .label_memberships
+                .insert(*label, crate::entities::MembershipState::Added { at: now });
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::UpsertTask(updated),
@@ -969,12 +1001,19 @@ pub fn plan_command(
         StateCommand::UnassignLabel { task, label } => {
             let source = live_task(app, *task)?;
             live_label(app, *label)?;
-            if !source.labels.contains(label) {
+            // Tombstone-aware absent-guard: removing an absent — or
+            // already removed — membership is a no-op, not a clock bump.
+            if !matches!(
+                source.label_memberships.get(label),
+                Some(crate::entities::MembershipState::Added { .. })
+            ) {
                 return Ok(no_op());
             }
             let mut updated = source.clone();
-            updated.labels.remove(label);
-            updated.clocks.labels = now;
+            updated.label_memberships.insert(
+                *label,
+                crate::entities::MembershipState::Removed { at: now },
+            );
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::UpsertTask(updated),
@@ -1942,7 +1981,6 @@ fn all_task_clocks(now: DateTime<Utc>) -> TaskClocks {
         urgency: now,
         recur: now,
 
-        labels: now,
         archived: now,
         deleted: now,
     }
@@ -2008,7 +2046,6 @@ mod tests {
             scheduled: ts(secs),
             done: ts(secs),
             position: ts(secs),
-            labels: ts(secs),
             effort: ts(secs),
             importance: ts(secs),
             urgency: ts(secs),
@@ -2034,7 +2071,7 @@ mod tests {
             scheduled: None,
             stack: stack_id,
             order: 1,
-            labels: BTreeSet::default(),
+            label_memberships: BTreeMap::default(),
             effort: None,
             importance: None,
             urgency: None,
@@ -2135,7 +2172,14 @@ mod tests {
         // The fixture task already carries the fixture label in its set,
         // so unassign tests have something to remove.
         let mut app = app;
-        app.tasks.get_mut(&task_id).unwrap().labels.insert(label_id);
+        app.tasks
+            .get_mut(&task_id)
+            .unwrap()
+            .label_memberships
+            .insert(
+                label_id,
+                crate::entities::MembershipState::Added { at: now() },
+            );
         (app, Vec::new())
     }
 
@@ -2597,10 +2641,9 @@ mod tests {
         assert_eq!(updated.duedate, Some(ts(T0 + 86_400)));
         assert_eq!(updated.clocks.title, now());
         assert_eq!(updated.clocks.duedate, now());
-        // Untouched fields keep their clocks — including position, labels,
-        // and the tombstone clock.
+        // Untouched fields keep their clocks — including position and
+        // the tombstone clock (label memberships carry no field clock).
         assert_eq!(updated.clocks.position, ts(T0 - 3_600));
-        assert_eq!(updated.clocks.labels, ts(T0 - 3_600));
         assert_eq!(updated.clocks.done, ts(T0 - 3_600));
         let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
             panic!("second action must be the enqueue");
@@ -3676,7 +3719,7 @@ mod tests {
     // ---- Assign / Unassign ---------------------------------------------
 
     #[test]
-    fn assign_and_unassign_stamp_the_whole_set_clock() {
+    fn assign_and_unassign_stamp_the_membership_state() {
         let (mut app, outbox) = base();
         let fresh = label(503, true);
         let fresh_id = fresh.id;
@@ -3684,7 +3727,7 @@ mod tests {
         app.tasks
             .get_mut(&task_id())
             .unwrap()
-            .labels
+            .label_memberships
             .remove(&fresh_id);
 
         let plan = run(
@@ -3699,8 +3742,11 @@ mod tests {
         let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
             panic!("first action must be the upsert");
         };
-        assert!(updated.labels.contains(&fresh_id));
-        assert_eq!(updated.clocks.labels, now());
+        assert!(updated.live_labels().contains(&fresh_id));
+        assert_eq!(
+            updated.label_memberships[&fresh_id],
+            crate::entities::MembershipState::Added { at: now() }
+        );
         let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
             panic!("second action must be the enqueue");
         };
@@ -3752,8 +3798,11 @@ mod tests {
         let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
             panic!("first action must be the upsert");
         };
-        assert!(!updated.labels.contains(&label_id()));
-        assert_eq!(updated.clocks.labels, now());
+        assert!(!updated.live_labels().contains(&label_id()));
+        assert_eq!(
+            updated.label_memberships[&label_id()],
+            crate::entities::MembershipState::Removed { at: now() }
+        );
     }
 
     // ---- Boards --------------------------------------------------------

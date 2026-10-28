@@ -13,7 +13,7 @@
 //! - P5: op freshness — enqueued op ids are unique and address entities
 //!   that exist in the post-state.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use proptest::prelude::*;
@@ -89,6 +89,7 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
         PersistenceAction::UpsertTask(Task {
             id: TaskId::from(uuid(raw)),
             remote: None,
+            label_memberships: BTreeMap::new(),
             title: "t".into(),
             description: String::new(),
             duedate: None,
@@ -96,7 +97,6 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
             done: None,
             stack: StackId::from(uuid(0)),
             order: 0,
-            labels: BTreeSet::new(),
             effort: None,
             importance: None,
             urgency: None,
@@ -111,7 +111,6 @@ fn arbitrary_action() -> impl Strategy<Value = PersistenceAction> {
                 scheduled: ts(1),
                 done: ts(1),
                 position: ts(1),
-                labels: ts(1),
                 effort: ts(1),
                 importance: ts(1),
                 urgency: ts(1),
@@ -422,6 +421,7 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
     let task = Task {
         id: ids.new_task_id(),
         remote: None,
+        label_memberships: BTreeMap::new(),
         title: "seed task".into(),
         description: String::new(),
         duedate: None,
@@ -429,7 +429,6 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
         done: None,
         stack: stack.id,
         order: 1,
-        labels: BTreeSet::from([label.id]),
         effort: None,
         importance: None,
         urgency: None,
@@ -444,7 +443,6 @@ fn coherent_seed() -> (PersistedState, StackId, TaskId, taskboard_domain::LabelI
             scheduled: ts(1),
             done: ts(1),
             position: ts(1),
-            labels: ts(1),
             effort: ts(1),
             importance: ts(1),
             urgency: ts(1),

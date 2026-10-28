@@ -5,7 +5,7 @@
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sqlx::{Row, SqlitePool};
 use taskboard_domain::entities::{BoardClocks, Effort, TASK_FIELDS, Task, TaskClocks};
@@ -214,7 +214,7 @@ fn minimal_task() -> Task {
         done: None,
         stack: StackId::from(uuid::Uuid::from_u128(0xfeed)),
         order: 0,
-        labels: BTreeSet::default(),
+        label_memberships: BTreeMap::new(),
         effort: None,
         importance: None,
         urgency: None,
@@ -229,7 +229,6 @@ fn minimal_task() -> Task {
             scheduled: BoardClocks::epoch(),
             done: BoardClocks::epoch(),
             position: BoardClocks::epoch(),
-            labels: BoardClocks::epoch(),
             effort: BoardClocks::epoch(),
             importance: BoardClocks::epoch(),
             urgency: BoardClocks::epoch(),

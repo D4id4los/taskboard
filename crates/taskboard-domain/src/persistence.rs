@@ -537,7 +537,6 @@ mod tests {
     use super::*;
     use crate::test_support;
     use proptest::prelude::*;
-    use std::collections::BTreeSet;
 
     use chrono::{DateTime, TimeZone, Utc};
 
@@ -557,7 +556,7 @@ mod tests {
             scheduled: None,
             stack: crate::ids::StackId::from(uuid::Uuid::from_u128(1)),
             order: 0,
-            labels: BTreeSet::default(),
+            label_memberships: BTreeMap::default(),
             effort: None,
             importance: None,
             urgency: None,
@@ -572,7 +571,6 @@ mod tests {
                 scheduled: ts(100),
                 done: ts(100),
                 position: ts(100),
-                labels: ts(100),
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),
@@ -863,7 +861,7 @@ mod tests {
             scheduled: None,
             stack: s,
             order: 0,
-            labels: BTreeSet::new(),
+            label_memberships: BTreeMap::new(),
             effort: None,
             importance: None,
             urgency: None,
@@ -878,7 +876,6 @@ mod tests {
                 scheduled: ts(100),
                 done: ts(100),
                 position: ts(100),
-                labels: ts(100),
                 effort: ts(100),
                 importance: ts(100),
                 urgency: ts(100),

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, stack, remote_board_id, remote_stack_id, remote_card_id,\n                      title, description,\n                      duedate as \"duedate: DateTime<Utc>\",\n                      scheduled as \"scheduled: DateTime<Utc>\",\n                      done as \"done: DateTime<Utc>\",\n                      sort_order,\n                      effort,\n                      importance, urgency, recur,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,\n                      ck_position, ck_labels, ck_effort, ck_importance, ck_urgency,\n                      ck_recur, ck_archived, ck_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\",\n                      remote_baseline\n               FROM tasks ORDER BY id",
+  "query": "SELECT id, stack, remote_board_id, remote_stack_id, remote_card_id,\n                      title, description,\n                      duedate as \"duedate: DateTime<Utc>\",\n                      scheduled as \"scheduled: DateTime<Utc>\",\n                      done as \"done: DateTime<Utc>\",\n                      sort_order,\n                      effort,\n                      importance, urgency, recur,\n                      archived as \"archived: bool\", deleted as \"deleted: bool\",\n                      ck_title, ck_description, ck_duedate, ck_scheduled, ck_done,\n                      ck_position, ck_effort, ck_importance, ck_urgency,\n                      ck_recur, ck_archived, ck_deleted,\n                      remote_seen as \"remote_seen: DateTime<Utc>\",\n                      remote_baseline\n               FROM tasks ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -257,19 +257,8 @@
         }
       },
       {
-        "name": "ck_labels",
-        "ordinal": 23,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "tasks",
-            "name": "ck_labels"
-          }
-        }
-      },
-      {
         "name": "ck_effort",
-        "ordinal": 24,
+        "ordinal": 23,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -280,7 +269,7 @@
       },
       {
         "name": "ck_importance",
-        "ordinal": 25,
+        "ordinal": 24,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -291,7 +280,7 @@
       },
       {
         "name": "ck_urgency",
-        "ordinal": 26,
+        "ordinal": 25,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -302,7 +291,7 @@
       },
       {
         "name": "ck_recur",
-        "ordinal": 27,
+        "ordinal": 26,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -313,7 +302,7 @@
       },
       {
         "name": "ck_archived",
-        "ordinal": 28,
+        "ordinal": 27,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -324,7 +313,7 @@
       },
       {
         "name": "ck_deleted",
-        "ordinal": 29,
+        "ordinal": 28,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -335,7 +324,7 @@
       },
       {
         "name": "remote_seen: DateTime<Utc>",
-        "ordinal": 30,
+        "ordinal": 29,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -346,7 +335,7 @@
       },
       {
         "name": "remote_baseline",
-        "ordinal": 31,
+        "ordinal": 30,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -389,10 +378,9 @@
       false,
       false,
       false,
-      false,
       true,
       true
     ]
   },
-  "hash": "b908abbd5ed496d38082e0b8c71013a93d93780d83a766ddce962bbd4bb60f0c"
+  "hash": "eca2f0f6c64a8f1a02e6e241c37886495478892b61852f16137c82bd7261a5ae"
 }

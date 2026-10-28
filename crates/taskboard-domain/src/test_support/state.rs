@@ -2,7 +2,7 @@
 //! Strategies for state-level shapes: the full `AppState` (referentially
 //! consistent), the persisted dataset, and sync phases.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use proptest::prelude::*;
@@ -345,11 +345,19 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
             let mut tasks = BTreeMap::new();
             for row in task_rows {
                 let (stack_id, stack_remote) = stack_bindings[row.stack_idx % stack_bindings.len()];
-                let label_set: BTreeSet<LabelId> = row
+                let label_set: BTreeMap<LabelId, crate::entities::MembershipState> = row
                     .label_idxs
                     .into_iter()
                     .filter(|_| !label_ids.is_empty())
                     .map(|i| label_ids[i % label_ids.len()])
+                    .map(|id| {
+                        (
+                            id,
+                            crate::entities::MembershipState::Added {
+                                at: row.clocks.position,
+                            },
+                        )
+                    })
                     .collect();
                 tasks.insert(
                     row.id,
@@ -367,7 +375,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
                         done: row.done,
                         stack: stack_id,
                         order: row.order,
-                        labels: label_set,
+                        label_memberships: label_set,
                         effort: None,
                         importance: None,
                         urgency: None,

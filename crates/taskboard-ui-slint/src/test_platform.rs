@@ -263,6 +263,7 @@ mod tests {
             .collect();
         let tasks: Vec<Task> = (0..6)
             .map(|i| Task {
+                label_memberships: std::collections::BTreeMap::new(),
                 id: TaskId::from(uuid::Uuid::from_u128(
                     0x3000 + u128::try_from(i).expect("small"),
                 )),
@@ -274,7 +275,6 @@ mod tests {
                 done: None,
                 stack: stacks[i % 2].id,
                 order: i64::try_from(i).expect("small"),
-                labels: std::collections::BTreeSet::new(),
                 effort: None,
                 importance: None,
                 urgency: None,
@@ -289,7 +289,6 @@ mod tests {
                     scheduled: stamp(2),
                     done: stamp(2),
                     position: stamp(2),
-                    labels: stamp(2),
                     effort: stamp(2),
                     importance: stamp(2),
                     urgency: stamp(2),

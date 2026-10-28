@@ -9,7 +9,7 @@
 //! back to a system font for a missing glyph.
 
 use chrono::TimeDelta;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use taskboard_domain::{
     AppState, Board, BoardClocks, BoardId, Color, Stack, StackClocks, StackId, SyncPhase, Task,
     TaskClocks, TaskId,
@@ -27,7 +27,6 @@ fn task_clocks() -> TaskClocks {
         scheduled: epoch(),
         done: epoch(),
         position: epoch(),
-        labels: epoch(),
         effort: epoch(),
         importance: epoch(),
         urgency: epoch(),
@@ -57,7 +56,7 @@ fn task(id: TaskId, stack: StackId, order: i64) -> Task {
         done: None,
         stack,
         order,
-        labels: BTreeSet::new(),
+        label_memberships: BTreeMap::new(),
         effort: None,
         importance: None,
         urgency: None,
