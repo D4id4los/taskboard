@@ -1202,6 +1202,32 @@ pub fn time_entries_for(
         .collect()
 }
 
+/// The flush's time-entries lane GC (design D-T13, the
+/// `lane_gc_scheduled` shape): strips section rows whose window instant
+/// falls out of the retention window — `start` for live `Entry` rows,
+/// `clock` for `Tombstone` rows. `Verbatim` rows pass untouched (never
+/// ordered against); an emptied section becomes `None`. **Wire-only**:
+/// nothing here or anywhere else deletes a local row. Open entries get
+/// no exemption (D-11): a 180-day-open entry is out of service by
+/// definition; its local truth is unaffected.
+#[must_use]
+pub fn lane_gc_old_time_entries(document: &AppDataDocument, now: DateTime<Utc>) -> AppDataDocument {
+    let mut gc = document.clone();
+    if let Some(section) = gc.sections.time_entries.take() {
+        let window_start = time_entry_window_start(now);
+        let kept: BTreeMap<String, TimeEntryRecord> = section
+            .into_iter()
+            .filter(|(_, row)| match row {
+                TimeEntryRecord::Entry { start, .. } => *start >= window_start,
+                TimeEntryRecord::Tombstone { clock } => *clock >= window_start,
+                TimeEntryRecord::Verbatim(_) => true,
+            })
+            .collect();
+        gc.sections.time_entries = (!kept.is_empty()).then_some(kept);
+    }
+    gc
+}
+
 /// Derives the removal tombstones for the `time-entries` section (design
 /// D-T12, the truncated-view guard): every base key gets
 /// `{ deleted: true, clock }` **iff every clause of the fail-closed
@@ -2818,6 +2844,160 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lane_gc_drops_only_aged_time_entries() {
+        let now = ts(10_000_000);
+        let aged_secs = now.timestamp()
+            - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS)
+                .unwrap()
+                .num_seconds()
+            - 1;
+        let doc = document(
+            2,
+            AppDataSections {
+                time_entries: Some(
+                    [
+                        ("fresh-live".to_owned(), entry_row(Some("412"), 9_000_000)),
+                        ("aged-live".to_owned(), base_entry("412", aged_secs)),
+                        (
+                            "fresh-tombstone".to_owned(),
+                            TimeEntryRecord::Tombstone {
+                                clock: ts(9_000_001),
+                            },
+                        ),
+                        (
+                            "aged-tombstone".to_owned(),
+                            TimeEntryRecord::Tombstone {
+                                clock: ts(aged_secs),
+                            },
+                        ),
+                        (
+                            "verbatim".to_owned(),
+                            TimeEntryRecord::Verbatim(serde_json::json!({ "future": 1 })),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                ..Default::default()
+            },
+        );
+        let gc = lane_gc_old_time_entries(&doc, now);
+        let kept = gc.sections.time_entries.as_ref().unwrap();
+        assert_eq!(kept.len(), 3, "fresh live + fresh tombstone + verbatim");
+        assert!(kept.contains_key("fresh-live"));
+        assert!(kept.contains_key("fresh-tombstone"));
+        assert!(kept.contains_key("verbatim"));
+        // The boundary instant itself survives (inclusive).
+        let boundary = lane_gc_old_time_entries(
+            &document(
+                2,
+                AppDataSections {
+                    time_entries: Some(
+                        [(
+                            "b".to_owned(),
+                            base_entry(
+                                "412",
+                                now.timestamp()
+                                    - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS)
+                                        .unwrap()
+                                        .num_seconds(),
+                            ),
+                        )]
+                        .into_iter()
+                        .collect(),
+                    ),
+                    ..Default::default()
+                },
+            ),
+            now,
+        );
+        assert_eq!(boundary.sections.time_entries.as_ref().unwrap().len(), 1);
+        // An emptied section becomes None; other sections are untouched.
+        let mut empties = document(
+            2,
+            AppDataSections {
+                time_entries: Some(
+                    [("aged".to_owned(), base_entry("412", aged_secs))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+        );
+        empties.sections.tasks = Some([("55".to_owned(), entry(&[]))].into_iter().collect());
+        let gc = lane_gc_old_time_entries(&empties, now);
+        assert!(gc.sections.time_entries.is_none());
+        assert!(gc.sections.tasks.is_some(), "other sections untouched");
+    }
+
+    #[test]
+    fn the_overlay_never_re_emits_what_the_gc_strips() {
+        let now = ts(10_000_000);
+        let aged_secs = now.timestamp()
+            - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS)
+                .unwrap()
+                .num_seconds()
+            - 1;
+        let bound = bound_task(false);
+        let mut tasks = BTreeMap::new();
+        tasks.insert(bound.id, bound.clone());
+        let aged = tracked(3, aged_secs, false, bound.id);
+        let fresh = tracked(4, 9_000_000, false, bound.id);
+        let mut entries = BTreeMap::new();
+        entries.insert(aged.id, aged.clone());
+        entries.insert(fresh.id, fresh.clone());
+        // Builder and GC over the same now agree: no aged row in either.
+        let overlay = time_entries_for(&entries, &tasks, RemoteBoardId(2), now);
+        assert_eq!(overlay.len(), 1);
+        assert!(overlay.contains_key(&fresh.id.as_uuid().to_string()));
+        let base_doc = document(
+            2,
+            AppDataSections {
+                time_entries: Some(
+                    [(aged.id.as_uuid().to_string(), base_entry("412", aged_secs))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+        );
+        let gc = lane_gc_old_time_entries(&base_doc, now);
+        assert!(
+            gc.sections.time_entries.is_none(),
+            "the GC strips exactly what the builder refuses to emit"
+        );
+        // A stale device's aged base row unions with the fresh overlay…
+        let stale = document(
+            2,
+            AppDataSections {
+                time_entries: Some(
+                    [(aged.id.as_uuid().to_string(), base_entry("412", aged_secs))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+        );
+        let overlay_doc = document(
+            2,
+            AppDataSections {
+                time_entries: Some(overlay),
+                ..Default::default()
+            },
+        );
+        let merged = union(&stale, &overlay_doc);
+        let gc = lane_gc_old_time_entries(&merged, now);
+        assert!(
+            !gc.sections
+                .time_entries
+                .as_ref()
+                .unwrap()
+                .contains_key(&aged.id.as_uuid().to_string()),
+            "…and the union cannot resurrect it: the next flush re-ages it"
+        );
+    }
+
     // ---- proptest: verbatim preservation is the load-bearing property --
 
     proptest! {
@@ -3096,6 +3276,48 @@ mod tests {
                 &back["sections"]["dismissals"]["55"][peer_key.as_str()],
                 &raw["sections"]["dismissals"]["55"][peer_key.as_str()]
             );
+        }
+
+        // P6 (DR-5/2, D-T13): the time-entries lane GC changes exactly
+        // that section — fresh rows and verbatim survive, aged rows of
+        // both arms go, every other section is untouched.
+        #[test]
+        fn gc_touched_only_time_entries(
+            rows in proptest::collection::vec(
+                (0_u128..8, proptest::option::of(0_u64..1_000), 0_i64..4_000_000_000, proptest::bool::ANY),
+                0..8,
+            ),
+            now in 4_000_000_000_i64..4_100_000_000,
+        ) {
+            let mut sections = AppDataSections::default();
+            let mut time_entries = BTreeMap::new();
+            for (seed, card, start, tombstone) in rows {
+                let key = uuid::Uuid::from_u128(seed).to_string();
+                let row = if tombstone {
+                    TimeEntryRecord::Tombstone { clock: ts(start) }
+                } else {
+                    base_entry(&card.map(|c| c.to_string()).unwrap_or_default(), start)
+                };
+                time_entries.insert(key, row);
+            }
+            sections.time_entries = Some(time_entries);
+            sections.tasks = Some([("55".to_owned(), entry(&[]))].into_iter().collect());
+            let doc = document(2, sections);
+            let gc = lane_gc_old_time_entries(&doc, ts(now));
+            prop_assert_eq!(gc.sections.tasks, doc.sections.tasks, "tasks untouched");
+            prop_assert_eq!(gc.sections.unknown, doc.sections.unknown);
+            let window_start = ts(now) - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS).unwrap();
+            if let (Some(before), Some(after)) = (&doc.sections.time_entries, &gc.sections.time_entries) {
+                for (key, row) in after {
+                    let instant = match row {
+                        TimeEntryRecord::Entry { start, .. } => Some(*start),
+                        TimeEntryRecord::Tombstone { clock } => Some(*clock),
+                        TimeEntryRecord::Verbatim(_) => None,
+                    };
+                    prop_assert!(instant.is_none_or(|t| t >= window_start), "survivors are in-window");
+                    prop_assert_eq!(row, &before[key], "survivors are unchanged");
+                }
+            }
         }
 
         // P3 (DR-5/2, D-T11): the time-entries section rides the document

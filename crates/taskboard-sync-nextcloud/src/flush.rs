@@ -23,8 +23,9 @@ use taskboard_domain::{
     AppDataDocument, AppDataEvidence, AppDataSections, AppDataUnreadable, BoardId, DeckFeatures,
     EntityTables, LocalOp, PendingOp, PushGroup, PushOutcome, PushResult, ReminderRule,
     ReminderRuleId, RemoteBoardId, RemoteBoardSnapshot, Stack, SyncErrorKind, Task, TaskId,
-    derive_rule_tombstones, dismissals_entry_for, lane_gc_scheduled, prune_absent_cards,
-    rules_entry_for, task_entry_for, union,
+    TimeEntry, TimeEntryId, derive_rule_tombstones, derive_time_entry_tombstones,
+    dismissals_entry_for, lane_gc_old_time_entries, lane_gc_scheduled, prune_absent_cards,
+    rules_entry_for, task_entry_for, time_entries_for, union,
 };
 
 use crate::anchor::{self, ANCHOR_ATTACHMENT_FILENAME, ANCHOR_ATTACHMENT_MIME, AnchorAction};
@@ -83,6 +84,9 @@ pub(crate) struct FlushCtx<'a> {
     /// input (the emission filter inside `dismissals_entry_for` keeps
     /// the wire Rule-ref-only, design D-4).
     pub dismissals: &'a BTreeSet<taskboard_domain::ReminderDismissal>,
+    /// The local time entries — the board-level `time-entries`
+    /// section's overlay input (design D-T10).
+    pub entries: &'a BTreeMap<TimeEntryId, TimeEntry>,
 }
 
 /// D12's lazy gate: any live task of `board` carrying app-data (the
@@ -92,6 +96,8 @@ pub(crate) struct FlushCtx<'a> {
 pub(crate) fn board_has_local_app_data(
     tables: EntityTables<'_>,
     rules: &BTreeMap<ReminderRuleId, ReminderRule>,
+    entries: &BTreeMap<TimeEntryId, TimeEntry>,
+    now: chrono::DateTime<chrono::Utc>,
     board: BoardId,
     native_scheduled: bool,
 ) -> bool {
@@ -107,6 +113,9 @@ pub(crate) fn board_has_local_app_data(
         })
         .map(|task| task.id)
         .collect();
+    let window_start = now
+        - chrono::TimeDelta::try_days(taskboard_domain::TRACKING_SYNC_RETENTION_DAYS)
+            .expect("180 days is within TimeDelta's range");
     tables.tasks.values().any(|task| {
         board_tasks.contains(&task.id)
             && (task.effort.is_some()
@@ -114,17 +123,22 @@ pub(crate) fn board_has_local_app_data(
                 || task.urgency.is_some()
                 || (!native_scheduled && task.scheduled.is_some())
                 || rules.values().any(|rule| rule.task == task.id))
-    })
+    }) || entries
+        .values()
+        .any(|entry| board_tasks.contains(&entry.task) && entry.start >= window_start)
 }
 
 /// Whether the flush must run this cycle (D11's has-work gate):
 /// the board planned a document group, or a rebuild trigger fired and
 /// local app-data exists.
+#[allow(clippy::too_many_arguments)] // the gate reads every lane's inputs; bundling hides the seams
 pub(crate) fn has_flush_work(
     group: Option<&PushGroup>,
     evidence: &AppDataEvidence,
     tables: EntityTables<'_>,
     rules: &BTreeMap<ReminderRuleId, ReminderRule>,
+    entries: &BTreeMap<TimeEntryId, TimeEntry>,
+    now: chrono::DateTime<chrono::Utc>,
     board: BoardId,
     native_scheduled: bool,
 ) -> bool {
@@ -135,7 +149,8 @@ pub(crate) fn has_flush_work(
         evidence,
         AppDataEvidence::Absent | AppDataEvidence::Unreadable(AppDataUnreadable::ForeignBoard)
     );
-    rebuild_trigger && board_has_local_app_data(tables, rules, board, native_scheduled)
+    rebuild_trigger
+        && board_has_local_app_data(tables, rules, entries, now, board, native_scheduled)
 }
 
 /// Runs the flush (D11). Call sites: the sync actor's cycle, after
@@ -245,6 +260,39 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             overlay_dismissals.insert(card_key, dismissals_entry);
         }
     }
+    // The time-entries section is board-level: it does not join the
+    // card-scoped loop (D-T10). The builder emits the in-window,
+    // card-bound rows; the derivation adds tombstones for base-present
+    // rows missing locally (D-T12's truncated-view guard), stamped with
+    // the same scoped stamp the rules derivation uses — the group
+    // primary's `queued_at`, or `read_at` in a rebuild.
+    let mut overlay_time = time_entries_for(ctx.entries, ctx.tasks, ctx.target, ctx.read_at);
+    let entry_stamp = ctx.group.and_then(|group| {
+        ctx.outbox
+            .iter()
+            .find(|entry| entry.op_id == group.primary)
+            .map(|entry| entry.queued_at)
+    });
+    let resolvable_cards: BTreeSet<String> = ctx
+        .tasks
+        .values()
+        .filter_map(|task| {
+            let binding = task.remote.as_ref()?;
+            (binding.board == ctx.target).then(|| binding.card.get().to_string())
+        })
+        .collect();
+    for (key, tombstone) in derive_time_entry_tombstones(
+        base.sections
+            .time_entries
+            .as_ref()
+            .unwrap_or(&BTreeMap::new()),
+        ctx.entries,
+        &resolvable_cards,
+        ctx.read_at,
+        entry_stamp.unwrap_or(ctx.read_at),
+    ) {
+        overlay_time.insert(key, tombstone);
+    }
     let overlay = AppDataDocument {
         format: taskboard_domain::APPDATA_FORMAT,
         board: ctx.target,
@@ -252,7 +300,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             tasks: (!overlay_tasks.is_empty()).then_some(overlay_tasks),
             reminder_rules: (!overlay_rules.is_empty()).then_some(overlay_rules),
             dismissals: (!overlay_dismissals.is_empty()).then_some(overlay_dismissals),
-            time_entries: None,
+            time_entries: (!overlay_time.is_empty()).then_some(overlay_time),
             unknown: BTreeMap::new(),
         },
         unknown: BTreeMap::new(),
@@ -261,6 +309,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     // ---- union + GC chain --------------------------------------------
     let merged = union(&base, &overlay);
     let merged = lane_gc_scheduled(&merged, ctx.features.card_startdate);
+    let merged = lane_gc_old_time_entries(&merged, ctx.read_at);
     let present_cards: BTreeSet<String> = ctx
         .snapshot
         .tasks
@@ -536,4 +585,157 @@ fn attachment_stamp(attachment: &crate::model::Attachment) -> Option<AttachmentS
         last_modified: attachment.last_modified,
         filesize,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    fn clock(secs: i64) -> chrono::DateTime<chrono::Utc> {
+        ts(secs)
+    }
+
+    /// One live (or soft-deleted) bound task in one stack on `board`.
+    fn fixture(deleted: bool) -> (EntityTables<'static>, TaskId) {
+        let board = BoardId::from(uuid::Uuid::from_u128(1));
+        let stack_id = taskboard_domain::StackId::from(uuid::Uuid::from_u128(2));
+        let id = TaskId::from(uuid::Uuid::from_u128(1));
+        let t = Task {
+            id,
+            remote: Some(taskboard_domain::RemoteCardRef {
+                board: RemoteBoardId(77),
+                stack: taskboard_domain::RemoteStackId(7),
+                card: taskboard_domain::RemoteCardId(412),
+            }),
+            title: "task".to_owned(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: stack_id,
+            order: 0,
+            label_memberships: BTreeMap::new(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            archived: false,
+            deleted,
+            clocks: taskboard_domain::TaskClocks {
+                title: clock(1),
+                description: clock(1),
+                duedate: clock(1),
+                scheduled: clock(1),
+                done: clock(1),
+                position: clock(1),
+                effort: clock(1),
+                importance: clock(1),
+                urgency: clock(1),
+                recur: clock(1),
+                archived: clock(1),
+                deleted: clock(1),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        };
+        let stack = Stack {
+            id: stack_id,
+            remote: Some(taskboard_domain::RemoteStackRef {
+                board: RemoteBoardId(77),
+                stack: taskboard_domain::RemoteStackId(7),
+            }),
+            board,
+            title: "stack".to_owned(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: clock(1),
+                order: clock(1),
+                deleted: clock(1),
+            },
+            remote_seen: None,
+        };
+        let pair = Box::leak(Box::new((
+            BTreeMap::from([(id, t)]),
+            BTreeMap::from([(stack_id, stack)]),
+        )));
+        let tables = EntityTables {
+            tasks: &pair.0,
+            stacks: &pair.1,
+            labels: empty_labels(),
+            boards: empty_boards(),
+        };
+        (tables, id)
+    }
+
+    fn entry(
+        id: u128,
+        task: TaskId,
+        start: chrono::DateTime<chrono::Utc>,
+    ) -> (TimeEntryId, TimeEntry) {
+        (
+            TimeEntryId::from(uuid::Uuid::from_u128(id)),
+            TimeEntry {
+                id: TimeEntryId::from(uuid::Uuid::from_u128(id)),
+                task,
+                task_title: "task".to_owned(),
+                start,
+                end: None,
+                created_at: start,
+                updated_at: start,
+            },
+        )
+    }
+
+    #[test]
+    fn a_tracking_only_board_fires_the_tracking_clause() {
+        let (tables, task_id) = fixture(false);
+        let board = BoardId::from(uuid::Uuid::from_u128(1));
+        let now = ts(10_000_000);
+        // No entries: a task with no app-data has no flush work.
+        let empty: BTreeMap<TimeEntryId, TimeEntry> = BTreeMap::new();
+        assert!(!has_flush_work(
+            None,
+            &AppDataEvidence::Absent,
+            tables,
+            &BTreeMap::new(),
+            &empty,
+            now,
+            board,
+            false
+        ));
+        // One in-window bound entry: the tracking clause fires alone.
+        let entries = BTreeMap::from([entry(1, task_id, ts(9_000_000))]);
+        assert!(has_flush_work(
+            None,
+            &AppDataEvidence::Absent,
+            tables,
+            &BTreeMap::new(),
+            &entries,
+            now,
+            board,
+            false
+        ));
+        // An aged entry is not work (the gate agrees with the window).
+        let aged_start = now
+            - chrono::TimeDelta::try_days(taskboard_domain::TRACKING_SYNC_RETENTION_DAYS).unwrap()
+            - chrono::TimeDelta::try_seconds(1).unwrap();
+        let aged = BTreeMap::from([entry(2, task_id, aged_start)]);
+        assert!(!has_flush_work(
+            None,
+            &AppDataEvidence::Absent,
+            tables,
+            &BTreeMap::new(),
+            &aged,
+            now,
+            board,
+            false
+        ));
+    }
 }

@@ -69,8 +69,8 @@ pub use appdata::{
     DismissalsEntry, MODELED_TASK_FIELD_KEYS, ModeledValue, RuleEntry, RulesEntry,
     TRACKING_SYNC_RETENTION_DAYS, TaskEntry, TaskFieldWrite, TimeEntryRecord,
     derive_rule_tombstones, derive_time_entry_tombstones, dismissal_wire_key, dismissals_entry_for,
-    lane_gc_scheduled, modeled_key, prune_absent_cards, rules_entry_for, task_entry_for,
-    time_entries_for, union,
+    lane_gc_old_time_entries, lane_gc_scheduled, modeled_key, prune_absent_cards, rules_entry_for,
+    task_entry_for, time_entries_for, union,
 };
 pub use capabilities::{DeckFeatures, flags_for};
 pub use clock::{Clock, SystemClock};
