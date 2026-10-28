@@ -451,6 +451,12 @@ pub enum SystemEvent {
     /// UI, not an error report (the command reply carries the typed
     /// repository error).
     StorageFailed,
+    /// A remote card delete contended with unsynced local work; the
+    /// task survived as a live, unbound task and one `CreateTask` op
+    /// was re-enqueued (R3's resurrect carve-out, #130). Non-blocking
+    /// surfacing only — status line / CLI line / tracing, never a
+    /// prompt (kiosk and daemon sessions must not block).
+    TaskResurrected(TaskId),
 }
 
 /// Engine → UI repaint trigger (broadcast payload).
@@ -648,6 +654,18 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<SystemEvent>(&json).expect("deserialize"),
             restored
+        );
+    }
+
+    /// The resurrect variant travels the wire like its siblings
+    /// (lossless serde round trip carrying the id).
+    #[test]
+    fn task_resurrected_round_trips_through_serde() {
+        let resurrected = SystemEvent::TaskResurrected(TaskId::from(uuid::Uuid::from_u128(42)));
+        let json = serde_json::to_string(&resurrected).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<SystemEvent>(&json).expect("deserialize"),
+            resurrected
         );
     }
 

@@ -46,12 +46,15 @@
 //! remote fast paths are silent by design. Tests never assert this text
 //! (AGENTS §5); the events are behavior-neutral by construction.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 
 use crate::entities::{Board, Label, MembershipState, RemoteTaskBaseline, Stack, Task};
-use crate::ids::{LabelId, RemoteBoardId, RemoteLabelId, RemoteStackId, StackId, TaskId};
+use crate::ids::{
+    LabelId, ReminderRuleId, RemoteBoardId, RemoteLabelId, RemoteStackId, StackId, TaskId,
+};
+use crate::reminders::ReminderRule;
 use crate::remote::{
     RemoteBoard, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
@@ -373,6 +376,9 @@ fn apply_label_events(
 /// The `deleted` field participates like any other: a local tombstone is
 /// resurrected iff the remote write is strictly newer than the tombstone
 /// (R5); otherwise the tombstone stands and its pending delete re-pushes.
+/// This is *adoption* (the card is present), never contention — an
+/// *absent* card's delete/edit verdict is R3's
+/// [`has_unsynced_work`] carve-out.
 #[allow(clippy::too_many_lines)] // one verdict block per field; the length is the schema's
 #[must_use]
 pub fn merge_task(
@@ -816,6 +822,63 @@ pub fn tombstone_task(local: &Task, observed_at: DateTime<Utc>) -> Task {
         "task tombstoned"
     );
     tombstoned
+}
+
+/// D-3a (#130): `true` when the task holds user work the remote has
+/// never observed — the delete-contention carve-out's input (R3's
+/// resurrect-vs-tombstone fork). Pure; derived from entity state — no
+/// persisted flag (ADR 0004's #130 amendment).
+///
+/// Disjunction of three clauses, each comparing a work stamp against
+/// `seen = remote_seen` (the `None` fallback compares against the
+/// epoch, resurrect-biased — unreachable for a bound task, defensive
+/// only):
+///
+/// 1. any of the eleven non-`deleted` field clocks strictly newer than
+///    `seen` (`deleted` is the tombstone's clock, not user work);
+/// 2. any label-membership stamp strictly newer (the OR-set verbs stamp
+///    only the membership, never `clocks.labels` — an `Added` *and* a
+///    `Removed` both count: a removal is work the server has not seen);
+/// 3. any of the task's reminder rules strictly newer (the sidecar
+///    lane's user data; its document flush stamps no echo back, so this
+///    clause errs toward resurrect until the card's next change — the
+///    data-preserving direction, ADR 0004's accepted limitation).
+///
+/// A fully-synced task is `false` by construction: a drained push's
+/// echo maxes all eleven field clocks and every membership stamp to
+/// `>= remote_seen`.
+#[must_use]
+pub fn has_unsynced_work(
+    task: &Task,
+    reminder_rules: &BTreeMap<ReminderRuleId, ReminderRule>,
+) -> bool {
+    let seen = task
+        .remote_seen
+        .unwrap_or_else(crate::entities::BoardClocks::epoch);
+    let clocks = &task.clocks;
+    let field_work = [
+        clocks.title,
+        clocks.description,
+        clocks.duedate,
+        clocks.scheduled,
+        clocks.done,
+        clocks.position,
+        clocks.effort,
+        clocks.importance,
+        clocks.urgency,
+        clocks.recur,
+        clocks.archived,
+    ]
+    .into_iter()
+    .any(|clock| clock > seen);
+    let membership_work = task
+        .label_memberships
+        .values()
+        .any(|membership| membership.at() > seen);
+    let rule_work = reminder_rules
+        .values()
+        .any(|rule| rule.task == task.id && rule.updated_at > seen);
+    field_work || membership_work || rule_work
 }
 
 /// R9a/R9b — unconditional echo adoption after a create/update push. The
@@ -1707,6 +1770,186 @@ mod tests {
 
         assert_eq!(finalized.remote_baseline, None);
         assert!(finalized.remote.is_none());
+    }
+
+    // ---- D-3a: `has_unsynced_work` (#130) --------------------------
+
+    fn rules_map(
+        rules: &[crate::reminders::ReminderRule],
+    ) -> std::collections::BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule>
+    {
+        rules.iter().map(|rule| (rule.id, rule.clone())).collect()
+    }
+
+    fn no_rules()
+    -> std::collections::BTreeMap<crate::ids::ReminderRuleId, crate::reminders::ReminderRule> {
+        std::collections::BTreeMap::new()
+    }
+
+    /// The echo-shaped fixture: every stamp at or below `remote_seen`
+    /// (a drained push's echo maxes the clocks and the membership
+    /// stamps there) — the 99%-path input, stated as data.
+    fn synced_task() -> Task {
+        let mut task = bound_task(1);
+        task.label_memberships.insert(
+            LabelId::from(uuid::Uuid::from_u128(500)),
+            crate::entities::MembershipState::Added { at: ts(BASE) },
+        );
+        task
+    }
+
+    #[test]
+    fn a_fresh_field_clock_counts_as_unsynced_work() {
+        let mut task = synced_task();
+        task.clocks.title = ts(BASE + 60);
+
+        assert!(has_unsynced_work(&task, &no_rules()));
+    }
+
+    #[test]
+    fn a_fresh_added_membership_counts_as_unsynced_work() {
+        let mut task = synced_task();
+        task.label_memberships.insert(
+            LabelId::from(uuid::Uuid::from_u128(501)),
+            crate::entities::MembershipState::Added { at: ts(BASE + 60) },
+        );
+
+        assert!(has_unsynced_work(&task, &no_rules()));
+    }
+
+    #[test]
+    fn a_fresh_removed_membership_counts_as_unsynced_work() {
+        // The removal-is-work pin: the OR-set verbs stamp only the
+        // membership, never `clocks.labels` — a removal the server has
+        // not seen is exactly the work this predicate exists to see.
+        let mut task = synced_task();
+        task.clocks.title = ts(BASE); // all field clocks at `remote_seen`
+        task.label_memberships.insert(
+            LabelId::from(uuid::Uuid::from_u128(501)),
+            crate::entities::MembershipState::Removed { at: ts(BASE + 60) },
+        );
+
+        assert!(has_unsynced_work(&task, &no_rules()));
+    }
+
+    #[test]
+    fn a_fresh_reminder_rule_counts_as_unsynced_work() {
+        let task = synced_task();
+        let rule = crate::reminders::ReminderRule {
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+            task: task.id,
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: ts(BASE + 60),
+            updated_at: ts(BASE + 60),
+        };
+
+        assert!(has_unsynced_work(&task, &rules_map(&[rule])));
+    }
+
+    #[test]
+    fn a_fully_synced_task_holds_no_unsynced_work() {
+        let task = synced_task();
+
+        assert!(!has_unsynced_work(&task, &no_rules()));
+    }
+
+    #[test]
+    fn synced_fields_with_one_fresh_membership_hold_unsynced_work() {
+        let mut task = synced_task();
+        task.label_memberships.insert(
+            LabelId::from(uuid::Uuid::from_u128(501)),
+            crate::entities::MembershipState::Added { at: ts(BASE + 60) },
+        );
+
+        assert!(has_unsynced_work(&task, &no_rules()));
+    }
+
+    #[test]
+    fn another_tasks_reminder_rules_do_not_leak_into_the_predicate() {
+        let task = synced_task();
+        let mut rule = crate::reminders::ReminderRule {
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+            task: TaskId::from(uuid::Uuid::from_u128(2)),
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: ts(BASE + 60),
+            updated_at: ts(BASE + 60),
+        };
+        rule.task = TaskId::from(uuid::Uuid::from_u128(999));
+
+        assert!(!has_unsynced_work(&task, &rules_map(&[rule])));
+    }
+
+    #[test]
+    fn a_missing_remote_seen_falls_back_to_the_epoch_resurrect_biased() {
+        let mut task = synced_task();
+        task.remote_seen = None;
+
+        assert!(has_unsynced_work(&task, &no_rules()));
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        /// The design's one-sentence property: the predicate is monotone
+        /// in "work newer than `remote_seen`" — shifting every work stamp
+        /// strictly below the observation flips it `false`, and raising
+        /// any single work stamp strictly above flips it back `true`.
+        #[test]
+        fn unsynced_work_is_monotone_in_work_newer_than_remote_seen(
+            task in crate::test_support::task_strategy(),
+            seen_secs in 0_i64..1_000,
+        ) {
+            let seen = ts(seen_secs);
+            let below = seen - chrono::Duration::seconds(1);
+            let above = seen + chrono::Duration::seconds(1);
+
+            // The all-below baseline: no work anywhere, `deleted`'s clock
+            // excluded from the clause set by construction (never read).
+            let mut settled = task;
+            settled.remote_seen = Some(seen);
+            settled.clocks = crate::entities::TaskClocks {
+                title: below,
+                description: below,
+                duedate: below,
+                scheduled: below,
+                done: below,
+                position: below,
+                effort: below,
+                importance: below,
+                urgency: below,
+                recur: below,
+                archived: below,
+                deleted: below,
+            };
+            settled.label_memberships = settled
+                .label_memberships
+                .into_keys()
+                .map(|label| (label, crate::entities::MembershipState::Added { at: below }))
+                .collect();
+            prop_assert!(!has_unsynced_work(&settled, &no_rules()));
+
+            // Raising any single work stamp strictly above flips true.
+            let mut field = settled.clone();
+            field.clocks.position = above;
+            prop_assert!(has_unsynced_work(&field, &no_rules()));
+
+            let mut membership = settled.clone();
+            let label = LabelId::from(uuid::Uuid::from_u128(777));
+            membership
+                .label_memberships
+                .insert(label, crate::entities::MembershipState::Removed { at: above });
+            prop_assert!(has_unsynced_work(&membership, &no_rules()));
+
+            let rule_task = settled;
+            let rule = crate::reminders::ReminderRule {
+                id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+                task: rule_task.id,
+                offset: crate::reminders::ReminderOffset::at_due(),
+                created_at: above,
+                updated_at: above,
+            };
+            prop_assert!(has_unsynced_work(&rule_task, &rules_map(&[rule])));
+        }
     }
 
     #[test]

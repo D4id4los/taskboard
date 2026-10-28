@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4e82941e2df45c39ff4952b55c1c55b7bed00516f4fee88694fa10330a398e84 # shrinks to task = Task { id: TaskId(00000000-0000-0000-0000-000000000000), remote: None, title: "", description: "", duedate: None, scheduled: None, done: None, stack: StackId(00000000-0000-0000-0000-000000000000), order: 0, label_memberships: {}, effort: None, importance: None, urgency: None, recur: None, archived: false, deleted: false, clocks: TaskClocks { title: 1971-01-01T00:00:00Z, description: 1971-01-01T00:00:00Z, duedate: 1971-01-01T00:00:00Z, scheduled: 1971-01-01T00:00:00Z, done: 1971-01-01T00:00:00Z, position: 1971-01-01T00:00:00Z, effort: 1971-01-01T00:00:00Z, importance: 1971-01-01T00:00:00Z, urgency: 1971-01-01T00:00:00Z, recur: 1971-01-01T00:00:00Z, archived: 1971-01-01T00:00:00Z, deleted: 1971-01-01T00:00:00Z }, remote_seen: None, remote_baseline: None }

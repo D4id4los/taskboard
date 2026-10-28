@@ -244,7 +244,7 @@ proptest! {
             last_updated: None,
         };
         let ids = CountingIds::new();
-        let (merged, mut actions) = apply_sync_report(
+        let (merged, mut actions, _events) = apply_sync_report(
             &app,
             &persisted.outbox,
             &snapshot,

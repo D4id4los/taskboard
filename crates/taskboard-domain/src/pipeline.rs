@@ -426,7 +426,11 @@ pub fn apply_sync_report(
     connector: &crate::ids::ConnectorId,
     app_data: &crate::messages::AppDataEvidence,
     features: crate::capabilities::DeckFeatures,
-) -> (AppState, Vec<PersistenceAction>) {
+) -> (
+    AppState,
+    Vec<PersistenceAction>,
+    Vec<crate::messages::SystemEvent>,
+) {
     let _span = tracing::debug_span!(
         "apply_sync_report",
         outbox_len = outbox.len(),
@@ -446,6 +450,13 @@ pub fn apply_sync_report(
     let mut stacks = current.stacks.clone();
     let mut tasks = current.tasks.clone();
     let mut labels = current.labels.clone();
+    // The report's broadcast-lane verdicts (R3's resurrect carve-out is
+    // the only producer today). Symmetric with `actions`: the pipeline
+    // plans, the engine forwards.
+    let mut system_events: Vec<crate::messages::SystemEvent> = Vec::new();
+    // R3's resurrect enqueues; held until the persistence batch exists
+    // (the batch is derived from the entity diff in section 7).
+    let mut resurrect_enqueues: Vec<PersistenceAction> = Vec::new();
 
     // ---- 1. Push outcomes (R9*) ------------------------------------
     let mut ctx = RemoteIndex::from_state(current);
@@ -739,12 +750,19 @@ pub fn apply_sync_report(
 
     // ---- 6. Presence reconciliation (R3) ----------------------------
     // Bound-but-absent entities are gone server-side (snapshot
-    // completeness contract). Cards: delete-wins fallback.
+    // completeness contract). Cards: delete-wins fallback — unless the
+    // task holds unsynced user work (#130's resurrect carve-out).
+    // Cascade territory (a dead stack) stays tombstone-wins: the
+    // present-stack set is derived up front so the carve-out's guard
+    // can consult it.
     let present_refs: std::collections::BTreeSet<(RemoteBoardId, RemoteCardId)> = snapshot
         .tasks
         .iter()
         .map(|t| (t.id.board, t.id.card))
         .collect();
+    let present_stack_refs: std::collections::BTreeSet<RemoteStackRef> =
+        snapshot.stacks.iter().map(|s| s.id).collect();
+    let reminder_rules = folded_rules.as_ref().unwrap_or(&current.reminders.rules);
     let bound_task_refs: Vec<(TaskId, (RemoteBoardId, RemoteCardId))> = tasks
         .iter()
         .filter_map(|(id, t)| {
@@ -758,25 +776,72 @@ pub fn apply_sync_report(
         // (R9c cache-lag safety).
         if !present_refs.contains(&remote_ref) {
             let local = &tasks[&id];
-            tasks.insert(id, tombstone_task(local, now));
-            let mut cancelled_ops = 0;
-            for other in outbox {
-                if !op_results.contains_key(&other.op_id) && op_targets_task(&other.op, id) {
-                    op_results.insert(other.op_id, false);
-                    cancelled_ops += 1;
+            let resurrect = local.is_live()
+                && local.remote.is_some_and(|r| {
+                    present_stack_refs.contains(&RemoteStackRef {
+                        board: r.board,
+                        stack: r.stack,
+                    })
+                })
+                && crate::merge::has_unsynced_work(local, reminder_rules);
+            if resurrect {
+                // The carve-out (#130): the work outlives the card. The
+                // binding trio clears together — a surviving stale
+                // baseline would corrupt the next merge's diff — and
+                // exactly one `CreateTask` re-enqueues; the next push
+                // mints a fresh remote card and the echo rebinds.
+                let mut resurrected = local.clone();
+                resurrected.remote = None;
+                resurrected.remote_seen = None;
+                resurrected.remote_baseline = None;
+                tasks.insert(id, resurrected);
+                let mut cancelled_ops = 0;
+                for other in outbox {
+                    if !op_results.contains_key(&other.op_id)
+                        && op_targets_task(&other.op, id)
+                        // The document lane rides: the flush runs last
+                        // against post-echo card ids and an unbound entry
+                        // simply rides to the next cycle — cancelling it
+                        // would orphan the task's sidecar content.
+                        && !matches!(other.op, crate::outbox::LocalOp::UpdateAppData(_))
+                    {
+                        op_results.insert(other.op_id, false);
+                        cancelled_ops += 1;
+                    }
                 }
+                resurrect_enqueues.push(PersistenceAction::EnqueueOp(PendingOp {
+                    op_id: ids.new_op_id(),
+                    op: crate::outbox::LocalOp::CreateTask(id),
+                    queued_at: now,
+                }));
+                system_events.push(crate::messages::SystemEvent::TaskResurrected(id));
+                tracing::debug!(
+                    rule = RULE_R3,
+                    task_id = ?id,
+                    card = ?remote_ref,
+                    cancelled_ops,
+                    outcome = "resurrected",
+                    "task absence resurrected unsynced work"
+                );
+            } else {
+                tasks.insert(id, tombstone_task(local, now));
+                let mut cancelled_ops = 0;
+                for other in outbox {
+                    if !op_results.contains_key(&other.op_id) && op_targets_task(&other.op, id) {
+                        op_results.insert(other.op_id, false);
+                        cancelled_ops += 1;
+                    }
+                }
+                tracing::debug!(
+                    rule = RULE_R3,
+                    task_id = ?id,
+                    card = ?remote_ref,
+                    cancelled_ops,
+                    "task absence tombstoned"
+                );
             }
-            tracing::debug!(
-                rule = RULE_R3,
-                task_id = ?id,
-                card = ?remote_ref,
-                cancelled_ops,
-                "task absence tombstoned"
-            );
         }
     }
-    let present_stack_refs: std::collections::BTreeSet<RemoteStackRef> =
-        snapshot.stacks.iter().map(|s| s.id).collect();
     let bound_stack_refs: Vec<(StackId, RemoteStackRef)> = stacks
         .iter()
         .filter_map(|(id, s)| Some((*id, s.remote?)))
@@ -885,6 +950,9 @@ pub fn apply_sync_report(
     // and the memory view below are the same deltas by construction.
     actions.extend(rule_actions);
     actions.extend(dismissal_actions);
+    // R3's resurrect creates ride last: the re-planning decided in
+    // section 6, the batch materializes here.
+    actions.extend(resurrect_enqueues);
     // Outbox order, not the HashMap's: equal inputs must yield equal
     // batches (the convergence property; the map is a lookup index).
     for entry in outbox {
@@ -956,7 +1024,7 @@ pub fn apply_sync_report(
         remaining_ops,
         "sync report applied",
     );
-    (state, actions)
+    (state, actions, system_events)
 }
 
 /// The outbox as it will look once this cycle's outcomes are applied:
@@ -1709,7 +1777,11 @@ mod tests {
         evidence: &AppDataEvidence,
         features: DeckFeatures,
         read_at: i64,
-    ) -> (AppState, Vec<PersistenceAction>) {
+    ) -> (
+        AppState,
+        Vec<PersistenceAction>,
+        Vec<crate::messages::SystemEvent>,
+    ) {
         apply_sync_report(
             state,
             outbox,
@@ -1741,7 +1813,7 @@ mod tests {
             unmodeled: std::collections::BTreeMap::new(),
         };
         let evidence = document_with(&[(1, entry)], None);
-        let (app, _actions) = fold_report(
+        let (app, _actions, _events) = fold_report(
             &state,
             &[],
             &snap,
@@ -1797,7 +1869,7 @@ mod tests {
             unknown: std::collections::BTreeMap::new(),
         };
         let evidence = document_with(&[], Some(&[(1, rules_entry)]));
-        let (app, actions) = fold_report(
+        let (app, actions, _events) = fold_report(
             &state,
             &[],
             &snap,
@@ -1891,7 +1963,7 @@ mod tests {
         )]);
         let evidence =
             document_with_dismissals(&[], Some(&[(1, rules_entry)]), Some(&[(1, dismissals)]));
-        let (app, actions) = fold_report(
+        let (app, actions, _events) = fold_report(
             &state,
             &[],
             &single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE),
@@ -1966,7 +2038,7 @@ mod tests {
         )]);
         let evidence =
             document_with_dismissals(&[], Some(&[(1, rules_entry)]), Some(&[(1, dismissals)]));
-        let (app, actions) = fold_report(
+        let (app, actions, _events) = fold_report(
             &state,
             &[op],
             &single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE),
@@ -2013,7 +2085,7 @@ mod tests {
             unmodeled: std::collections::BTreeMap::new(),
         };
         let evidence = document_with(&[(1, entry)], None);
-        let (app, actions) = fold_report(
+        let (app, actions, _events) = fold_report(
             &state,
             &[op],
             &snap,
@@ -2058,7 +2130,7 @@ mod tests {
             unmodeled: std::collections::BTreeMap::new(),
         };
         let evidence = document_with(&[(1, entry)], None);
-        let (app, _actions) = fold_report(
+        let (app, _actions, _events) = fold_report(
             &state,
             &[op],
             &snap,
@@ -2088,7 +2160,7 @@ mod tests {
             AppDataEvidence::Unreadable(crate::messages::AppDataUnreadable::FormatTooNew {
                 format: 99,
             });
-        let (app, _actions) = fold_report(
+        let (app, _actions, _events) = fold_report(
             &state,
             &[],
             &snap,
@@ -2108,7 +2180,7 @@ mod tests {
             )
         );
         // Absent evidence is healthy silence.
-        let (app, _) = fold_report(
+        let (app, _, _events) = fold_report(
             &state,
             &[],
             &snap,
@@ -2195,6 +2267,380 @@ mod tests {
                 .any(|a| matches!(a, PersistenceAction::FailOp(id) if *id == crate::outbox::OpId(uuid::Uuid::from_u128(555)))),
             "the task's pending ops must be cancelled"
         );
+    }
+
+    // ---- R3's resurrect carve-out (#130) ---------------------------
+
+    /// A task holding unsynced work: a fresh field clock plus one live
+    /// membership (the fixture the resurrect scenes build on).
+    fn unsynced_task() -> Task {
+        let mut task = bound_task(1);
+        task.clocks.title = ts(BASE + 300);
+        task.label_memberships.insert(
+            crate::ids::LabelId::from(uuid::Uuid::from_u128(500)),
+            crate::entities::MembershipState::Added { at: ts(BASE + 300) },
+        );
+        task
+    }
+
+    fn pending(op: LocalOp, num: u128) -> PendingOp {
+        PendingOp {
+            op_id: OpId(uuid::Uuid::from_u128(num)),
+            op,
+            queued_at: ts(BASE),
+        }
+    }
+
+    fn events_of(
+        app: &(
+            AppState,
+            Vec<PersistenceAction>,
+            Vec<crate::messages::SystemEvent>,
+        ),
+    ) -> &[crate::messages::SystemEvent] {
+        &app.2
+    }
+
+    #[test]
+    fn remote_absence_resurrects_unsynced_work_as_new_card() {
+        let task = unsynced_task();
+        let state = base_state(task);
+        let update_op = pending(LocalOp::UpdateTask(task_by_card(&state, 1).id), 555);
+        let empty_snapshot = single_stack_snapshot(vec![], BASE + 3_600);
+
+        let app = apply_sync_report(
+            &state,
+            &[update_op],
+            &empty_snapshot,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        let merged = app.0.tasks.values().next().unwrap();
+        assert!(!merged.deleted, "the work outlives the card");
+        assert!(merged.remote.is_none(), "unbound, ready to re-create");
+        assert!(merged.remote_seen.is_none());
+        assert!(
+            merged.remote_baseline.is_none(),
+            "the trio clears together: a stale baseline would corrupt the next merge"
+        );
+        let creates: Vec<_> = app
+            .1
+            .iter()
+            .filter(|a| matches!(a, PersistenceAction::EnqueueOp(p) if matches!(p.op, LocalOp::CreateTask(id) if id == merged.id)))
+            .collect();
+        assert_eq!(creates.len(), 1, "exactly one CreateTask re-enqueued");
+        assert!(
+            app.1.iter().any(|a| matches!(
+                a,
+                PersistenceAction::FailOp(id) if *id == OpId(uuid::Uuid::from_u128(555))
+            )),
+            "the subsumed update op is cancelled"
+        );
+        assert_eq!(
+            events_of(&app),
+            &[crate::messages::SystemEvent::TaskResurrected(merged.id)],
+        );
+    }
+
+    #[test]
+    fn remote_absence_resurrect_keeps_the_document_lane() {
+        let task = unsynced_task();
+        let state = base_state(task);
+        let id = task_by_card(&state, 1).id;
+        let ops = vec![
+            pending(LocalOp::UpdateTask(id), 555),
+            pending(LocalOp::UpdateAppData(id), 556),
+        ];
+        let empty_snapshot = single_stack_snapshot(vec![], BASE + 3_600);
+
+        let app = apply_sync_report(
+            &state,
+            &ops,
+            &empty_snapshot,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        assert!(
+            app.1.iter().any(|a| matches!(
+                a,
+                PersistenceAction::FailOp(id) if *id == OpId(uuid::Uuid::from_u128(555))
+            )),
+            "the native-lane op is cancelled"
+        );
+        assert!(
+            !app.1.iter().any(|a| matches!(
+                a,
+                PersistenceAction::FailOp(id) | PersistenceAction::CompleteOp(id)
+                    if *id == OpId(uuid::Uuid::from_u128(556))
+            )),
+            "the document lane rides to the next cycle untouched"
+        );
+    }
+
+    #[test]
+    fn remote_absence_resurrect_preserves_work_and_memberships() {
+        let task = unsynced_task();
+        let state = base_state(task.clone());
+        let empty_snapshot = single_stack_snapshot(vec![], BASE + 3_600);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &empty_snapshot,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        let merged = app.0.tasks.values().next().unwrap();
+        assert_eq!(merged.clocks, task.clocks, "no re-stamping on resurrect");
+        assert_eq!(merged.label_memberships, task.label_memberships);
+        assert_eq!(merged.title, task.title);
+    }
+
+    #[test]
+    fn synced_absence_emits_no_event() {
+        let state = base_state(bound_task(1));
+        let empty_snapshot = single_stack_snapshot(vec![], BASE + 3_600);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &empty_snapshot,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        let merged = app.0.tasks.values().next().unwrap();
+        assert!(merged.deleted, "the 99% path keeps delete-wins");
+        assert!(
+            events_of(&app).is_empty(),
+            "no broadcast on the synced path"
+        );
+    }
+
+    #[test]
+    fn cascade_card_present_under_dead_stack_never_resurrects() {
+        // R6's cache-lag fixture: the card is listed under the deleted
+        // stack, so R3 skips it and R6 tombstones — even unsynced.
+        let state = base_state(unsynced_task());
+        let mut remote = remote_stack(1, BASE + 420);
+        remote.deleted_at = Some(ts(BASE + 420));
+        let snap = snapshot(vec![remote], vec![remote_task(1, 1, BASE)]);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &snap,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 600),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        let merged = app.0.tasks.values().next().unwrap();
+        assert!(merged.deleted, "cascade territory stays tombstone-wins");
+        assert_eq!(events_of(&app).len(), 0);
+    }
+
+    #[test]
+    fn cascade_both_card_and_stack_absent_never_resurrects() {
+        // Guard 2: a collapsing world — resurrecting there would push a
+        // fresh card into a dead stack.
+        let state = base_state(unsynced_task());
+        let empty_snapshot = snapshot(vec![], vec![]);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &empty_snapshot,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 600),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        let merged = app.0.tasks.values().next().unwrap();
+        assert!(merged.deleted, "absent stack keeps the tombstone");
+        assert_eq!(events_of(&app).len(), 0);
+    }
+
+    #[test]
+    fn tombstoned_task_absence_stays_tombstone() {
+        // Guard 1: a tombstoned task's last intent was deletion — fresh
+        // rule stamps do not resurrect it.
+        let mut task = unsynced_task();
+        task.deleted = true;
+        task.clocks.deleted = ts(BASE + 300);
+        let state = base_state(task);
+        let mut rule = crate::reminders::ReminderRule {
+            id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+            task: task_by_card(&state, 1).id,
+            offset: crate::reminders::ReminderOffset::at_due(),
+            created_at: ts(BASE + 300),
+            updated_at: ts(BASE + 300),
+        };
+        rule.task = task_by_card(&state, 1).id;
+        let mut state = state;
+        state.reminders.rules.insert(rule.id, rule.clone());
+        let empty_snapshot = single_stack_snapshot(vec![], BASE + 3_600);
+
+        let app = apply_sync_report(
+            &state,
+            &[],
+            &empty_snapshot,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        let merged = app.0.tasks.values().next().unwrap();
+        assert!(merged.deleted);
+        assert!(merged.remote.is_none());
+        assert_eq!(events_of(&app).len(), 0);
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        /// The design's property with the D-3d carve-out explicit: a
+        /// bound, live task holding unsynced work, absent from a
+        /// snapshot whose stack is still present, never reaches
+        /// `deleted: true` through the R3 task branch.
+        #[test]
+        fn unsynced_work_never_tombstones_through_r3(
+            task in crate::test_support::task_strategy(),
+        ) {
+            let mut task = task;
+            task.remote = Some(card_ref(1, 1));
+            task.stack = local_stack().id;
+            task.deleted = false;
+            // `None` rides the epoch fallback: the predicate is true by
+            // construction for any stamp set.
+            task.remote_seen = None;
+            let state = base_state(task);
+
+            let app = apply_sync_report(
+                &state,
+                &[],
+                &single_stack_snapshot(vec![], BASE + 3_600),
+                &[],
+                DateTime::<chrono::Utc>::MAX_UTC,
+                &CountingIds::default(),
+                ts(BASE + 3_600),
+                &crate::test_support::test_connector(),
+                &crate::messages::AppDataEvidence::Absent,
+                crate::capabilities::DeckFeatures::CONSERVATIVE,
+            );
+
+            let merged = app.0.tasks.values().next().unwrap();
+            prop_assert!(!merged.deleted);
+            prop_assert!(merged.remote.is_none());
+            prop_assert_eq!(app.2.len(), 1);
+        }
+    }
+
+    #[test]
+    fn resurrect_then_rebind_then_second_delete_tombstones() {
+        // One new card per contention episode: resurrect → create's echo
+        // rebinds → a second delete of the *fresh* card is an ordinary
+        // synced delete (the work is synced now).
+        let state = base_state(unsynced_task());
+        let empty_snapshot = single_stack_snapshot(vec![], BASE + 3_600);
+        let (state_after_resurrect, actions, _) = apply_sync_report(
+            &state,
+            &[],
+            &empty_snapshot,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 3_600),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+        let create: PendingOp = actions
+            .iter()
+            .find_map(|a| match a {
+                PersistenceAction::EnqueueOp(p) => Some(p.clone()),
+                _ => None,
+            })
+            .expect("the resurrect enqueued one create");
+
+        // The create's push lands; the echo rebinds the fresh card.
+        let mut echo = remote_task(1, 5, BASE + 7_200);
+        echo.title = state_after_resurrect
+            .tasks
+            .values()
+            .next()
+            .unwrap()
+            .title
+            .clone();
+        let (rebound, _) = apply_push_report(
+            &state_after_resurrect,
+            std::slice::from_ref(&create),
+            &[PushOutcome {
+                op: create.op_id,
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Task(echo)),
+                },
+            }],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 7_200),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+        let rebound_task = rebound.tasks.values().next().unwrap();
+        assert!(!rebound_task.deleted && rebound_task.remote.is_some());
+
+        // Second delete of the fresh card: synced ⇒ tombstone, no event.
+        let second_absence = single_stack_snapshot(vec![], BASE + 10_800);
+        let (final_state, _, events) = apply_sync_report(
+            &rebound,
+            &[],
+            &second_absence,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 10_800),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+        let merged = final_state.tasks.values().next().unwrap();
+        assert!(merged.deleted, "the episode is over: synced delete wins");
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -3082,7 +3528,7 @@ mod tests {
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
-        let state_after = app_into_state(&app);
+        let state_after = app.0.clone();
         let merged = task_by_card(&state_after, 1);
         assert_eq!(merged.title, "normalized", "echo adopted");
         assert!(!merged.deleted, "no snapshot means no tombstones");
@@ -3446,7 +3892,7 @@ mod tests {
                 let (pushed_state, pushed_actions) = apply_push_report(
                     &app, &state.outbox, &pushes, chrono::DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
                     crate::capabilities::DeckFeatures::CONSERVATIVE);
-                let (full_state, full_actions) = apply_sync_report(
+                let (full_state, full_actions, _events) = apply_sync_report(
                     &app, &state.outbox, &snapshot, &pushes, DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
                 &crate::test_support::test_connector(),
                     &crate::messages::AppDataEvidence::Absent,
@@ -4073,7 +4519,7 @@ mod tests {
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
-        let (final_state, actions) = app;
+        let (final_state, actions, _events) = app;
         let merged = task_by_card(&final_state, 1);
         assert!(
             !merged.live_labels().contains(&label_id),
@@ -4263,7 +4709,7 @@ mod tests {
             vec![remote_stack(1, BASE + 60), remote_stack(3, BASE + 60)],
             vec![remote_task(1, 1, BASE), remote_task(3, 9, BASE + 60)],
         );
-        let (second, _) = apply_sync_report(
+        let (second, _, _events) = apply_sync_report(
             &app_into_state(&first),
             &[],
             &next_snap,
@@ -4598,7 +5044,7 @@ mod tests {
         ];
 
         let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
-        let (merged, actions) = apply_sync_report(
+        let (merged, actions, _events) = apply_sync_report(
             &state,
             &ops,
             &snap,

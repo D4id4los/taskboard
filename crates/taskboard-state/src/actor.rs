@@ -466,6 +466,7 @@ async fn run_loop(
                             &notifier,
                         ),
                         &metrics,
+                        &system_out,
                         report,
                     )
                     .await;
@@ -542,9 +543,10 @@ async fn run_loop(
                 ) => {
                     tracing::debug!("network event ignored: engine draining");
                 }
-                // The engine never acts on its own StorageFailed: it is
-                // the producer (compiler-forced arm).
-                Ok(SystemEvent::StorageFailed) => {}
+                // The engine never acts on its own StorageFailed, and
+                // it is `TaskResurrected`'s producer too: both are
+                // emit-upstream-only verdicts (compiler-forced arm).
+                Ok(SystemEvent::StorageFailed | SystemEvent::TaskResurrected(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => system_open = false,
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     tracing::warn!(missed, "system event backlog overflowed");
@@ -747,11 +749,12 @@ async fn ingest_sync_report(
         &mpsc::Sender<NotifierMessage>,
     ),
     metrics: &EngineMetrics,
+    system_out: &broadcast::WeakSender<SystemEvent>,
     report: taskboard_domain::SyncReport,
 ) {
     tracing::debug!("sync report ingested");
     let now = clock.now();
-    let (actions, deltas) = match report {
+    let (actions, deltas, _system_events) = match report {
         taskboard_domain::SyncReport::Completed {
             connector,
             snapshot,
@@ -762,7 +765,7 @@ async fn ingest_sync_report(
             app_data,
             features,
         } => {
-            let (merged, mut batch) = apply_sync_report(
+            let (merged, mut batch, system_events) = apply_sync_report(
                 &core.app(),
                 core.outbox(),
                 &snapshot,
@@ -774,6 +777,15 @@ async fn ingest_sync_report(
                 &app_data,
                 features,
             );
+            // The pipeline's broadcast verdicts (R3's resurrect is the
+            // only producer today): upgrade-or-drop like the storage
+            // edge — a closed channel means no receiver can ever
+            // appear, and the skipped emission is unobservable.
+            for event in system_events {
+                if let Some(system_out) = system_out.upgrade() {
+                    let _ = system_out.send(event);
+                }
+            }
             append_status_if_changed(core, &mut batch, &merged.sync);
             // The binding may have been adopted by this very batch, so the
             // keys derive from the post-merge board — "its own binding" is
@@ -797,7 +809,7 @@ async fn ingest_sync_report(
                 tracing::debug!(connector = %connector, "counter delta dropped: no board");
                 Vec::new()
             };
-            (batch, deltas)
+            (batch, deltas, Vec::<taskboard_domain::SystemEvent>::new())
         }
         taskboard_domain::SyncReport::Failed {
             connector,
@@ -842,7 +854,7 @@ async fn ingest_sync_report(
                 .into_iter()
                 .map(|board| (board, delta.clone()))
                 .collect();
-            (actions, deltas)
+            (actions, deltas, Vec::new())
         }
         // Evidence-then-verdict (phase 4 decision 3): the cycle's completed
         // pushes land even though the pull aborted — no snapshot merge, no
@@ -882,7 +894,7 @@ async fn ingest_sync_report(
                 tracing::debug!(connector = %connector, "counter delta dropped: no board");
                 Vec::new()
             };
-            (batch, deltas)
+            (batch, deltas, Vec::new())
         }
     };
 
