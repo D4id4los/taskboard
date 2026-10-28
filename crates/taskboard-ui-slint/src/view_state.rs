@@ -183,6 +183,14 @@ pub enum Flow {
     /// funnel (the adapter's `commit_date`), never `commit_edit`.
     /// Which field rides the flow; every flow rule is field-blind.
     EditDate { task: TaskId, field: DateField },
+    /// The task-detail description editor (round-3 D15/#228): the
+    /// shared `buffer` (the title's), committed verbatim — an empty
+    /// buffer commits `Some("")`, which is the clear (the
+    /// `TaskChanges.description` mask's documented shape). The
+    /// commit funnel is [`Self::commit_description`]; the settle rule
+    /// is the text flows' (commit non-empty / discard empty — no
+    /// accidental clears on focus loss).
+    EditDescription { task: TaskId },
     /// The move flow: moving `task` toward `target`.
     Move { task: TaskId, target: StackId },
     /// The jump-to search palette (#348, chunk 9): the palette cursor
@@ -949,6 +957,46 @@ impl ViewState {
         vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
     }
 
+    /// Arms the description editor for `task` (round-3 D15/#228):
+    /// the buffer seeds from the task's current description (the
+    /// display mirror, the `begin_edit_title` pattern). Inert
+    /// without a live task.
+    pub fn begin_edit_description(&mut self, state: &AppState, task: TaskId) -> Vec<FlowOutcome> {
+        let Some(task) = state.tasks.get(&task) else {
+            return Vec::new();
+        };
+        self.flow = Flow::EditDescription { task: task.id };
+        self.buffer.clone_from(&task.description);
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// The description commit funnel (round-3 D15/#228): dispatch the
+    /// typed `UpdateTask` with the buffer verbatim — no trim, the
+    /// description's whitespace is content; an empty buffer commits
+    /// `Some("")`, which is the clear (the `TaskChanges.description`
+    /// mask: `Some` sets, an empty string *is* the clear). The focus
+    /// paths use [`Self::settle_flow`], which never reaches here
+    /// empty.
+    pub fn commit_description(&mut self) -> Vec<FlowOutcome> {
+        let Flow::EditDescription { task } = self.flow else {
+            return Vec::new();
+        };
+        let description = self.buffer.clone();
+        self.flow = Flow::None;
+        self.buffer.clear();
+        vec![
+            FlowOutcome::Command(StateCommand::UpdateTask {
+                id: task,
+                changes: taskboard_domain::TaskChanges {
+                    description: Some(description),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }),
+            FlowOutcome::SetMode(Mode::Normal),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
     /// Arms the title editor for `task` (round-3 W-SM-d, F26): the
     /// one title-edit entry point — the registry action's
     /// `BeginTitleEdit`, the closed title's pointer seam, and vi's
@@ -1550,6 +1598,16 @@ impl ViewState {
                 }
             }
             Flow::EditDate { .. } => self.end_edit_date(),
+            // The description is a TEXT flow on the shared buffer:
+            // commit non-empty, discard empty — a focus steal never
+            // clears (round-3 D15).
+            Flow::EditDescription { .. } => {
+                if self.buffer.trim().is_empty() {
+                    self.discard_edit()
+                } else {
+                    self.commit_description()
+                }
+            }
             Flow::Move { .. } | Flow::MoveStack { .. } | Flow::DragMove { .. } => {
                 self.cancel_move()
             }
@@ -1743,6 +1801,7 @@ impl ViewState {
             if matches!(
                 self.flow,
                 Flow::EditTitle { task: t }
+                    | Flow::EditDescription { task: t }
                     | Flow::EditDate {
                         task: t, field: _,
                     } if t == task
@@ -3796,6 +3855,7 @@ mod tests {
                 task: a,
                 field: crate::view_state::DateField::Due,
             },
+            Flow::EditDescription { task: a },
             Flow::Move {
                 task: a,
                 target: s0,

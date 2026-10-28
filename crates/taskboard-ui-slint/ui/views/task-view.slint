@@ -39,6 +39,8 @@ export struct TaskDetailModel {
     scheduled-open: bool,
     scheduled-text: string,
     scheduled-echo: string,
+    description-edit-open: bool,
+    description-initial: string,
     date-picker-open: bool,
     date-caption: string,
     date-grid: [[DueDayModel]],
@@ -69,6 +71,11 @@ export component TaskView inherits FocusScope {
     // window: one open seam per field, one shared interaction set.
     callback due-edit-opened();
     callback scheduled-edit-opened();
+    // The description editor's seams (round-3 D15), forwarded to the
+    // window; focus loss rides the shared text-flow settle.
+    callback description-edit-opened();
+    callback description-edited(string);
+    callback description-committed(string);
     callback date-edited(string);
     callback date-accepted(string);
     callback date-picker-toggled();
@@ -313,19 +320,50 @@ export component TaskView inherits FocusScope {
                 add-custom-accepted(text) => root.rule-add-custom-accepted(text);
             }
 
-            // The description (read-only body text — markup rendering
-            // is POST-1.0/R10; editing is a recorded scope cut, D13).
+            // The description (round-3 D15/#228): the read-only body
+            // reads interactive (the closed cells' grammar) and
+            // click-opens the multiline editor — commit on Return and
+            // on the checkmark; Escape's discard rides the action
+            // layer; focus loss settles per the text-flow rule.
+            // Markup rendering stays POST-1.0/R10.
             VerticalLayout {
                 RoleText {
                     role: Typography.caption;
                     text-color: Theme.text-secondary;
                     text: "Description";
                 }
-                RoleText {
-                    role: Typography.body;
-                    text: root.task.description == "" ? "—" : root.task.description;
-                    wrap: word-wrap;
+                if (!root.task.description-edit-open): description-display := Rectangle {
+                    border-radius: Theme.radius-small;
                     horizontal-stretch: 1;
+                    accessible-role: AccessibleRole.button;
+                    accessible-label: "Edit description";
+                    accessible-description: "Opens the description editor.";
+                    accessible-action-default => { root.description-edit-opened(); }
+                    if (description-touch.has-hover): Rectangle {
+                        background: Theme.surface-raised;
+                        border-radius: Theme.radius-small;
+                    }
+                    RoleText {
+                        role: Typography.body;
+                        text: root.task.description == "" ? "—" : root.task.description;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                    description-touch := TouchArea {
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.description-edit-opened(); }
+                    }
+                }
+                if (root.task.description-edit-open): TextField {
+                    label: "Description";
+                    placeholder: "Describe the task";
+                    multiline: true;
+                    commit-affordance: true;
+                    initial-text: root.task.description-initial;
+                    horizontal-stretch: 1;
+                    accepted(text) => root.description-committed(text);
+                    edited(text) => root.description-edited(text);
+                    focus-lost() => root.text-flow-focus-lost();
                 }
             }
 

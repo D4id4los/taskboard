@@ -1021,6 +1021,7 @@ fn push_task_detail(
 ) -> usize {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
     let editing = matches!(vs.flow(), Flow::EditTitle { task } if vs.subject_task().is_some_and(|s| *task == s));
+    let description_editing = matches!(vs.flow(), Flow::EditDescription { task } if vs.subject_task().is_some_and(|s| *task == s));
     // The subject task's rules in id order (the table and the row
     // model agree by construction — D12).
     let task_rules: Vec<taskboard_domain::ReminderRuleId> = vs
@@ -1120,6 +1121,12 @@ fn push_task_detail(
         ),
         done: subject.is_some_and(|t| t.done.is_some()),
         description: SharedString::from(subject.map_or(String::new(), |t| t.description.clone())),
+        description_edit_open: description_editing,
+        description_initial: SharedString::from(if description_editing {
+            vs.buffer().to_owned()
+        } else {
+            String::new()
+        }),
         edit_open: editing,
         initial_text: SharedString::from(if editing {
             vs.buffer().to_owned()

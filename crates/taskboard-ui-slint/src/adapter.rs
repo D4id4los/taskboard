@@ -720,6 +720,7 @@ impl Adapter {
     /// The D9 interpretation table: one `match (flow, effect)` whose
     /// arms route to `view_state` methods named by what they do.
     #[allow(clippy::too_many_lines)] // one decision table, kept flat for review
+    #[allow(clippy::match_same_arms)] // one arm per matrix decision
     fn interpret(&mut self, window: &AppWindow, effect: UiEffect) {
         let compact = Self::is_compact(window);
         let state = self.state.load();
@@ -809,6 +810,15 @@ impl Adapter {
             (Flow::EditDate { .. }, UiEffect::Activate | UiEffect::SetMode(Mode::Insert)) => {
                 Vec::new()
             }
+            // The description editor (round-3 D15): the field's
+            // accepted seam owns Return (the checkmark composes);
+            // Escape's mode.normal discards — the settle rule is the
+            // text flows' (commit non-empty / discard empty). Insert
+            // is the named inert, shared with the move flows.
+            (
+                Flow::EditDescription { .. },
+                UiEffect::SetMode(Mode::Normal) | UiEffect::Activate,
+            ) => self.interpret_description(effect, &state),
             // -- quick capture (chunk 10 D8): the GLOBAL action, from
             //    any flow — the XOR rule replaces without committing --
             (_, UiEffect::BeginCapture) => self.view_state.begin_capture(),
@@ -823,6 +833,10 @@ impl Adapter {
                 Flow::None | Flow::Move { .. } | Flow::MoveStack { .. },
                 UiEffect::SetMode(Mode::Insert),
             ) => self.interpret_insert(&state),
+            // The description editor's insert inert (round-3 D15):
+            // re-entering insert inside the open editor changes
+            // nothing (the field owns its printables).
+            (Flow::EditDescription { .. }, UiEffect::SetMode(Mode::Insert)) => Vec::new(),
             // -- no flow: the intents begin things --
             (Flow::None, UiEffect::OpenPalette) => self.view_state.open_palette(),
             // The title action with no flow (round-3 W-SM-d): arms
@@ -1047,6 +1061,20 @@ impl Adapter {
         }
     }
 
+    /// The description editor's arms (round-3 D15), factored out of
+    /// the table: Escape discards; Activate commits through the
+    /// description funnel (the buffer verbatim — empty is the clear).
+    fn interpret_description(
+        &mut self,
+        effect: UiEffect,
+        _state: &taskboard_domain::AppState,
+    ) -> Vec<FlowOutcome> {
+        match effect {
+            UiEffect::SetMode(Mode::Normal) => self.view_state.discard_edit(),
+            _ => self.view_state.commit_description(),
+        }
+    }
+
     /// The move flows' arms (D8/D9; the round-2 stack move joins),
     /// factored out of the table.
     fn interpret_move(
@@ -1121,6 +1149,9 @@ impl Adapter {
             | Flow::CreateStack
             | Flow::CreateBoard
             | Flow::EditTitle { .. }
+            // The description behaves as a text flow everywhere
+            // (settle/leaving rules) — the kind vocabulary only.
+            | Flow::EditDescription { .. }
             | Flow::RenameStack { .. }
             | Flow::RenameBoard { .. } => FlowKind::Text,
             Flow::EditDate { .. } => FlowKind::Due,
@@ -3531,6 +3562,7 @@ fn activate_stack_row(adapter: &mut Adapter, window: &AppWindow, row: i32) {
 /// composition's seams (chunk 6, D13): index/preset/custom resolution
 /// against the id tables and the domain grammar, then the one-shot +
 /// route — the banner-seam template.
+#[allow(clippy::too_many_lines)] // one wiring sequence, kept flat for review
 fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     let mirror = Rc::clone(adapter);
     // The closed title's click (round-3 W-SM-d, F26): routes the
@@ -3575,6 +3607,45 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             return;
         };
         commit_text(&mut commit.borrow_mut(), &window, &text);
+    });
+
+    // The description editor's seams (round-3 D15/#228): the closed
+    // body's click arms the multiline field (buffer seeded by the
+    // view state); Return and the checkmark funnel through
+    // `commit_description` — the accepted text is the field's own
+    // buffer read (the funnel re-reads the view-state buffer, kept
+    // current by the edited seam).
+    let description_open = Rc::clone(adapter);
+    let description_open_weak = window.as_weak();
+    window.on_task_description_edit_opened(move || {
+        let Some(window) = description_open_weak.upgrade() else {
+            return;
+        };
+        let mut a = description_open.borrow_mut();
+        settle_pointer_conflict(&mut a, &window);
+        let state = a.state.load_full();
+        let Some(task) = a.view_state.subject_task() else {
+            return;
+        };
+        let outcomes = a.view_state.begin_edit_description(&state, task);
+        a.apply_outcomes(&window, &outcomes);
+    });
+    let description_edited = Rc::clone(adapter);
+    window.on_task_description_edited(move |text| {
+        description_edited
+            .borrow_mut()
+            .view_state
+            .set_buffer(text.to_string());
+    });
+    let description_commit = Rc::clone(adapter);
+    let description_commit_weak = window.as_weak();
+    window.on_task_description_committed(move |_text| {
+        let Some(window) = description_commit_weak.upgrade() else {
+            return;
+        };
+        let mut a = description_commit.borrow_mut();
+        let outcomes = a.view_state.commit_description();
+        a.apply_outcomes(&window, &outcomes);
     });
 
     let remove = Rc::clone(adapter);

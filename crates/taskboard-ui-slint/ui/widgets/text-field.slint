@@ -39,6 +39,12 @@ export component TextField inherits Rectangle {
     // never ≡ Return. The two flags are independent; a field carries
     // one in practice.
     in property <bool> clear-affordance: false;
+    // The multiline flavour (round-3 D15): the input wraps and the
+    // field grows with its content (floored at the single-line
+    // height); the commit affordances compose. On the pinned Slint,
+    // Return fires `accepted` without inserting a newline (the
+    // recorded probe) — commit-on-Return is the grammar.
+    in property <bool> multiline: false;
     callback edited(string);
     callback accepted(string);
     // The focus-loss seam (round-3 L1, plan §7 — the probe-recorded
@@ -60,7 +66,9 @@ export component TextField inherits Rectangle {
     border-radius: Theme.radius-small;
     border-width: input.has-focus ? Theme.focus-ring-width : 0;
     border-color: Semantic.focus-ring;
-    min-height: placeholder-text.preferred-height + 2 * Theme.space-2;
+    min-height: root.multiline
+        ? max(Theme.space-8, input.preferred-height + 2 * Theme.space-2)
+        : (placeholder-text.preferred-height + 2 * Theme.space-2);
     // The content-free preferred width (r2 D22): the token floor, so
     // a growing buffer cannot stretch the field or its ancestors.
     min-width: Theme.space-15;
@@ -118,6 +126,7 @@ export component TextField inherits Rectangle {
         // colour still flows from tokens.
         color: Theme.text-primary;
         input-type: root.secret ? InputType.password : InputType.text;
+        wrap: root.multiline ? word-wrap : no-wrap;
         vertical-alignment: center;
         edited() => root.edited(input.text);
         accepted() => root.accepted(input.text);

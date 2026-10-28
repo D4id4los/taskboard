@@ -316,6 +316,9 @@ export component AppWindow inherits Window {
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
                 due-edit-opened() => root.task-due-edit-opened();
                 scheduled-edit-opened() => root.task-scheduled-edit-opened();
+                description-edit-opened() => root.task-description-edit-opened();
+                description-edited(t) => root.task-description-edited(t);
+                description-committed(t) => root.task-description-committed(t);
                 date-edited(t) => root.task-date-edited(t);
                 date-accepted(t) => root.task-date-accepted(t);
                 date-picker-toggled() => root.task-date-picker-toggled();
@@ -708,6 +711,9 @@ export component AppWindow inherits Window {
     pure callback rule-add-custom-accepted(string) -> bool;
     pure callback task-due-edit-opened();
     pure callback task-scheduled-edit-opened();
+    pure callback task-description-edit-opened();
+    pure callback task-description-edited(string);
+    pure callback task-description-committed(string);
     pure callback task-date-edited(string);
     pure callback task-date-accepted(string);
     pure callback task-date-picker-toggled();

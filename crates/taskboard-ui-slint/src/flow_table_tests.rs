@@ -66,6 +66,7 @@ fn kind_of(flow: &Flow) -> FK {
         | Flow::CreateStack
         | Flow::CreateBoard
         | Flow::EditTitle { .. }
+        | Flow::EditDescription { .. }
         | Flow::RenameStack { .. }
         | Flow::RenameBoard { .. } => FK::Text,
         Flow::EditDate { .. } => FK::Due,
@@ -549,6 +550,7 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
             task: a,
             field: crate::view_state::DateField::Scheduled,
         },
+        Flow::EditDescription { task: a },
         Flow::Move {
             task: a,
             target: s1,
