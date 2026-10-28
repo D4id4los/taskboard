@@ -799,7 +799,51 @@ pub fn apply_sync_report(
         let local = &labels[&id];
         if !present_label_refs.contains(&remote_ref) && !local.deleted {
             labels.insert(id, tombstone_label(local, now));
-            tracing::debug!(rule = RULE_R3, label_id = ?id, label = ?remote_ref, "label absence tombstoned");
+            // Entity-death dominance (ADR 0004's labels amendment, D-2e):
+            // a dead label's live memberships are force-removed — the
+            // membership cannot exist server-side, and its queued
+            // assignments die with the entity (the push would 404).
+            // `Removed` entries keep their older stamps (max of two
+            // removals).
+            let removal = crate::entities::MembershipState::Removed { at: now };
+            let dominated: Vec<TaskId> = tasks
+                .iter()
+                .filter(|(_, t)| {
+                    t.is_live()
+                        && matches!(
+                            t.label_memberships.get(&id),
+                            Some(crate::entities::MembershipState::Added { .. })
+                        )
+                })
+                .map(|(task_id, _)| *task_id)
+                .collect();
+            for task_id in &dominated {
+                let mut merged = tasks[task_id].clone();
+                let entry = merged.label_memberships.remove(&id);
+                merged
+                    .label_memberships
+                    .insert(id, crate::merge::merge_membership_opt(entry, removal));
+                tasks.insert(*task_id, merged);
+            }
+            let mut cancelled_ops = 0usize;
+            for other in outbox {
+                let targets = matches!(
+                    other.op,
+                    LocalOp::AssignLabel(_, l) | LocalOp::UnassignLabel(_, l) if l == id
+                );
+                if targets && !op_results.contains_key(&other.op_id) {
+                    op_results.insert(other.op_id, false);
+                    cancelled_ops += 1;
+                }
+            }
+            tracing::debug!(
+                rule = RULE_R3,
+                label_id = ?id,
+                label = ?remote_ref,
+                dominated_tasks = dominated.len(),
+                cancelled_ops,
+                "label absence tombstoned"
+            );
         }
     }
 
@@ -3995,6 +4039,66 @@ mod tests {
     }
 
     #[test]
+    fn a_vanishing_label_force_removes_its_memberships_and_kills_queued_assignments() {
+        let mut state = base_state(bound_task(1));
+        let label = bound_label(5);
+        let label_id = label.id;
+        state.labels.insert(label_id, label);
+        // The live task holds the label; a queued assign op (queued after
+        // the read) rides the same cycle.
+        let task_id = task_by_card(&state, 1).id;
+        let mut carrying = task_by_card(&state, 1).clone();
+        carrying.label_memberships.insert(
+            label_id,
+            crate::entities::MembershipState::Added { at: ts(BASE) },
+        );
+        state.tasks.insert(carrying.id, carrying);
+        let op = crate::outbox::PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::from_u128(45)),
+            op: LocalOp::AssignLabel(task_id, label_id),
+            queued_at: ts(BASE + 30),
+        };
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 60)], BASE + 60);
+
+        let app = apply_sync_report(
+            &state,
+            std::slice::from_ref(&op),
+            &snap,
+            &[],
+            DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        let (final_state, actions) = app;
+        let merged = task_by_card(&final_state, 1);
+        assert!(
+            !merged.live_labels().contains(&label_id),
+            "the dead label's membership is force-removed"
+        );
+        assert_eq!(
+            merged.label_memberships[&label_id],
+            crate::entities::MembershipState::Removed { at: ts(BASE + 60) },
+            "stamped at the observation time, remembered not deleted"
+        );
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                PersistenceAction::FailOp(op_id)
+                    if op_id.0 == uuid::Uuid::from_u128(45)
+            )),
+            "the queued assignment dies with the entity"
+        );
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            PersistenceAction::UpsertTask(t) if t.id == task_id && !t.live_labels().contains(&label_id)
+        )));
+    }
+
+    #[test]
     fn board_tombstone_cascades_stacks_tasks_and_labels() {
         let mut state = base_state(bound_task(1));
         let label = bound_label(6);
@@ -5309,7 +5413,14 @@ mod tests {
             op: LocalOp::AssignLabel(task_by_card(&state, 1).id, label_id),
             queued_at: ts(BASE + 120),
         };
-        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+        // The snapshot must still list the label: entity-death dominance
+        // would otherwise (correctly) kill the queued assignment.
+        let snap = crate::remote::RemoteBoardSnapshot {
+            board: remote_board(REMOTE_BOARD_NUM, BASE + 300),
+            stacks: vec![remote_stack(1, BASE + 300)],
+            tasks: vec![remote_task(1, 1, BASE + 300)],
+            labels: vec![remote_label(5, BASE + 300)],
+        };
 
         let app = apply_sync_report(
             &state,
@@ -5417,7 +5528,14 @@ mod tests {
             op: LocalOp::UpdateTask(task_by_card(&state, 1).id),
             queued_at: ts(BASE),
         };
-        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE + 300)], BASE + 300);
+        // The snapshot must still list the label: entity-death dominance
+        // would otherwise (correctly) kill the queued assignment.
+        let snap = crate::remote::RemoteBoardSnapshot {
+            board: remote_board(REMOTE_BOARD_NUM, BASE + 300),
+            stacks: vec![remote_stack(1, BASE + 300)],
+            tasks: vec![remote_task(1, 1, BASE + 300)],
+            labels: vec![remote_label(5, BASE + 300)],
+        };
 
         let app = apply_sync_report(
             &state,
