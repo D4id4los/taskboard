@@ -30,8 +30,18 @@ ExecStart=%h/.local/bin/taskboard daemon
 # Environment=TASKBOARD_CONFIG=%h/.config/taskboard/taskboard.toml
 Restart=on-failure
 RestartSec=5
-# SIGTERM triggers the graceful drain (flush → broadcast → bounded
-# actor joins, ADR 0008 §5); the second signal force-exits (130).
+# The signal ladder (runbook §9, 2026-10-28): rung 1 — first
+# SIGINT/SIGTERM/`daemon stop` — runs the graceful drain (stop
+# accepting → bounded actor joins → flush); rung 2 — a second signal
+# while the drain is running — skips the joins, aborts the sync
+# actors, attempts one salvage flush (2 s bound), and exits
+# 128+signum (143 for SIGTERM); rung 3 — a third signal — exits
+# immediately. Exit codes: 0 clean drain, 1 degraded (a bounded join
+# aborted at its budget), 130/143 forced.
+# Deliberately NO SuccessExitStatus here: under Restart=on-failure a
+# forced (143) or degraded (1) exit must count as failure so
+# supervision recovers the daemon; `systemctl stop` suppresses
+# Restart= anyway, so an operator-initiated stop is not fought.
 TimeoutStopSec=30
 
 [Install]

@@ -57,8 +57,16 @@ ExecStartPre=/bin/sh -c 'test -n "$$WAYLAND_DISPLAY" || test -n "$$DISPLAY"'
 ExecStart=/usr/local/bin/taskboard --config /etc/taskboard/taskboard.toml
 Restart=always
 RestartSec=5
-# SIGTERM triggers the graceful drain (flush → broadcast → bounded
-# actor joins, ADR 0008 §5); the second signal force-exits (130).
+# The signal ladder (runbook §9, 2026-10-28): rung 1 — first
+# SIGINT/SIGTERM/`daemon stop` — runs the graceful drain (stop
+# accepting → bounded actor joins → flush); rung 2 — a second signal
+# while the drain is running — skips the joins, aborts the sync
+# actors, attempts one salvage flush (2 s bound), and exits
+# 128+signum (143 for SIGTERM); rung 3 — a third signal — exits
+# immediately. Exit codes: 0 clean drain, 1 degraded (a bounded join
+# aborted at its budget), 130/143 forced. SuccessExitStatus=143 makes
+# a SIGTERM-forced stop read as a clean stop in systemctl results.
+SuccessExitStatus=143
 TimeoutStopSec=30
 
 [Install]
