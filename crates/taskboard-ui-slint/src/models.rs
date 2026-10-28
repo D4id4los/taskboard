@@ -414,7 +414,6 @@ fn push_rows<T: PartialEq + Clone + 'static>(
 /// The due editor's pushed state (r2 D25): the adapter owns the
 /// buffer, echo, and picker cursor across refreshes (R-d); the push
 /// only carries them into the model.
-#[derive(Debug, Clone, Copy, Default)]
 pub struct DueEditorPush<'a> {
     pub text: &'a str,
     pub echo: &'a str,
@@ -422,6 +421,22 @@ pub struct DueEditorPush<'a> {
     /// The one-shot grid-focus flag (round-3 D10): consumed by the
     /// next push — `true` hands focus to the overlay's grid.
     pub focus_on_mount: bool,
+    /// The due-soon horizon (round-3 D14/#230): the handed-over
+    /// typed knob, one horizon everywhere (the sets and the grid
+    /// tint). Defaults to the presentation constant.
+    pub horizon: TimeDelta,
+}
+
+impl Default for DueEditorPush<'_> {
+    fn default() -> Self {
+        Self {
+            text: "",
+            echo: "",
+            picker: None,
+            focus_on_mount: false,
+            horizon: crate::presentation::DUE_SOON_HORIZON,
+        }
+    }
 }
 
 /// The timers section (DR-3/3, D-I6): the active (unfired) rows plus
@@ -557,7 +572,7 @@ pub fn push(
     due: &DueEditorPush<'_>,
 ) -> IdTables {
     let now = day.now;
-    let sets = presentation::due_sets(state, now);
+    let sets = presentation::due_sets(state, now, due.horizon);
     let board = vs.board().and_then(|id| state.boards.get(&id));
     let stack_ids: Vec<StackId> = vs.stack_ids(state);
     let live_boards = presentation::live_boards(state);
@@ -1025,7 +1040,7 @@ fn push_task_detail(
         .filter_map(|id| state.reminders.rules.get(id))
         .map(|rule| RuleRowModel {
             before: SharedString::from(rule.offset.text_form()),
-            created: SharedString::from(rule.created_at.to_rfc3339()),
+            created: SharedString::from(presentation::rule_created_phrase(rule.created_at, now)),
         })
         .collect();
     let preset_rows: Vec<SharedString> = presentation::rule_preset_labels()
@@ -1071,16 +1086,11 @@ fn push_task_detail(
                                     blank: date.is_none(),
                                     cursor: date.is_some_and(|d| d == picker.cursor()),
                                     today: date.is_some_and(|d| d == today),
-                                    kind: to_slint_due_kind(date.map_or(
-                                        crate::presentation::DueKind::None,
-                                        |d| {
-                                            crate::due_edit::cell_kind(
-                                                d,
-                                                today,
-                                                crate::presentation::DUE_SOON_HORIZON,
-                                            )
-                                        },
-                                    )),
+                                    kind: to_slint_due_kind(
+                                        date.map_or(crate::presentation::DueKind::None, |d| {
+                                            crate::due_edit::cell_kind(d, today, due.horizon)
+                                        }),
+                                    ),
                                 }
                             })
                             .collect::<Vec<DueDayModel>>(),

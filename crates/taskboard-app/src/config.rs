@@ -382,6 +382,13 @@ pub struct UiSection {
     /// precedent).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
+    /// The due-soon horizon in whole days (round-3 D14/#230): handed
+    /// to the UI as a typed delta. `0` is legal and means "nothing is
+    /// due soon" (an empty soon set); anything above ten years is the
+    /// typed [`ConfigError::InvalidDueSoonDays`] — never a silent
+    /// clamp.
+    #[serde(default = "default_due_soon_days")]
+    pub due_soon_days: u32,
 }
 
 impl Default for UiSection {
@@ -390,8 +397,13 @@ impl Default for UiSection {
             scale: default_ui_scale(),
             keymap: KeymapSection::default(),
             stack_widths: BTreeMap::new(),
+            due_soon_days: default_due_soon_days(),
         }
     }
+}
+
+fn default_due_soon_days() -> u32 {
+    1
 }
 
 fn default_ui_scale() -> f64 {
@@ -796,6 +808,12 @@ pub enum ConfigError {
         /// The dotted config key that is invalid.
         field: &'static str,
     },
+    /// `[ui] due_soon_days` exceeds the ten-year horizon ceiling.
+    #[error("due soon days invalid")]
+    InvalidDueSoonDays {
+        /// The dotted config key that is invalid.
+        field: &'static str,
+    },
 }
 
 impl ConfigError {
@@ -825,6 +843,7 @@ impl ConfigError {
             Self::KioskPinRequired { .. } => "kiosk-pin-required",
             Self::InvalidWebConfig { .. } => "invalid-web-config",
             Self::InvalidDayStartTime { .. } => "invalid-day-start-time",
+            Self::InvalidDueSoonDays { .. } => "invalid-due-soon-days",
         }
     }
 }
@@ -1070,6 +1089,14 @@ impl AppConfig {
         // range comparisons (NaN compares false both ways).
         if taskboard_ui_slint::UiScale::new(self.ui.scale).is_err() {
             return Err(ConfigError::InvalidScale { field: "ui.scale" });
+        }
+        // `[ui] due_soon_days`: 0 is legal (an empty soon set); the
+        // ten-year ceiling is the fail-fast bound (the InvalidScale
+        // precedent — never a silent clamp).
+        if self.ui.due_soon_days > 3652 {
+            return Err(ConfigError::InvalidDueSoonDays {
+                field: "ui.due_soon_days",
+            });
         }
         // `[web]`: the decoded (or default) table validates always —
         // the absent table's placeholder carries valid defaults, so the
@@ -1499,6 +1526,37 @@ mod tests {
         let mut c = valid();
         c.ui.scale = UI_SCALE_MAX;
         c.validate().expect("3.0 validates");
+    }
+
+    #[test]
+    fn due_soon_days_defaults_to_one_and_round_trips() {
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .extract()
+            .expect("defaults extract");
+        assert_eq!(round.ui.due_soon_days, 1, "absent decodes to the default");
+        let mut c = valid();
+        c.ui.due_soon_days = 14;
+        c.validate().expect("14 validates");
+        let round: AppConfig = Figment::from(Serialized::defaults(AppConfig::default()))
+            .merge(Toml::string("[ui]\ndue_soon_days = 14"))
+            .extract()
+            .expect("14 decodes");
+        assert_eq!(round.ui.due_soon_days, 14, "14 round-trips");
+    }
+
+    #[test]
+    fn due_soon_days_zero_is_legal_and_huge_is_typed_rejection() {
+        let mut c = valid();
+        c.ui.due_soon_days = 0;
+        c.validate().expect("0 is legal: an empty soon set");
+        let mut c = valid();
+        c.ui.due_soon_days = 4000;
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::InvalidDueSoonDays {
+                field: "ui.due_soon_days"
+            })
+        ));
     }
 
     #[test]

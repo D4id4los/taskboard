@@ -47,15 +47,13 @@ pub struct DueSets {
 
 /// Computes [`DueSets`] for `now` by calling the domain functions
 /// collection-side — the overdue/due-soon semantics exist only there.
+/// The horizon is the handed-over typed value (round-3 D14/#230: the
+/// `[ui] due_soon_days` knob; the const stays the default).
 #[must_use]
-pub fn due_sets(state: &AppState, now: DateTime<Utc>) -> DueSets {
+pub fn due_sets(state: &AppState, now: DateTime<Utc>, horizon: TimeDelta) -> DueSets {
     DueSets {
         overdue: task_id_keys(taskboard_domain::overdue_tasks(&state.tasks, now)),
-        soon: task_id_keys(taskboard_domain::due_soon(
-            &state.tasks,
-            now,
-            DUE_SOON_HORIZON,
-        )),
+        soon: task_id_keys(taskboard_domain::due_soon(&state.tasks, now, horizon)),
     }
 }
 
@@ -315,6 +313,16 @@ pub fn rule_list_hint(rule_count: usize) -> String {
     } else {
         "Explicit rules replace the task's default reminder: only these rules fire.".to_owned()
     }
+}
+
+/// The rule row's created stamp (round-3 D13/F29): the UTC calendar
+/// date, short form — created is bookkeeping metadata; the rfc3339
+/// `T`/offset noise was the finding, and date precision sits below
+/// the at-most-second ceiling. `now` is unused today (the short form
+/// needs no anchor) but keeps the phrase helpers' shape.
+#[must_use]
+pub fn rule_created_phrase(created_at: DateTime<Utc>, _now: DateTime<Utc>) -> String {
+    created_at.format("%Y-%m-%d").to_string()
 }
 
 /// One overdue-banner row (D12): the task truth plus its snooze
@@ -825,7 +833,7 @@ mod tests {
     fn due_kind_follows_the_sets() {
         let now = Utc::now();
         let state = AppState::default();
-        let sets = due_sets(&state, now);
+        let sets = due_sets(&state, now, DUE_SOON_HORIZON);
         let mut overdue = task(
             TaskId::from_uuid(uuid::Uuid::now_v7()),
             StackId::from_uuid(uuid::Uuid::now_v7()),
@@ -1654,6 +1662,40 @@ mod tests {
     }
 
     #[test]
+    fn due_sets_honours_the_handed_over_horizon() {
+        use chrono::TimeZone;
+        let now = Utc.with_ymd_and_hms(2030, 1, 31, 12, 0, 0).unwrap();
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut t = task(id, stack, 0);
+        // One hour past the default horizon: not soon under it, soon
+        // under a week — the knob moves the boundary (round-3 D14).
+        t.duedate = Some(now + DUE_SOON_HORIZON + TimeDelta::hours(1));
+        let mut state = AppState::default();
+        state.tasks.insert(id, t);
+        let default_sets = due_sets(&state, now, DUE_SOON_HORIZON);
+        assert!(!default_sets.soon.contains(&id));
+        let week = due_sets(&state, now, TimeDelta::try_days(7).unwrap());
+        assert!(week.soon.contains(&id));
+        // 0 days: nothing is due soon.
+        let zero = due_sets(&state, now, TimeDelta::zero());
+        assert!(zero.soon.is_empty());
+    }
+
+    #[test]
+    fn rule_created_phrase_is_the_short_utc_calendar_date() {
+        // Structural facts only (AGENTS §5): no `T`, no offset sign,
+        // bounded length — the humanized stamp, not an rfc3339 dump.
+        use chrono::TimeZone;
+        let now = Utc.with_ymd_and_hms(2030, 1, 31, 12, 0, 0).unwrap();
+        let created = Utc.with_ymd_and_hms(2029, 12, 1, 9, 30, 15).unwrap();
+        let phrase = rule_created_phrase(created, now);
+        assert!(phrase.len() <= 10);
+        assert!(!phrase.contains('T'));
+        assert!(!phrase.contains('+'));
+    }
+
+    #[test]
     fn at_time_suffix_is_empty_for_absent_and_midnight() {
         use chrono::TimeZone;
         assert_eq!(at_time_suffix(None), "");
@@ -1755,7 +1797,7 @@ mod tests {
             let mut state = AppState::default();
             state.tasks.insert(id, t.clone());
 
-            let sets = due_sets(&state, now);
+            let sets = due_sets(&state, now, DUE_SOON_HORIZON);
             let horizon = now + DUE_SOON_HORIZON;
             let overdue = !done && t.duedate.is_some_and(|d| d < now);
             let soon = !done && t.duedate.is_some_and(|d| d > now && d <= horizon);

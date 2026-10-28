@@ -106,6 +106,11 @@ pub struct UiSettings {
     /// resolved app-side at hand-over, held, never re-read (the
     /// `day_start` consumers contract).
     pub reminder_defaults: taskboard_domain::ReminderDefaults,
+    /// The due-soon horizon (round-3 D14/#230): `[ui] due_soon_days`
+    /// converted to a typed delta at hand-over — the consumers
+    /// contract, nothing reads config mid-flight. Defaults to the
+    /// presentation constant (the pre-config behaviour).
+    pub due_soon_horizon: chrono::TimeDelta,
     /// The kiosk display-mode rotation (K13, issue #363): minted
     /// app-side from the validated `[kiosk.rotation]` table — the
     /// hand-over carries typed values only. `None` is no rotation:
@@ -130,6 +135,7 @@ impl Default for UiSettings {
                 chrono::FixedOffset::east_opt(0).expect("zero"),
             ),
             reminder_defaults: taskboard_domain::ReminderDefaults::default(),
+            due_soon_horizon: presentation::DUE_SOON_HORIZON,
         }
     }
 }
@@ -262,6 +268,7 @@ pub fn mount(
         settings.stack_widths,
         settings.connectors,
         settings.day_start,
+        settings.due_soon_horizon,
         settings.kiosk,
         settings.kiosk_rotation,
         settings.reminder_defaults,

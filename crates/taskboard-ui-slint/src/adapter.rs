@@ -97,6 +97,9 @@ pub(crate) struct Adapter {
     /// The today window's derivation pair (chunk 10 D4): held, never
     /// re-read from config; `day_ctx` recomputes the window per pass.
     day_start: (chrono::NaiveTime, chrono::FixedOffset),
+    /// The due-soon horizon (round-3 D14/#230): handed over typed at
+    /// install — one horizon for the sets and the grid tint.
+    due_soon_horizon: chrono::TimeDelta,
     /// The run mode's one UI bit (Q8): on kiosk the today pass filters
     /// to the focused board's subset; the desktop is cross-board.
     kiosk: bool,
@@ -523,6 +526,7 @@ impl Adapter {
             echo: &self.due_echo,
             picker: self.due_picker.as_ref(),
             focus_on_mount: self.picker_focus_on_mount,
+            horizon: self.due_soon_horizon,
         };
         // The grid-focus flag is one-shot: consumed by this push.
         self.picker_focus_on_mount = false;
@@ -2340,6 +2344,7 @@ pub(crate) fn install(
     stack_widths: BTreeMap<uuid::Uuid, BTreeMap<uuid::Uuid, u32>>,
     connectors: Vec<ConnectorInfo>,
     day_start: (chrono::NaiveTime, chrono::FixedOffset),
+    due_soon_horizon: chrono::TimeDelta,
     kiosk: bool,
     rotation: Option<crate::view_state::KioskRotation>,
     reminder_defaults: taskboard_domain::ReminderDefaults,
@@ -2380,6 +2385,7 @@ pub(crate) fn install(
     let adapter = Rc::new(RefCell::new(Adapter {
         keymap,
         day_start,
+        due_soon_horizon,
         kiosk,
         reminder_defaults,
         shell: KeymapShell::default(),
