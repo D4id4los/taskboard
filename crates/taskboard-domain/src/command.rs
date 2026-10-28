@@ -3805,6 +3805,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn assigning_over_a_removed_membership_re_adds_with_the_new_stamp() {
+        let (mut app, outbox) = base();
+        // The task holds a remembered removal of label_id() from an
+        // earlier offline unassign.
+        app.tasks
+            .get_mut(&task_id())
+            .unwrap()
+            .label_memberships
+            .insert(
+                label_id(),
+                crate::entities::MembershipState::Removed { at: ts(T0 - 60) },
+            );
+
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AssignLabel {
+                task: task_id(),
+                label: label_id(),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert!(updated.live_labels().contains(&label_id()));
+        assert_eq!(
+            updated.label_memberships[&label_id()],
+            crate::entities::MembershipState::Added { at: now() },
+            "the re-add overwrites the tombstone with the newer stamp"
+        );
+        let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert!(matches!(op.op, LocalOp::AssignLabel(t, l) if t == task_id() && l == label_id()));
+    }
+
+    #[test]
+    fn unassigning_an_already_removed_membership_is_a_no_op_not_a_clock_bump() {
+        let (mut app, outbox) = base();
+        let removed_at = ts(T0 - 60);
+        app.tasks
+            .get_mut(&task_id())
+            .unwrap()
+            .label_memberships
+            .insert(
+                label_id(),
+                crate::entities::MembershipState::Removed { at: removed_at },
+            );
+
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UnassignLabel {
+                task: task_id(),
+                label: label_id(),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan, no_op());
+        assert_eq!(
+            app.tasks[&task_id()].label_memberships[&label_id()],
+            crate::entities::MembershipState::Removed { at: removed_at },
+            "the tombstone's stamp is untouched"
+        );
+    }
+
     // ---- Boards --------------------------------------------------------
 
     fn unbound_board_state() -> AppState {
