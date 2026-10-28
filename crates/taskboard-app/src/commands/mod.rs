@@ -21,6 +21,7 @@ pub mod labels;
 pub mod logout;
 pub mod output;
 pub mod reminders;
+pub mod repeat;
 pub mod stacks;
 pub mod status;
 pub mod sync;
@@ -171,6 +172,16 @@ pub enum CommandError {
     /// Re-asserting the identical title is a no-op edit and passes.
     #[error("this task is the app-data anchor card and cannot be renamed or deleted")]
     AnchorTaskReserved,
+    /// The resolved task is completed: a repeat *pattern* cannot be set
+    /// on a done head (its occurrence closed; the successor carries the
+    /// series forward). The guard lives app-layer by ruling — the
+    /// engine never learns of it; `--off` deliberately passes (clearing
+    /// a dead rule is honest cleanup).
+    #[error("task {selector:?} is done — repeating targets an open task")]
+    TaskDone {
+        /// The rejected selector, verbatim.
+        selector: String,
+    },
     /// No stack matches the selector.
     #[error("no such stack")]
     UnknownStack(String),
@@ -420,6 +431,7 @@ impl CommandError {
                 _ => "engine",
             },
             Self::AnchorTaskReserved => "anchor-task-reserved",
+            Self::TaskDone { .. } => "task-done",
             Self::InvalidCredentials => "invalid-credentials",
             Self::Unreachable => "unreachable",
             Self::UnknownBoard(_) | Self::UnknownBoardSelector { .. } => "unknown-board",
@@ -487,6 +499,7 @@ impl CommandError {
             Self::BoardAlreadyBound { board, current } => {
                 Some(format!("{board} (bound remote {current})"))
             }
+            Self::TaskDone { selector } => Some(selector.clone()),
             Self::UnknownTask(sel)
             | Self::UnknownStack(sel)
             | Self::UnknownLabel(sel)
@@ -1059,6 +1072,14 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 reminders::remind_command(&mut ctx.io, ctx.config_path.clone(), invocation).await
             }
             None => unreachable!("the outer match selected the Remind arm"),
+        },
+        Command::Tasks {
+            cmd: repeat @ TasksCmd::Repeat { .. },
+        } => match repeat::collapse(repeat) {
+            Some(invocation) => {
+                repeat::repeat_command(&mut ctx.io, ctx.config_path.clone(), invocation).await
+            }
+            None => unreachable!("the outer match selected the Repeat arm"),
         },
         Command::Find {
             query,
@@ -1773,6 +1794,10 @@ async fn tasks_line(
             Some(invocation) => reminders::remind_line(app, io, invocation).await,
             None => unreachable!("the outer match selected the Remind arm"),
         },
+        repeat @ TasksCmd::Repeat { .. } => match repeat::collapse(repeat) {
+            Some(invocation) => repeat::repeat_line(app, io, invocation).await,
+            None => unreachable!("the outer match selected the Repeat arm"),
+        },
         TasksCmd::Label { task, label } => emit_result(
             io,
             tasks::label_on(app, &task, &label, |t, l| StateCommand::AssignLabel {
@@ -2119,6 +2144,20 @@ mod ipc_routing_tests {
                     title: "t".to_owned(),
                     stack: None,
                 },
+            },
+            Command::Tasks {
+                cmd: TasksCmd::Repeat(crate::cli::RepeatArgs {
+                    task: "t".to_owned(),
+                    mode: crate::cli::RepeatModeFlags {
+                        daily: None,
+                        weekly: None,
+                        monthly: None,
+                        off: true,
+                    },
+                    every_weeks: None,
+                    until: None,
+                    count: None,
+                }),
             },
             Command::Find {
                 query: "needle".to_owned(),
