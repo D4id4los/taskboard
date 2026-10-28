@@ -1633,6 +1633,19 @@ fn map_form_field(field: settings_form::Field) -> requests::Field {
     }
 }
 
+/// The kind mirror → lane kind mapping (the same one-for-one lattice;
+/// `NotFinite`/`OutOfRange` joined with the scale field's parity,
+/// round-3 D20a — the sentences already exist in `settings_status`).
+fn map_form_kind(kind: settings_form::InvalidKind) -> InvalidKind {
+    match kind {
+        settings_form::InvalidKind::Empty => InvalidKind::Empty,
+        settings_form::InvalidKind::NotKebab => InvalidKind::NotKebab,
+        settings_form::InvalidKind::BadUrl => InvalidKind::BadUrl,
+        settings_form::InvalidKind::NotFinite => InvalidKind::NotFinite,
+        settings_form::InvalidKind::OutOfRange => InvalidKind::OutOfRange,
+    }
+}
+
 /// Converts a delivered key event to a [`crate::keymap::Stroke`]
 /// (D18): `None` for anything that is not exactly one bindable key —
 /// modifier-only/control events are rejected outright so text input
@@ -2032,26 +2045,9 @@ impl Adapter {
             // The chunk-5 mapping renders the exact reason sentence
             // with zero new presentation code.
             let detail = match err {
-                settings_form::DraftError::Invalid {
-                    field,
-                    kind: settings_form::InvalidKind::Empty,
-                } => SettingsError::Invalid {
+                settings_form::DraftError::Invalid { field, kind } => SettingsError::Invalid {
                     field: map_form_field(field),
-                    kind: InvalidKind::Empty,
-                },
-                settings_form::DraftError::Invalid {
-                    field,
-                    kind: settings_form::InvalidKind::NotKebab,
-                } => SettingsError::Invalid {
-                    field: map_form_field(field),
-                    kind: InvalidKind::NotKebab,
-                },
-                settings_form::DraftError::Invalid {
-                    field,
-                    kind: settings_form::InvalidKind::BadUrl,
-                } => SettingsError::Invalid {
-                    field: map_form_field(field),
-                    kind: InvalidKind::BadUrl,
+                    kind: map_form_kind(kind),
                 },
             };
             self.set_settings_outcome(window, SettingsOutcome::Rejected, Some(detail));
