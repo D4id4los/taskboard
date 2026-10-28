@@ -71,6 +71,36 @@ The workspace carries a single global version (see `docs/architecture.org`);
   reminder after a reload (#283 F11-03).
 
 ### Added
+- Task view & dates round (round-3 GUI review, findings F13/F14/F15/
+  F16/F17/F28/F29 and fold-ins #230/#228): the due cell reads
+  interactive (hover + pointer) and a second "Start date" column
+  edits the task's scheduled field through the *same* editor and
+  commit funnel as due (one seam, `Flow::EditDate`, the field is
+  enum data). The date grammar grows an optional `HH:MM` component —
+  `YYYY-MM-DD HH:MM` parses to the exact UTC wall-clock, out-of-range
+  fields refuse rather than clamp, the echo shows the time only when
+  set, and the closed cells append `· HH:MM` to the relative phrase
+  for non-midnight instants (a pinned UTC round-trip proptest guards
+  the date-shift risk). The calendar picker mounts as a window-level
+  overlay anchored to the field (it pushes nothing — pinned by a
+  geometry journey), opens by default on edit entry with the text
+  field focused (typing-first), is dismissed by an outside click
+  that leaves the editor armed and its seeded buffer intact, and is
+  clamped inside the window at minimum viewport (the main-menu
+  formula). Opening the editor seeds the buffer with the current
+  value — Enter untouched re-commits instead of accidentally
+  clearing — and the new `x` affordance stages a deliberate clear
+  (Return commits it). The picker follows the cursor across month
+  edges, its month buttons answer Return/Space (every IconButton is
+  now keyboard-operable), and a new −/＋ time-stepper row moves the
+  picker's time in 15-minute steps, wrapping over midnight. The
+  reminder rows' created stamp humanizes (short UTC date, no
+  rfc3339 noise), the due-soon horizon becomes the `[ui]
+  due_soon_days` config knob (default 1, `0` legal, typed refusal
+  above ten years, one horizon for both the Today sets and the grid
+  tint), and the task description edits in place: the read-only body
+  click-opens a wrapping multiline field that commits on Return or
+  the checkmark and never clears on focus loss.
 - Board surface round (round-3 GUI review, findings F4/F5/F6/F12/
   F10/F11/F41 and the slint-deprecation fold-in): the drag ghost is
   now card-sized (it used to fill the whole window); the plus glyphs
