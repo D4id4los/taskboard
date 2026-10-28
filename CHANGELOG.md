@@ -29,6 +29,32 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Changed
 
+- Navigation, palette and menu curation round (GUI review round 3,
+  chunk 6): the toolbar grows a Board | Today view switcher whose
+  clicks route the same actions as the keyboard, with the pushed
+  selection reply-sourced from the view state (a click under a live
+  flow settles it first). The search palette's input row keeps its
+  single-line height (the panel is content-sized and clamped above
+  the status bar). `nav.show-task` retargets board, stack, focus and
+  scroll from the palette's Return (the pre-fix jump left the board's
+  first stack selected and never changed the view). A control-level
+  focus walk (`nav.next-control` / `nav.prev-control`, Tab /
+  Shift+Tab or emacs `C-f`/`C-b` outside the board) walks fields and
+  buttons in reading order; the date picker's grid joins the walk —
+  its hardcoded key grabs became `picker.*` registry actions under a
+  non-masking `date-picker` context (Escape still closes the editor
+  cleanly). `view.scroll-down` / `view.scroll-up` page the focused
+  area (column, section, or settings pane). The generated menu
+  re-ranks the view submenu (go-to above the cycle), filters
+  preset-irrelevant rows (the Mode group exists only under vi), greys
+  state-dependent rows live (Cancel Move only while a move/drag flow
+  holds, Complete/Reopen per the focused task), and the hamburger's
+  binding hint is hover-only. Emacs gains the double-`C-g` convention
+  (a second `C-g` cancels from chains where the lone `C-g` is only a
+  prefix), and the reminder snooze/mute verbs gain preset bindings in
+  all three presets (#231).
+
+
 - Legacy single-server configs migrate automatically (round-3 D21,
   #351's migration half): on a serving boot, at the connect/login
   ceremony's entry, and ahead of every settings write, a
