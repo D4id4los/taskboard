@@ -233,6 +233,11 @@ pub fn resolve_ui_settings(
         // The today window's derivation pair (chunk 10 D4): resolved
         // once here — nothing reads config mid-flight.
         day_start,
+        // The due-soon horizon (round-3 D14/#230): the validated
+        // `[ui] due_soon_days` as a typed delta (0 is legal — an
+        // empty soon set).
+        due_soon_horizon: chrono::TimeDelta::try_days(i64::from(ui.due_soon_days))
+            .unwrap_or(taskboard_ui_slint::presentation::DUE_SOON_HORIZON),
         // Overwritten by the lifecycle from the engine config right
         // after this returns (the kiosk/connectors/boards precedent).
         reminder_defaults: taskboard_domain::ReminderDefaults::default(),
@@ -631,6 +636,7 @@ mod keymap_resolution_tests {
                     ),
                 ]),
             },
+            due_soon_days: 7,
         };
         let (settings, findings) = resolve_ui_settings(
             &ui,
@@ -642,6 +648,11 @@ mod keymap_resolution_tests {
 
         // Structural asserts on the handed-over map (no strings).
         assert_eq!(settings.scale.get(), 1.25);
+        assert_eq!(
+            settings.due_soon_horizon,
+            chrono::TimeDelta::try_days(7).unwrap(),
+            "the knob hands over as a typed horizon"
+        );
         assert_eq!(
             settings.startup.keymap_findings,
             u32::try_from(findings.len()).expect("findings fit u32")
