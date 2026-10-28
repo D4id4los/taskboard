@@ -2871,3 +2871,445 @@ async fn counters_advance_across_a_backward_clock_step() {
     })
     .await;
 }
+
+// ---------------------------------------------------------------------
+// DR-6/2: the day-boundary roll (the day tick) and the completion spawn
+// ---------------------------------------------------------------------
+
+/// 2026-06-15 00:00:00 UTC — the day-roll tests' logical boot instant
+/// (UTC-midnight calendar: the window-date of any instant on 06-15 is
+/// 06-15).
+const DAY0: i64 = 1_781_481_600;
+
+fn day(secs: i64) -> chrono::DateTime<chrono::Utc> {
+    common::ts(secs)
+}
+
+fn utc_calendar() -> taskboard_domain::DayCalendar {
+    taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: chrono::FixedOffset::east_opt(0).expect("zero is a valid offset"),
+    }
+}
+
+fn day_roll_enabled() -> DayRollConfig {
+    DayRollConfig {
+        enabled: true,
+        calendar: utc_calendar(),
+    }
+}
+
+/// A daily recurring rule anchored on 2026-06-01, unbounded.
+fn daily_rule() -> taskboard_domain::RecurRule {
+    taskboard_domain::RecurRule {
+        series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(9_000)),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
+        pattern: taskboard_domain::RecurPattern::Daily {
+            every: taskboard_domain::recur::EveryDays::new(1).unwrap(),
+        },
+        bound: taskboard_domain::RecurBound::None,
+        continued_from: None,
+    }
+}
+
+/// A board + stack + one recurring head (scheduled/duedate per the
+/// caller, both at 09:00/17:00 on `day_secs`'s date).
+fn seed_series_state(scheduled: Option<i64>, duedate: Option<i64>) -> PersistedState {
+    let mut state = seed_board_state("board");
+    let board_id = *state.boards.keys().next().expect("one board");
+    let stack_id = StackId::from_uuid(uuid::Uuid::from_u128(500));
+    state.stacks.insert(
+        stack_id,
+        Stack {
+            id: stack_id,
+            remote: None,
+            board: board_id,
+            title: "stack".into(),
+            order: 1,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: day(DAY0),
+                order: day(DAY0),
+                deleted: day(DAY0),
+            },
+            remote_seen: None,
+        },
+    );
+    let task_id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(600));
+    state.tasks.insert(
+        task_id,
+        taskboard_domain::Task {
+            id: task_id,
+            remote: None,
+            title: "recurring head".into(),
+            description: String::new(),
+            label_memberships: BTreeMap::new(),
+            duedate: duedate.map(day),
+            scheduled: scheduled.map(day),
+            done: None,
+            stack: stack_id,
+            order: 1,
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: Some(daily_rule()),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::TaskClocks {
+                title: day(DAY0),
+                description: day(DAY0),
+                duedate: day(DAY0),
+                scheduled: day(DAY0),
+                done: day(DAY0),
+                position: day(DAY0),
+                effort: day(DAY0),
+                importance: day(DAY0),
+                urgency: day(DAY0),
+                recur: day(DAY0),
+                archived: day(DAY0),
+                deleted: day(DAY0),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        },
+    );
+    state
+}
+
+fn head_task(app: &AppState) -> taskboard_domain::Task {
+    app.tasks
+        .values()
+        .find(|t| t.recur.is_some())
+        .cloned()
+        .expect("the seeded recurring head")
+}
+
+/// One timer wake: the engine's tick cadence is the (disabled)
+/// reminders config's 30 s, so a 31 s paused-time step lands exactly
+/// one wake, plus a grace step for the spawned work to settle.
+async fn one_wake() {
+    tokio::time::advance(Duration::from_secs(31)).await;
+    tokio::time::advance(Duration::from_millis(200)).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn rollover_rolls_stale_heads_once() {
+    // The head sits at yesterday; today's first tick rolls it to today.
+    let clock = FixedClock::new(DAY0);
+    let repo = Arc::new(InMemoryRepository::with_state(seed_series_state(
+        Some(DAY0 - 86_400 + 32_400),
+        None,
+    )));
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        clock: clock.clone(),
+        day_roll: day_roll_enabled(),
+        ..Spawner::default()
+    })
+    .await;
+
+    one_wake().await;
+    let target = day(DAY0 + 32_400); // today 09:00 preserved
+    eventually(&h.handle, |app| head_task(app).scheduled == Some(target)).await;
+
+    // Repeated wakes within the same local day change nothing (the
+    // watermark fast path): no write, no publish.
+    let quiet_repo = repo.snapshot();
+    let mut signals = h.handle.subscribe();
+    clock.advance(3_600);
+    one_wake().await;
+    one_wake().await;
+    assert_eq!(
+        repo.snapshot().tasks,
+        quiet_repo.tasks,
+        "the same day never rolls twice"
+    );
+    assert_eq!(
+        drain_signals(&mut signals),
+        0,
+        "a watermarked day publishes nothing"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_quiet_day_is_a_full_no_op() {
+    // The head is dated today: nothing is stale across the rollover.
+    let clock = FixedClock::new(DAY0);
+    let repo = Arc::new(InMemoryRepository::with_state(seed_series_state(
+        Some(DAY0 + 32_400),
+        None,
+    )));
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        clock: clock.clone(),
+        day_roll: day_roll_enabled(),
+        ..Spawner::default()
+    })
+    .await;
+
+    let mut signals = h.handle.subscribe();
+    let quiet_repo = repo.snapshot();
+    clock.advance(3_600);
+    one_wake().await;
+    one_wake().await;
+    assert_eq!(
+        repo.snapshot().tasks,
+        quiet_repo.tasks,
+        "a quiet day persists nothing"
+    );
+    // Deadline-guarded emptiness: bounded wait, then assert no signal.
+    tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            assert_eq!(
+                drain_signals(&mut signals),
+                0,
+                "a quiet day must not signal StateUpdated"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect_err("no StateUpdated arrived within the deadline");
+}
+
+#[tokio::test(start_paused = true)]
+async fn boot_catchup_rolls_once_not_per_tick() {
+    // A multi-day gap onto a non-member day: the weekly head rolls by
+    // `roll_target`'s skip-ahead case, and later ticks stay quiet.
+    let wednesday = day(1_781_654_400); // 2026-06-17 00:00 UTC
+    let clock = FixedClock::new(wednesday.timestamp());
+    let monday_09 = 1_781_514_000; // 2026-06-15 09:00 UTC (stale, a member)
+    let next_monday_09 = 1_782_118_800; // 2026-06-22 09:00 UTC
+    let mut state = seed_series_state(Some(monday_09), None);
+    let task = state.tasks.values_mut().next().expect("the head");
+    task.recur = Some(taskboard_domain::RecurRule {
+        pattern: taskboard_domain::RecurPattern::Weekly {
+            interval: taskboard_domain::recur::EveryWeeks::new(1).unwrap(),
+            on: taskboard_domain::recur::WeekdaySet::new([chrono::Weekday::Mon]).unwrap(),
+        },
+        ..daily_rule()
+    });
+    let repo = Arc::new(InMemoryRepository::with_state(state));
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        clock: clock.clone(),
+        day_roll: day_roll_enabled(),
+        ..Spawner::default()
+    })
+    .await;
+
+    one_wake().await;
+    eventually(&h.handle, |app| {
+        head_task(app).scheduled == Some(day(next_monday_09))
+    })
+    .await;
+
+    // The next local day's tick is quiet: the roll happened once.
+    let quiet_repo = repo.snapshot();
+    clock.advance(86_400);
+    one_wake().await;
+    assert_eq!(repo.snapshot().tasks, quiet_repo.tasks);
+}
+
+#[tokio::test(start_paused = true)]
+async fn storage_failure_defers_the_roll_until_it_heals() {
+    // First tick fails: nothing rolls, `StorageFailed` fires once, and
+    // the watermark did not advance — the healed next tick rolls the
+    // same day.
+    let clock = FixedClock::new(DAY0);
+    let repo = Arc::new(FlakyRepository {
+        inner: InMemoryRepository::with_state(seed_series_state(
+            Some(DAY0 - 86_400 + 32_400),
+            None,
+        )),
+        remaining_failures: std::sync::atomic::AtomicU32::new(1),
+    });
+    let (system_tx, boot_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+    // Subscribe before the spawn, and keep a strong sender alive: the
+    // engine holds the seam only as a `WeakSender`, so the test owns the
+    // channel's lifetime.
+    let mut system_rx = system_tx.subscribe();
+    let channel_liveness = system_tx.clone();
+    let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+    let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+    let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
+    let (handle, _join) = spawn_state_engine(
+        repo.clone(),
+        Arc::new(CountingIds::new()),
+        clock.clone(),
+        sync_out,
+        report_rx,
+        system_tx,
+        boot_rx,
+        notifier,
+        ReminderEngineConfig::disabled(),
+        day_roll_enabled(),
+    )
+    .await
+    .expect("engine boots");
+    let _keepalive = channel_liveness;
+
+    let target = day(DAY0 + 32_400);
+    one_wake().await;
+    assert_ne!(
+        head_task(&handle.shared_state().load()).scheduled,
+        Some(target),
+        "the failed batch rolled nothing"
+    );
+    // The failure surfaced as the shared banner signal (the edge fired
+    // once for this failure epoch).
+    let event = tokio::time::timeout(Duration::from_millis(200), system_rx.recv())
+        .await
+        .expect("an event arrived")
+        .expect("channel open");
+    assert!(matches!(event, SystemEvent::StorageFailed));
+
+    // The healed next tick rolls (durable-then-advance): the watermark
+    // never moved, so the retry is the same rollover.
+    one_wake().await;
+    eventually(&handle, |app| head_task(app).scheduled == Some(target)).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_roll_re_arms_reminders_by_construction() {
+    // A due-anchored rule on a stale head: the roll moves the due date,
+    // and the next reminder tick fires the *new* occurrence instant —
+    // the moved date is a new `(reminder, occurrence)` key, no reminder
+    // code involved.
+    let clock = FixedClock::new(DAY0);
+    let old_due = DAY0 - 2 * 86_400 + 61_200; // 2026-06-13 17:00 UTC
+    let mut state = seed_series_state(None, Some(old_due));
+    let rule_id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(700));
+    let task_id = state.tasks.keys().next().copied().expect("the head");
+    state.reminders.rules.insert(
+        rule_id,
+        taskboard_domain::ReminderRule {
+            id: rule_id,
+            task: task_id,
+            offset: taskboard_domain::ReminderOffset::before(
+                chrono::TimeDelta::try_hours(-1).unwrap(),
+            )
+            .unwrap(),
+            created_at: day(DAY0 - 86_400),
+            updated_at: day(DAY0 - 86_400),
+        },
+    );
+    let repo = Arc::new(InMemoryRepository::with_state(state));
+    let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+    let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+    let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
+    let (notifier, _notifications) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
+    let (handle, _join) = spawn_state_engine(
+        repo.clone(),
+        Arc::new(CountingIds::new()),
+        clock.clone(),
+        sync_out,
+        report_rx,
+        system_tx,
+        system_rx,
+        notifier,
+        ReminderEngineConfig {
+            enabled: true,
+            tick: Duration::from_secs(1),
+            defaults: taskboard_domain::ReminderDefaults::default(),
+        },
+        day_roll_enabled(),
+    )
+    .await
+    .expect("engine boots");
+
+    // The roll lands on the first (shared) wake…
+    let new_due = DAY0 + 61_200; // 2026-06-15 17:00 UTC
+    eventually(&handle, |app| head_task(app).duedate == Some(day(new_due))).await;
+
+    // …and the new occurrence (new due − 1 h) delivers on a later tick.
+    let new_occurrence = day(new_due - 3_600);
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let delivered = repo.snapshot().reminders.deliveries.iter().any(|d| {
+                d.reminder == taskboard_domain::ReminderRef::Rule(rule_id)
+                    && d.occurrence == new_occurrence
+            });
+            if delivered {
+                return;
+            }
+            // The occurrence is due only once the logical clock passes
+            // it: step the clock an hour and wake the ticks.
+            clock.advance(3_600);
+            tokio::time::advance(Duration::from_secs(2)).await;
+        }
+    })
+    .await
+    .expect("the rolled occurrence delivered within the deadline");
+    // The old occurrence delivered too (it was due before the roll and
+    // fired on the first wake): both facts are keyed to their own
+    // occurrence — nothing was overwritten.
+    let old_occurrence = day(old_due - 3_600);
+    assert!(
+        repo.snapshot()
+            .reminders
+            .deliveries
+            .iter()
+            .any(
+                |d| d.reminder == taskboard_domain::ReminderRef::Rule(rule_id)
+                    && d.occurrence == old_occurrence
+            )
+    );
+}
+
+#[tokio::test]
+async fn completing_a_recurring_head_spawns_over_the_live_engine() {
+    // The spawn end-to-end: the receipt is the domain plan's, the whole
+    // batch persists, and the published state carries the open
+    // successor with the rule copied verbatim.
+    let clock = FixedClock::new(DAY0);
+    let repo = Arc::new(InMemoryRepository::with_state(seed_series_state(
+        Some(DAY0 + 32_400),
+        Some(DAY0 + 61_200),
+    )));
+    let h = spawn(Spawner {
+        repo: repo.clone(),
+        clock: clock.clone(),
+        ..Spawner::default()
+    })
+    .await;
+
+    let head_id = h
+        .handle
+        .shared_state()
+        .load()
+        .tasks
+        .values()
+        .find(|t| t.recur.is_some())
+        .expect("the seeded head")
+        .id;
+    let outcome = h
+        .handle
+        .execute(StateCommand::SetTaskDone {
+            id: head_id,
+            done: true,
+        })
+        .await
+        .expect("accepted");
+    assert!(matches!(outcome, CommandOutcome::Applied));
+
+    eventually(&h.handle, |app| app.tasks.len() == 2).await;
+    let app = h.handle.shared_state().load_full();
+    let successor = app
+        .tasks
+        .values()
+        .find(|t| t.id != head_id)
+        .expect("the spawned successor");
+    assert_eq!(successor.done, None, "the successor is open");
+    assert_eq!(
+        successor.recur, app.tasks[&head_id].recur,
+        "the rule copies verbatim"
+    );
+    // Memory ≡ disk: the successor row persisted.
+    assert_eq!(
+        repo.snapshot().tasks.get(&successor.id).map(|t| t.done),
+        Some(None),
+        "the successor is durable"
+    );
+}
