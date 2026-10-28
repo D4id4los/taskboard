@@ -16,6 +16,9 @@ expression: rows
             - Alt+1
           action: nav.focus-board
         - sequence:
+            - Ctrl+Shift+B
+          action: reminder.mute
+        - sequence:
             - Ctrl+F
           action: palette.search
         - sequence:
@@ -27,6 +30,9 @@ expression: rows
         - sequence:
             - Ctrl+Q
           action: app.exit
+        - sequence:
+            - Ctrl+Shift+S
+          action: reminder.snooze
         - sequence:
             - Ctrl+T
           action: view.today
@@ -318,12 +324,24 @@ expression: rows
           action: view.today
         - sequence:
             - Ctrl+c
+            - Ctrl+b
+          action: reminder.mute
+        - sequence:
+            - Ctrl+c
             - c
           action: capture.quick
+        - sequence:
+            - Ctrl+c
+            - Ctrl+s
+          action: reminder.snooze
         - sequence:
             - Ctrl+g
             - Ctrl+/
           action: app.redo
+        - sequence:
+            - Ctrl+g
+            - Ctrl+g
+          action: task.move.cancel
         - sequence:
             - Ctrl+h
           action: app.help
@@ -829,11 +847,17 @@ expression: rows
             - k
           action: nav.prev-item
         - sequence:
+            - m
+          action: reminder.mute
+        - sequence:
             - o
           action: task.create
         - sequence:
             - Ctrl+r
           action: app.redo
+        - sequence:
+            - s
+          action: reminder.snooze
         - sequence:
             - u
           action: app.undo

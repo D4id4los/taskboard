@@ -77,6 +77,16 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+PageDown"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+PageUp"]),
     (ActionId::NavFocusBoard, ContextId::Global, &["Alt+1"]),
+    // Round 3 (D29, #231): the banner verbs' preset bindings —
+    // snooze/bell (Ctrl+Shift+U avoided: the IBus unicode composer);
+    // key-reachable exactly when a banner target is armed, NoTarget
+    // without one (the typed machinery).
+    (
+        ActionId::ReminderSnooze,
+        ContextId::Global,
+        &["Ctrl+Shift+S"],
+    ),
+    (ActionId::ReminderMute, ContextId::Global, &["Ctrl+Shift+B"]),
     // Round 2 (D16): move-cancel is all-preset via Escape (Global);
     // the emacs C-g alternate lives in Board, never Global (the
     // exact-match-first resolution keeps `app.redo`'s C-g prefix
@@ -262,6 +272,29 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     // pending prefix (the resolver is exact-match-first, so a Global
     // C-g would make `app.redo` permanently unreachable).
     (ActionId::TaskMoveCancel, ContextId::Global, &["Escape"]),
+    // Round 3 (D28): the double-C-g convention — the first C-g parks
+    // as a pending prefix (of both C-g C-g and C-g C-/), the second
+    // exactly resolves the cancel. Over the Board context the lone
+    // C-g still cancels instantly (exact-match-first); from the
+    // Today/TaskDetail chains the convention is the only C-g route.
+    (
+        ActionId::TaskMoveCancel,
+        ContextId::Global,
+        &["Ctrl+g", "Ctrl+g"],
+    ),
+    // Round 3 (D29, #231): the banner verbs join the C-c domain
+    // family (C-c C-m avoided — Ctrl+M is CR-ambiguous; distinct from
+    // C-c Ctrl+b board-create — no prefix relation).
+    (
+        ActionId::ReminderSnooze,
+        ContextId::Global,
+        &["Ctrl+c", "Ctrl+s"],
+    ),
+    (
+        ActionId::ReminderMute,
+        ContextId::Global,
+        &["Ctrl+c", "Ctrl+b"],
+    ),
     // Board
     (ActionId::NavNextItem, ContextId::Board, &["Ctrl+n"]),
     (ActionId::NavPrevItem, ContextId::Board, &["Ctrl+p"]),
@@ -435,6 +468,11 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::ViNormal, &["Return"]),
     (ActionId::TaskDelete, ContextId::ViNormal, &["d", "d"]),
     (ActionId::TaskMove, ContextId::ViNormal, &["g", "m"]),
+    // Round 3 (D29, #231): the banner verbs — bare s/m in ViNormal
+    // (free; no family growth). Global stays exactly one row (the
+    // vi-shape contract).
+    (ActionId::ReminderSnooze, ContextId::ViNormal, &["s"]),
+    (ActionId::ReminderMute, ContextId::ViNormal, &["m"]),
     // Round 2 (D16): vi's cancel lives in ViNormal, never Global (the
     // vi-shape contract keeps Global empty); Escape conflicts with
     // nothing there — ViInsert's Escape still wins while typing.
