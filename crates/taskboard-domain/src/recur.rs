@@ -51,6 +51,62 @@ pub enum InvalidRecur {
         /// The rejected position verbatim.
         got: u32,
     },
+    /// A weekday token the three-letter lowercase vocabulary does not
+    /// name (`Mon`, `xyz`, an empty comma slot — the text-form grammar's
+    /// only input class whose rejection is not a range violation).
+    #[error("unknown weekday {got:?}")]
+    BadWeekday {
+        /// The rejected token verbatim.
+        got: String,
+    },
+    /// A numeric token that is not a number (`abc` where `Nd`/digits
+    /// belong). Range violations of *parsed* numbers keep their own
+    /// variants; this carries the unparsable text verbatim.
+    #[error("not a number {got:?}")]
+    BadNumber {
+        /// The rejected token verbatim.
+        got: String,
+    },
+}
+
+/// The lowercase three-letter weekday token of `day` (`mon`..`sun`).
+fn weekday_token(day: Weekday) -> &'static str {
+    match day {
+        Weekday::Mon => "mon",
+        Weekday::Tue => "tue",
+        Weekday::Wed => "wed",
+        Weekday::Thu => "thu",
+        Weekday::Fri => "fri",
+        Weekday::Sat => "sat",
+        Weekday::Sun => "sun",
+    }
+}
+
+/// The weekday a lowercase three-letter token names; case-sensitive by
+/// ruling (the importance-vocabulary posture — `Mon` is rejected, the
+/// vocabulary is lowercase everywhere it renders).
+fn weekday_from_token(token: &str) -> Option<Weekday> {
+    match token {
+        "mon" => Some(Weekday::Mon),
+        "tue" => Some(Weekday::Tue),
+        "wed" => Some(Weekday::Wed),
+        "thu" => Some(Weekday::Thu),
+        "fri" => Some(Weekday::Fri),
+        "sat" => Some(Weekday::Sat),
+        "sun" => Some(Weekday::Sun),
+        _ => None,
+    }
+}
+
+/// The nth-weekday position's text token (`1st`…`5th`).
+fn nth_token(n: u8) -> String {
+    let suffix = match n {
+        1 => "st",
+        2 => "nd",
+        3 => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
 }
 
 /// Repeat interval in whole days; the inner value is never 0.
@@ -84,6 +140,28 @@ impl EveryDays {
     #[must_use]
     pub const fn get(self) -> u16 {
         self.0
+    }
+
+    /// The canonical text form (`3d`), the `--daily` flag's vocabulary.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        format!("{}d", self.0)
+    }
+
+    /// Parses the text form: digits with an optional `d` suffix
+    /// (`3`, `3d`). Documented leniency: the suffix is the canonical
+    /// render; bare digits are accepted so the flag can read `--daily 3`.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidRecur::BadNumber`] for non-numeric text,
+    /// [`InvalidRecur::ZeroInterval`] for 0.
+    pub fn parse_text_form(raw: &str) -> Result<Self, InvalidRecur> {
+        let digits = raw.strip_suffix('d').unwrap_or(raw);
+        let n = digits.parse::<u16>().map_err(|_| InvalidRecur::BadNumber {
+            got: raw.to_owned(),
+        })?;
+        Self::new(n)
     }
 }
 
@@ -120,6 +198,29 @@ impl EveryWeeks {
     #[must_use]
     pub const fn get(self) -> u16 {
         self.0
+    }
+
+    /// The canonical text form (`2w`), the `--every-weeks` flag's
+    /// vocabulary.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        format!("{}w", self.0)
+    }
+
+    /// Parses the text form: digits with an optional `w` suffix
+    /// (`2`, `2w`); the same documented bare-digit leniency as
+    /// [`EveryDays::parse_text_form`].
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidRecur::BadNumber`] for non-numeric text,
+    /// [`InvalidRecur::ZeroInterval`] for 0.
+    pub fn parse_text_form(raw: &str) -> Result<Self, InvalidRecur> {
+        let digits = raw.strip_suffix('w').unwrap_or(raw);
+        let n = digits.parse::<u16>().map_err(|_| InvalidRecur::BadNumber {
+            got: raw.to_owned(),
+        })?;
+        Self::new(n)
     }
 }
 
@@ -194,6 +295,37 @@ impl WeekdaySet {
     pub const fn is_empty(&self) -> bool {
         false
     }
+
+    /// The canonical text form: the members, comma-joined, in canonical
+    /// (Mon..Sun) order (`mon,wed,fri`) — the `--weekly` flag's
+    /// vocabulary.
+    #[must_use]
+    pub fn text_form(&self) -> String {
+        self.iter().map(weekday_token).collect::<Vec<_>>().join(",")
+    }
+
+    /// Parses the comma-separated three-letter lowercase vocabulary
+    /// (`mon,wed,fri`); duplicates dedup silently (set semantics) and
+    /// the canonical order is the mint's, not the input's.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidRecur::EmptyWeekdaySet`] for empty input (after split —
+    /// whitespace is not a member), [`InvalidRecur::BadWeekday`] for a
+    /// token the vocabulary does not name, case-sensitively.
+    pub fn parse_text_form(raw: &str) -> Result<Self, InvalidRecur> {
+        if raw.trim().is_empty() {
+            return Err(InvalidRecur::EmptyWeekdaySet);
+        }
+        let mut days = Vec::new();
+        for token in raw.split(',') {
+            let day = weekday_from_token(token.trim()).ok_or_else(|| InvalidRecur::BadWeekday {
+                got: token.to_owned(),
+            })?;
+            days.push(day);
+        }
+        Self::new(days)
+    }
 }
 
 impl TryFrom<Vec<Weekday>> for WeekdaySet {
@@ -234,6 +366,26 @@ impl DayOfMonth {
     pub const fn get(self) -> u8 {
         self.0
     }
+
+    /// The canonical text form (`15`), the `--monthly` day anchor's
+    /// vocabulary.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        self.0.to_string()
+    }
+
+    /// Parses the text form: bare digits.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidRecur::BadNumber`] for non-numeric text,
+    /// [`InvalidRecur::DayOutOfRange`] outside `1..=31`.
+    pub fn parse_text_form(raw: &str) -> Result<Self, InvalidRecur> {
+        let n = raw.parse::<u32>().map_err(|_| InvalidRecur::BadNumber {
+            got: raw.to_owned(),
+        })?;
+        Self::new(n)
+    }
 }
 
 impl TryFrom<u32> for DayOfMonth {
@@ -272,6 +424,34 @@ impl NthWeek {
     #[must_use]
     pub const fn get(self) -> u8 {
         self.0
+    }
+
+    /// The canonical text form (`2nd`), the `--monthly` nth anchor's
+    /// position vocabulary.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        nth_token(self.0)
+    }
+
+    /// Parses the text form: digits with an ordinal suffix (`2nd`; the
+    /// suffix is part of the vocabulary — `2` alone is an `OnDay` day).
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidRecur::BadNumber`] for non-numeric or suffix-less text,
+    /// [`InvalidRecur::WeekOutOfRange`] outside `1..=5`.
+    pub fn parse_text_form(raw: &str) -> Result<Self, InvalidRecur> {
+        let bad = || InvalidRecur::BadNumber {
+            got: raw.to_owned(),
+        };
+        let digits = raw
+            .strip_suffix("st")
+            .or_else(|| raw.strip_suffix("nd"))
+            .or_else(|| raw.strip_suffix("rd"))
+            .or_else(|| raw.strip_suffix("th"))
+            .ok_or_else(bad)?;
+        let n = digits.parse::<u32>().map_err(|_| bad())?;
+        Self::new(n)
     }
 }
 
@@ -313,6 +493,25 @@ impl OccurrenceCount {
     pub const fn get(self) -> u32 {
         self.0
     }
+
+    /// The canonical text form (`10`), the `--count` flag's vocabulary.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        self.0.to_string()
+    }
+
+    /// Parses the text form: bare digits.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidRecur::BadNumber`] for non-numeric text,
+    /// [`InvalidRecur::ZeroInterval`] for 0.
+    pub fn parse_text_form(raw: &str) -> Result<Self, InvalidRecur> {
+        let n = raw.parse::<u32>().map_err(|_| InvalidRecur::BadNumber {
+            got: raw.to_owned(),
+        })?;
+        Self::new(n)
+    }
 }
 
 impl TryFrom<u32> for OccurrenceCount {
@@ -330,6 +529,43 @@ pub enum MonthlyAnchor {
     OnDay(DayOfMonth),
     /// The nth weekday of the month (no 5th → no occurrence that month).
     NthWeekday(NthWeek, Weekday),
+}
+
+impl MonthlyAnchor {
+    /// The canonical text form: `15` ([`MonthlyAnchor::OnDay`]) or
+    /// `2nd-mon` ([`MonthlyAnchor::NthWeekday`]) — the `--monthly`
+    /// flag's vocabulary.
+    #[must_use]
+    pub fn text_form(self) -> String {
+        match self {
+            Self::OnDay(day) => day.text_form(),
+            Self::NthWeekday(k, weekday) => format!("{}-{}", k.text_form(), weekday_token(weekday)),
+        }
+    }
+
+    /// Parses the text form: bare digits → [`MonthlyAnchor::OnDay`],
+    /// `<k><suffix>-<day>` → [`MonthlyAnchor::NthWeekday`]. A month
+    /// lacking the k-th weekday contributes no member — legal grammar,
+    /// legal rule (chunk 1's D5).
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidRecur::BadNumber`] for an unparsable position,
+    /// [`InvalidRecur::WeekOutOfRange`] for a position outside `1..=5`
+    /// (`15th-mon` is a range rejection, not a fifth meaning),
+    /// [`InvalidRecur::DayOutOfRange`] / [`InvalidRecur::BadNumber`] /
+    /// [`InvalidRecur::BadWeekday`] per [`DayOfMonth::parse_text_form`]
+    /// / the weekday token.
+    pub fn parse_text_form(raw: &str) -> Result<Self, InvalidRecur> {
+        let Some((position, day)) = raw.split_once('-') else {
+            return DayOfMonth::parse_text_form(raw).map(Self::OnDay);
+        };
+        let k = NthWeek::parse_text_form(position)?;
+        let weekday = weekday_from_token(day.trim()).ok_or_else(|| InvalidRecur::BadWeekday {
+            got: day.to_owned(),
+        })?;
+        Ok(Self::NthWeekday(k, weekday))
+    }
 }
 
 /// The recurrence pattern proper: interval grammar only — anchor and
@@ -357,6 +593,30 @@ pub enum RecurPattern {
     },
 }
 
+impl RecurPattern {
+    /// The canonical render-only text form (`daily`, `every 3d`,
+    /// `weekly on mon,fri`, `every 2w on mon`, `monthly on 15`,
+    /// `monthly on 2nd-mon`) — the receipt/badge label glue's input.
+    /// Deliberately no `parse_text_form`: the flag grammar is the only
+    /// input syntax (D-S8), so no stringly grammar can grow here.
+    #[must_use]
+    pub fn text_form(&self) -> String {
+        match self {
+            Self::Daily { every } if every.get() == 1 => "daily".to_owned(),
+            Self::Daily { every } => format!("every {}", every.text_form()),
+            Self::Weekly { interval, on } => {
+                let weeks = if interval.get() == 1 {
+                    "weekly".to_owned()
+                } else {
+                    format!("every {}", interval.text_form())
+                };
+                format!("{weeks} on {}", on.text_form())
+            }
+            Self::Monthly { on } => format!("monthly on {}", on.text_form()),
+        }
+    }
+}
+
 /// Where a series stops. `Until` is arithmetic (the pure schedule
 /// filters it); `Count` is history (evaluated at the engine, which the
 /// pure functions cannot see — no counter column exists).
@@ -368,6 +628,21 @@ pub enum RecurBound {
     Until(NaiveDate),
     /// At most this many completed occurrences, engine-evaluated.
     Count(OccurrenceCount),
+}
+
+impl RecurBound {
+    /// The canonical render-only text form (empty when unbounded, else
+    /// `until 2026-12-31` | `count 10`) — the receipt's bound field's
+    /// vocabulary, and deliberately parse-free (D-S8, the flag grammar
+    /// is the only input syntax).
+    #[must_use]
+    pub fn text_form(&self) -> String {
+        match self {
+            Self::None => String::new(),
+            Self::Until(until) => format!("until {until}"),
+            Self::Count(n) => format!("count {}", n.text_form()),
+        }
+    }
 }
 
 /// A recurring-series rule — the open head task's template
@@ -810,6 +1085,68 @@ pub fn occurrence_outcome(
         Some(end) if now >= end => OccurrenceOutcome::Missed,
         _ => OccurrenceOutcome::NotYetReachable,
     }
+}
+
+/// What a head advertises as its next occurrence — the one law both
+/// surfaces (the `tasks repeat` receipt and the recurring badge) read,
+/// so they can never disagree (D-S5). Composed from the existing
+/// arithmetic: no new scheduling law.
+///
+/// - **Stale** (open, dated, reference strictly before today's
+///   window-date — [`roll_reference_date`] minus the dateless fallback,
+///   the roll predicate's read side): advertises [`roll_target`].
+/// - **Fresh** (dated, reference ≥ today): advertises
+///   [`next_after`] from the reference date.
+/// - **Dateless**: never stale; projects from the window-date of
+///   `now`.
+///
+/// `date: None` names the `Until` bound excluding the next member —
+/// this head is the series' last (the badge renders the pattern; the
+/// engine's own spawn/roll enforces the bound). `Count` is never
+/// evaluated here: it is engine-evaluated from completion history
+/// (chunk 1's D6), and the badge shows schedule truth, not quota
+/// state. The caller gates on liveness/completion itself (surfaces
+/// check `is_open()` — the done head's badge is a display policy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NextOccurrence {
+    /// The next advertised member date; `None` past the `Until` bound.
+    pub date: Option<NaiveDate>,
+    /// The overdue-recurring flag: the head's reference date is
+    /// strictly before today's window-date.
+    pub stale: bool,
+}
+
+/// Evaluates [`NextOccurrence`] for `head` under its rule.
+///
+/// # Panics
+///
+/// Only via the stale arm's `expect`: staleness is derived from the
+/// same `roll_reference_date` read, so a stale verdict implies a
+/// reference date — the `expect` guards the invariant, never input.
+#[must_use]
+pub fn next_occurrence(
+    rule: &RecurRule,
+    head: &Task,
+    day: crate::days::DayCalendar,
+    now: DateTime<Utc>,
+) -> NextOccurrence {
+    let today = day.today(now);
+    let reference = roll_reference_date(head, day);
+    let stale = reference.is_some_and(|r| r < today);
+    let until_admits = |d: NaiveDate| match rule.bound {
+        RecurBound::Until(until) => d <= until,
+        _ => true,
+    };
+    let date = if stale {
+        let r = reference.expect("stale implies a reference date");
+        let target = roll_target(&rule.pattern, rule.anchor, r, today);
+        until_admits(target).then_some(target)
+    } else {
+        let from = reference.unwrap_or(today);
+        let next = next_after(&rule.pattern, rule.anchor, from);
+        until_admits(next).then_some(next)
+    };
+    NextOccurrence { date, stale }
 }
 
 #[cfg(test)]
@@ -1642,6 +1979,490 @@ mod arithmetic_tests {
                         "adjacent weeks never align"
                     );
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_form_tests {
+    use super::*;
+    use crate::test_support::{proptest_config, weekday_strategy};
+    use InvalidRecur as E;
+    use chrono::Weekday::*;
+    use proptest::prelude::*;
+
+    fn set(days: &[Weekday]) -> WeekdaySet {
+        WeekdaySet::new(days.iter().copied()).unwrap()
+    }
+
+    #[test]
+    fn interval_text_forms_round_trip_and_reject_the_edges() {
+        // Accept edges and the canonical form.
+        assert_eq!(EveryDays::parse_text_form("3d").unwrap().get(), 3);
+        assert_eq!(EveryDays::parse_text_form("3").unwrap().get(), 3);
+        assert_eq!(EveryDays::parse_text_form("1").unwrap().text_form(), "1d");
+        assert_eq!(EveryWeeks::parse_text_form("2w").unwrap().text_form(), "2w");
+        assert_eq!(EveryWeeks::parse_text_form("2").unwrap().get(), 2);
+        // Reject edges: zero intervals and garbage.
+        assert!(matches!(
+            EveryDays::parse_text_form("0d"),
+            Err(E::ZeroInterval)
+        ));
+        assert!(matches!(
+            EveryWeeks::parse_text_form("0w"),
+            Err(E::ZeroInterval)
+        ));
+        assert!(matches!(
+            EveryDays::parse_text_form("abc"),
+            Err(E::BadNumber { got }) if got == "abc"
+        ));
+        assert!(matches!(
+            EveryWeeks::parse_text_form("soon"),
+            Err(E::BadNumber { got }) if got == "soon"
+        ));
+    }
+
+    #[test]
+    fn count_text_form_rejects_zero_and_garbage() {
+        assert_eq!(
+            OccurrenceCount::parse_text_form("10").unwrap().text_form(),
+            "10"
+        );
+        assert!(matches!(
+            OccurrenceCount::parse_text_form("0"),
+            Err(E::ZeroInterval)
+        ));
+        assert!(matches!(
+            OccurrenceCount::parse_text_form("many"),
+            Err(E::BadNumber { .. })
+        ));
+    }
+
+    #[test]
+    fn weekday_set_text_form_is_canonical_case_sensitive_and_set_semantic() {
+        assert_eq!(set(&[Mon, Wed, Fri]).text_form(), "mon,wed,fri");
+        // Canonical order regardless of input order; duplicates dedup.
+        assert_eq!(
+            WeekdaySet::parse_text_form("sun,wed,mon").unwrap(),
+            set(&[Mon, Wed, Sun])
+        );
+        assert_eq!(
+            WeekdaySet::parse_text_form("mon,mon").unwrap(),
+            set(&[Mon]),
+            "duplicates dedup silently"
+        );
+        // Case-sensitive: `Mon` is not in the lowercase vocabulary.
+        assert!(matches!(
+            WeekdaySet::parse_text_form("Mon"),
+            Err(E::BadWeekday { got }) if got == "Mon"
+        ));
+        // An empty comma slot is a typed weekday rejection.
+        assert!(matches!(
+            WeekdaySet::parse_text_form("mon,,"),
+            Err(E::BadWeekday { got }) if got.is_empty()
+        ));
+        assert!(matches!(
+            WeekdaySet::parse_text_form(""),
+            Err(E::EmptyWeekdaySet)
+        ));
+    }
+
+    #[test]
+    fn day_of_month_text_form_rejects_the_range_edges() {
+        assert_eq!(DayOfMonth::parse_text_form("15").unwrap().text_form(), "15");
+        // The day/nth range edges, typed.
+        for bad in ["0", "32"] {
+            let err = DayOfMonth::parse_text_form(bad).expect_err(bad);
+            assert!(
+                matches!(err, E::DayOutOfRange { got } if got.to_string() == bad),
+                "{bad}"
+            );
+        }
+        assert!(matches!(
+            DayOfMonth::parse_text_form("fifteen"),
+            Err(E::BadNumber { .. })
+        ));
+        // The ordinal suffix is part of the nth vocabulary.
+        assert_eq!(NthWeek::parse_text_form("2nd").unwrap().get(), 2);
+        assert!(matches!(
+            NthWeek::parse_text_form("6th"),
+            Err(E::WeekOutOfRange { got }) if got == 6
+        ));
+        assert!(matches!(
+            NthWeek::parse_text_form("2"),
+            Err(E::BadNumber { .. })
+        ));
+    }
+
+    #[test]
+    fn monthly_anchor_text_form_round_trips_both_shapes() {
+        let on_day = MonthlyAnchor::parse_text_form("15").unwrap();
+        assert_eq!(on_day, MonthlyAnchor::OnDay(DayOfMonth::new(15).unwrap()));
+        assert_eq!(on_day.text_form(), "15");
+        let nth = MonthlyAnchor::parse_text_form("2nd-mon").unwrap();
+        assert_eq!(
+            nth,
+            MonthlyAnchor::NthWeekday(NthWeek::new(2).unwrap(), Mon)
+        );
+        assert_eq!(nth.text_form(), "2nd-mon");
+        // A position outside 1..=5 is a typed range rejection, never a
+        // fifth meaning.
+        assert!(matches!(
+            MonthlyAnchor::parse_text_form("15th-mon"),
+            Err(E::WeekOutOfRange { got }) if got == 15
+        ));
+        // The day token stays vocabulary-checked.
+        assert!(matches!(
+            MonthlyAnchor::parse_text_form("2nd-XYZ"),
+            Err(E::BadWeekday { got }) if got == "XYZ"
+        ));
+        assert!(matches!(
+            MonthlyAnchor::parse_text_form("zz"),
+            Err(E::BadNumber { .. })
+        ));
+    }
+
+    #[test]
+    fn pattern_and_bound_text_forms_render_canonically() {
+        let one = EveryDays::new(1).unwrap();
+        let three = EveryDays::new(3).unwrap();
+        let one_week = EveryWeeks::new(1).unwrap();
+        let two_weeks = EveryWeeks::new(2).unwrap();
+        assert_eq!(RecurPattern::Daily { every: one }.text_form(), "daily");
+        assert_eq!(RecurPattern::Daily { every: three }.text_form(), "every 3d");
+        assert_eq!(
+            RecurPattern::Weekly {
+                interval: one_week,
+                on: set(&[Mon, Fri])
+            }
+            .text_form(),
+            "weekly on mon,fri"
+        );
+        assert_eq!(
+            RecurPattern::Weekly {
+                interval: two_weeks,
+                on: set(&[Mon])
+            }
+            .text_form(),
+            "every 2w on mon"
+        );
+        assert_eq!(
+            RecurPattern::Monthly {
+                on: MonthlyAnchor::OnDay(DayOfMonth::new(15).unwrap())
+            }
+            .text_form(),
+            "monthly on 15"
+        );
+        assert_eq!(
+            RecurPattern::Monthly {
+                on: MonthlyAnchor::NthWeekday(NthWeek::new(2).unwrap(), Fri)
+            }
+            .text_form(),
+            "monthly on 2nd-fri"
+        );
+        assert_eq!(RecurBound::None.text_form(), "");
+        assert_eq!(
+            RecurBound::Until(NaiveDate::from_ymd_opt(2026, 12, 31).unwrap()).text_form(),
+            "until 2026-12-31"
+        );
+        assert_eq!(
+            RecurBound::Count(OccurrenceCount::new(10).unwrap()).text_form(),
+            "count 10"
+        );
+    }
+
+    // T2 — the round-trip property over generated components.
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        #[test]
+        fn component_text_forms_round_trip(
+            days in 1_u16..=u16::MAX,
+            weeks in 1_u16..=u16::MAX,
+            count in 1_u32..=u32::MAX,
+            day in 1_u32..=31,
+            nth in 1_u32..=5,
+            weekday in weekday_strategy(),
+        ) {
+            let ed = EveryDays::new(days).unwrap();
+            prop_assert_eq!(EveryDays::parse_text_form(&ed.text_form()), Ok(ed));
+            let ew = EveryWeeks::new(weeks).unwrap();
+            prop_assert_eq!(EveryWeeks::parse_text_form(&ew.text_form()), Ok(ew));
+            let oc = OccurrenceCount::new(count).unwrap();
+            prop_assert_eq!(OccurrenceCount::parse_text_form(&oc.text_form()), Ok(oc));
+            let dm = DayOfMonth::new(day).unwrap();
+            prop_assert_eq!(DayOfMonth::parse_text_form(&dm.text_form()), Ok(dm));
+            let nw = NthWeek::new(nth).unwrap();
+            prop_assert_eq!(NthWeek::parse_text_form(&nw.text_form()), Ok(nw));
+            let anchor = MonthlyAnchor::NthWeekday(nw, weekday);
+            prop_assert_eq!(
+                MonthlyAnchor::parse_text_form(&anchor.text_form()),
+                Ok(anchor)
+            );
+        }
+
+        #[test]
+        fn weekday_set_text_form_round_trips(days in proptest::collection::vec(weekday_strategy(), 1..8)) {
+            let parsed = WeekdaySet::new(days).unwrap();
+            prop_assert_eq!(WeekdaySet::parse_text_form(&parsed.text_form()), Ok(parsed));
+        }
+    }
+}
+
+#[cfg(test)]
+mod next_occurrence_tests {
+    use super::*;
+    use crate::entities::TaskClocks;
+    use crate::test_support::{proptest_config, recur_rule_strategy};
+    use chrono::{TimeZone as _, Weekday};
+    use proptest::prelude::*;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        chrono::Utc.timestamp_opt(secs, 0).unwrap()
+    }
+
+    /// An open head scheduled at midnight UTC of `scheduled` (or
+    /// dateless when `None`).
+    fn head(scheduled: Option<NaiveDate>) -> Task {
+        Task {
+            id: crate::ids::TaskId::from_uuid(uuid::Uuid::from_u128(1)),
+            remote: None,
+            title: "head".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: scheduled.map(|d| ts(0) + days((d - date(1970, 1, 1)).num_days())),
+            done: None,
+            stack: crate::ids::StackId::from_uuid(uuid::Uuid::from_u128(2)),
+            order: 0,
+            label_memberships: std::collections::BTreeMap::default(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: ts(0),
+                description: ts(0),
+                duedate: ts(0),
+                scheduled: ts(0),
+                done: ts(0),
+                position: ts(0),
+                effort: ts(0),
+                importance: ts(0),
+                urgency: ts(0),
+                recur: ts(0),
+                archived: ts(0),
+                deleted: ts(0),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        }
+    }
+
+    fn calendar(start: chrono::NaiveTime, offset_seconds: i32) -> crate::days::DayCalendar {
+        crate::days::DayCalendar {
+            day_start_time: start,
+            offset: chrono::FixedOffset::east_opt(offset_seconds).unwrap(),
+        }
+    }
+
+    fn rule(pattern: RecurPattern, anchor: NaiveDate, bound: RecurBound) -> RecurRule {
+        RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+            anchor,
+            pattern,
+            bound,
+            continued_from: None,
+        }
+    }
+
+    fn days(n: i64) -> chrono::TimeDelta {
+        chrono::TimeDelta::try_days(n).unwrap()
+    }
+
+    /// The epoch instant of `d`'s UTC midnight.
+    fn midnight_utc(d: NaiveDate) -> DateTime<Utc> {
+        ts((d - date(1970, 1, 1)).num_days() * 86_400)
+    }
+
+    #[test]
+    fn stale_daily_advertises_today_and_is_stale() {
+        let day = calendar(chrono::NaiveTime::MIN, 0);
+        let anchor = date(2026, 10, 1);
+        let r = rule(
+            RecurPattern::Daily {
+                every: EveryDays::new(1).unwrap(),
+            },
+            anchor,
+            RecurBound::None,
+        );
+        // Head scheduled 2026-10-19, today is 2026-10-21 (midnight UTC).
+        let now = midnight_utc(date(2026, 10, 21));
+        let h = head(Some(date(2026, 10, 19)));
+        let next = next_occurrence(&r, &h, day, now);
+        assert!(next.stale);
+        assert_eq!(next.date, Some(date(2026, 10, 21)));
+    }
+
+    #[test]
+    fn stale_weekly_skips_ahead_to_the_next_member() {
+        let day = calendar(chrono::NaiveTime::MIN, 0);
+        // Weekly on Mondays, anchor a Monday; today is Wednesday
+        // 2026-10-21, head stale at Monday 2026-10-19 → next Monday.
+        let monday = date(2026, 10, 5);
+        let r = rule(
+            RecurPattern::Weekly {
+                interval: EveryWeeks::new(1).unwrap(),
+                on: WeekdaySet::new([Weekday::Mon]).unwrap(),
+            },
+            monday,
+            RecurBound::None,
+        );
+        let now = midnight_utc(date(2026, 10, 21));
+        let next = next_occurrence(&r, &head(Some(date(2026, 10, 19))), day, now);
+        assert!(next.stale);
+        assert_eq!(next.date, Some(date(2026, 10, 26)));
+    }
+
+    #[test]
+    fn fresh_head_advertises_next_after_from_its_reference() {
+        let day = calendar(chrono::NaiveTime::MIN, 0);
+        let anchor = date(2026, 10, 1);
+        let r = rule(
+            RecurPattern::Daily {
+                every: EveryDays::new(3).unwrap(),
+            },
+            anchor,
+            RecurBound::None,
+        );
+        // Reference today (2026-10-21): the next member is strictly
+        // after — the anchor-aligned grid 1,4,…,19,22 lands on the 22nd.
+        let now = midnight_utc(date(2026, 10, 21));
+        let next = next_occurrence(&r, &head(Some(date(2026, 10, 21))), day, now);
+        assert!(!next.stale);
+        assert_eq!(next.date, Some(date(2026, 10, 22)));
+    }
+
+    #[test]
+    fn a_dateless_head_is_never_stale_and_projects_from_the_window_date() {
+        let day = calendar(chrono::NaiveTime::MIN, 0);
+        let anchor = date(2026, 10, 1);
+        let r = rule(
+            RecurPattern::Daily {
+                every: EveryDays::new(1).unwrap(),
+            },
+            anchor,
+            RecurBound::None,
+        );
+        let now = midnight_utc(date(2026, 10, 21));
+        let next = next_occurrence(&r, &head(None), day, now);
+        assert!(!next.stale);
+        assert_eq!(next.date, Some(date(2026, 10, 22)));
+    }
+
+    #[test]
+    fn the_night_owl_window_reads_early_morning_as_yesterday() {
+        // Day starts 05:00, offset +02:00. `now` is 03:00 local on the
+        // 6th — the window-date is the *5th*; a head scheduled the 5th
+        // is fresh (reference == today), not stale.
+        let day = calendar(chrono::NaiveTime::from_hms_opt(5, 0, 0).unwrap(), 7_200);
+        let anchor = date(2026, 10, 1);
+        let r = rule(
+            RecurPattern::Daily {
+                every: EveryDays::new(1).unwrap(),
+            },
+            anchor,
+            RecurBound::None,
+        );
+        // 2026-10-06 03:00 local (+02:00) = 01:00 UTC on the 6th.
+        let now = midnight_utc(date(2026, 10, 6)) + chrono::TimeDelta::try_hours(1).unwrap();
+        let next = next_occurrence(&r, &head(Some(date(2026, 10, 5))), day, now);
+        assert!(!next.stale, "03:00 with a 05:00 start is still the 5th");
+        assert_eq!(next.date, Some(date(2026, 10, 6)));
+    }
+
+    #[test]
+    fn an_exhausted_until_bound_advertises_nothing() {
+        let day = calendar(chrono::NaiveTime::MIN, 0);
+        let anchor = date(2026, 10, 1);
+        let r = rule(
+            RecurPattern::Daily {
+                every: EveryDays::new(1).unwrap(),
+            },
+            anchor,
+            RecurBound::Until(date(2026, 10, 21)),
+        );
+        let now = midnight_utc(date(2026, 10, 21));
+        // Fresh head: next_after says the 22nd, past the bound → None.
+        let next = next_occurrence(&r, &head(Some(date(2026, 10, 21))), day, now);
+        assert!(!next.stale);
+        assert_eq!(next.date, None);
+        // A stale head whose roll target passes the bound likewise.
+        let stale_head = head(Some(date(2026, 10, 19)));
+        let next = next_occurrence(&r, &stale_head, day, now);
+        // roll_target catches up to the 21st, which the inclusive bound
+        // still admits.
+        assert_eq!(next.date, Some(date(2026, 10, 21)));
+    }
+
+    // The property: the law never disagrees with the arithmetic it
+    // composes — stale ⇒ roll_target (and forward), fresh ⇒ next_after,
+    // and the Until bound is never exceeded by an advertised date.
+    proptest! {
+        #![proptest_config(proptest_config(256))]
+
+        #[test]
+        fn next_occurrence_matches_its_composed_laws(
+            rule in recur_rule_strategy(),
+            scheduled_offset in 0_i64..=4_000,
+            now_offset in 0_i64..=4_000,
+            day_start_seconds in 0_u32..=86_399,
+            offset_seconds in -50_400_i32..=50_400,
+        ) {
+            let day = calendar(
+                chrono::NaiveTime::from_num_seconds_from_midnight_opt(day_start_seconds, 0)
+                    .expect("valid time of day"),
+                offset_seconds,
+            );
+            let scheduled = rule
+                .anchor
+                .checked_add_signed(days(scheduled_offset.min(now_offset)))
+                .expect("in range");
+            let base = date(2026, 1, 1).and_hms_opt(0, 0, 0).unwrap();
+            let now = (base + days(now_offset)).and_utc();
+            let h = head(Some(scheduled));
+            let next = next_occurrence(&rule, &h, day, now);
+            let today = day.today(now);
+            let reference = roll_reference_date(&h, day).unwrap();
+            let admits = |d: NaiveDate| match rule.bound {
+                RecurBound::Until(u) if d > u => None,
+                _ => Some(d),
+            };
+            if reference < today {
+                prop_assert!(next.stale);
+                prop_assert_eq!(
+                    next.date,
+                    admits(roll_target(&rule.pattern, rule.anchor, reference, today))
+                );
+                if let Some(d) = next.date {
+                    prop_assert!(d > reference);
+                }
+            } else {
+                prop_assert!(!next.stale);
+                prop_assert_eq!(
+                    next.date,
+                    admits(next_after(&rule.pattern, rule.anchor, reference))
+                );
+            }
+            // The Until bound is never exceeded (Count is invisible).
+            if let RecurBound::Until(u) = rule.bound {
+                prop_assert!(next.date.is_none_or(|d| d <= u));
             }
         }
     }
