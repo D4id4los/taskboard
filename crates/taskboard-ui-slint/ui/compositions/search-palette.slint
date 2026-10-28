@@ -29,17 +29,27 @@ export component SearchPalette inherits Rectangle {
     callback text-flow-focus-lost();
     callback row-activated(int);
 
+    // Content-driven height (round-3 D24): the panel is its rows,
+    // never a pane — the app-window clamp keeps it above the status
+    // bar; the fixed input row cannot absorb the surplus.
+    height: content.preferred-height;
+
     background: Theme.surface-raised;
     border-radius: Theme.radius-medium;
     border-width: Theme.focus-ring-width;
     border-color: Semantic.focus-ring;
     drop-shadow-blur: 12px;
 
-    VerticalLayout {
+    content := VerticalLayout {
         padding: Theme.space-2;
         spacing: Theme.space-1;
 
-        TextField {
+        // The input row is fixed at the field's natural single-line
+        // height (round-3 D24): the surplus never distributes into
+        // the field — the query row cannot grow with the palette.
+        query-field := TextField {
+            height: self.natural-height;
+            vertical-stretch: 0;
             placeholder: "Search…";
             label: "Search";
             edited(text) => root.query-edited(text);
@@ -47,6 +57,7 @@ export component SearchPalette inherits Rectangle {
         }
 
         for row[index] in root.rows: ListRow {
+            vertical-stretch: 0;
             text: row.text;
             meta: row.meta;
             emphasis: index == root.selected-index;
@@ -56,6 +67,7 @@ export component SearchPalette inherits Rectangle {
         }
 
         RoleText {
+            vertical-stretch: 0;
             role: Typography.caption;
             text-color: Theme.text-secondary;
             text: "+" + root.overflow + " more";

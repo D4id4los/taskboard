@@ -83,6 +83,13 @@ export component TextField inherits Rectangle {
         }
     }
 
+    // The single-line fact (round-3 D24): the height the widget
+    // already computes for its min-height, exposed so callers can pin
+    // an input row's height in a content-driven layout (the search
+    // palette). Tokens only.
+    out property <length> natural-height: placeholder-text.preferred-height
+        + 2 * Theme.space-2;
+
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;
     border-width: root.validity == FieldValidity.neutral
