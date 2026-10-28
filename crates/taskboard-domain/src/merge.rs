@@ -1899,6 +1899,157 @@ mod tests {
         );
     }
 
+    // ---- the echo translation (R9a/R9b labels, #129) ------------------
+
+    #[test]
+    fn the_echo_restamps_present_ids_and_tombstones_missing_ones() {
+        let ctx = RemoteIndex::default();
+        let mut local = bound_task(1);
+        // X: added locally at 100 — echo-present, restamped to lm.
+        // Y: added locally at 200 — missing from the echo: the server
+        //    confirmed the removal. Tombstoned at max(200, lm).
+        // Z: removed locally at 150 — missing from the echo: the
+        //    tombstone stands with the advanced clock.
+        local.label_memberships.insert(
+            label_id_n(600),
+            crate::entities::MembershipState::Added { at: ts(BASE + 100) },
+        );
+        local.label_memberships.insert(
+            label_id_n(601),
+            crate::entities::MembershipState::Added { at: ts(BASE + 200) },
+        );
+        local.label_memberships.insert(
+            label_id_n(602),
+            crate::entities::MembershipState::Removed { at: ts(BASE + 150) },
+        );
+
+        // An echo with no labels at all: only X's restamp is observable
+        // in the live set; every entry is missing and advances to lm.
+        let echo = remote_task(1, 1, BASE + 360);
+        let adopted = adopt_task_after_push(&local, &echo, &ctx, true);
+        assert!(
+            adopted.live_labels().is_empty(),
+            "X's confirmation removed it"
+        );
+        for id in [600, 601, 602] {
+            assert_eq!(
+                adopted.label_memberships[&label_id_n(id)],
+                crate::entities::MembershipState::Removed { at: ts(BASE + 360) },
+                "missing ids are tombstoned at max(local stamp, lm), never dropped"
+            );
+        }
+
+        // An echo that still lists a locally-removed id (cache-lag or
+        // another device's add riding our push): the outcome table
+        // decides — lm >= the tombstone's stamp lands the re-add.
+        let mut echo = remote_task(1, 1, BASE + 360);
+        let mut ctx = ctx;
+        ctx.label_by_ref.insert(
+            crate::ids::RemoteLabelRef {
+                board: board(REMOTE_BOARD_NUM),
+                label: RemoteLabelId(7),
+            },
+            label_id_n(602),
+        );
+        echo.labels = BTreeSet::from([RemoteLabelId(7)]);
+        let adopted = adopt_task_after_push(&local, &echo, &ctx, true);
+        assert_eq!(
+            adopted.label_memberships[&label_id_n(602)],
+            crate::entities::MembershipState::Added { at: ts(BASE + 360) },
+            "an echo presence at lm >= the tombstone re-adds"
+        );
+    }
+
+    #[test]
+    fn the_echo_round_trip_converges_after_a_cache_lagged_pull() {
+        // assign → echo → unchanged pull ⇒ no spurious events; then the
+        // unassign path: unassign → cache-lagged echo (label still
+        // present, stale stamp) → next pull's fresh ts_r converges to
+        // removed (the design §5 drift-mitigation property, labels ed.).
+        let mut ctx = RemoteIndex::default();
+        ctx.label_by_ref.insert(
+            crate::ids::RemoteLabelRef {
+                board: board(REMOTE_BOARD_NUM),
+                label: RemoteLabelId(7),
+            },
+            label_id_n(600),
+        );
+        let mut local = bound_task(1);
+        local.label_memberships.insert(
+            label_id_n(600),
+            crate::entities::MembershipState::Added { at: ts(BASE) },
+        );
+
+        let mut echo = remote_task(1, 1, BASE + 60);
+        echo.labels = BTreeSet::from([RemoteLabelId(7)]);
+        let adopted = adopt_task_after_push(&local, &echo, &ctx, true);
+        assert_eq!(
+            adopted.label_memberships[&label_id_n(600)],
+            crate::entities::MembershipState::Added { at: ts(BASE + 60) }
+        );
+
+        // The next pull shows exactly the echoed set: no event fires.
+        let remote2 = echo.clone();
+        let merged = merge_task(&adopted, &remote2, &ctx, true);
+        assert_eq!(
+            merged.label_memberships[&label_id_n(600)],
+            crate::entities::MembershipState::Added { at: ts(BASE + 60) }
+        );
+
+        // Local unassign at 100; the push's echo is cache-lagged (still
+        // lists the label with a stale BASE+90 stamp, older than the
+        // tombstone): the table keeps the removal.
+        let mut unassigned = adopted.clone();
+        unassigned.label_memberships.insert(
+            label_id_n(600),
+            crate::entities::MembershipState::Removed { at: ts(BASE + 100) },
+        );
+        let mut lagged = echo.clone();
+        lagged.last_modified = ts(BASE + 90);
+        let after_lag = adopt_task_after_push(&unassigned, &lagged, &ctx, true);
+        assert_eq!(
+            after_lag.label_memberships[&label_id_n(600)],
+            crate::entities::MembershipState::Removed { at: ts(BASE + 100) },
+            "the stale echo cannot resurrect behind the tombstone"
+        );
+
+        // The next pull's fresh snapshot confirms the removal with a
+        // newer ts_r: the baseline diff emits the removal event and the
+        // tombstone advances — converged.
+        let mut confirmed = echo.clone();
+        confirmed.last_modified = ts(BASE + 120);
+        confirmed.labels = BTreeSet::new();
+        let converged = merge_task(&after_lag, &confirmed, &ctx, true);
+        assert_eq!(
+            converged.label_memberships[&label_id_n(600)],
+            crate::entities::MembershipState::Removed { at: ts(BASE + 120) }
+        );
+    }
+
+    #[test]
+    fn adopted_tasks_carry_added_membership_maps() {
+        let mut remote = remote_task(1, 1, BASE + 300);
+        let mut ctx = RemoteIndex::default();
+        ctx.stack_by_ref
+            .insert(stack_ref(1), StackId::from(uuid::Uuid::from_u128(900)));
+        ctx.label_by_ref.insert(
+            crate::ids::RemoteLabelRef {
+                board: board(REMOTE_BOARD_NUM),
+                label: RemoteLabelId(5),
+            },
+            label_id_n(700),
+        );
+        remote.labels = BTreeSet::from([RemoteLabelId(5)]);
+
+        let adopted = adopt_remote_task(&remote, TaskId::from(uuid::Uuid::from_u128(77)), &ctx)
+            .expect("stack resolves");
+        assert_eq!(
+            adopted.label_memberships[&label_id_n(700)],
+            crate::entities::MembershipState::Added { at: ts(BASE + 300) },
+            "a fresh adoption stamps every mapped id with the entity stamp"
+        );
+    }
+
     #[test]
     fn the_missing_baseline_fallback_reproduces_the_wholesale_replacement() {
         // No baseline: the live set after the cycle equals the mapped
