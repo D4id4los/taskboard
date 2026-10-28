@@ -83,6 +83,7 @@ async fn r1_remind_adds_one_rule() {
         forbidden_store(),
         "Write report",
         Some(TimeDelta::try_minutes(10).expect("10m")),
+        taskboard_domain::Insistence::Normal,
     )
     .await
     .expect("add");
@@ -92,6 +93,7 @@ async fn r1_remind_adds_one_rule() {
         task_title,
         before,
         added,
+        ..
     } = receipt;
     assert!(added);
     assert_ne!(rule_id, "");
@@ -121,6 +123,7 @@ async fn r2_second_add_grows_and_same_offset_repeat_is_a_noop() {
         forbidden_store(),
         "File taxes",
         Some(TimeDelta::try_minutes(10).expect("10m")),
+        taskboard_domain::Insistence::Normal,
     )
     .await
     .expect("first add");
@@ -129,6 +132,7 @@ async fn r2_second_add_grows_and_same_offset_repeat_is_a_noop() {
         forbidden_store(),
         "File taxes",
         Some(TimeDelta::try_hours(1).expect("1h")),
+        taskboard_domain::Insistence::Normal,
     )
     .await
     .expect("second add");
@@ -152,6 +156,7 @@ async fn r2_second_add_grows_and_same_offset_repeat_is_a_noop() {
         forbidden_store(),
         "File taxes",
         Some(TimeDelta::try_minutes(10).expect("10m")),
+        taskboard_domain::Insistence::Normal,
     )
     .await
     .expect("repeat add at the first offset");
@@ -169,9 +174,15 @@ async fn r3_before_default_comes_from_config() {
     config.reminders.default_before = "2m".to_owned();
     seed(&config, "Todo", "Water plants").await;
 
-    let receipt = reminders::add(config.clone(), forbidden_store(), "Water plants", None)
-        .await
-        .expect("add with the config default");
+    let receipt = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Water plants",
+        None,
+        taskboard_domain::Insistence::Normal,
+    )
+    .await
+    .expect("add with the config default");
     assert_eq!(receipt.before, "2m");
     let listed = list(&config).await;
     assert_eq!(listed.rules[0].before, "2m");
@@ -186,9 +197,15 @@ async fn r4_list_empty_then_one_row() {
     assert_eq!(list(&config).await.rules, []);
 
     seed(&config, "Todo", "Alone").await;
-    reminders::add(config.clone(), forbidden_store(), "Alone", None)
-        .await
-        .expect("add");
+    reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Alone",
+        None,
+        taskboard_domain::Insistence::Normal,
+    )
+    .await
+    .expect("add");
     let listed = list(&config).await;
     assert_eq!(listed.rules.len(), 1);
     assert_eq!(listed.rules[0].task_title, "Alone");
@@ -203,9 +220,15 @@ async fn r5_clear_reports_removed_and_repeats_zero() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "r5.db");
     seed(&config, "Todo", "Sweep").await;
-    reminders::add(config.clone(), forbidden_store(), "Sweep", None)
-        .await
-        .expect("add");
+    reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Sweep",
+        None,
+        taskboard_domain::Insistence::Normal,
+    )
+    .await
+    .expect("add");
 
     let receipt = reminders::clear(config.clone(), forbidden_store(), "Sweep")
         .await
@@ -261,14 +284,26 @@ async fn r7_selector_errors_keep_their_kinds() {
     seed(&config, "Todo", "First").await;
     seed(&config, "Todo2", "First").await; // ambiguous duplicate title
 
-    let err = reminders::add(config.clone(), forbidden_store(), "no-such-task", None)
-        .await
-        .expect_err("unknown");
+    let err = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "no-such-task",
+        None,
+        taskboard_domain::Insistence::Normal,
+    )
+    .await
+    .expect_err("unknown");
     assert_eq!(err.error_kind(), "unknown-task");
 
-    let err = reminders::add(config.clone(), forbidden_store(), "First", None)
-        .await
-        .expect_err("ambiguous");
+    let err = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "First",
+        None,
+        taskboard_domain::Insistence::Normal,
+    )
+    .await
+    .expect_err("ambiguous");
     assert_eq!(err.error_kind(), "ambiguous-task");
 
     let err = reminders::remove(config.clone(), forbidden_store(), "no-such-task", "30m")
@@ -293,6 +328,7 @@ async fn r7b_rule_selectors_resolve_and_fail_typed() {
         forbidden_store(),
         "Selector task",
         Some(TimeDelta::try_minutes(30).expect("30m")),
+        taskboard_domain::Insistence::Normal,
     )
     .await
     .expect("first rule");
@@ -301,6 +337,7 @@ async fn r7b_rule_selectors_resolve_and_fail_typed() {
         forbidden_store(),
         "Selector task",
         Some(TimeDelta::try_hours(2).expect("2h")),
+        taskboard_domain::Insistence::Normal,
     )
     .await
     .expect("second rule");
@@ -329,6 +366,7 @@ async fn r7b_rule_selectors_resolve_and_fail_typed() {
         forbidden_store(),
         "Selector task",
         Some(TimeDelta::try_hours(2).expect("2h")),
+        taskboard_domain::Insistence::Normal,
     )
     .await
     .expect("re-add");
@@ -542,6 +580,7 @@ async fn r10_session_lane_routes_remind() {
                 cmd: TasksCmd::Remind {
                     task: Some("Session task".to_owned()),
                     before: Some(TimeDelta::try_minutes(7).expect("7m")),
+                    insistence: None,
                     list: false,
                     clear: false,
                     remove: None,
@@ -561,6 +600,7 @@ async fn r10_session_lane_routes_remind() {
                 cmd: TasksCmd::Remind {
                     task: None,
                     before: None,
+                    insistence: None,
                     list: true,
                     clear: false,
                     remove: None,
@@ -581,6 +621,7 @@ async fn r10_session_lane_routes_remind() {
                 cmd: TasksCmd::Remind {
                     task: Some("Session task".to_owned()),
                     before: None,
+                    insistence: None,
                     list: false,
                     clear: false,
                     remove: Some("7m".to_owned()),
@@ -826,10 +867,16 @@ fn sink_dump(sink: &RecordingSink) -> String {
 /// fire during the seeding boots: no duedate, no occurrence.
 async fn e2e_seed_task_and_rule(config: &AppConfig, title: &str, before: TimeDelta) -> String {
     seed(config, "Todo", title).await;
-    reminders::add(config.clone(), forbidden_store(), title, Some(before))
-        .await
-        .expect("rule added")
-        .rule_id
+    reminders::add(
+        config.clone(),
+        forbidden_store(),
+        title,
+        Some(before),
+        taskboard_domain::Insistence::Normal,
+    )
+    .await
+    .expect("rule added")
+    .rule_id
 }
 
 /// E1: rule → tick → delivery → notification. The rule is persisted by
@@ -1024,4 +1071,157 @@ async fn e4_default_reminder_fires_at_the_configured_offset() {
     );
     assert_eq!(notification.occurrence, due, "0s before due == at due");
     app.shutdown().await;
+}
+
+// ---- Insistence (DR-3/2, #475) -----------------------------------------
+
+/// R11: `--insistence alarm` stamps the receipt and the list row from
+/// post-state; the omitted flag folds `Normal`.
+#[tokio::test]
+async fn r11_insistence_receipts_and_rows_carry_the_level() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "r11.db");
+    seed(&config, "Todo", "Loud task").await;
+
+    let receipt = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Loud task",
+        Some(TimeDelta::try_minutes(10).expect("10m")),
+        taskboard_domain::Insistence::Alarm,
+    )
+    .await
+    .expect("add");
+    assert_eq!(
+        receipt.insistence,
+        taskboard_domain::Insistence::Alarm,
+        "the receipt carries the created level"
+    );
+    let listed = list(&config).await;
+    assert_eq!(listed.rules.len(), 1);
+    assert_eq!(
+        listed.rules[0].insistence,
+        taskboard_domain::Insistence::Alarm
+    );
+
+    // Omitted flag: the default reminder level is `Normal`.
+    let receipt = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Loud task",
+        Some(TimeDelta::try_minutes(20).expect("20m")),
+        taskboard_domain::Insistence::Normal,
+    )
+    .await
+    .expect("add");
+    assert_eq!(receipt.insistence, taskboard_domain::Insistence::Normal);
+}
+
+/// R12: the dedup hit reports the **survivor's** level (post-state
+/// read-back, never the requested echo); the only path to a different
+/// level is re-create.
+#[tokio::test]
+async fn r12_dedup_hit_receipt_reports_the_survivors_level() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "r12.db");
+    seed(&config, "Todo", "Quiet task").await;
+
+    reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Quiet task",
+        Some(TimeDelta::try_minutes(10).expect("10m")),
+        taskboard_domain::Insistence::Normal,
+    )
+    .await
+    .expect("the quiet rule");
+    let hit = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Quiet task",
+        Some(TimeDelta::try_minutes(10).expect("10m")),
+        taskboard_domain::Insistence::Alarm,
+    )
+    .await
+    .expect("the loud request");
+    assert!(!hit.added, "the dedup hit");
+    assert_eq!(
+        hit.insistence,
+        taskboard_domain::Insistence::Normal,
+        "the survivor's level, not the requested echo"
+    );
+
+    // Re-create: remove (by offset text form) then re-add at the same
+    // offset with the new level.
+    reminders::remove(config.clone(), forbidden_store(), "Quiet task", "10m")
+        .await
+        .expect("removed");
+    let fresh = reminders::add(
+        config.clone(),
+        forbidden_store(),
+        "Quiet task",
+        Some(TimeDelta::try_minutes(10).expect("10m")),
+        taskboard_domain::Insistence::Alarm,
+    )
+    .await
+    .expect("re-created");
+    assert!(fresh.added);
+    assert_eq!(fresh.insistence, taskboard_domain::Insistence::Alarm);
+}
+
+/// R13: the `--json` envelope carries the insistence key on the add
+/// receipt (structural JSON assertion — the machine envelope is the
+/// contract here).
+#[tokio::test]
+async fn r13_json_envelope_carries_insistence() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "r13.db");
+    seed(&config, "Todo", "Envelope task").await;
+
+    let store = forbidden_store();
+    let app = taskboard_app::bootstrap::bootstrap(
+        config.clone(),
+        store.clone(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("session boots");
+    let session = BasicSession {
+        config: config.clone(),
+        store,
+        config_path: None,
+    };
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    {
+        let mut io = CommandIo {
+            out: &mut out,
+            err: &mut err,
+            json: true,
+        };
+        let code = dispatch_line(
+            &session,
+            &app,
+            Command::Tasks {
+                cmd: TasksCmd::Remind {
+                    task: Some("Envelope task".to_owned()),
+                    before: Some(TimeDelta::try_minutes(7).expect("7m")),
+                    insistence: Some(taskboard_domain::Insistence::Alarm),
+                    list: false,
+                    clear: false,
+                    remove: None,
+                    off: false,
+                    on: false,
+                },
+            },
+            &mut io,
+        )
+        .await;
+        assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    }
+    let payload: serde_json::Value = serde_json::from_slice(&out).expect("one json receipt");
+    assert_eq!(
+        payload["insistence"], "alarm",
+        "the machine envelope carries the rung"
+    );
 }

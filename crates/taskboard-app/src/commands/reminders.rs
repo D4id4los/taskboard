@@ -34,10 +34,13 @@ pub async fn add(
     store: Arc<dyn CredentialStore>,
     task: &str,
     before: Option<TimeDelta>,
+    insistence: taskboard_domain::Insistence,
 ) -> Result<ReminderAddReceipt, CommandError> {
     let task = task.to_owned();
-    crate::commands::tasks::with_core(config, store, async |app| add_on(app, &task, before).await)
-        .await
+    crate::commands::tasks::with_core(config, store, async |app| {
+        add_on(app, &task, before, insistence).await
+    })
+    .await
 }
 
 /// # Errors
@@ -112,6 +115,7 @@ pub async fn add_on(
     app: &crate::App,
     task: &str,
     before: Option<TimeDelta>,
+    insistence: taskboard_domain::Insistence,
 ) -> Result<ReminderAddReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
     let task_id = crate::commands::tasks::resolve_task(&state, task)?;
@@ -126,7 +130,7 @@ pub async fn add_on(
         .execute(StateCommand::AddReminderRule {
             task: task_id,
             offset,
-            insistence: taskboard_domain::Insistence::Normal,
+            insistence,
         })
         .await?;
     let CommandOutcome::ReminderRuleAdded { rule, added } = outcome else {
@@ -134,12 +138,19 @@ pub async fn add_on(
     };
     let state = app.engine.shared_state().load_full();
     let task_title = live_title(&state, task_id)?;
+    let insistence = state
+        .reminders
+        .rules
+        .get(&rule)
+        .map(|r| r.insistence)
+        .unwrap_or_default();
     Ok(ReminderAddReceipt {
         rule_id: rule.as_uuid().to_string(),
         task_id: task_id.as_uuid().to_string(),
         task_title,
         before: offset.text_form(),
         added,
+        insistence,
     })
 }
 
@@ -332,6 +343,7 @@ fn reminder_rows(state: &AppState) -> Vec<ReminderRow> {
                 before: rule.offset.text_form(),
                 created_at: rule.created_at,
                 task_muted: state.reminders.muted.contains(&task.id),
+                insistence: rule.insistence,
             });
         }
     }
@@ -363,6 +375,9 @@ pub fn render_text_list(list: &RemindersList) -> String {
                 "{}  {} before due (rule {})",
                 row.task_title, row.before, row.id
             );
+            if row.insistence == taskboard_domain::Insistence::Alarm {
+                let _ = write!(line, " [alarm]");
+            }
             if row.task_muted {
                 let _ = write!(line, " [muted]");
             }
@@ -376,7 +391,7 @@ pub fn render_text_list(list: &RemindersList) -> String {
 /// dedup hit — no state diff needed, the outcome carries the fact).
 #[must_use]
 pub fn render_text_add(receipt: &ReminderAddReceipt) -> String {
-    if receipt.added {
+    let mut line = if receipt.added {
         format!(
             "reminder added for \"{}\" {} before due (rule {})",
             receipt.task_title, receipt.before, receipt.rule_id
@@ -386,7 +401,12 @@ pub fn render_text_add(receipt: &ReminderAddReceipt) -> String {
             "a reminder {} before due is already set for \"{}\" (rule {})",
             receipt.before, receipt.task_title, receipt.rule_id
         )
+    };
+    if receipt.insistence == taskboard_domain::Insistence::Alarm {
+        use std::fmt::Write as _;
+        let _ = write!(line, " [alarm]");
     }
+    line
 }
 
 /// The human-readable `--remove` receipt.
@@ -441,14 +461,18 @@ pub enum RemindInvocation {
         /// `true` = `--off` (mute).
         muted: bool,
     },
-    /// `<task> [--before dur]`: add one rule (the config default
-    /// applies when `--before` is omitted).
+    /// `<task> [--before dur] [--insistence rung]`: add one rule (the
+    /// config default applies when `--before` is omitted; the rung
+    /// default is `Normal` when `--insistence` is omitted).
     Add {
         /// The task selector.
         task: String,
         /// The explicit `--before` value; the config default applies
         /// when `None`.
         before: Option<TimeDelta>,
+        /// The explicit `--insistence` value; `Normal` when `None` (a
+        /// create-time-only flag — no "unspecified" state is stored).
+        insistence: taskboard_domain::Insistence,
     },
 }
 
@@ -461,6 +485,7 @@ pub fn collapse(cmd: crate::cli::TasksCmd) -> Option<RemindInvocation> {
         crate::cli::TasksCmd::Remind {
             task,
             before,
+            insistence,
             list,
             clear,
             remove,
@@ -485,6 +510,7 @@ pub fn collapse(cmd: crate::cli::TasksCmd) -> Option<RemindInvocation> {
                 Some(RemindInvocation::Add {
                     task: task.unwrap_or_default(),
                     before,
+                    insistence: insistence.unwrap_or_default(),
                 })
             }
         }
@@ -536,15 +562,17 @@ pub async fn remind_command(
             )
             .await
         }
-        RemindInvocation::Add { task, before } => {
-            super::run_core(
-                io,
-                config_path,
-                render_text_add,
-                move |config, store| async move { add(config, store, &task, before).await },
-            )
-            .await
-        }
+        RemindInvocation::Add {
+            task,
+            before,
+            insistence,
+        } => super::run_core(
+            io,
+            config_path,
+            render_text_add,
+            move |config, store| async move { add(config, store, &task, before, insistence).await },
+        )
+        .await,
     }
 }
 
@@ -569,8 +597,14 @@ pub async fn remind_line(
         RemindInvocation::Mute { task, muted } => {
             crate::commands::emit_result(io, mute_on(app, &task, muted).await, render_text_mute)
         }
-        RemindInvocation::Add { task, before } => {
-            crate::commands::emit_result(io, add_on(app, &task, before).await, render_text_add)
-        }
+        RemindInvocation::Add {
+            task,
+            before,
+            insistence,
+        } => crate::commands::emit_result(
+            io,
+            add_on(app, &task, before, insistence).await,
+            render_text_add,
+        ),
     }
 }

@@ -54,7 +54,7 @@ use crate::entities::{Board, Label, MembershipState, RemoteTaskBaseline, Stack, 
 use crate::ids::{
     LabelId, ReminderRuleId, RemoteBoardId, RemoteLabelId, RemoteStackId, StackId, TaskId,
 };
-use crate::reminders::{Insistence, ReminderRule};
+use crate::reminders::ReminderRule;
 use crate::remote::{
     RemoteBoard, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
@@ -1534,6 +1534,7 @@ pub fn tombstone_label(local: &Label, observed_at: DateTime<Utc>) -> Label {
 mod tests {
     use super::*;
     use crate::merge_testutil::*;
+    use crate::reminders::Insistence;
     use crate::test_support;
     use proptest::prelude::*;
     use std::collections::BTreeSet;

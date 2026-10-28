@@ -527,6 +527,15 @@ fn parse_urgency(raw: &str) -> Result<UrgencySpec, String> {
         .ok_or_else(|| "expected very-low|low|normal|high|very-high|none".to_owned())
 }
 
+/// Parses `--insistence` over the reminder rung vocabulary
+/// (`normal`|`alarm`; no `none` — a rule is created at one rung, the
+/// default folds at the collapse boundary). Anything unmatched is a
+/// clap usage error (exit 2), the `parse_urgency` shape.
+fn parse_insistence_flag(raw: &str) -> Result<taskboard_domain::Insistence, String> {
+    taskboard_domain::Insistence::parse_text_form(raw)
+        .ok_or_else(|| "expected normal|alarm".to_owned())
+}
+
 /// The `tasks remind --before` flag: the same `[reminders]
 /// default_before` grammar ([`crate::config::parse_before`]). A
 /// malformed value is a clap usage error (exit 2), the `parse_due`
@@ -612,6 +621,9 @@ pub enum TimersCmd {
             value_parser = parse_at_flag
         )]
         at: Option<chrono::DateTime<chrono::Utc>>,
+        /// How loudly the alarm insists (`normal|alarm`).
+        #[arg(long, value_parser = parse_insistence_flag)]
+        insistence: Option<taskboard_domain::Insistence>,
     },
     /// List the standalone alarms in canonical `(fire_at, id)` order
     /// (pure read).
@@ -793,6 +805,15 @@ pub enum TasksCmd {
         /// `tasks list`.
         #[arg(long, requires = "task", value_parser = parse_before_flag)]
         before: Option<chrono::TimeDelta>,
+        /// How loudly the new rule insists (`normal|alarm`; the default
+        /// reminder stays normal). Composes with the add mode only.
+        #[arg(
+            long,
+            requires = "task",
+            value_parser = parse_insistence_flag,
+            conflicts_with_all = ["clear", "remove", "off", "on", "list"]
+        )]
+        insistence: Option<taskboard_domain::Insistence>,
         /// List the board's reminder rules (pure read).
         #[arg(long, conflicts_with_all = ["task", "clear", "off", "on"])]
         list: bool,
@@ -838,6 +859,82 @@ mod tests {
             DueSpec::Clear => panic!("bare date must set"),
         }
         assert_eq!(parse_due("none"), Ok(DueSpec::Clear));
+    }
+
+    #[test]
+    fn parse_insistence_flag_matches_the_domain_vocabulary() {
+        assert_eq!(
+            parse_insistence_flag("normal"),
+            Ok(taskboard_domain::Insistence::Normal)
+        );
+        assert_eq!(
+            parse_insistence_flag("alarm"),
+            Ok(taskboard_domain::Insistence::Alarm)
+        );
+        for raw in ["critical", "wake_up", "", "ALARM"] {
+            assert!(
+                parse_insistence_flag(raw).is_err(),
+                "{raw} must be a usage error"
+            );
+        }
+    }
+
+    #[test]
+    fn the_insistence_flags_parse_and_respect_the_coherence_sets() {
+        // Remind: the flag composes with the add mode only.
+        let Cli {
+            command:
+                Some(Command::Tasks {
+                    cmd: TasksCmd::Remind { insistence, .. },
+                }),
+            ..
+        } = Cli::try_parse_from([
+            "taskboard",
+            "tasks",
+            "remind",
+            "tea",
+            "--before",
+            "5m",
+            "--insistence",
+            "alarm",
+        ])
+        .expect("the add-mode flag parses")
+        else {
+            panic!("expected remind");
+        };
+        assert_eq!(insistence, Some(taskboard_domain::Insistence::Alarm));
+        let parsed = Cli::try_parse_from([
+            "taskboard",
+            "tasks",
+            "remind",
+            "tea",
+            "--clear",
+            "--insistence",
+            "alarm",
+        ]);
+        assert!(parsed.is_err(), "--insistence conflicts with --clear");
+        // Timers add: no conflicts.
+        let Cli {
+            command:
+                Some(Command::Timers {
+                    cmd: TimersCmd::Add { insistence, .. },
+                }),
+            ..
+        } = Cli::try_parse_from([
+            "taskboard",
+            "timers",
+            "add",
+            "tea",
+            "--in",
+            "2m",
+            "--insistence",
+            "alarm",
+        ])
+        .expect("the timers flag parses")
+        else {
+            panic!("expected timers add");
+        };
+        assert_eq!(insistence, Some(taskboard_domain::Insistence::Alarm));
     }
 
     #[test]
