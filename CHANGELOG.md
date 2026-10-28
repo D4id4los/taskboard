@@ -69,6 +69,27 @@ The workspace carries a single global version (see `docs/architecture.org`);
   discard (empty) when the field loses focus, and the drag-gesture
   and due-editor buffers can no longer outlive their flows.
 
+- The settings surface's round-3 polish (findings F3/F19/F20/F21/
+  F23/F24/F25): the app-password field gains a reveal/conceal eye
+  that lives entirely in the field (markup-local state, nothing
+  secret on any model or log); InfoTip frames now size from their
+  help text, wrapping under the width caps instead of clipping at the
+  short caption; the status line pins between the header and the
+  scroll viewport, so an outcome is readable without scrolling at any
+  scale; form fields carry a per-keystroke validity flavour — danger
+  border + inline error line when a field fails, success border when
+  it passes, quiet when empty — computed from the same ladder that
+  gates Save, so the flavour and the gate cannot disagree, and a
+  refused scale commit now says which rule fired; the scale field
+  echoes the live scale both ways with the slider (a typed draft
+  survives concurrent previews and dies on focus loss), the slider
+  drag no longer loses its gesture to the scroll (the Flickable's
+  mouse-drag pan is off — touch panning and wheel scrolling are
+  untouched; live preview kept, probe-backed), and a scale commit
+  re-anchors the scroll on the scale row so it stays in view across
+  the re-layout in both directions, without fighting manual
+  scrolling afterwards.
+
 - `taskboard sync --wait` no longer misreports a completed, successful
   cycle as `TimedOut` after the host clock steps backward (#283
   F11-04): cycle freshness is detected structurally — the sync
