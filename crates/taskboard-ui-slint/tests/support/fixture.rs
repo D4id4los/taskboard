@@ -393,6 +393,15 @@ pub fn today_overdue_state() -> (TwoBoardFixture, AppState, [TaskId; 2]) {
         let task = state.tasks.get_mut(&id).expect("fixture task");
         task.duedate = Some(overdue_stamp);
     }
+    // The seeded running timer (DR-5/4, D-TU12): the today matrix
+    // carries the chip and the overdue row's badge, same minute-
+    // relative stamp class the board goldens accepted.
+    let _ = add_open_entry(
+        &mut state,
+        board_one_task,
+        "task one",
+        now - TimeDelta::minutes(12),
+    );
     (fixture, state, [board_one_task, board_two_task])
 }
 
