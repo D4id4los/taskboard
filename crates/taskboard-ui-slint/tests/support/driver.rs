@@ -564,8 +564,13 @@ mod tests {
                 driver.advance_time(0);
                 driver.set_window_size(1000, 800);
 
+                // The round-3 toolbar switcher's segment and its
+                // label text share the string; the region is the
+                // full-width match (its width reads the window).
                 let board = driver
-                    .find_by_label("Board")
+                    .find_all_by_label("Board")
+                    .into_iter()
+                    .find(|el| (el.size().width - 1000.0).abs() < f32::EPSILON)
                     .expect("the board region is addressable");
                 let size = board.size();
                 assert_eq!(size.width, 1000.0, "the region reads its width back");
@@ -583,8 +588,16 @@ mod tests {
                 );
                 assert_eq!(
                     driver.find_all_by_label("Board").len(),
-                    1,
-                    "the find-all label query addresses every instance"
+                    3,
+                    "the find-all label query addresses every instance \
+                     (region + the switcher's segment and its label)"
+                );
+                assert!(
+                    driver
+                        .find_all_by_label("Board")
+                        .iter()
+                        .any(super::Element::is_radio_button),
+                    "the switcher's segment is a distinct radio address"
                 );
             },
         );
