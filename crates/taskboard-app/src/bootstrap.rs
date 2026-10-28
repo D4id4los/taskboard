@@ -1227,9 +1227,10 @@ pub fn exit_if_degraded(outcome: ShutdownOutcome, server_budget_hit: bool) {
     }
 }
 
-/// Daemon lifecycle: await `ctrl_c` (and SIGTERM on unix), then run the
-/// graceful shutdown sequence. The second-signal force-exit lives in
-/// `main` (thin glue, deliberately untested).
+/// Library convenience lifecycle: await `ctrl_c` (and SIGTERM on
+/// unix), then run one graceful shutdown — no ladder; the daemon,
+/// kiosk, and desktop tails install
+/// [`crate::signals::install_lifecycle_watcher`] instead.
 pub async fn run_until_signal(app: App) -> ShutdownOutcome {
     wait_for_signal().await;
     tracing::info!("shutdown signal received");

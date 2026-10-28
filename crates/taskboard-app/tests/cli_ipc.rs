@@ -143,16 +143,21 @@ async fn e1_daemon_serves_verbs_then_stop_then_fallback() {
     let (code, _, _) = install.run(&["daemon", "stop"]);
     assert_eq!(code, Some(0));
     let stop_deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if daemon.0.try_wait().expect("poll daemon").is_some() {
-            break;
+    let stop_code = loop {
+        if let Some(status) = daemon.0.try_wait().expect("poll daemon") {
+            break status.code();
         }
         assert!(
             Instant::now() < stop_deadline,
             "daemon did not exit after stop"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    };
+    assert_eq!(
+        stop_code,
+        Some(0),
+        "the stop-initiated drain is a clean exit (contract row 0)"
+    );
     assert!(
         !install.socket().exists(),
         "graceful stop removes the socket artifact"
