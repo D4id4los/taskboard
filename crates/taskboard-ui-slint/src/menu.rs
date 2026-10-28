@@ -138,6 +138,11 @@ pub const TASK_CONTEXT: &[ActionId] = &[
     // timer target routes NoTarget).
     ActionId::TimerCreate,
     ActionId::TimerCancel,
+    // DR-5/4: the tracking arms — pointer-driven, menu-reachable, no
+    // preset bindings (the timers note verbatim); dispatch-time
+    // gating only (the planner's NoOps own the refusals).
+    ActionId::TaskTrackStart,
+    ActionId::TaskTrackStop,
 ];
 
 /// The stack-header context menu's action list (round-2 D21): the
@@ -303,6 +308,9 @@ mod tests {
             // 150/160 (the registry's reviewed rows).
             ActionId::TimerCreate,
             ActionId::TimerCancel,
+            // DR-5/4: the tracking arms join at ranks 170/180.
+            ActionId::TaskTrackStart,
+            ActionId::TaskTrackStop,
         ];
         assert_eq!(
             ids(&rows),

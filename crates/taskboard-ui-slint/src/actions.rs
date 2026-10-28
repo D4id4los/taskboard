@@ -203,6 +203,8 @@ pub enum ActionId {
     ReminderRuleRemove,
     TimerCreate,
     TimerCancel,
+    TaskTrackStart,
+    TaskTrackStop,
     MenuNext,
     MenuPrevious,
     MenuInvoke,
@@ -262,6 +264,8 @@ impl ActionId {
             Self::ReminderRuleRemove => "reminder.rule-remove",
             Self::TimerCreate => "timer.create",
             Self::TimerCancel => "timer.cancel",
+            Self::TaskTrackStart => "task.track-start",
+            Self::TaskTrackStop => "task.track-stop",
             Self::MenuNext => "menu.next",
             Self::MenuPrevious => "menu.previous",
             Self::MenuInvoke => "menu.invoke",
@@ -814,6 +818,30 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Cancels the selected standalone alarm before or after it fires.",
         menu_group: Some(MenuGroup::Task),
     },
+    // The tracking verbs (DR-5/4, D-T16): the timers family's
+    // pointer-driven precedent — menu-reachable, no preset bindings;
+    // dispatch-time gating only (the planner's idempotent NoOps own
+    // the refusals).
+    ActionEntry {
+        id: ActionId::TaskTrackStart,
+        label: "Start tracking",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 170,
+        description: "Starts tracking the focused task: any running timer closes, this task's opens.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::TaskTrackStop,
+        label: "Stop tracking",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 180,
+        description: "Stops the running timer, closing its open time entry.",
+        menu_group: Some(MenuGroup::Task),
+    },
     ActionEntry {
         id: ActionId::MenuNext,
         label: "Next menu entry",
@@ -949,6 +977,8 @@ mod tests {
             ActionId::ReminderRuleRemove,
             ActionId::TimerCreate,
             ActionId::TimerCancel,
+            ActionId::TaskTrackStart,
+            ActionId::TaskTrackStop,
             ActionId::MenuNext,
             ActionId::MenuPrevious,
             ActionId::MenuInvoke,
