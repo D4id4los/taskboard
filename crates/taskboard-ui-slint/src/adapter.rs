@@ -160,6 +160,10 @@ pub(crate) struct Adapter {
     /// The timers row's alarm (DR-3/3, D-I8); consumed by the next
     /// `timer.cancel` dispatch, then cleared (one-shot).
     timer_target: Option<taskboard_domain::AdhocAlarmId>,
+    /// The notification row's task (DR-5/4, D-TU5); consumed by the
+    /// next `task.track-start` dispatch, then cleared (one-shot, the
+    /// timer-target precedent).
+    track_target: Option<taskboard_domain::TaskId>,
     /// The date editor's live state (r2 D25/R-d, round-3 D8): the
     /// typed buffer, its echo, and the picker cursor/month/time —
     /// adapter-owned so a refresh push can never reset them. A commit
@@ -391,6 +395,7 @@ impl Adapter {
         self.rule_add_offset = None;
         ctx.timer_draft = self.timer_draft.take();
         ctx.timer_target = self.timer_target.take();
+        ctx.track_target = self.track_target.take();
         // The today window rides every dispatch (chunk 10 D4): state-
         // derived from the held pair, never consumed.
         ctx.day_window = Some(self.day_ctx().window);
@@ -2655,6 +2660,7 @@ pub(crate) fn install(
         rule_add_offset: None,
         timer_draft: None,
         timer_target: None,
+        track_target: None,
         tables: IdTables::default(),
         models: crate::models::PushModels::default(),
         width_drag: None,

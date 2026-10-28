@@ -266,6 +266,13 @@ pub struct DispatchCtx {
     /// a cancel affordance activates (section row or awaiting row);
     /// `timer.cancel` routes from it (`NoTarget` without one).
     pub timer_target: Option<AdhocAlarmId>,
+    /// The notification row's task (DR-5/4, D-TU5): set by the adapter
+    /// when a row's Start Task affordance activates; `task.track-start`
+    /// routes from it, falling back to the focused task (the context
+    /// menu's and the detail button's seam — every card-focused
+    /// invocation already addresses the focused task; `NoTarget` when
+    /// neither is set).
+    pub track_target: Option<TaskId>,
     /// Whether the focused task is done (round 2, D19): the reopen
     /// verb's enablement gate — `task.reopen` routes only for a
     /// focused *completed* task (the `task.complete` machinery
@@ -365,6 +372,16 @@ impl ActionRouter {
                 Some(alarm) => DispatchOutcome::Command(StateCommand::CancelAdhocAlarm { alarm }),
                 None => DispatchOutcome::NoTarget,
             },
+            // The tracking verbs (DR-5/4, D-T16): Start routes from the
+            // explicit one-shot target, falling back to the focused
+            // task (D-TU5's two honest sources); Stop is payload-free
+            // and unconditional — nothing-open is the planner's total
+            // NoOp, the engine owns the refusals.
+            ActionId::TaskTrackStart => match ctx.track_target.or(ctx.focused_task) {
+                Some(task) => DispatchOutcome::Command(StateCommand::StartTracking { task }),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::TaskTrackStop => DispatchOutcome::Command(StateCommand::StopTracking),
             // The chunk-3 view intents (D6): the adapter resolves the
             // effects against the view-state model.
             ActionId::NavNextView => DispatchOutcome::UiEffect(UiEffect::NextView),
@@ -449,6 +466,7 @@ mod tests {
             rule_add_offset: None,
             timer_draft: None,
             timer_target: None,
+            track_target: None,
             day_window: None,
             focused_task_done: false,
         }
@@ -492,6 +510,52 @@ mod tests {
         assert_eq!(
             ActionRouter::dispatch(ActionId::TimerCancel, &ctx),
             DispatchOutcome::Command(StateCommand::CancelAdhocAlarm { alarm })
+        );
+    }
+
+    /// DR-5/4 — the tracking verbs route exact typed commands: Start
+    /// prefers the explicit one-shot target over focus, falls back to
+    /// focus, and is `NoTarget` with neither; Stop routes the exact
+    /// payload-free command unconditionally.
+    #[test]
+    fn tracking_verbs_route_exact_commands_from_their_two_sources() {
+        let task = TaskId::from_uuid(Uuid::now_v7());
+        let focused = TaskId::from_uuid(Uuid::now_v7());
+
+        let mut empty = ctx(false);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskTrackStart, &empty),
+            DispatchOutcome::NoTarget,
+            "neither source set"
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskTrackStop, &empty),
+            DispatchOutcome::Command(StateCommand::StopTracking),
+            "Stop is unconditional (the planner's total NoOp owns nothing-open)"
+        );
+
+        empty.track_target = Some(task);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskTrackStart, &empty),
+            DispatchOutcome::Command(StateCommand::StartTracking { task }),
+            "the explicit target wins"
+        );
+
+        let focused_ctx = ctx(true);
+        let focused_task = focused_ctx.focused_task.expect("set");
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskTrackStart, &focused_ctx),
+            DispatchOutcome::Command(StateCommand::StartTracking { task: focused_task }),
+            "the context menu's and detail button's focused-task path"
+        );
+
+        let mut both = ctx(true);
+        both.track_target = Some(task);
+        both.focused_task = Some(focused);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskTrackStart, &both),
+            DispatchOutcome::Command(StateCommand::StartTracking { task }),
+            "the notification row's target is table addressing, not focus"
         );
     }
 
