@@ -256,9 +256,14 @@ pub fn stacks_json(cards: &serde_json::Value) -> String {
 
 /// One remote card.
 pub fn card_json(id: u64, title: &str) -> serde_json::Value {
+    // A real Deck stamps a card response with its *current* write time —
+    // a create echo with a stale stamp reads as unsynced local work
+    // against the listing (the #130 carve-out's input). Whole seconds,
+    // like the server's wire format.
+    let now = chrono::Utc::now().timestamp();
     serde_json::json!({
         "id": id, "title": title, "stackId": STACK, "type": "plain",
-        "order": 0, "lastModified": T, "labels": [], "archived": false,
+        "order": 0, "lastModified": now, "labels": [], "archived": false,
         "duedate": null, "done": null
     })
 }

@@ -305,8 +305,9 @@ keep tombstone-wins, as do already-tombstoned tasks. Contention
 surfacing is the non-blocking =SystemEvent::TaskResurrected= (status
 line / CLI line / tracing) — never a prompt: kiosk and daemon sessions
 must not block. Accepted residue: the reminder-rule clause has no echo
-stamp-back, so a rule edit whose sidecar flush already landed can bias
-toward resurrect until the card's next change — the data-preserving
+stamp-back, and Deck's whole-second =lastModified= can stamp an echo
+strictly older than a sub-second local write — either can bias toward
+resurrect until the card's next change — the data-preserving
 direction.
 
 The same-cycle corollary: a cycle is fetch-before-write, so a card

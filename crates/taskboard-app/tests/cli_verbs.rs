@@ -241,6 +241,20 @@ async fn v5_sync_pushes_the_queued_create_and_succeeds() {
     let dir = tempdir();
     let server = wiremock::MockServer::start().await;
     mount_pull(&server, common::stacks_json(&json!([]))).await;
+    let db = dir.path().join("v5.db");
+    common::seed_board_binding(&db, 0x00DA_000E, common::BOARD, "v5").await;
+    let store = store_for(&server.uri());
+    let config = config_for(&server.uri(), dir.path(), "v5.db");
+
+    tasks::add(config.clone(), Arc::clone(&store), "v5-task", Some("col"))
+        .await
+        .expect("add");
+
+    // The create echo mounts *after* the add, faithfully: a real Deck
+    // stamps the echo after receiving the write, so the echo's
+    // `lastModified` is never older than the local edit's stamp (an
+    // older echo reads as unsynced work against the listing — the #130
+    // carve-out's input).
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path(
             "/index.php/apps/deck/api/v1.0/boards/3/stacks/8/cards",
@@ -254,14 +268,6 @@ async fn v5_sync_pushes_the_queued_create_and_succeeds() {
         )
         .mount(&server)
         .await;
-    let db = dir.path().join("v5.db");
-    common::seed_board_binding(&db, 0x00DA_000E, common::BOARD, "v5").await;
-    let store = store_for(&server.uri());
-    let config = config_for(&server.uri(), dir.path(), "v5.db");
-
-    tasks::add(config.clone(), Arc::clone(&store), "v5-task", Some("col"))
-        .await
-        .expect("add");
 
     let outcome = sync::run(config, store, false, Duration::from_secs(30), None)
         .await
