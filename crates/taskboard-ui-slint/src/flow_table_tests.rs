@@ -125,6 +125,8 @@ enum EK {
     ShowTask,
     ControlNext,
     ControlPrev,
+    ScrollUp,
+    ScrollDown,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -172,6 +174,8 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::ShowTask => EK::ShowTask,
         UiEffect::ControlNext => EK::ControlNext,
         UiEffect::ControlPrev => EK::ControlPrev,
+        UiEffect::ScrollUp => EK::ScrollUp,
+        UiEffect::ScrollDown => EK::ScrollDown,
         // The picker keys are applied in `apply_effect`, before the
         // table — the matrix never sees them (the menu-family
         // pattern). Their class cell is exercised via `class_of`.
@@ -627,6 +631,8 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::ShowTask,
         UiEffect::ControlNext,
         UiEffect::ControlPrev,
+        UiEffect::ScrollUp,
+        UiEffect::ScrollDown,
     ]
 }
 

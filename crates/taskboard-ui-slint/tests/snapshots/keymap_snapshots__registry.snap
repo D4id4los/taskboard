@@ -154,6 +154,32 @@ expression: rows
   menu_rank: 170
   description: "Moves the keyboard focus to the previous control (field or button) in reading order; wraps like the runtime's tab traversal."
   menu_group: view-nav
+- id: view.scroll-down
+  label: Scroll down
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+    - settings
+  category: navigation
+  enabled: true
+  menu_rank: 180
+  description: "Pages the focused scroll area down one page (a column, a section, or the settings pane); inert without a focused container."
+  menu_group: view-nav
+- id: view.scroll-up
+  label: Scroll up
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+    - settings
+  category: navigation
+  enabled: true
+  menu_rank: 190
+  description: "Pages the focused scroll area up one page (a column, a section, or the settings pane); inert without a focused container."
+  menu_group: view-nav
 - id: nav.next-item
   label: Focus next item
   contexts:

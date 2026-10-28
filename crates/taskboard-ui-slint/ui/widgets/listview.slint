@@ -17,12 +17,39 @@ export component ListView inherits Flickable {
             self.scroll-row-into-view(self.request-row);
         }
     }
+    // The scroll actions' paging seam (round-3 D26): the consumer
+    // binds page-request/-nonce filtered on its family+index pair
+    // (the request-row pattern); a nonce change pages by
+    // visible-height minus one row of context (the same runtime
+    // average scroll-row-into-view inverts), clamped to the content.
+    in property <int> page-request: 0;
+    in property <int> page-nonce: -1;
+    changed page-nonce => {
+        if (self.page-request != 0) {
+            self.page(self.page-request);
+        }
+    }
     // Top-anchors the row using the runtime's own cached average
     // (content-height/total-rows) — the exact divisor the runtime's
     // 1.5-screen random seek inverts (repeater.rs update_visible_
     // instances), so the seek lands the row live at the window top.
     // Guard: no-op while the first layout is pending (avg == 0) and
     // when the estimated range already holds the row.
+    public function page(page: int) {
+        let avg-est = self.total-rows > 0
+            ? self.content-height / self.total-rows
+            : 0px;
+        let delta = self.visible-height - avg-est;
+        if (delta <= 0px) {
+            return;
+        }
+        self.content-y = Math.clamp(
+            self.content-y - page * delta,
+            -self.content-height,
+            0px,
+        );
+    }
+
     public function scroll-row-into-view(row: int) {
         if (row < 0 || self.total-rows <= 0) {
             return;

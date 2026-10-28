@@ -21,6 +21,7 @@ import { BoardBar, BoardBarModel } from "board-bar.slint";
 import { DragState } from "../drag-state.slint";
 import { FocusScrollHint } from "../focus-scroll.slint";
 import { ListView } from "../widgets/listview.slint";
+import { ScrollPageHint } from "../scroll-page.slint";
 
 // One labelled call-to-action button (r3 D5): no generic Button
 // primitive exists in the widget set, and the empty-board page needs
@@ -516,6 +517,16 @@ export component BoardLayout inherits Rectangle {
                                 request-nonce: FocusScrollHint.target-a == column-index
                                     ? FocusScrollHint.nonce
                                     : 0;
+                                // Family 1 (round-3 D26): the focused
+                                // column pages.
+                                page-request: ScrollPageHint.family == 1
+                                    && ScrollPageHint.index == column-index
+                                    ? ScrollPageHint.page
+                                    : 0;
+                                page-nonce: ScrollPageHint.family == 1
+                                    && ScrollPageHint.index == column-index
+                                    ? ScrollPageHint.nonce
+                                    : -1;
                                 total-rows: column.tasks.length;
                                 for task[task-index] in column.tasks: drag-zone := DragArea {
                                     width: 100%;
@@ -781,6 +792,16 @@ export component BoardLayout inherits Rectangle {
                 request-nonce: FocusScrollHint.target-a == column-index
                     ? FocusScrollHint.nonce
                     : 0;
+                // Family 3 (round-3 D26): the compact leg's selected
+                // viewport pages.
+                page-request: ScrollPageHint.family == 3
+                    && ScrollPageHint.index == column-index
+                    ? ScrollPageHint.page
+                    : 0;
+                page-nonce: ScrollPageHint.family == 3
+                    && ScrollPageHint.index == column-index
+                    ? ScrollPageHint.nonce
+                    : -1;
                 total-rows: column.tasks.length;
                 for task[task-index] in column.tasks: compact-task := TaskCard {
                     model: task;

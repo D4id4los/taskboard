@@ -78,6 +78,12 @@ pub enum UiEffect {
     /// previous direction) under the walk's re-entrancy guard.
     ControlNext,
     ControlPrev,
+    /// The scroll actions (round-3 D26): the adapter resolves the
+    /// focused container per view and pages it (the `ScrollPageHint`
+    /// global, or the settings facts two-way for the settings pane).
+    /// Inert without a focused container.
+    ScrollUp,
+    ScrollDown,
     /// The picker keys (round-3 D25): applied before/aside the flow
     /// table (the menu-family pattern) — the picker mutates its own
     /// adapter state and refreshes; the date flow is Insert and the
@@ -189,6 +195,8 @@ impl UiEffect {
             | Self::ShowTask
             | Self::ControlNext
             | Self::ControlPrev
+            | Self::ScrollUp
+            | Self::ScrollDown
             | Self::BoardNext
             | Self::BoardPrevious
             | Self::BoardSelect(_)
@@ -417,6 +425,8 @@ impl ActionRouter {
             ActionId::NavShowTask => DispatchOutcome::UiEffect(UiEffect::ShowTask),
             ActionId::NavNextControl => DispatchOutcome::UiEffect(UiEffect::ControlNext),
             ActionId::NavPrevControl => DispatchOutcome::UiEffect(UiEffect::ControlPrev),
+            ActionId::ViewScrollUp => DispatchOutcome::UiEffect(UiEffect::ScrollUp),
+            ActionId::ViewScrollDown => DispatchOutcome::UiEffect(UiEffect::ScrollDown),
             ActionId::PickerLeft => {
                 DispatchOutcome::UiEffect(UiEffect::PickerKey(crate::due_edit::DatePickerKey::Left))
             }

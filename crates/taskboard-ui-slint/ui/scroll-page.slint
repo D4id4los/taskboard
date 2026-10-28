@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The scroll actions' paging hint (round-3 D26): the
+// `FocusScrollHint` pattern — the adapter resolves the focused
+// container per view and writes this global; each ListView instance
+// filters by its own family+index pair and pages only when it owns
+// the target. Families: 0 settings (paged adapter-side through the
+// settings facts), 1 board column, 2 today section, 3 stack/compact
+// viewport. `page` is +1 = scroll-down (content advances), −1 = up.
+// The nonce makes repeated same-direction pages edge-triggered.
+
+export global ScrollPageHint {
+    in property <int> family: -1;
+    in property <int> index: -1;
+    in property <int> page: 0;
+    in property <int> nonce: 0;
+}

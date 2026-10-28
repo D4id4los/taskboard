@@ -75,6 +75,52 @@ fn p1_synthetic_tab_moves_focus_between_tab_stops() {
     });
 }
 
+/// P3 — the in-house `ListView`'s page arithmetic (round-3 D26):
+/// one page advances by visible-height minus one row of context (the
+/// runtime's cached average), the page clamps at both content ends,
+/// and the up direction mirrors. The function is driven directly —
+/// the family/index filtering is the consumers' bindings.
+#[test]
+fn p3_listview_pages_by_the_runtime_average_and_clamps() {
+    run_probe(|window| {
+        window.set_page_total_rows(1000);
+        window.set_page_content_height(1000.0_f32);
+        // The viewport is whatever the probe window laid out; the
+        // average row is content/total = 1.
+        let viewport = window.get_page_visible_height();
+        let delta = viewport - 1.0_f32;
+        assert!(delta > 0.0, "the probe's viewport exceeds the row");
+
+        // One page down.
+        window.invoke_page_by(1);
+        advance_probe_clock(0);
+        assert_eq!(window.get_page_y(), -delta, "one page down");
+
+        // Clamp at the content end: at most −(content − visible).
+        window.set_page_y(-(1000.0_f32 - viewport - 10.0));
+        window.invoke_page_by(1);
+        advance_probe_clock(0);
+        assert_eq!(
+            window.get_page_y(),
+            -(1000.0_f32 - viewport),
+            "the down clamp holds"
+        );
+
+        // One page up mirrors; the top clamp holds.
+        window.invoke_page_by(-1);
+        advance_probe_clock(0);
+        assert_eq!(
+            window.get_page_y(),
+            -(1000.0 - viewport) + delta,
+            "one page up"
+        );
+        window.set_page_y(-10.0);
+        window.invoke_page_by(-1);
+        advance_probe_clock(0);
+        assert_eq!(window.get_page_y(), 0.0, "the top clamp holds");
+    });
+}
+
 /// P2 — `changed has-focus` fires on a plain `focus-on-tab-navigation`
 /// `FocusScope`, once per gain and once per loss: the date-picker
 /// grid's DatePicker-context seam (mechanism A on a `FocusScope`).

@@ -1043,6 +1043,87 @@ impl Adapter {
             let flag = self.walk_reentry.clone();
             Self::dispatch_traversal(window, &flag, backwards);
         }
+        // The scroll actions (round-3 D26): the focused container
+        // pages after the outcomes (the tables are fresh).
+        if matches!(effect, UiEffect::ScrollUp | UiEffect::ScrollDown) {
+            self.push_scroll_page_hint(window, effect == UiEffect::ScrollDown);
+        }
+    }
+
+    /// The scroll actions' container resolution (round-3 D26): the
+    /// focused task's column on the wide board, the selected stack's
+    /// viewport on the compact board and the stack detail, the focused
+    /// task's section on today, the settings pane adapter-side through
+    /// the two-way facts, and a typed inert on the task detail (no
+    /// container) or without a focused task (the ends hold).
+    fn push_scroll_page_hint(&mut self, window: &AppWindow, down: bool) {
+        const FAMILY_SETTINGS: i32 = 0;
+        const FAMILY_BOARD: i32 = 1;
+        const FAMILY_TODAY: i32 = 2;
+        const FAMILY_STACK: i32 = 3;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let to_hint_index = |value: usize| value as i32;
+        let page = if down { 1 } else { -1 };
+        let state = self.state.load_full();
+        let hint: Option<(i32, i32)> = match (self.view_state.view(), Self::is_compact(window)) {
+            (crate::view_state::ViewId::Board, false) => self
+                .view_state
+                .focused_task()
+                .and_then(|focused| self.tables.board_position(focused))
+                .map(|(column, _)| (FAMILY_BOARD, to_hint_index(column))),
+            (crate::view_state::ViewId::Board, true) => {
+                // The compact leg's selected viewport: the selected
+                // column (the focused task's, when the walk seeded one).
+                let selected = self.view_state.selected_stack();
+                let column = selected.and_then(|stack| {
+                    self.view_state
+                        .stack_ids(&state)
+                        .iter()
+                        .position(|s| *s == stack)
+                });
+                column.map(|c| (FAMILY_STACK, to_hint_index(c)))
+            }
+            (crate::view_state::ViewId::StackDetail, _) => Some((FAMILY_STACK, -1)),
+            (crate::view_state::ViewId::Today, _) => self
+                .view_state
+                .focused_task()
+                .and_then(|focused| self.tables.today_position(focused))
+                .map(|(section, _)| (FAMILY_TODAY, to_hint_index(section))),
+            (crate::view_state::ViewId::Settings, _) => {
+                Self::page_settings(window, down);
+                return;
+            }
+            (crate::view_state::ViewId::TaskDetail, _) => None,
+        };
+        // The settings family only ever rides the facts path.
+        let Some((family, index)) = hint.filter(|(family, _)| *family != FAMILY_SETTINGS) else {
+            return;
+        };
+        let scroll = window.global::<crate::ScrollPageHint>();
+        scroll.set_family(family);
+        scroll.set_index(index);
+        scroll.set_page(page);
+        scroll.set_nonce(scroll.get_nonce() + 1);
+    }
+
+    /// The settings pane's adapter-side paging (round-3 D26): the
+    /// facts global already carries the heights and the two-way
+    /// `viewport-y` — the adapter writes the clamped target and no
+    /// markup change is needed. Clamps at both ends by construction.
+    fn page_settings(window: &AppWindow, down: bool) {
+        let facts = window.global::<crate::SettingsScrollFacts>();
+        let viewport = facts.get_viewport_height();
+        let content = facts.get_content_height();
+        if viewport <= 0.0 || content <= viewport {
+            return;
+        }
+        let max = content - viewport;
+        let target = if down {
+            facts.get_viewport_y() + viewport
+        } else {
+            facts.get_viewport_y() - viewport
+        };
+        facts.set_viewport_y(target.clamp(0.0, max));
     }
 
     /// The focus-into-view seam (#373 design round §3a, D-5): after a
@@ -1366,6 +1447,7 @@ impl Adapter {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // the effect application switch, kept flat
     fn apply_effect(&mut self, window: &AppWindow, effect: UiEffect) {
         match effect {
             UiEffect::Exit => {
@@ -1459,6 +1541,8 @@ impl Adapter {
             | UiEffect::ShowTask
             | UiEffect::ControlNext
             | UiEffect::ControlPrev
+            | UiEffect::ScrollUp
+            | UiEffect::ScrollDown
             | UiEffect::BeginCreate
             | UiEffect::BeginCreateStack
             | UiEffect::BeginTitleEdit
