@@ -2838,6 +2838,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_banner_seams(window, adapter);
     install_notification_seams(window, adapter);
     install_timer_seams(window, adapter);
+    install_tracking_seams(window, adapter);
     install_settings_seams(window, adapter);
 }
 
@@ -4355,11 +4356,45 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
+/// The tracking seams (DR-5/4, D-TU11): the chip's stop and the detail
+/// view's two verbs route the matching registry actions — the chip is
+/// unconditional (`StopTracking` is total), the detail verbs ride the
+/// focused task (every detail invocation has the subject focused,
+/// D-TU5's fallback path). No seam for the context-menu arms: the
+/// generic menu invocation already re-dispatches registry entries over
+/// the focused task.
+fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let chip = Rc::clone(adapter);
+    let chip_weak = window.as_weak();
+    window.on_tracking_chip_stop_clicked(move || {
+        let Some(window) = chip_weak.upgrade() else {
+            return;
+        };
+        chip.borrow_mut().route(&window, ActionId::TaskTrackStop);
+    });
+
+    let start = Rc::clone(adapter);
+    let start_weak = window.as_weak();
+    window.on_task_track_start_clicked(move || {
+        let Some(window) = start_weak.upgrade() else {
+            return;
+        };
+        start.borrow_mut().route(&window, ActionId::TaskTrackStart);
+    });
+
+    let stop = Rc::clone(adapter);
+    let stop_weak = window.as_weak();
+    window.on_task_track_stop_clicked(move || {
+        let Some(window) = stop_weak.upgrade() else {
+            return;
+        };
+        stop.borrow_mut().route(&window, ActionId::TaskTrackStop);
+    });
+}
+
 /// The notification surface's seams (R3 chunk C, design D-10): each
 /// button dispatches exactly one engine command and nothing else (the
-/// thin-client rule). No Start Task button — deferred to the
-/// time-tracking subsystem (issue #210), which is charged with adding
-/// it and carrying the implicit-dismissal semantic.
+/// thin-client rule).
 fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // Dismiss: the synced dismissal fact (the universal surface's one
     // write command).
@@ -4443,6 +4478,28 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         };
         a.timer_target = Some(alarm);
         a.route(&window, ActionId::TimerCancel);
+    });
+
+    // Start Task (DR-5/4, D-TU7): the routed TaskTrackStart over the
+    // row's one-shot target — table addressing, not focus (D-TU5).
+    // Exactly one command leaves the UI: the implicit dismissal lives
+    // planner-side (D-T5's same-batch emission); a stray index or an
+    // alarm row (no task behind the anchor table) degrades to a no-op,
+    // the done-seam's guard shape. The issue #210 reservation
+    // resolves here.
+    let track = Rc::clone(adapter);
+    let track_weak = window.as_weak();
+    window.on_notification_track_start_clicked(move |index| {
+        let Some(window) = track_weak.upgrade() else {
+            return;
+        };
+        let mut a = track.borrow_mut();
+        let Some(row) = notification_row(&a, index) else {
+            return;
+        };
+        let Some(task) = row.task else { return };
+        a.track_target = Some(task);
+        a.route(&window, ActionId::TaskTrackStart);
     });
 }
 

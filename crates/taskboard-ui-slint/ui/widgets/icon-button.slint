@@ -29,6 +29,10 @@ export enum IconKind {
     calendar,
     // The done affordance (R3 chunk C): a check mark.
     check,
+    // The start-tracking affordance (DR-5/4, D-T16): a play triangle.
+    play,
+    // The stop-tracking affordance (DR-5/4, D-T16): a stop square.
+    stop,
 }
 
 export component IconButton inherits Rectangle {
@@ -249,6 +253,38 @@ export component IconButton inherits Rectangle {
                     stroke: icon-box.icon-color();
                     stroke-width: Theme.focus-ring-width;
                     fill: transparent;
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                }
+            }
+        }
+
+        if (root.icon == IconKind.play): VerticalLayout {
+            // A play triangle: one filled polygon (geometric, D19).
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: Theme.space-4;
+                Path {
+                    width: Theme.space-3;
+                    height: Theme.space-3;
+                    commands: "M 2 1 L 11 6 L 2 11 Z";
+                    fill: icon-box.icon-color();
+                    viewbox-width: 12;
+                    viewbox-height: 12;
+                }
+            }
+        }
+
+        if (root.icon == IconKind.stop): VerticalLayout {
+            // A stop square: one filled rectangle (geometric, D19).
+            Rectangle {
+                vertical-stretch: 1;
+                min-height: Theme.space-4;
+                Path {
+                    width: Theme.space-3;
+                    height: Theme.space-3;
+                    commands: "M 2 2 L 10 2 L 10 10 L 2 10 Z";
+                    fill: icon-box.icon-color();
                     viewbox-width: 12;
                     viewbox-height: 12;
                 }

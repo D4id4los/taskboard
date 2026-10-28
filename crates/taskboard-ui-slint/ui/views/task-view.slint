@@ -21,6 +21,11 @@ export struct TaskDetailModel {
     due-kind: DueKind,
     scheduled-phrase: string,
     done: bool,
+    // The tracking verbs (DR-5/4, D-TU6): exactly one true while a
+    // subject exists, both false without — the button beside the
+    // State cell.
+    can-track-start: bool,
+    can-track-stop: bool,
     description: string,
     edit-open: bool,
     initial-text: string,
@@ -62,6 +67,10 @@ export component TaskView inherits FocusScope {
     // `task.title-edit` action — click ≡ key (§7.1).
     callback title-edit-opened();
     callback back-clicked();
+    // The tracking verbs (DR-5/4, D-T16): route the matching action
+    // over the focused task (the subject IS the focused task).
+    callback task-track-start-clicked();
+    callback task-track-stop-clicked();
     // The rule-list composition's seams (chunk 6, D12): forwarded to
     // the window, resolved against the id tables there.
     callback rule-remove-clicked(int);
@@ -300,10 +309,29 @@ export component TaskView inherits FocusScope {
                         text-color: Theme.text-secondary;
                         text: "State";
                     }
-                    RoleText {
-                        role: Typography.body;
-                        text-color: root.task.done ? Semantic.success : Theme.text-primary;
-                        text: root.task.done ? "Completed" : "Open";
+                    HorizontalLayout {
+                        spacing: Theme.space-1;
+                        RoleText {
+                            role: Typography.body;
+                            text-color: root.task.done ? Semantic.success : Theme.text-primary;
+                            text: root.task.done ? "Completed" : "Open";
+                            vertical-alignment: center;
+                        }
+                        // The Start/Stop affordance (DR-5/4, D-TU6):
+                        // exactly one verb while a subject exists; no
+                        // elapsed text, no history (fenced #491).
+                        if (root.task.can-track-start): IconButton {
+                            icon: IconKind.play;
+                            tone: Tone.info;
+                            label: "Start tracking";
+                            clicked => root.task-track-start-clicked();
+                        }
+                        if (root.task.can-track-stop): IconButton {
+                            icon: IconKind.stop;
+                            tone: Tone.info;
+                            label: "Stop tracking";
+                            clicked => root.task-track-stop-clicked();
+                        }
                     }
                 }
             }

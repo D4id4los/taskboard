@@ -161,6 +161,11 @@ export component AppWindow inherits Window {
     // default invisible (no prompt; kiosk/daemon never block).
     in-out property <bool> notice-visible: false;
     in-out property <string> notice-text;
+    // The tracking chip (DR-5/4, D-T16): display visible on kiosk
+    // too; the stop affordance's flag is the model-side gate.
+    in-out property <bool> tracking-chip-visible: false;
+    in-out property <string> tracking-chip;
+    in-out property <bool> tracking-chip-action-visible: false;
     // The jump-to search palette (#348): the model rows arrive ranked,
     // anchor-filtered, and capped from the Rust pass.
     in-out property <bool> palette-open: false;
@@ -331,6 +336,8 @@ export component AppWindow inherits Window {
                 date-edited(t) => root.task-date-edited(t);
                 date-accepted(t) => root.task-date-accepted(t);
                 date-picker-toggled() => root.task-date-picker-toggled();
+                task-track-start-clicked() => root.task-track-start-clicked();
+                task-track-stop-clicked() => root.task-track-stop-clicked();
             }
 
             // The board create/rename fields (r2 D21): the
@@ -368,6 +375,7 @@ export component AppWindow inherits Window {
                 snooze-clicked(i) => root.notification-snooze-clicked(i);
                 mute-clicked(i) => root.notification-mute-clicked(i);
                 cancel-clicked(i) => root.notification-cancel-clicked(i);
+                track-start-clicked(i) => root.notification-track-start-clicked(i);
             }
 
             status := StatusBar {
@@ -380,10 +388,14 @@ export component AppWindow inherits Window {
                 timers-chip: root.timers-chip;
                 notice-visible: root.notice-visible;
                 notice-text: root.notice-text;
+                tracking-chip-visible: root.tracking-chip-visible;
+                tracking-chip: root.tracking-chip;
+                tracking-chip-action-visible: root.tracking-chip-action-visible;
                 snooze-clicked(i) => root.banner-snooze-clicked(i);
                 mute-clicked(i) => root.banner-mute-clicked(i);
                 row-activated(i) => root.banner-row-activated(i);
                 timers-chip-clicked() => root.timers-chip-clicked();
+                tracking-stop-clicked() => root.tracking-chip-stop-clicked();
             }
         }
 
@@ -738,14 +750,21 @@ export component AppWindow inherits Window {
     pure callback banner-row-activated(int);
     // The notification surface's buttons (R3 chunk C, D-10): Dismiss /
     // Mark Done / Snooze / Mute — each dispatches one engine command
-    // and nothing else (thin client). No Start Task button: deferred
-    // to the time-tracking subsystem (issue #210), which is charged
-    // with adding it and carrying the implicit-dismissal semantic.
+    // and nothing else (thin client). Start Task (DR-5/4, D-TU7)
+    // rides the same one-command rule: the planner's implicit
+    // same-batch dismissal means the UI sends StartTracking alone.
     pure callback notification-dismiss-clicked(int);
     pure callback notification-done-clicked(int);
     pure callback notification-snooze-clicked(int);
     pure callback notification-mute-clicked(int);
     pure callback notification-cancel-clicked(int);
+    pure callback notification-track-start-clicked(int);
+    // The tracking seams (DR-5/4, D-TU11): the chip's stop routes
+    // TaskTrackStop; the detail view's two verbs route over the
+    // focused task.
+    pure callback tracking-chip-stop-clicked();
+    pure callback task-track-start-clicked();
+    pure callback task-track-stop-clicked();
     // The timers surface (DR-3/3, D-I8): create dispatches
     // TimerCreate from the parsed draft; cancel dispatches
     // TimerCancel from the row table; the chip click focuses today.

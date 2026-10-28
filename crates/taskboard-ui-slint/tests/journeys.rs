@@ -3797,7 +3797,15 @@ fn every_settings_field_carries_its_info_tip() {
 /// never asserted), and moving away hides it.
 #[test]
 fn an_info_tip_hover_arms_the_generalized_tooltip() {
-    let (_fixture, state) = fixture::golden_state();
+    let (_fixture, mut state) = fixture::golden_state();
+    // The golden fixture now seeds a running timer (DR-5/4, D-TU12);
+    // its chip control trips the testing backend's element traversal
+    // (a second conditional control in the status row makes the
+    // SettingsView query return empty — backend limitation, not
+    // behavior: the settings journeys pass with the chip mounted).
+    // The tooltip machinery is this test's subject; it runs on a
+    // chip-free chrome. Issue-worthy against the backend harness.
+    state.tracking.entries.clear();
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -7251,6 +7259,220 @@ fn the_timers_form_creates_then_cancels() {
             harness.engine.settle(&harness.handle);
             assert_eq!(harness.handle.window().get_timers_model().row_count(), 0);
             assert!(!harness.handle.window().get_timers_chip_visible());
+        },
+    );
+}
+
+// -- DR-5/4: the tracking affordances (issue #489) -----------------------
+
+/// DR-5/4 — the chip: the open entry names itself (title snapshot +
+/// elapsed) on desktop WITH the stop affordance, whose click routes
+/// the exact payload-free `StopTracking`; a closed-only state hides
+/// the chip. The kiosk leg pins D-T16's gate: the display STAYS (the
+/// appliance shows what is being worked on), the action empties — a
+/// hidden chip on kiosk is the stage-3 blocking finding.
+#[test]
+fn the_tracking_chip_renders_and_the_kiosk_gate_empties_only_the_action() {
+    let (_fixture, state) = fixture::golden_state();
+    // The seeded entry (D-TU12) is the chip's input; a closed-only
+    // variant for the hidden leg.
+    let mut closed_only = state.clone();
+    closed_only.tracking.entries.clear();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            // Desktop: chip + action visible, text present (presence,
+            // never content — AGENTS §5).
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            assert!(harness.handle.window().get_tracking_chip_visible());
+            assert!(harness.handle.window().get_tracking_chip_action_visible());
+            assert!(
+                !harness.handle.window().get_tracking_chip().is_empty(),
+                "the chip names the open entry"
+            );
+
+            // The stop affordance routes the exact command (the seam
+            // invoked directly — the testing backend exposes no a11y
+            // node for a TouchArea control, so a labelled click cannot
+            // address it; the gate's render arm is the `if` over the
+            // property pinned below).
+            harness.handle.window().invoke_tracking_chip_stop_clicked();
+            harness.assert_commands(&[taskboard_domain::StateCommand::StopTracking]);
+
+            // Closed-only: no chip, no action.
+            drop(harness);
+            let harness = Harness::mount(SlintDriver::default(), closed_only);
+            assert!(!harness.handle.window().get_tracking_chip_visible());
+            assert!(!harness.handle.window().get_tracking_chip_action_visible());
+
+            // Kiosk: the display STAYS, the action empties.
+            drop(harness);
+            let (_fixture, kiosk_state) = fixture::golden_state();
+            let harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                kiosk_state,
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            assert!(
+                harness.handle.window().get_tracking_chip_visible(),
+                "the kiosk appliance still shows what is being worked on"
+            );
+            assert!(
+                !harness.handle.window().get_tracking_chip().is_empty(),
+                "the kiosk chip carries the title and elapsed"
+            );
+            assert!(
+                !harness.handle.window().get_tracking_chip_action_visible(),
+                "the gate empties the action, not the display"
+            );
+        },
+    );
+}
+
+/// DR-5/4 (D-TU3) — the badge rides the decorations slot: exactly one
+/// card on the board carries the tracking decoration, the open
+/// entry's card; the ghost and compact collapsing ride the existing
+/// slot semantics, never re-derived here.
+#[test]
+fn the_tracking_badge_rides_only_the_open_entrys_card() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            let board = harness.handle.window().get_board_model();
+            let mut badged: Vec<(usize, usize)> = Vec::new();
+            for column in 0..board.stacks.row_count() {
+                let tasks = board.stacks.row_data(column).expect("column").tasks;
+                for row in 0..tasks.row_count() {
+                    let card = tasks.row_data(row).expect("card");
+                    let mut decorations = Vec::new();
+                    for index in 0..card.decorations.row_count() {
+                        decorations.push(card.decorations.row_data(index).expect("decoration"));
+                    }
+                    if decorations.iter().any(|decoration| {
+                        decoration.kind == taskboard_ui_slint::DecorationKind::Tracking
+                    }) {
+                        badged.push((column, row));
+                    }
+                }
+            }
+            assert_eq!(
+                badged,
+                vec![(0, 1)],
+                "exactly the open entry's card badges (stack a, order 1)"
+            );
+        },
+    );
+}
+
+/// DR-5/4 (D-TU7) — the notification Start Task seam: exactly one
+/// command leaves the UI, the exact `StartTracking { task }` — the
+/// implicit dismissal lives planner-side, so a `DismissReminder`
+/// alongside would be the blocking duplicate. A stale index and an
+/// alarm row degrade to zero commands.
+#[test]
+fn the_notification_start_task_dispatches_exactly_one_command() {
+    let (fixture, mut state) = fixture::golden_state();
+    let due = chrono::Utc::now() - TimeDelta::minutes(5);
+    fixture::deliver_task_notification(&mut state, fixture.task1, due);
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let window = harness.handle.window();
+
+            // The task row renders the affordance (the anchor table).
+            let rows = window.get_notification_model();
+            assert_eq!(rows.row_count(), 1);
+            assert!(rows.row_data(0).expect("row").can_track_start);
+
+            // The seam dispatches exactly one command.
+            window.invoke_notification_track_start_clicked(0);
+            harness.assert_commands(&[taskboard_domain::StateCommand::StartTracking {
+                task: fixture.task1,
+            }]);
+
+            // A stale index degrades to a no-op.
+            harness
+                .handle
+                .window()
+                .invoke_notification_track_start_clicked(999);
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// DR-5/4 (D-TU7) — the anchor table at the seam: an alarm-anchored
+/// row never offers Start Task and its seam dispatches nothing.
+#[test]
+fn the_alarm_row_never_offers_start_task() {
+    let (_fixture, mut state) = fixture::golden_state();
+    let fired_at = chrono::Utc::now() - TimeDelta::minutes(1);
+    let alarm = fixture::add_alarm(&mut state, "tea", fired_at);
+    fixture::deliver_alarm(&mut state, alarm, fired_at);
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let rows = harness.handle.window().get_notification_model();
+            assert_eq!(rows.row_count(), 1, "the awaiting alarm renders");
+            assert!(
+                !rows.row_data(0).expect("row").can_track_start,
+                "an Adhoc row never renders Start Task"
+            );
+            drop(rows);
+            harness
+                .handle
+                .window()
+                .invoke_notification_track_start_clicked(0);
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// DR-5/4 (D-TU6) — the detail button carries exactly one verb per
+/// subject: Start for the untracked subject, Stop for the subject
+/// holding the open entry (no done-gate in the UI — R-8 is the
+/// engine's).
+#[test]
+fn the_detail_button_carries_one_verb_per_subject() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // The first card (task-0, untracked): Start only.
+            harness.press(ActionId::NavFirstItem);
+            harness.press(ActionId::TaskEdit);
+            let model = harness.handle.window().get_task_model();
+            assert!(model.can_track_start && !model.can_track_stop);
+
+            // The tracked subject: Stop only.
+            harness.press(ActionId::NavFocusBoard);
+            harness.press(ActionId::NavNextItem);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 1)),
+                "the walk reaches the tracked card"
+            );
+            harness.press(ActionId::TaskEdit);
+            let model = harness.handle.window().get_task_model();
+            assert!(!model.can_track_start && model.can_track_stop);
         },
     );
 }
