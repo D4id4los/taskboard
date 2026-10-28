@@ -532,6 +532,73 @@ pub fn tracking_badge_visible(open_task: Option<TaskId>, card_task: TaskId) -> b
     open_task == Some(card_task)
 }
 
+/// The recurring badge's typed parts (DR-6/4, D-S7): the domain's
+/// next-occurrence law, displayed. `next: None` renders the
+/// pattern-only badge (the series' last head — the `Until` bound
+/// excludes the next member); `stale` is the overdue-recurring display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecurBadge {
+    /// The next advertised member; `None` past the `Until` bound.
+    pub next: Option<chrono::NaiveDate>,
+    /// The head's reference date is before today's window-date.
+    pub stale: bool,
+    /// The pattern, the label glue's input.
+    pub pattern: taskboard_domain::RecurPattern,
+}
+
+/// The recurring badge's pure decision (D-S7): `None` (hidden) unless
+/// the task carries a rule **and** is open — done heads are closed
+/// occurrences (the successor carries the series forward and gets its
+/// own badge). The body is the domain's `next_occurrence` + the rule
+/// echo — no UI-held recurrence state; derived per frame from the
+/// published state. `Count` is never surfaced here (engine-evaluated
+/// history; the badge shows schedule truth, not quota state).
+#[must_use]
+pub fn recur_badge(
+    task: &Task,
+    day: taskboard_domain::days::DayCalendar,
+    now: DateTime<Utc>,
+) -> Option<RecurBadge> {
+    let rule = task.recur.as_ref()?;
+    if !task.is_open() {
+        return None;
+    }
+    let next = taskboard_domain::next_occurrence(rule, task, day, now);
+    Some(RecurBadge {
+        next: next.date,
+        stale: next.stale,
+        pattern: rule.pattern.clone(),
+    })
+}
+
+/// The badge's label glue: the pattern's canonical text form plus a
+/// day-granularity next phrase over the [`duration_bucket`] day bucket
+/// of `next - today` (never a wall-clock delta — day granularity keeps
+/// the label diff-stable within a window, so mid-day re-pushes write
+/// identical labels). A past roll target clamps to `Now` ("today" —
+/// the stale tone carries the overdue-recurring display);
+/// `next: None` renders the pattern-only badge. The string is UX copy:
+/// tests assert non-empty and deterministic, never the wording.
+#[must_use]
+pub fn recur_badge_label(badge: &RecurBadge, today: chrono::NaiveDate) -> String {
+    let phrase = badge.next.map(|next| {
+        match duration_bucket(next.signed_duration_since(today)) {
+            // A past roll target clamps into `Now` (the stale tone
+            // carries the overdue display); the sub-day buckets cannot
+            // arise (both sides are midnight dates) but share the arm.
+            DurationBucket::Now | DurationBucket::Minutes(_) | DurationBucket::Hours(_) => {
+                "today".to_owned()
+            }
+            DurationBucket::Days(1) => "tomorrow".to_owned(),
+            DurationBucket::Days(n) => format!("in {n}d"),
+        }
+    });
+    match phrase {
+        Some(phrase) => format!("{} \u{b7} {phrase}", badge.pattern.text_form()),
+        None => badge.pattern.text_form(),
+    }
+}
+
 /// The task-detail button's verb (D-T16): `Stop` when the subject
 /// holds the open entry, `Start` otherwise. No done-gate — the
 /// engine's R-8 ruling ("a completed task is trackable") owns it.
@@ -2566,5 +2633,199 @@ mod connector_status_tests {
         let once = resurrect_notice_phrase("held work");
         assert!(!once.is_empty() && once.contains("held work"));
         assert_eq!(once, resurrect_notice_phrase("held work"));
+    }
+}
+
+// ---- the recurring badge (DR-6/4, T13) ----------------------------------
+
+#[cfg(test)]
+mod recur_badge_tests {
+    use super::*;
+    use taskboard_domain::{
+        DayCalendar, RecurBound, RecurPattern as Pattern, RecurRule, SeriesId, TaskClocks,
+    };
+
+    /// A local open head (the `tests::task` fixture is private to the
+    /// sibling module; this needs only the badge-relevant fields).
+    fn task() -> Task {
+        Task {
+            id: TaskId::from_uuid(uuid::Uuid::from_u128(1)),
+            remote: None,
+            label_memberships: std::collections::BTreeMap::new(),
+            title: "badge head".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: StackId::from_uuid(uuid::Uuid::from_u128(2)),
+            order: 0,
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            archived: false,
+            deleted: false,
+            clocks: TaskClocks {
+                title: taskboard_domain::BoardClocks::epoch(),
+                description: taskboard_domain::BoardClocks::epoch(),
+                duedate: taskboard_domain::BoardClocks::epoch(),
+                scheduled: taskboard_domain::BoardClocks::epoch(),
+                done: taskboard_domain::BoardClocks::epoch(),
+                position: taskboard_domain::BoardClocks::epoch(),
+                effort: taskboard_domain::BoardClocks::epoch(),
+                importance: taskboard_domain::BoardClocks::epoch(),
+                urgency: taskboard_domain::BoardClocks::epoch(),
+                recur: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+            },
+            remote_seen: None,
+            remote_baseline: None,
+        }
+    }
+
+    fn calendar() -> DayCalendar {
+        DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("zero is a valid offset"),
+        }
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// The epoch instant of `d`'s UTC midnight.
+    fn midnight(d: chrono::NaiveDate) -> DateTime<Utc> {
+        use chrono::TimeZone as _;
+        chrono::Utc
+            .timestamp_opt((d - date(1970, 1, 1)).num_days() * 86_400, 0)
+            .unwrap()
+    }
+
+    fn rule(
+        pattern: taskboard_domain::RecurPattern,
+        anchor: chrono::NaiveDate,
+        bound: RecurBound,
+    ) -> RecurRule {
+        RecurRule {
+            series: SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+            anchor,
+            pattern,
+            bound,
+            continued_from: None,
+        }
+    }
+
+    #[test]
+    fn visibility_follows_rule_and_openness() {
+        let day = calendar();
+        let now = midnight(date(2026, 10, 21));
+        let mut t = task();
+        // No rule → None.
+        assert_eq!(recur_badge(&t, day, now), None);
+        // A rule on an open head → Some.
+        t.recur = Some(rule(
+            Pattern::Daily {
+                every: taskboard_domain::EveryDays::new(1).unwrap(),
+            },
+            date(2026, 10, 1),
+            RecurBound::None,
+        ));
+        let badge = recur_badge(&t, day, now).expect("open + rule shows");
+        assert!(!badge.stale);
+        assert_eq!(badge.next, Some(date(2026, 10, 22)));
+        // A done head shows none (the successor carries the series).
+        t.done = Some(now);
+        assert_eq!(recur_badge(&t, day, now), None);
+    }
+
+    #[test]
+    fn the_stale_head_badges_the_roll_target_with_the_overdue_decision() {
+        let day = calendar();
+        let now = midnight(date(2026, 10, 21));
+        let mut t = task();
+        t.scheduled = Some(midnight(date(2026, 10, 19)));
+        t.recur = Some(rule(
+            Pattern::Daily {
+                every: taskboard_domain::EveryDays::new(1).unwrap(),
+            },
+            date(2026, 10, 1),
+            RecurBound::None,
+        ));
+        let badge = recur_badge(&t, day, now).expect("stale head shows");
+        assert!(badge.stale);
+        assert_eq!(badge.next, Some(date(2026, 10, 21)));
+        // The dateless sibling is never stale.
+        let mut dateless = task();
+        dateless.recur = Some(rule(
+            Pattern::Daily {
+                every: taskboard_domain::EveryDays::new(1).unwrap(),
+            },
+            date(2026, 10, 1),
+            RecurBound::None,
+        ));
+        let badge = recur_badge(&dateless, day, now).expect("dateless shows");
+        assert!(!badge.stale);
+    }
+
+    #[test]
+    fn an_exhausted_until_bound_renders_the_pattern_only_badge() {
+        let day = calendar();
+        let now = midnight(date(2026, 10, 21));
+        let mut t = task();
+        t.recur = Some(rule(
+            Pattern::Weekly {
+                interval: taskboard_domain::EveryWeeks::new(1).unwrap(),
+                on: taskboard_domain::WeekdaySet::new([chrono::Weekday::Mon]).unwrap(),
+            },
+            date(2026, 10, 5),
+            RecurBound::Until(date(2026, 10, 19)),
+        ));
+        let badge = recur_badge(&t, day, now).expect("exhausted head still shows");
+        assert_eq!(badge.next, None);
+        // The pattern-only label is non-empty and deterministic.
+        let label = recur_badge_label(&badge, date(2026, 10, 21));
+        assert!(!label.is_empty(), "the pattern-only label renders");
+        assert_eq!(label, recur_badge_label(&badge, date(2026, 10, 21)));
+    }
+
+    #[test]
+    fn the_label_is_day_stable_within_a_window_and_deterministic() {
+        let day = calendar();
+        let mut t = task();
+        t.recur = Some(rule(
+            Pattern::Monthly {
+                on: taskboard_domain::MonthlyAnchor::OnDay(
+                    taskboard_domain::DayOfMonth::new(15).unwrap(),
+                ),
+            },
+            date(2026, 10, 15),
+            RecurBound::Count(taskboard_domain::OccurrenceCount::new(3).unwrap()),
+        ));
+        // Two `now`s inside one window (the 21st): identical labels —
+        // day granularity keeps re-pushes diff-stable.
+        let morning = midnight(date(2026, 10, 21));
+        let evening = morning + chrono::TimeDelta::try_hours(20).unwrap();
+        let a = recur_badge(&t, day, morning).expect("badge");
+        let b = recur_badge(&t, day, evening).expect("badge");
+        assert_eq!(a, b, "same window, same badge");
+        let label_a = recur_badge_label(&a, day.today(morning));
+        assert!(!label_a.is_empty(), "the label renders");
+        assert_eq!(label_a, recur_badge_label(&b, day.today(evening)));
+        // The day bucket arithmetic the phrase rides: the next member
+        // (Nov 15) sits 25 days out from the 21st.
+        assert_eq!(
+            duration_bucket(
+                chrono::TimeDelta::try_days(
+                    a.next
+                        .expect("next")
+                        .signed_duration_since(date(2026, 10, 21))
+                        .num_days()
+                )
+                .expect("25d"),
+            ),
+            DurationBucket::Days(25)
+        );
     }
 }

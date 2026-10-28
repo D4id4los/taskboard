@@ -19,6 +19,9 @@ export enum DecorationKind {
     // The running-timer badge (DR-5/4, D-TU3): the card whose task
     // holds the open entry — static label, the chip owns the elapsed.
     tracking,
+    // The recurring-series badge (DR-6/4, D-S7): the open head's next
+    // occurrence, derived per frame from the published state.
+    recur,
 }
 
 export struct TaskDecoration {
