@@ -5804,7 +5804,11 @@ mod tests {
         // First verdict wins: an op this cycle's push echo already
         // settled must stay CompleteOp when the same task is then
         // absence-tombstoned; only still-pending ops of the task are
-        // failed by R3.
+        // failed by R3. The tombstone route runs through cascade
+        // territory (the card's stack is absent too): the #130 carve-
+        // out counts a card this cycle's echo carried as present, so a
+        // live-stack absence can no longer tombstone a just-echoed
+        // card at all.
         let state = base_state(bound_task(1));
         let task_id = task_by_card(&state, 1).id;
         let echo_op_id = crate::outbox::OpId(uuid::Uuid::from_u128(82));
@@ -5823,7 +5827,7 @@ mod tests {
         ];
         let mut echo = remote_task(1, 1, BASE + 60);
         echo.title = "echoed".into();
-        let snap = single_stack_snapshot(vec![], BASE + 60);
+        let snap = snapshot(vec![], vec![]);
 
         let app = apply_sync_report(
             &state,
