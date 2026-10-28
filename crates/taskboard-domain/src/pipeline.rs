@@ -30,19 +30,24 @@ use serde::{Deserialize, Serialize};
 use crate::entities::{Board, Label, Stack, Task};
 use crate::idgen::IdGenerator;
 use crate::ids::{
-    BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteStackId, RemoteStackRef, StackId, TaskId,
+    BoardId, LabelId, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteStackId, RemoteStackRef,
+    StackId, TaskId,
 };
 use crate::merge::{
-    RULE_R1, RULE_R3, RULE_R4, RULE_R5, RULE_R6, RULE_R9, adopt_board_after_delete_push,
-    adopt_board_after_push, adopt_label_after_push, adopt_remote_board, adopt_remote_label,
-    adopt_remote_stack, adopt_remote_task, adopt_stack_after_push, adopt_task_after_push,
-    finalize_pushed_task_delete, fold_reminder_dismissals, fold_reminder_rules, fold_task_app_data,
-    merge_board, merge_label, merge_stack, merge_task, remote_wins, tombstone_board,
-    tombstone_label, tombstone_stack, tombstone_task, utc_min,
+    CreateSignature, RULE_R_DUP, RULE_R1, RULE_R3, RULE_R4, RULE_R5, RULE_R6, RULE_R9,
+    adopt_board_after_delete_push, adopt_board_after_push, adopt_label_after_push,
+    adopt_remote_board, adopt_remote_label, adopt_remote_stack, adopt_remote_task,
+    adopt_stack_after_push, adopt_task_after_push, collapse_for_task,
+    detect_crash_window_duplicates, finalize_pushed_task_delete, fold_reminder_dismissals,
+    fold_reminder_rules, fold_task_app_data, merge_board, merge_label, merge_stack, merge_task,
+    rebind_task_to_survivor, remote_wins, tombstone_board, tombstone_label, tombstone_stack,
+    tombstone_task, utc_min,
 };
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
-use crate::remote::{PushOutcome, PushResult, RemoteBoardSnapshot, RemoteEcho, RemoteIndex};
+use crate::remote::{
+    PushOutcome, PushResult, RemoteBoardSnapshot, RemoteEcho, RemoteIndex, RemoteTask,
+};
 use crate::state::{AppState, SyncErrorKind, SyncPhase};
 
 /// The entity id an op targets, for `tracing` fields on push-outcome
@@ -415,6 +420,13 @@ fn keep_label_intent(
 /// `ids` provides fresh local ids for remotely-created entities (R1);
 /// `now` is the observation time for absence tombstones. Neither is ever
 /// read by the per-entity merge primitives.
+///
+/// # Panics
+///
+/// Never on any input the engine can produce: the duplicate collapse's
+/// survivor observation is looked up only among the members the
+/// detection just matched, so the `expect` there is a construction
+/// invariant, not an input-validation surface.
 // Still one fixed-order sequence after the R9 decision table was extracted
 // into `apply_push_outcomes`; the numbered sections ARE the design.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)] // the injected seams ARE the constructor
@@ -553,6 +565,107 @@ pub fn apply_sync_report(
         );
     }
 
+    // ---- 2b. Crash-window stack duplicates (#150, rule R-dup) --------
+    // The stack variant with the survivorship inversion (DEC-3): the
+    // BOUND stack survives (every replayed card resolves into it and
+    // the unbound orphan is provably empty), the orphan gets a
+    // ref-delete push. Runs before §3 so the orphan's R1 adoption is
+    // suppressed — no local duplicate row is ever created.
+    let mut dup_enqueues: Vec<PersistenceAction> = Vec::new();
+    let mut dup_stack_suppressed: std::collections::BTreeSet<RemoteStackRef> =
+        std::collections::BTreeSet::new();
+    let dup_stack_creates: Vec<(&crate::outbox::PendingOp, bool)> = outbox
+        .iter()
+        .filter(|entry| {
+            matches!(entry.op, LocalOp::CreateStack(_))
+                && op_results.get(&entry.op_id) != Some(&false)
+        })
+        .map(|entry| {
+            let echoed = pushes.iter().any(|o| {
+                o.op == entry.op_id
+                    && matches!(
+                        &o.result,
+                        PushResult::Applied {
+                            echo: Some(RemoteEcho::Stack(_)),
+                        }
+                    )
+            });
+            (entry, echoed)
+        })
+        .collect();
+    for (entry, _echoed) in &dup_stack_creates {
+        let LocalOp::CreateStack(local_stack_id) = entry.op else {
+            continue;
+        };
+        let Some(survivor) = stacks.get(&local_stack_id) else {
+            continue;
+        };
+        // No binding ⇒ no crash window: the stack never pushed.
+        let Some(bound_ref) = survivor.remote else {
+            continue;
+        };
+        for remote in &snapshot.stacks {
+            if ctx.stack_by_ref.contains_key(&remote.id)
+                || dup_stack_suppressed.contains(&remote.id)
+            {
+                continue;
+            }
+            // Clause 1: same normalized title, same board.
+            if crate::reconcile::normalized_title(&survivor.title)
+                != crate::reconcile::normalized_title(&remote.title)
+                || remote.id.board != bound_ref.board
+            {
+                continue;
+            }
+            // Clause 3: the window on the orphan's stamp — stacks carry
+            // no `created_at` (DEC-1), `last_modified` is the proxy.
+            if !crate::merge::dup_window_contains(remote.last_modified, entry.queued_at, now) {
+                continue;
+            }
+            // Clause 4: the create-stack body is title + order.
+            if remote.order != survivor.order {
+                continue;
+            }
+            // The never-by-construction guard: an orphan holding a ref
+            // that resolves to a live bound task is left alone (Deck's
+            // stack delete cascades its cards — DEC-3).
+            // The domain snapshot flattens cards out of the stacks, so
+            // the orphan's nested cards come from `snapshot.tasks`.
+            let contested = snapshot.tasks.iter().any(|card| {
+                card.id.board == remote.id.board
+                    && card.id.stack == remote.id.stack
+                    && ctx
+                        .task_by_ref
+                        .get(&card.id)
+                        .is_some_and(|task_id| tasks[task_id].is_live())
+            });
+            if contested {
+                tracing::debug!(
+                    rule = RULE_R_DUP,
+                    stack = ?remote.id,
+                    "orphan stack holds bound cards; collapse skipped"
+                );
+                continue;
+            }
+            dup_stack_suppressed.insert(remote.id);
+            dup_enqueues.push(PersistenceAction::EnqueueOp(PendingOp {
+                op_id: ids.new_op_id(),
+                op: LocalOp::DeleteRemoteStack {
+                    board: board_id,
+                    stack: remote.id,
+                },
+                queued_at: now,
+            }));
+            tracing::debug!(
+                rule = RULE_R_DUP,
+                stack_id = ?local_stack_id,
+                survivor = ?bound_ref,
+                orphan = ?remote.id,
+                "crash-window duplicate stack collapses to the bound survivor"
+            );
+        }
+    }
+
     // ---- 3. Stacks (R1/R4/R5/R6) ------------------------------------
     let mut newly_tombstoned_stack_refs: Vec<RemoteStackId> = Vec::new();
     for remote in &snapshot.stacks {
@@ -581,6 +694,12 @@ pub fn apply_sync_report(
                     "stack merged"
                 );
             }
+        } else if dup_stack_suppressed.contains(&remote.id) {
+            tracing::debug!(
+                rule = RULE_R_DUP,
+                stack = ?remote.id,
+                "doomed orphan stack adoption suppressed"
+            );
         } else {
             let id = ids.new_stack_id();
             stacks.insert(id, adopt_remote_stack(remote, id, board_id));
@@ -613,6 +732,140 @@ pub fn apply_sync_report(
             labels.insert(id, adopt_remote_label(remote, id, board_id));
             ctx.label_by_ref.insert(remote.id, id);
             tracing::debug!(rule = RULE_R1, label_id = ?id, fresh_id = ?id, label = ?remote.id, "label adopted");
+        }
+    }
+
+    // ---- 4b. Crash-window card duplicates (#150, rule R-dup) ---------
+    // The create signatures in scope: every CreateTask in the outbox
+    // slice whose outcome this cycle was not a failure (a pending op,
+    // or the replay's echo — the crash signature cannot exist without
+    // our own create). No signatures ⇒ the pass cannot fire.
+    let mut dup_suppressed: std::collections::BTreeSet<RemoteCardRef> =
+        std::collections::BTreeSet::new();
+    let dup_creates: Vec<CreateSignature> = outbox
+        .iter()
+        .filter(|entry| {
+            matches!(entry.op, LocalOp::CreateTask(_))
+                && op_results.get(&entry.op_id) != Some(&false)
+        })
+        .map(|entry| {
+            let echoed = pushes.iter().any(|o| {
+                o.op == entry.op_id
+                    && matches!(
+                        &o.result,
+                        PushResult::Applied {
+                            echo: Some(RemoteEcho::Task(_)),
+                        }
+                    )
+            });
+            CreateSignature {
+                task: match entry.op {
+                    LocalOp::CreateTask(task) => task,
+                    _ => unreachable!("filtered above"),
+                },
+                op: entry.op_id,
+                queued_at: entry.queued_at,
+                echoed_this_cycle: echoed,
+            }
+        })
+        .collect();
+    if !dup_creates.is_empty() {
+        // The bound card's observation, when this cycle's evidence carries
+        // one: the snapshot listing first, this cycle's task echoes second.
+        let mut card_observations: HashMap<RemoteCardRef, &RemoteTask> =
+            snapshot.tasks.iter().map(|task| (task.id, task)).collect();
+        for outcome in pushes {
+            if let PushResult::Applied {
+                echo: Some(RemoteEcho::Task(echo)),
+            } = &outcome.result
+            {
+                card_observations.insert(echo.id, echo);
+            }
+        }
+        for sig in &dup_creates {
+            let Some(local) = tasks.get(&sig.task) else {
+                continue;
+            };
+            let bound_obs = local
+                .remote
+                .and_then(|ref_| card_observations.get(&ref_).copied());
+            // Clause verdicts per unbound snapshot card, then one group
+            // formation (DEC-10's multi-orphan generalization).
+            let mut matched: Vec<(RemoteCardRef, chrono::DateTime<chrono::Utc>)> = Vec::new();
+            let mut satisfied_op = None;
+            for candidate in &snapshot.tasks {
+                if task_by_board_card.contains_key(&(candidate.id.board, candidate.id.card))
+                    || dup_suppressed.contains(&candidate.id)
+                {
+                    continue;
+                }
+                if let Some(verdict) = detect_crash_window_duplicates(
+                    candidate,
+                    bound_obs,
+                    &tasks,
+                    &stacks,
+                    std::slice::from_ref(sig),
+                    now,
+                    features.card_startdate,
+                ) {
+                    matched.push((candidate.id, candidate.created_at));
+                    if satisfied_op.is_none() {
+                        satisfied_op = verdict.satisfied_op;
+                    }
+                }
+            }
+            if matched.is_empty() {
+                continue;
+            }
+            let collapse = collapse_for_task(
+                sig.task,
+                bound_obs.map(|obs| (obs.id, obs.created_at)),
+                matched,
+                satisfied_op,
+            );
+            if collapse.rebind {
+                // The survivor came from this cycle's evidence by
+                // construction (the detection matched on it).
+                let survivor_obs = card_observations
+                    .get(&collapse.survivor)
+                    .copied()
+                    .expect("the survivor was matched from this cycle's evidence");
+                let old_bound = tasks[&sig.task].remote;
+                let rebinded = rebind_task_to_survivor(&tasks[&sig.task], survivor_obs);
+                tasks.insert(sig.task, rebinded);
+                // The doomed old binding must not drive §5's merge for
+                // its card: the task no longer points there.
+                if let Some(old) = old_bound {
+                    task_by_board_card.remove(&(old.board, old.card));
+                }
+            }
+            // DEC-6: the pending create's effect exists server-side (the
+            // survivor IS the first POST's card) — completes true; a
+            // false would stamp the board Failed.
+            if let Some(op) = collapse.satisfied_op {
+                op_results.insert(op, true);
+            }
+            for doomed in &collapse.doomed {
+                dup_enqueues.push(PersistenceAction::EnqueueOp(PendingOp {
+                    op_id: ids.new_op_id(),
+                    op: LocalOp::DeleteRemoteCard {
+                        board: board_id,
+                        card: *doomed,
+                    },
+                    queued_at: now,
+                }));
+            }
+            dup_suppressed.insert(collapse.survivor);
+            dup_suppressed.extend(collapse.doomed.iter().copied());
+            tracing::debug!(
+                rule = RULE_R_DUP,
+                task_id = ?sig.task,
+                survivor = ?collapse.survivor,
+                rebind = collapse.rebind,
+                doomed = collapse.doomed.len(),
+                satisfied_op = ?collapse.satisfied_op,
+                "crash-window duplicate collapse applied"
+            );
         }
     }
 
@@ -675,6 +928,15 @@ pub fn apply_sync_report(
                     }
                 }
             }
+        } else if dup_suppressed.contains(&remote.id) {
+            // R1 suppression (DEC-2): the collapse's verdicts skip
+            // before any id burn or row insert — no local duplicate row
+            // is ever created, in memory or storage.
+            tracing::debug!(
+                rule = RULE_R_DUP,
+                card = ?remote.id,
+                "duplicate adoption suppressed"
+            );
         } else {
             // Deferred adoption (None) when the remote stack has no local
             // binding: the card joins a later cycle, once its stack exists
@@ -968,8 +1230,11 @@ pub fn apply_sync_report(
     actions.extend(rule_actions);
     actions.extend(dismissal_actions);
     // R3's resurrect creates ride last: the re-planning decided in
-    // section 6, the batch materializes here.
+    // section 6, the batch materializes here. The duplicate collapse's
+    // ref-deletes ride beside them (same shape: decided mid-pass,
+    // materialized on the final batch).
     actions.extend(resurrect_enqueues);
+    actions.extend(dup_enqueues);
     // Outbox order, not the HashMap's: equal inputs must yield equal
     // batches (the convergence property; the map is a lookup index).
     for entry in outbox {
@@ -6275,6 +6540,257 @@ mod tests {
         assert_eq!(
             app.0.labels[&label2_id].title, "label 2 renamed",
             "the other label adopts the remote title"
+        );
+    }
+}
+
+#[cfg(test)]
+mod duplicate_reconcile_tests {
+    //! T-7: the collapse composed end-to-end through
+    //! [`apply_sync_report`] — the echo arm's rebind + delete push, the
+    //! pending arm's op completion, the stranger's-twin negative, the
+    //! stack variant with its survivorship inversion, and the honesty
+    //! pin (no `SystemEvent` on the collapse path).
+
+    use super::*;
+    use crate::merge_testutil::*;
+    use uuid::Uuid;
+
+    const NOW: i64 = BASE + 30;
+
+    /// A matching card observation: title normalizes to the bound
+    /// fixture's, content equal (order differs — the excluded field).
+    fn twin(stack: u64, card: u64, created_at: i64) -> RemoteTask {
+        let mut view = remote_task(stack, card, created_at);
+        view.id = card_ref(stack, card);
+        view.title = "LOCAL 800".into();
+        view.created_at = ts(created_at);
+        view
+    }
+
+    fn echo_push(op_num: u128, echo: RemoteTask) -> PushOutcome {
+        PushOutcome {
+            op: OpId(Uuid::from_u128(op_num)),
+            result: PushResult::Applied {
+                echo: Some(RemoteEcho::Task(echo)),
+            },
+        }
+    }
+
+    fn run(
+        state: &AppState,
+        outbox: &[PendingOp],
+        snapshot: &RemoteBoardSnapshot,
+        pushes: &[PushOutcome],
+    ) -> (
+        AppState,
+        Vec<PersistenceAction>,
+        Vec<crate::messages::SystemEvent>,
+    ) {
+        apply_sync_report(
+            state,
+            outbox,
+            snapshot,
+            pushes,
+            ts(BASE + 1),
+            &CountingIds::default(),
+            ts(NOW),
+            &crate::test_support::test_connector(),
+            &crate::messages::AppDataEvidence::Absent,
+            crate::capabilities::DeckFeatures::NATIVE,
+        )
+    }
+
+    fn enqueued_ref_deletes(actions: &[PersistenceAction]) -> Vec<LocalOp> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                PersistenceAction::EnqueueOp(p) => Some(p.op),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_echo_arm_rebinds_to_the_older_card_and_dooms_the_newer() {
+        // Crash journey's replay cycle: the replayed create's echo bound
+        // T to the NEWER card B; the listing also carries the first
+        // POST's older card A — the collapse rebinds T→A and ref-deletes B.
+        let a = twin(1, 900, BASE + 10);
+        let b = twin(1, 800, BASE + 20);
+        let task = bound_task(800); // bound to B
+        let state = base_state(task);
+        let create_op = PendingOp {
+            op_id: OpId(Uuid::from_u128(700)),
+            op: LocalOp::CreateTask(task_by_card(&state, 800).id),
+            queued_at: ts(BASE),
+        };
+        let (app, actions, events) = run(
+            &state,
+            &[create_op],
+            &single_stack_snapshot(vec![a.clone(), b.clone()], BASE),
+            &[echo_push(700, b.clone())],
+        );
+
+        // Zero new task rows: B's card is bound, A's adoption suppressed.
+        assert_eq!(app.tasks.len(), 1, "no duplicate local row");
+        let merged = task_by_card(&app, 900);
+        assert_eq!(merged.remote, Some(a.id), "rebound to the older card");
+        assert_eq!(merged.remote_seen, Some(a.last_modified));
+        assert!(
+            merged.remote_baseline.is_some(),
+            "the rebind refreshes the baseline (D-1c)"
+        );
+        // One ref-delete enqueue for the doomed newer card.
+        let deletes = enqueued_ref_deletes(&actions);
+        assert_eq!(deletes.len(), 1);
+        assert!(matches!(
+            &deletes[0],
+            LocalOp::DeleteRemoteCard { card, .. } if *card == b.id
+        ));
+        // The create op completed via its echo (§1), the phase stays Idle.
+        assert!(actions.iter().any(
+            |a| matches!(a, PersistenceAction::CompleteOp(id) if *id == OpId(Uuid::from_u128(700)))
+        ));
+        assert_eq!(*events, [], "the honesty rule: no SystemEvent");
+    }
+
+    #[test]
+    fn the_pending_arm_completes_the_create_and_rebinds() {
+        // Landing batch lost, pull succeeded on a later cycle: T still
+        // unbound, the first POST's card A in the listing, no echo.
+        let a = twin(1, 900, BASE + 10);
+        let task = {
+            let mut task = bound_task(800);
+            task.remote = None;
+            task.remote_seen = None;
+            task
+        };
+        let state = base_state(task);
+        let create_op = PendingOp {
+            op_id: OpId(Uuid::from_u128(700)),
+            op: LocalOp::CreateTask(TaskId::from(Uuid::from_u128(800))),
+            queued_at: ts(BASE),
+        };
+        let (app, actions, events) = run(
+            &state,
+            &[create_op],
+            &single_stack_snapshot(vec![a.clone()], BASE),
+            &[],
+        );
+
+        assert_eq!(app.tasks.len(), 1);
+        let merged = app.tasks.get(&TaskId::from(Uuid::from_u128(800))).unwrap();
+        assert_eq!(merged.remote, Some(a.id), "rebound to the survivor");
+        assert!(
+            enqueued_ref_deletes(&actions).is_empty(),
+            "the survivor is the only card"
+        );
+        // DEC-6: the create completes true — the board phase stays Idle.
+        assert!(actions.iter().any(
+            |a| matches!(a, PersistenceAction::CompleteOp(id) if *id == OpId(Uuid::from_u128(700)))
+        ));
+        assert_eq!(app.sync.aggregate().phase, crate::state::SyncPhase::Idle);
+        assert_eq!(*events, []);
+    }
+
+    #[test]
+    fn a_strangers_twin_card_is_adopted_normally() {
+        // Clause 2 through the pipeline: no create in scope ⇒ the pass
+        // cannot fire; the twin adopts as its own task (today's behavior).
+        let a = twin(1, 900, BASE + 10);
+        let state = base_state(bound_task(800));
+        let (app, actions, _) = run(
+            &state,
+            &[],
+            &single_stack_snapshot(vec![a.clone()], BASE),
+            &[],
+        );
+        assert_eq!(app.tasks.len(), 2, "the twin R1-adopts unchanged");
+        assert_eq!(task_by_card(&app, 900).remote, Some(a.id));
+        assert_eq!(enqueued_ref_deletes(&actions), []);
+    }
+
+    #[test]
+    fn the_stack_variant_deletes_the_orphan_and_keeps_the_bound_stack() {
+        // DEC-3's inversion: the bound stack survives (it holds the
+        // cards), the unbound same-titled orphan gets a ref-delete.
+        let mut orphan = remote_stack(2, BASE + 10);
+        orphan.title = "stack 1".into();
+        orphan.order = 1; // clause 4: the create body's order matches
+        let state = base_state(bound_task(800));
+        let stack_id = local_stack().id;
+        let create_op = PendingOp {
+            op_id: OpId(Uuid::from_u128(710)),
+            op: LocalOp::CreateStack(stack_id),
+            queued_at: ts(BASE),
+        };
+        let (app, actions, events) = run(
+            &state,
+            &[create_op],
+            &snapshot(vec![remote_stack(1, BASE), orphan.clone()], vec![]),
+            &[],
+        );
+        assert_eq!(app.stacks.len(), 1, "the orphan's adoption is suppressed");
+        let deletes = enqueued_ref_deletes(&actions);
+        assert_eq!(deletes.len(), 1);
+        assert!(matches!(
+            &deletes[0],
+            LocalOp::DeleteRemoteStack { stack, .. } if *stack == orphan.id
+        ));
+        assert_eq!(*events, []);
+    }
+
+    #[test]
+    fn an_orphan_holding_a_bound_card_is_left_alone() {
+        // The never-by-construction guard (DEC-3): the orphan's nested
+        // card resolves to a live bound local task — the collapse refuses.
+        let mut orphan = remote_stack(2, BASE + 10);
+        orphan.title = "stack 1".into();
+        orphan.order = 1;
+        let mut nested = twin(2, 950, BASE + 10);
+        nested.title = "nested".into();
+        let mut task = bound_task(800);
+        task.remote = Some(nested.id); // a live binding into the orphan
+        task.title = "nested".into();
+        let mut state = base_state(task);
+        // The fixture board's stack binding is ref 1; point the task's
+        // stack row at a second local stack bound to the orphan's ref.
+        let orphan_stack_row = Stack {
+            id: StackId::from(Uuid::from_u128(901)),
+            remote: Some(stack_ref(2)),
+            board: BoardId::from(Uuid::from_u128(800)),
+            title: "stack 1".into(),
+            order: 1,
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::StackClocks {
+                title: ts(BASE),
+                order: ts(BASE),
+                deleted: ts(BASE),
+            },
+            remote_seen: Some(ts(BASE)),
+        };
+        state.stacks.insert(orphan_stack_row.id, orphan_stack_row);
+        let (app, actions, _) = run(
+            &state,
+            &[],
+            &snapshot(
+                vec![remote_stack(1, BASE), orphan],
+                vec![twin(2, 950, BASE + 10)],
+            ),
+            &[],
+        );
+        assert_eq!(
+            app.stacks.len(),
+            2,
+            "the contested orphan is adopted, not collapsed"
+        );
+        assert!(
+            enqueued_ref_deletes(&actions)
+                .iter()
+                .all(|op| !matches!(op, LocalOp::DeleteRemoteStack { .. })),
+            "no stack delete fires for a contested orphan"
         );
     }
 }

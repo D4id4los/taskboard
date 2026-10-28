@@ -932,7 +932,11 @@ pub struct DuplicateCollapse {
 /// of our own create.
 const DUP_WINDOW_SECS: i64 = 60;
 
-fn dup_window_contains(stamp: DateTime<Utc>, queued_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+pub(crate) fn dup_window_contains(
+    stamp: DateTime<Utc>,
+    queued_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
     stamp >= queued_at - chrono::Duration::seconds(DUP_WINDOW_SECS)
         && stamp <= now + chrono::Duration::seconds(DUP_WINDOW_SECS)
 }
