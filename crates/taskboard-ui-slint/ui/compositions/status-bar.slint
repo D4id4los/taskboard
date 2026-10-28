@@ -54,6 +54,10 @@ export component StatusBar inherits Rectangle {
     // nearest fire; clicking focuses the today view's timers section.
     in property <bool> timers-chip-visible;
     in property <string> timers-chip;
+    // The resurrect notice (#130): a passive, non-clickable line —
+    // default invisible so existing compositions are unchanged.
+    in property <bool> notice-visible;
+    in property <string> notice-text;
     callback snooze-clicked(int);
     callback mute-clicked(int);
     callback row-activated(int);
@@ -260,6 +264,18 @@ export component StatusBar inherits Rectangle {
                         : "choose target · same key cancels · Return confirms";
                     vertical-alignment: center;
                 }
+            }
+        }
+
+        // The resurrect notice (#130): passive text, no click affordance
+        // — the kiosk constraint is "never block", and a line never does.
+        if (root.notice-visible && root.notice-text != ""): HorizontalLayout {
+            spacing: Theme.space-2;
+            RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: root.notice-text;
+                overflow: elide;
             }
         }
     }

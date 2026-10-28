@@ -157,6 +157,10 @@ export component AppWindow inherits Window {
     in-out property <int> timers-awaiting: 0;
     in-out property <bool> timers-chip-visible: false;
     in-out property <string> timers-chip;
+    // The resurrect notice (#130): a transient, passive status line —
+    // default invisible (no prompt; kiosk/daemon never block).
+    in-out property <bool> notice-visible: false;
+    in-out property <string> notice-text;
     // The jump-to search palette (#348): the model rows arrive ranked,
     // anchor-filtered, and capped from the Rust pass.
     in-out property <bool> palette-open: false;
@@ -374,6 +378,8 @@ export component AppWindow inherits Window {
                 flow-hint: root.flow-hint-model;
                 timers-chip-visible: root.timers-chip-visible;
                 timers-chip: root.timers-chip;
+                notice-visible: root.notice-visible;
+                notice-text: root.notice-text;
                 snooze-clicked(i) => root.banner-snooze-clicked(i);
                 mute-clicked(i) => root.banner-mute-clicked(i);
                 row-activated(i) => root.banner-row-activated(i);
