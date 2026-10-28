@@ -36,6 +36,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
   history or completion. One-shot `connect`/`login` keep the default
   ^C disposition (death, pre-persist).
 
+- The daemon, kiosk appliance, and desktop GUI lifecycles join the one
+  signal policy (#162): a shared three-rung ladder — first
+  SIGINT/SIGTERM/`daemon stop` runs the graceful drain, a second
+  signal during the drain skips the bounded joins, aborts the sync
+  actors, attempts one salvage engine flush (2 s bound), and exits at
+  128+signum (130/143), and a third exits immediately. The exit-code
+  contract is now honest: 0 clean, 1 degraded drain (any bounded join
+  aborted at its budget — previously a silent exit 0), 130/143 forced.
+  SIGQUIT/SIGHUP/SIGKILL keep their kernel defaults.
+
 ### Fixed
 
 - The GUI's flow state machine no longer traps the board (round-3
