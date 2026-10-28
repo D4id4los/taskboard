@@ -2740,6 +2740,89 @@ fn the_preset_selection_echoes_the_replied_preset_not_the_click() {
 }
 
 // ---------------------------------------------------------------------
+// r3 D18: the status line's pinned placement
+// ---------------------------------------------------------------------
+
+/// The status line sits outside the scroll viewport (r3 D18, dispatch
+/// §5 c): at scale 3.0 in the min-floor window, triggering an outcome
+/// renders the pinned row above the Flickable's band — readable
+/// without scrolling (finding 20) — while the pinned header stays
+/// put; the hidden state leaves the scroll geometry untouched
+/// (layouts skip invisible children).
+#[test]
+fn the_status_line_pins_above_the_scroll_viewport() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let settings = UiSettings {
+                scale: taskboard_ui_slint::UiScale::new(3.0).expect("valid"),
+                ..UiSettings::default()
+            };
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            driver.bind(&harness.handle);
+            driver.set_window_size(480 * 3, 400 * 3);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+            driver.advance_time(0);
+
+            // Hidden mount: no outcome, and the scroll host occupies
+            // its geometry.
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::None
+            );
+            let flick = driver
+                .find_all_by_id("SettingsView::flick")
+                .into_iter()
+                .next()
+                .expect("the scroll host");
+            let flick_y_hidden = flick.absolute_position().y;
+            let back_y = |driver: &SlintDriver| {
+                driver
+                    .find_by_label("Back")
+                    .expect("the pinned Back affordance")
+                    .absolute_position()
+                    .y
+            };
+            let back_hidden = back_y(driver);
+
+            // Trigger an outcome (the seam-local scale refusal).
+            window.invoke_settings_scale_committed("not a number".into());
+            driver.advance_time(0);
+            assert_ne!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::None,
+                "the outcome landed"
+            );
+
+            // The status row renders OUTSIDE the Flickable's band:
+            // entirely above the viewport's top edge.
+            let status = driver
+                .find_all_by_id("SettingsView::status-line")
+                .into_iter()
+                .next()
+                .expect("the pinned status line");
+            let pos = status.absolute_position();
+            let size = status.size();
+            assert!(
+                pos.y + size.height <= flick_y_hidden,
+                "the status row (y {}, h {}) sits above the viewport top {}",
+                pos.y,
+                size.height,
+                flick_y_hidden
+            );
+
+            // The pinned header never moved.
+            assert_eq!(back_y(driver), back_hidden, "the header stays pinned");
+        },
+    );
+}
+
+// ---------------------------------------------------------------------
 // r3 D16: the password eye toggle
 // ---------------------------------------------------------------------
 

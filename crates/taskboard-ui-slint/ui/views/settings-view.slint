@@ -318,6 +318,32 @@ export component SettingsView inherits FocusScope {
             }
         }
 
+        // The status line (r2 D28 contract, r3 D18 placement): tone
+        // dot + mapped text, PINNED between the header and the scroll
+        // viewport — a visible outcome is readable without scrolling
+        // (finding 20). The row's extent is pinned (min == max == one
+        // control row, vertical-stretch 0), so it is structurally
+        // unable to absorb layout height — the F-C3 mechanism, dead.
+        // Layouts skip invisible children, so a hidden status leaves
+        // the viewport identical; a visible one shrinks it — the fix.
+        status-line := HorizontalLayout {
+            visible: SettingsModel.last-outcome != SettingsOutcome.none;
+            spacing: Theme.space-2;
+            vertical-stretch: 0;
+            min-height: status-text.preferred-height + 2 * Theme.space-2;
+            max-height: status-text.preferred-height + 2 * Theme.space-2;
+            StatusDot {
+                outcome: SettingsModel.last-outcome;
+            }
+            status-text := RoleText {
+                role: Typography.body;
+                text: SettingsModel.status-text;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+        }
+
         // The scroll host (r2 D30): a layout cell (never an overlay
         // child — max-height is not honoured on a Flickable-hosted
         // panel, the action-menu's recorded Slint fact), hosting the
@@ -646,29 +672,6 @@ export component SettingsView inherits FocusScope {
                 if SettingsModel.error-scale != "": ErrorLine {
                     text: SettingsModel.error-scale;
                 }
-            }
-        }
-
-        // The status line (r2 D28 — reverses round-1 R5's
-        // tones-only rule by user direction): tone dot + mapped
-        // text. The row's extent is pinned (min == max == one
-        // control row, vertical-stretch 0), so it is structurally
-        // unable to absorb layout height — the F-C3 mechanism, dead.
-        HorizontalLayout {
-            visible: SettingsModel.last-outcome != SettingsOutcome.none;
-            spacing: Theme.space-2;
-            vertical-stretch: 0;
-            min-height: status-text.preferred-height + 2 * Theme.space-2;
-            max-height: status-text.preferred-height + 2 * Theme.space-2;
-            StatusDot {
-                outcome: SettingsModel.last-outcome;
-            }
-            status-text := RoleText {
-                role: Typography.body;
-                text: SettingsModel.status-text;
-                vertical-alignment: center;
-                overflow: elide;
-                horizontal-stretch: 1;
             }
         }
             }
