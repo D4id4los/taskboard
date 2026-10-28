@@ -17,3 +17,17 @@ export global MenuPanelFacts {
     in-out property <length> flyout-width;
     in-out property <length> flyout-height;
 }
+
+// The date-picker overlay's facts (round-3 D10): the same seam as the
+// menu panel above — the TaskView lives in a conditional element the
+// window cannot name, so the mounted editor mirrors its field row's
+// realized window-space geometry here through `changed` handlers;
+// values are stale while no editor is open (the overlay's mount
+// condition — the model's `date-picker-open` — is the window's own
+// read, so staleness never renders).
+export global DatePickerFacts {
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+}

@@ -303,15 +303,23 @@ impl Adapter {
         let Some(stroke) = to_stroke(text, modifiers) else {
             return false;
         };
-        // The due editor's Down-in-field opens the picker (r2 D25):
-        // consumed here, ahead of the resolver, so the insert-mode
-        // chain never has to bind it. The stroke is the grammar's own
-        // Down row — never a private-use literal.
+        // The date editor's Down-in-field opens the picker focused
+        // (r2 D25; round-3 D10): consumed here, ahead of the
+        // resolver, so the insert-mode chain never has to bind it.
+        // With the picker already open (the default-open), the same
+        // stroke is the grid's focus hand-over — the one-shot flag
+        // rides the push, and the panel's `changed` moves focus. The
+        // stroke is the grammar's own Down row — never a
+        // private-use literal.
         if matches!(self.view_state.flow(), Flow::EditDate { .. })
-            && self.due_picker.is_none()
             && Ok(stroke) == crate::keymap::stroke::parse("Down")
         {
-            self.open_due_picker(window, true);
+            if self.due_picker.is_none() {
+                self.open_due_picker(window, true);
+            } else {
+                self.picker_focus_on_mount = true;
+                self.refresh(window);
+            }
             return true;
         }
         // The chain reflects the view-state machine, not a stale seam
@@ -514,7 +522,10 @@ impl Adapter {
             text: &self.due_buffer,
             echo: &self.due_echo,
             picker: self.due_picker.as_ref(),
+            focus_on_mount: self.picker_focus_on_mount,
         };
+        // The grid-focus flag is one-shot: consumed by this push.
+        self.picker_focus_on_mount = false;
         self.tables = crate::models::push(
             window,
             &state,
@@ -3726,6 +3737,20 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.refresh(&window);
     });
 
+    let dismiss = Rc::clone(adapter);
+    let dismiss_weak = window.as_weak();
+    window.on_date_picker_dismiss_requested(move || {
+        let Some(window) = dismiss_weak.upgrade() else {
+            return;
+        };
+        let mut a = dismiss.borrow_mut();
+        // Outside click: drop the picker only — the editor and its
+        // flow stay armed, the buffer intact (round-3 D10).
+        if a.due_picker.take().is_some() {
+            a.refresh(&window);
+        }
+    });
+
     let day = Rc::clone(adapter);
     let day_weak = window.as_weak();
     window.on_task_date_day_clicked(move |cell| {
@@ -3778,6 +3803,11 @@ fn begin_date_edit(a: &mut Adapter, window: &AppWindow, field: crate::view_state
     a.due_buffer = crate::due_edit::format_entry(value);
     a.due_echo = crate::due_edit::echo(&a.due_buffer, chrono::Utc::now());
     a.apply_outcomes(window, &outcomes);
+    // The picker is default-open on edit entry (round-3 D10) —
+    // visible, click-armed, and idle: the text field keeps focus
+    // (typing-first preserved). Inert when the begin refused (the
+    // flow never armed).
+    a.open_due_picker(window, false);
 }
 
 /// Opens the picker anchored on the armed field's current value (or

@@ -419,6 +419,9 @@ pub struct DueEditorPush<'a> {
     pub text: &'a str,
     pub echo: &'a str,
     pub picker: Option<&'a crate::due_edit::DuePickerState>,
+    /// The one-shot grid-focus flag (round-3 D10): consumed by the
+    /// next push — `true` hands focus to the overlay's grid.
+    pub focus_on_mount: bool,
 }
 
 /// The timers section (DR-3/3, D-I6): the active (unfired) rows plus
@@ -1131,6 +1134,11 @@ fn push_task_detail(
                 .map_or(String::new(), |p| p.month().format("%Y-%m").to_string()),
         ),
         date_grid,
+        date_grid_focus: due.focus_on_mount,
+        date_time_text: SharedString::from(due.picker.map_or(String::new(), |p| {
+            p.time()
+                .map_or("--:--".to_owned(), |t| t.format("%H:%M").to_string())
+        })),
     });
     tables.task_rules = task_rules;
     mutations

@@ -9,7 +9,9 @@ import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.s
 import { TextField } from "../widgets/text-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
-import { DueEditor, DueDayModel } from "../compositions/due-editor.slint";
+import { DueEditor } from "../compositions/due-editor.slint";
+import { DueDayModel } from "../compositions/date-picker.slint";
+import { DatePickerFacts } from "../menu-facts.slint";
 
 // The task-detail model (D22).
 export struct TaskDetailModel {
@@ -40,6 +42,8 @@ export struct TaskDetailModel {
     date-picker-open: bool,
     date-caption: string,
     date-grid: [[DueDayModel]],
+    date-grid-focus: bool,
+    date-time-text: string,
 }
 
 export component TaskView inherits FocusScope {
@@ -68,8 +72,36 @@ export component TaskView inherits FocusScope {
     callback date-edited(string);
     callback date-accepted(string);
     callback date-picker-toggled();
-    callback date-picker-key(int);
-    callback date-day-clicked(int);
+    // The picker's key/day seams live on the window-level overlay
+    // (round-3 D10) — bound there directly, not forwarded here.
+
+    // The overlay's anchor (round-3 D10): the armed field's metadata
+    // column, window-space — read from the *unconditional* column
+    // elements (a conditional element's id is not reachable across
+    // scopes; the columns are) and mirrored into the window-level
+    // facts global the overlay reads (the MenuPanelFacts precedent;
+    // values are stale while the view is unmounted, and the
+    // overlay's mount condition is the model's date-picker-open).
+    out property <bool> date-picker-visible: root.task.date-picker-open;
+    private property <length> date-anchor-x: root.task.due-open
+        ? due-column.absolute-position.x
+        : scheduled-column.absolute-position.x;
+    private property <length> date-anchor-y: root.task.due-open
+        ? due-column.absolute-position.y
+        : scheduled-column.absolute-position.y;
+    private property <length> date-anchor-width: root.task.due-open
+        ? due-column.width
+        : scheduled-column.width;
+    private property <length> date-anchor-height: root.task.due-open
+        ? due-column.height - due-caption.preferred-height
+        : scheduled-column.height - scheduled-caption.preferred-height;
+    // The mirrors (changed handlers — the row-selection mirror
+    // precedent; they fire when the layout resolves the positions
+    // after mount).
+    changed date-anchor-x => { DatePickerFacts.anchor-x = root.date-anchor-x; }
+    changed date-anchor-y => { DatePickerFacts.anchor-y = root.date-anchor-y; }
+    changed date-anchor-width => { DatePickerFacts.anchor-width = root.date-anchor-width; }
+    changed date-anchor-height => { DatePickerFacts.anchor-height = root.date-anchor-height; }
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -170,13 +202,13 @@ export component TaskView inherits FocusScope {
                         text: root.task.stack-title;
                     }
                 }
-                VerticalLayout {
+                due-column := VerticalLayout {
                     // The due-date region (D16). Editing is r2 D25
                     // (W2 closed; #227): the collapsed cell is the
                     // display RoleText, clickable into the DueEditor
                     // — typed entry and the calendar picker, one
                     // commit seam.
-                    RoleText {
+                    due-caption := RoleText {
                         role: Typography.caption;
                         text-color: Theme.text-secondary;
                         text: "Due date";
@@ -206,25 +238,20 @@ export component TaskView inherits FocusScope {
                             text: root.task.due-phrase == "" ? "—" : root.task.due-phrase;
                         }
                     }
-                    if (root.task.due-open): DueEditor {
+                    if (root.task.due-open): due-editor := DueEditor {
                         initial-text: root.task.due-text;
                         echo: root.task.due-echo;
-                        picker-open: root.task.date-picker-open;
-                        caption: root.task.date-caption;
-                        grid: root.task.date-grid;
                         clear-affordance: true;
                         edited(text) => root.date-edited(text);
                         accepted(text) => root.date-accepted(text);
                         picker-toggled() => root.date-picker-toggled();
-                        picker-key(key) => root.date-picker-key(key);
-                        day-clicked(cell) => root.date-day-clicked(cell);
                     }
                 }
                 // The start-date column (round-3 D8/F14): the due
                 // column's grammar, one look — same closed cell, the
                 // same editor composition.
-                VerticalLayout {
-                    RoleText {
+                scheduled-column := VerticalLayout {
+                    scheduled-caption := RoleText {
                         role: Typography.caption;
                         text-color: Theme.text-secondary;
                         text: "Start date";
@@ -249,20 +276,15 @@ export component TaskView inherits FocusScope {
                             text: root.task.scheduled-phrase == "" ? "—" : root.task.scheduled-phrase;
                         }
                     }
-                    if (root.task.scheduled-open): DueEditor {
+                    if (root.task.scheduled-open): scheduled-editor := DueEditor {
                         field-label: "Start date entry";
                         entry-placeholder: "YYYY-MM-DD or +2d";
                         initial-text: root.task.scheduled-text;
                         echo: root.task.scheduled-echo;
-                        picker-open: root.task.date-picker-open;
-                        caption: root.task.date-caption;
-                        grid: root.task.date-grid;
                         clear-affordance: true;
                         edited(text) => root.date-edited(text);
                         accepted(text) => root.date-accepted(text);
                         picker-toggled() => root.date-picker-toggled();
-                        picker-key(key) => root.date-picker-key(key);
-                        day-clicked(cell) => root.date-day-clicked(cell);
                     }
                 }
                 VerticalLayout {
