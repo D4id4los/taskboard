@@ -25,7 +25,7 @@ use std::sync::Arc;
 use taskboard_domain::{AppState, StateCommand, TaskId};
 use taskboard_ui_slint::actions::{ActionId, ContextId};
 use taskboard_ui_slint::keymap::stroke::{self, parse};
-use taskboard_ui_slint::{UiSettings, View};
+use taskboard_ui_slint::{FieldValidity, SettingsOutcome, UiSettings, View};
 
 /// The harness (chunk plan §5): driver + fake engine + fixture + the
 /// keypress guard. Everything runs on the driver thread inside one
@@ -2740,12 +2740,132 @@ fn the_preset_selection_echoes_the_replied_preset_not_the_click() {
 }
 
 // ---------------------------------------------------------------------
+// r3 D19: the validity flavour (per-field, per keystroke)
+// ---------------------------------------------------------------------
+
+/// The validity flavour tracks every field per keystroke (r3 D19,
+/// dispatch §5 d): empty renders neutral with no error line, a
+/// failing field renders invalid with a non-empty error element, a
+/// passing field renders valid — and the Save gate (the same ladder,
+/// one source of truth) tracks the draft throughout. The error copy
+/// itself is presentation text and is never asserted (§7-R3).
+#[test]
+fn the_validity_flavour_tracks_each_field_per_keystroke() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // The empty mount: every field neutral, no error line.
+            assert_eq!(model().get_validity_name(), FieldValidity::Neutral);
+            assert_eq!(model().get_error_name(), "");
+            assert!(
+                harness
+                    .driver
+                    .find_all_by_id("LabeledField::error-line")
+                    .is_empty(),
+                "no error line renders on the empty mount"
+            );
+
+            // An invalid name: invalid flavour + non-empty error
+            // element, the Save gate closed.
+            window.invoke_settings_field_edited(0, "Work".into());
+            assert_eq!(model().get_validity_name(), FieldValidity::Invalid);
+            assert_ne!(model().get_error_name(), "");
+            assert_eq!(model().get_validity_server(), FieldValidity::Neutral);
+            assert!(!model().get_save_enabled(), "the gate follows the ladder");
+
+            // Fixed: valid flavour, the line gone.
+            window.invoke_settings_field_edited(0, "work".into());
+            assert_eq!(model().get_validity_name(), FieldValidity::Valid);
+            assert_eq!(model().get_error_name(), "");
+
+            // Empty again: back to neutral, never an error line.
+            window.invoke_settings_field_edited(0, "".into());
+            assert_eq!(model().get_validity_name(), FieldValidity::Neutral);
+            assert_eq!(model().get_error_name(), "");
+
+            // The server field's grammar: a bad URL is invalid, a
+            // good one valid.
+            window.invoke_settings_field_edited(1, "not a url".into());
+            assert_eq!(model().get_validity_server(), FieldValidity::Invalid);
+            assert_ne!(model().get_error_server(), "");
+            window.invoke_settings_field_edited(1, "https://c.example".into());
+            assert_eq!(model().get_validity_server(), FieldValidity::Valid);
+
+            // The username: whitespace-only is invalid (the trimmed
+            // ladder rule), a name valid.
+            window.invoke_settings_field_edited(2, "   ".into());
+            assert_eq!(model().get_validity_username(), FieldValidity::Invalid);
+            window.invoke_settings_field_edited(2, "alice".into());
+            assert_eq!(model().get_validity_username(), FieldValidity::Valid);
+
+            // The password rides the draft mirror: typed text is
+            // valid; the redaction contract is pinned by the save
+            // ceremony journey.
+            window.invoke_settings_field_edited(3, "pw".into());
+            assert_eq!(model().get_validity_password(), FieldValidity::Valid);
+
+            // All fields pass: the gate opened.
+            window.invoke_settings_field_edited(0, "work".into());
+            assert!(model().get_save_enabled(), "the valid draft enables Save");
+        },
+    );
+}
+
+/// The scale field's flavour carries the typed detail (r3 D20a): a
+/// parse miss on Return renders the invalid flavour + error line and
+/// the status Rejected *with* the typed scale detail (the recorded
+/// decision upgrading the r2 pins' detail-less Rejected), and the
+/// typo stays in the field.
+#[test]
+fn a_scale_parse_miss_renders_the_invalid_flavour_and_typed_detail() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // The typed draft rides the edited seam (the field's
+            // per-keystroke path), then Return.
+            window.invoke_settings_field_edited(4, "abc".into());
+            window.invoke_settings_scale_committed("abc".into());
+            assert_eq!(model().get_last_outcome(), SettingsOutcome::Rejected);
+            assert_eq!(model().get_validity_scale(), FieldValidity::Invalid);
+            assert_ne!(model().get_error_scale(), "", "the error line renders");
+            assert_eq!(
+                model().get_scale_echo(),
+                "abc",
+                "the typo stays visible under the flavour"
+            );
+
+            // A typed Err reply's revert and a successful commit are
+            // pinned by the scale trio journeys.
+        },
+    );
+}
+
+// ---------------------------------------------------------------------
 // r2 D28: the status line's text and auto-clear lifetime
 // ---------------------------------------------------------------------
 
 /// Terminal status shows mapped text and auto-clears under the mock
 /// clock (r2 D28): the seam-local Rejected (a scale parse miss — no
-/// lane round-trip) is visible for `STATUS_VISIBLE_MS`, then returns to
+/// lane round-trip; recorded decision, r3 D20a: since then it also
+/// carries the typed `Invalid{Scale, NotKebab}` detail and the field
+/// flavour — these pins assert outcome lifetime only) is visible for
+/// `STATUS_VISIBLE_MS`, then returns to
 /// hidden (outcome None, text empty — the VM cleared, so no refresh
 /// can resurrect it).
 #[test]
@@ -2804,7 +2924,9 @@ fn a_terminal_status_shows_text_then_auto_clears_under_the_mock_clock() {
     );
 }
 
-/// A new outcome re-arms the auto-clear (r2 D28): seven seconds after
+/// A new outcome re-arms the auto-clear (r2 D28; the scale commit's
+/// typed detail arrived later, r3 D20a — recorded decision, the pins
+/// here assert outcome lifetime only): seven seconds after
 /// the first terminal outcome a second one landed three seconds in —
 /// the status must still be visible, clearing only `STATUS_VISIBLE_MS`
 /// after the *second* outcome (the tooltip-restart pin's shape).

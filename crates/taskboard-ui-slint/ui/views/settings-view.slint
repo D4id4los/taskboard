@@ -11,7 +11,11 @@
 // mode via the adapter's edited seams; commit returns to Normal.
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
-import { TextField } from "../widgets/text-field.slint";
+import { TextField, FieldValidity } from "../widgets/text-field.slint";
+// The validity flavour's single declaration lives beside the widget
+// (text-field.slint); the view re-exports the import for the
+// generated Rust module.
+export { FieldValidity }
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { Slider } from "../widgets/slider.slint";
 import { SettingsScrollFacts } from "../settings-facts.slint";
@@ -76,6 +80,26 @@ export global SettingsModel {
     in-out property <string> draft-name: "";
     in-out property <string> draft-server: "";
     in-out property <string> draft-username: "";
+    // The per-field validity flavour + error copy (round-3 D19):
+    // recomputed from the form ladder on every push — the same
+    // source of truth the Save gate reads, so the flavour and the
+    // gate cannot diverge. The error strings are presentation copy
+    // (settings_status::invalid_text); never asserted by tests.
+    in-out property <FieldValidity> validity-name: FieldValidity.neutral;
+    in-out property <FieldValidity> validity-server: FieldValidity.neutral;
+    in-out property <FieldValidity> validity-username: FieldValidity.neutral;
+    in-out property <FieldValidity> validity-password: FieldValidity.neutral;
+    in-out property <FieldValidity> validity-scale: FieldValidity.neutral;
+    in-out property <string> error-name: "";
+    in-out property <string> error-server: "";
+    in-out property <string> error-username: "";
+    in-out property <string> error-password: "";
+    in-out property <string> error-scale: "";
+    // The scale field's echo (round-3 D20a): draft-when-present,
+    // live-scale-otherwise — written by the adapter's push pass (and
+    // by the slider preview while no draft exists). The field binds
+    // its text here, closing the finding-23 sync hole.
+    in-out property <string> scale-echo: "";
     in-out property <int> preset-index: 0;
     in-out property <bool> save-enabled: false;
     in-out property <SettingsOutcome> last-outcome: SettingsOutcome.none;
@@ -171,8 +195,31 @@ component SettingsButton inherits Rectangle {
     }
 }
 
-component LabeledField inherits HorizontalLayout {
-    spacing: Theme.space-2;
+// The inline error line (round-3 D19): hover-box styling under a
+// field, carrying the field's reason sentence. The text is
+// presentation copy pushed by the adapter (settings_status constants)
+// — never asserted by tests; tests pin validity + presence.
+component ErrorLine inherits Rectangle {
+    in property <string> text;
+    background: Theme.surface-raised;
+    border-width: Theme.focus-ring-width;
+    border-color: Theme.border;
+    border-radius: Theme.radius-small;
+    min-height: error-text.preferred-height + 2 * Theme.space-1;
+    horizontal-stretch: 1;
+    error-text := RoleText {
+        role: Typography.caption;
+        text: root.text;
+        text-color: Semantic.danger;
+        wrap: word-wrap;
+        x: Theme.space-2;
+        width: parent.width - 2 * Theme.space-2;
+        y: (parent.height - self.preferred-height) / 2;
+    }
+}
+
+component LabeledField inherits VerticalLayout {
+    spacing: Theme.space-1;
     in property <string> label;
     in property <string> placeholder;
     in property <bool> secret: false;
@@ -181,32 +228,47 @@ component LabeledField inherits HorizontalLayout {
     // The help fact (r2 D31): rides the InfoTip AND the field's
     // accessible-description — one source per help fact.
     in property <string> help;
+    // The validity flavour (round-3 D19): forwarded to the field's
+    // border and the error line's presence.
+    in property <FieldValidity> validity: FieldValidity.neutral;
+    in property <string> error-text: "";
     callback edited(int, string);
     callback committed();
-    RoleText {
-        role: Typography.body;
-        text: root.label;
-        min-width: Theme.space-8;
-        vertical-alignment: center;
-    }
-    help-tip := InfoTip {
-        about: root.label;
-        help: root.help;
-    }
-    TextField {
-        placeholder: root.placeholder;
-        label: root.label;
-        description: root.help;
-        commit-affordance: true;
-        secret: root.secret;
-        text <=> root.text;
-        edited(t) => {
-            root.edited(root.field-index, t);
+    // The row wrapper restructured from a bare HorizontalLayout
+    // (round-3 D19, plan §1.3): the error line spans label + InfoTip
+    // + field — mounting it inside the primitive would grow the
+    // field's pinned height contract per keystroke.
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        RoleText {
+            role: Typography.body;
+            text: root.label;
+            min-width: Theme.space-8;
+            vertical-alignment: center;
         }
-        accepted(t) => {
-            root.edited(root.field-index, t);
-            root.committed();
+        help-tip := InfoTip {
+            about: root.label;
+            help: root.help;
         }
+        TextField {
+            placeholder: root.placeholder;
+            label: root.label;
+            description: root.help;
+            commit-affordance: true;
+            secret: root.secret;
+            validity: root.validity;
+            text <=> root.text;
+            edited(t) => {
+                root.edited(root.field-index, t);
+            }
+            accepted(t) => {
+                root.edited(root.field-index, t);
+                root.committed();
+            }
+        }
+    }
+    if root.error-text != "": error-line := ErrorLine {
+        text: root.error-text;
     }
 }
 
@@ -424,6 +486,8 @@ export component SettingsView inherits FocusScope {
             help: SettingsModel.help-name;
             field-index: 0;
             text <=> SettingsModel.draft-name;
+            validity: SettingsModel.validity-name;
+            error-text: SettingsModel.error-name;
             edited(i, t) => {
                 root.field-edited(i, t);
             }
@@ -437,6 +501,8 @@ export component SettingsView inherits FocusScope {
             help: SettingsModel.help-server;
             field-index: 1;
             text <=> SettingsModel.draft-server;
+            validity: SettingsModel.validity-server;
+            error-text: SettingsModel.error-server;
             edited(i, t) => {
                 root.field-edited(i, t);
             }
@@ -450,6 +516,8 @@ export component SettingsView inherits FocusScope {
             help: SettingsModel.help-username;
             field-index: 2;
             text <=> SettingsModel.draft-username;
+            validity: SettingsModel.validity-username;
+            error-text: SettingsModel.error-username;
             edited(i, t) => {
                 root.field-edited(i, t);
             }
@@ -463,6 +531,8 @@ export component SettingsView inherits FocusScope {
             help: SettingsModel.help-app-password;
             secret: true;
             field-index: 3;
+            validity: SettingsModel.validity-password;
+            error-text: SettingsModel.error-password;
             edited(i, t) => {
                 root.field-edited(i, t);
             }
@@ -552,15 +622,27 @@ export component SettingsView inherits FocusScope {
                     root.scale-released(v);
                 }
             }
-            TextField {
-                placeholder: "1.0";
-                label: "Scale";
-                commit-affordance: true;
-                // Commit on Return only (D9): a per-keystroke commit
-                // would live-apply half-typed values and spam the lane.
-                // The field stays authoritative (r2 D29).
-                accepted(t) => {
-                    root.scale-committed(t);
+            // The scale field (round-3 D19/D20a): the flavour + error
+            // line ride the same contract as the LabeledFields (a
+            // VerticalLayout wrapper hosts the line — the primitive's
+            // height contract stays pinned); the commit grammar is
+            // Return-only.
+            VerticalLayout {
+                spacing: Theme.space-1;
+                TextField {
+                    placeholder: "1.0";
+                    label: "Scale";
+                    commit-affordance: true;
+                    validity: SettingsModel.validity-scale;
+                    // Commit on Return only (D9): a per-keystroke commit
+                    // would live-apply half-typed values and spam the lane.
+                    // The field stays authoritative (r2 D29).
+                    accepted(t) => {
+                        root.scale-committed(t);
+                    }
+                }
+                if SettingsModel.error-scale != "": ErrorLine {
+                    text: SettingsModel.error-scale;
                 }
             }
         }

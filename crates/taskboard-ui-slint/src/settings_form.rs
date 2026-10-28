@@ -107,9 +107,14 @@ pub fn field_invalid(field: Field, draft: &ConnectionDraft) -> Option<InvalidKin
 
 /// The flavour mapping (round-3 D19): empty → [`FieldStatus::Neutral`],
 /// failing → [`FieldStatus::Invalid`], passing → [`FieldStatus::Valid`].
+/// Empty means literally empty text — whitespace-only content is
+/// non-empty and renders the ladder's `Empty` invalidity (§1.1: the
+/// neutral state is *the field's text is empty*). The scale field's
+/// own mapping ([`scale_status`]) deliberately trims instead — its
+/// truth table pins `"   "` → Neutral.
 #[must_use]
 pub fn field_status(field: Field, draft: &ConnectionDraft) -> FieldStatus {
-    if field_text(field, draft).trim().is_empty() {
+    if field_text(field, draft).is_empty() {
         return FieldStatus::Neutral;
     }
     match field_invalid(field, draft) {
