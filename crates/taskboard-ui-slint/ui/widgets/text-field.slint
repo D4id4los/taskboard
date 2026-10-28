@@ -66,8 +66,13 @@ export component TextField inherits Rectangle {
     border-radius: Theme.radius-small;
     border-width: input.has-focus ? Theme.focus-ring-width : 0;
     border-color: Semantic.focus-ring;
+    // The multiline editor is a fixed three-line window (the growth
+    // binding — `input.preferred-height` — is a width-dependent
+    // layout cycle on the pinned Slint, deprecated and panic-prone;
+    // the overflow clips instead of growing).
+    clip: true;
     min-height: root.multiline
-        ? max(Theme.space-8, input.preferred-height + 2 * Theme.space-2)
+        ? 3 * placeholder-text.preferred-height + 2 * Theme.space-2
         : (placeholder-text.preferred-height + 2 * Theme.space-2);
     // The content-free preferred width (r2 D22): the token floor, so
     // a growing buffer cannot stretch the field or its ancestors.
@@ -127,7 +132,7 @@ export component TextField inherits Rectangle {
         color: Theme.text-primary;
         input-type: root.secret ? InputType.password : InputType.text;
         wrap: root.multiline ? word-wrap : no-wrap;
-        vertical-alignment: center;
+        vertical-alignment: root.multiline ? TextVerticalAlignment.top : TextVerticalAlignment.center;
         edited() => root.edited(input.text);
         accepted() => root.accepted(input.text);
     }
