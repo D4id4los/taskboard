@@ -1170,6 +1170,7 @@ mod tests {
         let mut t1 = task(ruled, stack, 0);
         t1.duedate = Some(now - TimeDelta::hours(1));
         let rule = ReminderRule {
+            insistence: taskboard_domain::Insistence::Normal,
             id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7()),
             task: ruled,
             offset: ReminderOffset::before(TimeDelta::minutes(-30)).expect("valid offset"),
@@ -1222,6 +1223,7 @@ mod tests {
         state.reminders.alarms.insert(
             AdhocAlarmId::from_uuid(uuid::Uuid::now_v7()),
             AdhocAlarm {
+                insistence: taskboard_domain::Insistence::Normal,
                 id: AdhocAlarmId::from_uuid(uuid::Uuid::now_v7()),
                 label: "steep the tea".into(),
                 fire_at: now - TimeDelta::hours(1), // overdue as an alarm
@@ -1261,6 +1263,7 @@ mod tests {
         state.reminders.rules.insert(
             rule_id,
             taskboard_domain::ReminderRule {
+                insistence: taskboard_domain::Insistence::Normal,
                 id: rule_id,
                 task: ruled,
                 offset: ReminderOffset::at_due(),
@@ -1343,6 +1346,7 @@ mod tests {
         fire_at: DateTime<Utc>,
     ) -> taskboard_domain::AdhocAlarm {
         taskboard_domain::AdhocAlarm {
+            insistence: taskboard_domain::Insistence::Normal,
             id,
             label: label.to_owned(),
             fire_at,
@@ -1506,6 +1510,7 @@ mod tests {
         state.reminders.rules.insert(
             rule_id,
             taskboard_domain::ReminderRule {
+                insistence: taskboard_domain::Insistence::Normal,
                 id: rule_id,
                 task: ruled,
                 offset: ReminderOffset::at_due(),
@@ -2123,6 +2128,7 @@ mod tests {
                 state.tasks.insert(id, t);
                 if rule_this {
                     let rule = ReminderRule {
+                        insistence: taskboard_domain::Insistence::Normal,
                         id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7()),
                         task: id,
                         offset: ReminderOffset::before(TimeDelta::minutes(-15))

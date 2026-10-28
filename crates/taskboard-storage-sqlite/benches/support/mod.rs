@@ -212,6 +212,7 @@ fn fixture_op(j: usize, tasks: &[Task]) -> PendingOp {
 
 fn fixture_rule(k: usize, tasks: &[Task]) -> ReminderRule {
     ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
         id: ReminderRuleId::from(id(RULE_BASE, k)),
         task: tasks[20 * k].id,
         offset: ReminderOffset::before(TimeDelta::minutes(-15))

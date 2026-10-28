@@ -54,7 +54,7 @@ use crate::entities::{Board, Label, MembershipState, RemoteTaskBaseline, Stack, 
 use crate::ids::{
     LabelId, ReminderRuleId, RemoteBoardId, RemoteLabelId, RemoteStackId, StackId, TaskId,
 };
-use crate::reminders::ReminderRule;
+use crate::reminders::{Insistence, ReminderRule};
 use crate::remote::{
     RemoteBoard, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask, resolve_label,
 };
@@ -728,6 +728,7 @@ pub fn fold_reminder_rules(
                     Some(_) => {} // local stands
                     None => {
                         let adopted = crate::reminders::ReminderRule {
+                            insistence: Insistence::Normal,
                             id,
                             task,
                             offset: *offset,
@@ -1836,6 +1837,7 @@ mod tests {
     fn a_fresh_reminder_rule_counts_as_unsynced_work() {
         let task = synced_task();
         let rule = crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task.id,
             offset: crate::reminders::ReminderOffset::at_due(),
@@ -1868,6 +1870,7 @@ mod tests {
     fn another_tasks_reminder_rules_do_not_leak_into_the_predicate() {
         let task = synced_task();
         let mut rule = crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: TaskId::from(uuid::Uuid::from_u128(2)),
             offset: crate::reminders::ReminderOffset::at_due(),
@@ -1942,6 +1945,7 @@ mod tests {
 
             let rule_task = settled;
             let rule = crate::reminders::ReminderRule {
+                insistence: Insistence::Normal,
                 id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
                 task: rule_task.id,
                 offset: crate::reminders::ReminderOffset::at_due(),
@@ -2933,6 +2937,7 @@ mod tests {
 
     fn rule_with_clock(updated_secs: i64) -> crate::reminders::ReminderRule {
         crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: TaskId::from(uuid::Uuid::from_u128(1)),
             offset: crate::reminders::ReminderOffset::at_due(),

@@ -157,6 +157,7 @@ struct ReminderRuleRow {
     rule_id: String,
     task_id: String,
     offset_seconds: i64,
+    insistence: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -166,6 +167,7 @@ struct AdhocAlarmRow {
     alarm_id: String,
     label: String,
     fire_at: DateTime<Utc>,
+    insistence: String,
     created_at: DateTime<Utc>,
 }
 
@@ -195,6 +197,7 @@ fn decode_adhoc_alarm(row: &AdhocAlarmRow) -> Result<AdhocAlarm, RepositoryError
         id: AdhocAlarmId::from(decode::uuid(&row.alarm_id)?),
         label: row.label.clone(),
         fire_at: row.fire_at,
+        insistence: decode::insistence(&row.insistence)?,
         created_at: row.created_at,
     })
 }
@@ -222,6 +225,12 @@ mod decode {
         raw: &str,
     ) -> Result<taskboard_domain::entities::Urgency, RepositoryError> {
         codec::urgency_from_text(raw).ok_or(RepositoryError::Corrupted)
+    }
+
+    pub(crate) fn insistence(
+        raw: &str,
+    ) -> Result<taskboard_domain::reminders::Insistence, RepositoryError> {
+        codec::insistence_from_text(raw).ok_or(RepositoryError::Corrupted)
     }
 
     pub(crate) fn recur(raw: &str) -> Result<taskboard_domain::recur::RecurRule, RepositoryError> {
@@ -486,6 +495,7 @@ fn decode_reminder_rule(
             id,
             task: TaskId::from(decode::uuid(&row.task_id)?),
             offset,
+            insistence: decode::insistence(&row.insistence)?,
             created_at: row.created_at,
             // 0007's NOT NULL DEFAULT epoch column: pre-chunk-4 rows
             // decode with the epoch, which loses every clock race
@@ -654,7 +664,7 @@ impl SqliteTaskRepository {
 
         let reminder_rule_rows = sqlx::query_as!(
             ReminderRuleRow,
-            r#"SELECT rule_id, task_id, offset_seconds,
+            r#"SELECT rule_id, task_id, offset_seconds, insistence,
                       created_at as "created_at: DateTime<Utc>",
                       updated_at as "updated_at: DateTime<Utc>"
                FROM reminder_rules ORDER BY rule_id"#
@@ -700,6 +710,7 @@ impl SqliteTaskRepository {
             AdhocAlarmRow,
             r#"SELECT alarm_id, label,
                       fire_at as "fire_at: DateTime<Utc>",
+                      insistence,
                       created_at as "created_at: DateTime<Utc>"
                FROM adhoc_alarms ORDER BY alarm_id"#
         )
@@ -1369,16 +1380,18 @@ async fn execute_batch(
         // truncation, no divergence between the evaluated offset and
         // the reloaded one.
         sqlx::query!(
-            r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?)
+            r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, insistence, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(rule_id) DO UPDATE SET
                        task_id = excluded.task_id,
                        offset_seconds = excluded.offset_seconds,
+                       insistence = excluded.insistence,
                        created_at = excluded.created_at,
                        updated_at = excluded.updated_at"#,
             codec::uuid_to_text(rule.id.as_uuid()),
             codec::uuid_to_text(rule.task.as_uuid()),
             rule.offset.as_duration().num_seconds(),
+            codec::insistence_to_text(rule.insistence),
             rule.created_at.to_rfc3339(),
             rule.updated_at.to_rfc3339(),
         )
@@ -1423,15 +1436,17 @@ async fn execute_batch(
 
     for alarm in alarm_upserts {
         sqlx::query!(
-            r#"INSERT INTO adhoc_alarms (alarm_id, label, fire_at, created_at)
-                   VALUES (?, ?, ?, ?)
+            r#"INSERT INTO adhoc_alarms (alarm_id, label, fire_at, insistence, created_at)
+                   VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(alarm_id) DO UPDATE SET
                        label = excluded.label,
                        fire_at = excluded.fire_at,
+                       insistence = excluded.insistence,
                        created_at = excluded.created_at"#,
             codec::uuid_to_text(alarm.id.as_uuid()),
             alarm.label,
             alarm.fire_at.to_rfc3339(),
+            codec::insistence_to_text(alarm.insistence),
             alarm.created_at.to_rfc3339(),
         )
         .execute(&mut *tx)

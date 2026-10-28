@@ -225,6 +225,54 @@ impl ReminderRef {
     }
 }
 
+/// How loudly a reminder insists when it fires — per-reminder flavour
+/// data stamped at creation. Naming: deliberately not `Urgency`, which
+/// is an existing synced task field ([`crate::entities::Urgency`]); the
+/// design round records the rename (D-I2). The evaluator never reads
+/// this — it decides *when*, never *how loud*; the escalation driver is
+/// the behavioral consumer.
+///
+/// Ordering: declaration order is the ladder's severity-ascending order
+/// (`Normal` first, `Alarm` second — the `entities::LEVELS`
+/// discipline), so derived [`Ord`] reads "higher = more insistent". No
+/// canonical order sorts by this: a future insistent-first surface sort
+/// states `Reverse(insistence)` explicitly at its sort site.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Insistence {
+    /// One passive toast + the in-app row (today's whole behavior).
+    #[default]
+    Normal,
+    /// The wake-up rung: the alarm window, re-toasts, and the sound
+    /// ramp live in the escalation chunk; this type only carries the
+    /// datum.
+    Alarm,
+}
+
+impl Insistence {
+    /// Parses the canonical text form (`"normal"` / `"alarm"`) — the
+    /// single-word serde name, so serde and the text form coincide.
+    #[must_use]
+    pub fn parse_text_form(raw: &str) -> Option<Self> {
+        match raw {
+            "normal" => Some(Self::Normal),
+            "alarm" => Some(Self::Alarm),
+            _ => None,
+        }
+    }
+
+    /// The canonical text form (the serde name).
+    #[must_use]
+    pub const fn text_form(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Alarm => "alarm",
+        }
+    }
+}
+
 /// A reminder rule anchored on a task's due date. N rules per task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReminderRule {
@@ -235,6 +283,10 @@ pub struct ReminderRule {
     /// Fire this far before the due date; zero = at due (≤ 0 by
     /// construction via [`ReminderOffset`]).
     pub offset: ReminderOffset,
+    /// How loudly this rule insists. Stamped at creation, immutable per
+    /// row (no rule-edit verbs exist; a different level re-creates the
+    /// rule).
+    pub insistence: Insistence,
     /// Write time. Per-field write clocks are added additively when a
     /// connector demands rule sync; v1 needs only the creation stamp.
     pub created_at: DateTime<Utc>,
@@ -276,6 +328,9 @@ pub struct AdhocAlarm {
     pub label: String,
     /// The absolute fire instant.
     pub fire_at: DateTime<Utc>,
+    /// How loudly this alarm insists (stamped at creation; Cancel
+    /// remains the off-switch regardless of level).
+    pub insistence: Insistence,
     /// Creation stamp.
     pub created_at: DateTime<Utc>,
 }
@@ -479,6 +534,11 @@ pub struct Notification {
     pub anchor: ReminderAnchor,
     /// Title snapshot at fire time.
     pub title: String,
+    /// Insistence snapshot at fire time — copied from the firing's rule
+    /// or alarm row (the `title` precedent: the payload is
+    /// self-describing for sinks). The implicit default reminder has no
+    /// row and is always [`Insistence::Normal`].
+    pub insistence: Insistence,
     /// The effective occurrence that fired.
     pub occurrence: DateTime<Utc>,
 }
@@ -525,6 +585,26 @@ pub fn notifications_for(
                 reminder: firing.reminder,
                 anchor: firing.anchor,
                 title: task.title.clone(),
+                insistence: match firing.reminder {
+                    // The rule row was just read by the evaluator in the
+                    // same tick, so through the engine this `get` always
+                    // hits; a hand-constructed firing with a missing row
+                    // degrades to `Normal` rather than dropping a
+                    // notification the evaluator deemed due (total on
+                    // arbitrary input).
+                    ReminderRef::Rule(rule_id) => reminders
+                        .rules
+                        .get(&rule_id)
+                        .map(|rule| rule.insistence)
+                        .unwrap_or_default(),
+                    // The implicit default has no row: it is always
+                    // `Normal` (design D-I3).
+                    ReminderRef::Default(_) => Insistence::Normal,
+                    // Unreachable by anchor construction (an Adhoc ref
+                    // anchors on `ReminderAnchor::Alarm`); `Normal` keeps
+                    // the arm total.
+                    ReminderRef::Adhoc(_) => Insistence::Normal,
+                },
                 occurrence: firing.occurrence,
             }),
             ReminderAnchor::Alarm(alarm_id) => {
@@ -532,6 +612,7 @@ pub fn notifications_for(
                     reminder: firing.reminder,
                     anchor: firing.anchor,
                     title: alarm.label.clone(),
+                    insistence: alarm.insistence,
                     occurrence: firing.occurrence,
                 })
             }
@@ -1155,6 +1236,7 @@ mod tests {
                 }
             };
             expected.push(Notification {
+                insistence: Insistence::Normal,
                 reminder,
                 anchor,
                 title,
@@ -1308,6 +1390,7 @@ mod tests {
             let reminder = match which {
                 0 => {
                     let rule = ReminderRule {
+                        insistence: Insistence::Normal,
                         id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
                         task: task.id,
                         offset,
@@ -1321,6 +1404,7 @@ mod tests {
                 1 => ReminderRef::Default(task.id),
                 _ => {
                     let alarm = AdhocAlarm {
+                        insistence: Insistence::Normal,
                         id: AdhocAlarmId::from(uuid::Uuid::from_u128(10)),
                         label: "p7".into(),
                         fire_at: now,
@@ -1459,6 +1543,7 @@ mod tests {
     #[test]
     fn occurrence_arithmetic_stays_total_at_the_representable_edge() {
         let rule = ReminderRule {
+            insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(1)),
             task: TaskId::from(uuid::Uuid::from_u128(2)),
             offset: ReminderOffset::before(chrono::TimeDelta::try_days(-30).unwrap()).unwrap(),
@@ -1491,6 +1576,7 @@ mod tests {
         let mut reminders = ReminderState::default();
         // task_a (later order) fires earlier: output must not follow task order.
         let rule_a = ReminderRule {
+            insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task_a.id,
             offset: ReminderOffset::at_due(),
@@ -1498,6 +1584,7 @@ mod tests {
             updated_at: ts(100),
         };
         let rule_b = ReminderRule {
+            insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(11)),
             task: task_b.id,
             offset: ReminderOffset::at_due(),
@@ -1667,6 +1754,7 @@ mod tests {
         let task = live_task(1, Some(ts(19_000)), 0);
         let tasks = BTreeMap::from([(task.id, task.clone())]);
         let rule = ReminderRule {
+            insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task.id,
             offset: ReminderOffset::at_due(),
@@ -1784,6 +1872,7 @@ mod tests {
     #[test]
     fn notification_roundtrips_through_serde() {
         let notification = Notification {
+            insistence: Insistence::Normal,
             reminder: ref_of(3),
             anchor: ReminderAnchor::Task(TaskId::from(uuid::Uuid::from_u128(4))),
             title: "ship it".into(),
@@ -1799,6 +1888,7 @@ mod tests {
         let task = live_task(1, Some(ts(500)), 0);
         let tasks = BTreeMap::from([(task.id, task.clone())]);
         let alarm = crate::reminders::AdhocAlarm {
+            insistence: Insistence::Normal,
             id: AdhocAlarmId::from(uuid::Uuid::from_u128(20)),
             label: "steep the tea".into(),
             fire_at: ts(300),
@@ -1835,12 +1925,14 @@ mod tests {
             notes,
             vec![
                 Notification {
+                    insistence: Insistence::Normal,
                     reminder: ref_of(10),
                     anchor: ReminderAnchor::Task(task.id),
                     title: task.title.clone(),
                     occurrence: ts(400),
                 },
                 Notification {
+                    insistence: Insistence::Normal,
                     reminder: ReminderRef::Adhoc(alarm.id),
                     anchor: ReminderAnchor::Alarm(alarm.id),
                     title: alarm.label.clone(),
@@ -1851,6 +1943,102 @@ mod tests {
              missing anchors are skipped"
         );
         assert_eq!(notifications_for(&[], &tasks, &reminders), Vec::new());
+    }
+
+    // ---- Insistence (D-I2/D-I3, chunk DR-3/2) -------------------------
+
+    #[test]
+    fn insistence_serde_roundtrips_and_rejects_unknown() {
+        for (level, wire) in [(Insistence::Normal, "\"normal\""), (Insistence::Alarm, "\"alarm\"")] {
+            let json = serde_json::to_string(&level).expect("serializable");
+            assert_eq!(json, wire);
+            let back: Insistence = serde_json::from_str(&json).expect("decodable");
+            assert_eq!(back, level);
+        }
+        assert!(
+            serde_json::from_str::<Insistence>("\"critical\"").is_err(),
+            "an unknown rung is a typed serde rejection"
+        );
+    }
+
+    #[test]
+    fn insistence_text_form_roundtrips() {
+        assert_eq!(Insistence::parse_text_form("normal"), Some(Insistence::Normal));
+        assert_eq!(Insistence::parse_text_form("alarm"), Some(Insistence::Alarm));
+        assert_eq!(Insistence::Normal.text_form(), "normal");
+        assert_eq!(Insistence::Alarm.text_form(), "alarm");
+        assert_eq!(Insistence::parse_text_form("critical"), None);
+        assert_eq!(Insistence::parse_text_form(""), None);
+    }
+
+    #[test]
+    fn insistence_default_and_order_follow_the_ladder() {
+        assert_eq!(Insistence::default(), Insistence::Normal);
+        assert!(Insistence::Normal < Insistence::Alarm, "higher = more insistent");
+    }
+
+    #[test]
+    fn notifications_for_snapshots_insistence_from_rows_and_defaults() {
+        let task = live_task(1, Some(ts(500)), 0);
+        let tasks = BTreeMap::from([(task.id, task.clone())]);
+        let alarm = AdhocAlarm {
+            id: AdhocAlarmId::from(uuid::Uuid::from_u128(20)),
+            label: "steep the tea".into(),
+            fire_at: ts(300),
+            insistence: Insistence::Alarm,
+            created_at: ts(100),
+        };
+        let loud_rule = ReminderRule {
+            id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
+            task: task.id,
+            offset: ReminderOffset::before(chrono::TimeDelta::minutes(-5)).expect("valid"),
+            insistence: Insistence::Alarm,
+            created_at: ts(100),
+            updated_at: ts(100),
+        };
+        let mut reminders = ReminderState::default();
+        reminders.alarms.insert(alarm.id, alarm.clone());
+        reminders.rules.insert(loud_rule.id, loud_rule.clone());
+        let ghost_rule = ReminderRuleId::from(uuid::Uuid::from_u128(11));
+        let firings = vec![
+            // A Rule-ref firing snapshots its rule row's level.
+            ReminderFiring {
+                reminder: ReminderRef::Rule(loud_rule.id),
+                anchor: ReminderAnchor::Task(task.id),
+                occurrence: ts(400),
+            },
+            // An Adhoc firing snapshots the alarm row's level.
+            ReminderFiring {
+                reminder: ReminderRef::Adhoc(alarm.id),
+                anchor: ReminderAnchor::Alarm(alarm.id),
+                occurrence: ts(401),
+            },
+            // The implicit default has no row: always Normal.
+            ReminderFiring {
+                reminder: ReminderRef::Default(task.id),
+                anchor: ReminderAnchor::Task(task.id),
+                occurrence: ts(402),
+            },
+            // A hand-built firing whose rule row is missing degrades to
+            // Normal rather than dropping the notification.
+            ReminderFiring {
+                reminder: ReminderRef::Rule(ghost_rule),
+                anchor: ReminderAnchor::Task(task.id),
+                occurrence: ts(403),
+            },
+        ];
+        let notes = notifications_for(&firings, &tasks, &reminders);
+        let levels: Vec<Insistence> = notes.iter().map(|n| n.insistence).collect();
+        assert_eq!(
+            levels,
+            vec![
+                Insistence::Alarm,
+                Insistence::Alarm,
+                Insistence::Normal,
+                Insistence::Normal,
+            ],
+            "rule/alarm rows snapshot their level; default and missing-row degrade Normal"
+        );
     }
 
     proptest! {
@@ -1895,6 +2083,7 @@ mod tests {
                 occurrence: firing_occurrence,
             });
             roundtrip(&Notification {
+                insistence: Insistence::Normal,
                 reminder: delivery.reminder,
                 anchor: ReminderAnchor::Alarm(alarm.id),
                 title: alarm.label.clone(),
@@ -1979,6 +2168,7 @@ mod tests {
         let offset =
             ReminderOffset::before(chrono::TimeDelta::try_seconds(offset_secs).unwrap()).unwrap();
         ReminderRule {
+            insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(rule_raw)),
             task,
             offset,
@@ -2031,6 +2221,7 @@ mod tests {
             let task_id = task.id;
             let tasks = BTreeMap::from([(task.id, task)]);
             let rule = ReminderRule {
+                insistence: Insistence::Normal,
                 id: ReminderRuleId::from(uuid::Uuid::from_u128(401)),
                 task: task_id,
                 offset: ReminderOffset::at_due(),
@@ -2292,6 +2483,7 @@ mod tests {
             let task_id = task.id;
             let tasks = BTreeMap::from([(task.id, task)]);
             let rule = ReminderRule {
+                insistence: Insistence::Normal,
                 id: ReminderRuleId::from(uuid::Uuid::from_u128(402)),
                 task: task_id,
                 offset: ReminderOffset::before(-one_hour).unwrap(),

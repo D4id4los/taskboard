@@ -3848,6 +3848,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
     // Two rules on the focused task, distinct offsets; ids ascend with
     // insertion order so the row table is deterministic.
     let rule1 = taskboard_domain::ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
         id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(11)),
         task: task1,
         offset: taskboard_domain::ReminderOffset::at_due(),
@@ -3855,6 +3856,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
         updated_at: taskboard_domain::BoardClocks::epoch(),
     };
     let rule2 = taskboard_domain::ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
         id: taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(12)),
         task: task1,
         offset: taskboard_domain::ReminderOffset::before(

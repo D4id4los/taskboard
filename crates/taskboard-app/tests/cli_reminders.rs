@@ -396,6 +396,7 @@ fn r7c_colliding_rule_prefix_is_typed_ambiguous() {
     // Two ids sharing a long hex prefix, deterministically.
     let epoch = chrono::DateTime::UNIX_EPOCH;
     let mk = |raw: u128| ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
         id: ReminderRuleId::from(uuid::Uuid::from_u128(raw)),
         task,
         offset: ReminderOffset::at_due(),

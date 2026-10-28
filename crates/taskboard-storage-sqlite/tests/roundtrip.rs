@@ -258,6 +258,7 @@ async fn reminder_rule_round_trips_the_write_clock_and_epoch_decodes() {
     let t = task(1, &s, BTreeMap::default());
     let rule_id = ReminderRuleId::from(uuid::Uuid::from_u128(20));
     let rule = ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
         id: rule_id,
         task: t.id,
         offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
@@ -338,6 +339,7 @@ async fn rule_offset_roundtrips_identically_through_sqlite() {
         let t = task(1, &s, BTreeMap::default());
         let rule_id = ReminderRuleId::from(uuid::Uuid::from_u128(20 + i as u128));
         let rule = ReminderRule {
+            insistence: taskboard_domain::Insistence::Normal,
             id: rule_id,
             task: t.id,
             offset: ReminderOffset::before(chrono::TimeDelta::try_seconds(secs).unwrap())
@@ -384,6 +386,7 @@ async fn adhoc_alarms_and_their_facts_survive_a_board_clear() {
         PersistenceAction::UpsertStack(s),
         PersistenceAction::UpsertTask(t),
         PersistenceAction::UpsertAdhocAlarm(taskboard_domain::reminders::AdhocAlarm {
+            insistence: taskboard_domain::Insistence::Normal,
             id: alarm_id,
             label: "steep the tea".into(),
             fire_at: ts(3_000),
@@ -1186,4 +1189,147 @@ async fn pre_baseline_row_decodes_to_none_and_merges_under_the_fallback() {
     // ...and the second cycle is a fixpoint.
     let second = taskboard_domain::merge::merge_task(&first, &remote, &ctx, true);
     assert_eq!(second, first);
+}
+
+// ---- Insistence storage (DR-3/2, #475, migration 0013) ----------------
+
+/// The insistence upgrade pin: raw pre-0013-shape rows in both tables
+/// (no `insistence` column) decode as `Normal` — existing rows fold
+/// `normal`, the pre-migration behavior bit-for-bit.
+#[tokio::test]
+async fn pre_insistence_rows_decode_normal() {
+    use taskboard_domain::ids::{AdhocAlarmId, ReminderRuleId};
+    use taskboard_domain::reminders::Insistence;
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+    ])
+    .await
+    .expect("parents");
+    let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+    let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+    sqlx::query(
+        "INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at, updated_at) \
+         VALUES ('00000000-0000-0000-0000-000000000021', \
+                 '00000000-0000-0000-0000-000000000001', -60, \
+                 '1970-01-01T00:00:16+00:00', '1970-01-01T00:00:17+00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw rule insert");
+    sqlx::query(
+        "INSERT INTO adhoc_alarms (alarm_id, label, fire_at, created_at) \
+         VALUES ('00000000-0000-0000-0000-00000000002a', 'tea', \
+                 '1970-01-01T00:05:00+00:00', '1970-01-01T00:00:16+00:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("raw alarm insert");
+    pool.close().await;
+
+    let loaded = db.repo().load().await.expect("load");
+    let rule = loaded.reminders.rules
+        [&ReminderRuleId::from(uuid::Uuid::from_u128(0x21))]
+        .clone();
+    let alarm = loaded.reminders.alarms
+        [&AdhocAlarmId::from(uuid::Uuid::from_u128(0x2a))]
+        .clone();
+    assert_eq!(rule.insistence, Insistence::Normal, "rules fold normal");
+    assert_eq!(alarm.insistence, Insistence::Normal, "alarms fold normal");
+    db.close().await;
+}
+
+/// An `Alarm` rung survives write/reload identically on both tables
+/// (the column stores the domain serde unit name).
+#[tokio::test]
+async fn insistence_round_trips_through_sqlite() {
+    use taskboard_domain::ids::{AdhocAlarmId, ReminderRuleId};
+    use taskboard_domain::reminders::{
+        AdhocAlarm, Insistence, ReminderOffset, ReminderRule,
+    };
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let rule = ReminderRule {
+        id: ReminderRuleId::from(uuid::Uuid::from_u128(20)),
+        task: t.id,
+        offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
+            .expect("valid offset"),
+        insistence: Insistence::Alarm,
+        created_at: ts(1_000),
+        updated_at: ts(2_000),
+    };
+    let alarm = AdhocAlarm {
+        id: AdhocAlarmId::from(uuid::Uuid::from_u128(30)),
+        label: "wake".into(),
+        fire_at: ts(3_000),
+        insistence: Insistence::Alarm,
+        created_at: ts(1_000),
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertReminderRule(rule.clone()),
+        PersistenceAction::UpsertAdhocAlarm(alarm.clone()),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.reminders.rules[&rule.id], rule);
+    assert_eq!(loaded.reminders.alarms[&alarm.id], alarm);
+    db.close().await;
+}
+
+/// Unknown insistence text in the db is a typed corruption, never a
+/// defaulted decode (the codec's one-representation discipline).
+#[tokio::test]
+async fn unknown_insistence_text_is_a_typed_corruption() {
+    use taskboard_domain::ids::ReminderRuleId;
+    use taskboard_domain::persistence::RepositoryError;
+    use taskboard_domain::reminders::{ReminderOffset, ReminderRule};
+
+    let mut db = common::FileDb::new().await;
+    let repo = db.repo();
+    let b = board(11);
+    let s = stack(2, &b);
+    let t = task(1, &s, BTreeMap::default());
+    let rule = ReminderRule {
+        id: ReminderRuleId::from(uuid::Uuid::from_u128(20)),
+        task: t.id,
+        offset: ReminderOffset::before(chrono::TimeDelta::try_minutes(-5).unwrap())
+            .expect("valid offset"),
+        insistence: taskboard_domain::Insistence::Normal,
+        created_at: ts(1_000),
+        updated_at: ts(2_000),
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertBoard(b),
+        PersistenceAction::UpsertStack(s),
+        PersistenceAction::UpsertTask(t),
+        PersistenceAction::UpsertReminderRule(rule),
+    ])
+    .await
+    .expect("apply");
+    let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
+    let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
+    sqlx::query("UPDATE reminder_rules SET insistence = 'wake_up'")
+        .execute(&pool)
+        .await
+        .expect("corrupting update");
+    pool.close().await;
+
+    let err = db.repo().load().await.expect_err("corrupt decode");
+    assert!(matches!(err, RepositoryError::Corrupted));
+    db.close().await;
 }

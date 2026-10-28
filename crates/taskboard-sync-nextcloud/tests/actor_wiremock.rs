@@ -3171,6 +3171,7 @@ mod flush_seed {
         state.reminders.rules.insert(
             rule_id,
             taskboard_domain::ReminderRule {
+                insistence: taskboard_domain::Insistence::Normal,
                 id: rule_id,
                 task: task_id,
                 offset: taskboard_domain::ReminderOffset::at_due(),

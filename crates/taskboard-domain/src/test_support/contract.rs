@@ -12,6 +12,7 @@ use std::task::{Context, Poll, Waker};
 use chrono::{TimeZone, Utc};
 
 use crate::entities::{Task, TaskClocks};
+use crate::reminders::Insistence;
 use crate::ids::{StackId, TaskId};
 use crate::outbox::{LocalOp, OpId, PendingOp};
 use crate::persistence::{
@@ -273,6 +274,7 @@ pub async fn assert_task_repository_contract_async<R: TaskRepository>(repo: &R) 
     // inherits. Fixed stamps: every decode round-trip must return the
     // exact rows written.
     let rule = crate::reminders::ReminderRule {
+        insistence: Insistence::Normal,
         id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(20)),
         task: task.id,
         offset: crate::reminders::ReminderOffset::before(

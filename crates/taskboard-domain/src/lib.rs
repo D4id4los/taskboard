@@ -114,9 +114,9 @@ pub use recur::{
     occurrence_outcome, occurs_on, roll_target, schedule,
 };
 pub use reminders::{
-    AdhocAlarm, AdhocWhen, InvalidReminderOffset, Notification, NotifierMessage, ReminderAnchor,
-    ReminderDefaults, ReminderDelivery, ReminderDismissal, ReminderFiring, ReminderOffset,
-    ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState,
+    AdhocAlarm, AdhocWhen, Insistence, InvalidReminderOffset, Notification, NotifierMessage,
+    ReminderAnchor, ReminderDefaults, ReminderDelivery, ReminderDismissal, ReminderFiring,
+    ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze, ReminderSnoozeKey, ReminderState,
     active_notifications, alarm_occurrence, due_firings, due_soon, effective_occurrence,
     notifications_for, occurrence_of, overdue_tasks, prune_settled_alarms,
 };

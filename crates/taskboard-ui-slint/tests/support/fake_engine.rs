@@ -151,6 +151,7 @@ impl FakeEngine {
                     state.reminders.alarms.insert(
                         id,
                         taskboard_domain::AdhocAlarm {
+                            insistence: taskboard_domain::Insistence::Normal,
                             id,
                             label,
                             fire_at,

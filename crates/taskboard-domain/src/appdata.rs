@@ -939,6 +939,7 @@ pub fn lane_gc_scheduled(document: &AppDataDocument, drop: bool) -> AppDataDocum
 
 #[cfg(test)]
 mod tests {
+    use crate::reminders::Insistence;
     use super::*;
     use crate::entities::TASK_FIELDS;
     use chrono::TimeZone;
@@ -1556,6 +1557,7 @@ mod tests {
         let task = task_fixture();
         let mut rules = std::collections::BTreeMap::new();
         let rule = crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task.id,
             offset: crate::reminders::ReminderOffset::at_due(),
@@ -1589,6 +1591,7 @@ mod tests {
         local.insert(
             kept,
             crate::reminders::ReminderRule {
+                insistence: Insistence::Normal,
                 id: kept,
                 task: TaskId::from(uuid::Uuid::from_u128(1)),
                 offset: crate::reminders::ReminderOffset::at_due(),
@@ -1823,6 +1826,7 @@ mod tests {
         let foreign_rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(11));
         let orphan_rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(12));
         let mk_rule = |id, task| crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id,
             task,
             offset: crate::reminders::ReminderOffset::at_due(),
@@ -2021,6 +2025,7 @@ mod tests {
                 local.insert(
                     ReminderRuleId::from(uuid::Uuid::from_u128(0xa)),
                     crate::reminders::ReminderRule {
+                        insistence: Insistence::Normal,
                         id: ReminderRuleId::from(uuid::Uuid::from_u128(0xa)),
                         task: TaskId::from(uuid::Uuid::from_u128(1)),
                         offset: crate::reminders::ReminderOffset::at_due(),
@@ -2146,6 +2151,7 @@ mod tests {
             rules.insert(
                 rule,
                 crate::reminders::ReminderRule {
+                    insistence: Insistence::Normal,
                     id: rule,
                     task,
                     offset: crate::reminders::ReminderOffset::at_due(),

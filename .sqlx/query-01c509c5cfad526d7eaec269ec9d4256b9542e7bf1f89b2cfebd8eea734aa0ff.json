@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT alarm_id, label,\n                      fire_at as \"fire_at: DateTime<Utc>\",\n                      created_at as \"created_at: DateTime<Utc>\"\n               FROM adhoc_alarms ORDER BY alarm_id",
+  "query": "SELECT alarm_id, label,\n                      fire_at as \"fire_at: DateTime<Utc>\",\n                      insistence,\n                      created_at as \"created_at: DateTime<Utc>\"\n               FROM adhoc_alarms ORDER BY alarm_id",
   "describe": {
     "columns": [
       {
@@ -37,8 +37,19 @@
         }
       },
       {
-        "name": "created_at: DateTime<Utc>",
+        "name": "insistence",
         "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "adhoc_alarms",
+            "name": "insistence"
+          }
+        }
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -55,8 +66,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "2b359f735ad4fa6bd8276faf430991702eb92d6a05894de6f3d8105814fb1c30"
+  "hash": "01c509c5cfad526d7eaec269ec9d4256b9542e7bf1f89b2cfebd8eea734aa0ff"
 }

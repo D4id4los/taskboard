@@ -346,6 +346,7 @@ mod tests {
             ReminderAnchor::Alarm(alarm) => ReminderRef::Adhoc(*alarm),
         };
         Notification {
+            insistence: taskboard_domain::Insistence::Normal,
             reminder,
             anchor,
             title: "ship it".into(),
