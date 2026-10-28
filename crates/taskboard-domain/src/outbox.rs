@@ -71,10 +71,13 @@ pub enum LocalOp {
         /// The doomed stack's remote ref.
         stack: crate::ids::RemoteStackRef,
     },
-    /// App-data document entry for a task is stale: fields and/or
-    /// reminder rules. Full-send at flush; coalesces per board into the
-    /// single sidecar document upload (D-S5). Nothing enqueues it yet —
-    /// the flush lane is chunk 4's.
+    /// App-data document content for a task is stale: app fields,
+    /// reminder rules, or a time entry touched. Full-send at flush;
+    /// coalesces per board into the single sidecar document upload
+    /// (D-S5). Every task-touching planner verb (task verbs, reminder
+    /// verbs, the tracking verbs) and the done/deleted close
+    /// side-effects enqueue it for each touched task; the flush lane
+    /// consumes the board's coalesced ops.
     UpdateAppData(TaskId),
 }
 
