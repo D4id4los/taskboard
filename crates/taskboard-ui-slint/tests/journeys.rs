@@ -2740,6 +2740,95 @@ fn the_preset_selection_echoes_the_replied_preset_not_the_click() {
 }
 
 // ---------------------------------------------------------------------
+// r3 D16: the password eye toggle
+// ---------------------------------------------------------------------
+
+/// The eye toggle (r3 D16, dispatch §5 a): the secret field carries a
+/// discoverable a11y button beside it; toggling is markup-local —
+/// every model property stays untouched and the lane stays silent.
+/// The reveal state itself (dots vs plaintext) is a Tier-4 visual,
+/// not harness-pinned; the write-only redaction contract (the
+/// emptiness oracle, nothing secret on any model/Debug) is pinned by
+/// the save ceremony journey and the adapter's draft mirror.
+#[test]
+fn the_eye_toggles_locally_without_leaking_the_secret() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            // Type a secret through the mirror path.
+            window.invoke_settings_field_edited(3, "hunter2-secret".into());
+            let model_snapshot = (
+                model().get_draft_name(),
+                model().get_draft_server(),
+                model().get_draft_username(),
+                model().get_save_enabled(),
+            );
+
+            // The eye is discoverable as an accessible button beside
+            // the password field.
+            let eyes: Vec<_> = harness
+                .driver
+                .find_all_by_label("Reveal")
+                .into_iter()
+                .filter(support::driver::Element::is_accessible_button)
+                .collect();
+            assert_eq!(eyes.len(), 1, "exactly one eye on the form");
+
+            // Toggle: no model property moves, the lane stays silent.
+            eyes.into_iter()
+                .next()
+                .expect("the eye")
+                .invoke_default_action();
+            harness.driver.advance_time(0);
+            assert_eq!(
+                (
+                    model().get_draft_name(),
+                    model().get_draft_server(),
+                    model().get_draft_username(),
+                    model().get_save_enabled(),
+                ),
+                model_snapshot,
+                "the toggle touched nothing but the field's local state"
+            );
+            assert!(harness.drain_requests().is_empty(), "zero lane traffic");
+
+            // Re-toggle: the label swaps with the state.
+            let concealed: Vec<_> = harness
+                .driver
+                .find_all_by_label("Conceal")
+                .into_iter()
+                .filter(support::driver::Element::is_accessible_button)
+                .collect();
+            assert_eq!(concealed.len(), 1, "the eye relabels with the state");
+            concealed
+                .into_iter()
+                .next()
+                .expect("the relabelled eye")
+                .invoke_default_action();
+            harness.driver.advance_time(0);
+            assert_eq!(
+                (
+                    model().get_draft_name(),
+                    model().get_draft_server(),
+                    model().get_draft_username(),
+                    model().get_save_enabled(),
+                ),
+                model_snapshot,
+                "the second toggle is equally local"
+            );
+        },
+    );
+}
+
+// ---------------------------------------------------------------------
 // r3 D19: the validity flavour (per-field, per keystroke)
 // ---------------------------------------------------------------------
 

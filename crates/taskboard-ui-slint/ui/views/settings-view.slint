@@ -527,7 +527,9 @@ export component SettingsView inherits FocusScope {
         }
         password-field := LabeledField {
             label: "App password";
-            placeholder: "write-only; never shown";
+            // The eye can reveal the buffer now (r3 D16): the old
+            // "never shown" placeholder is false advertising.
+            placeholder: "paste the app password";
             help: SettingsModel.help-app-password;
             secret: true;
             field-index: 3;
