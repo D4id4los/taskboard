@@ -472,9 +472,6 @@ pub(crate) fn remote_col(raw: u64) -> i64 {
 mod tests {
     use super::*;
 
-    fn codec_payload(op: &LocalOp) -> Option<String> {
-        op_payload_to_json(op)
-    }
     use taskboard_domain::ids::{RemoteBoardId, RemoteCardId, RemoteLabelId, RemoteStackId};
 
     fn id(raw: u128) -> Uuid {
@@ -528,7 +525,7 @@ mod tests {
             let stack_text = cols.stack_id.map(|s| uuid_to_text(s.as_uuid()));
             let label_text = cols.label_id.map(|l| uuid_to_text(l.as_uuid()));
             let board_text = cols.board_id.map(|b| uuid_to_text(b.as_uuid()));
-            let payload_text = codec_payload(&op);
+            let payload_text = op_payload_to_json(&op);
             let back = op_from_columns(
                 op_kind_to_text(&op),
                 task_text.as_deref(),
@@ -568,7 +565,7 @@ mod tests {
                 stack: stack_ref,
             },
         ] {
-            let payload = codec_payload(&op).expect("ref-delete carries a payload");
+            let payload = op_payload_to_json(&op).expect("ref-delete carries a payload");
             let back = op_from_columns(
                 op_kind_to_text(&op),
                 None,
