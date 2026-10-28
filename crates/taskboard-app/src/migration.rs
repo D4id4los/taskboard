@@ -243,6 +243,7 @@ fn backup_path(path: &Path) -> PathBuf {
 ///
 /// [`crate::config::ConfigError`] — the load's own typed failures,
 /// and the terminal propagate of the corner ladder above.
+#[allow(clippy::result_large_err)] // the same enum, the same once-at-boot shape
 pub fn load_migrated(explicit: Option<PathBuf>) -> Result<AppConfig, crate::config::ConfigError> {
     let config = AppConfig::load(explicit.clone())?;
     let Some(path) = AppConfig::config_path(explicit.clone()) else {
@@ -399,10 +400,10 @@ mod tests {
             "the [nextcloud] husk keeps only credential_store"
         );
         assert!(
-            !reloaded
+            reloaded
                 .get("sync")
                 .and_then(|sync| sync.get("backend"))
-                .is_some(),
+                .is_none(),
             "the scalar backend word is folded into the entry"
         );
 
