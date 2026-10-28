@@ -55,7 +55,7 @@ fn cfg(clock: Arc<dyn Clock>) -> SyncActorConfig {
 /// spawn (and re-spawn) actors against it.
 #[allow(dead_code)] // per-test subsets
 struct Stack {
-    server: MockServer,
+    server: Arc<MockServer>,
     engine: taskboard_state::EngineHandle,
     engine_join: tokio::task::JoinHandle<()>,
     report_tx: mpsc::Sender<SyncReport>,
@@ -66,14 +66,25 @@ struct Stack {
     clock: Arc<dyn Clock>,
 }
 
-async fn boot(server: MockServer, repo_state: taskboard_domain::PersistedState) -> Stack {
+async fn boot(
+    server: Arc<MockServer>,
+    repo_state: taskboard_domain::PersistedState,
+    clock: Arc<dyn Clock>,
+) -> Stack {
+    boot_with_ids(server, repo_state, clock, Arc::new(CountingIds::new())).await
+}
+
+/// Boot with explicit ids: a restart over restored state must not mint
+/// ids the persisted rows already carry (the fake generator's small
+/// integers would collide with the pre-crash op ids and the crash
+/// journey's re-enqueued delete would alias a completed op).
+async fn boot_with_ids(
+    server: Arc<MockServer>,
+    repo_state: taskboard_domain::PersistedState,
+    clock: Arc<dyn Clock>,
+    ids: Arc<dyn taskboard_domain::IdGenerator>,
+) -> Stack {
     let repo = Arc::new(InMemoryRepository::with_state(repo_state));
-    let ids: Arc<dyn taskboard_domain::IdGenerator> = Arc::new(CountingIds::new());
-    // Stepping, not fixed: the pair's freshness predicates compare two
-    // engine stamps (`last_success` before/after restart); a constant
-    // clock would freeze them equal. Whole-second steps from `T + 1000`
-    // stay after every fixture stamp and strictly increase.
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
     let (nudges_tx, _nudges_rx) = mpsc::channel(16);
     let (report_tx, report_rx) = mpsc::channel(16);
     let (system_tx, system_engine_rx) = broadcast::channel(16);
@@ -255,18 +266,32 @@ struct DeckSim {
     ops: Arc<std::sync::Mutex<Vec<String>>>,
     next_id: Arc<std::sync::atomic::AtomicU64>,
     now: Arc<std::sync::atomic::AtomicI64>,
+    /// The pair's shared clock: sim-minted stamps must land inside the
+    /// crash-window detection's `[queued_at − 60s, now + 60s]`, so they
+    /// read the same timeline the engine's stamps do (the fixture's
+    /// `createdAt` on minted cards — an absent field would decode to
+    /// `MIN_UTC` and fail the window safe, silently defeating detection).
+    clock: Option<Arc<dyn Clock>>,
 }
 
 impl DeckSim {
-    fn new() -> Self {
+    fn new(clock: Arc<dyn Clock>) -> Self {
         Self {
             now: Arc::new(std::sync::atomic::AtomicI64::new(T + 1)),
+            clock: Some(clock),
             ..Self::default()
         }
     }
 
     fn stamp(&self) -> i64 {
-        self.now.fetch_add(60, std::sync::atomic::Ordering::SeqCst) + 60
+        let now_secs = match &self.clock {
+            Some(clock) => clock.now().timestamp(),
+            None => i64::MAX,
+        };
+        let prev = self
+            .now
+            .fetch_max(now_secs, std::sync::atomic::Ordering::SeqCst);
+        prev.max(now_secs) + 1
     }
 
     fn id(&self) -> u64 {
@@ -365,12 +390,13 @@ impl DeckSim {
                     .nth(1)
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(STACK);
+                let stamp = sim5.stamp();
                 let card = serde_json::json!({
                     "id": sim5.id(), "title": body["title"], "stackId": stack_num,
                     "type": "plain", "order": body["order"].as_i64().unwrap_or(0),
                     "description": body["description"].as_str().unwrap_or(""),
-                    "lastModified": sim5.stamp(), "labels": [], "archived": false,
-                    "duedate": null, "done": null
+                    "createdAt": stamp, "lastModified": stamp, "labels": [],
+                    "archived": false, "duedate": null, "done": null
                 });
                 sim5.cards.lock().unwrap().push(card.clone());
                 ResponseTemplate::new(200).set_body_json(card)
@@ -526,8 +552,9 @@ impl DeckSim {
 /// published `AppState`.
 #[tokio::test(start_paused = true)]
 async fn i1_offline_creates_round_trip_to_the_server() {
-    let server = start_server().await;
-    let sim = DeckSim::new();
+    let server = std::sync::Arc::new(start_server().await);
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let sim = DeckSim::new(Arc::clone(&clock));
     sim.mount(&server).await;
     // The board's live column exists server-side from the start.
     sim.stacks.lock().unwrap().push(serde_json::json!({
@@ -535,7 +562,8 @@ async fn i1_offline_creates_round_trip_to_the_server() {
         "lastModified": T, "deletedAt": 0, "archived": false, "cards": []
     }));
 
-    let stack = boot(server, seeded_state()).await;
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(server, seeded_state(), Arc::clone(&clock)).await;
     let (commands, _actor) = spawn_actor(&stack);
     // Deterministic: wait for the broadcast subscription (a structural
     // fact) instead of sleeping through the actor's first tick.
@@ -604,7 +632,7 @@ async fn i1_offline_creates_round_trip_to_the_server() {
 /// locally stale one on the next pull.
 #[tokio::test(start_paused = true)]
 async fn i2_remote_newer_edit_adopts() {
-    let server = start_server().await;
+    let server = std::sync::Arc::new(start_server().await);
     // The card exists remotely with a NEWER lastModified than the local
     // stale edit (local clocks ~T; remote edit T + 600).
     let mut card = card_json(55, "server wins");
@@ -654,7 +682,8 @@ async fn i2_remote_newer_edit_adopts() {
         remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
-    let stack = boot(server, state).await;
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(server, state, clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
     nudge_cycle(&commands).await;
@@ -671,7 +700,7 @@ async fn i2_remote_newer_edit_adopts() {
 /// survives while the remotely newer description adopts.
 #[tokio::test(start_paused = true)]
 async fn i3_concurrent_edits_resolve_per_field() {
-    let server = start_server().await;
+    let server = std::sync::Arc::new(start_server().await);
     let mut card = card_json(55, "older remote title");
     card["description"] = serde_json::json!("newer remote description");
     card["lastModified"] = serde_json::json!(T + 100); // newer than remote_seen
@@ -721,7 +750,8 @@ async fn i3_concurrent_edits_resolve_per_field() {
         remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
-    let stack = boot(server, state).await;
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(server, state, clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
     nudge_cycle(&commands).await;
@@ -741,8 +771,9 @@ async fn i3_concurrent_edits_resolve_per_field() {
 #[tokio::test(start_paused = true)]
 #[allow(clippy::too_many_lines)] // fixture seeding is the scenario
 async fn i4_move_label_and_delete_push_to_the_server() {
-    let server = start_server().await;
-    let sim = DeckSim::new();
+    let server = std::sync::Arc::new(start_server().await);
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let sim = DeckSim::new(Arc::clone(&clock));
     sim.mount(&server).await;
     // The two server-side columns and the card, matching the seeded state.
     sim.stacks.lock().unwrap().extend([
@@ -757,8 +788,8 @@ async fn i4_move_label_and_delete_push_to_the_server() {
     ]);
     sim.cards.lock().unwrap().push(serde_json::json!({
         "id": 55, "title": "draft", "stackId": STACK, "type": "plain",
-        "order": 0, "lastModified": T, "labels": [], "archived": false,
-        "duedate": null, "done": null
+        "order": 0, "createdAt": T, "lastModified": T, "labels": [],
+        "archived": false, "duedate": null, "done": null
     }));
 
     let mut state = seeded_state();
@@ -862,7 +893,7 @@ async fn i4_move_label_and_delete_push_to_the_server() {
             queued_at: ts(T),
         });
     }
-    let stack = boot(server, state).await;
+    let stack = boot(server, state, clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
     nudge_cycle(&commands).await;
@@ -934,12 +965,13 @@ async fn eventually_no_state(pred: impl Fn() -> bool) {
 /// old actor gone, the engine's dead nudge channel costs nothing.)
 #[tokio::test(start_paused = true)]
 async fn i5_restart_resumes_conditional_polling() {
-    let server = start_server().await;
+    let server = std::sync::Arc::new(start_server().await);
     mount_conditional_pull(&server, &board_labels()).await;
 
     // First lifetime: one full cycle (cold cache → fresh data + validators
     // persisted by the engine).
-    let stack = boot(server, seeded_state()).await;
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(server, seeded_state(), clock).await;
     let (commands, first_actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
     nudge_cycle(&commands).await;
@@ -991,4 +1023,173 @@ async fn i5_restart_resumes_conditional_polling() {
         after > before,
         "the restarted actor polled (its nudges come from poll ticks)"
     );
+}
+
+/// I6 (DR-4/R, #150) — the crash-window duplicate journey: a create POST
+/// completes server-side, the landing batch is lost to a crash, the
+/// restart replays the create (a second card), and the pull reconciles
+/// to one card — the first POST's — with the replayed twin deleted
+/// through the 404-tolerant ref-delete and zero duplicate local rows.
+/// Deterministic: shared stepping clock, `eventually` polling, no sleeps.
+#[tokio::test(start_paused = true)]
+#[allow(clippy::too_many_lines)] // the journey IS the scenario
+async fn i6_crash_window_duplicate_reconciles_to_one_card() {
+    let server = std::sync::Arc::new(start_server().await);
+    // One clock for both lifetimes: the sim's stamps, the op's
+    // `queued_at`, and the reports' `now` must share a timeline for the
+    // detection window to hold.
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let sim = DeckSim::new(Arc::clone(&clock));
+    sim.mount(&server).await;
+    sim.stacks.lock().unwrap().push(serde_json::json!({
+        "id": STACK, "title": "col", "boardId": BOARD, "order": 0,
+        "lastModified": T, "deletedAt": 0, "archived": false, "cards": []
+    }));
+
+    // Lifetime 1: create the task offline, then nudge one cycle — the
+    // create POST lands server-side (card A).
+    let stack = boot(Arc::clone(&server), seeded_state(), Arc::clone(&clock)).await;
+    let (commands, actor1) = spawn_actor(&stack);
+    wait_subscribed(&stack.system_tx).await;
+    let stack_id = taskboard_domain::StackId::from(uuid(2));
+    let CommandOutcome::CreatedTask(task_id) = stack
+        .engine
+        .execute(taskboard_domain::StateCommand::CreateTask {
+            title: "offline draft".into(),
+            stack: stack_id,
+            order: 0,
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("wrong receipt");
+    };
+    stack.engine.flush().await;
+    // The crash point: the repo state BEFORE the cycle — the create op
+    // queued, the task unbound.
+    let pre_crash = stack.repo.snapshot();
+    nudge_cycle(&commands).await;
+    eventually_no_state(|| sim.cards.lock().unwrap().len() == 1).await;
+    let card_a = sim.cards.lock().unwrap()[0]["id"].as_u64().unwrap();
+
+    // The crash: drop actor and engine; the storage reboots on the
+    // pre-cycle state — exactly "POST completed, landing batch lost".
+    actor1.abort();
+    stack.engine_join.abort();
+
+    // Lifetime 2: restart on the restored repo; the sim still holds A.
+    // The restarted engine's id counter starts past the restored rows'.
+    let ids: Arc<dyn taskboard_domain::IdGenerator> = Arc::new(CountingIds::new());
+    for _ in 0..100 {
+        ids.new_op_id();
+    }
+    let stack = boot_with_ids(Arc::clone(&server), pre_crash, Arc::clone(&clock), ids).await;
+    // The honesty rule's structural receiver: nothing may broadcast.
+    let mut system_rx = stack.system_tx.subscribe();
+    let (commands, _actor2) = spawn_actor(&stack);
+    wait_subscribed(&stack.system_tx).await;
+    nudge_cycle(&commands).await;
+
+    // The replay POSTs a second card (B), the pull lists A + B, the
+    // collapse rebinds T to A and ref-deletes B; the next cycle drains
+    // the delete. One live task, bound to A's ref, outbox empty.
+    eventually(&stack.engine, |app| {
+        app.tasks.get(&task_id).is_some_and(|t| {
+            t.is_live()
+                && t.remote.is_some_and(|r| r.card.0 == card_a)
+                && app.sync.aggregate().pending_ops == 0
+        })
+    })
+    .await;
+    eventually_no_state(|| {
+        let cards = sim.cards.lock().unwrap();
+        cards.len() == 1 && cards[0]["id"].as_u64() == Some(card_a)
+    })
+    .await;
+    stack.engine.flush().await;
+    assert!(
+        stack.repo.snapshot().outbox.is_empty(),
+        "the create completed and the ref-delete drained"
+    );
+    assert!(
+        sim.ops.lock().unwrap().contains(&"delete".to_string()),
+        "the doomed replay twin was deleted server-side"
+    );
+    let app = stack.engine.shared_state().load_full();
+    assert_eq!(
+        app.tasks.values().filter(|t| t.is_live()).count(),
+        1,
+        "zero duplicate local rows"
+    );
+    assert_eq!(app.sync.aggregate().phase, SyncPhase::Idle);
+    assert!(
+        system_rx.try_recv().is_err(),
+        "the honesty rule: no SystemEvent on any cycle of the journey"
+    );
+}
+
+/// I7 (DR-4/R, #150) — the actor-tier boundary pin: with no create in
+/// scope, a same-titled same-stack content-equal card is a stranger's
+/// twin, not ours — the pull R1-adopts it unchanged and the unbound
+/// local task stays untouched (the translator carries the stamps; the
+/// policy lives in the engine).
+#[tokio::test(start_paused = true)]
+async fn i7_a_strangers_twin_card_adopts_without_a_create_in_scope() {
+    let server = start_server().await;
+    let mut card = card_json(55, "offline draft");
+    card["createdAt"] = serde_json::json!(T + 5);
+    card["lastModified"] = serde_json::json!(T + 5);
+    mount_pull(&server, serde_json::json!([card])).await;
+
+    let mut state = seeded_state();
+    let task = taskboard_domain::Task {
+        id: taskboard_domain::TaskId::from(uuid(100)),
+        remote: None,
+        title: "offline draft".into(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack: taskboard_domain::StackId::from(uuid(2)),
+        order: 0,
+        label_memberships: std::collections::BTreeMap::new(),
+        effort: None,
+        importance: None,
+        urgency: None,
+        recur: None,
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::TaskClocks {
+            title: ts(T),
+            description: ts(T),
+            duedate: ts(T),
+            scheduled: ts(T),
+            done: ts(T),
+            position: ts(T),
+            effort: ts(T),
+            importance: ts(T),
+            urgency: ts(T),
+            recur: ts(T),
+            archived: ts(T),
+            deleted: ts(T),
+        },
+        remote_seen: None,
+        remote_baseline: None,
+    };
+    state.tasks.insert(task.id, task);
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(Arc::new(server), state, clock).await;
+    let (commands, _actor) = spawn_actor(&stack);
+    wait_subscribed(&stack.system_tx).await;
+    nudge_cycle(&commands).await;
+
+    // The twin adopts as its own task; the local draft stays unbound.
+    eventually(&stack.engine, |app| {
+        app.tasks.len() == 2
+            && app
+                .tasks
+                .get(&taskboard_domain::TaskId::from(uuid(100)))
+                .is_some_and(|t| t.remote.is_none())
+    })
+    .await;
 }
