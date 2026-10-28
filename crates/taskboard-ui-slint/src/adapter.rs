@@ -237,6 +237,43 @@ pub(crate) struct Adapter {
 }
 
 impl Adapter {
+    /// The menu greying map (round-3 D27c): the enumerated
+    /// state-dependent rows only — everything else keeps
+    /// dispatch-time `NoTarget` machinery (the closed set; R-E).
+    /// Built at menu open and in the models pass while the menu
+    /// holds, so engine syncs re-grey a live menu.
+    pub(crate) fn entry_states(
+        &self,
+        state: &taskboard_domain::AppState,
+        flow: &Flow,
+    ) -> BTreeMap<ActionId, bool> {
+        use crate::actions::ActionId;
+        let focused = self.view_state.focused_task();
+        let focused_done = focused
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|task| task.done.is_some());
+        let move_flow_live = matches!(
+            flow,
+            Flow::Move { .. } | Flow::MoveStack { .. } | Flow::DragMove { .. }
+        );
+        let tracking_live = crate::presentation::tracking_chip(state).is_some();
+        let subject = self.view_state.subject_task();
+        BTreeMap::from([
+            (ActionId::TaskMoveCancel, move_flow_live),
+            (ActionId::TaskComplete, focused.is_some() && !focused_done),
+            (ActionId::TaskReopen, focused.is_some() && focused_done),
+            (ActionId::TaskMove, focused.is_some()),
+            (ActionId::TaskEdit, focused.is_some()),
+            (ActionId::TaskDelete, focused.is_some()),
+            (ActionId::TaskTitleEdit, subject.is_some()),
+            (
+                ActionId::TaskTrackStart,
+                focused.is_some() && !tracking_live,
+            ),
+            (ActionId::TaskTrackStop, tracking_live),
+        ])
+    }
+
     /// Pushes the shell-derived state one-way onto the window
     /// globals (D18); nothing renders it in chunk 2 — chunk 3's
     /// status bar reads these.
@@ -587,6 +624,20 @@ impl Adapter {
             &mut self.models,
             &due,
         );
+        // Round-3 D27c: engine syncs re-grey a live menu — the pages
+        // rebuild from the fresh state while the menu holds (the
+        // cursor's length bound rides along).
+        if self.shell.menu.open {
+            let flow = self.view_state.flow().clone();
+            let states = self.entry_states(&state, &flow);
+            self.root_entries = menu::root_page(&self.keymap, &self.menu_chain, &states);
+            self.menu_entries = match self.shell.menu.active_group {
+                Some(group) => menu::group_page(&self.keymap, &self.menu_chain, &states, group),
+                None => self.root_entries.clone(),
+            };
+            self.shell.menu.len = self.menu_entries.len();
+            self.sync_menu_models(window);
+        }
         self.push_settings(window);
     }
 
@@ -1469,7 +1520,13 @@ impl Adapter {
                 let chain = self.shell.chain();
                 self.menu_anchor = MenuAnchor::Hamburger;
                 self.menu_chain = chain;
-                self.root_entries = menu::root_page(&self.keymap, &self.menu_chain);
+                {
+                    let state = self.state.load_full();
+                    let flow = self.view_state.flow().clone();
+                    let states = self.entry_states(&state, &flow);
+                    self.root_entries =
+                        menu::root_page(&self.keymap, &self.menu_chain, &states);
+                }
                 self.menu_entries = self.root_entries.clone();
                 self.shell.apply(&effect, self.menu_entries.len());
                 self.sync_menu_models(window);
@@ -1643,7 +1700,12 @@ impl Adapter {
         self.shell.menu.root_selected = self.shell.menu.selected;
         self.shell.menu.selected = 0;
         self.shell.menu.active_group = Some(group);
-        self.menu_entries = menu::group_page(&self.keymap, &self.menu_chain, group);
+        {
+            let state = self.state.load_full();
+            let flow = self.view_state.flow().clone();
+            let states = self.entry_states(&state, &flow);
+            self.menu_entries = menu::group_page(&self.keymap, &self.menu_chain, &states, group);
+        }
         self.shell.menu.len = self.menu_entries.len();
         self.sync_menu_models(window);
         // The F7 fix (r2 D12): the mouse parent path pushes the same

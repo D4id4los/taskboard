@@ -33,6 +33,18 @@ pub struct MenuEntry {
     pub submenu: Option<MenuGroup>,
 }
 
+/// The preset-irrelevant filter (round-3 D27b): the Mode group
+/// renders only when the active keymap binds `mode.insert` in
+/// `ViNormal` — true exactly for the vi preset. Data-derived, no new
+/// plumbing; the group-page emptiness cascade hides the parent row
+/// with the page.
+fn preset_irrelevant(group: MenuGroup, keymap: &Keymap) -> bool {
+    group == MenuGroup::Mode
+        && !keymap
+            .bound_contexts(crate::actions::ActionId::ModeInsert)
+            .contains(&ContextId::ViNormal)
+}
+
 /// The registry rows whose availability intersects `chain`
 /// (`Global`-tagged always), as `(registry index, entry)` in registry
 /// order — the shared filter of all three page projections.
@@ -47,12 +59,20 @@ fn chain_visible(chain: &[ContextId]) -> Vec<(usize, &'static crate::actions::Ac
         .collect()
 }
 
-fn row(keymap: &Keymap, chain: &[ContextId], entry: &crate::actions::ActionEntry) -> MenuEntry {
+fn row(
+    keymap: &Keymap,
+    chain: &[ContextId],
+    states: &std::collections::BTreeMap<ActionId, bool>,
+    entry: &crate::actions::ActionEntry,
+) -> MenuEntry {
     MenuEntry {
         action: Some(entry.id),
         label: entry.label,
         description: entry.description,
-        enabled: entry.enabled,
+        // Dynamic greying (round-3 D27c): an adapter-supplied state
+        // override wins; the static registry `enabled` stays the
+        // default (the permanently-disabled reservations' letter).
+        enabled: states.get(&entry.id).copied().unwrap_or(entry.enabled),
         hint: keymap
             .first_binding_display(entry.id, chain)
             .unwrap_or_default(),
@@ -66,18 +86,25 @@ fn row(keymap: &Keymap, chain: &[ContextId], entry: &crate::actions::ActionEntry
 /// page is non-empty for the chain (group declaration order), then
 /// `app.exit` pinned last regardless of its rank.
 #[must_use]
-pub fn root_page(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
+pub fn root_page(
+    keymap: &Keymap,
+    chain: &[ContextId],
+    states: &std::collections::BTreeMap<ActionId, bool>,
+) -> Vec<MenuEntry> {
     let visible = chain_visible(chain);
     let mut quick: Vec<(u16, usize, MenuEntry)> = visible
         .iter()
         .filter(|(_, entry)| entry.menu_group.is_none() && entry.id != ActionId::AppExit)
-        .map(|(index, entry)| (entry.menu_rank, *index, row(keymap, chain, entry)))
+        .map(|(index, entry)| (entry.menu_rank, *index, row(keymap, chain, states, entry)))
         .collect();
     quick.sort_by_key(|(rank, index, _)| (*rank, *index));
 
     let mut page: Vec<MenuEntry> = quick.into_iter().map(|(_, _, entry)| entry).collect();
     for group in MenuGroup::all() {
-        if !group_page(keymap, chain, *group).is_empty() {
+        if preset_irrelevant(*group, keymap) {
+            continue;
+        }
+        if !group_page(keymap, chain, states, *group).is_empty() {
             page.push(MenuEntry {
                 action: None,
                 label: group.label(),
@@ -92,7 +119,7 @@ pub fn root_page(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
         .iter()
         .find(|(_, entry)| entry.id == ActionId::AppExit)
     {
-        page.push(row(keymap, chain, exit));
+        page.push(row(keymap, chain, states, exit));
     }
     page
 }
@@ -100,11 +127,19 @@ pub fn root_page(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
 /// One group's page (round-1 D6): the group's chain-visible rows in
 /// `(menu_rank, registry order)`.
 #[must_use]
-pub fn group_page(keymap: &Keymap, chain: &[ContextId], group: MenuGroup) -> Vec<MenuEntry> {
+pub fn group_page(
+    keymap: &Keymap,
+    chain: &[ContextId],
+    states: &std::collections::BTreeMap<ActionId, bool>,
+    group: MenuGroup,
+) -> Vec<MenuEntry> {
+    if preset_irrelevant(group, keymap) {
+        return Vec::new();
+    }
     let mut rows: Vec<(u16, usize, MenuEntry)> = chain_visible(chain)
         .iter()
         .filter(|(_, entry)| entry.menu_group == Some(group))
-        .map(|(index, entry)| (entry.menu_rank, *index, row(keymap, chain, entry)))
+        .map(|(index, entry)| (entry.menu_rank, *index, row(keymap, chain, states, entry)))
         .collect();
     rows.sort_by_key(|(rank, index, _)| (*rank, *index));
     rows.into_iter().map(|(_, _, entry)| entry).collect()
@@ -116,7 +151,12 @@ pub fn group_page(keymap: &Keymap, chain: &[ContextId], group: MenuGroup) -> Vec
 /// Task-group registry rows.
 #[must_use]
 pub fn context_entries(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
-    group_page(keymap, chain, MenuGroup::Task)
+    group_page(
+        keymap,
+        chain,
+        &std::collections::BTreeMap::new(),
+        MenuGroup::Task,
+    )
 }
 
 /// The task context menu's action list (round-2 D21): the Task
@@ -177,7 +217,7 @@ pub const BOARD_CONTEXT: &[ActionId] = &[
 pub fn object_entries(keymap: &Keymap, chain: &[ContextId], ids: &[ActionId]) -> Vec<MenuEntry> {
     ids.iter()
         .filter_map(|id| REGISTRY.iter().find(|entry| entry.id == *id))
-        .map(|entry| row(keymap, chain, entry))
+        .map(|entry| row(keymap, chain, &std::collections::BTreeMap::new(), entry))
         .collect()
 }
 
@@ -207,11 +247,13 @@ mod tests {
     /// T-1 — the curated root page: the four quick rows in rank
     /// order, then the parent rows in group order (every group's page
     /// is non-empty over the board chain; six since the round-2
-    /// Stack/Board split), then Quit last.
+    /// Stack/Board split, five since round-3 D27b filters the
+    /// preset-irrelevant Mode group under the standard preset), then
+    /// Quit last.
     #[test]
     fn root_page_is_curated_quick_rows_parents_quit() {
         let keymap = standard_keymap();
-        let rows = root_page(&keymap, &board_chain());
+        let rows = root_page(&keymap, &board_chain(), &std::collections::BTreeMap::new());
         let mut actions = rows.iter().filter_map(|e| e.action);
         for id in [
             ActionId::AppSettings,
@@ -221,20 +263,23 @@ mod tests {
         ] {
             assert_eq!(actions.next(), Some(id), "quick row order");
         }
-        // Then the parent rows (no action), then Quit.
+        // Then the parent rows (no action), then Quit. The Mode
+        // group is filtered under the standard preset (round-3 D27b:
+        // preset-irrelevant rows).
         let parents: Vec<_> = rows
             .iter()
             .filter(|e| e.action.is_none())
             .map(|e| e.submenu)
             .collect();
+        let expected_parents: Vec<_> = MenuGroup::all()
+            .iter()
+            .copied()
+            .filter(|g| *g != MenuGroup::Mode)
+            .map(Some)
+            .collect();
         assert_eq!(
-            parents,
-            MenuGroup::all()
-                .iter()
-                .copied()
-                .map(Some)
-                .collect::<Vec<_>>(),
-            "one parent per group, in group order"
+            parents, expected_parents,
+            "one parent per rendered group, in group order"
         );
         assert_eq!(
             *rows.last().expect("non-empty"),
@@ -268,7 +313,7 @@ mod tests {
             ],
             vec![ContextId::Global],
         ] {
-            let rows = root_page(&keymap, &chain);
+            let rows = root_page(&keymap, &chain, &std::collections::BTreeMap::new());
             assert_eq!(
                 rows.last().expect("non-empty").action,
                 Some(ActionId::AppExit),
@@ -289,7 +334,12 @@ mod tests {
     #[test]
     fn group_page_projects_the_groups_rows_with_hints() {
         let keymap = standard_keymap();
-        let rows = group_page(&keymap, &board_chain(), MenuGroup::Task);
+        let rows = group_page(
+            &keymap,
+            &board_chain(),
+            &std::collections::BTreeMap::new(),
+            MenuGroup::Task,
+        );
         let expected = [
             ActionId::TaskCreate,
             ActionId::TaskEdit,
@@ -336,6 +386,7 @@ mod tests {
             group_page(
                 &keymap,
                 &[ContextId::TaskDetail, ContextId::Global],
+                &std::collections::BTreeMap::new(),
                 MenuGroup::Task
             )
             .iter()
@@ -357,7 +408,7 @@ mod tests {
     #[test]
     fn parent_rows_carry_the_group_and_no_action() {
         let keymap = standard_keymap();
-        let rows = root_page(&keymap, &board_chain());
+        let rows = root_page(&keymap, &board_chain(), &std::collections::BTreeMap::new());
         for parent in rows.iter().filter(|e| e.action.is_none()) {
             assert!(parent.submenu.is_some(), "a parent names its group");
             assert_ne!(parent.label, "");
@@ -371,7 +422,15 @@ mod tests {
         let non_empty: Vec<_> = MenuGroup::all()
             .iter()
             .copied()
-            .filter(|g| !group_page(&keymap, &[ContextId::Global], *g).is_empty())
+            .filter(|g| {
+                !group_page(
+                    &keymap,
+                    &[ContextId::Global],
+                    &std::collections::BTreeMap::new(),
+                    *g,
+                )
+                .is_empty()
+            })
             .collect();
         assert_eq!(page_groups, non_empty);
     }
@@ -411,7 +470,12 @@ mod tests {
         }
         // The task list is the Task group page, spelled explicitly.
         let task_rows = object_entries(&keymap, &chain, TASK_CONTEXT);
-        let task_page = group_page(&keymap, &chain, MenuGroup::Task);
+        let task_page = group_page(
+            &keymap,
+            &chain,
+            &std::collections::BTreeMap::new(),
+            MenuGroup::Task,
+        );
         assert_eq!(
             ids(&task_rows),
             task_page.iter().map(|e| e.action).collect::<Vec<_>>()
@@ -426,9 +490,15 @@ mod tests {
     fn pages_filter_to_the_chain_and_global() {
         let keymap = standard_keymap();
         let chain = board_chain();
-        let mut all: Vec<MenuEntry> = root_page(&keymap, &chain);
+        let mut all: Vec<MenuEntry> =
+            root_page(&keymap, &chain, &std::collections::BTreeMap::new());
         for group in MenuGroup::all() {
-            all.extend(group_page(&keymap, &chain, *group));
+            all.extend(group_page(
+                &keymap,
+                &chain,
+                &std::collections::BTreeMap::new(),
+                *group,
+            ));
         }
         let ids: Vec<_> = all.iter().filter_map(|e| e.action).collect();
         assert!(ids.contains(&ActionId::TaskComplete), "board verb offered");
@@ -442,9 +512,18 @@ mod tests {
             "nothing twice"
         );
 
-        let global = root_page(&keymap, &[ContextId::Global]);
+        let global = root_page(
+            &keymap,
+            &[ContextId::Global],
+            &std::collections::BTreeMap::new(),
+        );
         assert!(global.iter().any(|e| e.action == Some(ActionId::AppExit)));
-        let task = group_page(&keymap, &[ContextId::Global], MenuGroup::Task);
+        let task = group_page(
+            &keymap,
+            &[ContextId::Global],
+            &std::collections::BTreeMap::new(),
+            MenuGroup::Task,
+        );
         // The Global-tagged reminder rows survive; the view-only task
         // verbs do not.
         assert!(
@@ -464,30 +543,38 @@ mod tests {
     #[test]
     fn pages_are_ordered_and_disabled_rows_stay_hinted() {
         let keymap = standard_keymap();
-        let rows = group_page(&keymap, &board_chain(), MenuGroup::ViewNav);
+        let rows = group_page(
+            &keymap,
+            &board_chain(),
+            &std::collections::BTreeMap::new(),
+            MenuGroup::ViewNav,
+        );
+        // Round 3 (D27a): the re-ranked ViewNav page — the go-to
+        // verbs above the cycle, spaced 10, no ties.
         let expected = [
-            ActionId::PaletteSearch,
-            ActionId::NavNextView,
-            ActionId::NavPrevView,
-            ActionId::NavFocusBoard,
-            // Chunk 10 (D3): view.today joins at rank 90, view.inbox
-            // at 100 — rank ties keep registry order.
-            ActionId::ViewToday,
-            ActionId::NavNextItem,
-            ActionId::ViewInbox,
-            ActionId::NavPrevItem,
-            // Round 2 (D20): the first/last jumps join the ViewNav
-            // page at ranks 105/115.
-            ActionId::NavFirstItem,
-            ActionId::NavLastItem,
-            // Round 3 (D25): the control walk joins at ranks 160/170
-            // (the full re-rank is chunk 6 §7.1's commit).
-            ActionId::NavNextControl,
-            ActionId::NavPrevControl,
-            // Round 3 (D26): the scroll actions join at ranks 180/190.
-            ActionId::ViewScrollDown,
-            ActionId::ViewScrollUp,
+            ActionId::PaletteSearch,  // 50
+            ActionId::ViewToday,      // 60
+            ActionId::ViewInbox,      // 70
+            ActionId::NavFocusBoard,  // 80
+            ActionId::NavShowTask, // 90 (palette-only availability: not chain-visible over the board chain)
+            ActionId::NavNextView, // 100
+            ActionId::NavPrevView, // 110
+            ActionId::NavNextItem, // 120
+            ActionId::NavPrevItem, // 130
+            ActionId::NavFirstItem, // 140
+            ActionId::NavLastItem, // 150
+            ActionId::NavNextControl, // 160
+            ActionId::NavPrevControl, // 170
+            ActionId::ViewScrollDown, // 180
+            ActionId::ViewScrollUp, // 190
         ];
+        let expected: Vec<_> = expected
+            .iter()
+            .copied()
+            // nav.show-task never renders in a menu (the Palette-only
+            // availability masking).
+            .filter(|id| *id != ActionId::NavShowTask)
+            .collect();
         assert_eq!(
             ids(&rows),
             expected.iter().map(|id| Some(*id)).collect::<Vec<_>>()
@@ -510,7 +597,7 @@ mod tests {
             overrides: BTreeMap::new(),
         })
         .keymap;
-        let rows = root_page(&emacs, &board_chain());
+        let rows = root_page(&emacs, &board_chain(), &std::collections::BTreeMap::new());
         let exit = rows
             .iter()
             .find(|e| e.action == Some(ActionId::AppExit))
@@ -532,7 +619,11 @@ mod tests {
                 overrides: BTreeMap::new(),
             })
             .keymap;
-            let rows = root_page(&keymap, &[ContextId::ViNormal, ContextId::Global]);
+            let rows = root_page(
+                &keymap,
+                &[ContextId::ViNormal, ContextId::Global],
+                &std::collections::BTreeMap::new(),
+            );
             let exit = rows
                 .iter()
                 .find(|e| e.action == Some(ActionId::AppExit))
@@ -544,6 +635,118 @@ mod tests {
         }
     }
 
+    /// Round 3 (D27a): the re-rank pin — the go-to verbs ride above
+    /// the next/prev cycle on the `ViewNav` page (§7.1's table).
+    #[test]
+    fn view_nav_page_ranks_jumps_above_the_cycle() {
+        let keymap = standard_keymap();
+        let rows = group_page(
+            &keymap,
+            &board_chain(),
+            &std::collections::BTreeMap::new(),
+            MenuGroup::ViewNav,
+        );
+        let position = |id: ActionId| {
+            rows.iter()
+                .position(|e| e.action == Some(id))
+                .unwrap_or_else(|| panic!("{id} on the page"))
+        };
+        assert!(position(ActionId::ViewToday) < position(ActionId::NavNextView));
+        assert!(position(ActionId::NavFocusBoard) < position(ActionId::NavNextView));
+        assert!(position(ActionId::ViewInbox) < position(ActionId::NavNextView));
+        assert!(position(ActionId::NavNextView) < position(ActionId::NavNextItem));
+        assert!(position(ActionId::NavPrevItem) < position(ActionId::NavNextControl));
+        assert!(position(ActionId::ViewScrollDown) < position(ActionId::ViewScrollUp));
+        // Quick-row rank spacing is not re-checked here: the registry
+        // test (`every_row_carries_a_description_and_spaced_top_ranks`)
+        // iterates the same table after these rank edits and owns the
+        // contract.
+    }
+
+    /// Round 3 (D27b): the Mode group renders only when the active
+    /// keymap binds `mode.insert` in `ViNormal` — vi's does; standard
+    /// and emacs do not. The parent row disappears with the page.
+    #[test]
+    fn the_mode_group_renders_only_for_vi() {
+        let empty: std::collections::BTreeMap<ActionId, bool> = std::collections::BTreeMap::new();
+        for preset in [Preset::Standard, Preset::Emacs] {
+            let keymap = build(&RawKeymap {
+                preset,
+                overrides: BTreeMap::new(),
+            })
+            .keymap;
+            let rows = root_page(&keymap, &board_chain(), &empty);
+            assert!(
+                !rows.iter().any(|e| e.submenu == Some(MenuGroup::Mode)),
+                "{preset:?}: no Mode parent row"
+            );
+            assert!(
+                group_page(&keymap, &board_chain(), &empty, MenuGroup::Mode).is_empty(),
+                "{preset:?}: the Mode page is empty"
+            );
+        }
+        let vi = build(&RawKeymap {
+            preset: Preset::Vi,
+            overrides: BTreeMap::new(),
+        })
+        .keymap;
+        let rows = root_page(&vi, &board_chain(), &empty);
+        assert!(
+            rows.iter().any(|e| e.submenu == Some(MenuGroup::Mode)),
+            "vi carries the Mode parent row"
+        );
+        assert!(
+            !group_page(&vi, &board_chain(), &empty, MenuGroup::Mode).is_empty(),
+            "vi renders the Mode page"
+        );
+    }
+
+    /// Round 3 (D27c): the adapter's greying map drives the rows'
+    /// enabled bits — the enumerated state rows flip per fixture
+    /// state, static rows keep the registry default.
+    #[test]
+    fn state_rows_grey_from_the_adapter_map() {
+        let keymap = standard_keymap();
+
+        // A move flow live: cancel greys IN, everything else keeps
+        // its static bit.
+        let mut move_live = std::collections::BTreeMap::new();
+        move_live.insert(ActionId::TaskMoveCancel, true);
+        let rows = group_page(&keymap, &board_chain(), &move_live, MenuGroup::Task);
+        let cancel = rows
+            .iter()
+            .find(|e| e.action == Some(ActionId::TaskMoveCancel))
+            .expect("the cancel row");
+        assert!(cancel.enabled, "the state override wins");
+
+        // A map of falses greys the enumerated rows out (the
+        // registry's `enabled` stays the default — a false override
+        // is the greying itself).
+        let mut greyed: std::collections::BTreeMap<ActionId, bool> =
+            std::collections::BTreeMap::new();
+        for id in [
+            ActionId::TaskMoveCancel,
+            ActionId::TaskComplete,
+            ActionId::TaskReopen,
+            ActionId::TaskMove,
+            ActionId::TaskEdit,
+            ActionId::TaskDelete,
+            ActionId::TaskTitleEdit,
+            ActionId::TaskTrackStart,
+            ActionId::TaskTrackStop,
+        ] {
+            greyed.insert(id, false);
+        }
+        let rows = group_page(&keymap, &board_chain(), &greyed, MenuGroup::Task);
+        for e in &rows {
+            if greyed.contains_key(&e.action.expect("leaf")) {
+                assert!(!e.enabled, "{} greys from the map", e.action.unwrap());
+            } else {
+                assert!(e.enabled, "{} keeps its static bit", e.action.unwrap());
+            }
+        }
+    }
+
     /// Every projected row (registry rows included, parents excluded)
     /// carries a non-empty description — the tooltip source (T-6's
     /// totality, re-checked at the projection).
@@ -551,14 +754,14 @@ mod tests {
     fn projected_rows_carry_descriptions() {
         let keymap = standard_keymap();
         let chain = board_chain();
-        for row in root_page(&keymap, &chain)
+        for row in root_page(&keymap, &chain, &std::collections::BTreeMap::new())
             .iter()
             .filter(|e| e.action.is_some())
         {
             assert_ne!(row.description, "");
         }
         for group in MenuGroup::all() {
-            for row in group_page(&keymap, &chain, *group) {
+            for row in group_page(&keymap, &chain, &std::collections::BTreeMap::new(), *group) {
                 assert_ne!(row.description, "");
             }
         }

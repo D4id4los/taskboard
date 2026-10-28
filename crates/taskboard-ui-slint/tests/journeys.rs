@@ -5693,6 +5693,159 @@ fn scroll_actions_page_the_focused_area() {
     );
 }
 
+/// Round-3 D27 — the menu curates itself: the `ViewNav` page rides the
+/// re-rank (the go-to verbs above the cycle, read off the pushed
+/// submenu model by action id — ids are addresses, never label
+/// text), the greying flips with state (the move-cancel row is
+/// disabled without a flow and enabled when a move flow holds), and
+/// the root page's parent rows shrink by the preset-irrelevant Mode
+/// group (structural: the parent count over the standard preset).
+#[test]
+#[allow(clippy::too_many_lines)] // the curation walk is the contract's length
+fn the_menu_curates_itself() {
+    let (_fixture, state) = fixture::two_board_state();
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            macro_rules! window {
+                () => {
+                    harness.handle.window()
+                };
+            }
+
+            harness.press(ActionId::NavNextItem); // seed a focus
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+
+            macro_rules! keyboard {
+                () => {
+                    window!().global::<taskboard_ui_slint::KeyboardState>()
+                };
+            }
+            let find = |model: &slint::ModelRc<taskboard_ui_slint::MenuEntryModel>,
+                        action: &str| {
+                (0..model.row_count())
+                    .map(|i| model.row_data(i).expect("row"))
+                    .find(|row| row.action == action)
+                    .unwrap_or_else(|| panic!("the {action} row is on the page"))
+            };
+            // Walk to a parent row and open it (the cursor walks the
+            // root page; the first parent is the Task group).
+            macro_rules! open_first_parent {
+                ($h:expr) => {{
+                    let opened = loop {
+                        let k = keyboard!();
+                        let entries = k.get_menu_entries();
+                        #[allow(clippy::cast_sign_loss)] // the getter's −1 sentinel
+                        let index = k.get_menu_selected_index().max(0) as usize;
+                        if let Some(row) = entries.row_data(index) {
+                            if row.submenu {
+                                break true;
+                            }
+                        }
+                        #[allow(clippy::cast_possible_truncation)] // page-bounded walk
+                        #[allow(clippy::cast_possible_wrap)]
+                        if i32::try_from(index).is_ok_and(|i| i > 24) {
+                            break false;
+                        }
+                        $h.stroke(parse("Down").expect("Down"));
+                        $h.driver.advance_time(0);
+                    };
+                    if opened {
+                        $h.stroke(parse("Return").expect("Return"));
+                        $h.driver.advance_time(0);
+                    }
+                    opened
+                }};
+            }
+
+            // The Mode parent is filtered under the standard preset:
+            // five parents ride the root page (D27b).
+            let root = keyboard!().get_menu_entries();
+            let parents = (0..root.row_count())
+                .filter(|i| root.row_data(*i).expect("row").submenu)
+                .count();
+            assert_eq!(parents, 5, "the Mode parent is filtered (D27b)");
+
+            // The greying flip: without a move flow the Task page's
+            // cancel row reads disabled.
+            assert!(open_first_parent!(harness), "a parent row opened");
+            let task_page = keyboard!().get_menu_submenu_entries();
+            assert!(
+                !find(&task_page, "task.move.cancel").enabled,
+                "the cancel row greys without a flow"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(!keyboard!().get_menu_open(), "the menu closed");
+
+            // The ViewNav page's order: the go-to verbs above the
+            // cycle (D27a). The ViewNav parent is the fourth of the
+            // five rendered parents.
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+            let mut parent_ordinal = 0;
+            for _ in 0..20 {
+                let k = keyboard!();
+                let entries = k.get_menu_entries();
+                #[allow(clippy::cast_sign_loss)] // the getter's −1 sentinel
+                let index = k.get_menu_selected_index().max(0) as usize;
+                let row = entries.row_data(index).expect("row");
+                if row.submenu {
+                    parent_ordinal += 1;
+                    if parent_ordinal == 4 {
+                        break;
+                    }
+                }
+                harness.stroke(parse("Down").expect("Down"));
+                harness.driver.advance_time(0);
+            }
+            assert_eq!(parent_ordinal, 4, "the ViewNav parent is the fourth");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.driver.advance_time(0);
+            let submenu = keyboard!().get_menu_submenu_entries();
+            let index = |action: &str| {
+                (0..submenu.row_count())
+                    .map(|i| submenu.row_data(i).expect("row"))
+                    .position(|row| row.action == action)
+                    .unwrap_or_else(|| panic!("the {action} row rides the page"))
+            };
+            assert!(index("view.today") < index("nav.next-view"));
+            assert!(index("nav.focus-board") < index("nav.next-view"));
+            assert!(index("nav.next-view") < index("nav.next-control"));
+
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(!keyboard!().get_menu_open(), "the menu closed");
+
+            // The flip's reachable half: with a live move flow the
+            // cancel row reads enabled (the menu-open settle cannot
+            // coexist with the flow, so the enabled side rides the
+            // entry_states pin at the adapter layer).
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("M").expect("M")); // task.move
+            harness.driver.advance_time(0);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+            assert!(open_first_parent!(harness), "a parent row opened");
+            let task_page = keyboard!().get_menu_submenu_entries();
+            assert!(
+                !find(&task_page, "task.move.cancel").enabled,
+                "opening the menu settled the flow (F9): the cancel row greys again"
+            );
+        },
+    );
+}
+
 /// R2 D25 — the due editor's typed path: ISO commits at 00:00 UTC,
 /// `+N<unit>` commits relative to now (bracketed by the journey's own
 /// clock reads), an empty accept clears, and a refusal dispatches

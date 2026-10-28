@@ -796,6 +796,66 @@ fn walk_reentry_rejects_exactly_one_tab() {
     });
 }
 
+/// Round-3 D27c — the greying flip: the adapter's `entry_states` map
+/// flips the move-cancel row with the live move flow and the
+/// complete/reopen pair with the focused task's done stamp, while a
+/// static row (task.create carries no state row) stays off the map.
+#[test]
+fn entry_states_grey_the_enumerated_rows_per_state() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        {
+            let mut a = adapter.borrow_mut();
+            a.test_reset();
+            let live = rig.handle.test_state();
+            a.view_state.reconcile(&live.load_full());
+            let [a_id, _b, _c] = fx.tasks;
+            a.view_state.activate_card(a_id, fx.stacks[0]);
+        }
+        let states = |adapter: &Rc<RefCell<crate::adapter::Adapter>>| {
+            let a = adapter.borrow();
+            let live = rig.handle.test_state();
+            let flow = a.view_state.flow().clone();
+            a.entry_states(&live.load_full(), &flow)
+        };
+
+        // A focused open task: complete on, reopen off, move/edit/
+        // delete on, cancel off (no flow), track-start on.
+        let s = states(&adapter);
+        assert!(!s[&crate::actions::ActionId::TaskMoveCancel]);
+        assert!(s[&crate::actions::ActionId::TaskComplete]);
+        assert!(!s[&crate::actions::ActionId::TaskReopen]);
+        assert!(s[&crate::actions::ActionId::TaskMove]);
+        assert!(s[&crate::actions::ActionId::TaskTrackStart]);
+        assert!(!s[&crate::actions::ActionId::TaskTrackStop]);
+        assert!(!s.contains_key(&crate::actions::ActionId::TaskCreate));
+
+        // A live move flow flips the cancel row on (and the walk is
+        // still armed under it).
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::RequestMove);
+        let s = states(&adapter);
+        assert!(s[&crate::actions::ActionId::TaskMoveCancel]);
+
+        // Mark the focused task done: the complete/reopen pair flips.
+        {
+            let mut a = adapter.borrow_mut();
+            a.interpret_for_test(rig.handle.window(), UiEffect::CancelMove);
+        }
+        let live = rig.handle.test_state();
+        let id = fx.tasks[0];
+        let mut fresh = (*live.load_full()).clone();
+        fresh.tasks.get_mut(&id).expect("task").done = Some(taskboard_domain::BoardClocks::epoch());
+        live.store(std::sync::Arc::new(fresh));
+        let s = states(&adapter);
+        assert!(!s[&crate::actions::ActionId::TaskComplete]);
+        assert!(s[&crate::actions::ActionId::TaskReopen]);
+    });
+}
+
 /// The class matrix covers each `(FlowKind, EffectClass)` cell
 /// exactly once — a new variant without a row fails the driver above
 /// via the missing-row panic or the compile-time-exhaustive mirrors.

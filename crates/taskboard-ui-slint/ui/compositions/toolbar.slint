@@ -7,7 +7,6 @@
 import { Theme, Typography, RoleText, Tone } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
-import { KbdHint } from "../widgets/kbd-hint.slint";
 import { Badge } from "../widgets/badge.slint";
 
 export component Toolbar inherits Rectangle {
@@ -87,15 +86,14 @@ export component Toolbar inherits Rectangle {
             }
         }
 
-        VerticalLayout {
-            KbdHint {
-                keys: root.menu-hint;
-            }
-        }
-
+        // Round-3 D27d (R3-F33): the always-visible kbd chip left the
+        // row — the binding hint rides the button's hover tooltip like
+        // every other element (`menu-toolbar-hint` keeps flowing; no
+        // geometry change).
         menu-button := IconButton {
             icon: IconKind.menu;
             label: "Command menu";
+            hint-keys: root.menu-hint;
             clicked => root.menu-clicked();
         }
     }

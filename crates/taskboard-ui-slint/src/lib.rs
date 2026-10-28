@@ -2168,9 +2168,14 @@ mod view_component_tests {
         use crate::menu;
         let keymap = UiSettings::default().keymap;
         let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
-        let mut rows = menu::root_page(&keymap, &chain);
+        let mut rows = menu::root_page(&keymap, &chain, &std::collections::BTreeMap::new());
         for group in MenuGroup::all() {
-            rows.extend(menu::group_page(&keymap, &chain, *group));
+            rows.extend(menu::group_page(
+                &keymap,
+                &chain,
+                &std::collections::BTreeMap::new(),
+                *group,
+            ));
         }
         let enabled = |id: ActionId| rows.iter().any(|r| r.action == Some(id) && r.enabled);
         assert!(enabled(ActionId::TaskComplete));
