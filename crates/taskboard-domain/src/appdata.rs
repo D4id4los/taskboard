@@ -1132,6 +1132,129 @@ pub fn lane_gc_scheduled(document: &AppDataDocument, drop: bool) -> AppDataDocum
     gc
 }
 
+/// The time-entries retention window in days (design D-T13): a named
+/// constant, never a `[tracking]` config knob (the surface is fenced —
+/// retention aging is a wire-compaction concern, not a policy). The
+/// overlay builder and the lane GC filter by this one window so an aged
+/// row is never re-emitted and the union cannot resurrect it. **The
+/// local database never drops history** — this constant bounds the
+/// document only; `export` reads full local history.
+pub const TRACKING_SYNC_RETENTION_DAYS: i64 = 180;
+
+/// `now − TRACKING_SYNC_RETENTION_DAYS`: rows whose window instant
+/// (`start` for live entries, `clock` for tombstones) falls **before**
+/// this instant are aged; the boundary itself is inside.
+fn time_entry_window_start(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS)
+        .expect("180 days is within TimeDelta's range")
+}
+
+/// Builds the flush overlay's `time-entries` section from the local
+/// tracking state (design D-T10/D-T13). The emission filter is
+/// fail-closed by construction:
+///
+/// - the entry must be **within the retention window**
+///   (`start >= now − TRACKING_SYNC_RETENTION_DAYS`; aged rows are
+///   never re-emitted — overlay and lane GC agree on the one window);
+/// - the entry's task must exist **and bind to `board`**
+///   (`task.remote` is `Some` with `.board == board`): unbound entries
+///   are device-local and never emitted, other boards' entries are not
+///   this document's, and a dangling task id (possible after
+///   `ClearBoardContent`, D-15) emits nothing;
+/// - **`task.deleted` does not filter**: a soft-deleted-but-bound
+///   task's entries keep flowing so post-deletion adjusts/deletes roam
+///   (soft-deleted tasks keep local rows precisely so their ops stay
+///   resolvable);
+/// - the emitted row's `task` is the decimal remote card id; `clock`
+///   is the entry's LWW mutation clock — the remote stop is just a
+///   newer write (D-T11).
+#[must_use]
+pub fn time_entries_for(
+    entries: &BTreeMap<crate::ids::TimeEntryId, crate::tracking::TimeEntry>,
+    tasks: &BTreeMap<crate::ids::TaskId, crate::entities::Task>,
+    board: RemoteBoardId,
+    now: DateTime<Utc>,
+) -> BTreeMap<String, TimeEntryRecord> {
+    let window_start = time_entry_window_start(now);
+    entries
+        .iter()
+        .filter_map(|(id, entry)| {
+            if entry.start < window_start {
+                return None; // aged: never re-emitted (D-T13)
+            }
+            let task = tasks.get(&entry.task)?;
+            let binding = task.remote.as_ref()?;
+            if binding.board != board {
+                return None; // unbound or another board's document
+            }
+            Some((
+                id.as_uuid().to_string(),
+                TimeEntryRecord::Entry {
+                    task: Some(binding.card.get().to_string()),
+                    title: entry.task_title.clone(),
+                    start: entry.start,
+                    end: entry.end,
+                    created: entry.created_at,
+                    clock: entry.updated_at,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Derives the removal tombstones for the `time-entries` section (design
+/// D-T12, the truncated-view guard): every base key gets
+/// `{ deleted: true, clock }` **iff every clause of the fail-closed
+/// conjunction holds** — a narrower view can never erase another
+/// device's history:
+///
+/// 1. the base row decodes as a live `Entry` (base tombstones pass
+///    through untouched — no re-stamp; `Verbatim` is never ordered
+///    against);
+/// 2. the key parses as a UUID (an unparseable key is not an entry
+///    identity);
+/// 3. the **base row's own `start` is within the retention window**
+///    (a row the GC is about to strip is not tombstoned — guard on
+///    what the base row carries, not the local copy, so the check
+///    survives a locally-unknown row);
+/// 4. the row's `task` card **resolves locally** (present in
+///    `resolvable_cards` — unresolvable entries are neither imported
+///    by the fold nor deleted here; they age out instead, D-T13);
+/// 5. **no local entry with that UUID exists** (absence-from-base is
+///    never an input — only base-*present* rows missing locally
+///    tombstone).
+#[must_use]
+pub fn derive_time_entry_tombstones(
+    base: &BTreeMap<String, TimeEntryRecord>,
+    local: &BTreeMap<crate::ids::TimeEntryId, crate::tracking::TimeEntry>,
+    resolvable_cards: &std::collections::BTreeSet<String>,
+    now: DateTime<Utc>,
+    clock: DateTime<Utc>,
+) -> BTreeMap<String, TimeEntryRecord> {
+    let window_start = time_entry_window_start(now);
+    base.iter()
+        .filter_map(|(key, row)| {
+            let TimeEntryRecord::Entry {
+                start,
+                task: Some(task),
+                ..
+            } = row
+            else {
+                return None; // tombstones pass through, verbatim never ordered
+            };
+            let uuid = uuid::Uuid::parse_str(key).ok()?;
+            if *start < window_start {
+                return None; // aged rows are stripped, not tombstoned (D-T13)
+            }
+            if !resolvable_cards.contains(task) {
+                return None; // an unresolvable card never deletes
+            }
+            let id = crate::ids::TimeEntryId::from(uuid);
+            (!local.contains_key(&id)).then(|| (key.clone(), TimeEntryRecord::Tombstone { clock }))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2503,6 +2626,198 @@ mod tests {
         );
     }
 
+    // ---- DR-5/2: the overlay builder + the truncated-view guard -----
+
+    use crate::ids::{RemoteCardId, RemoteCardRef, RemoteStackId, TimeEntryId};
+
+    /// A bound copy of `task_fixture` on board 2 (the `document()` board),
+    /// card 412, optionally soft-deleted.
+    fn bound_task(deleted: bool) -> Task {
+        let mut task = task_fixture();
+        task.remote = Some(RemoteCardRef {
+            board: RemoteBoardId(2),
+            stack: RemoteStackId(7),
+            card: RemoteCardId(412),
+        });
+        task.deleted = deleted;
+        task
+    }
+
+    fn tracked(seed: u128, start: i64, open: bool, task: TaskId) -> crate::tracking::TimeEntry {
+        crate::tracking::TimeEntry {
+            id: TimeEntryId::from(uuid::Uuid::from_u128(seed)),
+            task,
+            task_title: "task".to_owned(),
+            start: ts(start),
+            end: open.then_some(ts(start + 1_000)),
+            created_at: ts(start - 10),
+            updated_at: ts(start + 10),
+        }
+    }
+
+    fn base_entry(task: &str, start: i64) -> TimeEntryRecord {
+        TimeEntryRecord::Entry {
+            task: Some(task.to_owned()),
+            title: "remote title".to_owned(),
+            start: ts(start),
+            end: None,
+            created: ts(start - 10),
+            clock: ts(start + 10),
+        }
+    }
+
+    #[test]
+    fn time_entries_emission_is_card_bound_only_and_window_filtered() {
+        let now = ts(10_000_000);
+        let mut bound = bound_task(false);
+        bound.id = TaskId::from(uuid::Uuid::from_u128(101));
+        let deleted_but_bound = {
+            let mut task = task_fixture();
+            task.id = TaskId::from(uuid::Uuid::from_u128(102));
+            task.remote = Some(RemoteCardRef {
+                board: RemoteBoardId(2),
+                stack: RemoteStackId(7),
+                card: RemoteCardId(413),
+            });
+            task.deleted = true;
+            task
+        };
+        let mut unbound = task_fixture();
+        unbound.id = TaskId::from(uuid::Uuid::from_u128(103));
+        let foreign = {
+            let mut task = bound_task(false);
+            task.id = TaskId::from(uuid::Uuid::from_u128(104));
+            task.remote = Some(RemoteCardRef {
+                board: RemoteBoardId(9),
+                stack: RemoteStackId(7),
+                card: RemoteCardId(414),
+            });
+            task
+        };
+        let mut tasks = BTreeMap::new();
+        tasks.insert(bound.id, bound.clone());
+        tasks.insert(deleted_but_bound.id, deleted_but_bound.clone());
+        tasks.insert(unbound.id, unbound.clone());
+        tasks.insert(foreign.id, foreign.clone());
+
+        let fresh = tracked(1, 9_000_000, true, bound.id);
+        let boundary_start = now.timestamp()
+            - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS)
+                .unwrap()
+                .num_seconds();
+        let on_boundary = tracked(2, boundary_start, false, bound.id);
+        let aged_secs = now.timestamp()
+            - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS)
+                .unwrap()
+                .num_seconds()
+            - 100;
+        let aged = tracked(3, aged_secs, false, bound.id);
+        let deleted_task_entry = tracked(4, 9_000_000, false, deleted_but_bound.id);
+        let unbound_entry = tracked(5, 9_000_000, false, unbound.id);
+        let foreign_entry = tracked(6, 9_000_000, false, foreign.id);
+        let dangling = tracked(
+            7,
+            9_000_000,
+            false,
+            TaskId::from(uuid::Uuid::from_u128(999)),
+        );
+        let mut entries = BTreeMap::new();
+        for e in [
+            &fresh,
+            &on_boundary,
+            &aged,
+            &deleted_task_entry,
+            &unbound_entry,
+            &foreign_entry,
+            &dangling,
+        ] {
+            entries.insert(e.id, e.clone());
+        }
+        let emitted = time_entries_for(&entries, &tasks, RemoteBoardId(2), now);
+        assert_eq!(emitted.len(), 3, "fresh + boundary + deleted-task-bound");
+        assert!(emitted.contains_key(&fresh.id.as_uuid().to_string()));
+        assert!(
+            emitted.contains_key(&on_boundary.id.as_uuid().to_string()),
+            "the boundary instant itself is inside (inclusive)"
+        );
+        assert!(
+            emitted.contains_key(&deleted_task_entry.id.as_uuid().to_string()),
+            "soft-deleted-but-bound keeps flowing (post-deletion ops roam)"
+        );
+        assert!(!emitted.contains_key(&aged.id.as_uuid().to_string()));
+        assert!(!emitted.contains_key(&unbound_entry.id.as_uuid().to_string()));
+        assert!(!emitted.contains_key(&foreign_entry.id.as_uuid().to_string()));
+        assert!(!emitted.contains_key(&dangling.id.as_uuid().to_string()));
+        // The emitted shape: decimal card id, title snapshot, clock = updated_at.
+        assert_eq!(
+            emitted[&fresh.id.as_uuid().to_string()],
+            TimeEntryRecord::Entry {
+                task: Some("412".to_owned()),
+                title: "task".to_owned(),
+                start: fresh.start,
+                end: fresh.end,
+                created: fresh.created_at,
+                clock: fresh.updated_at,
+            }
+        );
+    }
+
+    #[test]
+    fn tombstone_derivation_tombstones_exactly_the_locally_absent_live_entries() {
+        let now = ts(10_000_000);
+        let clock = ts(10_000_001);
+        let aged_secs = now.timestamp()
+            - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS)
+                .unwrap()
+                .num_seconds()
+            - 100;
+        let resolvable: std::collections::BTreeSet<String> =
+            ["412"].into_iter().map(str::to_owned).collect();
+        let local_id = TimeEntryId::from(uuid::Uuid::from_u128(1));
+        let mut local = BTreeMap::new();
+        local.insert(
+            local_id,
+            tracked(1, 9_000_000, true, TaskId::from(uuid::Uuid::from_u128(1))),
+        );
+        let base = BTreeMap::from([
+            // Locally absent, resolvable, in-window: tombstoned.
+            (
+                "00000000-0000-0000-0000-000000000002".to_owned(),
+                base_entry("412", 9_000_000),
+            ),
+            // Locally present: never tombstoned.
+            (local_id.as_uuid().to_string(), base_entry("412", 9_000_001)),
+            // An existing tombstone passes through untouched.
+            (
+                "00000000-0000-0000-0000-000000000003".to_owned(),
+                TimeEntryRecord::Tombstone { clock: ts(500) },
+            ),
+            // Verbatim is never ordered against.
+            (
+                "00000000-0000-0000-0000-000000000004".to_owned(),
+                TimeEntryRecord::Verbatim(serde_json::json!(1)),
+            ),
+            // Out-of-window base row: stripped by GC, not tombstoned.
+            (
+                "00000000-0000-0000-0000-000000000005".to_owned(),
+                base_entry("412", aged_secs),
+            ),
+            // Unresolvable card: ages out instead.
+            (
+                "00000000-0000-0000-0000-000000000006".to_owned(),
+                base_entry("999", 9_000_002),
+            ),
+            // Unparseable key: not an entry identity.
+            ("not-a-uuid".to_owned(), base_entry("412", 9_000_003)),
+        ]);
+        let derived = derive_time_entry_tombstones(&base, &local, &resolvable, now, clock);
+        assert_eq!(derived.len(), 1);
+        assert_eq!(
+            derived["00000000-0000-0000-0000-000000000002"],
+            TimeEntryRecord::Tombstone { clock }
+        );
+    }
+
     // ---- proptest: verbatim preservation is the load-bearing property --
 
     proptest! {
@@ -2820,6 +3135,101 @@ mod tests {
             prop_assert_eq!(&converged, &ab);
             let converged = union_maps(&ba, &ab);
             prop_assert_eq!(&converged, &ab);
+        }
+
+        // P4 (DR-5/2, the D-T12 pin): for arbitrary base maps and
+        // resolvable sets, every derived tombstone names a key that
+        // decodes as a live base row, parses as a UUID, lies within the
+        // window, resolves, and is locally absent — a truncated view can
+        // never invent a deletion.
+        #[test]
+        fn tombstone_derivation_never_deletes_from_a_truncated_view(
+            entries in proptest::collection::vec(
+                (0_u128..8, proptest::option::of(0_u64..1_000), 0_i64..4_000_000_000, proptest::bool::ANY),
+                0..8,
+            ),
+            resolvable_cards in proptest::collection::vec("[0-9]{1,4}", 0..4),
+            now in 4_000_000_000_i64..4_100_000_000,
+            clock in 0_i64..4_000_000_000,
+        ) {
+            let resolvable: std::collections::BTreeSet<String> =
+                resolvable_cards.into_iter().collect();
+            let mut base = BTreeMap::new();
+            let mut local = BTreeMap::new();
+            for (seed, card, start, locally_present) in entries {
+                let key = uuid::Uuid::from_u128(seed).to_string();
+                let row = base_entry(&card.map(|c| c.to_string()).unwrap_or_default(), start);
+                base.insert(key, row);
+                if locally_present && let Some(task_seed) = card {
+                    let id = TimeEntryId::from(uuid::Uuid::from_u128(seed));
+                    let task = TaskId::from(uuid::Uuid::from_u128(u128::from(task_seed)));
+                    local.insert(id, tracked(seed, start, true, task));
+                }
+            }
+            let derived =
+                derive_time_entry_tombstones(&base, &local, &resolvable, ts(now), ts(clock));
+            for (key, row) in &derived {
+                prop_assert!(matches!(row, TimeEntryRecord::Tombstone { .. }), "only tombstones derive");
+                let Some(parsed) = uuid::Uuid::parse_str(key).ok() else {
+                    prop_assert!(false, "derived keys parse as UUIDs");
+                    return Err(TestCaseError::Fail("unparseable key".into()));
+                };
+                let TimeEntryRecord::Entry { start, task: Some(task), .. } = &base[key] else {
+                    prop_assert!(false, "derived keys name live base rows");
+                    return Err(TestCaseError::Fail("non-live base row".into()));
+                };
+                prop_assert!(*start >= ts(now) - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS).unwrap(), "within the window");
+                prop_assert!(resolvable.contains(task), "the card resolves");
+                prop_assert!(!local.contains_key(&TimeEntryId::from(parsed)), "locally absent");
+            }
+        }
+
+        // P5 (DR-5/2, the fail-closed emission pin): every emitted key
+        // parses as a UUID and every emitted `task` is a decimal string
+        // naming a `board`-bound card — no local or unbound identity
+        // reaches the time-entries wire.
+        #[test]
+        fn no_local_or_unbound_ids_reach_the_time_entries_wire(
+            entries in proptest::collection::vec(
+                (0_u128..16, 0_u128..16, proptest::option::of(0_u64..1_000), 0_i64..4_000_000_000),
+                0..8,
+            ),
+            target_board in 0_u64..1_000,
+            now in 4_000_000_000_i64..4_100_000_000,
+        ) {
+            let board = RemoteBoardId(target_board);
+            let mut tasks = BTreeMap::new();
+            let mut entries_map = BTreeMap::new();
+            for (entry_seed, task_seed, card, start) in &entries {
+                let task = TaskId::from(uuid::Uuid::from_u128(*task_seed));
+                tasks.entry(task).or_insert_with(|| {
+                    let mut t = task_fixture();
+                    t.id = task;
+                    t.remote = card.map(|c| RemoteCardRef {
+                        board,
+                        stack: RemoteStackId(7),
+                        card: RemoteCardId(c),
+                    });
+                    t
+                });
+                let entry = tracked(*entry_seed, *start, true, task);
+                entries_map.insert(entry.id, entry);
+            }
+            let emitted = time_entries_for(&entries_map, &tasks, board, ts(now));
+            for (key, row) in &emitted {
+                prop_assert!(uuid::Uuid::parse_str(key).is_ok(), "keys are UUIDs");
+                let TimeEntryRecord::Entry { task: Some(task), .. } = row else {
+                    return Err(TestCaseError::Fail("emitted rows carry a card".into()));
+                };
+                let Ok(card_num) = task.parse::<u64>() else {
+                    prop_assert!(false, "the card id is decimal");
+                    return Err(TestCaseError::Fail("non-decimal card".into()));
+                };
+                prop_assert!(
+                    tasks.values().any(|t| t.remote.is_some_and(|r| r.board == board && r.card.get() == card_num)),
+                    "the card names a board-bound task"
+                );
+            }
         }
     }
 }
