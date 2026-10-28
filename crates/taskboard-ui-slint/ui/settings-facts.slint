@@ -8,4 +8,12 @@ export global SettingsScrollFacts {
     in-out property <length> content-height;
     in-out property <length> viewport-height;
     in-out property <length> viewport-y;
+    // The scroll anchor (r3 D20c): the scale row's content-space
+    // offset (markup → all, mirrored per layout pass) plus the
+    // captured viewport offset and the one-shot flag (adapter →
+    // markup) — a scale commit restores the row's viewport position
+    // across the re-layout, both directions, once.
+    in-out property <length> scale-row-y;
+    in-out property <length> anchor-offset;
+    in-out property <bool> anchor-requested: false;
 }

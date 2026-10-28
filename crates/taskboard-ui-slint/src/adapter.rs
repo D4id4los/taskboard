@@ -1670,6 +1670,18 @@ fn to_stroke(text: &SharedString, modifiers: KeyboardModifiers) -> Option<crate:
     )
 }
 
+/// The scale commit's scroll-anchor capture (round-3 D20c): the
+/// viewport offset of the scale row, read PRE-layout (the caller
+/// writes `Theme.base_scale` right after, re-laying the content out
+/// on the next pass), stored with the one-shot flag. The markup's
+/// `changed content-height` hook consumes it by restoring the row's
+/// viewport position — measured, not predicted.
+fn request_scale_anchor(window: &AppWindow) {
+    let facts = window.global::<crate::SettingsScrollFacts>();
+    facts.set_anchor_offset(facts.get_scale_row_y() + facts.get_viewport_y());
+    facts.set_anchor_requested(true);
+}
+
 /// The settings surface's adapter half (round-1 chunk 3, D7/D8/D9):
 /// the form mirrors, the send seams, the reply drain, and the
 /// liveness overrides. Every reply path is non-blocking — the drain
@@ -1774,7 +1786,11 @@ impl Adapter {
                     Ok(Err(err)) => {
                         landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
                         // The live-apply revert (D9): the theme value
-                        // goes back to the previous setting.
+                        // goes back to the previous setting, and the
+                        // scroll re-anchors on the scale row (r3
+                        // D20c) — the content height returns and the
+                        // row stays where it was.
+                        request_scale_anchor(window);
                         #[allow(clippy::cast_possible_truncation)]
                         window
                             .global::<crate::Theme>()
@@ -2370,6 +2386,10 @@ impl Adapter {
         // The commit consumed the field's staged buffer (round-3
         // D20a): the canonical echo re-renders from the live value.
         self.settings.scale_draft = None;
+        // The scroll anchor captures PRE-layout (r3 D20c): the row
+        // offset and viewport offset are read before the write below
+        // re-lays the content out.
+        request_scale_anchor(window);
         #[allow(clippy::cast_possible_truncation)]
         window.global::<crate::Theme>().set_base_scale(scale as f32);
         let (reply, reply_rx) = oneshot::channel();
@@ -2441,10 +2461,33 @@ impl Adapter {
         if self.scale_drag.is_none() {
             return;
         }
+        let clamped = value.clamp(0.5, 3.0);
         #[allow(clippy::cast_possible_truncation)]
         window
             .global::<crate::Theme>()
-            .set_base_scale(value.clamp(0.5, 3.0) as f32);
+            .set_base_scale(clamped as f32);
+        // Writer point 2 (round-3 D20a): the echo follows the thumb
+        // ONLY when no typed draft exists — the draft is the field's
+        // staged buffer and must never be clobbered mid-typing. A
+        // direct global write: the preview deliberately pushes
+        // nothing (the one-request-per-gesture proof holds — no lane
+        // write exists in this arm).
+        if self.settings.scale_draft.is_none() {
+            window
+                .global::<crate::SettingsModel>()
+                .set_scale_echo(settings_form::format_scale(clamped).into());
+        }
+    }
+
+    /// The scale field's focus-loss seam (round-3 D20a writer 7): a
+    /// Return-less edit never applies — the staged draft dies and the
+    /// push re-renders the echo from the live scale (the chunk-1
+    /// focus-loss seam is the mechanism).
+    pub(crate) fn settings_scale_focus_lost(&mut self, window: &AppWindow) {
+        if self.settings.scale_draft.take().is_none() {
+            return;
+        }
+        self.push_settings(window);
     }
 
     /// The slider gesture's release (r2 D29): one gate, one commit.
@@ -2458,6 +2501,8 @@ impl Adapter {
             return;
         };
         if self.settings.pending.is_some() || !value.is_finite() || !(0.5..=3.0).contains(&value) {
+            // The out-of-gate revert re-anchors too (r3 D20c).
+            request_scale_anchor(window);
             #[allow(clippy::cast_possible_truncation)]
             window
                 .global::<crate::Theme>()
@@ -4460,6 +4505,14 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     {
         let adapter = Rc::clone(adapter);
         let weak = window.as_weak();
+        window.on_settings_view_mounted(move || {
+            let Some(window) = weak.upgrade() else { return };
+            adapter.borrow_mut().push_settings(&window);
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
         window.on_settings_scale_committed(move |text| {
             let Some(window) = weak.upgrade() else { return };
             adapter
@@ -4493,6 +4546,14 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             adapter
                 .borrow_mut()
                 .settings_scale_released(&window, f64::from(value));
+        });
+    }
+    {
+        let adapter = Rc::clone(adapter);
+        let weak = window.as_weak();
+        window.on_settings_scale_focus_lost(move || {
+            let Some(window) = weak.upgrade() else { return };
+            adapter.borrow_mut().settings_scale_focus_lost(&window);
         });
     }
 }

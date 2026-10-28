@@ -2740,6 +2740,224 @@ fn the_preset_selection_echoes_the_replied_preset_not_the_click() {
 }
 
 // ---------------------------------------------------------------------
+// r3 D20a: the scale echo (field <-> slider sync)
+// ---------------------------------------------------------------------
+
+/// The scale field echoes the live scale and the slider (r3 D20a,
+/// dispatch §5 e): mount shows "1.0"; slider previews move the echo
+/// and the theme with the lane silent; a typed draft survives a
+/// concurrent preview unclobbered; focus loss discards it and
+/// re-syncs; a commit re-renders the canonical echo and an Err reply
+/// follows the revert.
+#[test]
+fn the_scale_echo_syncs_both_ways() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+            let scale = || {
+                window
+                    .global::<taskboard_ui_slint::Theme>()
+                    .get_base_scale()
+            };
+
+            // Mount: the canonical echo of the live scale.
+            assert_eq!(model().get_scale_echo(), "1.0");
+
+            // Slider preview: echo + theme move, the lane silent.
+            window.invoke_settings_scale_pressed();
+            window.invoke_settings_scale_preview(1.7);
+            assert!((scale() - 1.7).abs() < 0.001, "the preview live-applies");
+            assert_eq!(
+                model().get_scale_echo(),
+                "1.7",
+                "the echo follows the thumb"
+            );
+            assert!(harness.drain_requests().is_empty(), "no request per tick");
+
+            // A typed draft survives the concurrent preview.
+            window.invoke_settings_field_edited(4, "2.2".into());
+            assert_eq!(model().get_scale_echo(), "2.2", "the draft is the echo");
+            window.invoke_settings_scale_preview(1.9);
+            assert!(
+                (scale() - 1.9).abs() < 0.001,
+                "the preview still live-applies"
+            );
+            assert_eq!(
+                model().get_scale_echo(),
+                "2.2",
+                "the preview never clobbers the typed draft"
+            );
+
+            // Focus loss discards the Return-less edit.
+            window.invoke_settings_scale_focus_lost();
+            assert_eq!(
+                model().get_scale_echo(),
+                "1.9",
+                "the echo re-syncs to the live scale"
+            );
+
+            // Commit "2": canonical echo, one request, Err reverts.
+            window.invoke_settings_field_edited(4, "2".into());
+            window.invoke_settings_scale_committed("2".into());
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "one SetScale");
+            assert_eq!(model().get_scale_echo(), "2.0", "the canonical echo");
+            let taskboard_ui_slint::requests::UiRequest::SetScale { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the scale request routed");
+            };
+            reply
+                .send(Err(
+                    taskboard_ui_slint::requests::SettingsError::PersistFailed,
+                ))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            assert!(
+                (scale() - 1.9).abs() < 0.001,
+                "the Err reply reverts the theme"
+            );
+            assert_eq!(
+                model().get_scale_echo(),
+                "1.9",
+                "the echo follows the reverted live scale"
+            );
+        },
+    );
+}
+
+// ---------------------------------------------------------------------
+// r3 D20c: the scale commit's scroll anchor
+// ---------------------------------------------------------------------
+
+/// The scale commit anchors the scroll on the scale row (r3 D20c,
+/// dispatch §5 g): scrolled to the bottom at scale 1.0 in a window
+/// that overflows (driven by REAL wheel events — the production
+/// scroll path), an UPWARD commit to 3.0 preserves the row's viewport
+/// position (within a row height), the downward commit back to 1.0
+/// leaves the viewport within bounds (no blank screen, finding 25),
+/// and manual scrolling afterwards is never fought (one commit, one
+/// consume).
+#[test]
+fn a_scale_commit_anchors_the_scroll_on_the_scale_row() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver: &mut SlintDriver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            driver.bind(&harness.handle);
+            driver.set_window_size(480, 460);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let facts = window.global::<taskboard_ui_slint::SettingsScrollFacts>();
+            driver.advance_time(0);
+            assert!(
+                facts.get_content_height() > facts.get_viewport_height(),
+                "the overflow exists at scale 1.0 in the small window: {} vs {}",
+                facts.get_content_height(),
+                facts.get_viewport_height()
+            );
+
+            // Scroll to the bottom with real wheel events (the
+            // production scroll path — the flickable processes them,
+            // severing any property bindings on content-y exactly as
+            // in production; the anchor must survive that).
+            for _ in 0..8 {
+                window
+                    .window()
+                    .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                        position: slint::LogicalPosition::new(240.0, 230.0),
+                        delta_x: 0.0,
+                        delta_y: -60.0,
+                    });
+                driver.advance_time(30);
+            }
+            let overflow = facts.get_content_height() - facts.get_viewport_height();
+            assert!(
+                (facts.get_viewport_y() + overflow).abs() < 20.0,
+                "the wheel reached the bottom"
+            );
+
+            // The row's viewport offset before the commit.
+            let offset_before = facts.get_scale_row_y() + facts.get_viewport_y();
+
+            // Commit UP via the field; the Ok reply settles.
+            window.invoke_settings_field_edited(4, "3.0".into());
+            window.invoke_settings_scale_committed("3.0".into());
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let taskboard_ui_slint::requests::UiRequest::SetScale { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the scale request routed");
+            };
+            reply.send(Ok(())).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            driver.advance_time(0);
+
+            // Up-leg: the row's viewport offset is preserved within a
+            // row height.
+            let offset_after = facts.get_scale_row_y() + facts.get_viewport_y();
+            assert!(
+                (offset_after - offset_before).abs() <= 60.0,
+                "the scale row stayed put across the up-commit: {offset_before} -> {offset_after}"
+            );
+            let vy = facts.get_viewport_y();
+            let min_vy = (facts.get_viewport_height() - facts.get_content_height()).min(0.0);
+            assert!(
+                vy >= min_vy - 0.01 && vy <= 0.01,
+                "in bounds after the up-commit"
+            );
+
+            // Commit DOWN again; the viewport must land within bounds
+            // (no blank screen — the finding-25 direction).
+            window.invoke_settings_field_edited(4, "1.0".into());
+            window.invoke_settings_scale_committed("1.0".into());
+            let mut requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let taskboard_ui_slint::requests::UiRequest::SetScale { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the second scale request routed");
+            };
+            reply.send(Ok(())).expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            driver.advance_time(0);
+            let vy = facts.get_viewport_y();
+            let min_vy = (facts.get_viewport_height() - facts.get_content_height()).min(0.0);
+            assert!(
+                vy >= min_vy - 0.01 && vy <= 0.01,
+                "the viewport is within bounds after the down-commit (no blank): {vy} in [{min_vy}, 0]"
+            );
+
+            // Manual scrolling afterwards is never fought: a wheel
+            // event moves the viewport (the anchor consumed once).
+            window
+                .window()
+                .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                    position: slint::LogicalPosition::new(240.0, 230.0),
+                    delta_x: 0.0,
+                    delta_y: -60.0,
+                });
+            driver.advance_time(30);
+            assert!(
+                facts.get_viewport_y() < vy,
+                "the manual wheel scroll stuck (the anchor consumed once)"
+            );
+        },
+    );
+}
+
+// ---------------------------------------------------------------------
 // r3 D18: the status line's pinned placement
 // ---------------------------------------------------------------------
 
@@ -2775,12 +2993,6 @@ fn the_status_line_pins_above_the_scroll_viewport() {
                 model().get_last_outcome(),
                 taskboard_ui_slint::SettingsOutcome::None
             );
-            let flick = driver
-                .find_all_by_id("SettingsView::flick")
-                .into_iter()
-                .next()
-                .expect("the scroll host");
-            let flick_y_hidden = flick.absolute_position().y;
             let back_y = |driver: &SlintDriver| {
                 driver
                     .find_by_label("Back")
@@ -2800,7 +3012,16 @@ fn the_status_line_pins_above_the_scroll_viewport() {
             );
 
             // The status row renders OUTSIDE the Flickable's band:
-            // entirely above the viewport's top edge.
+            // entirely above the viewport's top edge (measured after
+            // the outcome — a visible row legitimately shrinks the
+            // viewport, the fix).
+            let flick_y = driver
+                .find_all_by_id("SettingsView::flick")
+                .into_iter()
+                .next()
+                .expect("the scroll host")
+                .absolute_position()
+                .y;
             let status = driver
                 .find_all_by_id("SettingsView::status-line")
                 .into_iter()
@@ -2809,11 +3030,11 @@ fn the_status_line_pins_above_the_scroll_viewport() {
             let pos = status.absolute_position();
             let size = status.size();
             assert!(
-                pos.y + size.height <= flick_y_hidden,
+                pos.y + size.height <= flick_y,
                 "the status row (y {}, h {}) sits above the viewport top {}",
                 pos.y,
                 size.height,
-                flick_y_hidden
+                flick_y
             );
 
             // The pinned header never moved.
@@ -3425,7 +3646,10 @@ fn settings_scroll_reaches_the_scale_controls_at_scale_3() {
             assert_eq!(harness.handle.window().get_current_view(), View::Settings);
 
             let window = harness.handle.window();
-            let facts = window.global::<taskboard_ui_slint::SettingsScrollFacts>();
+            let facts = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::SettingsScrollFacts>();
             assert!(
                 facts.get_content_height() > facts.get_viewport_height(),
                 "the overflow exists at scale 3.0 in the min-floor window"
