@@ -4563,6 +4563,98 @@ fn a_palette_activation_shows_the_task() {
     );
 }
 
+/// Round-3 D22 — the toolbar view switcher journey: the clicks drive
+/// the same registry actions the keyboard uses (click ≡ key), the
+/// pushed index tracks the mounted view in both directions
+/// (reply-sourced), the settings round-trip shows the return view's
+/// segment, the compact breakpoint keeps the switcher (it drops the
+/// inbox chip, never the switcher), and a live board-create flow is
+/// settled by a switcher click (the leaving rule).
+#[test]
+fn the_switcher_drives_and_tracks_the_view() {
+    let (_fixture, state) = fixture::two_board_state();
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            macro_rules! window {
+                () => {
+                    harness.handle.window()
+                };
+            }
+
+            #[allow(clippy::items_after_statements)] // the run closure's helper
+            fn segment(driver: &SlintDriver, label: &str) -> support::driver::Element {
+                driver
+                    .find_all_by_label(label)
+                    .into_iter()
+                    .find(support::driver::Element::is_radio_button)
+                    .unwrap_or_else(|| panic!("the {label} segment is present"))
+            }
+
+            // The pushed index tracks the view from the mount on.
+            assert_eq!(window!().get_switcher_index(), 0, "the board branch");
+
+            // Click → action: Today. The segment's radio-button role
+            // is the address (the visible text labels echo the same
+            // string); AT activation is the click path here.
+            segment(&harness.driver, "Today").invoke_default_action();
+            assert_eq!(window!().get_current_view(), View::Today);
+            harness.driver.advance_time(0);
+            assert_eq!(window!().get_switcher_index(), 1, "today lit");
+
+            // Keyboard equivalence: Alt+1 lands where the Board
+            // segment click does, and the echo is reply-sourced.
+            harness.stroke(parse("Alt+1").expect("alt 1"));
+            assert_eq!(window!().get_current_view(), View::Board);
+            harness.driver.advance_time(0);
+            assert_eq!(window!().get_switcher_index(), 0);
+
+            // Settings round-trip: the segment names the return view.
+            harness.press(ActionId::AppSettings);
+            assert_eq!(window!().get_current_view(), View::Settings);
+            harness.driver.advance_time(0);
+            assert_eq!(window!().get_switcher_index(), 0, "return reads board");
+            segment(&harness.driver, "Today").invoke_default_action();
+            assert_eq!(window!().get_current_view(), View::Today);
+            harness.driver.advance_time(0);
+            assert_eq!(window!().get_switcher_index(), 1);
+
+            // Compact: the switcher survives the breakpoint that
+            // drops the inbox chip.
+            harness.driver.set_window_size(600, 400);
+            assert!(window!().get_compact_active(), "600 px is compact");
+            assert!(
+                harness.driver.find_by_label("Today").is_some(),
+                "the switcher is mounted in compact"
+            );
+            segment(&harness.driver, "Board").invoke_default_action();
+            assert_eq!(window!().get_current_view(), View::Board);
+            harness.driver.advance_time(0);
+            assert_eq!(window!().get_switcher_index(), 0);
+            harness.driver.set_window_size(1280, 800);
+
+            // A live board-create flow settles under the switcher
+            // click (the leaving rule): the field closes, nothing
+            // dispatches, the switch happens.
+            harness.press(ActionId::BoardCreate);
+            harness.driver.advance_time(0);
+            assert!(window!().get_board_create_open(), "the flow armed");
+            segment(&harness.driver, "Today").invoke_default_action();
+            harness.driver.advance_time(0);
+            assert!(
+                !window!().get_board_create_open(),
+                "the leaving settle ended the flow"
+            );
+            assert_eq!(window!().get_current_view(), View::Today);
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
 // ---- round 2 (D16–D21): the action round-up journeys --------------------
 
 /// Presses one action through `preset`'s own binding table (the

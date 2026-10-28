@@ -605,6 +605,7 @@ pub fn push(
     mutations += push_chrome(
         window,
         vs.view(),
+        vs,
         state,
         kiosk,
         board,
@@ -684,6 +685,7 @@ pub fn push(
 fn push_chrome(
     window: &AppWindow,
     view: crate::view_state::ViewId,
+    vs: &ViewState,
     state: &AppState,
     kiosk: bool,
     board: Option<&taskboard_domain::Board>,
@@ -691,6 +693,9 @@ fn push_chrome(
     chain: &[ContextId],
     models: &mut PushModels,
 ) -> usize {
+    // The view switcher's pushed index (round-3 D22): reply-sourced —
+    // every refresh rebuilds it from the view-state projection.
+    window.set_switcher_index(i32::try_from(vs.switcher_selection()).unwrap_or(i32::MAX));
     // The inbox chip's count (chunk 10 D9): desktop only — kiosk reads
     // 0 and the compact breakpoint hides the chip.
     window.set_toolbar_inbox_count(if kiosk {

@@ -759,6 +759,7 @@ impl Adapter {
             UiEffect::NextView
                 | UiEffect::PrevView
                 | UiEffect::FocusBoard
+                | UiEffect::FocusToday
                 | UiEffect::BoardNext
                 | UiEffect::BoardPrevious
                 | UiEffect::BoardSelect(_)
@@ -3119,6 +3120,26 @@ fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     window.on_toolbar_inbox_clicked(move || {
         let Some(window) = weak.upgrade() else { return };
         inbox.borrow_mut().route(&window, ActionId::ViewInbox);
+    });
+    // The view switcher's clicks (round-3 D22): each routes the same
+    // registry action the keyboard uses — the leaving-rule settle
+    // applies unchanged (a switcher click under a live flow settles
+    // it first, the `FocusBoard` precedent).
+    let board = Rc::clone(adapter);
+    let board_weak = window.as_weak();
+    window.on_toolbar_switcher_board_clicked(move || {
+        let Some(window) = board_weak.upgrade() else {
+            return;
+        };
+        board.borrow_mut().route(&window, ActionId::NavFocusBoard);
+    });
+    let today = Rc::clone(adapter);
+    let today_weak = window.as_weak();
+    window.on_toolbar_switcher_today_clicked(move || {
+        let Some(window) = today_weak.upgrade() else {
+            return;
+        };
+        today.borrow_mut().route(&window, ActionId::ViewToday);
     });
 }
 

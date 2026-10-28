@@ -108,6 +108,9 @@ export component AppWindow inherits Window {
     in-out property <TodayModel> today-model;
     in-out property <string> toolbar-title;
     in-out property <int> toolbar-inbox-count: 0;
+    // The view switcher's pushed index (round-3 D22; contract
+    // [Board, Today] — see toolbar.slint).
+    in-out property <int> switcher-index: 0;
     in-out property <[string]> toolbar-menu-hint;
     // The nav.focus-board binding (round-1 D12; a keymap projection).
     in-out property <[string]> nav-back-hint;
@@ -229,8 +232,11 @@ export component AppWindow inherits Window {
                 menu-hint: root.toolbar-menu-hint;
                 inbox-count: root.toolbar-inbox-count;
                 compact: Responsive.current-breakpoint == Breakpoint.compact;
+                switcher-index: root.switcher-index;
                 menu-clicked => root.toolbar-menu-clicked();
                 inbox-clicked => root.toolbar-inbox-clicked();
+                switcher-board-clicked => root.toolbar-switcher-board-clicked();
+                switcher-today-clicked => root.toolbar-switcher-today-clicked();
             }
 
             // The view-stack area (D20 [DEV]): conditional mounting of
@@ -635,6 +641,10 @@ export component AppWindow inherits Window {
     // against the id tables it built when pushing the models (D2).
     pure callback toolbar-menu-clicked();
     pure callback toolbar-inbox-clicked();
+    // The view switcher's clicks (round-3 D22): each routes the same
+    // registry action the keyboard uses (§7.1: click ≡ key).
+    pure callback toolbar-switcher-board-clicked();
+    pure callback toolbar-switcher-today-clicked();
     pure callback board-bar-segment-activated(int);
     pure callback board-task-activated(int, int);
     pure callback board-task-clicked(int, int);

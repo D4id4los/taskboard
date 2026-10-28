@@ -6,6 +6,7 @@
 
 import { Theme, Typography, RoleText, Tone } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 import { Badge } from "../widgets/badge.slint";
 
@@ -21,8 +22,16 @@ export component Toolbar inherits Rectangle {
     // The breakpoint read (the chip's desktop-only visibility; the
     // compact path drops its chrome).
     in property <bool> compact;
+    // The view switcher's pushed index (round-3 D22): the
+    // index-order contract is `[Board, Today]` — the same
+    // caller-owned-echo discipline as the settings picker
+    // (`[Standard, Emacs, Vi]`). Visible at every breakpoint and on
+    // kiosk: it drives the two actions the keyboard already has.
+    in property <int> switcher-index;
     callback menu-clicked();
     callback inbox-clicked();
+    callback switcher-board-clicked();
+    callback switcher-today-clicked();
 
     background: Theme.surface;
     height: Theme.space-8;
@@ -48,6 +57,22 @@ export component Toolbar inherits Rectangle {
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
+        }
+
+        // The view switcher (round-3 D22): segments size to their
+        // labels; the title keeps the stretch and elides.
+        view-switcher := SegmentedControl {
+            options: ["Board", "Today"];
+            selected-index: root.switcher-index;
+            group-label: "View";
+            horizontal-stretch: 0;
+            picked(index) => {
+                if (index == 0) {
+                    root.switcher-board-clicked();
+                } else {
+                    root.switcher-today-clicked();
+                }
+            }
         }
 
         if (root.compact == false): inbox-chip := TouchArea {
