@@ -338,6 +338,15 @@ Verdict: ships (§0). Widget and seams:
   report (the design's commit-on-Return would then be impossible
   without a custom key filter — probe decides, house probe rules
   apply).
+  **Stage-3 deviation (recorded, supersedes the growth clause
+  above)**: the grown height binding (`min-height` from
+  `input.preferred-height`) is a width-dependent layout cycle on the
+  pinned Slint — a window-level binding-loop deprecation warning
+  ("may cause panic at runtime"; it regressed chunk 2's
+  warning-free-build gate). The multiline editor is a fixed
+  three-line window instead: `clip: true`, text top-aligned, the
+  typed content scrolls/clips inside; zero binding-loop warnings is
+  the gate.
 - Markup rendering stays deferred (POST-1.0/R10 note unchanged).
 
 ## 10. Testing catalogue (TDD-first; one behaviour, one test, lowest layer)
