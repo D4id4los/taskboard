@@ -43,7 +43,9 @@ use crate::ids::{
 use crate::messages::{LabelChanges, StateCommand, TaskChanges};
 use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
-use crate::recur::{RecurBound, RecurRule, next_after, roll_target};
+use crate::recur::{
+    RecurBound, RecurRule, next_after, roll_reference_date, roll_target, series_reference_date,
+};
 use crate::reminders::{
     Insistence, ReminderDefaults, ReminderDismissal, ReminderRef, ReminderRule, ReminderSnooze,
     active_notifications,
@@ -454,29 +456,6 @@ fn flush_ops(
         .iter()
         .map(|task| enqueue(LocalOp::UpdateAppData(*task), ids, now))
         .collect()
-}
-
-/// The head's reference date — the plain calendar day the series
-/// "is on" (D-E5's chain): the calendar date of `scheduled`, else of
-/// `duedate`, else the completion day (the window-date of `now`). Plain
-/// dates make the spawn drift-free: a head scheduled 03:00 references
-/// the date its instant literally sits on, and the successor's own
-/// reference reproduces it exactly.
-fn series_reference_date(head: &Task, day: DayCalendar, now: DateTime<Utc>) -> NaiveDate {
-    if let Some(scheduled) = head.scheduled {
-        return day.calendar_date(scheduled);
-    }
-    head.duedate
-        .map_or_else(|| day.today(now), |d| day.calendar_date(d))
-}
-
-/// The roll's stale-reference: the same chain minus the dateless
-/// fallback — a dateless head is never stale (nothing anchors it to a
-/// day), so `None` means "skip".
-fn roll_reference_date(task: &Task, day: DayCalendar) -> Option<NaiveDate> {
-    task.scheduled
-        .map(|s| day.calendar_date(s))
-        .or_else(|| task.duedate.map(|d| day.calendar_date(d)))
 }
 
 /// How many completions attribute to `series`: every row carrying the

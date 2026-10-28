@@ -21,9 +21,10 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{Datelike as _, NaiveDate, Weekday};
+use chrono::{DateTime, Datelike as _, NaiveDate, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 
+use crate::entities::Task;
 use crate::ids::{HabitId, SeriesId};
 
 /// Why a [`RecurRule`] component's mint rejected a value. One variant
@@ -387,6 +388,39 @@ pub struct RecurRule {
     /// (or `None`). Entity lands in a later chunk; the seam is typed
     /// now so misfiling stays recoverable without data fabrication.
     pub continued_from: Option<HabitId>,
+}
+
+/// The head's reference date — the plain calendar day the series
+/// "is on" (D-E5's chain): the calendar date of `scheduled`, else of
+/// `duedate`, else the completion day (the window-date of `now`). Plain
+/// dates make the spawn drift-free: a head scheduled 03:00 references
+/// the date its instant literally sits on, and the successor's own
+/// reference reproduces it exactly. Series vocabulary shared by the
+/// engine (spawn/roll), the CLI verb (the `tasks repeat` anchor) and
+/// the next-occurrence law ([`next_occurrence`]) — no raw-UTC date is
+/// ever treated as local: every leg goes through
+/// [`DayCalendar::calendar_date`]/[`DayCalendar::today`].
+#[must_use]
+pub fn series_reference_date(
+    head: &Task,
+    day: crate::days::DayCalendar,
+    now: DateTime<Utc>,
+) -> NaiveDate {
+    if let Some(scheduled) = head.scheduled {
+        return day.calendar_date(scheduled);
+    }
+    head.duedate
+        .map_or_else(|| day.today(now), |d| day.calendar_date(d))
+}
+
+/// The roll's stale-reference: the same chain minus the dateless
+/// fallback — a dateless head is never stale (nothing anchors it to a
+/// day), so `None` means "skip".
+#[must_use]
+pub fn roll_reference_date(task: &Task, day: crate::days::DayCalendar) -> Option<NaiveDate> {
+    task.scheduled
+        .map(|s| day.calendar_date(s))
+        .or_else(|| task.duedate.map(|d| day.calendar_date(d)))
 }
 
 /// The Monday-start week index of a date: CE day 1 is a Monday
