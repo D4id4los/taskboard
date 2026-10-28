@@ -804,3 +804,24 @@ ADR +~45. Ten commits, each standalone (§5).
   bullet and the amendment trail this chunk appends to.
 - AGENTS §2 (A1 policy), §5 (test directives), §8 (branch/PR), §10
   (gates).
+
+---
+
+## 10. Stage-2 sweep verification (2026-10-28)
+
+The §4 checklist's mechanical sites landed compile-driven across the
+implementation commits — retiring `Task.labels` at C1 turned every
+surviving reader into a compile error, so the sweep's fixes ride the
+commits that invalidated them (recorded deviation from "the sweep is its
+own commit"; this section is the verification commit). Post-sweep state:
+
+- `grep -rn 'clocks\.labels' crates/ --include='*.rs'` → **zero hits**.
+- Every remaining `.labels` site is `AppState.labels`, a receipt/counter
+  field, `RemoteTask.labels`/`baseline.labels` (remote vocabulary), or a
+  DTO — the §4 allowed set.
+- CLI readers converted: `commands/labels.rs:76` and
+  `commands/output.rs:810` read `live_labels()`; `web/render.rs` builds
+  from it; no render change.
+- The lockstep extras set grew to `{reminder_rules, labels}` and the
+  state crate's partition pin asserts `labels` has left the clock
+  manifest while still never riding `UpdateTask`.
