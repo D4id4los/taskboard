@@ -5129,6 +5129,66 @@ fn the_picker_overlay_dismisses_without_disturbing_the_editor() {
     );
 }
 
+/// Round-3 D15/#228 (acceptance i) — the description edits in place:
+/// the read-only body's click arms the multiline field (the seeded
+/// buffer mirrors the current text), Return commits
+/// `description: Some(_)` (the multiline Enter probe: no newline
+/// inserts), Escape discards without dispatching.
+#[test]
+fn the_description_edits_in_place() {
+    let (fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit description");
+            harness.driver.advance_time(0);
+            assert!(
+                keyboard(&harness).get_vi_insert(),
+                "the editor opened in insert mode"
+            );
+
+            // Typed text + Return commits `Some(_)` through the
+            // funnel — and proves the multiline field's Return fires
+            // `accepted` without inserting a newline (the recorded
+            // probe).
+            // The fixture's description is empty, so the seeded
+            // buffer starts empty: typing is the whole entry.
+            harness.type_text("steep, then serve");
+            harness.stroke(parse("Return").expect("Return"));
+            let drained = harness.engine.drain();
+            match drained.as_slice() {
+                [StateCommand::UpdateTask { id, changes, .. }] => {
+                    assert_eq!(id, &fixture.task1);
+                    let description = changes
+                        .description
+                        .as_deref()
+                        .expect("the description arm is Some(_)");
+                    assert!(!description.contains('\n'), "no newline inserts");
+                }
+                other => panic!("the description commit reached the boundary, got {other:?}"),
+            }
+
+            // Escape discards without dispatching.
+            harness.driver.click_by_label("Edit description");
+            harness.driver.advance_time(0);
+            harness.type_text("half-typed");
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.assert_commands(&[]);
+            assert!(
+                !keyboard(&harness).get_vi_insert(),
+                "back to normal after the discard"
+            );
+        },
+    );
+}
+
 /// The appended legs' view read (the earlier journeys' local helper
 /// duplicated once for the chunk-10 block).
 fn current_view(harness: &Harness) -> View {

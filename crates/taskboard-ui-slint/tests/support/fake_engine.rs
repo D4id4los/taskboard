@@ -124,6 +124,12 @@ impl FakeEngine {
                         if let Some(duedate) = changes.duedate {
                             task.duedate = duedate;
                         }
+                        if let Some(description) = changes.description {
+                            task.description = description;
+                        }
+                        if let Some(scheduled) = changes.scheduled {
+                            task.scheduled = scheduled;
+                        }
                         if let Some(archived) = changes.archived {
                             task.archived = archived;
                         }
