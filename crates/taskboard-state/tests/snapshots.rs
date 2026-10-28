@@ -1713,3 +1713,401 @@ async fn s38c_boot_catchup_over_a_multi_day_gap() {
     .await;
     s.snap("s38c");
 }
+// ---- S41–S44: R3's resurrect carve-out (#130) ----------------------
+// (numbered s41–s44 at rebase: DR-6/2's series scenes took the s37/s38
+// snapshot-name slots first — one shared insta corpus, no reuse.)
+// Fixtures: a board bound to remote 77 with one bound stack (remote 1)
+// and one bound card (remote 10). Deterministic ids throughout; the
+// clock advances one minute per message like every S-scene.
+
+use taskboard_domain::{
+    BoardClocks, RemoteBoardId, RemoteCardId, RemoteCardRef, RemoteEcho, RemoteStackId,
+    RemoteStackRef, StackId, TaskClocks,
+};
+
+const SEED_BOARD_ID: u128 = 800;
+const SEED_STACK_ID: u128 = 900;
+const SEED_TASK_ID: u128 = 1000;
+const SEED_OP_ID: u128 = 5000;
+
+fn card_ref(card: u64) -> RemoteCardRef {
+    RemoteCardRef {
+        board: RemoteBoardId(77),
+        stack: RemoteStackId(1),
+        card: RemoteCardId(card),
+    }
+}
+
+fn stack_ref() -> RemoteStackRef {
+    RemoteStackRef {
+        board: RemoteBoardId(77),
+        stack: RemoteStackId(1),
+    }
+}
+
+/// The bound content seed. `unsynced` stamps the task's title clock one
+/// minute past `remote_seen` and queues a matching `UpdateTask` — the
+/// edit-after-last-sync shape the carve-out exists for.
+fn bound_card_seed(unsynced: bool) -> taskboard_domain::PersistedState {
+    let board_id = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(SEED_BOARD_ID));
+    let stack_id = StackId::from(uuid::Uuid::from_u128(SEED_STACK_ID));
+    let task_id = taskboard_domain::TaskId::from(uuid::Uuid::from_u128(SEED_TASK_ID));
+    let mut state = taskboard_domain::PersistedState::default();
+    state.boards.insert(
+        board_id,
+        taskboard_domain::Board {
+            id: board_id,
+            remote: taskboard_domain::test_support::test_binding(RemoteBoardId(77)),
+            title: "kiosk".into(),
+            color: Color::new("0000ff"),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: ts(T0),
+                color: ts(T0),
+                archived: ts(T0),
+                deleted: ts(T0),
+            },
+            remote_seen: Some(ts(T0)),
+        },
+    );
+    state.stacks.insert(
+        stack_id,
+        taskboard_domain::Stack {
+            id: stack_id,
+            board: board_id,
+            remote: Some(stack_ref()),
+            title: "column".into(),
+            order: 1,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: ts(T0),
+                order: ts(T0),
+                deleted: ts(T0),
+            },
+            remote_seen: Some(ts(T0)),
+        },
+    );
+    let mut task = taskboard_domain::Task {
+        id: task_id,
+        remote: Some(card_ref(10)),
+        title: "held work".into(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack: stack_id,
+        order: 1,
+        label_memberships: std::collections::BTreeMap::new(),
+        effort: None,
+        importance: None,
+        urgency: None,
+        recur: None,
+        archived: false,
+        deleted: false,
+        clocks: TaskClocks {
+            title: ts(T0),
+            description: ts(T0),
+            duedate: ts(T0),
+            scheduled: ts(T0),
+            done: ts(T0),
+            position: ts(T0),
+            effort: ts(T0),
+            importance: ts(T0),
+            urgency: ts(T0),
+            recur: ts(T0),
+            archived: ts(T0),
+            deleted: ts(T0),
+        },
+        remote_seen: Some(ts(T0)),
+        remote_baseline: None,
+    };
+    if unsynced {
+        task.clocks.title = ts(T0 + 60);
+        state.outbox.push(taskboard_domain::PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(SEED_OP_ID)),
+            op: taskboard_domain::LocalOp::UpdateTask(task_id),
+            queued_at: ts(T0 + 60),
+        });
+    }
+    state.tasks.insert(task_id, task);
+    state
+}
+
+/// A `Completed` report over the bound board with the given stacks and
+/// cards (all stamped `last_modified` at `at`).
+fn content_report(
+    stacks: Vec<taskboard_domain::RemoteStack>,
+    tasks: Vec<taskboard_domain::RemoteTask>,
+    at: i64,
+) -> SyncReport {
+    SyncReport::Completed {
+        app_data: taskboard_domain::AppDataEvidence::Absent,
+        duration: std::time::Duration::from_millis(250),
+        connector: taskboard_domain::test_support::test_connector(),
+        snapshot: Box::new(RemoteBoardSnapshot {
+            board: RemoteBoard {
+                id: RemoteBoardId(77),
+                title: "kiosk".into(),
+                color: "0000ff".into(),
+                archived: false,
+                deleted_at: None,
+                last_modified: ts(at),
+            },
+            stacks,
+            tasks,
+            labels: vec![],
+        }),
+        validators: test_validators(),
+        pushes: vec![],
+        read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+        features: taskboard_domain::DeckFeatures::CONSERVATIVE,
+    }
+}
+
+fn live_stack(at: i64) -> taskboard_domain::RemoteStack {
+    taskboard_domain::RemoteStack {
+        id: stack_ref(),
+        title: "column".into(),
+        order: 1,
+        archived: false,
+        deleted_at: None,
+        last_modified: ts(at),
+    }
+}
+
+fn remote_card(card: u64, title: &str, at: i64) -> taskboard_domain::RemoteTask {
+    taskboard_domain::RemoteTask {
+        id: card_ref(card),
+        title: title.into(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack: RemoteStackId(1),
+        order: 1,
+        labels: std::collections::BTreeSet::default(),
+        archived: false,
+        last_modified: ts(at),
+    }
+}
+
+/// Polls the published task until the predicate holds (the S-scene
+/// settle discipline: a deadline, never a fixed wait).
+async fn wait_for_task(s: &Scenario, done: impl Fn(&taskboard_domain::Task) -> bool) {
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            let hit = s
+                .handle
+                .shared_state()
+                .load_full()
+                .tasks
+                .values()
+                .next()
+                .is_some_and(&done);
+            if hit {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("report settles");
+}
+
+fn seed_task_id() -> taskboard_domain::TaskId {
+    taskboard_domain::TaskId::from(uuid::Uuid::from_u128(SEED_TASK_ID))
+}
+
+/// S41 — the byte-identical pin at the disk-contract tier: a synced
+/// card's remote absence tombstones, clears the binding, and emits no
+/// event. The 99% path.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s41_synced_card_absence_disappears() {
+    let s = Scenario::start_with(bound_card_seed(false)).await;
+    let mut events = s.system_tx.subscribe();
+
+    s.clock.advance(60);
+    s.report_tx
+        .send(content_report(vec![live_stack(T0 + 60)], vec![], T0 + 60))
+        .await
+        .expect("report channel open");
+    wait_for_task(&s, |t| t.deleted && t.remote.is_none()).await;
+
+    assert!(
+        matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "no broadcast on the synced path"
+    );
+    s.snap("s41");
+}
+
+/// S42 — the carve-out's disk contract: the unsynced edit survives as a
+/// live unbound task, the stale update dead-letters, one create queues,
+/// and the broadcast carries `TaskResurrected` exactly once.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s42_unsynced_edit_resurrects_as_new_card() {
+    let s = Scenario::start_with(bound_card_seed(true)).await;
+    let mut events = s.system_tx.subscribe();
+
+    s.clock.advance(60);
+    s.report_tx
+        .send(content_report(vec![live_stack(T0 + 60)], vec![], T0 + 60))
+        .await
+        .expect("report channel open");
+    wait_for_task(&s, |t| !t.deleted && t.remote.is_none()).await;
+
+    let mut resurrected = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let SystemEvent::TaskResurrected(id) = event {
+            resurrected.push(id);
+        }
+    }
+    assert_eq!(resurrected, vec![seed_task_id()]);
+
+    let persisted = s.repo.snapshot();
+    assert!(
+        !persisted
+            .outbox
+            .iter()
+            .any(|p| p.op_id == taskboard_domain::OpId(uuid::Uuid::from_u128(SEED_OP_ID))),
+        "the stale update is dead-lettered"
+    );
+    assert_eq!(
+        persisted
+            .outbox
+            .iter()
+            .filter(|p| matches!(p.op, taskboard_domain::LocalOp::CreateTask(_)))
+            .count(),
+        1,
+        "exactly one create queued"
+    );
+    s.snap("s42");
+}
+
+/// S43 — one new card per contention episode: the create's echo rebinds,
+/// and a second absence of the *fresh* card is an ordinary synced delete.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s43_second_absence_after_rebind_tombstones() {
+    let s = Scenario::start_with(bound_card_seed(true)).await;
+    let mut events = s.system_tx.subscribe();
+
+    // The resurrect cycle.
+    s.clock.advance(60);
+    s.report_tx
+        .send(content_report(vec![live_stack(T0 + 60)], vec![], T0 + 60))
+        .await
+        .expect("report channel open");
+    wait_for_task(&s, |t| !t.deleted && t.remote.is_none()).await;
+
+    // The create's push lands; the echo rebinds the fresh card (11).
+    let create: taskboard_domain::PendingOp = s
+        .repo
+        .snapshot()
+        .outbox
+        .into_iter()
+        .find(|p| matches!(p.op, taskboard_domain::LocalOp::CreateTask(_)))
+        .expect("the resurrect queued one create");
+    let mut echo = remote_card(11, "held work", T0 + 120);
+    echo.title = s
+        .handle
+        .shared_state()
+        .load_full()
+        .tasks
+        .values()
+        .next()
+        .expect("task survives")
+        .title
+        .clone();
+    s.clock.advance(60);
+    s.report_tx
+        .send(SyncReport::Completed {
+            app_data: taskboard_domain::AppDataEvidence::Absent,
+            duration: std::time::Duration::from_millis(250),
+            connector: taskboard_domain::test_support::test_connector(),
+            snapshot: Box::new(RemoteBoardSnapshot {
+                board: RemoteBoard {
+                    id: RemoteBoardId(77),
+                    title: "kiosk".into(),
+                    color: "0000ff".into(),
+                    archived: false,
+                    deleted_at: None,
+                    last_modified: ts(T0 + 120),
+                },
+                stacks: vec![live_stack(T0 + 120)],
+                tasks: vec![echo],
+                labels: vec![],
+            }),
+            validators: test_validators(),
+            pushes: vec![PushOutcome {
+                op: create.op_id,
+                result: PushResult::Applied {
+                    echo: Some(RemoteEcho::Task(remote_card(11, "held work", T0 + 120))),
+                },
+            }],
+            read_at: chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            features: taskboard_domain::DeckFeatures::CONSERVATIVE,
+        })
+        .await
+        .expect("report channel open");
+    wait_for_task(&s, |t| t.remote == Some(card_ref(11))).await;
+
+    // Second delete of the fresh card: synced work ⇒ tombstone, no event.
+    s.clock.advance(60);
+    s.report_tx
+        .send(content_report(vec![live_stack(T0 + 180)], vec![], T0 + 180))
+        .await
+        .expect("report channel open");
+    wait_for_task(&s, |t| t.deleted).await;
+
+    let mut second_episode = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let SystemEvent::TaskResurrected(id) = event {
+            second_episode.push(id);
+        }
+    }
+    assert_eq!(
+        second_episode,
+        vec![seed_task_id()],
+        "exactly the first episode resurrected"
+    );
+    s.snap("s43");
+}
+
+/// S44 — cascade territory: a card with unsynced edits listed under a
+/// remotely-deleted stack keeps tombstone-wins (D-3d), no event.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s44_cascade_absence_stays_tombstoned() {
+    let s = Scenario::start_with(bound_card_seed(true)).await;
+    let mut events = s.system_tx.subscribe();
+
+    let mut dead_stack = live_stack(T0 + 60);
+    dead_stack.deleted_at = Some(ts(T0 + 60));
+    s.clock.advance(60);
+    s.report_tx
+        .send(content_report(
+            vec![dead_stack],
+            // Cache lag: the card is still listed under the dead stack.
+            vec![remote_card(10, "held work", T0)],
+            T0 + 60,
+        ))
+        .await
+        .expect("report channel open");
+    wait_for_task(&s, |t| t.deleted).await;
+
+    assert!(
+        matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "cascade territory never resurrects"
+    );
+    s.snap("s44");
+}
