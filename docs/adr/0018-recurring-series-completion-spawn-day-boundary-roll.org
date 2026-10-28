@@ -1,0 +1,104 @@
+#+title: ADR 0018: Recurring Series — Materialise-on-Completion with a Day-Boundary Roll-Forward
+- *Date:* 2026-10-28
+- *Status:* Accepted (the engine lands with chunk DR-6/2; storage & sync DR-6/3, surfaces DR-6/4, habits DR-6/5–6/6 follow)
+- *Depends on:* ADR 0006 (the interpret loop), ADR 0004 (LWW / sync policy), ADR 0013 (the =(reminder, occurrence)= key precedent)
+
+* Context
+
+Issue #212 asks for recurring tasks. The design round (2026-10-26,
+D-C1–D-C13) fixed the shape: *the open head is the template*. A
+recurring task is an ordinary card carrying a =RecurRule= (series id,
+anchor date, interval pattern, bound); completing the head produces the
+next occurrence as a *real card*, and a head left open across a day
+boundary rolls forward to the current day. Two alternatives were
+rejected:
+
+- *Display-only roll* — keep the stored date stale and add "+overdue"
+  at read time. Two truths for one field: every consumer (reminders,
+  today view, sync wire, CLI) would need the same virtual arithmetic,
+  and the sync wire would publish a lie.
+- *Virtual-instance projection* — store one template and project
+  occurrences per date range. The sync layer cannot publish a
+  projection (the remote sees a deck of real cards), and history
+  ("which occurrences did I actually do?") would need a second
+  bookkeeping structure the materialized cards give for free.
+
+* Decision
+
+1. *Completion spawns the successor inside the same pure plan.*
+   =SetTaskDone= on a recur-bearing head either appends the successor
+   card's batch (fresh id, copied title/description/stack/content
+   decorations, open, newborn clocks, live labels re-stamped,
+   =recur= copied verbatim — same series identity) or, when the
+   series' bound is exhausted, performs the *terminal transition*
+   (decision 3). A plain task's completion plan is byte-identical to
+   the pre-series catalogue. The planner stays pure and total: no
+   async, no tick, no IO — the spawn is more plan output.
+2. *Midpoint insertion after the head.* The successor's =order= is a
+   free slot at =head.order + 1= when the head is last, the floor
+   midpoint when the gap to the next card is ≥ 2, and a tie with *the
+   head only* when the gap is exactly 1 (resolved by the canonical
+   =(order, id)= sort over UUIDv7 minting; the tie vanishes when the
+   head leaves the open lists). D-C13's later habit drags reuse the
+   same helper.
+3. *=Until= is arithmetic; =Count= is history.* An =Until(d)= bound
+   filters at the schedule (a member *on* =d= still spawns/rolls).
+   =Count(n)= derives from completion history at evaluation time —
+   every row carrying the series and a done stamp counts, including
+   soft-deleted ones (history outlives deletion; no counter column
+   exists). *Suppression happens at the completion*: the exhausted
+   completion still stamps done (closes and dismissals intact) and the
+   same batch clears =recur= as an appdata-lane edit. Roll-path
+   suppression writes nothing — a bound-exhausted open head keeps its
+   rule and stays stale until completed or deleted.
+4. *The day tick beside the reminder tick.* The state engine's timer
+   arm wakes for either engine; each runs under its own flag. The day
+   tick reads the injected clock once, plans the roll purely
+   (=plan_day_rolls=), persists, then publishes — the reminder tick's
+   shape. The watermark (last rolled window-date) is engine-internal
+   edge state, *never persisted as user state*: a quiet day is a full
+   no-op, a failed batch retries on the next tick without advancing
+   the watermark, and a restart re-scans once — which is the boot
+   catch-up path and is idempotent by the stale predicate's
+   construction. There is deliberately no user-facing switch: the roll
+   is the feature's core materialization, and a kiosk with reminders
+   off still needs its series to appear.
+5. *Date conventions.* =DayCalendar= (day-start time + fixed boot
+   offset) is injected everywhere. Field *references* (the head's
+   series day) use plain offset-calendar dates — the spawn is
+   drift-free from generation to generation; *"today"* is the
+   window-date (the night-owl rule). Time-of-day is preserved per
+   field. The reference chain is scheduled → duedate → completion day;
+   a dateless head is never stale and spawns dateless.
+6. *Occurrences roam as cards.* The successor syncs through the
+   ordinary =CreateTask= / =AssignLabel= / =UpdateTask= ops; =recur=
+   rides the per-task appdata entry behind one =UpdateAppData= flush
+   trigger. The moved due date of a roll is a new
+   =(reminder, occurrence)= key, so due-anchored reminders re-arm by
+   construction — no reminder machinery changes. Two devices rolling
+   the same head on the same local day produce identical targets (the
+   pure arithmetic), so the no-dedup race is benign under LWW.
+   Fold-time dedup for the spawn race is chunk DR-6/3's and keys
+   =(series, scheduled-date)=.
+
+* Consequences
+
+- *Born-stale successors converge late.* A multi-day-stale head
+  completed mid-day spawns a successor dated in the past; it rolls at
+  the *next* boundary, not instantly. Schedule-truth over display
+  comfort; the overdue-recurring presentation is DR-6/4's.
+- *The terminal clear drops the final occurrence's series
+  attribution.* After the bound-exhausted completion the done head no
+  longer carries =recur.series=, so derived analysis (streaks,
+  occurrence outcomes) cannot see that final completion. Ruled
+  deliberately ("the series ends as an ordinary standalone task");
+  the analysis surfaces must read the ruling the same way.
+- *Daily-series card volume is accepted* (D-C6): a daily chore is one
+  card per day, forever, like any deck task.
+- *The timer coupling:* an engine with reminders disabled but the roll
+  armed wakes on =[reminders] tick_secs= — one clock read + date
+  compare per wake, bounded by the watermark to one scan per local
+  day.
+- *Offset fixed at boot:* a DST flip mid-run shifts wall-clock labels
+  ≤1h — already accepted by the day-window ruling; the roll inherits
+  it.
