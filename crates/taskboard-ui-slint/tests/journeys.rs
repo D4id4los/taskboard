@@ -4845,6 +4845,58 @@ fn move_cancel_routes_through_escape_and_emacs_c_g() {
     }
 }
 
+/// Round-3 D28 — the emacs double-C-g convention, end to end: from
+/// the today chain (where the lone C-g never resolves), a live move
+/// flow is cancelled by `C-g C-g` — the first C-g parks as the
+/// pending prefix (the status signal), the second dispatches the
+/// cancel; nothing moves and the flow is gone.
+#[test]
+fn emacs_double_c_g_cancels_from_the_today_chain() {
+    let (_fixture, state, _walked) = fixture::today_overdue_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            harness.stroke(parse("Ctrl+T").expect("Ctrl+T"));
+            press_preset(&mut harness, preset, ActionId::NavNextItem); // seed a today row
+            press_preset(&mut harness, preset, ActionId::TaskMove);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_flow_hint_model().visible,
+                "the move flow armed"
+            );
+
+            // The convention: the first C-g parks (the prefix-abort
+            // status signal rides the pending feedback), the second
+            // cancels.
+            harness.stroke(parse("Ctrl+g").expect("Ctrl+g"));
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_flow_hint_model().visible,
+                "the lone C-g is only a pending prefix here"
+            );
+            harness.stroke(parse("Ctrl+g").expect("Ctrl+g"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_flow_hint_model().visible,
+                "C-g C-g cancelled the move"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
 /// The dispatch (d) contract: the stack walk wraps at both ends and
 /// lands focus on the new stack's first task.
 #[test]

@@ -724,6 +724,76 @@ mod tests {
         }
     }
 
+    /// Round 3 (D28): the emacs double-C-g convention — `C-g` parks
+    /// as a pending prefix on the task chain, `C-g C-g` exactly
+    /// resolves the move-cancel, and `C-g Ctrl+/` still resolves the
+    /// redo; over the board chain the lone `C-g` still cancels
+    /// instantly (exact-match-first).
+    #[test]
+    fn emacs_double_c_g_cancels_and_keeps_redo() {
+        let keymap = Keymap::from_preset(Preset::Emacs);
+        let task_chain = [
+            ContextId::TaskDetail,
+            ContextId::ViNormal,
+            ContextId::Global,
+        ];
+        let board_chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        let c_g = stroke::parse("Ctrl+g").expect("ctrl g");
+        let c_slash = stroke::parse("Ctrl+/").expect("ctrl slash");
+
+        let mut resolver = crate::resolver::KeymapResolver::new();
+        assert_eq!(
+            resolver.feed(c_g, &task_chain, &keymap),
+            crate::resolver::Resolution::Pending,
+            "the first C-g parks (a prefix of both C-g C-g and C-g C-/)"
+        );
+        assert_eq!(
+            resolver.feed(c_g, &task_chain, &keymap),
+            crate::resolver::Resolution::Action(ActionId::TaskMoveCancel),
+            "the second C-g cancels"
+        );
+
+        let mut resolver = crate::resolver::KeymapResolver::new();
+        resolver.feed(c_g, &task_chain, &keymap);
+        assert_eq!(
+            resolver.feed(c_slash, &task_chain, &keymap),
+            crate::resolver::Resolution::Action(ActionId::AppRedo),
+            "C-g Ctrl+/ is still the redo"
+        );
+
+        let mut resolver = crate::resolver::KeymapResolver::new();
+        assert_eq!(
+            resolver.feed(c_g, &board_chain, &keymap),
+            crate::resolver::Resolution::Action(ActionId::TaskMoveCancel),
+            "the lone C-g still cancels on the board chain"
+        );
+    }
+
+    /// Round 3 (D29, #231): the snooze/mute verbs are key-reachable in
+    /// every preset (the no-second-class gate), and vi's Global stays
+    /// exactly one row (the vi-shape contract's continuity).
+    #[test]
+    fn snooze_and_mute_are_reachable_in_every_preset() {
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            // vi's verbs ride ViNormal (the modal home); the session
+            // chain always carries the mode context.
+            let chain = if preset == Preset::Vi {
+                vec![ContextId::ViNormal, ContextId::Global]
+            } else {
+                vec![ContextId::Global]
+            };
+            for verb in [ActionId::ReminderSnooze, ActionId::ReminderMute] {
+                assert!(
+                    keymap.first_binding_display(verb, &chain).is_some(),
+                    "{preset:?} does not resolve {verb}"
+                );
+            }
+        }
+        let vi = Keymap::from_preset(Preset::Vi);
+        assert_eq!(vi.bindings_in(ContextId::Global).expect("one row").len(), 1);
+    }
+
     /// Grouped rows per context for the conflict/shadow contracts.
     fn rows_by_context(preset: Preset) -> BTreeMap<ContextId, Vec<(ActionId, Vec<Stroke>)>> {
         let mut grouped: BTreeMap<_, Vec<_>> = BTreeMap::new();
