@@ -34,12 +34,14 @@
 
 use std::sync::Arc;
 
+use tokio::sync::watch;
+
 /// A signal family member the watcher listened to. Unix-only kinds are
 /// constructed only under `cfg(unix)` (the watcher's cfg-gated
 /// streams); the type itself is total so the machine and its tests are
 /// platform-independent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Signal {
+pub enum Signal {
     /// SIGINT / console Ctrl-C: the cancel family.
     Interrupt,
     /// SIGTERM: the external-termination family.
@@ -52,7 +54,7 @@ impl Signal {
     /// The conventional exit code of a default-disposition death by
     /// this signal: `128 + signum` (130/143/129).
     #[must_use]
-    pub(crate) fn exit_code(self) -> i32 {
+    pub fn exit_code(self) -> i32 {
         match self {
             Self::Interrupt => 130,
             Self::Terminate => 143,
@@ -68,6 +70,13 @@ impl Signal {
 pub(crate) enum Event {
     Signal(Signal),
     Progress,
+    /// The rung-1 trigger that is not a signal: `daemon stop` answered
+    /// over the control lane. It arms the ladder exactly as a first
+    /// signal does — a later signal during a stop-initiated drain is
+    /// the *second* trigger, not a re-initiation — but it never
+    /// records a kind (design D-6: the forcing code must always name
+    /// a real signal; a stop can never fire rung 2/3).
+    StopRequest,
 }
 
 /// The ladder's verdict: begin the first-rung action, begin a middle
@@ -116,8 +125,19 @@ impl Ladder {
         match (&self.state, event) {
             // Everything past the force rung is inert (no action, no
             // state change — the recorded kind stays for the exit code),
-            // and a fresh ladder's acknowledgement is a no-op too.
-            (State::Forced, _) | (State::Fresh, Event::Progress) => None,
+            // a fresh ladder's acknowledgement is a no-op too, and a
+            // stop request on an already-armed ladder is idempotent
+            // (the drain is already starting; nothing re-triggers).
+            (State::Forced, _)
+            | (State::Fresh, Event::Progress)
+            | (State::Armed { .. }, Event::StopRequest) => None,
+            // The control-lane trigger (design D-6): counts as trigger
+            // #1 but records no kind — the forcing code must always
+            // name a real signal, and a stop can never fire rung 2/3.
+            (State::Fresh, Event::StopRequest) => {
+                self.state = State::Armed { rung: 1 };
+                Some(Action::Initiate)
+            }
             (State::Fresh, Event::Signal(signal)) => {
                 self.last = Some(signal);
                 self.state = State::Armed { rung: 1 };
@@ -392,6 +412,10 @@ pub(crate) fn install_session_watcher(saved: SavedTty) -> crate::repl::SessionSi
             };
             let action = match event {
                 Event::Progress => interrupt_ladder.on(Event::Progress),
+                // The session feeders never emit this (it is the
+                // lifecycle wiring's control-lane event) — but the
+                // match must stay total over the machine's alphabet.
+                Event::StopRequest => continue,
                 Event::Signal(Signal::Interrupt) => interrupt_ladder.on(event),
                 #[cfg(unix)]
                 Event::Signal(_) => terminate_ladder.on(event),
@@ -438,6 +462,150 @@ pub(crate) fn install_session_watcher(saved: SavedTty) -> crate::repl::SessionSi
         cancel,
         ack,
         terminate,
+    }
+}
+
+/// The watch halves the lifecycle tail consumes and feeds (design
+/// D-1/D-6): the three rungs travel out as `begin_drain` (rung 1) and
+/// `escalate` (rung 2, carrying the forcing signal — its
+/// [`Signal::exit_code`] names the code), while the tail feeds
+/// `stop_request` (the `daemon stop` control lane arms rung 1) and
+/// `progress` (the drain future resolved — the de-arm that keeps the
+/// exit epilogue from flipping a clean 0 into a forced code). Dead
+/// senders mean *never act* ([`changed_or_never`] semantics), so the
+/// watcher survives to rung 3 even after its tail is gone.
+pub struct LifecycleSignals {
+    /// Rung 1 (signal-initiated): the tail's serve select listens.
+    pub begin_drain: watch::Receiver<()>,
+    /// Rung 2: carries the forcing signal kind.
+    pub escalate: watch::Receiver<Signal>,
+    /// Fed by the tail's `daemon stop` arm (rung 1 via the machine).
+    pub stop_request: watch::Sender<()>,
+    /// Fed by the tail when the drain future resolves (de-arm).
+    pub progress: watch::Sender<()>,
+}
+
+/// Installs the daemon/kiosk/GUI lifecycle's signal watcher (design
+/// D-1/D-6): one merged [`Ladder::new(1)`] — the mixed-kind row is
+/// this wiring's contract — over the interrupt + termination streams
+/// (unix; Windows: the single ctrl-C bridge delivering one
+/// [`Signal::Interrupt`], then ending — the console's own second-^C
+/// disposition is the force world) and the two side channels
+/// ([`LifecycleSignals::stop_request`]/[`LifecycleSignals::progress`])
+/// consumed in the same select. Actions: `Initiate` →
+/// `begin_drain`; `Escalate` → `escalate` with the forcing signal;
+/// `Force` → `std::process::exit(last_signal.exit_code())` — no tty
+/// restore (this surface never saves one; the one-shot precedent;
+/// `std::process::exit`, not `_exit`, under the crate-wide
+/// `forbid(unsafe_code)` — the rungs differ in the salvage attempt,
+/// not the exit mechanism).
+///
+/// A failed stream registration spawns no feeder (the
+/// `wait_for_signal` degrade precedent); a dead side-channel sender
+/// makes that arm never fire ([`changed_or_never`]) instead of
+/// killing the watcher. Handlers are never on test paths (D-7):
+/// production lifecycle entries install this immediately after their
+/// core boot returns — a signal during the boot itself keeps the
+/// default disposition, and an install-at-top would swallow a
+/// boot-phase ^C into an `Initiate` nobody listens to yet.
+#[allow(clippy::too_many_lines)] // one feeder block per cfg'd stream, kept flat
+#[must_use]
+pub fn install_lifecycle_watcher() -> LifecycleSignals {
+    let (begin_drain_tx, begin_drain) = tokio::sync::watch::channel(());
+    let (escalate_tx, escalate) = tokio::sync::watch::channel(Signal::Terminate);
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(());
+    let (progress_tx, progress_rx) = tokio::sync::watch::channel(());
+    let (pump_tx, mut pump_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+
+    // The feeders: unix interrupt + terminate streams pump into one
+    // mpsc (the session watcher's shape); SIGHUP/SIGQUIT are not
+    // installed — they keep their kernel defaults on this surface.
+    #[cfg(unix)]
+    for (kind, signal) in [
+        (
+            tokio::signal::unix::SignalKind::interrupt(),
+            Signal::Interrupt,
+        ),
+        (
+            tokio::signal::unix::SignalKind::terminate(),
+            Signal::Terminate,
+        ),
+    ] {
+        if let Ok(mut stream) = tokio::signal::unix::signal(kind) {
+            let pump = pump_tx.clone();
+            tokio::spawn(async move {
+                while stream.recv().await.is_some() {
+                    if pump.send(Event::Signal(signal)).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let pump = pump_tx.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let _ = pump.send(Event::Signal(Signal::Interrupt));
+            }
+        });
+    }
+
+    // The machine + side effects. `pump_rx` ends only when every
+    // feeder is gone (all registrations failed): the watcher ends with
+    // it — never busy, never acting. Dead side senders park their arm
+    // forever (never act), so a dying tail cannot fire an arm.
+    tokio::spawn(async move {
+        let mut ladder = Ladder::new(1);
+        let mut stop_rx = stop_rx;
+        let mut progress_rx = progress_rx;
+        loop {
+            let event = tokio::select! {
+                event = pump_rx.recv() => match event {
+                    Some(event) => event,
+                    None => return,
+                },
+                changed = stop_rx.changed() => {
+                    if changed.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                    Event::StopRequest
+                }
+                changed = progress_rx.changed() => {
+                    if changed.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                    Event::Progress
+                }
+            };
+            match ladder.on(event) {
+                Some(Action::Initiate) => {
+                    let _ = begin_drain_tx.send(());
+                }
+                Some(Action::Escalate) => {
+                    // The escalation is always a real signal's work
+                    // (StopRequest never escalates), so the kind is
+                    // recorded and names the exit code.
+                    if let Some(forcing) = ladder.last_signal() {
+                        let _ = escalate_tx.send(forcing);
+                    }
+                }
+                Some(Action::Force) => {
+                    let code = ladder.last_signal().map_or(130, Signal::exit_code);
+                    tracing::warn!(code, "the daemon signal force rung fired");
+                    std::process::exit(code);
+                }
+                None => {}
+            }
+        }
+    });
+
+    LifecycleSignals {
+        begin_drain,
+        escalate,
+        stop_request: stop_tx,
+        progress: progress_tx,
     }
 }
 
@@ -488,6 +656,41 @@ mod tests {
         assert_eq!(ladder.on(sig(Signal::Terminate)), None);
     }
 
+    /// T1 (design D-6, §10 Q1/Q2): `daemon stop` arms rung 1 exactly
+    /// like a first signal but records no kind; re-arming is
+    /// idempotent, and a forced ladder stays inert to it.
+    #[test]
+    fn stop_request_arms_rung_1_without_a_kind() {
+        let mut ladder = Ladder::new(1);
+        assert_eq!(ladder.on(Event::StopRequest), Some(Action::Initiate));
+        assert_eq!(ladder.last_signal(), None, "no kind is recorded");
+        assert_eq!(ladder.on(Event::StopRequest), None, "idempotent");
+        assert_eq!(ladder.last_signal(), None);
+        // The stop cannot escalate or force; only a real signal can.
+        assert_eq!(ladder.on(sig(Signal::Interrupt)), Some(Action::Escalate));
+        assert_eq!(ladder.last_signal(), Some(Signal::Interrupt));
+        assert_eq!(ladder.on(Event::StopRequest), None, "inert past Force");
+        assert_eq!(ladder.on(Event::Progress), None);
+        assert_eq!(ladder.on(Event::StopRequest), Some(Action::Initiate));
+        assert_eq!(
+            ladder.last_signal(),
+            Some(Signal::Interrupt),
+            "the recorded kind survives de-arms"
+        );
+    }
+
+    /// T2 (design D-6): stop-initiated drain + one signal escalates at
+    /// the signal's kind; a third trigger forces at that kind's code.
+    #[test]
+    fn stop_then_signal_escalates_then_forces_at_the_signal_code() {
+        let mut ladder = Ladder::new(1);
+        assert_eq!(ladder.on(Event::StopRequest), Some(Action::Initiate));
+        assert_eq!(ladder.on(sig(Signal::Interrupt)), Some(Action::Escalate));
+        assert_eq!(ladder.last_signal().map(Signal::exit_code), Some(130));
+        assert_eq!(ladder.on(sig(Signal::Terminate)), Some(Action::Force));
+        assert_eq!(ladder.last_signal().map(Signal::exit_code), Some(143));
+    }
+
     /// The mixed-kind row (D-6): kinds count together on one merged
     /// instance — the machine is family-agnostic; the wiring decides.
     #[test]
@@ -501,21 +704,26 @@ mod tests {
     }
 
     /// Exhaustive invariant sweep over every event sequence of length
-    /// ≤ 4 over {Signal(Interrupt), Signal(Terminate), Progress}, for
-    /// both rung configurations (3⁴ = 81 sequences × 2 configs). The
-    /// invariants — not a mirror implementation:
+    /// ≤ 4 over {`Signal::Interrupt`, `Signal::Terminate`, `Progress`,
+    /// `StopRequest`}, for both rung configurations (4⁴ = 256 sequences
+    /// × 2 configs). The invariants — not a mirror implementation:
     /// (a) `Force` is answered only to the (2+middle)-th consecutive
     ///     unacknowledged signal;
     /// (b) `Forced` ladders never act again;
     /// (c) `Progress` never acts and always re-arms to `Initiate`-next;
     /// (d) `last_signal` is always the most recently fed signal kind;
-    /// (e) exit codes are 128+signum for the recorded kind.
+    /// (e) exit codes are 128+signum for the recorded kind;
+    /// (f) `StopRequest` acts only off `Fresh` (then exactly as trigger
+    ///     #1: it counts toward the rung but never escalates, never
+    ///     forces, never records a kind).
     #[test]
+    #[allow(clippy::too_many_lines)] // the invariant bodies are the test
     fn every_short_sequence_satisfies_the_ladder_invariants() {
         let alphabet = [
             sig(Signal::Interrupt),
             sig(Signal::Terminate),
             Event::Progress,
+            Event::StopRequest,
         ];
         for middle in [0u8, 1] {
             // Odometer generation over all sequences of length 1..=4
@@ -530,8 +738,8 @@ mod tests {
                     let mut seq = Vec::with_capacity(len);
                     let mut rem = code;
                     for _ in 0..len {
-                        seq.push(alphabet[rem % 3]);
-                        rem /= 3;
+                        seq.push(alphabet[rem % 4]);
+                        rem /= 4;
                     }
                     sequences.push(seq);
                 }
@@ -600,6 +808,31 @@ mod tests {
                                     ladder.last_signal(),
                                     last_kind,
                                     "the recorded kind survives the de-arm"
+                                );
+                            }
+                        }
+                        Event::StopRequest => {
+                            if forced {
+                                assert_eq!(
+                                    action, None,
+                                    "acted after Force: seq {seq:?} step {step}"
+                                );
+                            } else if unacked == 0 {
+                                assert_eq!(
+                                    action,
+                                    Some(Action::Initiate),
+                                    "StopRequest arms exactly as trigger #1: seq {seq:?} step {step}"
+                                );
+                                unacked = 1;
+                                assert_eq!(
+                                    ladder.last_signal(),
+                                    last_kind,
+                                    "StopRequest records no kind: seq {seq:?} step {step}"
+                                );
+                            } else {
+                                assert_eq!(
+                                    action, None,
+                                    "StopRequest never escalates or forces: seq {seq:?} step {step}"
                                 );
                             }
                         }
