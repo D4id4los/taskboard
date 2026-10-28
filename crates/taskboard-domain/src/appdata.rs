@@ -25,7 +25,7 @@ use serde_json::Value;
 use crate::entities::{Effort, Importance, Urgency};
 use crate::ids::RemoteBoardId;
 use crate::recur::RecurRule;
-use crate::reminders::ReminderOffset;
+use crate::reminders::{Insistence, ReminderOffset};
 
 /// The document format version. Additive changes never bump it; a reader
 /// seeing a greater `format` folds nothing (the fence lives in the
@@ -358,11 +358,16 @@ impl<'de> Deserialize<'de> for RulesEntry {
 /// D-S2's materialization rule).
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuleEntry {
-    /// `{ "offset": <seconds ≤ 0>, "created": rfc3339, "clock": rfc3339 }`.
+    /// `{ "offset": <seconds ≤ 0>, "created": rfc3339, "clock": rfc3339,
+    /// "insistence": "normal"|"alarm" }`. The insistence key is
+    /// additive: a pre-insistence document omits it and folds
+    /// `Normal`; an unknown rung demotes the whole entry to
+    /// [`RuleEntry::Verbatim`] (never a silent downgrade).
     Rule {
         offset: ReminderOffset,
         created: DateTime<Utc>,
         clock: DateTime<Utc>,
+        insistence: Insistence,
     },
     /// `{ "deleted": true, "clock": rfc3339 }` — rule *membership* needs
     /// explicit tombstones (absence from a possibly-truncated document
@@ -395,15 +400,20 @@ impl RuleEntry {
             }
             return Self::Verbatim(raw);
         }
-        if let (Ok(offset), Ok(created), Ok(clock)) = (
+        if let (Ok(offset), Ok(created), Ok(clock), Ok(insistence)) = (
             decode_offset(map.get("offset")),
             serde_json::from_value(map.get("created").cloned().unwrap_or(Value::Null)),
             serde_json::from_value(map.get("clock").cloned().unwrap_or(Value::Null)),
+            // Default-on-missing (the additive-section precedent): an
+            // old document folds `Normal`. A *present* but unmodelable
+            // value is not defaulted — it falls through to `Verbatim`.
+            decode_insistence_default_on_missing(map.get("insistence")),
         ) {
             return Self::Rule {
                 offset,
                 created,
                 clock,
+                insistence,
             };
         }
         Self::Verbatim(raw)
@@ -417,10 +427,12 @@ impl Serialize for RuleEntry {
                 offset,
                 created,
                 clock,
+                insistence,
             } => serde_json::json!({
                 "offset": offset.as_duration().num_seconds(),
                 "created": created,
                 "clock": clock,
+                "insistence": insistence.text_form(),
             })
             .serialize(serializer),
             Self::Tombstone { clock } => {
@@ -428,6 +440,17 @@ impl Serialize for RuleEntry {
             }
             Self::Verbatim(value) => value.serialize(serializer),
         }
+    }
+}
+
+/// Decodes the rule entry's insistence rung: absent → `Normal`
+/// (default-on-missing, the DR-1 additive precedent); present and a
+/// valid serde unit → the rung; present and unknown → `Err` (the entry
+/// demotes to `Verbatim`, never a silent downgrade).
+fn decode_insistence_default_on_missing(raw: Option<&Value>) -> Result<Insistence, ()> {
+    match raw {
+        None | Some(&Value::Null) => Ok(Insistence::Normal),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|_| ()),
     }
 }
 
@@ -840,6 +863,7 @@ pub fn rules_entry_for(
                     offset: rule.offset,
                     created: rule.created_at,
                     clock: rule.updated_at,
+                    insistence: rule.insistence,
                 },
             )
         })
@@ -996,6 +1020,7 @@ mod tests {
                         rules: [(
                             "018f0000-0000-7000-8000-000000000001".to_owned(),
                             RuleEntry::Rule {
+                                insistence: Insistence::Normal,
                                 offset: ReminderOffset::before(chrono::TimeDelta::seconds(-900))
                                     .unwrap(),
                                 created: ts(100),
@@ -1261,6 +1286,121 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(entry.rules["r"], RuleEntry::Verbatim(_)));
+    }
+
+    #[test]
+    fn rule_entry_insistence_default_on_missing_roundtrips_and_emits() {
+        // The exact pre-insistence document shape: no insistence key.
+        let entry: RulesEntry = serde_json::from_value(serde_json::json!({
+            "rules": { "r": { "offset": -900, "created": "2026-01-01T00:00:00Z",
+                              "clock": "2026-01-01T00:01:00Z" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            entry.rules["r"],
+            RuleEntry::Rule {
+                offset: crate::reminders::ReminderOffset::before(
+                    chrono::TimeDelta::try_minutes(-15).unwrap()
+                )
+                .unwrap(),
+                created: "2026-01-01T00:00:00Z".parse().unwrap(),
+                clock: "2026-01-01T00:01:00Z".parse().unwrap(),
+                insistence: crate::reminders::Insistence::Normal,
+            },
+            "the missing key folds Normal"
+        );
+        // An explicit alarm rung roundtrips.
+        let entry: RulesEntry = serde_json::from_value(serde_json::json!({
+            "rules": { "r": { "offset": -900, "created": "2026-01-01T00:00:00Z",
+                              "clock": "2026-01-01T00:01:00Z",
+                              "insistence": "alarm" } }
+        }))
+        .unwrap();
+        assert_eq!(
+            entry.rules["r"],
+            RuleEntry::Rule {
+                offset: crate::reminders::ReminderOffset::before(
+                    chrono::TimeDelta::try_minutes(-15).unwrap()
+                )
+                .unwrap(),
+                created: "2026-01-01T00:00:00Z".parse().unwrap(),
+                clock: "2026-01-01T00:01:00Z".parse().unwrap(),
+                insistence: crate::reminders::Insistence::Alarm,
+            }
+        );
+        // Emission writes the key unconditionally on a clocked entry.
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["rules"]["r"]["insistence"], "alarm");
+    }
+
+    #[test]
+    fn an_unknown_insistence_value_demotes_to_verbatim() {
+        // A rung this version does not know is unmodelable content —
+        // preserved verbatim, never silently folded down to Normal
+        // (the positive-offset precedent).
+        let entry: RulesEntry = serde_json::from_value(serde_json::json!({
+            "rules": { "r": { "offset": -900, "created": "2026-01-01T00:00:00Z",
+                              "clock": "2026-01-01T00:01:00Z",
+                              "insistence": "critical" } }
+        }))
+        .unwrap();
+        assert!(matches!(entry.rules["r"], RuleEntry::Verbatim(_)));
+    }
+
+    #[test]
+    fn mixed_fleet_old_shape_folds_and_unknown_sibling_relays_verbatim() {
+        // One pre-round device's old-shape rule entry + one entry whose
+        // rung this version does not model: the old shape folds Normal
+        // locally, and the union re-emits the unknown entry verbatim
+        // (the D-S2 relay, extended to the insistence rung).
+        let raw = serde_json::json!({
+            "rules": {
+                "018f0000-0000-7000-8000-000000000001":
+                    { "offset": -900, "created": "2026-01-01T00:00:00Z",
+                      "clock": "2026-01-01T00:01:00Z" },
+                "018f0000-0000-7000-8000-000000000002":
+                    { "offset": -60, "created": "2026-01-01T00:00:00Z",
+                      "clock": "2026-01-01T00:01:00Z", "insistence": "siren" }
+            }
+        });
+        let entry: RulesEntry = serde_json::from_value(raw.clone()).unwrap();
+        let folded = entry.rules["018f0000-0000-7000-8000-000000000001"].clone();
+        assert!(matches!(
+            folded,
+            RuleEntry::Rule {
+                insistence: crate::reminders::Insistence::Normal,
+                ..
+            }
+        ));
+        // The document union (the flush's merge) relays the unknown
+        // entry untouched.
+        let base: crate::appdata::AppDataDocument = serde_json::from_value(serde_json::json!({
+            "format": 2, "board": 7, "sections": { "reminder-rules": { "t": raw } }
+        }))
+        .unwrap();
+        let overlay: crate::appdata::AppDataDocument = serde_json::from_value(serde_json::json!({
+            "format": 2, "board": 7, "sections": {}
+        }))
+        .unwrap();
+        let merged = crate::appdata::union(&base, &overlay);
+        let relayed = &merged.sections.reminder_rules.as_ref().unwrap()["t"];
+        assert_eq!(
+            serde_json::to_value(relayed).unwrap(),
+            serde_json::json!({
+                "rules": {
+                    // The known old shape folds Normal and re-emits the
+                    // fully-owned shape (emission is unconditional).
+                    "018f0000-0000-7000-8000-000000000001":
+                        { "offset": -900, "created": "2026-01-01T00:00:00Z",
+                          "clock": "2026-01-01T00:01:00Z",
+                          "insistence": "normal" },
+                    // The unknown rung survives the union value-for-value.
+                    "018f0000-0000-7000-8000-000000000002":
+                        { "offset": -60, "created": "2026-01-01T00:00:00Z",
+                          "clock": "2026-01-01T00:01:00Z", "insistence": "siren" }
+                }
+            }),
+        );
     }
 
     #[test]
@@ -1576,6 +1716,7 @@ mod tests {
         assert_eq!(
             entry.rules[&rule.id.as_uuid().to_string()],
             RuleEntry::Rule {
+                insistence: Insistence::Normal,
                 offset: rule.offset,
                 created: rule.created_at,
                 clock: rule.updated_at,
@@ -1604,6 +1745,7 @@ mod tests {
                 (
                     "00000000-0000-0000-0000-00000000000a",
                     RuleEntry::Rule {
+                        insistence: Insistence::Normal,
                         offset: crate::reminders::ReminderOffset::at_due(),
                         created: ts(1),
                         clock: ts(1),
@@ -1701,6 +1843,7 @@ mod tests {
                         rules: [(
                             "018f0000-0000-7000-8000-000000000001".to_owned(),
                             RuleEntry::Rule {
+                                insistence: Insistence::Normal,
                                 offset: ReminderOffset::before(chrono::TimeDelta::seconds(-900))
                                     .unwrap(),
                                 created: ts(100),
@@ -2014,6 +2157,7 @@ mod tests {
             let id = "00000000-0000-0000-0000-00000000000a";
             let base = RulesEntry {
                 rules: [(id.to_owned(), RuleEntry::Rule {
+                    insistence: Insistence::Normal,
                     offset: crate::reminders::ReminderOffset::at_due(),
                     created: ts(1),
                     clock: ts(2),

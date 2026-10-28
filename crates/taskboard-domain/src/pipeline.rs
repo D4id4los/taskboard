@@ -1872,6 +1872,7 @@ mod tests {
                 (
                     "00000000-0000-0000-0000-00000000000b".to_owned(),
                     RuleEntry::Rule {
+                        insistence: Insistence::Normal,
                         offset: crate::reminders::ReminderOffset::before(
                             chrono::TimeDelta::try_minutes(-15).unwrap(),
                         )
@@ -1954,6 +1955,7 @@ mod tests {
                 (
                     "00000000-0000-0000-0000-00000000000a".to_owned(),
                     RuleEntry::Rule {
+                        insistence: Insistence::Normal,
                         offset: crate::reminders::ReminderOffset::at_due(),
                         created: ts(BASE + 100),
                         clock: ts(BASE + 100),
@@ -1962,6 +1964,7 @@ mod tests {
                 (
                     "00000000-0000-0000-0000-00000000000b".to_owned(),
                     RuleEntry::Rule {
+                        insistence: Insistence::Normal,
                         offset: crate::reminders::ReminderOffset::at_due(),
                         created: ts(BASE + 100),
                         clock: ts(BASE + 100),
@@ -2035,6 +2038,7 @@ mod tests {
             rules: [(
                 "00000000-0000-0000-0000-00000000000a".to_owned(),
                 RuleEntry::Rule {
+                    insistence: Insistence::Normal,
                     offset: crate::reminders::ReminderOffset::at_due(),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 100),

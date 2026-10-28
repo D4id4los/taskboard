@@ -713,6 +713,7 @@ pub fn fold_reminder_rules(
                 offset,
                 created,
                 clock,
+                insistence,
             } => {
                 let Ok(uuid) = uuid::Uuid::parse_str(key) else {
                     continue; // an unparseable key is not a rule identity
@@ -722,13 +723,14 @@ pub fn fold_reminder_rules(
                     Some(local) if *clock >= local.updated_at => {
                         local.offset = *offset;
                         local.created_at = *created;
+                        local.insistence = *insistence;
                         local.updated_at = std::cmp::max(local.updated_at, *clock);
                         changes.upserts.push(local.clone());
                     }
                     Some(_) => {} // local stands
                     None => {
                         let adopted = crate::reminders::ReminderRule {
-                            insistence: Insistence::Normal,
+                            insistence: *insistence,
                             id,
                             task,
                             offset: *offset,
@@ -3199,6 +3201,7 @@ mod tests {
             (
                 "00000000-0000-0000-0000-00000000000a",
                 RuleEntry::Rule {
+                    insistence: Insistence::Normal,
                     offset: crate::reminders::ReminderOffset::before(
                         chrono::TimeDelta::try_minutes(-30).unwrap(),
                     )
@@ -3210,6 +3213,7 @@ mod tests {
             (
                 "00000000-0000-0000-0000-00000000000b",
                 RuleEntry::Rule {
+                    insistence: Insistence::Normal,
                     offset: crate::reminders::ReminderOffset::at_due(),
                     created: ts(BASE + 400),
                     clock: ts(BASE + 400),
@@ -3235,6 +3239,63 @@ mod tests {
     }
 
     #[test]
+    fn rules_fold_carries_insistence() {
+        // Adopt: an unknown uuid arms with the document's level.
+        let mut rules = std::collections::BTreeMap::new();
+        let adopted_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(11));
+        let entry = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000b",
+            RuleEntry::Rule {
+                insistence: Insistence::Alarm,
+                offset: crate::reminders::ReminderOffset::at_due(),
+                created: ts(BASE + 400),
+                clock: ts(BASE + 400),
+            },
+        )]);
+        let task = TaskId::from(uuid::Uuid::from_u128(1));
+        let changes = fold_reminder_rules(&mut rules, task, &entry, false);
+        assert_eq!(changes.upserts.len(), 1);
+        assert_eq!(rules[&adopted_id].insistence, Insistence::Alarm);
+        // Clock-gated update: a newer document entry overwrites the
+        // local row's level.
+        let mut local = rule_with_clock(BASE + 100);
+        local.insistence = Insistence::Normal;
+        let local_id = local.id;
+        let mut rules = std::collections::BTreeMap::new();
+        rules.insert(local_id, local);
+        let newer = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000a",
+            RuleEntry::Rule {
+                insistence: Insistence::Alarm,
+                offset: crate::reminders::ReminderOffset::at_due(),
+                created: ts(BASE + 100),
+                clock: ts(BASE + 500),
+            },
+        )]);
+        let changes = fold_reminder_rules(&mut rules, task, &newer, false);
+        assert_eq!(changes.upserts.len(), 1);
+        assert_eq!(rules[&local_id].insistence, Insistence::Alarm);
+        // Clock-older: the local level stands.
+        let mut local = rule_with_clock(BASE + 600);
+        local.insistence = Insistence::Alarm;
+        let local_id = local.id;
+        let mut rules = std::collections::BTreeMap::new();
+        rules.insert(local_id, local);
+        let older = rules_entry(&[(
+            "00000000-0000-0000-0000-00000000000a",
+            RuleEntry::Rule {
+                insistence: Insistence::Normal,
+                offset: crate::reminders::ReminderOffset::at_due(),
+                created: ts(BASE + 100),
+                clock: ts(BASE + 500),
+            },
+        )]);
+        let changes = fold_reminder_rules(&mut rules, task, &older, false);
+        assert_eq!(changes.upserts, Vec::new());
+        assert_eq!(rules[&local_id].insistence, Insistence::Alarm);
+    }
+
+    #[test]
     fn rules_fold_lets_a_newer_local_rule_stand() {
         let mut rules = std::collections::BTreeMap::new();
         let existing = rule_with_clock(BASE + 600);
@@ -3242,6 +3303,7 @@ mod tests {
         let entry = rules_entry(&[(
             "00000000-0000-0000-0000-00000000000a",
             RuleEntry::Rule {
+                insistence: Insistence::Normal,
                 offset: crate::reminders::ReminderOffset::at_due(),
                 created: ts(BASE + 100),
                 clock: ts(BASE + 500),
@@ -3322,6 +3384,7 @@ mod tests {
             (
                 "not-a-uuid-either",
                 RuleEntry::Rule {
+                    insistence: Insistence::Normal,
                     offset: crate::reminders::ReminderOffset::at_due(),
                     created: ts(BASE + 1),
                     clock: ts(BASE + 2),
@@ -3352,6 +3415,7 @@ mod tests {
             (
                 "00000000-0000-0000-0000-00000000000a",
                 RuleEntry::Rule {
+                    insistence: Insistence::Normal,
                     offset: crate::reminders::ReminderOffset::at_due(),
                     created: ts(BASE + 100),
                     clock: ts(BASE + 900),
@@ -3360,6 +3424,7 @@ mod tests {
             (
                 "00000000-0000-0000-0000-00000000000b",
                 RuleEntry::Rule {
+                    insistence: Insistence::Normal,
                     offset: crate::reminders::ReminderOffset::at_due(),
                     created: ts(BASE + 1),
                     clock: ts(BASE + 1),
