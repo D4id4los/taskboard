@@ -955,6 +955,8 @@ pub fn apply_sync_report(
     let mut folded_dismissals: Option<
         std::collections::BTreeSet<crate::reminders::ReminderDismissal>,
     > = None;
+    let mut tracking_actions: Vec<PersistenceAction> = Vec::new();
+    let mut folded_tracking: Option<crate::tracking::TrackingState> = None;
     if let crate::messages::AppDataEvidence::Document(document) = app_data {
         let task_intents = pending_task_intents(outbox, read_at);
         for remote in &snapshot.tasks {
@@ -999,6 +1001,27 @@ pub fn apply_sync_report(
                 for dismissal in fold_reminder_dismissals(dismissals, entry) {
                     dismissal_actions.push(PersistenceAction::RecordReminderDismissal(dismissal));
                 }
+            }
+        }
+        // The time-entries fold is board-level: once per document, AFTER
+        // the per-card rules/dismissals loop (design D-T12's fold-order
+        // property). Resolution uses the pre-R3 card map, so an entry
+        // whose card R3 tombstones in this same cycle still folds —
+        // history outlives the card; the task lands soft-deleted with
+        // the entry's reference intact.
+        if let Some(rows) = &document.sections.time_entries {
+            let board_cards: std::collections::BTreeMap<String, TaskId> = task_by_board_card
+                .iter()
+                .filter(|((board, _), _)| *board == remote_board.id)
+                .map(|((_, card), id)| (card.get().to_string(), *id))
+                .collect();
+            let tracking = folded_tracking.get_or_insert_with(|| current.tracking.clone());
+            let changes = crate::merge::fold_time_entries(tracking, rows, &board_cards);
+            for entry in changes.upserts {
+                tracking_actions.push(PersistenceAction::UpsertTimeEntry(entry));
+            }
+            for entry_id in changes.deletes {
+                tracking_actions.push(PersistenceAction::DeleteTimeEntry(entry_id));
             }
         }
     }
@@ -1219,6 +1242,7 @@ pub fn apply_sync_report(
     // and the memory view below are the same deltas by construction.
     actions.extend(rule_actions);
     actions.extend(dismissal_actions);
+    actions.extend(tracking_actions);
     // R3's resurrect creates ride last: the re-planning decided in
     // section 6, the batch materializes here. The duplicate collapse's
     // ref-deletes ride beside them (same shape: decided mid-pass,
@@ -1272,7 +1296,7 @@ pub fn apply_sync_report(
             dismissals: folded_dismissals.unwrap_or_else(|| current.reminders.dismissals.clone()),
             ..current.reminders.clone()
         },
-        tracking: current.tracking.clone(),
+        tracking: folded_tracking.unwrap_or_else(|| current.tracking.clone()),
         // No habit data enters the sync path: definitions and log rows
         // ride chunk DR-6/6's sidecar sections; both carry through
         // untouched.
@@ -2064,6 +2088,34 @@ mod tests {
             },
             unknown: std::collections::BTreeMap::new(),
         }))
+    }
+
+    /// A document evidence carrying only a `time-entries` section (the
+    /// other sections left empty — the DR-5/2 fold's fixture).
+    fn document_with_time_entries(
+        rows: &[(uuid::Uuid, crate::appdata::TimeEntryRecord)],
+    ) -> AppDataEvidence {
+        let mut doc = match document_with_dismissals(&[], None, None) {
+            AppDataEvidence::Document(doc) => *doc,
+            _ => unreachable!("document_with_dismissals always builds a Document"),
+        };
+        doc.sections.time_entries = Some(
+            rows.iter()
+                .map(|(uuid, row)| (uuid.to_string(), row.clone()))
+                .collect(),
+        );
+        AppDataEvidence::Document(Box::new(doc))
+    }
+
+    fn wire_entry(task: Option<&str>, clock: i64) -> crate::appdata::TimeEntryRecord {
+        crate::appdata::TimeEntryRecord::Entry {
+            task: task.map(str::to_owned),
+            title: "wire title".to_owned(),
+            start: ts(clock - 1_000),
+            end: None,
+            created: ts(clock - 2_000),
+            clock: ts(clock),
+        }
     }
 
     fn fold_report(
@@ -6603,6 +6655,120 @@ mod tests {
         assert_eq!(
             app.0.labels[&label2_id].title, "label 2 renamed",
             "the other label adopts the remote title"
+        );
+    }
+    // ---- DR-5/2: the time-entries fold (D-T12's position pins) ------
+
+    #[test]
+    fn the_pipeline_folds_time_entries_after_dismissals() {
+        use crate::appdata::{DismissalEntry, dismissal_wire_key};
+        use crate::ids::ReminderRuleId;
+        let task = bound_task(1);
+        let state = base_state(task);
+        let dismissed_rule = ReminderRuleId::from(uuid::Uuid::from_u128(0xa));
+        let occurrence = ts(BASE + 1_000);
+        let dismissal_entry = crate::appdata::DismissalsEntry {
+            dismissals: [(
+                dismissal_wire_key(dismissed_rule, occurrence),
+                DismissalEntry::Dismissed {
+                    dismissed_at: ts(BASE + 200),
+                },
+            )]
+            .into(),
+            unknown: std::collections::BTreeMap::new(),
+        };
+        let entry_uuid = uuid::Uuid::from_u128(0x20);
+        let mut evidence_doc =
+            match document_with_dismissals(&[], None, Some(&[(1, dismissal_entry)])) {
+                AppDataEvidence::Document(doc) => *doc,
+                _ => unreachable!(),
+            };
+        evidence_doc.sections.time_entries = Some(
+            [(entry_uuid.to_string(), wire_entry(Some("1"), BASE + 500))]
+                .into_iter()
+                .collect(),
+        );
+        let evidence = AppDataEvidence::Document(Box::new(evidence_doc));
+        let (app, actions, _events) = fold_report(
+            &state,
+            &[],
+            &single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE),
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        // Both the dismissal row and the entry landed (the position pin:
+        // the entry fold runs after dismissals in the same pass).
+        assert_eq!(app.reminders.dismissals.len(), 1);
+        let task_id = task_by_card(&app, 1).id;
+        assert_eq!(app.tracking.entries.len(), 1);
+        let folded = &app.tracking.entries[&crate::ids::TimeEntryId::from(entry_uuid)];
+        assert_eq!(folded.task, task_id);
+        assert_eq!(folded.updated_at, ts(BASE + 500));
+        // The batch carries the entry upsert (batch and view identical
+        // by construction).
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, PersistenceAction::UpsertTimeEntry(_))),
+        );
+    }
+
+    #[test]
+    fn an_entry_whose_card_vanishes_this_cycle_still_folds() {
+        let task = bound_task(1);
+        let state = base_state(task);
+        let entry_uuid = uuid::Uuid::from_u128(0x21);
+        let evidence =
+            document_with_time_entries(&[(entry_uuid, wire_entry(Some("1"), BASE + 500))]);
+        // The snapshot carries no cards at all — R3 will tombstone the
+        // bound task this same cycle, but the fold resolves against the
+        // pre-R3 card map.
+        let (app, actions, _events) = fold_report(
+            &state,
+            &[],
+            &single_stack_snapshot(vec![], BASE),
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        assert_eq!(app.tracking.entries.len(), 1, "history outlives the card");
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, PersistenceAction::UpsertTimeEntry(_))),
+        );
+        let vanished = &app.tasks[&crate::ids::TaskId::from(uuid::Uuid::from_u128(1))];
+        assert!(
+            vanished.deleted && vanished.remote.is_none(),
+            "R3 still tombstoned the vanished card's task (binding cleared)"
+        );
+    }
+
+    #[test]
+    fn a_null_task_wire_row_is_skipped_entirely() {
+        let task = bound_task(1);
+        let state = base_state(task);
+        let evidence = document_with_time_entries(&[(
+            uuid::Uuid::from_u128(0x22),
+            wire_entry(None, BASE + 500),
+        )]);
+        let (app, actions, _events) = fold_report(
+            &state,
+            &[],
+            &single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE),
+            &evidence,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        assert!(
+            app.tracking.entries.is_empty(),
+            "neither imported nor deleted"
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, PersistenceAction::UpsertTimeEntry(_))),
         );
     }
 }

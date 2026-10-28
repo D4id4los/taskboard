@@ -811,6 +811,113 @@ pub fn fold_reminder_dismissals(
     folded
 }
 
+/// The typed deltas one [`fold_time_entries`] pass produced: the
+/// pipeline turns them into persistence actions and applies the same
+/// deltas to the memory view, so batch and view cannot drift (the
+/// [`RuleFoldChanges`] pattern).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TrackingFoldChanges {
+    /// Entries adopted or updated from the document.
+    pub upserts: Vec<crate::tracking::TimeEntry>,
+    /// Entries removed by a strictly newer tombstone.
+    pub deletes: Vec<crate::ids::TimeEntryId>,
+}
+
+/// The sidecar document fold for the board-level `time-entries` section
+/// (design D-T12, recipe step 8 — the §5b position right after
+/// [`fold_reminder_dismissals`]). Keyed by the entry UUID; per-key LWW
+/// against the local `updated_at`:
+///
+/// - A live `Entry` row whose `clock >=` the local row's `updated_at`
+///   overwrites `task`/`task_title`/`start`/`end` with
+///   `updated_at = max(local, clock)` (doc wins pull-side ties — the
+///   [`fold_reminder_rules`] comparison, the mirror of the flush's
+///   tie-to-overlay); an unknown UUID adopts the row verbatim with
+///   `updated_at = clock`; an older row leaves local standing.
+/// - A tombstone removes the local row iff strictly newer (a delete
+///   after an adjust wins; a re-created row carries a newer clock and
+///   stands). Tombstones for locally-unknown ids leave no trace.
+/// - [`crate::appdata::TimeEntryRecord::Verbatim`] rows never fold.
+/// - **Guard-immune** (D-13): no `protected` parameter — the D-S6
+///   intent flag protects local *edits* during the copy-over collapse
+///   window; entries are independent rows with no such window (the
+///   dismissals fold's precedent, but with LWW because entries are
+///   editable).
+/// - **Fail-closed resolution**: a row with a null `task` or a card
+///   absent from `cards` (decimal card key → `TaskId`, board-scoped) is
+///   skipped — unresolvable rows are neither imported nor deleted; they
+///   age out on the wire instead (D-T12).
+pub fn fold_time_entries(
+    tracking: &mut crate::tracking::TrackingState,
+    rows: &std::collections::BTreeMap<String, crate::appdata::TimeEntryRecord>,
+    cards: &std::collections::BTreeMap<String, TaskId>,
+) -> TrackingFoldChanges {
+    let mut changes = TrackingFoldChanges::default();
+    for (key, row) in rows {
+        match row {
+            crate::appdata::TimeEntryRecord::Entry {
+                task: Some(task_card),
+                title,
+                start,
+                end,
+                created,
+                clock,
+            } => {
+                let Ok(uuid) = uuid::Uuid::parse_str(key) else {
+                    continue; // an unparseable key is not an entry identity
+                };
+                let Some(&task_id) = cards.get(task_card) else {
+                    continue; // unresolvable: neither imported nor deleted
+                };
+                match tracking
+                    .entries
+                    .get_mut(&crate::ids::TimeEntryId::from(uuid))
+                {
+                    Some(local) if *clock >= local.updated_at => {
+                        local.task = task_id;
+                        local.task_title.clone_from(title);
+                        local.start = *start;
+                        local.end = *end;
+                        local.updated_at = std::cmp::max(local.updated_at, *clock);
+                        changes.upserts.push(local.clone());
+                    }
+                    Some(_) => {} // local stands
+                    None => {
+                        let adopted = crate::tracking::TimeEntry {
+                            id: crate::ids::TimeEntryId::from(uuid),
+                            task: task_id,
+                            task_title: title.clone(),
+                            start: *start,
+                            end: *end,
+                            created_at: *created,
+                            updated_at: *clock,
+                        };
+                        tracking.entries.insert(adopted.id, adopted.clone());
+                        changes.upserts.push(adopted);
+                    }
+                }
+            }
+            crate::appdata::TimeEntryRecord::Tombstone { clock } => {
+                let Ok(uuid) = uuid::Uuid::parse_str(key) else {
+                    continue;
+                };
+                let id = crate::ids::TimeEntryId::from(uuid);
+                if tracking
+                    .entries
+                    .get(&id)
+                    .is_some_and(|local| *clock > local.updated_at)
+                {
+                    tracking.entries.remove(&id);
+                    changes.deletes.push(id);
+                }
+            }
+            crate::appdata::TimeEntryRecord::Entry { task: None, .. }
+            | crate::appdata::TimeEntryRecord::Verbatim(_) => {}
+        }
+    }
+    changes
+}
+
 /// R3 — observed remote absence of a bound card: delete-wins fallback.
 /// The tombstone's write time is the *observation* time (`observed_at`,
 /// i.e. "now" passed in by the engine); the remote binding is cleared.
@@ -4788,5 +4895,119 @@ mod duplicate_reconcile_tests {
             prop_assert_eq!(collapse.rebind, expected_survivor == cand.0);
             prop_assert_eq!(collapse.doomed.len(), 1);
         }
+    }
+
+    // ---- DR-5/2: the time-entries fold (D-T12/D-13) -----------------
+
+    use crate::appdata::TimeEntryRecord;
+
+    fn entry_row(task: &str, clock: i64) -> TimeEntryRecord {
+        TimeEntryRecord::Entry {
+            task: Some(task.to_owned()),
+            title: "wire title".to_owned(),
+            start: crate::merge_testutil::ts(clock - 1_000),
+            end: None,
+            created: crate::merge_testutil::ts(clock - 2_000),
+            clock: crate::merge_testutil::ts(clock),
+        }
+    }
+
+    #[test]
+    fn fold_time_entries_imports_updates_and_tombstones_by_the_clock() {
+        let mut tracking = crate::tracking::TrackingState::default();
+        let local_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(1));
+        let adjusted = crate::tracking::TimeEntry {
+            id: local_id,
+            task: crate::merge_testutil::bound_task(1).id,
+            task_title: "local title".to_owned(),
+            start: crate::merge_testutil::ts(100),
+            end: Some(crate::merge_testutil::ts(200)),
+            created_at: crate::merge_testutil::ts(50),
+            updated_at: crate::merge_testutil::ts(BASE + 300),
+        };
+        tracking.entries.insert(local_id, adjusted.clone());
+        let cards = std::collections::BTreeMap::from([(
+            "1".to_owned(),
+            crate::merge_testutil::bound_task(1).id,
+        )]);
+        // The adopt-then-tombstone journey uses two distinct rows in two
+        // passes (one map cannot carry both for one key) — the fold call
+        // below runs twice, the second seeing the tombstone map.
+        let adopt_rows = std::collections::BTreeMap::from([
+            // Adopt an unknown UUID.
+            (
+                uuid::Uuid::from_u128(2).to_string(),
+                entry_row("1", BASE + 500),
+            ),
+            // Tie on the clock: the document wins (pull side).
+            (local_id.as_uuid().to_string(), entry_row("1", BASE + 300)),
+        ]);
+        let rows = std::collections::BTreeMap::from([
+            // A strictly newer tombstone removes the adopted row.
+            (
+                uuid::Uuid::from_u128(2).to_string(),
+                TimeEntryRecord::Tombstone {
+                    clock: crate::merge_testutil::ts(BASE + 600),
+                },
+            ),
+            // An older tombstone leaves the re-created row standing.
+            (
+                local_id.as_uuid().to_string(),
+                TimeEntryRecord::Tombstone {
+                    clock: crate::merge_testutil::ts(BASE + 100),
+                },
+            ),
+            // A tombstone for a locally-unknown id leaves no trace.
+            (
+                uuid::Uuid::from_u128(3).to_string(),
+                TimeEntryRecord::Tombstone {
+                    clock: crate::merge_testutil::ts(BASE + 900),
+                },
+            ),
+            // Verbatim, null-task, and unresolvable-card rows skip.
+            (
+                "not-a-uuid".to_owned(),
+                TimeEntryRecord::Verbatim(serde_json::json!(1)),
+            ),
+            (
+                uuid::Uuid::from_u128(4).to_string(),
+                TimeEntryRecord::Entry {
+                    task: None,
+                    title: "x".to_owned(),
+                    start: crate::merge_testutil::ts(1),
+                    end: None,
+                    created: crate::merge_testutil::ts(1),
+                    clock: crate::merge_testutil::ts(BASE + 900),
+                },
+            ),
+            (
+                uuid::Uuid::from_u128(5).to_string(),
+                entry_row("999", BASE + 900),
+            ),
+        ]);
+        let adopted = fold_time_entries(&mut tracking, &adopt_rows, &cards);
+        assert_eq!(tracking.entries.len(), 2, "the unknown UUID adopted");
+        assert_eq!(adopted.upserts.len(), 2);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards);
+        assert_eq!(tracking.entries.len(), 1);
+        let local = &tracking.entries[&local_id];
+        assert_eq!(
+            local.task_title, "wire title",
+            "the tie went to the document"
+        );
+        assert_eq!(local.updated_at, crate::merge_testutil::ts(BASE + 300));
+        // Deletes: only the adopted row, only by its strictly newer stone.
+        assert_eq!(
+            changes.deletes,
+            vec![crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(2))]
+        );
+        assert!(
+            adopted.upserts.iter().any(|upsert| upsert.id == local_id),
+            "the tie updated the local row"
+        );
+        assert!(
+            changes.upserts.iter().all(|upsert| upsert.id == local_id),
+            "the older tombstone and the skips report nothing"
+        );
     }
 }
