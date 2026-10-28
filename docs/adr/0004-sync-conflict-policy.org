@@ -309,6 +309,11 @@ stamp-back, so a rule edit whose sidecar flush already landed can bias
 toward resurrect until the card's next change — the data-preserving
 direction.
 
+The same-cycle corollary: a cycle is fetch-before-write, so a card
+created and echoed inside the cycle is absent from the pre-push
+listing — the echo counts as presence evidence, and the fresh card is
+neither tombstoned nor resurrected in its first cycle.
+
 This amends §Deletion's card bullet: the sentence "an observed remote
 absence always beats concurrent local edits (delete-wins tombstone,
 stamped with the observation time)" gains the carve-out above, and the
