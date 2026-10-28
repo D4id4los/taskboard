@@ -232,7 +232,11 @@ pub(crate) fn task_by_card(state: &AppState, card: u64) -> &Task {
 
 /// Clones the merged state out of a pipeline result (assertion helper).
 pub(crate) fn app_into_state(
-    app: &(AppState, Vec<crate::persistence::PersistenceAction>),
+    app: &(
+        AppState,
+        Vec<crate::persistence::PersistenceAction>,
+        Vec<crate::messages::SystemEvent>,
+    ),
 ) -> AppState {
     app.0.clone()
 }
