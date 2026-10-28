@@ -21,6 +21,10 @@ use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
 use taskboard_sync_nextcloud::{DeckClient, DeckColor};
 
+/// The crash-window sweep's rule tag (#150): typed tracing facts only,
+/// never a user surface. Same tag text as the domain's `R-dup`.
+const RULE_R_DUP: &str = "R-dup";
+
 /// The publish/create color fallback when the stored (lenient) board
 /// color is not valid hex (CLI-validated input makes this defensive).
 /// The constant's home is the domain (the engine's Inbox creation uses
@@ -721,19 +725,37 @@ pub(crate) async fn publish_on(
         CommandOutcome::NoOp => None,
         other => unreachable!("BindBoard answers Bound or NoOp, got {other:?}"),
     };
-    bind_nudge_wait_reconcile(
+    // The W2 sweep (F-150b, #150): a crash between the create POST and
+    // the BindBoard commit left an orphan board on the server; a re-run
+    // published a second one. One listing, one compare: a live
+    // same-title, same-color board stamped inside the ceremony window
+    // is the orphan — keep the older board bound, ref-delete the rest.
+    // A sweep failure never fails the publish (the ADR 0010 runbook
+    // sentence stays the documented floor for anything it misses).
+    let mut bound_remote = RemoteBoardId(created.id);
+    if let Err(sweep_err) = sweep_publish_orphans(
         app,
-        board_id,
-        RemoteBoardId(created.id),
-        wiped_refs,
-        timeout,
+        client,
+        &title,
+        &color,
+        &created,
+        connector,
+        &mut bound_remote,
     )
-    .await?;
+    .await
+    {
+        tracing::warn!(
+            rule = RULE_R_DUP,
+            error = %sweep_err,
+            "publish orphan sweep failed; the ADR 0010 runbook stays the floor"
+        );
+    }
+    bind_nudge_wait_reconcile(app, board_id, bound_remote, wiped_refs, timeout).await?;
     let state = app.engine.shared_state().load_full();
     let settled = state.boards[&board_id].clone();
     Ok(PublishReceipt {
         board: BoardsListEntry {
-            id: created.id,
+            id: bound_remote.0,
             title: created.title.clone(),
             archived: created.archived,
             deleted: !created.is_live(),
@@ -742,6 +764,100 @@ pub(crate) async fn publish_on(
         wiped_refs,
     })
     .map(|receipt| receipt_with_board(receipt, &settled))
+}
+
+/// The publish ceremony's W2 orphan sweep (#150, DEC-11/DEC-12): lists
+/// the connector's boards once; every live board sharing the published
+/// title's normalization and the minted color, stamped within the
+/// 10-minute window ending at the just-created board's stamp, is a
+/// crash-window orphan. Keep-older survivorship: the just-bound board
+/// wins identity only when it is the oldest; otherwise the ceremony
+/// rebinds to the oldest orphan (`UnbindBoard` + `BindBoard`, the
+/// ceremony's typed refusals) and deletes every other candidate through
+/// the client. `bound_remote` updates to the survivor so the single
+/// nudge/wait targets the final binding.
+///
+/// # Errors
+///
+/// [`DeckError`] — pass-through: the caller degrades to today's
+/// behavior (warn + continue), never failing the publish.
+async fn sweep_publish_orphans(
+    app: &crate::App,
+    client: &DeckClient,
+    title: &str,
+    color: &DeckColor,
+    created: &taskboard_sync_nextcloud::model::Board,
+    connector: &taskboard_domain::ConnectorId,
+    bound_remote: &mut RemoteBoardId,
+) -> Result<(), String> {
+    let board_id = crate::commands::resolve_board(app, None).map_err(|err| err.to_string())?;
+    let listed = client.boards().await.map_err(|err| err.to_string())?;
+    let window_start = created.last_modified.saturating_sub(600);
+    let orphans: Vec<&taskboard_sync_nextcloud::model::Board> = listed
+        .iter()
+        .filter(|board| {
+            board.id != created.id
+                && board.deleted_at == 0
+                && taskboard_domain::reconcile::normalized_title(&board.title)
+                    == taskboard_domain::reconcile::normalized_title(title)
+                && board.color.as_str() == color.as_str()
+                && board.last_modified >= window_start
+                && board.last_modified <= created.last_modified
+        })
+        .collect();
+    if orphans.is_empty() {
+        return Ok(());
+    }
+    // Keep-older: the just-created board wins ties (DEC-5's bound-card
+    // rule, board vocabulary — the binding is the identity here).
+    let survivor = orphans
+        .iter()
+        .map(|board| board.last_modified)
+        .fold(created.last_modified, std::cmp::Ord::min);
+    if survivor < created.last_modified {
+        // Rebind to the oldest orphan before the nudge: the ceremony's
+        // single wait then targets the final binding (DEC-12).
+        app.engine
+            .execute(StateCommand::UnbindBoard { board: board_id })
+            .await
+            .map_err(|err| err.to_string())?;
+        let oldest = orphans
+            .iter()
+            .min_by_key(|board| board.last_modified)
+            .expect("non-empty above");
+        app.engine
+            .execute(StateCommand::BindBoard {
+                board: board_id,
+                remote: RemoteBoardId(oldest.id),
+                connector: connector.clone(),
+            })
+            .await
+            .map_err(|err| err.to_string())?;
+        *bound_remote = RemoteBoardId(oldest.id);
+    }
+    // Delete every non-survivor candidate: the orphans other than the
+    // adopted one, plus the just-created board itself when the rebind
+    // chose an older orphan (the created board loses identity).
+    let mut doomed: Vec<u64> = orphans
+        .iter()
+        .map(|board| board.id)
+        .filter(|id| *id != bound_remote.0)
+        .collect();
+    if bound_remote.0 != created.id {
+        doomed.push(created.id);
+    }
+    for board_id in doomed {
+        client
+            .delete_board(board_id)
+            .await
+            .map_err(|err| err.to_string())?;
+        tracing::debug!(
+            rule = RULE_R_DUP,
+            orphan = board_id,
+            "crash-window publish orphan deleted"
+        );
+    }
+    Ok(())
 }
 
 /// Overlays the settled local board's title/flags onto the receipt (the

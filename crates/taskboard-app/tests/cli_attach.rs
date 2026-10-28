@@ -298,3 +298,283 @@ async fn v17_publish_refusals_are_typed() {
         Some(format!("{local} (bound remote 3)").as_str())
     );
 }
+
+// ---- V18–V21: the publish ceremony's W2 orphan sweep (#150) ---------
+
+/// The created-board payload for the sweep fixtures: `id`/`lastModified`
+/// controlled, the color the sweep matches on.
+fn created_board_json(id: u64, last_modified: i64) -> String {
+    json!({
+        "id": id, "title": "v18", "color": "00ff00",
+        "lastModified": last_modified, "deletedAt": 0,
+        "archived": false, "labels": []
+    })
+    .to_string()
+}
+
+fn orphan_board_json(id: u64, last_modified: i64) -> String {
+    json!([{
+        "id": 3, "title": "unrelated", "color": "ffffff",
+        "lastModified": common::T, "deletedAt": 0, "archived": false,
+        "labels": []
+    }, {
+        "id": id, "title": "  V18 ", "color": "00ff00",
+        "lastModified": last_modified, "deletedAt": 0,
+        "archived": false, "labels": []
+    }])
+    .to_string()
+}
+
+/// The pull endpoints for the board the ceremony ends bound to.
+async fn mount_pull_for(server: &wiremock::MockServer, board: u64, last_modified: i64) {
+    let base = format!("/index.php/apps/deck/api/v1.0/boards/{board}");
+    let detail = json!({
+        "id": board, "title": "v18", "color": "00ff00",
+        "lastModified": last_modified, "deletedAt": 0,
+        "archived": false, "labels": []
+    })
+    .to_string();
+    for (p, body) in [
+        (base.clone(), detail),
+        (format!("{base}/stacks"), "[]".to_owned()),
+        (format!("{base}/stacks/archived"), "[]".to_owned()),
+    ] {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(p))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"gen-1\"")
+                    .set_body_string(body),
+            )
+            .mount(server)
+            .await;
+    }
+}
+
+async fn delete_expectation(server: &wiremock::MockServer, board: u64) {
+    wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+        .and(wiremock::matchers::path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{board}"
+        )))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(created_board_json(board, common::T)),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+/// V18: an orphan from a crashed earlier publish attempt — same title
+/// (normalized), same color, stamped inside the window but OLDER — is
+/// adopted: the ceremony rebinds to it and deletes the just-created
+/// board (keep-older, DEC-12).
+#[tokio::test]
+async fn v18_publish_adopts_an_older_orphan_and_deletes_the_newer() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    // The just-created board (newer) and the crashed attempt's orphan
+    // (older, inside the 10-minute window).
+    let created_lm = common::T + 1_200;
+    let orphan_lm = common::T + 900;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(created_board_json(30, created_lm)),
+        )
+        .mount(&server)
+        .await;
+    // One listing serves both the sweep and the cycle's boards read.
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_string(orphan_board_json(31, orphan_lm)),
+        )
+        .mount(&server)
+        .await;
+    mount_pull_for(&server, 31, orphan_lm).await;
+    delete_expectation(&server, 30).await;
+    // The queued CreateStack drains onto the adopted board (31).
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(
+            "/index.php/apps/deck/api/v1.0/boards/31/stacks",
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    let db = dir.path().join("v18.db");
+    seed_local_board(&db, 0x00DA_0012, "v18", "00ff00").await;
+    let config = config_for(&server.uri(), dir.path(), "v18.db");
+    let receipt = boards::publish(
+        config,
+        store_for(&server.uri()),
+        None,
+        Duration::from_secs(60),
+        None,
+    )
+    .await
+    .expect("publish succeeds");
+    assert_eq!(receipt.board.id, 31, "the older orphan wins identity");
+    server.verify().await;
+}
+
+/// V19: an exact-stamp tie keeps the just-created board bound (the
+/// DEC-5 tie rule, board vocabulary) and the orphan is deleted. (An
+/// in-window orphan can never be strictly NEWER — the window's upper
+/// bound is the created board's stamp — so the tie is the only
+/// keep-the-binding case.)
+#[tokio::test]
+async fn v19_publish_keeps_the_binding_when_the_created_board_is_older() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    let created_lm = common::T + 900;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(created_board_json(30, created_lm)),
+        )
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_string(orphan_board_json(31, created_lm)),
+        )
+        .mount(&server)
+        .await;
+    mount_pull_for(&server, 30, created_lm).await;
+    delete_expectation(&server, 31).await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(
+            "/index.php/apps/deck/api/v1.0/boards/30/stacks",
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    let db = dir.path().join("v19.db");
+    seed_local_board(&db, 0x00DA_0013, "v18", "00ff00").await;
+    let config = config_for(&server.uri(), dir.path(), "v19.db");
+    let receipt = boards::publish(
+        config,
+        store_for(&server.uri()),
+        None,
+        Duration::from_secs(60),
+        None,
+    )
+    .await
+    .expect("publish succeeds");
+    assert_eq!(receipt.board.id, 30, "the binding keeps the created board");
+    server.verify().await;
+}
+
+/// V20: a same-title same-color board OUTSIDE the window is a near-miss
+/// negative — neither board is deleted, the publish is unaffected.
+#[tokio::test]
+async fn v20_an_outside_window_orphan_is_left_alone() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    let created_lm = common::T + 1_200;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(created_board_json(30, created_lm)),
+        )
+        .mount(&server)
+        .await;
+    // Same title/color, but stamped long before the window.
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(orphan_board_json(31, common::T - 100_000)),
+        )
+        .mount(&server)
+        .await;
+    mount_pull_for(&server, 30, created_lm).await;
+    wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+        .and(wiremock::matchers::path(BOARDS_PATH.to_owned() + "/31"))
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(
+            "/index.php/apps/deck/api/v1.0/boards/30/stacks",
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    let db = dir.path().join("v20.db");
+    seed_local_board(&db, 0x00DA_0014, "v18", "00ff00").await;
+    let config = config_for(&server.uri(), dir.path(), "v20.db");
+    let receipt = boards::publish(
+        config,
+        store_for(&server.uri()),
+        None,
+        Duration::from_secs(60),
+        None,
+    )
+    .await
+    .expect("publish succeeds");
+    assert_eq!(receipt.board.id, 30);
+    server.verify().await;
+}
+
+/// V21: a sweep failure (the listing read fails once) degrades to
+/// today's behavior — the publish still succeeds.
+#[tokio::test]
+async fn v21_a_sweep_failure_never_fails_the_publish() {
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_string(created_board_json(30, common::T)),
+        )
+        .mount(&server)
+        .await;
+    // The sweep's listing read fails once; the later reads (the cycle's
+    // boards pull) answer fresh — wiremock prefers the latest mount, so
+    // the 500-once mock sits in front of the healthy listing.
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(wiremock::ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_string(orphan_board_json(31, common::T)),
+        )
+        .mount(&server)
+        .await;
+    mount_pull_for(&server, 30, common::T).await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(
+            "/index.php/apps/deck/api/v1.0/boards/30/stacks",
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    let db = dir.path().join("v21.db");
+    seed_local_board(&db, 0x00DA_0015, "v18", "00ff00").await;
+    let config = config_for(&server.uri(), dir.path(), "v21.db");
+    let receipt = boards::publish(
+        config,
+        store_for(&server.uri()),
+        None,
+        Duration::from_secs(60),
+        None,
+    )
+    .await
+    .expect("the publish survives the sweep failure");
+    assert_eq!(receipt.board.id, 30);
+}
