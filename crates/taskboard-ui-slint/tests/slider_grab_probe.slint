@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The slider-grab probe (round-3 D20b, plan §5.2): the real `Slider`
+// inside a vertically-overflowing `Flickable` — the minimal host that
+// reproduces the settings surface's gesture-steal. The global counts
+// the Slider's press/preview/commit fires and mirrors the flick's
+// `content-y` (a `changed` mirror — the flickable's pan path severs
+// any two-way binding on its first write).
+//
+// Geometry rides Theme tokens (the token lint's rule); the probe
+// leaves `base-scale` at 1.0, so the token values are the raw pixel
+// figures the tests dispatch against:
+//
+//   window 384 × 192; three space-7 fillers; the slider row
+//   space-7 at y 144–192 (inside the viewport); a trailing space-8·4
+//   filler keeps the content (448 px) overflowing. The track sits at
+//   x 64–256, its centre (160, 168).
+
+import { Theme } from "../ui/theme.slint";
+import { Slider } from "../ui/widgets/slider.slint";
+
+export global GrabProbe {
+    in-out property <int> pressed: 0;
+    in-out property <int> previews: 0;
+    in-out property <int> committed: 0;
+    in-out property <bool> pan-enabled: true;
+    in-out property <bool> preview-writes-theme: true;
+    in-out property <length> flick-y;
+}
+
+export component GrabProbeWindow inherits Window {
+    width: Theme.space-8 * 6;
+    height: Theme.space-7 * 4;
+
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        mouse-drag-pan-enabled: GrabProbe.pan-enabled;
+        // The pan mirror: one-way via `changed` — the flickable's
+        // pan path calls `remove_binding()` on `content-y` on its
+        // first write (the pinned source), so a two-way binding to
+        // the global would be severed exactly when panning starts
+        // and the mirror would read 0 forever.
+        changed content-y => {
+            GrabProbe.flick-y = self.content-y;
+        }
+        content := VerticalLayout {
+            // The slider row sits INSIDE the viewport while the
+            // trailing filler keeps the content overflowing — the
+            // flick is pannable, the slider reachable: the settings
+            // shape.
+            for _ in 3: Rectangle {
+                height: Theme.space-7;
+                background: Theme.surface;
+            }
+            slider-row := Rectangle {
+                height: Theme.space-7;
+                s := Slider {
+                    x: Theme.space-8;
+                    width: Theme.space-8 * 3;
+                    y: Theme.space-2;
+                    height: Theme.space-6;
+                    minimum: 0.5;
+                    maximum: 3.0;
+                    step: 0.1;
+                    value: Theme.base-scale;
+                    pressed() => {
+                        GrabProbe.pressed += 1;
+                    }
+                    preview(v) => {
+                        GrabProbe.previews += 1;
+                        if (GrabProbe.preview-writes-theme) {
+                            Theme.base-scale = v;
+                        }
+                    }
+                    committed(v) => {
+                        GrabProbe.committed += 1;
+                    }
+                }
+            }
+            Rectangle {
+                height: Theme.space-8 * 4;
+                background: Theme.surface;
+            }
+        }
+    }
+}

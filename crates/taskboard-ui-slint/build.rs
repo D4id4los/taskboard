@@ -44,4 +44,16 @@ fn main() {
     )
     .expect("focus seam probe compilation failed");
     println!("cargo:rerun-if-changed={}", seam_source.display());
+
+    // The slider-grab probe (round-3 D20b): the real Slider inside a
+    // pannable Flickable — the gesture-steal matrix's host, same
+    // include shape.
+    let grab_source = manifest.join("tests/slider_grab_probe.slint");
+    slint_build::compile_with_output_path(
+        &grab_source,
+        out.join("slider_grab_probe.rs"),
+        slint_build::CompilerConfiguration::new().with_debug_info(true),
+    )
+    .expect("slider grab probe compilation failed");
+    println!("cargo:rerun-if-changed={}", grab_source.display());
 }
