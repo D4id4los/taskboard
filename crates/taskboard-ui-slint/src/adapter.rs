@@ -2490,6 +2490,17 @@ impl Adapter {
         self.push_settings(window);
     }
 
+    /// The settings surface's mount (r3 D20a writer hygiene, plan
+    /// §5.1 draft invariants): the scale field's staged buffer dies at
+    /// the mount — a Return-less edit from a previous visit never
+    /// survives the surface's unmount, and the re-push renders the
+    /// canonical live echo. (The connection draft persists by design;
+    /// only the scale buffer's lifetime is bound to its surface.)
+    pub(crate) fn settings_view_mounted(&mut self, window: &AppWindow) {
+        self.settings.scale_draft = None;
+        self.push_settings(window);
+    }
+
     /// The slider gesture's release (r2 D29): one gate, one commit.
     /// An out-of-gate value reverts the whole preview (base-scale
     /// back to the pre-**gesture** value) with a seam-local Rejected;
@@ -4507,7 +4518,7 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let weak = window.as_weak();
         window.on_settings_view_mounted(move || {
             let Some(window) = weak.upgrade() else { return };
-            adapter.borrow_mut().push_settings(&window);
+            adapter.borrow_mut().settings_view_mounted(&window);
         });
     }
     {
