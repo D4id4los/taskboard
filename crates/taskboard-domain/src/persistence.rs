@@ -534,6 +534,7 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
 
 #[cfg(test)]
 mod tests {
+    use crate::reminders::Insistence;
     use super::*;
     use crate::test_support;
     use proptest::prelude::*;
@@ -902,6 +903,7 @@ mod tests {
             remote_seen: None,
         };
         let rule = crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(51)),
             task,
             offset: crate::reminders::ReminderOffset::at_due(),
@@ -1126,6 +1128,7 @@ mod tests {
 
     fn reminder_rule(raw: u128) -> crate::reminders::ReminderRule {
         crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(raw)),
             task: crate::ids::TaskId::from(uuid::Uuid::from_u128(raw + 1)),
             offset: crate::reminders::ReminderOffset::at_due(),
@@ -1638,6 +1641,7 @@ mod tests {
 
     fn adhoc_alarm(raw: u128, fire_at_secs: i64) -> crate::reminders::AdhocAlarm {
         crate::reminders::AdhocAlarm {
+            insistence: Insistence::Normal,
             id: crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(raw)),
             label: "steep the tea".into(),
             fire_at: ts(fire_at_secs),
@@ -1927,6 +1931,7 @@ mod tests {
                 ts(1_000)
             ),
             vec![crate::reminders::Notification {
+                insistence: Insistence::Normal,
                 reminder,
                 anchor: crate::reminders::ReminderAnchor::Alarm(a.id),
                 title: "steep the tea".into(),

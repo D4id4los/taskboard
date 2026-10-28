@@ -1175,6 +1175,7 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
         remote_baseline: None,
     };
     let rule = ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
         id: ids.new_reminder_rule_id(),
         task: task.id,
         offset: ReminderOffset::before(chrono::TimeDelta::try_hours(-2).unwrap())
@@ -1445,6 +1446,7 @@ fn seed_series_state(
     state.reminders.rules.insert(
         rule_id,
         taskboard_domain::ReminderRule {
+            insistence: taskboard_domain::Insistence::Normal,
             id: rule_id,
             task: task_id,
             offset: taskboard_domain::ReminderOffset::before(

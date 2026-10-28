@@ -72,6 +72,31 @@ pub fn urgency_from_text(raw: &str) -> Option<taskboard_domain::entities::Urgenc
     }
 }
 
+/// The stored TEXT form of a reminder insistence rung: the domain
+/// enum's serde unit name (single words, so the serde kebab-case and
+/// the TEXT form coincide — the one-representation discipline).
+#[must_use]
+pub fn insistence_to_text(level: taskboard_domain::reminders::Insistence) -> &'static str {
+    use taskboard_domain::reminders::Insistence::{Alarm, Normal};
+    match level {
+        Normal => "normal",
+        Alarm => "alarm",
+    }
+}
+
+/// Parses the stored TEXT form back; `None` on an unknown rung.
+#[must_use]
+pub fn insistence_from_text(
+    raw: &str,
+) -> Option<taskboard_domain::reminders::Insistence> {
+    use taskboard_domain::reminders::Insistence::{Alarm, Normal};
+    match raw {
+        "normal" => Some(Normal),
+        "alarm" => Some(Alarm),
+        _ => None,
+    }
+}
+
 /// The stored TEXT form of a recurring-series rule: the domain serde
 /// JSON of the rule (the `Option` wrapper is not stored — NULL is the
 /// unset state at the column level).
@@ -423,6 +448,17 @@ mod tests {
         let raw = id(42);
         assert_eq!(uuid_from_text(&uuid_to_text(raw)), Ok(raw));
         assert_eq!(uuid_from_text("not-a-uuid"), Err(CodecError));
+    }
+
+    #[test]
+    fn insistence_text_roundtrips_and_rejects_unknown() {
+        use taskboard_domain::reminders::Insistence;
+        assert_eq!(insistence_to_text(Insistence::Normal), "normal");
+        assert_eq!(insistence_to_text(Insistence::Alarm), "alarm");
+        assert_eq!(insistence_from_text("normal"), Some(Insistence::Normal));
+        assert_eq!(insistence_from_text("alarm"), Some(Insistence::Alarm));
+        assert_eq!(insistence_from_text("wake_up"), None);
+        assert_eq!(insistence_from_text(""), None);
     }
 
     #[test]

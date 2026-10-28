@@ -1598,6 +1598,7 @@ fn cascade_board(
 
 #[cfg(test)]
 mod tests {
+    use crate::reminders::Insistence;
     use super::*;
     use crate::merge_testutil::*;
     use crate::test_support;
@@ -1849,6 +1850,7 @@ mod tests {
         let task = bound_task(1);
         let mut state = base_state(task);
         let existing = ReminderRule {
+            insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: state.tasks.values().next().unwrap().id,
             offset: crate::reminders::ReminderOffset::at_due(),
@@ -1940,6 +1942,7 @@ mod tests {
         let dismissed_rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xa));
         let live_rule = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xb));
         let rule = |id| crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id,
             task: task_id,
             offset: crate::reminders::ReminderOffset::at_due(),
@@ -2562,6 +2565,7 @@ mod tests {
         task.clocks.deleted = ts(BASE + 300);
         let state = base_state(task);
         let mut rule = crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(10)),
             task: task_by_card(&state, 1).id,
             offset: crate::reminders::ReminderOffset::at_due(),

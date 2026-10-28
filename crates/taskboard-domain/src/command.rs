@@ -40,7 +40,7 @@ use crate::outbox::{LocalOp, OpId, PendingOp, op_targets_task};
 use crate::persistence::PersistenceAction;
 use crate::recur::{RecurBound, RecurRule, next_after, roll_target};
 use crate::reminders::{
-    ReminderDefaults, ReminderDismissal, ReminderRef, ReminderRule, ReminderSnooze,
+    Insistence, ReminderDefaults, ReminderDismissal, ReminderRef, ReminderRule, ReminderSnooze,
     active_notifications,
 };
 use crate::state::AppState;
@@ -528,6 +528,7 @@ fn completion_spawn(
     // shape: fresh id, copied offset, both stamps at the spawn instant.
     for old in app.reminders.rules.values().filter(|r| r.task == head.id) {
         actions.push(PersistenceAction::UpsertReminderRule(ReminderRule {
+            insistence: Insistence::Normal,
             id: ids.new_reminder_rule_id(),
             task: successor.id,
             offset: old.offset,
@@ -1832,6 +1833,7 @@ pub fn plan_command(
             // document-lane trigger rides the add — the op is the flush
             // trigger, never a native card write.
             let rule = crate::reminders::ReminderRule {
+                insistence: Insistence::Normal,
                 id: ids.new_reminder_rule_id(),
                 task: *task,
                 offset: *offset,
@@ -1906,6 +1908,7 @@ pub fn plan_command(
                 crate::reminders::AdhocWhen::At(t) => t,
             };
             let alarm = crate::reminders::AdhocAlarm {
+                insistence: Insistence::Normal,
                 id: ids.new_adhoc_alarm_id(),
                 label: label.clone(),
                 fire_at,
@@ -2589,6 +2592,7 @@ mod tests {
             task.duedate = Some(ts(T0 + 3_600));
         }
         let rule = crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: rule_id,
             task: task_id,
             // Two hours before the T0 + 3_600 due: the occurrence
@@ -2670,6 +2674,7 @@ mod tests {
         app.reminders.alarms.insert(
             alarm_id,
             crate::reminders::AdhocAlarm {
+                insistence: Insistence::Normal,
                 id: alarm_id,
                 label: "tea".into(),
                 fire_at: ts(T0 - 60),
@@ -5669,6 +5674,7 @@ mod tests {
 
     fn reminder_rule(raw: u64, task: TaskId) -> crate::reminders::ReminderRule {
         crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(u128::from(raw))),
             task,
             offset: crate::reminders::ReminderOffset::at_due(),
@@ -6234,6 +6240,7 @@ mod tests {
 
     fn alarm(raw: u128, fire_at: chrono::DateTime<Utc>) -> crate::reminders::AdhocAlarm {
         crate::reminders::AdhocAlarm {
+            insistence: Insistence::Normal,
             id: crate::ids::AdhocAlarmId::from(uuid::Uuid::from_u128(raw)),
             label: "steep the tea".into(),
             fire_at,
@@ -7802,6 +7809,7 @@ mod series_tests {
     fn reminder_rules_replicate_without_history() {
         let (mut app, outbox) = base_with(recur_head(RecurBound::None));
         let rule = crate::reminders::ReminderRule {
+            insistence: Insistence::Normal,
             id: crate::ids::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(4_100)),
             task: head_id(),
             offset: crate::reminders::ReminderOffset::before(

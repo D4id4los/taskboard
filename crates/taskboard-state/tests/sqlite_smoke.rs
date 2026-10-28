@@ -195,6 +195,7 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
     };
     let rule_id = taskboard_domain::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0x28));
     let rule = ReminderRule {
+        insistence: taskboard_domain::Insistence::Normal,
         id: rule_id,
         task: task.id,
         offset: ReminderOffset::before(chrono::TimeDelta::try_seconds(-90).unwrap())

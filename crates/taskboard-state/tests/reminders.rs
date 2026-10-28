@@ -344,6 +344,7 @@ async fn r1_first_tick_fires_the_past_due_default() {
     assert_eq!(
         notes,
         vec![Notification {
+            insistence: taskboard_domain::Insistence::Normal,
             reminder: ReminderRef::Default(task_id),
             anchor: taskboard_domain::ReminderAnchor::Task(task_id),
             title: "due task".into(),
@@ -527,6 +528,7 @@ async fn r9_alarm_fires_within_one_tick_and_survives_until_dismissal() {
     assert_eq!(
         notes,
         vec![Notification {
+            insistence: taskboard_domain::Insistence::Normal,
             reminder,
             anchor: ReminderAnchor::Alarm(alarm_id),
             title: "steep the tea".into(),

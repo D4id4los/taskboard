@@ -17,6 +17,7 @@ use super::{task_id_strategy, task_strategy, timestamp_strategy};
 use crate::entities::Task;
 use crate::ids::{AdhocAlarmId, ReminderRuleId, TaskId};
 use crate::reminders::{
+    Insistence,
     AdhocAlarm, ReminderDelivery, ReminderOffset, ReminderRef, ReminderRule, ReminderSnooze,
     ReminderSnoozeKey, ReminderState,
 };
@@ -35,6 +36,14 @@ pub fn reminder_offset_strategy() -> impl Strategy<Value = ReminderOffset> {
 /// A random rule id.
 pub fn reminder_rule_id_strategy() -> impl Strategy<Value = ReminderRuleId> {
     any::<u128>().prop_map(|raw| ReminderRuleId::from(uuid::Uuid::from_u128(raw)))
+}
+
+/// A random insistence rung (the flavour ladder's two levels).
+pub fn insistence_strategy() -> impl proptest::strategy::Strategy<Value = Insistence> {
+    proptest::prop_oneof![
+        proptest::strategy::Just(Insistence::Normal),
+        proptest::strategy::Just(Insistence::Alarm),
+    ]
 }
 
 /// A random adhoc-alarm id.
@@ -64,9 +73,11 @@ pub fn adhoc_alarm_strategy() -> impl Strategy<Value = AdhocAlarm> {
         adhoc_alarm_id_strategy(),
         proptest::string::string_regex("[a-z0-9]{0,10}").expect("valid regex"),
         timestamp_strategy(),
+        insistence_strategy(),
         timestamp_strategy(),
     )
-        .prop_map(|(id, label, fire_at, created_at)| AdhocAlarm {
+        .prop_map(|(id, label, fire_at, insistence, created_at)| AdhocAlarm {
+            insistence,
             id,
             label,
             fire_at,
@@ -81,9 +92,11 @@ pub fn reminder_rule_strategy() -> impl Strategy<Value = ReminderRule> {
         reminder_rule_id_strategy(),
         task_id_strategy(),
         reminder_offset_strategy(),
+        insistence_strategy(),
         timestamp_strategy(),
     )
-        .prop_map(|(id, task, offset, created_at)| ReminderRule {
+        .prop_map(|(id, task, offset, insistence, created_at)| ReminderRule {
+            insistence,
             id,
             task,
             offset,
@@ -240,6 +253,7 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
             0 => {
                 if let Some(&task) = task_ids.get(row.pick % task_ids.len()) {
                     let rule = ReminderRule {
+                        insistence: Insistence::Normal,
                         id: row.rule,
                         task,
                         offset: row.offset,
@@ -276,6 +290,7 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
             }
             4 => {
                 let alarm = AdhocAlarm {
+                    insistence: Insistence::Normal,
                     id: row.alarm,
                     label: row.label,
                     fire_at: row.occurrence,

@@ -126,6 +126,7 @@ pub fn add_alarm(
     state.reminders.alarms.insert(
         id,
         taskboard_domain::AdhocAlarm {
+            insistence: taskboard_domain::Insistence::Normal,
             id,
             label: label.to_owned(),
             fire_at,
@@ -195,6 +196,7 @@ pub fn deliver_task_notification(
     state.reminders.rules.insert(
         rule_id,
         taskboard_domain::ReminderRule {
+            insistence: taskboard_domain::Insistence::Normal,
             id: rule_id,
             task,
             offset: taskboard_domain::ReminderOffset::at_due(),
