@@ -65,6 +65,18 @@ export component IconButton inherits Rectangle {
         // The AT/keyboard activation lands on the same callback the
         // TouchArea's click hits (§7.1's equivalence, D15).
         accessible-action-default => { root.clicked(); }
+        // The raw-key half (round-3 D12/F28): Return/Enter/Space
+        // activate — every IconButton is fully keyboard-operable,
+        // widget-level (the routed action's binding stays the
+        // semantic path; this is the direct-key half).
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                accept
+            } else {
+                reject
+            }
+        }
     }
 
     icon-box := VerticalLayout {
