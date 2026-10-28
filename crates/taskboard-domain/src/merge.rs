@@ -283,6 +283,86 @@ fn adopt_live_set(
     }
 }
 
+/// The push echo's membership translation (#129): the echo observes a
+/// whole live set, so `adopt_live_set` restamps the echo-present ids at
+/// `lm` and tombstones the newly displaced members; an echo-missing id
+/// that was *already* `Removed` keeps its tombstone but advances its
+/// clock to `max(at, lm)` — the echo is our own PUT's response, so its
+/// stamp is still an observation of the membership. A stale
+/// (cache-lagged) echo can never resurrect behind a newer tombstone —
+/// the outcome table keeps the removal.
+fn adopt_echo_memberships(
+    local: &std::collections::BTreeMap<LabelId, MembershipState>,
+    live: &BTreeSet<LabelId>,
+    lm: DateTime<Utc>,
+) -> std::collections::BTreeMap<LabelId, MembershipState> {
+    let mut memberships = local.clone();
+    adopt_live_set(&mut memberships, live, lm);
+    for (id, state) in &mut memberships {
+        if !live.contains(id) {
+            *state = MembershipState::Removed {
+                at: max_ts(state.at(), lm),
+            };
+        }
+    }
+    memberships
+}
+
+/// R7 — applies the OR-set label events of a changed remote snapshot
+/// (#129). With a baseline, the remote set diffs against it in remote
+/// vocabulary: an observed add stamps `Added{ts_r}`, an observed removal
+/// stamps `Removed{ts_r}`, each through the outcome table; unmapped ids
+/// are skipped (the pipeline adopts label entities first, so unmapped
+/// means absent remotely — entity-death dominance in its quiet form).
+/// Without a baseline (local creates, pre-migration rows, freshly bound
+/// reconcile survivors) the mapped live set is adopted wholesale; the
+/// cycle establishes the record either way. Returns the applied
+/// (adds, removes) event counts for the verdict log — the wholesale
+/// fallback reports `(0, 0)` (it is not a diff).
+fn apply_label_events(
+    merged: &mut Task,
+    baseline: Option<&RemoteTaskBaseline>,
+    remote: &crate::remote::RemoteTask,
+    ctx: &RemoteIndex,
+    ts_r: DateTime<Utc>,
+) -> (usize, usize) {
+    let Some(baseline) = baseline else {
+        adopt_live_set(
+            &mut merged.label_memberships,
+            &map_remote_labels(ctx, remote.id.board, &remote.labels),
+            ts_r,
+        );
+        return (0, 0);
+    };
+    let mut stamp = |events: &[crate::ids::RemoteLabelId], event| {
+        let mut applied = 0usize;
+        for rl in events {
+            let Some(local_id) = resolve_label(ctx, remote.id.board, *rl) else {
+                continue;
+            };
+            let entry = merged.label_memberships.remove(&local_id);
+            merged
+                .label_memberships
+                .insert(local_id, merge_membership_opt(entry, event));
+            applied += 1;
+        }
+        applied
+    };
+    let add_events: Vec<crate::ids::RemoteLabelId> = remote
+        .labels
+        .difference(&baseline.labels)
+        .copied()
+        .collect();
+    let remove_events: Vec<crate::ids::RemoteLabelId> = baseline
+        .labels
+        .difference(&remote.labels)
+        .copied()
+        .collect();
+    let adds = stamp(&add_events, MembershipState::Added { at: ts_r });
+    let removes = stamp(&remove_events, MembershipState::Removed { at: ts_r });
+    (adds, removes)
+}
+
 /// R4/R5/R7/R8 — per-field LWW merge of a bound task against a changed
 /// remote snapshot entry (`remote.last_modified > local.remote_seen` is
 /// the caller's responsibility; unchanged remotes never reach this).
@@ -374,17 +454,27 @@ pub fn merge_task(
     }
     // R7: the label memberships are per-membership OR-set state (ADR
     // 0004's labels amendment, #129). An unchanged remote set (against
-    // the persisted baseline) emits no events; a changed set is adopted
-    // as a whole live set stamped `ts_r` — local `Added` ids displaced
-    // by the observation are tombstoned, never dropped. Unmapped remote
-    // labels are skipped (the pipeline adopts label entities first).
-    if changed.labels {
-        adopt_live_set(
-            &mut merged.label_memberships,
-            &map_remote_labels(ctx, remote.id.board, &remote.labels),
+    // the persisted baseline) emits no events — Deck cache-lag echoes of
+    // our own writes are invisible by construction. A changed set diffs
+    // against the baseline in remote vocabulary: an observed add stamps
+    // `Added{ts_r}`, an observed removal stamps `Removed{ts_r}`, each
+    // through the outcome table. Unmapped ids are skipped (the pipeline
+    // adopts label entities first, so unmapped means absent remotely —
+    // entity-death dominance in its quiet form). A task without a
+    // baseline (local creates, pre-migration rows, freshly bound
+    // reconcile survivors) falls back to the wholesale live-set
+    // adoption; the cycle establishes the record either way.
+    let (labels_remote_adds, labels_remote_removes) = if changed.labels {
+        apply_label_events(
+            &mut merged,
+            local.remote_baseline.as_ref(),
+            remote,
+            ctx,
             ts_r,
-        );
-    }
+        )
+    } else {
+        (0, 0)
+    };
     let archived_remote_wins = remote_wins(ts_r, local.clocks.archived) && changed.archived;
     if archived_remote_wins {
         merged.archived = remote.archived;
@@ -409,6 +499,8 @@ pub fn merge_task(
         done_remote_wins,
         archived_remote_wins,
         labels_changed = changed.labels,
+        labels_remote_adds,
+        labels_remote_removes,
         position_remote_wins,
         position_stack_resolved = position_stack.is_some(),
         title_changed = changed.title,
@@ -416,7 +508,6 @@ pub fn merge_task(
         duedate_changed = changed.duedate,
         scheduled_changed = changed.scheduled,
         done_changed = changed.done,
-        labels_changed = changed.labels,
         position_changed = changed.position,
         archived_changed = changed.archived,
         "task field verdicts"
@@ -773,19 +864,14 @@ pub fn adopt_task_after_push(
         done: echo.done,
         stack: resolve_local_stack(ctx, echo.id.board, echo.stack).unwrap_or(local.stack),
         order: echo.order,
-        // The echo is our own PUT's response: echo-present ids restamp
-        // `Added` with the advanced clock; a local `Added` id missing
-        // from the echo is the server confirming a removal — stamped
-        // `Removed`, never dropped (the no-flap rule, #129).
-        label_memberships: {
-            let mut memberships = local.label_memberships.clone();
-            adopt_live_set(
-                &mut memberships,
-                &map_remote_labels(ctx, echo.id.board, &echo.labels),
-                lm,
-            );
-            memberships
-        },
+        // The echo is our own PUT's response: its label set is a whole
+        // live-set observation, translated never to forget a removal
+        // (the no-flap rule, #129).
+        label_memberships: adopt_echo_memberships(
+            &local.label_memberships,
+            &map_remote_labels(ctx, echo.id.board, &echo.labels),
+            lm,
+        ),
         effort: None,
         importance: None,
         urgency: None,
@@ -1680,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_remote_set_tombstones_displaced_local_members() {
+    fn a_changed_remote_set_tombstones_displaced_local_members_without_a_baseline() {
         let mut previous = remote_task(1, 1, BASE + 180);
         previous.labels = BTreeSet::from([RemoteLabelId(7)]);
         let mut local = bound_task(1);
@@ -1692,7 +1778,6 @@ mod tests {
             LabelId::from(uuid::Uuid::from_u128(601)),
             crate::entities::MembershipState::Removed { at: ts(BASE + 150) },
         );
-        let local = with_baseline(local, &previous);
 
         let ctx = RemoteIndex::default();
 
@@ -1714,6 +1799,161 @@ mod tests {
         assert_eq!(
             merged.label_memberships[&LabelId::from(uuid::Uuid::from_u128(601))],
             crate::entities::MembershipState::Removed { at: ts(BASE + 150) }
+        );
+    }
+
+    // ---- the baseline-diff label events (the OR-set R7, #129) --------
+
+    /// A ctx that maps remote labels 7 and 8 on the fixture board to the
+    /// given local ids.
+    fn label_ctx(x: LabelId, y: LabelId) -> RemoteIndex {
+        let mut ctx = RemoteIndex::default();
+        ctx.label_by_ref.insert(
+            crate::ids::RemoteLabelRef {
+                board: board(REMOTE_BOARD_NUM),
+                label: RemoteLabelId(7),
+            },
+            x,
+        );
+        ctx.label_by_ref.insert(
+            crate::ids::RemoteLabelRef {
+                board: board(REMOTE_BOARD_NUM),
+                label: RemoteLabelId(8),
+            },
+            y,
+        );
+        ctx
+    }
+
+    fn label_id_n(n: u128) -> LabelId {
+        LabelId::from(uuid::Uuid::from_u128(n))
+    }
+
+    #[test]
+    fn concurrent_two_device_label_adds_both_survive() {
+        let mut previous = remote_task(1, 1, BASE + 180);
+        previous.labels = BTreeSet::from([RemoteLabelId(7)]);
+        let mut local = bound_task(1);
+        local.label_memberships.insert(
+            label_id_n(600),
+            crate::entities::MembershipState::Added { at: ts(BASE + 200) },
+        );
+        let local = with_baseline(local, &previous);
+
+        let ctx = label_ctx(label_id_n(600), label_id_n(601));
+        // The remote (another device) attached label 8 alongside 7.
+        let mut remote = remote_task(1, 1, BASE + 360);
+        remote.labels = BTreeSet::from([RemoteLabelId(7), RemoteLabelId(8)]);
+
+        let merged = merge_task(&local, &remote, &ctx, true);
+
+        assert_eq!(
+            merged.live_labels(),
+            BTreeSet::from([label_id_n(600), label_id_n(601)]),
+            "both concurrent adds survive"
+        );
+        assert_eq!(
+            merged.label_memberships[&label_id_n(600)],
+            crate::entities::MembershipState::Added { at: ts(BASE + 200) },
+            "the local add sees no event (7 equals the baseline) and keeps its stamp"
+        );
+        assert_eq!(
+            merged.label_memberships[&label_id_n(601)],
+            crate::entities::MembershipState::Added { at: ts(BASE + 360) },
+            "the observed remote add lands stamped ts_r"
+        );
+    }
+
+    #[test]
+    fn a_remote_label_removal_wins_only_when_strictly_newer() {
+        let mut previous = remote_task(1, 1, BASE + 180);
+        previous.labels = BTreeSet::from([RemoteLabelId(7)]);
+        let ctx = label_ctx(label_id_n(600), label_id_n(601));
+        let mut remote = remote_task(1, 1, BASE + 360);
+        remote.labels = BTreeSet::new();
+
+        // Local add older than the remote removal: removed.
+        let mut local = bound_task(1);
+        local.label_memberships.insert(
+            label_id_n(600),
+            crate::entities::MembershipState::Added { at: ts(BASE + 200) },
+        );
+        let local = with_baseline(local, &previous);
+        let merged = merge_task(&local, &remote, &ctx, true);
+        assert_eq!(
+            merged.label_memberships[&label_id_n(600)],
+            crate::entities::MembershipState::Removed { at: ts(BASE + 360) }
+        );
+
+        // Local add newer than the removal: the add stands, stamp kept.
+        let mut local = bound_task(1);
+        local.label_memberships.insert(
+            label_id_n(600),
+            crate::entities::MembershipState::Added { at: ts(BASE + 500) },
+        );
+        let local = with_baseline(local, &previous);
+        let merged = merge_task(&local, &remote, &ctx, true);
+        assert_eq!(
+            merged.label_memberships[&label_id_n(600)],
+            crate::entities::MembershipState::Added { at: ts(BASE + 500) }
+        );
+    }
+
+    #[test]
+    fn the_missing_baseline_fallback_reproduces_the_wholesale_replacement() {
+        // No baseline: the live set after the cycle equals the mapped
+        // remote set exactly; displaced members are tombstoned, never
+        // dropped; existing tombstones stay.
+        let mut local = bound_task(1);
+        local.label_memberships.insert(
+            label_id_n(600),
+            crate::entities::MembershipState::Added { at: ts(BASE + 100) },
+        );
+        local.label_memberships.insert(
+            label_id_n(602),
+            crate::entities::MembershipState::Added { at: ts(BASE + 200) },
+        );
+        local.label_memberships.insert(
+            label_id_n(603),
+            crate::entities::MembershipState::Removed { at: ts(BASE + 150) },
+        );
+
+        let ctx = label_ctx(label_id_n(600), label_id_n(601));
+        let mut remote = remote_task(1, 1, BASE + 360);
+        remote.labels = BTreeSet::from([RemoteLabelId(7), RemoteLabelId(8)]);
+
+        let merged = merge_task(&local, &remote, &ctx, true);
+
+        assert_eq!(
+            merged.live_labels(),
+            BTreeSet::from([label_id_n(600), label_id_n(601)]),
+            "the live set is the mapped remote set"
+        );
+        assert_eq!(
+            merged.label_memberships[&label_id_n(602)],
+            crate::entities::MembershipState::Removed { at: ts(BASE + 360) },
+            "the displaced member is remembered, not dropped"
+        );
+        assert_eq!(
+            merged.label_memberships[&label_id_n(603)],
+            crate::entities::MembershipState::Removed { at: ts(BASE + 150) },
+            "an existing tombstone keeps its older stamp"
+        );
+    }
+
+    #[test]
+    fn an_unmapped_remote_add_creates_no_membership() {
+        let mut previous = remote_task(1, 1, BASE + 180);
+        previous.labels = BTreeSet::new();
+        let local = with_baseline(bound_task(1), &previous);
+
+        let mut remote = remote_task(1, 1, BASE + 360);
+        remote.labels = BTreeSet::from([RemoteLabelId(42)]); // unmapped
+
+        let merged = merge_task(&local, &remote, &RemoteIndex::default(), true);
+        assert!(
+            merged.label_memberships.is_empty(),
+            "unmapped adds are skipped (dominance in its quiet form)"
         );
     }
 
@@ -2834,6 +3074,46 @@ mod tests {
         }
 
         #[test]
+        fn membership_merge_is_commutative_and_idempotent(
+            l in crate::test_support::membership_state_strategy(),
+            r in crate::test_support::membership_state_strategy(),
+        ) {
+            prop_assert_eq!(crate::merge::merge_membership(l, r), crate::merge::merge_membership(r, l), "commutative");
+            prop_assert_eq!(crate::merge::merge_membership(l, l), l, "idempotent");
+        }
+
+        #[test]
+        fn a_removal_lands_exactly_when_strictly_newer(
+            add_secs in 0_i64..10_000,
+            remove_secs in 0_i64..10_000,
+        ) {
+            let added = crate::entities::MembershipState::Added { at: ts(add_secs) };
+            let event = crate::entities::MembershipState::Removed { at: ts(remove_secs) };
+            let merged = crate::merge::merge_membership(added, event);
+            let removed = matches!(merged, crate::entities::MembershipState::Removed { .. });
+            prop_assert_eq!(removed, remove_secs > add_secs);
+        }
+
+        #[test]
+        fn a_stale_re_add_cannot_resurrect_behind_a_tombstone(
+            remove_secs in 0_i64..10_000,
+            add_secs in 0_i64..10_000,
+            events in 2..6usize,
+        ) {
+            proptest::prop_assume!(add_secs < remove_secs, "the re-add must be stale");
+            let mut state = crate::entities::MembershipState::Removed { at: ts(remove_secs) };
+            for _ in 0..events {
+                state = crate::merge::merge_membership(
+                    state,
+                    crate::entities::MembershipState::Added { at: ts(add_secs) },
+                );
+                let resurrected =
+                    matches!(state, crate::entities::MembershipState::Added { .. });
+                prop_assert!(!resurrected, "every stale re-add stays behind the tombstone");
+            }
+        }
+
+        #[test]
         fn fold_never_decreases_app_clocks_and_the_guard_dominates(
             doc_secs in 0_i64..10_000,
             local_secs in 0_i64..10_000,
@@ -3282,25 +3562,12 @@ mod tests {
         assert_eq!(merged.order, local.order);
         assert_eq!(merged.clocks.position, local.clocks.position);
         // Labels are per-membership OR-set state: an unchanged remote set
-        // emits no events (the map is byte-identical); a changed set
-        // adopts the mapped live set stamped `ts_r` — the property's ctx
-        // maps no labels, so every local `Added` member is tombstoned at
-        // `max(local stamp, ts_r)` and existing tombstones keep theirs.
-        let labels_touched = !touched.nothing && touched.labels;
-        if labels_touched {
-            assert!(merged.live_labels().is_empty());
-            for (id, state) in &local.label_memberships {
-                let expected = match *state {
-                    crate::entities::MembershipState::Added { at } => {
-                        crate::entities::MembershipState::Removed { at: at.max(ts_r) }
-                    }
-                    removed @ crate::entities::MembershipState::Removed { .. } => removed,
-                };
-                assert_eq!(&merged.label_memberships[id], &expected);
-            }
-        } else {
-            assert_eq!(&merged.label_memberships, &local.label_memberships);
-        }
+        // emits no events; a changed set diffs against the baseline in
+        // remote vocabulary and maps each id through the property's ctx
+        // — which resolves nothing, so no event applies and the map is
+        // byte-identical either way (unmapped ids are skipped, dominance
+        // in its quiet form).
+        assert_eq!(&merged.label_memberships, &local.label_memberships);
         let archived_touched = !touched.nothing && touched.archived;
         if !archived_touched {
             assert_eq!(merged.archived, local.archived);
