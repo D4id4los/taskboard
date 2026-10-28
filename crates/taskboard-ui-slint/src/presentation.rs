@@ -473,6 +473,87 @@ pub fn resurrect_notice_phrase(title: &str) -> String {
     format!("\"{title}\" was deleted remotely while it had unsynced work \u{2014} re-created")
 }
 
+/// The tracking chip's parts (DR-5/4, D-T17): the newest-open entry's
+/// task, its title SNAPSHOT (survives rename and deletion — the D-T2
+/// history ruling), and its start. `now` is data; nothing ticks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackingChip {
+    pub task: TaskId,
+    pub title: String,
+    pub start: DateTime<Utc>,
+}
+
+/// The status chip's pure decision (DR-5/4, D-T16/D-T17): `None`
+/// (hidden) while no open entry exists; else the D-T8 reader pick over
+/// the domain's `newest_open` — chip and badge share this one
+/// derivation so they can never disagree under the transient
+/// double-open ruling.
+#[must_use]
+pub fn tracking_chip(state: &AppState) -> Option<TrackingChip> {
+    state.tracking.newest_open().map(|entry| TrackingChip {
+        task: entry.task,
+        title: entry.task_title.clone(),
+        start: entry.start,
+    })
+}
+
+/// The shared open-entry task (the card badge's visibility input):
+/// one derivation with [`tracking_chip`].
+#[must_use]
+pub fn tracking_open_task(state: &AppState) -> Option<TaskId> {
+    tracking_chip(state).map(|chip| chip.task)
+}
+
+/// The open entry's elapsed phrase (D-T17): minute buckets, past
+/// direction, over [`duration_bucket`] — `0m` for the sub-minute
+/// `Now` bucket (an honest zero, not a countdown-style "now").
+#[must_use]
+pub fn open_elapsed_phrase(start: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    match duration_bucket(now - start) {
+        DurationBucket::Now => "0m".to_owned(),
+        DurationBucket::Minutes(n) => format!("{n}m"),
+        DurationBucket::Hours(n) => format!("{n}h"),
+        DurationBucket::Days(n) => format!("{n}d"),
+    }
+}
+
+/// The kiosk gate (D-T16): the gate empties the ACTION, never the
+/// display — the appliance shows what is being worked on, with no
+/// tracking commands (tracking is a desktop/REPL surface).
+#[must_use]
+pub const fn tracking_chip_action_visible(kiosk: bool) -> bool {
+    !kiosk
+}
+
+/// The card badge's visibility (D-T16): the card's task holds the
+/// shared open-entry pick.
+#[must_use]
+pub fn tracking_badge_visible(open_task: Option<TaskId>, card_task: TaskId) -> bool {
+    open_task == Some(card_task)
+}
+
+/// The task-detail button's verb (D-T16): `Stop` when the subject
+/// holds the open entry, `Start` otherwise. No done-gate — the
+/// engine's R-8 ruling ("a completed task is trackable") owns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackDetail {
+    Start,
+    Stop,
+}
+
+/// The detail button's pure decision: `None` with no subject, else the
+/// verb over the shared open-entry pick.
+#[must_use]
+pub fn detail_tracking_verb(state: &AppState, subject: Option<TaskId>) -> Option<TrackDetail> {
+    let subject = subject?;
+    let holding = tracking_open_task(state) == Some(subject);
+    Some(if holding {
+        TrackDetail::Stop
+    } else {
+        TrackDetail::Start
+    })
+}
+
 /// One active timer row (D-I7): the alarm plus its walked effective
 /// occurrence, carried so the push pass derives the countdown phrase
 /// once per refresh.
@@ -500,8 +581,9 @@ pub struct TimerChip {
 /// The per-row button visibility table for the notification surface
 /// (D-P11): the anchor-aware repair as reviewed data, not markup
 /// drift. Dismiss/Snooze are universal; task anchors add Done + Mute
-/// (task-shaped); alarm anchors add Cancel (the timer's off-switch).
-/// (The five-bool shape is the deliberate table — clippy's
+/// (task-shaped) + Start Task (DR-5/4, D-T16 — the tracking verb is
+/// task-shaped too); alarm anchors add Cancel (the timer's off-switch).
+/// (The six-bool shape is the deliberate table — clippy's
 /// state-machine suggestion would obscure the reviewed row.)
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -511,6 +593,7 @@ pub struct AwaitingButtons {
     pub snooze: bool,
     pub mute: bool,
     pub cancel: bool,
+    pub track_start: bool,
 }
 
 /// The active timer rows for `now` (D-I7, D-P17): one row per live
@@ -650,6 +733,7 @@ pub const fn awaiting_row_buttons(anchor: taskboard_domain::ReminderAnchor) -> A
             snooze: true,
             mute: true,
             cancel: false,
+            track_start: true,
         },
         taskboard_domain::ReminderAnchor::Alarm(_) => AwaitingButtons {
             dismiss: true,
@@ -657,6 +741,7 @@ pub const fn awaiting_row_buttons(anchor: taskboard_domain::ReminderAnchor) -> A
             snooze: true,
             mute: false,
             cancel: true,
+            track_start: false,
         },
     }
 }
@@ -1492,6 +1577,181 @@ mod tests {
         );
     }
 
+    /// A closed-or-open time entry fixture (DR-5/4): planner-shaped —
+    /// stamps from the same instant, never inverted.
+    fn entry(
+        id: taskboard_domain::TimeEntryId,
+        task: TaskId,
+        title: &str,
+        start: DateTime<Utc>,
+        end: Option<DateTime<Utc>>,
+    ) -> taskboard_domain::TimeEntry {
+        taskboard_domain::TimeEntry {
+            id,
+            task,
+            task_title: title.to_owned(),
+            start,
+            end,
+            created_at: start,
+            updated_at: end.unwrap_or(start),
+        }
+    }
+
+    /// DR-5/4 — the chip's pick: hidden while the tracking map holds
+    /// only closed rows, naming the `newest_open` entry (with the
+    /// domain's id tie-break) otherwise, carrying the title snapshot.
+    #[test]
+    fn tracking_chip_picks_the_newest_open_entry() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        let state = AppState::default();
+        assert_eq!(tracking_chip(&state), None, "no entries, no chip");
+
+        let task = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        // A closed row never chips.
+        let closed = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        state.tracking.entries.insert(
+            closed,
+            entry(closed, task, "closed", now - TimeDelta::hours(2), Some(now)),
+        );
+        assert_eq!(tracking_chip(&state), None, "closed-only, no chip");
+
+        let early = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        let late = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        let tie_low = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::from_u128(1));
+        let tie_high = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::from_u128(2));
+        state.tracking.entries.insert(
+            early,
+            entry(early, task, "early", now - TimeDelta::minutes(30), None),
+        );
+        state.tracking.entries.insert(
+            late,
+            entry(late, task, "late", now - TimeDelta::minutes(5), None),
+        );
+        assert_eq!(
+            tracking_chip(&state),
+            Some(TrackingChip {
+                task,
+                title: "late".to_owned(),
+                start: now - TimeDelta::minutes(5),
+            }),
+            "the most-recently-started open entry"
+        );
+
+        // The same-start tie-break: the greater entry id wins, and the
+        // chip and the shared open-task pick agree.
+        state.tracking.entries.remove(&late);
+        state.tracking.entries.insert(
+            tie_low,
+            entry(tie_low, task, "tie-low", now - TimeDelta::minutes(5), None),
+        );
+        state.tracking.entries.insert(
+            tie_high,
+            entry(
+                tie_high,
+                task,
+                "tie-high",
+                now - TimeDelta::minutes(5),
+                None,
+            ),
+        );
+        assert_eq!(
+            tracking_open_task(&state),
+            Some(task),
+            "one shared derivation for chip and badge"
+        );
+        assert_eq!(
+            tracking_chip(&state).map(|chip| chip.title),
+            Some("tie-high".to_owned()),
+            "the id tie-break mirrors the domain's newest_open"
+        );
+    }
+
+    /// DR-5/4 — the elapsed phrase's minute buckets (D-T17): the
+    /// sub-minute bucket renders the honest zero, the edges follow
+    /// `duration_bucket`'s tested contract, and a skew-produced
+    /// inverted span clamps to the zero.
+    #[test]
+    fn open_elapsed_phrase_buckets_the_past_direction() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        assert_eq!(open_elapsed_phrase(now, now), "0m");
+        assert_eq!(open_elapsed_phrase(now - TimeDelta::seconds(59), now), "0m");
+        assert_eq!(
+            open_elapsed_phrase(now - TimeDelta::minutes(12), now),
+            "12m"
+        );
+        assert_eq!(open_elapsed_phrase(now - TimeDelta::minutes(60), now), "1h");
+        assert_eq!(open_elapsed_phrase(now - TimeDelta::hours(25), now), "1d");
+        assert_eq!(
+            open_elapsed_phrase(now + TimeDelta::minutes(5), now),
+            "0m",
+            "an inverted span contributes nothing"
+        );
+    }
+
+    /// DR-5/4 — the kiosk gate (D-T16): the gate empties the ACTION;
+    /// the display decision is not this function's.
+    #[test]
+    fn the_kiosk_gate_empties_the_action_only() {
+        assert!(tracking_chip_action_visible(false));
+        assert!(!tracking_chip_action_visible(true));
+    }
+
+    /// DR-5/4 — the badge's visibility: exactly the open entry's card.
+    #[test]
+    fn the_tracking_badge_visible_only_on_the_open_entrys_card() {
+        let tracked = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let other = TaskId::from_uuid(uuid::Uuid::now_v7());
+        assert!(tracking_badge_visible(Some(tracked), tracked));
+        assert!(!tracking_badge_visible(Some(tracked), other));
+        assert!(
+            !tracking_badge_visible(None, tracked),
+            "nothing open, no badge"
+        );
+    }
+
+    /// DR-5/4 — the detail verb: Stop while the subject holds the
+    /// open entry, Start otherwise — including a completed subject
+    /// (R-8 is the engine's ruling, not a UI gate), and `None` with
+    /// no subject.
+    #[test]
+    fn detail_tracking_verb_follows_the_shared_pick_without_a_done_gate() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 28, 10, 0, 0).unwrap();
+        let tracked = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let other = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut state = AppState::default();
+        let open = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+        state.tracking.entries.insert(
+            open,
+            entry(open, tracked, "tracked", now - TimeDelta::minutes(5), None),
+        );
+
+        assert_eq!(detail_tracking_verb(&state, None), None);
+        assert_eq!(
+            detail_tracking_verb(&state, Some(tracked)),
+            Some(TrackDetail::Stop)
+        );
+        // The verb reads only the open-entry pick — a subject without
+        // one (fresh or completed alike) is Start; R-8's done-gate is
+        // the engine's ruling, never a UI gate.
+        assert_eq!(
+            detail_tracking_verb(&state, Some(other)),
+            Some(TrackDetail::Start)
+        );
+    }
+
+    /// DR-5/4 — the anchor table grows `track_start`: task rows only;
+    /// an Adhoc row never renders Start Task.
+    #[test]
+    fn awaiting_row_buttons_offer_track_start_on_task_anchors_only() {
+        let task = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let alarm = taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7());
+        let task_row = awaiting_row_buttons(taskboard_domain::ReminderAnchor::Task(task));
+        assert!(task_row.track_start);
+        let alarm_row = awaiting_row_buttons(taskboard_domain::ReminderAnchor::Alarm(alarm));
+        assert!(!alarm_row.track_start);
+    }
+
     #[test]
     fn parse_timer_when_accepts_the_in_and_at_forms() {
         let now = Utc.with_ymd_and_hms(2026, 10, 27, 10, 0, 0).unwrap();
@@ -1611,7 +1871,7 @@ mod tests {
         let alarm_anchor = taskboard_domain::ReminderAnchor::Alarm(
             taskboard_domain::AdhocAlarmId::from_uuid(uuid::Uuid::now_v7()),
         );
-        // Task rows keep all four task-shaped affordances, no cancel.
+        // Task rows keep all five task-shaped affordances, no cancel.
         assert_eq!(
             awaiting_row_buttons(task_anchor),
             AwaitingButtons {
@@ -1620,10 +1880,11 @@ mod tests {
                 snooze: true,
                 mute: true,
                 cancel: false,
+                track_start: true,
             }
         );
         // Alarm rows: Dismiss / Snooze / Cancel — no Mark Done (no
-        // task), no Mute (mute is task-shaped).
+        // task), no Mute (mute is task-shaped), no Start Task.
         assert_eq!(
             awaiting_row_buttons(alarm_anchor),
             AwaitingButtons {
@@ -1632,6 +1893,7 @@ mod tests {
                 snooze: true,
                 mute: false,
                 cancel: true,
+                track_start: false,
             }
         );
     }
